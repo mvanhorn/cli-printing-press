@@ -722,17 +722,7 @@ func extractSubcommandWords(command string) []string {
 	return words
 }
 
-// chainSegment is one runnable (or pipe-skipped) piece of a recipe command.
-type chainSegment struct {
-	// Text is the segment as it appeared in the source, with surrounding
-	// whitespace trimmed. Pipe and redirect tokens are NOT stripped here —
-	// stripRedirects handles that downstream.
-	Text string
-	// AfterPipe is true when this segment sat to the right of a top-level
-	// `|` operator. The validator skips these segments because their input
-	// would normally arrive over a shell pipe.
-	AfterPipe bool
-}
+type chainSegment = shellargs.ChainSegment
 
 // splitShellChain walks command and returns the segments separated by
 // top-level `&&`, `||`, `;`, or `|` operators. Quoted text is preserved.
@@ -742,77 +732,7 @@ type chainSegment struct {
 // Backslash-escapes and quoted-string handling mirror shellargs.Split
 // so the segments are safe to feed back into shellargs.Split.
 func splitShellChain(command string) ([]chainSegment, error) {
-	var (
-		segments  []chainSegment
-		quote     rune
-		escaped   bool
-		afterPipe bool
-		start     int
-	)
-	flush := func(end int) {
-		if seg := strings.TrimSpace(command[start:end]); seg != "" {
-			segments = append(segments, chainSegment{Text: seg, AfterPipe: afterPipe})
-		}
-	}
-	for i := 0; i < len(command); i++ {
-		c := command[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if quote == '\'' {
-			if c == '\'' {
-				quote = 0
-			}
-			continue
-		}
-		if quote == '"' {
-			switch c {
-			case '\\':
-				escaped = true
-			case '"':
-				quote = 0
-			}
-			continue
-		}
-		switch c {
-		case '\\':
-			escaped = true
-		case '\'', '"':
-			quote = rune(c)
-		case '&':
-			if i+1 < len(command) && command[i+1] == '&' {
-				flush(i)
-				i++
-				start = i + 1
-				// && resets the pipeline; segments after && start fresh.
-				afterPipe = false
-			}
-		case '|':
-			if i+1 < len(command) && command[i+1] == '|' {
-				flush(i)
-				i++
-				start = i + 1
-				// || resets the pipeline too.
-				afterPipe = false
-				continue
-			}
-			// Bare `|` ends the current runnable segment and marks every
-			// subsequent segment in this && / || / ; group as pipe-skipped.
-			flush(i)
-			start = i + 1
-			afterPipe = true
-		case ';':
-			flush(i)
-			start = i + 1
-			afterPipe = false
-		}
-	}
-	if quote != 0 {
-		return nil, fmt.Errorf("unclosed %s quote in %q", quoteName(quote), command)
-	}
-	flush(len(command))
-	return segments, nil
+	return shellargs.SplitChain(command)
 }
 
 // stripRedirects removes top-level shell redirects (`<file`, `>file`, `>>file`)
@@ -941,13 +861,6 @@ func stripRedirects(segment string) (string, []string) {
 		}
 	}
 	return strings.TrimSpace(cleaned.String()), redirects
-}
-
-func quoteName(r rune) string {
-	if r == '\'' {
-		return "single"
-	}
-	return "double"
 }
 
 // isIdentifierToken reports whether s contains only ASCII alphanumerics,
