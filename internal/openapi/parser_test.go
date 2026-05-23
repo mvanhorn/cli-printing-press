@@ -411,11 +411,12 @@ func TestMapParametersOnlyMarksQueryFieldSelectors(t *testing.T) {
 	assert.Equal(t, spec.ParamPurposeFieldSelector, byName["opt_fields"].Purpose)
 }
 
-// TestMapParametersDropsPhantomBracketName covers issue #1670. A spec
-// parameter literally named "[]" (or empty) is not a usable MCP/CLI argument
-// and would emit "?[]=value" on the wire. It must be dropped before reaching
-// CLI flags, MCP tool schemas, and tools-manifest.json. Legitimate
-// array-style names like "tags[]" must be preserved.
+// TestMapParametersDropsPhantomBracketName verifies that phantom parameter
+// names are dropped (issue #1670). A spec parameter literally named "[]" (or
+// empty) is not a usable MCP/CLI argument and would emit "?[]=value" on the
+// wire, so it must be dropped before reaching CLI flags, MCP tool schemas, and
+// tools-manifest.json. Legitimate array-style names like "tags[]" must be
+// preserved.
 func TestMapParametersDropsPhantomBracketName(t *testing.T) {
 	t.Parallel()
 
