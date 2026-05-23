@@ -5783,6 +5783,41 @@ func TestClassifyAPIError409RequiresIdempotent(t *testing.T) {
 	requireNoopJSON(t, stdout, "already_exists")
 }
 
+func TestClassifyAPIErrorPreservesTypedCLIError(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		flags    *rootFlags
+		wantCode int
+	}{
+		{"semantic envelope error", usageErr(errors.New("semantic API envelope rejected input")), &rootFlags{}, 2},
+		{"HTTP-like usage error with idempotent flags", usageErr(errors.New("HTTP 409: conflict")), &rootFlags{idempotent: true, asJSON: true}, 2},
+		{"HTTP-like auth error", authErr(errors.New("HTTP 401: unauthorized")), &rootFlags{}, 4},
+		{"HTTP-like api error with idempotent flags", apiErr(errors.New("HTTP 409: conflict")), &rootFlags{idempotent: true, asJSON: true}, 5},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, classified := captureStdoutStderr(t, func() error {
+				return classifyAPIError(tc.err, tc.flags)
+			})
+
+			if classified != tc.err {
+				t.Fatalf("classifyAPIError should preserve typed cliError unchanged, got %#v", classified)
+			}
+			if got := ExitCode(classified); got != tc.wantCode {
+				t.Fatalf("ExitCode(classifyAPIError(%T)) = %d, want %d", tc.err, got, tc.wantCode)
+			}
+			if stdout != "" {
+				t.Fatalf("typed cliError pass-through should not write stdout, got %q", stdout)
+			}
+			if stderr != "" {
+				t.Fatalf("typed cliError pass-through should not write stderr, got %q", stderr)
+			}
+		})
+	}
+}
+
 func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
 	err := classifyDeleteError(errors.New("HTTP 404: not found"), &rootFlags{})
 	if err == nil {
