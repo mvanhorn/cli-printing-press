@@ -50,6 +50,7 @@ const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 // honor a smaller --limit) so the matrix's per-command timeout
 // doesn't kill an otherwise healthy run.
 const dogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
+const liveDogfoodAuthRetryDelay = time.Second
 
 type LiveDogfoodOptions struct {
 	CLIDir              string
@@ -935,8 +936,6 @@ func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout
 	return result
 }
 
-var liveDogfoodAuthRetryDelay = time.Second
-
 func liveDogfoodRetryableAuth401(run liveDogfoodRun) bool {
 	if run.exitCode == 0 {
 		return false
@@ -1180,8 +1179,7 @@ func liveDogfoodAuth401(run liveDogfoodRun) bool {
 	}
 	return strings.Contains(output, "couldn't authenticate") ||
 		strings.Contains(output, "could not authenticate") ||
-		strings.Contains(output, "not authenticated") ||
-		strings.Contains(output, "unauthorized")
+		strings.Contains(output, "not authenticated")
 }
 
 func commandSupportsDryRun(help string) bool {

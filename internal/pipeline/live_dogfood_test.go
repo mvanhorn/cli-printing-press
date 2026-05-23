@@ -263,10 +263,6 @@ func TestRunLiveDogfoodProcessRetriesTransientAuth401(t *testing.T) {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
-	prevDelay := liveDogfoodAuthRetryDelay
-	liveDogfoodAuthRetryDelay = 0
-	t.Cleanup(func() { liveDogfoodAuthRetryDelay = prevDelay })
-
 	dir := t.TempDir()
 	countPath := filepath.Join(dir, "count")
 	binPath := writeStubBinary(t, dir, "flaky-auth", `count_file="count"
@@ -297,10 +293,6 @@ func TestRunLiveDogfoodSkipsPersistentAuth401AsRunnerCredentialUnavailable(t *te
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
-
-	prevDelay := liveDogfoodAuthRetryDelay
-	liveDogfoodAuthRetryDelay = 0
-	t.Cleanup(func() { liveDogfoodAuthRetryDelay = prevDelay })
 
 	dir := t.TempDir()
 	binaryName := "fixture-pp-cli"
@@ -355,6 +347,11 @@ exit 1
 	require.NotNil(t, happy, "expected account show-settings happy_path result")
 	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
 	assert.Equal(t, reasonUnavailableRunnerCredentials, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult, "expected account show-settings json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonUnavailableRunnerCredentials, jsonResult.Reason)
 
 	count, err := os.ReadFile(filepath.Join(dir, "count"))
 	require.NoError(t, err)
