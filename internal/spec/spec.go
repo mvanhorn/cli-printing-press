@@ -9,7 +9,6 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"unicode"
 
@@ -307,7 +306,6 @@ func (s *APISpec) InferEndpointTemplateVarsFromBaseURLs() {
 		out = append(out, name)
 	}
 
-	add(s.BaseURL)
 	s.visitURLTemplateSources(true, func(raw string) bool {
 		add(raw)
 		return true
@@ -408,7 +406,7 @@ func sortedStringKeys[V any](m map[string]V) []string {
 	for key := range m {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
