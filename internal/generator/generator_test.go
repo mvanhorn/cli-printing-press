@@ -9703,6 +9703,17 @@ func assertVerifyEnvConcurrencyPin(t *testing.T, syncContent, cliutilImportPath,
 		label+": verify-env override must sit after the default-resolution block (as shipped)")
 }
 
+func assertSyncDefaultConcurrency(t *testing.T, syncContent string, want int, label string) {
+	t.Helper()
+	assert.Contains(t, syncContent,
+		fmt.Sprintf(`cmd.Flags().IntVar(&concurrency, "concurrency", %d, "Number of parallel sync workers")`, want),
+		label+": --concurrency flag default must match spec rate class")
+	assert.Regexp(t,
+		fmt.Sprintf(`if concurrency < 1 \{\s*concurrency = %d\s*\}`, want),
+		syncContent,
+		label+": invalid concurrency fallback must match spec rate class")
+}
+
 // TestGeneratedSyncForcesSingleWorkerUnderVerifyEnv pins the verify-mode
 // override in the REST sync template. Without it, the worker pool races on
 // SQLite writes once network latency disappears, tripping SQLITE_BUSY
@@ -9774,6 +9785,23 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedGraphQLSyncConcurrencyDefaultHonorsRateClass(t *testing.T) {
+	t.Parallel()
+
+	gqlSpec, err := graphql.ParseSDL(filepath.Join("..", "..", "testdata", "graphql", "test.graphql"))
+	require.NoError(t, err)
+	gqlSpec.RateClass = spec.RateClassMonthly
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(gqlSpec.Name))
+	gen := New(gqlSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assertSyncDefaultConcurrency(t, string(syncGo), 1, "GraphQL sync.go")
 }
 
 func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {

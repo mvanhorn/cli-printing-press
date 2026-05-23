@@ -5198,6 +5198,82 @@ paths:
 	assert.Equal(t, "paid", findEndpointByPath(items, "/items/{id}").Tier)
 }
 
+func TestParseRateClassExtensionFromInfo(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Monthly Quota API
+  version: 1.0.0
+  x-rate-class: monthly
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.Equal(t, spec.RateClassMonthly, parsed.RateClass)
+	assert.Equal(t, 1, parsed.SyncDefaultConcurrency())
+}
+
+func TestParseRateClassExtensionRootOverridesInfo(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+openapi: 3.0.3
+x-rate-class: daily
+info:
+  title: Root Rate Class API
+  version: 1.0.0
+  x-rate-class: per-second
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.Equal(t, spec.RateClassDaily, parsed.RateClass)
+	assert.Equal(t, 1, parsed.SyncDefaultConcurrency())
+}
+
+func TestParseRateClassRejectsNonStringExtension(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Bad Rate Class API
+  version: 1.0.0
+  x-rate-class: [monthly]
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: ok
+`)
+
+	_, err := Parse(data)
+	require.ErrorContains(t, err, "x-rate-class must be a string")
+}
+
 func TestParseTierRoutingExtensionFromInfo(t *testing.T) {
 	t.Parallel()
 	data := []byte(`
