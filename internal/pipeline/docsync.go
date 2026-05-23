@@ -17,6 +17,77 @@ type syncedArtifact struct {
 	Detail string
 }
 
+// SyncCLINarrativeDocs rewrites generated README/SKILL narrative blocks from
+// the current research.json narrative. Empty narrative fields remove only the
+// narrative-owned subsections; generic fallback prose is left intact.
+func SyncCLINarrativeDocs(dir, apiName string, narrative *ReadmeNarrative) ([]syncedArtifact, error) {
+	if narrative == nil {
+		return nil, nil
+	}
+
+	var synced []syncedArtifact
+	if len(narrative.QuickStart) > 0 {
+		changed, err := syncMarkdownFeatureSection(
+			filepath.Join(dir, "README.md"),
+			"## Quick Start",
+			renderQuickStartSection(narrative.QuickStart),
+			[]string{"## Unique Features", "## Usage"},
+		)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			synced = append(synced, syncedArtifact{Path: "README.md", Detail: "Quick Start"})
+		}
+	}
+
+	if strings.TrimSpace(narrative.AuthNarrative) != "" {
+		changed, err := syncReadmeAuthNarrative(filepath.Join(dir, "README.md"), narrative.AuthNarrative)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			synced = append(synced, syncedArtifact{Path: "README.md", Detail: "Authentication"})
+		}
+
+		changed, err = syncMarkdownFeatureSection(
+			filepath.Join(dir, "SKILL.md"),
+			"## Auth Setup",
+			renderSkillAuthSetupSection(apiName, narrative.AuthNarrative),
+			[]string{"## Agent Mode", "## Command Reference"},
+		)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			synced = append(synced, syncedArtifact{Path: "SKILL.md", Detail: "Auth Setup"})
+		}
+	}
+
+	changed, err := syncReadmeTroubleshoots(filepath.Join(dir, "README.md"), narrative.Troubleshoots)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		synced = append(synced, syncedArtifact{Path: "README.md", Detail: "Troubleshooting"})
+	}
+
+	changed, err = syncMarkdownFeatureSection(
+		filepath.Join(dir, "SKILL.md"),
+		"## Recipes",
+		renderRecipesSection(narrative.Recipes),
+		[]string{"## Auth Setup", "## Agent Mode", "## Command Reference"},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		synced = append(synced, syncedArtifact{Path: "SKILL.md", Detail: "Recipes"})
+	}
+
+	return synced, nil
+}
+
 // SyncCLITranscendenceDocs rewrites generated README/SKILL transcendence
 // blocks from dogfood-verified features. Empty verified sets remove the blocks.
 func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArtifact, error) {
@@ -49,6 +120,129 @@ func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArti
 	return synced, nil
 }
 
+func syncReadmeAuthNarrative(path, authNarrative string) (bool, error) {
+	return syncMarkdownFile(path, func(content string) string {
+		heading := "## Authentication"
+		staleHeading := ""
+		if findMarkdownHeading(content, "## Optional: API Key") >= 0 {
+			heading = "## Optional: API Key"
+			staleHeading = "## Authentication"
+		}
+		content = replaceMarkdownSection(content, heading, renderAuthNarrativeSection(heading, authNarrative), []string{"## Quick Start"})
+		if staleHeading != "" {
+			content = replaceMarkdownSection(content, staleHeading, "", nil)
+		}
+		return content
+	})
+}
+
+func syncReadmeTroubleshoots(path string, troubleshoots []TroubleshootTip) (bool, error) {
+	return syncMarkdownFile(path, func(content string) string {
+		return replaceMarkdownSubsection(content, "## Troubleshooting", "### API-specific", renderTroubleshootSubsection(troubleshoots))
+	})
+}
+
+func renderQuickStartSection(steps []QuickStartStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Quick Start\n\n```bash\n")
+	for _, step := range steps {
+		if step.Comment != "" {
+			b.WriteString("# ")
+			b.WriteString(step.Comment)
+			b.WriteString("\n")
+		}
+		b.WriteString(step.Command)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("```")
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderAuthNarrativeSection(heading, authNarrative string) string {
+	authNarrative = strings.TrimSpace(authNarrative)
+	if authNarrative == "" {
+		return ""
+	}
+	if heading == "## Optional: API Key" {
+		return heading + "\n\n**All core commands work without setup.** The API key below is only needed to unlock additional features.\n\n" + authNarrative
+	}
+	return heading + "\n\n" + authNarrative
+}
+
+func renderSkillAuthSetupSection(apiName, authNarrative string) string {
+	authNarrative = strings.TrimSpace(authNarrative)
+	if authNarrative == "" {
+		return ""
+	}
+	cliName := strings.TrimSpace(apiName)
+	if cliName == "" {
+		cliName = "<cli>"
+	} else if !strings.HasSuffix(cliName, "-pp-cli") {
+		cliName += "-pp-cli"
+	}
+	if authNarrativeMentionsDoctor(authNarrative, cliName) {
+		return "## Auth Setup\n\n" + authNarrative
+	}
+	return "## Auth Setup\n\n" + authNarrative + "\n\nRun `" + cliName + " doctor` to verify setup."
+}
+
+func authNarrativeMentionsDoctor(authNarrative, cliName string) bool {
+	lower := strings.ToLower(authNarrative)
+	cliName = strings.ToLower(strings.TrimSpace(cliName))
+	for _, candidate := range []string{
+		"`" + cliName + " doctor`",
+		"`<cli> doctor`",
+	} {
+		if strings.Contains(lower, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func renderTroubleshootSubsection(troubleshoots []TroubleshootTip) string {
+	if len(troubleshoots) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("### API-specific\n")
+	for _, tip := range troubleshoots {
+		b.WriteString("- **")
+		b.WriteString(tip.Symptom)
+		b.WriteString("** \u2014 ")
+		b.WriteString(tip.Fix)
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderRecipesSection(recipes []Recipe) string {
+	if len(recipes) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Recipes\n")
+	for _, recipe := range recipes {
+		b.WriteString("\n### ")
+		b.WriteString(recipe.Title)
+		b.WriteString("\n\n```bash\n")
+		b.WriteString(recipe.Command)
+		b.WriteString("\n```")
+		if recipe.Explanation != "" {
+			b.WriteString("\n\n")
+			b.WriteString(recipe.Explanation)
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // SyncCLIRootHighlights rewrites root --help Highlights from dogfood-verified
 // features. It edits only the generated Long-string section so hand-authored
 // command registration changes in root.go are left intact.
@@ -72,6 +266,12 @@ func SyncCLIRootHighlights(dir string, features []NovelFeature) (bool, error) {
 }
 
 func syncMarkdownFeatureSection(path, heading, replacement string, insertBefore []string) (bool, error) {
+	return syncMarkdownFile(path, func(content string) string {
+		return replaceMarkdownSection(content, heading, replacement, insertBefore)
+	})
+}
+
+func syncMarkdownFile(path string, rewrite func(string) string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -80,8 +280,9 @@ func syncMarkdownFeatureSection(path, heading, replacement string, insertBefore 
 		return false, fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	updated := replaceMarkdownSection(string(data), heading, replacement, insertBefore)
-	if updated == string(data) {
+	content := string(data)
+	updated := rewrite(content)
+	if updated == content {
 		return false, nil
 	}
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
@@ -198,6 +399,25 @@ func replaceMarkdownSection(content, heading, replacement string, insertBefore [
 	return joinMarkdownParts(content[:insertAt], replacement, content[insertAt:])
 }
 
+func replaceMarkdownSubsection(content, parentHeading, subsectionHeading, replacement string) string {
+	parentStart := findMarkdownHeading(content, parentHeading)
+	if parentStart < 0 {
+		return content
+	}
+
+	parentEnd := findNextLevelTwoHeading(content, parentStart+len(parentHeading))
+	subStart := findMarkdownHeadingInRange(content, subsectionHeading, parentStart+len(parentHeading), parentEnd)
+	if subStart >= 0 {
+		subEnd := findNextMarkdownHeadingAtMost(content, subStart+len(subsectionHeading), 3, parentEnd)
+		return joinMarkdownParts(content[:subStart], replacement, content[subEnd:])
+	}
+
+	if strings.TrimSpace(replacement) == "" {
+		return content
+	}
+	return joinMarkdownParts(content[:parentEnd], replacement, content[parentEnd:])
+}
+
 func joinMarkdownParts(prefix, middle, suffix string) string {
 	prefix = strings.TrimRight(prefix, "\n")
 	middle = strings.Trim(middle, "\n")
@@ -227,31 +447,134 @@ func joinMarkdownParts(prefix, middle, suffix string) string {
 }
 
 func findMarkdownHeading(content, heading string) int {
-	offset := 0
-	for {
-		idx := strings.Index(content[offset:], heading)
-		if idx == -1 {
-			return -1
+	for _, candidate := range markdownHeadings(content, 0, len(content), 1, 6) {
+		if candidate.Text == heading {
+			return candidate.Start
 		}
-		idx += offset
-		beforeOK := idx == 0 || content[idx-1] == '\n'
-		after := idx + len(heading)
-		afterOK := after == len(content) || content[after] == '\n' || content[after] == '\r'
-		if beforeOK && afterOK {
-			return idx
-		}
-		offset = idx + len(heading)
 	}
+	return -1
+}
+
+func findMarkdownHeadingInRange(content, heading string, start, end int) int {
+	for _, candidate := range markdownHeadings(content, start, end, 1, 6) {
+		if candidate.Text == heading {
+			return candidate.Start
+		}
+	}
+	return -1
 }
 
 func findNextLevelTwoHeading(content string, after int) int {
-	if after >= len(content) {
-		return len(content)
-	}
-	if idx := strings.Index(content[after:], "\n## "); idx >= 0 {
-		return after + idx + 1
+	if heading := firstMarkdownHeading(content, after, len(content), 2, 2); heading.Start >= 0 {
+		return heading.Start
 	}
 	return len(content)
+}
+
+func findNextMarkdownHeadingAtMost(content string, after, maxLevel, limit int) int {
+	if heading := firstMarkdownHeading(content, after, limit, 1, maxLevel); heading.Start >= 0 {
+		return heading.Start
+	}
+	if limit > len(content) {
+		return len(content)
+	}
+	return limit
+}
+
+type markdownHeading struct {
+	Start int
+	Level int
+	Text  string
+}
+
+func firstMarkdownHeading(content string, start, end, minLevel, maxLevel int) markdownHeading {
+	for _, heading := range markdownHeadings(content, start, end, minLevel, maxLevel) {
+		return heading
+	}
+	return markdownHeading{Start: -1}
+}
+
+func markdownHeadings(content string, start, end, minLevel, maxLevel int) []markdownHeading {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(content) {
+		end = len(content)
+	}
+	if start > end {
+		return nil
+	}
+
+	var headings []markdownHeading
+	inFence := false
+	fenceMarker := ""
+	for lineStart := 0; lineStart < len(content); {
+		lineEnd := strings.IndexByte(content[lineStart:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(content)
+		} else {
+			lineEnd += lineStart
+		}
+
+		if lineStart >= end {
+			break
+		}
+
+		line := content[lineStart:lineEnd]
+		trimmed := strings.TrimLeft(line, " \t")
+		if marker, ok := markdownFenceMarker(trimmed); ok {
+			if !inFence {
+				inFence = true
+				fenceMarker = marker
+			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) {
+				inFence = false
+				fenceMarker = ""
+			}
+		} else if !inFence && lineStart >= start {
+			if heading, ok := parseMarkdownHeading(line, lineStart, minLevel, maxLevel); ok {
+				headings = append(headings, heading)
+			}
+		}
+
+		if lineEnd == len(content) {
+			break
+		}
+		lineStart = lineEnd + 1
+	}
+	return headings
+}
+
+func markdownFenceMarker(trimmedLine string) (string, bool) {
+	if len(trimmedLine) < 3 {
+		return "", false
+	}
+	ch := trimmedLine[0]
+	if ch != '`' && ch != '~' {
+		return "", false
+	}
+	end := 1
+	for end < len(trimmedLine) && trimmedLine[end] == ch {
+		end++
+	}
+	if end < 3 {
+		return "", false
+	}
+	return trimmedLine[:end], true
+}
+
+func parseMarkdownHeading(line string, start, minLevel, maxLevel int) (markdownHeading, bool) {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level < minLevel || level > maxLevel || level >= len(line) || line[level] != ' ' {
+		return markdownHeading{}, false
+	}
+	return markdownHeading{
+		Start: start,
+		Level: level,
+		Text:  strings.TrimRight(line, " \t\r"),
+	}, true
 }
 
 const rootHighlightsHeading = "Highlights (not in the official API docs):"
