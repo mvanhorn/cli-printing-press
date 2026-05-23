@@ -22,6 +22,7 @@ func TestParseDurationLoose(t *testing.T) {
 		{"two weeks window", "14d", 14 * 24 * time.Hour, false},
 		{"weeks", "4w", 4 * 7 * 24 * time.Hour, false},
 		{"one week", "1w", 7 * 24 * time.Hour, false},
+		{"zero days", "0d", 0, false},
 		{"negative days", "-2d", -2 * 24 * time.Hour, false},
 		{"surrounding spaces", " 7d ", 7 * 24 * time.Hour, false},
 		{"stdlib hours", "24h", 24 * time.Hour, false},
@@ -35,7 +36,6 @@ func TestParseDurationLoose(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := ParseDurationLoose(tc.input)
