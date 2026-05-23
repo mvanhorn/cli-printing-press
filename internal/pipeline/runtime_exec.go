@@ -14,7 +14,7 @@ import (
 )
 
 func buildCLI(dir string) (string, error) {
-	dir, err := resolveCLIDir(dir)
+	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolving CLI directory: %w", err)
 	}
@@ -43,7 +43,7 @@ func buildCLITo(dir, binaryPath string) error {
 }
 
 func findCLICommandDir(dir string) (string, error) {
-	dir, err := resolveCLIDir(dir)
+	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolving CLI directory: %w", err)
 	}
@@ -93,10 +93,6 @@ func findCLICommandDir(dir string) (string, error) {
 	}
 
 	return "", fmt.Errorf("cannot find CLI cmd entry point in %s", dir)
-}
-
-func resolveCLIDir(dir string) (string, error) {
-	return filepath.Abs(dir)
 }
 
 func runCLI(binary string, args []string, env []string, timeout time.Duration) error {
