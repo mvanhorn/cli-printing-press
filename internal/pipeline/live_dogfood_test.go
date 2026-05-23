@@ -258,6 +258,106 @@ func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
 	assert.Equal(t, "1", run.stdout, "live-dogfood subprocess should see PRINTING_PRESS_DOGFOOD=1")
 }
 
+func TestRunLiveDogfoodProcessRetriesTransientAuth401(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	binPath := writeStubBinary(t, dir, "flaky-auth", `count_file="count"
+count=0
+if [ -f "$count_file" ]; then
+  count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+if [ "$count" -eq 1 ]; then
+  echo 'Error: GET /api/v2/account/settings returned HTTP 401: {"error":"Couldn'\''t authenticate you"}' >&2
+  exit 1
+fi
+printf '{"ok":true}'
+`)
+
+	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	require.NoError(t, run.err, "fixture: %s", run.stderr)
+	assert.Equal(t, 0, run.exitCode)
+	assert.Equal(t, `{"ok":true}`, run.stdout)
+
+	count, err := os.ReadFile(countPath)
+	require.NoError(t, err)
+	assert.Equal(t, "2", string(count), "auth-shaped 401 should be retried once")
+}
+
+func TestRunLiveDogfoodSkipsPersistentAuth401AsRunnerCredentialUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	writeStubBinary(t, dir, binaryName, `if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show-settings"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show-settings" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show account settings.
+
+Usage:
+  fixture-pp-cli account show-settings [flags]
+
+Examples:
+  fixture-pp-cli account show-settings
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+count_file="count"
+count=0
+if [ -f "$count_file" ]; then
+  count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+echo 'Error: GET /api/v2/account/settings returned HTTP 401: {"error":"Could not authenticate you"}' >&2
+exit 1
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    5 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected account show-settings happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonUnavailableRunnerCredentials, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult, "expected account show-settings json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonUnavailableRunnerCredentials, jsonResult.Reason)
+
+	count, err := os.ReadFile(filepath.Join(dir, "count"))
+	require.NoError(t, err)
+	assert.Equal(t, "2", string(count), "persistent auth-shaped 401 should retry once before skip classification")
+}
+
 func TestRunLiveDogfoodProcessPreservesLargeJSONUnderCap(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -657,6 +757,7 @@ func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
 
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 403 permission denied"}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "your credentials are valid but lack access"}))
+	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"error":"Couldn't authenticate you"}`}))
 	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 404 NotFound"}))
 }
 

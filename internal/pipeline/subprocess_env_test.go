@@ -121,6 +121,50 @@ func TestApplyDefaultSubprocessEnvInstallsScopedHome(t *testing.T) {
 	}
 }
 
+func TestSubprocessEnvPreservesAPICredentialsAfterScopedHome(t *testing.T) {
+	t.Setenv("FOO_API_TOKEN", "secret-token")
+	t.Setenv("BAR_API_KEY", "secret-key")
+
+	cleanup, err := scopeSubprocessHome()
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
+	defer cleanup()
+
+	env := subprocessEnv()
+	assertEnv(t, env, "FOO_API_TOKEN", "secret-token")
+	assertEnv(t, env, "BAR_API_KEY", "secret-key")
+}
+
+func TestApplyDefaultSubprocessEnvDogfoodAppendPreservesAPICredential(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	t.Setenv("FOO_API_TOKEN", "secret-token")
+
+	dir := t.TempDir()
+	binPath := writeStubBinary(t, dir, "echo-credential", `printf '%s|%s' "${FOO_API_TOKEN:-}" "${PRINTING_PRESS_DOGFOOD:-}"`)
+
+	cleanup, err := scopeSubprocessHome()
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
+	defer cleanup()
+
+	cmd := exec.Command(binPath)
+	applyDefaultSubprocessEnv(cmd)
+	cmd.Env = append(cmd.Env, dogfoodEnvVar+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run fixture: %v\n%s", err, out)
+	}
+
+	if string(out) != "secret-token|1" {
+		t.Fatalf("credential or dogfood env missing from subprocess: %q", out)
+	}
+}
+
 // TestSubprocessWriteDoesNotEscapeScopedHome is the acceptance test for
 // issue #1409: a subprocess invoked under a scoped session must not write
 // to the parent's HOME-resolved config dir. The parent's HOME is
