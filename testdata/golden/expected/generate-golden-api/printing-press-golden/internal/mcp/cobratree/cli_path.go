@@ -7,12 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 )
 
 // SiblingCLIPath resolves the companion CLI via sibling-of-executable,
 // PRINTING_PRESS_GOLDEN_CLI_PATH env var, then PATH.
 func SiblingCLIPath() (string, error) {
-	const cliName = "printing-press-golden-pp-cli"
+	cliName := cliExecutableName(runtime.GOOS)
 	if exe, err := os.Executable(); err == nil {
 		candidate := filepath.Join(filepath.Dir(exe), cliName)
 		if _, err := os.Stat(candidate); err == nil {
@@ -23,4 +24,12 @@ func SiblingCLIPath() (string, error) {
 		return v, nil
 	}
 	return exec.LookPath(cliName)
+}
+
+func cliExecutableName(goos string) string {
+	name := "printing-press-golden-pp-cli"
+	if goos == "windows" {
+		return name + ".exe"
+	}
+	return name
 }
