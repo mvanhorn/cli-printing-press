@@ -115,8 +115,8 @@ type QuickStartStep struct {
 	Comment string `json:"comment,omitempty"`
 }
 
-// Recipe is a worked example for SKILL.md. Title is rendered as a heading,
-// Command as a fenced code block, Explanation as a paragraph beneath.
+// Recipe is a worked example for README and SKILL.md. Title is rendered as a
+// heading, Command as a fenced code block, Explanation as a paragraph beneath.
 type Recipe struct {
 	Title       string `json:"title"`
 	Command     string `json:"command"`
