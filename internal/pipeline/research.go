@@ -97,7 +97,7 @@ type ReadmeNarrative struct {
 	// WhenToUse is a 2–4 sentence narrative rendered in SKILL.md describing
 	// the CLI's ideal use cases. Not rendered in README.
 	WhenToUse string `json:"when_to_use,omitempty"`
-	// Recipes are worked examples rendered in SKILL.md's Recipes section.
+	// Recipes are worked examples rendered in README/SKILL Recipes sections.
 	// Each recipe is a titled command with an explanation.
 	Recipes []Recipe `json:"recipes,omitempty"`
 	// TriggerPhrases are natural-language phrases that should invoke this
@@ -115,8 +115,8 @@ type QuickStartStep struct {
 	Comment string `json:"comment,omitempty"`
 }
 
-// Recipe is a worked example for SKILL.md. Title is rendered as a heading,
-// Command as a fenced code block, Explanation as a paragraph beneath.
+// Recipe is a worked example for README and SKILL.md. Title is rendered as a
+// heading, Command as a fenced code block, Explanation as a paragraph beneath.
 type Recipe struct {
 	Title       string `json:"title"`
 	Command     string `json:"command"`

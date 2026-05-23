@@ -62,7 +62,7 @@ type QuickStartStep struct {
 	Comment string
 }
 
-// Recipe mirrors pipeline.Recipe for SKILL.md template rendering.
+// Recipe mirrors pipeline.Recipe for README/SKILL template rendering.
 type Recipe struct {
 	Title       string
 	Command     string

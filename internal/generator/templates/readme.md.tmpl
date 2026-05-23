@@ -323,6 +323,22 @@ These capabilities aren't available in any other tool for this API.
 {{- end}}
 {{- end}}
 {{- end}}
+{{- if and .Narrative .Narrative.Recipes}}
+
+## Recipes
+{{range .Narrative.Recipes}}
+
+### {{.Title}}
+
+```bash
+{{.Command}}
+```
+{{- if .Explanation}}
+
+{{.Explanation}}
+{{- end}}
+{{- end}}
+{{- end}}
 
 ## Usage
 
