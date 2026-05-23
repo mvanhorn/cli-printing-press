@@ -590,8 +590,8 @@ func resolveNamedMapKeys(scope *ast.BlockStmt, name string, callPos token.Pos, h
 				if !ok {
 					continue
 				}
-				for i, n := range vs.Names {
-					if n.Name != name || i >= len(vs.Values) {
+				for i, nameIdent := range vs.Names {
+					if nameIdent.Name != name || i >= len(vs.Values) {
 						continue
 					}
 					if litKeys, ok := extractCompositeLiteralKeys(vs.Values[i]); ok {
@@ -786,6 +786,12 @@ func helperBodyDispatchesThroughHelper(body *ast.BlockStmt, paramName string, he
 	}
 	dispatches := false
 	ast.Inspect(body, func(n ast.Node) bool {
+		// Skip nested closures — paramName may be shadowed inside them,
+		// matching the symmetric guard in resolveHelperEnrichmentKeys so
+		// the two passes agree on what counts as a same-scope dispatch.
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
