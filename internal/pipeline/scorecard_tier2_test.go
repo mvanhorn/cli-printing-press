@@ -2440,7 +2440,7 @@ func runLookup() error { return nil }
 		assert.Equal(t, 10, scoreWorkflows(dir))
 	})
 
-	t.Run("does not count commands that do not call store helpers", func(t *testing.T) {
+	t.Run("counts direct store-helper calls and excludes non-store commands", func(t *testing.T) {
 		dir := t.TempDir()
 
 		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
