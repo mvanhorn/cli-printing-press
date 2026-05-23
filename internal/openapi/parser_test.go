@@ -7001,6 +7001,144 @@ paths:
 	assert.Contains(t, err.Error(), "transport")
 }
 
+func TestParseCacheExtensionFromRoot(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Cache API", `
+x-cache:
+  enabled: true
+  stale_after: 15m
+  refresh_timeout: 5s
+  env_opt_out: CACHE_API_NO_REFRESH
+  resources:
+    items: 30m
+  commands:
+    - name: dashboard
+      resources: [items]
+`, "", true)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.True(t, parsed.Cache.Enabled)
+	assert.Equal(t, "15m", parsed.Cache.StaleAfter)
+	assert.Equal(t, "5s", parsed.Cache.RefreshTimeout)
+	assert.Equal(t, "CACHE_API_NO_REFRESH", parsed.Cache.EnvOptOut)
+	assert.Equal(t, "30m", parsed.Cache.Resources["items"])
+	require.Len(t, parsed.Cache.Commands, 1)
+	assert.Equal(t, "dashboard", parsed.Cache.Commands[0].Name)
+	assert.Equal(t, []string{"items"}, parsed.Cache.Commands[0].Resources)
+}
+
+func TestParseCacheExtensionFromInfo(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Info Cache API", "", `
+x-cache:
+  enabled: true
+  stale_after: 1h
+`, false)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.True(t, parsed.Cache.Enabled)
+	assert.Equal(t, "1h", parsed.Cache.StaleAfter)
+}
+
+func TestParseCacheExtensionAbsentLeavesZeroValue(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("No Cache API", "", "", false)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.False(t, parsed.Cache.Enabled)
+	assert.Empty(t, parsed.Cache.StaleAfter)
+	assert.Empty(t, parsed.Cache.Resources)
+	assert.Empty(t, parsed.Cache.Commands)
+}
+
+func TestParseCacheExtensionRootBeatsInfo(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Root Cache API", `
+x-cache:
+  enabled: true
+  stale_after: 2h
+`, `
+x-cache:
+  enabled: true
+  stale_after: 1h
+  env_opt_out: INFO_ONLY_NO_REFRESH
+  resources:
+    items: 5m
+`, false)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.Equal(t, "2h", parsed.Cache.StaleAfter)
+	assert.Empty(t, parsed.Cache.EnvOptOut, "root x-cache must not merge info-only fields")
+	assert.Empty(t, parsed.Cache.Resources, "root x-cache must not merge info-only fields")
+}
+
+func TestParseCacheExtensionRejectsInvalidDuration(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Bad Cache API", `
+x-cache:
+  enabled: true
+  stale_after: yesterday
+`, "", false)
+
+	_, err := Parse(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `cache.stale_after "yesterday" is not a valid Go duration`)
+}
+
+func cacheExtensionSpec(title, rootExtension, infoExtension string, typedItems bool) []byte {
+	var b strings.Builder
+	fmt.Fprintf(&b, `openapi: 3.0.3
+info:
+  title: %s
+  version: 1.0.0
+`, title)
+	if infoExtension != "" {
+		b.WriteString(indentYAML(infoExtension, "  "))
+	}
+	b.WriteString(`servers:
+  - url: https://api.example.com
+`)
+	if rootExtension != "" {
+		b.WriteString(strings.TrimPrefix(rootExtension, "\n"))
+	}
+	b.WriteString(`paths:
+  /items:
+    get:
+      operationId: listItems
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+	if typedItems {
+		b.WriteString(`          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+`)
+	}
+	return []byte(b.String())
+}
+
+func indentYAML(s, prefix string) string {
+	lines := strings.Split(strings.TrimPrefix(s, "\n"), "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = prefix + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestParseMultipartRequestBodyPreservesContentType(t *testing.T) {
 	t.Parallel()
 	data := []byte(`

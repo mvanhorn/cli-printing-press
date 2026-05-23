@@ -20,6 +20,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
 | `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
+| `x-cache` | root or `info` | `APISpec.Cache` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -254,6 +255,40 @@ x-mcp:
   transport: [stdio, http]
   orchestration: code
   endpoint_tools: hidden
+```
+
+### `x-cache`
+
+Declares cache-freshness and auto-refresh behavior for generated CLIs. Mirrors
+the internal YAML spec's top-level `cache:` block so OpenAPI specs with a
+store-backed sync surface can opt into the same freshness machinery.
+
+Parsed field: `APISpec.Cache` (`spec.CacheConfig`)
+
+Rules:
+- Optional. Specs without `x-cache` keep today's behavior: no freshness helper
+  or auto-refresh hook is emitted unless cache is configured elsewhere.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- Shape mirrors the internal YAML `cache:` block field-for-field: `enabled`,
+  `stale_after`, `refresh_timeout`, `env_opt_out`, `resources`, `commands`.
+- Validated by the same cache/share validation as internal YAML specs. Duration
+  fields must be Go duration strings, `commands` require `enabled: true`, and
+  command resource names must refer to parsed resources.
+
+Example:
+
+```yaml
+x-cache:
+  enabled: true
+  stale_after: 6h
+  refresh_timeout: 30s
+  env_opt_out: EXAMPLE_NO_AUTO_REFRESH
+  resources:
+    quotes: 5m
+  commands:
+    - name: dashboard
+      resources: [quotes]
 ```
 
 ### `x-tenant-env-var`
