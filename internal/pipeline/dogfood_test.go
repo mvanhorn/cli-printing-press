@@ -1301,6 +1301,14 @@ func authHeader() string { return configAuthHeader() }
 			wantGenerated: "bearer auth",
 		},
 		{
+			name:          "bot literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Bot DISCORD_TOKEN"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "bot auth",
+		},
+		{
 			name:           "unknown scheme classifies as custom-composed",
 			auth:           apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "FooScheme XYZ"},
 			clientGo:       composedClient,

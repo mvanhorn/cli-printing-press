@@ -1413,6 +1413,7 @@ type composedAuthLiteralScheme struct {
 }
 
 var composedAuthLiteralSchemes = []composedAuthLiteralScheme{
+	{prefix: "Bot ", label: "bot auth"},
 	{prefix: "Basic ", label: "basic auth"},
 	{prefix: "Bearer ", label: "bearer auth"},
 	{prefix: "Cookie ", label: "cookie auth"},
