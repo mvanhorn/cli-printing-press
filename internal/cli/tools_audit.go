@@ -284,9 +284,10 @@ type commandFields struct {
 	// missing-read-only finding fires only when the annotation is
 	// genuinely absent — an author who has explicitly opted out by
 	// writing "false" has done the right thing and shouldn't be flagged.
-	hasExplicitReadOnly bool
-	hasEndpoint         bool
-	hasRunE             bool // true when the literal declares Run or RunE; parent groupers omit both
+	hasExplicitReadOnly       bool
+	hasEndpoint               bool
+	hasRunE                   bool
+	hasParentNoSubcommandRunE bool
 }
 
 func isCobraCommandType(expr ast.Expr) bool {
@@ -326,9 +327,25 @@ func extractCommandFields(lit *ast.CompositeLit) commandFields {
 			f.hasExplicitReadOnly, f.hasEndpoint = inspectAnnotations(kv.Value)
 		case "Run", "RunE":
 			f.hasRunE = true
+			if key.Name == "RunE" && isParentNoSubcommandRunE(kv.Value) {
+				f.hasParentNoSubcommandRunE = true
+			}
 		}
 	}
 	return f
+}
+
+// Must match the generated helper name in
+// internal/generator/templates/cobratree/classify.go.tmpl.
+const parentNoSubcommandRunESentinel = "parentNoSubcommandRunE"
+
+func isParentNoSubcommandRunE(e ast.Expr) bool {
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	fn, ok := call.Fun.(*ast.Ident)
+	return ok && fn.Name == parentNoSubcommandRunESentinel
 }
 
 func stringLit(e ast.Expr) string {
@@ -378,11 +395,12 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 	}
 	name := cmdName[0]
 
-	// The Cobra-side checks only apply to commands that actually become
-	// shell-out MCP tools at runtime. The cobratree walker skips:
+	// The Cobra-side checks only apply when the command's own Short is
+	// meaningful agent-facing description material. The audit exempts:
 	//   - pp:endpoint commands (registered as typed tools with
 	//     spec-derived descriptions; the manifest audit covers those)
-	//   - parent groupers (no Run/RunE means not actionable)
+	//   - parent groupers (no Run/RunE, or the generated
+	//     parentNoSubcommandRunE sentinel, means not actionable)
 	//   - top-level framework command files (auth, doctor, version,
 	//     etc.) — including their true framework subtree. Generated CLIs
 	//     put children (e.g. `auth status`, `profile list`) in the same
@@ -391,12 +409,13 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 	//     match a framework name. A nested domain command named `search`
 	//     in a non-framework file still becomes a shell-out MCP tool and
 	//     must be audited.
-	// For all of these, the Cobra Short isn't the MCP tool description
-	// the agent will see, so flagging it would be noise.
-	isShellOut := !f.hasEndpoint && f.hasRunE && !inFrameworkSubtree(file)
+	// For all of these, Cobra Short quality is either covered by another
+	// surface or describes a non-leaf grouping affordance, so flagging it
+	// here would be noise.
+	shouldAuditShort := !f.hasEndpoint && f.hasRunE && !f.hasParentNoSubcommandRunE && !inFrameworkSubtree(file)
 
 	var out []ToolsAuditFinding
-	if isShellOut {
+	if shouldAuditShort {
 		switch {
 		case f.short == "":
 			out = append(out, ToolsAuditFinding{
@@ -410,10 +429,10 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 			})
 		}
 	}
-	// missing-read-only applies only to commands that become shell-out
-	// MCP tools (typed endpoint tools get classification from the spec
-	// method; framework commands don't register at all).
-	if isShellOut && !f.hasExplicitReadOnly && readShapedName(name) {
+	// missing-read-only follows the same audit eligibility as Short
+	// quality: parent groupers and generated typed endpoints are not
+	// places for hand-authored command safety annotations.
+	if shouldAuditShort && !f.hasExplicitReadOnly && readShapedName(name) {
 		out = append(out, ToolsAuditFinding{
 			Kind: kindMissingReadOnly, Command: name, File: file, Line: line,
 			Evidence: "name matches read heuristic; no mcp:read-only annotation",

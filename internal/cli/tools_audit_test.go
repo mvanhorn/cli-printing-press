@@ -5,6 +5,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -579,6 +581,18 @@ func TestAuditCommandFieldsThinShortStillFlagsShellOutCommands(t *testing.T) {
 	}
 }
 
+func TestAuditCommandFieldsParentNoSubcommandRunESkipsParentFindings(t *testing.T) {
+	findings := auditCommandFields("internal/cli/reports.go", 1, commandFields{
+		use:                       "report",
+		short:                     "Manage reports",
+		hasRunE:                   true,
+		hasParentNoSubcommandRunE: true,
+	})
+	if len(findings) != 0 {
+		t.Fatalf("parentNoSubcommandRunE parent findings = %+v, want none", findings)
+	}
+}
+
 func TestAuditCommandFieldsFrameworkNamesOnlySkippedInFrameworkSubtrees(t *testing.T) {
 	t.Run("nested framework-named domain command is audited", func(t *testing.T) {
 		findings := auditCommandFields("items.go", 1, commandFields{
@@ -611,6 +625,102 @@ func TestAuditCommandFieldsFrameworkNamesOnlySkippedInFrameworkSubtrees(t *testi
 			t.Fatalf("top-level framework search findings = %+v, want none", findings)
 		}
 	})
+}
+
+func TestExtractCommandFieldsDetectsParentNoSubcommandRunE(t *testing.T) {
+	src := `package x
+import "github.com/spf13/cobra"
+func newMintsCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "mints",
+		Short: "Manage mints",
+		RunE:  parentNoSubcommandRunE(flags),
+	}
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mints.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var lit *ast.CompositeLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		c, ok := n.(*ast.CompositeLit)
+		if !ok || !isCobraCommandType(c.Type) {
+			return true
+		}
+		lit = c
+		return false
+	})
+	if lit == nil {
+		t.Fatalf("no cobra command literal found")
+	}
+
+	fields := extractCommandFields(lit)
+	if !fields.hasRunE {
+		t.Fatalf("hasRunE = false, want true")
+	}
+	if !fields.hasParentNoSubcommandRunE {
+		t.Fatalf("hasParentNoSubcommandRunE = false, want true")
+	}
+}
+
+func TestAuditCobraSourceDistinguishesSentinelFromRealRunE(t *testing.T) {
+	root := t.TempDir()
+	cliDir := filepath.Join(root, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatalf("mkdir cli dir: %v", err)
+	}
+	sentinelSrc := `package cli
+import "github.com/spf13/cobra"
+func newReportCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "report",
+		Short: "Manage reports",
+		RunE:  parentNoSubcommandRunE(flags),
+	}
+}`
+	realRunESrc := `package cli
+import "github.com/spf13/cobra"
+func newReportRealCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "report",
+		Short: "Manage reports",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
+	}
+}`
+	if err := os.WriteFile(filepath.Join(cliDir, "report.go"), []byte(sentinelSrc), 0o644); err != nil {
+		t.Fatalf("write sentinel source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cliDir, "report_real.go"), []byte(realRunESrc), 0o644); err != nil {
+		t.Fatalf("write real RunE source: %v", err)
+	}
+
+	findings, err := auditCobraSource(root)
+	if err != nil {
+		t.Fatalf("auditCobraSource: %v", err)
+	}
+	var sentinelFindings, realThinShort, realMissingReadOnly int
+	for _, f := range findings {
+		switch f.File {
+		case "report.go":
+			sentinelFindings++
+		case "report_real.go":
+			switch f.Kind {
+			case kindThinShort:
+				realThinShort++
+			case kindMissingReadOnly:
+				realMissingReadOnly++
+			}
+		}
+	}
+	if sentinelFindings != 0 {
+		t.Fatalf("sentinel parent findings = %d in %+v, want none", sentinelFindings, findings)
+	}
+	if realThinShort != 1 || realMissingReadOnly != 1 {
+		t.Fatalf("real RunE findings thin=%d missing-read-only=%d in %+v, want 1 each", realThinShort, realMissingReadOnly, findings)
+	}
 }
 
 // TestInspectAnnotationsExplicitReadOnlyFalse pins the AST-level
