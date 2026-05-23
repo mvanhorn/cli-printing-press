@@ -192,12 +192,46 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	require.NotEqual(t, -1, copyIntoLibrary)
 }
 
+func TestPublishSkillDocumentsPatchesIndexContract(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+
+	step65 := strings.Index(skill, "## Step 6.5: Record Customizations")
+	step7 := strings.Index(skill, "## Step 7: Collision Detection & Resolution")
+	require.NotEqual(t, -1, step65)
+	require.NotEqual(t, -1, step7)
+	assert.Less(t, step65, step7)
+
+	block := skill[step65:step7]
+	assert.Contains(t, block, ".printing-press-patches.json")
+	assert.Contains(t, block, "if ! jq -e")
+	assert.Contains(t, block, `(.schema_version | type == "number")`)
+	assert.Contains(t, block, `(.patches | type == "array")`)
+	assert.Contains(t, block, "Reprint with a current cli-printing-press binary before publishing")
+	assert.Contains(t, block, "malformed .printing-press-patches.json")
+	assert.Contains(t, block, "rather than synthesizing the")
+	assert.Contains(t, block, "deterministic provenance fields by hand")
+	assert.Contains(t, block, "one concise entry per customization")
+	assert.Contains(t, block, "`patches[]`")
+	assert.Contains(t, block, "README/SKILL.md-only polish does not need a patch")
+	assert.Contains(t, block, "manifest entry")
+	assert.Contains(t, block, "Inline `// PATCH(...)` source comments are optional navigation aids")
+	assert.Contains(t, block, "does not require a marker/comment pairing")
+}
+
 func TestAmendSkillRequiresUpstreamBreadcrumbsForTemporaryPatches(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"))
+	patchContract := substringBetween(t, skill, "### Step 3 — Execute the plan", "### Step 4 — Validate")
 
+	assert.Contains(t, patchContract, `"id": "<api-slug>-refresh-token-expiry"`)
+	assert.Contains(t, patchContract, `"reason": "The generated CLI hid an expired refresh token`)
+	assert.Contains(t, patchContract, `"validated_outcome": "publish validate passed`)
 	assert.Contains(t, skill, `"deferred_to_upstream": [`)
 	assert.Contains(t, skill, `"upstream_issue": "https://github.com/mvanhorn/cli-printing-press/issues/<n>"`)
 	assert.Contains(t, skill, "Do not leave a machine-level or API-publication dependency only in the PR body")
+	assert.Contains(t, skill, "Inline `// PATCH(...)` source comments are optional navigation aids")
+	assert.Contains(t, skill, "the public library verifier no longer enforces a marker/comment pairing")
+	assert.NotContains(t, skill, "source comments AND `.printing-press-patches.json` entries")
+	assert.NotContains(t, skill, "workflow rejects PRs where one is present without the other")
 }
 
 func TestGeneratedAgentsTemplateDocumentsUpstreamPatchHandoff(t *testing.T) {
