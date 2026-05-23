@@ -882,9 +882,7 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 	if !liveDogfoodRetryableAuth401(run) || time.Until(deadline) <= liveDogfoodAuthRetryDelay {
 		return run
 	}
-	if liveDogfoodAuthRetryDelay > 0 {
-		time.Sleep(liveDogfoodAuthRetryDelay)
-	}
+	time.Sleep(liveDogfoodAuthRetryDelay)
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return run
