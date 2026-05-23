@@ -461,6 +461,13 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 				fmt.Fprintf(os.Stderr, "dogfood: synced %s (%s) from novel_features_built\n", artifact.Path, artifact.Detail)
 			}
 		}
+		if artifacts, err := SyncCLINarrativeDocs(cliDir, research.APIName, research.Narrative); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not sync narrative docs: %v\n", err)
+		} else {
+			for _, artifact := range artifacts {
+				fmt.Fprintf(os.Stderr, "dogfood: synced %s (%s) from research.json narrative\n", artifact.Path, artifact.Detail)
+			}
+		}
 		if changed, err := SyncCLIRootHighlights(cliDir, built); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not sync root highlights: %v\n", err)
 		} else if changed {
