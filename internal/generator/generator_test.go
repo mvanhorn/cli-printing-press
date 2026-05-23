@@ -11352,6 +11352,25 @@ func TestCacheKeyIncludesTemplateVars(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestBuildURL")
 }
 
+func TestGenerateInfersEndpointTemplateVarsFromBaseURL(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("tenant-api")
+	apiSpec.BaseURL = "https://{tenant}.api.example.com"
+	require.Empty(t, apiSpec.EndpointTemplateVars)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.Equal(t, []string{"tenant"}, apiSpec.EndpointTemplateVars)
+	require.NoError(t, gen.Generate())
+
+	_, err := os.Stat(filepath.Join(outputDir, "internal", "client", "url.go"))
+	require.NoError(t, err, "url.go should be generated when BaseURL contains a placeholder")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateEndpointTemplateVarsVerifyPlaceholderFallback covers the
 // PRINTING_PRESS_VERIFY=1 fallback in config.Load(): when a spec declares
 // EndpointTemplateVars and the runtime env var (e.g. SHOPIFY_SHOP) is unset,
