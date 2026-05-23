@@ -175,6 +175,12 @@ func TestRunCLICommandFallsBackToStdoutOnFailureWithoutStderr(t *testing.T) {
 	if !strings.Contains(err.Error(), "stdout failure") {
 		t.Fatalf("error did not include stdout fallback: %v", err)
 	}
+	if !strings.Contains(err.Error(), "output: stdout failure") {
+		t.Fatalf("error did not label stdout fallback as output: %v", err)
+	}
+	if strings.Contains(err.Error(), "stderr: stdout failure") {
+		t.Fatalf("stdout fallback mislabeled as stderr: %v", err)
+	}
 }
 
 func writeShelloutHelper(t *testing.T, mode string) string {

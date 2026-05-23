@@ -135,7 +135,11 @@ func RunCLICommand(ctx context.Context, binPath string, args []string) (string, 
 			msg = strings.TrimSpace(stdout.String())
 		}
 		if msg != "" {
-			return stdout.String(), fmt.Errorf("cli %s: %w (stderr: %s)", binPath, err, msg)
+			label := "stderr"
+			if strings.TrimSpace(stderr.String()) == "" {
+				label = "output"
+			}
+			return stdout.String(), fmt.Errorf("cli %s: %w (%s: %s)", binPath, err, label, msg)
 		}
 		return stdout.String(), fmt.Errorf("cli %s: %w", binPath, err)
 	}
