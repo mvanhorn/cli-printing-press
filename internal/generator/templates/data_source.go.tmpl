@@ -201,6 +201,11 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	}
 	defer db.Close()
 
+	pageItemKeys := []string{
+		"data", "results", "items", "records", "nodes", "entries",
+		"Data", "Results", "Items", "Records", "Nodes", "Entries",
+	}
+
 	// Collect items to upsert from various response shapes
 	var items []json.RawMessage
 
@@ -210,13 +215,35 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 		// Try object — check for common envelope patterns (results, data, items)
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal(data, &envelope) == nil {
-			for _, key := range []string{"results", "data", "items"} {
+			for _, key := range pageItemKeys {
 				if raw, ok := envelope[key]; ok {
 					var arr []json.RawMessage
 					if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
 						items = arr
 						break
 					}
+				}
+			}
+			// Fallback: if exactly one top-level key is a non-empty array of
+			// objects, treat it as the list payload. This covers resource-named
+			// wrappers like {"events":[...]} without misclassifying ambiguous envelopes.
+			if items == nil {
+				var arrayItems []json.RawMessage
+				arrayCount := 0
+				for _, raw := range envelope {
+					var candidate []json.RawMessage
+					if json.Unmarshal(raw, &candidate) != nil || len(candidate) == 0 {
+						continue
+					}
+					var obj map[string]json.RawMessage
+					if json.Unmarshal(candidate[0], &obj) != nil {
+						continue
+					}
+					arrayItems = candidate
+					arrayCount++
+				}
+				if arrayCount == 1 {
+					items = arrayItems
 				}
 			}
 			// Single object detail response: let UpsertBatch's existing
@@ -233,7 +260,7 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 			if items == nil && len(envelope) > 0 {
 				looksLikeListEnvelope := false
 				hasListWrapperArray := false
-				for _, key := range []string{"results", "data", "items"} {
+				for _, key := range pageItemKeys {
 					raw, ok := envelope[key]
 					if !ok {
 						continue
