@@ -202,8 +202,8 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	defer db.Close()
 
 	pageItemKeys := []string{
-		"data", "results", "items", "records", "nodes", "entries",
-		"Data", "Results", "Items", "Records", "Nodes", "Entries",
+		"data", "results", "items", "records", "nodes", "entries", "features",
+		"Data", "Results", "Items", "Records", "Nodes", "Entries", "Features",
 	}
 
 	// Collect items to upsert from various response shapes
