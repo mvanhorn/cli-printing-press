@@ -842,6 +842,41 @@ func TestLiveCheck_RebuildsStageBinaryWhenInternalSourceIsNewer(t *testing.T) {
 	require.Equal(t, "rebuilt", result.BinaryRefresh.Action)
 }
 
+func TestLiveCheck_BinaryRefreshReasonIncludesSourceWalkError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permission behavior differs on Windows")
+	}
+
+	dir := filepath.Join(t.TempDir(), "sample-pp-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	binaryName := "sample-pp-cli"
+	writeLiveCheckGoCLI(t, dir, binaryName, `{"data":[{"source":"rebuilt"}]}`)
+
+	blockedDir := filepath.Join(dir, "cmd", binaryName, "blocked")
+	require.NoError(t, os.MkdirAll(blockedDir, 0o755))
+	require.NoError(t, os.Chmod(blockedDir, 0))
+	t.Cleanup(func() {
+		_ = os.Chmod(blockedDir, 0o755)
+	})
+
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stub := filepath.Join(stagedBinDir, binaryName)
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho '{\"data\":[{\"source\":\"stale\"}]}'\n"), 0o755))
+	oldTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(stub, oldTime, oldTime))
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Foo", Command: "foo", Example: binaryName + " foo --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: binaryName, Timeout: 5 * time.Second})
+	require.True(t, result.Unable)
+	require.NotNil(t, result.BinaryRefresh)
+	require.Equal(t, "failed", result.BinaryRefresh.Action)
+	require.NotEmpty(t, result.BinaryRefresh.Reason)
+	require.Contains(t, result.Reason, result.BinaryRefresh.Reason)
+}
+
 func TestLiveCheckBinaryCandidatesIncludeHostExecutableName(t *testing.T) {
 	t.Parallel()
 

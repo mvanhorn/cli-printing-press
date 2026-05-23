@@ -295,6 +295,7 @@ func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, e
 	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir, cmdDir)
 	if err != nil {
 		refresh.Action = "failed"
+		refresh.Reason = err.Error()
 		return refresh, err
 	}
 	if !ok {
@@ -407,6 +408,12 @@ func newestLiveCheckSourceModTime(cliDir, cmdDir string) (time.Time, bool, error
 	var newest time.Time
 	found := false
 	for _, root := range []string{cmdDir, filepath.Join(cliDir, "internal")} {
+		if _, err := os.Stat(root); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return time.Time{}, false, err
+		}
 		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -425,9 +432,6 @@ func newestLiveCheckSourceModTime(cliDir, cmdDir string) (time.Time, bool, error
 			return nil
 		})
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
 			return time.Time{}, false, err
 		}
 	}
