@@ -2140,7 +2140,7 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "html_extract.go"))
 	gomod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gomod), "golang.org/x/net v0.53.0")
+	assert.Contains(t, string(gomod), "golang.org/x/net v0.55.0")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	binaryPath := filepath.Join(outputDir, "webhtml-pp-cli")
