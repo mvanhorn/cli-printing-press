@@ -1516,6 +1516,18 @@ func runGoCommandRequired(t *testing.T, dir string, args ...string) {
 	require.NoError(t, err, string(output))
 }
 
+func runGeneratedBinary(t *testing.T, binaryPath string, args ...string) (string, string) {
+	t.Helper()
+
+	cmd := exec.Command(binaryPath, args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	require.NoError(t, err, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	return stdout.String(), stderr.String()
+}
+
 // --- Unit 1: Template Regression Tests ---
 
 func TestGenerateWithNoAuth(t *testing.T) {
@@ -2389,7 +2401,7 @@ func TestSyncResourceExtractsHTMLLinks(t *testing.T) {
 	}
 	defer db.Close()
 
-	res := syncResource(context.Background(), htmlSyncClient{}, db, "pages", "", false, 1, false, nil)
+	res := syncResource(context.Background(), htmlSyncClient{}, db, "pages", "", false, 1, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -2429,7 +2441,7 @@ func TestSyncDependentResourceContinuesAfterHTMLExtractionError(t *testing.T) {
 		dependentHTMLSyncClient{},
 		db,
 		dependentResourceDef{Name: "messages", ParentTable: "channels", ParentIDParam: "channelId", PathTemplate: "/channels/{channelId}/messages"},
-		"", false, 1, false, nil,
+		"", false, 1, false, nil, nil,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -3625,7 +3637,7 @@ func TestSyncResourceIDWalksPostQueryPages(t *testing.T) {
 	defer db.Close()
 
 	client := &postQuerySyncClient{}
-	res := syncResource(context.Background(), client, db, "tickets", "", true, 10, false, nil)
+	res := syncResource(context.Background(), client, db, "tickets", "", true, 10, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -4312,7 +4324,7 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 		dependentParentFKClient{},
 		db,
 		dependentResourceDef{Name: "contacts", ParentTable: "lists", ParentIDParam: "listId", PathTemplate: "/lists/{listId}/contacts"},
-		"", false, 1, false, nil,
+		"", false, 1, false, nil, nil,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -7391,11 +7403,28 @@ func TestGeneratedOutput_WorkflowArchiveDelegatesToSyncResource(t *testing.T) {
 		workflowGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
 		require.NoError(t, err)
 		src := string(workflowGo)
+		syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+		require.NoError(t, err)
+		syncSrc := string(syncGo)
 
 		assert.Contains(t, src, "func newWorkflowArchiveCmd(flags *rootFlags) *cobra.Command",
 			"archive command must be emitted when Sync is enabled")
 		assert.Contains(t, src, "syncResource(",
 			"archive must delegate to syncResource so it inherits the hardened sync loop")
+		assert.Contains(t, src, "syncEventWriter := cmd.OutOrStdout()",
+			"archive should default syncResource JSON events to the command stdout writer for non-json wrapper runs")
+		assert.Contains(t, src, "syncEventWriter = cmd.ErrOrStderr()",
+			"archive --json must route syncResource event NDJSON away from stdout")
+		assert.Contains(t, src, `nil, syncEventWriter)`,
+			"archive must pass the wrapper-selected event writer into syncResource")
+		assert.Contains(t, syncSrc, "syncEvents io.Writer",
+			"syncResource should expose an event writer parameter for wrapper callers")
+		assert.Contains(t, syncSrc, "syncEventWriter := cmd.OutOrStdout()",
+			"direct sync should honor Cobra's stdout writer")
+		assert.Contains(t, syncSrc, "userParams, syncEventWriter)",
+			"direct sync --json should keep emitting NDJSON events on stdout")
+		assert.Contains(t, syncSrc, `fmt.Fprintf(syncEvents, `+"`"+`{"event":"sync_start"`,
+			"syncResource events should write through the selected event writer")
 
 		assert.NotContains(t, src, `c.Get("/"+resource`,
 			"archive must not hardcode `/<resource>` paths (#1077 Bug 1)")
@@ -7424,6 +7453,64 @@ func TestGeneratedOutput_WorkflowArchiveDelegatesToSyncResource(t *testing.T) {
 		assert.Contains(t, src, "func newWorkflowStatusCmd",
 			"status subcommand must still be emitted")
 	})
+}
+
+func TestGeneratedOutput_WorkflowArchiveJSONKeepsSyncEventsOffStdout(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/items", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"item-1","name":"one"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := minimalSpec("archive-json-runtime")
+	apiSpec.BaseURL = server.URL
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources["items"] = spec.Resource{
+		Description: "Manage items",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/items",
+				Description: "List items",
+				Response:    spec.ResponseDef{Type: "array"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+
+	archiveDB := filepath.Join(t.TempDir(), "archive.db")
+	stdout, stderr := runGeneratedBinary(t, binaryPath, "workflow", "archive", "--json", "--db", archiveDB)
+	assert.NotContains(t, stdout, `"event":"sync_`,
+		"workflow archive --json stdout must be a single JSON document, not sync NDJSON")
+	assert.Contains(t, stderr, `"event":"sync_start"`,
+		"workflow archive --json should still surface sync progress on stderr")
+	var archiveSummary map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &archiveSummary),
+		"workflow archive --json stdout should be exactly one JSON document")
+
+	syncJSONDB := filepath.Join(t.TempDir(), "sync-json.db")
+	stdout, stderr = runGeneratedBinary(t, binaryPath, "sync", "--json", "--db", syncJSONDB)
+	assert.Empty(t, stderr)
+	assert.Contains(t, stdout, `"event":"sync_start"`,
+		"direct sync --json should keep streaming sync events to stdout")
+	assert.Contains(t, stdout, `"event":"sync_complete"`)
+	assert.Contains(t, stdout, `"event":"sync_summary"`)
+
+	syncHumanDB := filepath.Join(t.TempDir(), "sync-human.db")
+	stdout, stderr = runGeneratedBinary(t, binaryPath, "sync", "--human-friendly", "--db", syncHumanDB)
+	assert.NotContains(t, stdout, `"event":"sync_`,
+		"human-friendly sync should not emit sync NDJSON on stdout")
+	assert.Contains(t, stderr, "Sync complete:")
 }
 
 func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
