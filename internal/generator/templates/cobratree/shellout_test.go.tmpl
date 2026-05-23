@@ -4,7 +4,11 @@
 package cobratree
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -29,7 +33,7 @@ func TestSplitShellArgs(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := splitShellArgs(tc.in)
+			got := SplitShellArgs(tc.in)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("splitShellArgs(%q) = %v, want %v", tc.in, got, tc.want)
 			}
@@ -97,7 +101,7 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 // caught at unit-test scope rather than only via end-to-end MCP runs.
 func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 	guard := func(raw string) (rejected string, ok bool) {
-		for _, t := range splitShellArgs(raw) {
+		for _, t := range SplitShellArgs(raw) {
 			if strings.HasPrefix(t, "-") {
 				return t, false
 			}
@@ -135,4 +139,85 @@ func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunCLICommandKeepsStdoutSeparateFromStderr(t *testing.T) {
+	bin := writeShelloutHelper(t, "success")
+	got, err := RunCLICommand(context.Background(), bin, []string{"alpha", "beta"})
+	if err != nil {
+		t.Fatalf("RunCLICommand success returned error: %v", err)
+	}
+	if !strings.Contains(got, `{"args":"alpha beta"}`) {
+		t.Fatalf("stdout result missing JSON payload: %q", got)
+	}
+	if strings.Contains(got, "telemetry") {
+		t.Fatalf("stderr telemetry leaked into stdout: %q", got)
+	}
+}
+
+func TestRunCLICommandReportsStderrOnFailure(t *testing.T) {
+	bin := writeShelloutHelper(t, "fail-stderr")
+	_, err := RunCLICommand(context.Background(), bin, nil)
+	if err == nil {
+		t.Fatal("RunCLICommand fail-stderr succeeded unexpectedly")
+	}
+	if !strings.Contains(err.Error(), "boom from stderr") {
+		t.Fatalf("error did not include stderr: %v", err)
+	}
+}
+
+func TestRunCLICommandFallsBackToStdoutOnFailureWithoutStderr(t *testing.T) {
+	bin := writeShelloutHelper(t, "fail-stdout")
+	_, err := RunCLICommand(context.Background(), bin, nil)
+	if err == nil {
+		t.Fatal("RunCLICommand fail-stdout succeeded unexpectedly")
+	}
+	if !strings.Contains(err.Error(), "stdout failure") {
+		t.Fatalf("error did not include stdout fallback: %v", err)
+	}
+	if !strings.Contains(err.Error(), "output: stdout failure") {
+		t.Fatalf("error did not label stdout fallback as output: %v", err)
+	}
+	if strings.Contains(err.Error(), "stderr: stdout failure") {
+		t.Fatalf("stdout fallback mislabeled as stderr: %v", err)
+	}
+}
+
+func writeShelloutHelper(t *testing.T, mode string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, "helper.bat")
+		var body string
+		switch mode {
+		case "success":
+			body = "@echo off\r\necho telemetry 1>&2\r\necho {\"args\":\"%*\"}\r\n"
+		case "fail-stderr":
+			body = "@echo off\r\necho boom from stderr 1>&2\r\nexit /b 7\r\n"
+		case "fail-stdout":
+			body = "@echo off\r\necho stdout failure\r\nexit /b 7\r\n"
+		default:
+			t.Fatalf("unknown mode %q", mode)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatalf("write helper: %v", err)
+		}
+		return path
+	}
+	path := filepath.Join(dir, "helper.sh")
+	var body string
+	switch mode {
+	case "success":
+		body = "#!/bin/sh\necho telemetry >&2\nprintf '{\"args\":\"%s\"}\\n' \"$*\"\n"
+	case "fail-stderr":
+		body = "#!/bin/sh\necho boom from stderr >&2\nexit 7\n"
+	case "fail-stdout":
+		body = "#!/bin/sh\necho stdout failure\nexit 7\n"
+	default:
+		t.Fatalf("unknown mode %q", mode)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+	return path
 }

@@ -3,7 +3,8 @@
 
 // Package mcp — intent handlers.
 //
-// Intents are higher-level MCP tools that compose multiple endpoint calls.
+// Intents are higher-level MCP tools that compose multiple endpoint calls
+// or expose curated recipe commands with useful flag defaults.
 // Rather than forcing an agent to stitch primitives like get_thread +
 // create_issue + link_attachment, a single create_issue_from_thread tool
 // accepts the top-level input, calls each endpoint in sequence, resolves
@@ -16,17 +17,24 @@ package mcp
 
 import (
 	"context"
+{{- if .MCP.Intents}}
 	"encoding/json"
+{{- end}}
 	"fmt"
 	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+{{- if .MCP.Intents}}
 	"{{modulePath}}/internal/client"
+{{- end}}
+{{- if .RecipeIntents}}
+	"{{modulePath}}/internal/mcp/cobratree"
+{{- end}}
 )
 
-// RegisterIntents adds the spec-declared intent tools to the MCP server.
-// This is called from RegisterTools when MCP.Intents is non-empty.
+// RegisterIntents adds generated intent tools to the MCP server.
+// This is called from RegisterTools when spec intents or recipe-lifted intents exist.
 func RegisterIntents(s *server.MCPServer) {
 {{- range .MCP.Intents}}
 	s.AddTool(
@@ -34,6 +42,20 @@ func RegisterIntents(s *server.MCPServer) {
 			mcplib.WithDescription({{printf "%q" .Description}}),
 {{- range .Params}}
 			mcplib.{{mcpBindingFunc .Type}}("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
+{{- end}}
+		),
+		handle{{pascal .Name}},
+	)
+{{- end}}
+{{- range .RecipeIntents}}
+	s.AddTool(
+		mcplib.NewTool("{{.Name}}",
+			mcplib.WithDescription({{printf "%q" .Description}}),
+{{- range .Params}}
+			mcplib.{{mcpBindingFunc (recipeParamTypeString .Type)}}("{{.InputName}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
+{{- end}}
+{{- if .TakesArgs}}
+			mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the recipe command. Flag-like arguments are rejected; use structured parameters for flags.")),
 {{- end}}
 		),
 		handle{{pascal .Name}},
@@ -90,6 +112,50 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 		return mcplib.NewToolResultError(fmt.Sprintf("encoding %s result: %v", returnKey, err)), nil
 	}
 	return mcplib.NewToolResultText(string(data)), nil
+}
+{{end}}
+
+{{range .RecipeIntents}}
+// handle{{pascal .Name}} runs the {{.Name}} recipe intent: {{.Description}}
+func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	if recipeCLIPathErr != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("companion CLI binary not found: %v", recipeCLIPathErr)), nil
+	}
+
+	input := req.GetArguments()
+	args := []string{
+{{- range .Command}}
+		{{printf "%q" .}},
+{{- end}}
+	}
+{{- range .Params}}
+{{- if eq (recipeParamTypeString .Type) "boolean"}}
+	args = appendRecipeBoolFlag(args, {{printf "%q" .FlagName}}, input[{{printf "%q" .InputName}}], {{.BoolDefault}})
+{{- else}}
+	var missing{{.GoName}} bool
+	args, missing{{.GoName}} = appendRecipeStringFlag(args, {{printf "%q" .FlagName}}, input[{{printf "%q" .InputName}}], {{printf "%q" .Default}}, {{.Required}}, {{.UseEquals}})
+	if missing{{.GoName}} {
+		return mcplib.NewToolResultError({{printf "%q" (printf "--%s is required" .FlagName)}}), nil
+	}
+{{- end}}
+{{- end}}
+{{- if .TakesArgs}}
+	if raw, _ := input["args"].(string); strings.TrimSpace(raw) != "" {
+		tokens := cobratree.SplitShellArgs(raw)
+		for _, token := range tokens {
+			if strings.HasPrefix(token, "-") {
+				return mcplib.NewToolResultError(fmt.Sprintf("flag-like argument %q not allowed in args; use structured tool parameters instead", token)), nil
+			}
+		}
+		args = append(args, tokens...)
+	}
+{{- end}}
+
+	out, err := cobratree.RunCLICommand(ctx, recipeCLIPath, args)
+	if err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
+	return mcplib.NewToolResultText(out), nil
 }
 {{end}}
 
@@ -232,5 +298,60 @@ var intentEndpoints = map[string]intentEndpointMeta{
 	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}{{if $ep.BodyIsArray}}, bodyIsArray: true{{end}}},
 {{- end}}
 {{- end}}
+}
+{{- end}}
+
+{{- if .RecipeIntents}}
+var (
+	recipeCLIPath    string
+	recipeCLIPathErr error
+)
+
+func init() {
+	recipeCLIPath, recipeCLIPathErr = cobratree.SiblingCLIPath()
+}
+
+func appendRecipeStringFlag(args []string, name string, value any, defaultValue string, required bool, useEquals bool) ([]string, bool) {
+	selected := defaultValue
+	if value != nil {
+		selected = recipeValueString(value)
+	}
+	if selected == "" {
+		return args, required
+	}
+	if useEquals {
+		return append(args, "--"+name+"="+selected), false
+	}
+	return append(args, "--"+name, selected), false
+}
+
+func appendRecipeBoolFlag(args []string, name string, value any, defaultValue bool) []string {
+	selected := defaultValue
+	if v, ok := value.(bool); ok {
+		selected = v
+	}
+	if selected {
+		return append(args, "--"+name)
+	}
+	return args
+}
+
+func recipeValueString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		return fmt.Sprintf("%v", v)
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		if value == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", value)
+	}
 }
 {{- end}}
