@@ -84,13 +84,53 @@ func TestConfigBinaryResponseHeaderBypassesJSONCache(t *testing.T) {
 	if _, err := c.GetWithHeaders(context.Background(), "/blob", nil, nil); err != nil {
 		t.Fatalf("second config-header binary GetWithHeaders returned error: %v", err)
 	}
-	if seen != 2 {
-		t.Fatalf("server saw %d requests, want 2 because config binary responses bypass cache", seen)
+	if _, err := c.GetWithHeadersNoCache(context.Background(), "/blob", nil, nil); err != nil {
+		t.Fatalf("config-header binary GetWithHeadersNoCache returned error: %v", err)
+	}
+	if seen != 3 {
+		t.Fatalf("server saw %d requests, want 3 because config binary responses bypass cache", seen)
 	}
 	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "*.json")); err != nil {
 		t.Fatalf("glob cache files: %v", err)
 	} else if len(matches) != 0 {
 		t.Fatalf("config binary response wrote JSON cache files: %v", matches)
+	}
+}
+
+func TestCaseVariantBinaryResponseHeadersAreDeterministic(t *testing.T) {
+	var seen int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen++
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte{0x1f, 0x8b, 0x08, 0x00})
+	}))
+	defer server.Close()
+
+	c := New(&config.Config{
+		BaseURL: server.URL,
+		Headers: map[string]string{
+			BinaryResponseHeader:               "false",
+			"x-printing-press-binary-response": "true",
+		},
+	}, time.Second, 0)
+	c.cacheDir = t.TempDir()
+
+	if _, err := c.GetWithHeaders(context.Background(), "/blob", nil, nil); err != nil {
+		t.Fatalf("case-variant config binary GetWithHeaders returned error: %v", err)
+	}
+	if _, err := c.GetWithHeaders(context.Background(), "/blob", nil, map[string]string{
+		BinaryResponseHeader:               "false",
+		"x-printing-press-binary-response": "true",
+	}); err != nil {
+		t.Fatalf("case-variant call binary GetWithHeaders returned error: %v", err)
+	}
+	if seen != 2 {
+		t.Fatalf("server saw %d requests, want 2 because case-variant binary headers bypass cache", seen)
+	}
+	if matches, err := filepath.Glob(filepath.Join(c.cacheDir, "*.json")); err != nil {
+		t.Fatalf("glob cache files: %v", err)
+	} else if len(matches) != 0 {
+		t.Fatalf("case-variant binary response wrote JSON cache files: %v", matches)
 	}
 }
 

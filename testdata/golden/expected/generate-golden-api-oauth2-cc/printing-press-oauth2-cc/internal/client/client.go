@@ -164,18 +164,27 @@ func (c *Client) responseCacheEnabled(binaryResponse bool) bool {
 func (c *Client) wantsBinaryResponse(headers map[string]string) bool {
 	binaryResponse := false
 	if c != nil && c.Config != nil {
-		for k, v := range c.Config.Headers {
-			if strings.EqualFold(k, BinaryResponseHeader) {
-				binaryResponse = strings.EqualFold(v, "true")
+		if value, ok := binaryResponseHeaderValue(c.Config.Headers); ok {
+			binaryResponse = value
+		}
+	}
+	if value, ok := binaryResponseHeaderValue(headers); ok {
+		binaryResponse = value
+	}
+	return binaryResponse
+}
+
+func binaryResponseHeaderValue(headers map[string]string) (bool, bool) {
+	found := false
+	for k, v := range headers {
+		if strings.EqualFold(k, BinaryResponseHeader) {
+			found = true
+			if strings.EqualFold(v, "true") {
+				return true, true
 			}
 		}
 	}
-	for k, v := range headers {
-		if strings.EqualFold(k, BinaryResponseHeader) {
-			binaryResponse = strings.EqualFold(v, "true")
-		}
-	}
-	return binaryResponse
+	return false, found
 }
 
 func (c *Client) validateCachedRequestAuth(ctx context.Context) error {
