@@ -2569,6 +2569,22 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 					},
 				},
 			},
+			"badattr": {
+				Description: "Reject unsupported attribute selectors",
+				Endpoints: map[string]spec.Endpoint{
+					"show": {
+						Method:         "GET",
+						Path:           "/jsonld",
+						Description:    "Read structured data with an invalid selector",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:           spec.HTMLExtractModeEmbeddedJSON,
+							ScriptSelector: "script[async]",
+						},
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
 			"missing": {
 				Description: "Missing script tag",
 				Endpoints: map[string]spec.Endpoint{
@@ -2650,6 +2666,15 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	require.NoError(t, json.Unmarshal(out, &stateViewEnv), string(out))
 	require.Len(t, stateViewEnv.Results, 1)
 	assert.Equal(t, "state-a", stateViewEnv.Results[0]["slug"])
+
+	// Unsupported attribute-existence selectors should fail explicitly instead
+	// of silently degrading to a broad tag-only match.
+	cmd = exec.Command(binaryPath, "badattr", "show", "--json")
+	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
+	out, err = cmd.CombinedOutput()
+	require.Error(t, err, string(out))
+	assert.Contains(t, string(out), "embedded-json: invalid selector")
+	assert.Contains(t, string(out), `tag[attr="value"]`)
 
 	// Missing script tag: extractor reports an actionable error rather
 	// than silently returning empty data.
