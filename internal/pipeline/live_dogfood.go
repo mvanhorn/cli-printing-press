@@ -1165,13 +1165,16 @@ func validLiveDogfoodJSONOutput(stdout string) bool {
 func liveDogfoodUnavailableForRunner(run liveDogfoodRun) bool {
 	output := strings.ToLower(run.stdout + run.stderr)
 	return strings.Contains(output, "http 403") ||
-		liveDogfoodAuth401(run) ||
+		liveDogfoodAuth401Output(output) ||
 		strings.Contains(output, "permission denied") ||
 		strings.Contains(output, "your credentials are valid but lack access")
 }
 
 func liveDogfoodAuth401(run liveDogfoodRun) bool {
-	output := strings.ToLower(run.stdout + run.stderr)
+	return liveDogfoodAuth401Output(strings.ToLower(run.stdout + run.stderr))
+}
+
+func liveDogfoodAuth401Output(output string) bool {
 	if !strings.Contains(output, "http 401") {
 		return false
 	}
