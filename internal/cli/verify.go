@@ -75,6 +75,11 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
   # Structural verification without an API spec (plan-driven CLIs)
   cli-printing-press verify --dir ./agent-capture-pp-cli --no-spec`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			absDir, err := filepath.Abs(dir)
+			if err != nil {
+				return fmt.Errorf("resolving --dir: %w", err)
+			}
+			dir = absDir
 			cfg := pipeline.VerifyConfig{
 				Dir:       dir,
 				SpecPath:  specPath,
