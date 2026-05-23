@@ -445,8 +445,10 @@ func scoreTerminalUXWithSurface(dir string, surfaceContent []string) int {
 	if containsAnyInAny(surfaceContent, "NO_COLOR") {
 		score += 1
 	}
-	// Presence: TTY detection
-	if containsAnyInAny(surfaceContent, "isatty", "IsTerminal", "x/term") {
+	// Presence: TTY detection. Accept any canonical Go idiom:
+	// ModeCharDevice (the generator's helpers.go template), IsTerminal /
+	// x/term (golang.org/x/term), or isatty (github.com/mattn/go-isatty).
+	if containsAnyInAny(surfaceContent, "isatty", "IsTerminal", "x/term", "ModeCharDevice") {
 		score += 1
 	}
 	// Presence: no-color flag
