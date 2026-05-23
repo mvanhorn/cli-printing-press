@@ -85,6 +85,42 @@ func TestSplitUnclosedQuote(t *testing.T) {
 	}
 }
 
+func TestSplitChain(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    []ChainSegment
+		wantErr string
+	}{
+		{"plain command", "stub widgets list", []ChainSegment{{Text: "stub widgets list"}}, ""},
+		{"and-chain", "stub sync && stub list --within 60d", []ChainSegment{{Text: "stub sync"}, {Text: "stub list --within 60d"}}, ""},
+		{"semicolon-chain", "stub sync ; stub list", []ChainSegment{{Text: "stub sync"}, {Text: "stub list"}}, ""},
+		{"or-chain", "stub sync || stub list", []ChainSegment{{Text: "stub sync"}, {Text: "stub list"}}, ""},
+		{"top-level pipe splits", "stub list | grep foo", []ChainSegment{{Text: "stub list"}, {Text: "grep foo", AfterPipe: true}}, ""},
+		{"and after pipe resets pipeline", "stub list | jq && stub show 42", []ChainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "stub show 42"}}, ""},
+		{"operators inside quotes", `stub run --msg "a && b | c"`, []ChainSegment{{Text: `stub run --msg "a && b | c"`}}, ""},
+		{"empty trailing segment dropped", "stub sync &&", []ChainSegment{{Text: "stub sync"}}, ""},
+		{"unclosed quote", `stub run "oops`, nil, "unclosed double quote"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SplitChain(tc.in)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("SplitChain(%q) error = %v, want substring %q", tc.in, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SplitChain(%q): %v", tc.in, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("SplitChain(%q) = %#v, want %#v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestArgsAfterBinary(t *testing.T) {
 	got, err := ArgsAfterBinary(`cli goat "chicken tikka masala"`)
 	if err != nil {

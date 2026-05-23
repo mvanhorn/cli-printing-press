@@ -51,6 +51,40 @@ func TestBuildMCPBBundle(t *testing.T) {
 		assert.Contains(t, entries, "bin/demo-pp-mcp", "bundle must place binary at server.entry_point")
 	})
 
+	t.Run("packages companion CLI binary under provided archive name", func(t *testing.T) {
+		dir := t.TempDir()
+
+		manifest := MCPBManifest{
+			ManifestVersion: MCPBManifestVersion,
+			Name:            "demo-pp-mcp",
+			Server: MCPBServer{
+				Type:       "binary",
+				EntryPoint: "bin/demo-pp-mcp",
+				MCPConfig:  MCPBLaunchSpec{Command: "${__dirname}/bin/demo-pp-mcp"},
+			},
+		}
+		mData, _ := json.Marshal(manifest)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, MCPBManifestFilename), mData, 0o644))
+
+		mcpPath := filepath.Join(dir, "fake-mcp")
+		cliPath := filepath.Join(dir, "fake-cli.exe")
+		require.NoError(t, os.WriteFile(mcpPath, []byte("#!/bin/sh\necho mcp\n"), 0o755))
+		require.NoError(t, os.WriteFile(cliPath, []byte("cli"), 0o755))
+
+		out := filepath.Join(dir, "demo.mcpb")
+		err := BuildMCPBBundle(BundleParams{
+			CLIDir:        dir,
+			BinaryPath:    mcpPath,
+			CLIBinaryName: "demo-pp-cli.exe",
+			CLIBinaryPath: cliPath,
+			OutputPath:    out,
+		})
+		require.NoError(t, err)
+
+		entries := readZipEntries(t, out)
+		assert.Contains(t, entries, "bin/demo-pp-cli.exe")
+	})
+
 	t.Run("missing manifest skips silently", func(t *testing.T) {
 		dir := t.TempDir()
 		// No manifest.json written; bundle call should no-op.

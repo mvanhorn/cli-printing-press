@@ -109,6 +109,89 @@ func joinLineContinuations(s string) string {
 	return s
 }
 
+// ChainSegment is one runnable or pipe-skipped piece of a shell-style command.
+type ChainSegment struct {
+	// Text is the segment as it appeared in the source, with surrounding
+	// whitespace trimmed.
+	Text string
+	// AfterPipe is true when this segment sat to the right of a top-level
+	// pipe operator. Callers that execute commands should usually skip these
+	// because their input would normally arrive over a shell pipe.
+	AfterPipe bool
+}
+
+// SplitChain returns segments separated by top-level &&, ||, ;, or | operators.
+// Quoted text is preserved. Segments after a top-level | carry AfterPipe=true.
+func SplitChain(command string) ([]ChainSegment, error) {
+	var (
+		segments  []ChainSegment
+		quote     rune
+		escaped   bool
+		afterPipe bool
+		start     int
+	)
+	flush := func(end int) {
+		if seg := strings.TrimSpace(command[start:end]); seg != "" {
+			segments = append(segments, ChainSegment{Text: seg, AfterPipe: afterPipe})
+		}
+	}
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if quote == '"' {
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\\':
+			escaped = true
+		case '\'', '"':
+			quote = rune(c)
+		case '&':
+			if i+1 < len(command) && command[i+1] == '&' {
+				flush(i)
+				i++
+				start = i + 1
+				afterPipe = false
+			}
+		case '|':
+			if i+1 < len(command) && command[i+1] == '|' {
+				flush(i)
+				i++
+				start = i + 1
+				afterPipe = false
+				continue
+			}
+			flush(i)
+			start = i + 1
+			afterPipe = true
+		case ';':
+			flush(i)
+			start = i + 1
+			afterPipe = false
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unclosed %s quote in %q", quoteName(quote), command)
+	}
+	flush(len(command))
+	return segments, nil
+}
+
 // ArgsAfterBinary returns every token after the leading binary name.
 func ArgsAfterBinary(example string) ([]string, error) {
 	tokens, err := Split(example)

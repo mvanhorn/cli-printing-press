@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/format"
+	"maps"
 	"net/url"
 	"os"
 	"path"
@@ -22,6 +23,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -267,9 +269,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return false
 		},
-		"exampleLine":        g.exampleLine,
-		"commandExampleArgs": commandExampleArgs,
-		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
+		"exampleLine":         g.exampleLine,
+		"promotedExampleLine": g.promotedExampleLine,
+		"commandExampleArgs":  commandExampleArgs,
+		"currentYear":         func() string { return strconv.Itoa(time.Now().Year()) },
 		"modulePath": func() string {
 			if g.ModulePath != "" {
 				return g.ModulePath
@@ -4771,13 +4774,222 @@ func exampleValue(p spec.Param) string {
 }
 
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
+	commandParts := append(strings.Fields(commandPath), toKebab(endpointName))
+	if line, ok := g.narrativeExampleLine(commandParts, endpoint); ok {
+		return line
+	}
+	if endpoint.Alias != "" {
+		aliasParts := append(strings.Fields(commandPath), endpoint.Alias)
+		if line, ok := g.narrativeExampleLine(aliasParts, endpoint); ok {
+			return line
+		}
+	}
+
 	var parts []string
 	parts = append(parts, naming.CLI(g.Spec.Name))
-	parts = append(parts, strings.Fields(commandPath)...)
-	parts = append(parts, toKebab(endpointName))
+	parts = append(parts, commandParts...)
 	parts = append(parts, commandExampleArgParts(endpoint)...)
 
 	return "  " + strings.Join(parts, " ")
+}
+
+func (g *Generator) promotedExampleLine(promotedName string, endpoint spec.Endpoint) string {
+	if line, ok := g.narrativeExampleLine([]string{promotedName}, endpoint); ok {
+		return line
+	}
+
+	parts := []string{naming.CLI(g.Spec.Name), promotedName}
+	parts = append(parts, commandExampleArgParts(endpoint)...)
+	return "  " + strings.Join(parts, " ")
+}
+
+func (g *Generator) narrativeExampleLine(commandParts []string, endpoint spec.Endpoint) (string, bool) {
+	if g == nil || g.Narrative == nil {
+		return "", false
+	}
+
+	for _, command := range g.narrativeExampleCommands() {
+		segments, err := shellargs.SplitChain(command)
+		if err != nil {
+			continue
+		}
+		for _, segment := range segments {
+			if segment.AfterPipe {
+				continue
+			}
+			if narrativeCommandMatches(g.Spec.Name, segment.Text, commandParts, endpoint) {
+				return "  " + strings.TrimSpace(segment.Text), true
+			}
+		}
+	}
+	return "", false
+}
+
+func (g *Generator) narrativeExampleCommands() []string {
+	if g == nil || g.Narrative == nil {
+		return nil
+	}
+
+	var commands []string
+	for _, step := range g.Narrative.QuickStart {
+		if command := strings.TrimSpace(step.Command); command != "" {
+			commands = append(commands, command)
+		}
+	}
+	for _, recipe := range g.Narrative.Recipes {
+		if command := strings.TrimSpace(recipe.Command); command != "" {
+			commands = append(commands, command)
+		}
+	}
+	return commands
+}
+
+func narrativeCommandMatches(apiName, command string, commandParts []string, endpoint spec.Endpoint) bool {
+	tokens, err := shellargs.Split(command)
+	if err != nil || len(tokens) < 1+len(commandParts) {
+		return false
+	}
+	if tokens[0] != naming.CLI(apiName) {
+		return false
+	}
+	args := tokens[1:]
+	commandIndex, ok := narrativeCommandStart(args)
+	if !ok || len(args[commandIndex:]) < len(commandParts) {
+		return false
+	}
+	for i, part := range commandParts {
+		if args[commandIndex+i] != part {
+			return false
+		}
+	}
+	return narrativeTailMatches(args[commandIndex+len(commandParts):], endpoint)
+}
+
+func narrativeTailMatches(args []string, endpoint spec.Endpoint) bool {
+	flags := narrativeEndpointFlags()
+	for _, p := range endpoint.Params {
+		if p.Positional {
+			continue
+		}
+		flags[publicFlagName(p)] = !isBoolParam(p)
+	}
+	for _, p := range endpoint.Body {
+		flags[publicFlagName(p)] = !isBoolParam(p)
+	}
+
+	positionals := 0
+	expectedPositionals := endpointPositionalCount(endpoint)
+	for i := 0; i < len(args); {
+		if strings.HasPrefix(args[i], "--") {
+			next, ok := skipNarrativeFlag(args, i, flags)
+			if !ok {
+				return false
+			}
+			i = next
+			continue
+		}
+		if positionals >= expectedPositionals {
+			return false
+		}
+		positionals++
+		i++
+	}
+	return positionals == expectedPositionals
+}
+
+func endpointPositionalCount(endpoint spec.Endpoint) int {
+	count := 0
+	for _, p := range endpoint.Params {
+		if p.Positional {
+			count++
+		}
+	}
+	return count
+}
+
+func narrativeEndpointFlags() map[string]bool {
+	flags := maps.Clone(narrativeGlobalFlags)
+	flags["all"] = false
+	flags["body-json"] = true
+	flags["stdin"] = false
+	flags["wait"] = false
+	flags["wait-interval"] = true
+	flags["wait-timeout"] = true
+	return flags
+}
+
+func skipNarrativeFlag(args []string, index int, flags map[string]bool) (int, bool) {
+	arg := args[index]
+	if arg == "--" {
+		return 0, false
+	}
+	name, _, hasInlineValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+	requiresValue, ok := flags[name]
+	if !ok {
+		return 0, false
+	}
+	next := index + 1
+	if requiresValue && !hasInlineValue {
+		if next >= len(args) {
+			return 0, false
+		}
+		next++
+	}
+	return next, true
+}
+
+func isBoolParam(p spec.Param) bool {
+	switch p.Type {
+	case "boolean", "bool":
+		return true
+	default:
+		return false
+	}
+}
+
+func narrativeCommandStart(args []string) (int, bool) {
+	for i := 0; i < len(args); {
+		arg := args[i]
+		if arg == "--" {
+			return 0, false
+		}
+		if !strings.HasPrefix(arg, "--") {
+			return i, true
+		}
+		next, ok := skipNarrativeFlag(args, i, narrativeGlobalFlags)
+		if !ok {
+			return 0, false
+		}
+		i = next
+	}
+	return 0, false
+}
+
+var narrativeGlobalFlags = map[string]bool{
+	"agent":                 false,
+	"allow-partial-failure": false,
+	"compact":               false,
+	"config":                true,
+	"csv":                   false,
+	"data-source":           true,
+	"deliver":               true,
+	"dry-run":               false,
+	"human-friendly":        false,
+	"idempotent":            false,
+	"ignore-missing":        false,
+	"json":                  false,
+	"max-age":               true,
+	"no-cache":              false,
+	"no-color":              false,
+	"no-input":              false,
+	"plain":                 false,
+	"profile":               true,
+	"quiet":                 false,
+	"rate-limit":            true,
+	"select":                true,
+	"throttle-mode":         true,
+	"timeout":               true,
+	"yes":                   false,
 }
 
 func flagName(name string) string {
