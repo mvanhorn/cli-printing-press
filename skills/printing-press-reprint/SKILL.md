@@ -254,6 +254,18 @@ via its own discovery snippet (see
 import populated in Phase A are exactly the paths it checks; Pass 2(d)
 fires whenever prior `research.json` exists.
 
+The library-preservation contract is owned by `/printing-press` Phase 5.6
+("Promote to Library"), not by this skill. When the existing library has
+`novel_features > 0` in its manifest (or hand-authored files under
+`internal/cli/`, `internal/syncer/`, or `internal/store/`), Phase 5.6
+routes promotion through `cli-printing-press regen-merge "$LIB_TARGET"
+--fresh "$CLI_WORK_DIR" --apply` instead of the bare destructive swap, so
+hand-authored novels survive the reprint. This honors the prefer-`regen-merge`
+guidance under the **Hand-edits to generator-emitted files are not durable.**
+section of `skills/printing-press/SKILL.md` (anchor `hand-edit-durability`).
+If a future edit to that phase changes the routing rule, update this paragraph
+in the same PR — the reprint skill is the dominant entry point that fires it.
+
 ## After hand-off
 
 The printing-press flow drives the rest. Don't summarize its work — let
