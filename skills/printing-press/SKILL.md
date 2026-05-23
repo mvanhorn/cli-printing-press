@@ -2858,7 +2858,7 @@ cli-printing-press shipcheck \
   --research-dir "$API_RUN_DIR"
 ```
 
-The umbrella defaults to `verify --fix` (auto-repair common failures), `validate-narrative --strict --full-examples` (README/SKILL narrative command validation), and `scorecard --live-check` (sample novel-feature output against real targets). Use `--no-fix` for a read-only pass, `--no-live-check` to skip live sampling, or `--json` for a structured envelope (suppresses per-leg output for clean piping). Pass `--api-key` / `--env-var` through to verify when live testing needs a credential, or `--strict` to make verify-skill treat likely-false-positive findings as failures.
+The umbrella defaults to `verify --fix` (auto-repair common failures), `validate-narrative --strict --full-examples` (README/SKILL narrative command validation), and `scorecard --live-check` (sample novel-feature output against real targets). When Go sources under `cmd/<cli>/` or `internal/` are newer than `build/stage/bin/<cli>`, `scorecard --live-check` rebuilds the staged binary before sampling and reports the refresh action in human and JSON output. Use `--no-fix` for a read-only pass, `--no-live-check` to skip live sampling, or `--json` for a structured envelope (suppresses per-leg output for clean piping). Pass `--api-key` / `--env-var` through to verify when live testing needs a credential, or `--strict` to make verify-skill treat likely-false-positive findings as failures.
 
 If a leg fails, re-run that one leg standalone (e.g., `cli-printing-press verify-skill --dir <CLI_WORK_DIR>`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
 

@@ -76,6 +76,13 @@ func newScorecardCmd() *cobra.Command {
 
 			if live != nil {
 				fmt.Printf("\nSample Output Probe (live command sample)\n")
+				if live.BinaryRefresh != nil {
+					fmt.Printf("  Binary refresh: %s", live.BinaryRefresh.Action)
+					if live.BinaryRefresh.Reason != "" {
+						fmt.Printf(" (%s)", live.BinaryRefresh.Reason)
+					}
+					fmt.Println()
+				}
 				if live.Unable {
 					fmt.Printf("  Unable to run: %s\n", live.Reason)
 				} else {
@@ -114,6 +121,10 @@ func newScorecardCmd() *cobra.Command {
 				}
 			}
 
+			if reason := liveCheckFatalReason(live); reason != "" {
+				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("%s", reason)}
+			}
+
 			return nil
 		},
 	}
@@ -126,6 +137,16 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&liveCheckTimeout, "live-check-timeout", 10*time.Second, "Per-feature timeout for live check invocations")
 
 	return cmd
+}
+
+func liveCheckFatalReason(live *pipeline.LiveCheckResult) string {
+	if live == nil || live.BinaryRefresh == nil || live.BinaryRefresh.Action != "failed" {
+		return ""
+	}
+	if live.Reason != "" {
+		return "live-check staged binary refresh failed: " + live.Reason
+	}
+	return "live-check staged binary refresh failed"
 }
 
 // renderHumanScorecard writes the human-readable scorecard table to w.
