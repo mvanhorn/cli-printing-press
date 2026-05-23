@@ -218,6 +218,44 @@ func newSyncCmd() *cobra.Command {
 	require.Contains(t, string(out), "SKILL.md")
 }
 
+func TestVerifySkill_ProseInvocationFlagNameIsChecked(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := `---
+name: pp-fixture
+description: "fixture"
+---
+
+# Fixture
+
+Use fixture-pp-cli sync --base USD when you need a specific base currency.
+`
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSyncCmd())
+	return rootCmd
+}
+`,
+		"sync.go": `package cli
+import "github.com/spf13/cobra"
+func newSyncCmd() *cobra.Command {
+	return &cobra.Command{Use: "sync"}
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "flag-names").CombinedOutput()
+	require.Error(t, err, "prose invocation flags must still be checked by flag-names")
+	require.Contains(t, string(out), "--base is referenced")
+	require.Contains(t, string(out), "SKILL.md")
+}
+
 func TestVerifySkill_ProseInvocationDoesNotAffectPositionalArgs(t *testing.T) {
 	t.Parallel()
 
@@ -303,4 +341,54 @@ func newExportCmd() *cobra.Command {
 	require.Error(t, err, "bad sync flag should still be reported")
 	require.Contains(t, string(out), "--base is not declared anywhere")
 	require.NotContains(t, string(out), "--format is declared elsewhere but not on sync")
+}
+
+func TestVerifySkill_ProseInvocationIgnoresBareSeparatorBetweenMentions(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := `---
+name: pp-fixture
+description: "fixture"
+---
+
+# Fixture
+
+Use fixture-pp-cli sync --base USD -- fixture-pp-cli export --format csv for local handoffs.
+`
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSyncCmd())
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd
+}
+`,
+		"sync.go": `package cli
+import "github.com/spf13/cobra"
+func newSyncCmd() *cobra.Command {
+	var base string
+	cmd := &cobra.Command{Use: "sync"}
+	cmd.Flags().StringVar(&base, "base", "", "Base")
+	return cmd
+}
+`,
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	var format string
+	cmd := &cobra.Command{Use: "export"}
+	cmd.Flags().StringVar(&format, "format", "", "Format")
+	return cmd
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "flag-names").CombinedOutput()
+	require.NoError(t, err, "bare -- separator between prose mentions must not produce an empty-flag finding: %s", string(out))
+	require.NotContains(t, string(out), "[flag-names]")
 }

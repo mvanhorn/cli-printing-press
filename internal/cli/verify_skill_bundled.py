@@ -639,6 +639,9 @@ def _cli_invocation_from_tokens(
     flags: list[str] = []
     while i < len(tokens):
         t = tokens[i]
+        if t == "--":
+            i += 1
+            continue
         if t.startswith("--"):
             flags.append(t)
             # Skip value if present and not another flag
@@ -801,7 +804,7 @@ def check_flag_names(cli_dir: Path, sources: list[Path], cli_binary: str, report
             cmd_path = list(raw_cmd_path)
             for raw_flag in flags:
                 flag = raw_flag.lstrip("-")
-                if flag in COMMON_FLAGS or flag in seen:
+                if not flag or flag in COMMON_FLAGS or flag in seen:
                     continue
                 if flag_declared_in(all_files, flag):
                     continue
@@ -828,7 +831,7 @@ def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, rep
             for raw_flag in flags:
                 flag = raw_flag.lstrip("-")
                 key = (path_str, flag)
-                if flag in COMMON_FLAGS or key in seen:
+                if not flag or flag in COMMON_FLAGS or key in seen:
                     continue
                 cmd_files, _, _ = find_command_source(cli_dir, cmd_path)
                 if cmd_files and flag_declared_in(cmd_files, flag):
