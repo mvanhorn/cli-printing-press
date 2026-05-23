@@ -608,6 +608,22 @@ func TestReadWritePIILedger_RoundTrip(t *testing.T) {
 	assert.Len(t, got.Findings, 1)
 }
 
+func TestRunPIIAudit_RedactsCLIDirInLedger(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "captured.json"), `{"email":"leak@example.com"}`)
+
+	_, err := RunPIIAudit(dir)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, PIILedgerFilename))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), dir)
+
+	got := ReadPIILedger(dir)
+	require.NotNil(t, got)
+	assert.Equal(t, filepath.Join(CLIDirPlaceholder, filepath.Base(dir)), got.CLIDir)
+}
+
 func TestReadPIILedger_CorruptDeletesFile(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, PIILedgerFilename), []byte("not json"), 0644))
