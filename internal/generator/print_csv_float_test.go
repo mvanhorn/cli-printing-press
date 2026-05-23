@@ -26,7 +26,9 @@ import (
 )
 
 func TestPrintCSVFloat64AvoidsScientificNotation(t *testing.T) {
-	payload, err := json.Marshal([]map[string]any{{"population": 3483757.0}})
+	// Large value (>= 1e6) previously rendered as 3.483757e+06; small value
+	// (< 1e-4) previously rendered as 1e-05. Cover both exponent signs.
+	payload, err := json.Marshal([]map[string]any{{"population": 3483757.0, "ratio": 0.00001}})
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
@@ -38,10 +40,14 @@ func TestPrintCSVFloat64AvoidsScientificNotation(t *testing.T) {
 
 	got := out.String()
 	if !strings.Contains(got, "3483757") {
-		t.Fatalf("expected decimal float rendering, got %s", got)
+		t.Fatalf("expected decimal float rendering of large value, got %s", got)
 	}
-	if strings.Contains(got, "e+") || strings.Contains(got, "E+") {
-		t.Fatalf("expected no scientific notation, got %s", got)
+	if !strings.Contains(got, "0.00001") {
+		t.Fatalf("expected fixed-notation rendering of small value, got %s", got)
+	}
+	if strings.Contains(got, "e+") || strings.Contains(got, "E+") ||
+		strings.Contains(got, "e-") || strings.Contains(got, "E-") {
+		t.Fatalf("expected no scientific notation (neither exponent sign), got %s", got)
 	}
 }
 `), 0o644))
