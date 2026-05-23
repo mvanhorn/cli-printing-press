@@ -112,6 +112,67 @@ func TestGenerateSyncConcurrencyDefaultHonorsRateClass(t *testing.T) {
 	}
 }
 
+func TestGenerateSyncDefaultsSkipAuthTaggedResources(t *testing.T) {
+	t.Parallel()
+
+	paginated := func(path string, tags ...string) spec.Endpoint {
+		return spec.Endpoint{
+			Method:     "GET",
+			Path:       path,
+			Tags:       tags,
+			Response:   spec.ResponseDef{Type: "array"},
+			Pagination: &spec.Pagination{Type: "cursor", LimitParam: "limit", CursorParam: "after"},
+		}
+	}
+	apiSpec := minimalSpec("sync-auth")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Items",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/items")},
+		},
+		"oauth-token": {
+			Description: "OAuth token endpoint",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/oauth_token", "OAuth")},
+		},
+		"oauth2-token": {
+			Description: "OAuth2 token endpoint",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/oauth2_token", "OAuth2")},
+		},
+		"authorization-grant": {
+			Description: "Authorization grant endpoint",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/authorization_grant", "Billing", "Authorization")},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	defaultsStart := strings.Index(syncSrc, "func defaultSyncResources() []string")
+	knownStart := strings.Index(syncSrc, "func knownSyncResourceNames() []string")
+	require.NotEqual(t, -1, defaultsStart)
+	require.NotEqual(t, -1, knownStart)
+	defaultsBlock := syncSrc[defaultsStart:knownStart]
+	assert.Contains(t, defaultsBlock, `"items"`)
+	assert.NotContains(t, defaultsBlock, `"oauth-token"`)
+	assert.NotContains(t, defaultsBlock, `"oauth2-token"`)
+	assert.NotContains(t, defaultsBlock, `"authorization-grant"`)
+
+	knownBlock := syncSrc[knownStart:]
+	assert.Contains(t, knownBlock, `"items"`)
+	assert.Contains(t, knownBlock, `"oauth-token"`, "explicit --resources should still accept auth-tagged sync endpoints")
+	assert.Contains(t, knownBlock, `"oauth2-token"`, "explicit --resources should still accept auth-tagged sync endpoints")
+	assert.Contains(t, knownBlock, `"authorization-grant"`, "explicit --resources should still accept auth-tagged sync endpoints")
+
+	workflowSrc := readGeneratedFile(t, outputDir, "internal", "cli", "channel_workflow.go")
+	archiveIdx := strings.Index(workflowSrc, "resources := []string")
+	require.NotEqual(t, -1, archiveIdx)
+	archiveBlock := workflowSrc[archiveIdx:]
+	assert.Contains(t, archiveBlock, `"items"`)
+	assert.NotContains(t, archiveBlock, `"oauth-token"`)
+	assert.NotContains(t, archiveBlock, `"oauth2-token"`)
+	assert.NotContains(t, archiveBlock, `"authorization-grant"`)
+}
+
 // dependentResourceSpec builds a minimal spec with a parent + child
 // resource so syncDependentResource is actually emitted. The
 // dependent-resource profiler requires paginated list endpoints (not
