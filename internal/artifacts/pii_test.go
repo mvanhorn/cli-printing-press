@@ -16,6 +16,62 @@ import (
 // Detector behavior
 // ---------------------------------------------------------------------------
 
+func TestRedactPIIText_RedactsJSONPII(t *testing.T) {
+	got := RedactPIIText(`{"name":"Jane Doe","email":"jane@example.com","address":"123 Main Street","id":42,"status":"active"}`)
+
+	require.NotContains(t, got, "Jane Doe")
+	require.NotContains(t, got, "jane@example.com")
+	require.NotContains(t, got, "123 Main Street")
+	require.Contains(t, got, `"name":"<redacted>"`)
+	require.Contains(t, got, `"email":"<redacted>"`)
+	require.Contains(t, got, `"address":"<redacted>"`)
+	require.Contains(t, got, `"id":42`)
+	require.Contains(t, got, `"status":"active"`)
+}
+
+func TestRedactPIIText_LeavesStructuralJSONUnchanged(t *testing.T) {
+	input := `{"id":42,"status":"active"}`
+
+	require.Equal(t, input, RedactPIIText(input))
+}
+
+func TestRedactPIIJSONKeys_RedactsWithoutPatternSweep(t *testing.T) {
+	got, changed := RedactPIIJSONKeys(`{"name":"Jane Doe","note":"contact jane@example.com","id":42}`)
+
+	require.True(t, changed)
+	require.NotContains(t, got, "Jane Doe")
+	require.Contains(t, got, `"name":"<redacted>"`)
+	require.Contains(t, got, "jane@example.com")
+	require.Contains(t, got, `"id":42`)
+}
+
+func TestRedactPIIJSONKeys_RedactsNDJSON(t *testing.T) {
+	got, changed := RedactPIIJSONKeys("{\"name\":\"Jane Doe\"}\n{\"status\":\"active\"}\n{\"invoice_number\":\"INV-12345\"}")
+
+	require.True(t, changed)
+	require.NotContains(t, got, "Jane Doe")
+	require.NotContains(t, got, "INV-12345")
+	require.Contains(t, got, `"name":"<redacted>"`)
+	require.Contains(t, got, `"invoice_number":"<redacted>"`)
+	require.Contains(t, got, `"status":"active"`)
+}
+
+func TestRedactPIIJSONKeys_FragmentRedactsValueWhenKeyEqualsValue(t *testing.T) {
+	got, changed := RedactPIIJSONKeys(`prefix {"name":"name",`)
+
+	require.True(t, changed)
+	require.Contains(t, got, `"name":"<redacted>"`)
+	require.NotContains(t, got, `"<redacted>":"name"`)
+}
+
+func TestRedactPIIText_RedactsPlainTextPatterns(t *testing.T) {
+	got := RedactPIIText("billing email jane@example.com lives at 123 Main Street")
+
+	require.NotContains(t, got, "jane@example.com")
+	require.NotContains(t, got, "123 Main Street")
+	require.Contains(t, got, PIIRedactedSentinel)
+}
+
 func TestFindPII_CardLast4(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -153,6 +154,226 @@ var piiDetectors = []piiDetector{
 		// captures surface them, expand with explicit handling.
 		pattern: regexp.MustCompile(`\b\d+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3}\s+(?i:ST|STREET|AVE|AVENUE|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY)\b`),
 	},
+}
+
+// PIIRedactedSentinel is the stable marker used when artifact text is
+// scrubbed before it can be persisted.
+const PIIRedactedSentinel = "<redacted>"
+
+var piiJSONScalarKeys = map[string]bool{
+	"address":         true,
+	"address1":        true,
+	"address2":        true,
+	"billingaddress":  true,
+	"cardlast4":       true,
+	"customeremail":   true,
+	"customername":    true,
+	"email":           true,
+	"firstname":       true,
+	"fullname":        true,
+	"invoice":         true,
+	"invoicenumber":   true,
+	"lastname":        true,
+	"last4":           true,
+	"mobile":          true,
+	"name":            true,
+	"phone":           true,
+	"phonenumber":     true,
+	"postalcode":      true,
+	"shippingaddress": true,
+	"street":          true,
+	"streetaddress":   true,
+	"zip":             true,
+}
+
+var piiJSONKeyNeedleRE = regexp.MustCompile(`(?i)"(?:address1?|address2|billing[_ -]?address|card[_ -]?last[_ -]?4|customer[_ -]?(?:email|name)|email|first[_ -]?name|full[_ -]?name|invoice(?:[_ -]?number)?|last[_ -]?name|last[_ -]?4|mobile|name|phone(?:[_ -]?number)?|postal[_ -]?code|shipping[_ -]?address|street(?:[_ -]?address)?|zip)"\s*:`)
+
+// RedactPIIText returns text with customer-PII shapes replaced before the
+// text is written to durable artifacts. JSON input preserves non-PII fields
+// when redactions are needed and returns the original text unchanged when no
+// PII is found.
+func RedactPIIText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	if redacted, changed := redactPIIJSONText(text); changed {
+		return redacted
+	}
+	if redacted, changed := RedactPIIJSONKeys(text); changed {
+		return redactPIIPatterns(redacted)
+	}
+	return redactPIIPatterns(text)
+}
+
+// RedactPIIJSONKeys redacts values whose JSON keys commonly carry customer
+// PII. It intentionally skips regex value sweeps so callers can apply it to
+// larger captures before truncating, then run RedactPIIText on the bounded
+// persisted sample.
+func RedactPIIJSONKeys(text string) (string, bool) {
+	if strings.TrimSpace(text) == "" {
+		return text, false
+	}
+	if !piiJSONKeyNeedleRE.MatchString(text) {
+		return text, false
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &parsed); err == nil {
+		redacted, changed := redactPIIJSONValue(parsed, "", false)
+		if !changed {
+			return text, false
+		}
+		out, ok := marshalPIIJSON(redacted)
+		if !ok {
+			return text, false
+		}
+		return out, true
+	}
+
+	if redacted, changed := redactPIIJSONLines(text); changed {
+		return redacted, true
+	}
+	return redactPIIJSONKeyFragments(text)
+}
+
+func redactPIIJSONText(text string) (string, bool) {
+	var parsed any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &parsed); err != nil {
+		return "", false
+	}
+	redacted, changed := redactPIIJSONValue(parsed, "", true)
+	if !changed {
+		return text, false
+	}
+	out, ok := marshalPIIJSON(redacted)
+	if !ok {
+		return redactPIIPatterns(text), true
+	}
+	return out, true
+}
+
+func marshalPIIJSON(value any) (string, bool) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		return "", false
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), true
+}
+
+func redactPIIJSONLines(text string) (string, bool) {
+	var out strings.Builder
+	changed := false
+	for _, line := range strings.SplitAfter(text, "\n") {
+		lineBody := strings.TrimSuffix(line, "\n")
+		lineEnding := line[len(lineBody):]
+		trimmed := strings.TrimSpace(lineBody)
+		if trimmed == "" {
+			out.WriteString(line)
+			continue
+		}
+		var parsed any
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+			out.WriteString(line)
+			continue
+		}
+		redacted, lineChanged := redactPIIJSONValue(parsed, "", false)
+		if !lineChanged {
+			out.WriteString(line)
+			continue
+		}
+		marshaled, ok := marshalPIIJSON(redacted)
+		if !ok {
+			out.WriteString(line)
+			continue
+		}
+		out.WriteString(marshaled)
+		out.WriteString(lineEnding)
+		changed = true
+	}
+	return out.String(), changed
+}
+
+func redactPIIJSONValue(value any, key string, redactStringPatterns bool) (any, bool) {
+	if key != "" && piiJSONScalarKeys[normalizePIIJSONKey(key)] {
+		return PIIRedactedSentinel, true
+	}
+
+	switch v := value.(type) {
+	case map[string]any:
+		changed := false
+		for childKey, child := range v {
+			redacted, childChanged := redactPIIJSONValue(child, childKey, redactStringPatterns)
+			if childChanged {
+				v[childKey] = redacted
+				changed = true
+			}
+		}
+		return v, changed
+	case []any:
+		changed := false
+		for i, child := range v {
+			redacted, childChanged := redactPIIJSONValue(child, "", redactStringPatterns)
+			if childChanged {
+				v[i] = redacted
+				changed = true
+			}
+		}
+		return v, changed
+	case string:
+		if !redactStringPatterns {
+			return v, false
+		}
+		redacted := redactPIIPatterns(v)
+		return redacted, redacted != v
+	default:
+		return value, false
+	}
+}
+
+var jsonStringPairRE = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+
+func redactPIIJSONKeyFragments(text string) (string, bool) {
+	changed := false
+	redacted := jsonStringPairRE.ReplaceAllStringFunc(text, func(match string) string {
+		pair := jsonStringPairRE.FindStringSubmatch(match)
+		if len(pair) != 3 {
+			return match
+		}
+		key, err := strconv.Unquote(`"` + pair[1] + `"`)
+		if err != nil || !piiJSONScalarKeys[normalizePIIJSONKey(key)] {
+			return match
+		}
+		changed = true
+		target := `"` + pair[2] + `"`
+		valueIdx := strings.LastIndex(match, target)
+		if valueIdx == -1 {
+			return match
+		}
+		return match[:valueIdx] + strconv.Quote(PIIRedactedSentinel) + match[valueIdx+len(target):]
+	})
+	return redacted, changed
+}
+
+func normalizePIIJSONKey(key string) string {
+	key = strings.ToLower(key)
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	key = strings.ReplaceAll(key, " ", "")
+	return key
+}
+
+func redactPIIPatterns(text string) string {
+	redacted := text
+	for _, det := range piiDetectors {
+		redacted = det.pattern.ReplaceAllStringFunc(redacted, func(match string) string {
+			if isSyntheticPIIPlaceholder(det.kind, match) {
+				return match
+			}
+			return PIIRedactedSentinel
+		})
+	}
+	return redacted
 }
 
 // Scoped to the capture-to-publish leak path: manuscripts, test

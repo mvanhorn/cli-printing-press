@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
@@ -508,6 +509,54 @@ func TestLiveCheck_OutputCap(t *testing.T) {
 	})
 	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 10 * time.Second})
 	require.Equal(t, 1, result.Passed, "run should complete despite bounded output")
+}
+
+func TestLiveCheck_OutputSampleRedactsPII(t *testing.T) {
+	got := sampleOutput(`{"name":"Jane Doe","email":"jane@example.com","address":"123 Main Street","id":42,"status":"active"}`)
+
+	require.NotContains(t, got, "Jane Doe")
+	require.NotContains(t, got, "jane@example.com")
+	require.NotContains(t, got, "123 Main Street")
+	require.Contains(t, got, `"name":"<redacted>"`)
+	require.Contains(t, got, `"email":"<redacted>"`)
+	require.Contains(t, got, `"address":"<redacted>"`)
+	require.Contains(t, got, `"id":42`)
+	require.Contains(t, got, `"status":"active"`)
+}
+
+func TestLiveCheck_OutputSampleLeavesStructuralJSONUnchanged(t *testing.T) {
+	input := `{"id":42,"status":"active"}`
+
+	require.Equal(t, input, sampleOutput(input))
+}
+
+func TestLiveCheck_OutputSampleRedactsPIIBeforeTruncatingJSON(t *testing.T) {
+	longNote := strings.Repeat("x", outputSampleMaxBytes)
+	got := sampleOutput(fmt.Sprintf(`{"name":"Jane Doe","email":"jane@example.com","note":%q}`, longNote))
+
+	require.Contains(t, got, "…[truncated]")
+	require.NotContains(t, got, "Jane Doe")
+	require.NotContains(t, got, "jane@example.com")
+	require.Contains(t, got, `"name":"<redacted>"`)
+	require.Contains(t, got, `"email":"<redacted>"`)
+}
+
+func TestLiveCheck_OutputSampleRedactsNDJSONAndMixedParts(t *testing.T) {
+	got := sampleOutputParts("{\"name\":\"Jane Doe\"}\n", "{\"invoice_number\":\"INV-12345\"}")
+
+	require.NotContains(t, got, "Jane Doe")
+	require.NotContains(t, got, "INV-12345")
+	require.Contains(t, got, `"name":"<redacted>"`)
+	require.Contains(t, got, `"invoice_number":"<redacted>"`)
+}
+
+func TestLiveCheck_OutputSampleRedactsPIIAcrossTruncationBoundary(t *testing.T) {
+	got := sampleOutput(strings.Repeat("x", outputSampleMaxBytes-8) + " jane@example.com")
+
+	require.Contains(t, got, "…[truncated]")
+	require.NotContains(t, got, "jane@example.com")
+	require.NotContains(t, got, "jane@")
+	require.Contains(t, got, "<redacted>")
 }
 
 // TestLiveCheck_BinaryAutoDerivation verifies RunLiveCheck finds the binary
@@ -1027,6 +1076,33 @@ printf 'Hello cookie world\n'
 	require.Contains(t, result.OutputSample, "Hello cookie world")
 }
 
+func TestRunOneFeatureCheck_RedactsPIIFromFailureReason(t *testing.T) {
+	binary := buildFakeCLI(t, `#!/usr/bin/env bash
+printf '{"name":"Jane Doe","email":"jane@example.com"}' >&2
+exit 7
+`)
+	feature := NovelFeature{
+		Name:    "demo",
+		Command: "demo",
+		Example: "bin demo",
+	}
+	result := runOneFeatureCheck(t.TempDir(), binary, feature, 5*time.Second)
+
+	require.Equal(t, StatusFail, result.Status)
+	require.NotContains(t, result.Reason, "Jane Doe")
+	require.NotContains(t, result.Reason, "jane@example.com")
+	require.Contains(t, result.Reason, `"name":"<redacted>"`)
+	require.Contains(t, result.Reason, `"email":"<redacted>"`)
+}
+
+func TestTrimOutput_RedactsPIIBeforeTruncatingFailureReason(t *testing.T) {
+	got := trimOutput(strings.Repeat("x", 290) + " jane@example.com")
+
+	require.NotContains(t, got, "jane@")
+	require.NotContains(t, got, "example.com")
+	require.Contains(t, got, "<redacted")
+}
+
 func TestSampleOutput_TruncatesLargeCapture(t *testing.T) {
 	// Guard the serialized-sample size so one feature can't bloat the
 	// scorecard JSON or overwhelm an agentic reviewer's context window.
@@ -1034,6 +1110,24 @@ func TestSampleOutput_TruncatesLargeCapture(t *testing.T) {
 	got := sampleOutput(big)
 	require.Contains(t, got, "…[truncated]", "truncation marker missing")
 	require.LessOrEqual(t, len(got), outputSampleMaxBytes+len("…[truncated]"))
+}
+
+func TestSampleOutput_TruncatesUTF8Safely(t *testing.T) {
+	got := sampleOutput(strings.Repeat("a", outputSampleMaxBytes-1) + "é")
+
+	require.Contains(t, got, "…[truncated]")
+	require.NotContains(t, got, "\uFFFD")
+	require.True(t, utf8.ValidString(got))
+}
+
+func TestTruncateUTF8_PreservesPrefixWithEarlierInvalidByte(t *testing.T) {
+	input := "prefix" + string([]byte{0xff}) + strings.Repeat("a", 32) + "é"
+	got := truncateUTF8(input, len(input)-1)
+
+	require.Contains(t, got, string([]byte{0xff}))
+	require.Contains(t, got, strings.Repeat("a", 32))
+	require.NotContains(t, got, "é")
+	require.Greater(t, len(got), 30)
 }
 
 func TestSampleOutputParts_TruncatesWithoutConcatenatingFullCapture(t *testing.T) {
