@@ -56,6 +56,14 @@ func TestRedactPIIJSONKeys_RedactsNDJSON(t *testing.T) {
 	require.Contains(t, got, `"status":"active"`)
 }
 
+func TestRedactPIIJSONKeys_FragmentRedactsValueWhenKeyEqualsValue(t *testing.T) {
+	got, changed := RedactPIIJSONKeys(`prefix {"name":"name",`)
+
+	require.True(t, changed)
+	require.Contains(t, got, `"name":"<redacted>"`)
+	require.NotContains(t, got, `"<redacted>":"name"`)
+}
+
 func TestRedactPIIText_RedactsPlainTextPatterns(t *testing.T) {
 	got := RedactPIIText("billing email jane@example.com lives at 123 Main Street")
 

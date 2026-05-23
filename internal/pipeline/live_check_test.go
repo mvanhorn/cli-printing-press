@@ -1112,6 +1112,16 @@ func TestSampleOutput_TruncatesUTF8Safely(t *testing.T) {
 	require.True(t, utf8.ValidString(got))
 }
 
+func TestTruncateUTF8_PreservesPrefixWithEarlierInvalidByte(t *testing.T) {
+	input := "prefix" + string([]byte{0xff}) + strings.Repeat("a", 32) + "é"
+	got := truncateUTF8(input, len(input)-1)
+
+	require.Contains(t, got, string([]byte{0xff}))
+	require.Contains(t, got, strings.Repeat("a", 32))
+	require.NotContains(t, got, "é")
+	require.Greater(t, len(got), 30)
+}
+
 func TestSampleOutputParts_TruncatesWithoutConcatenatingFullCapture(t *testing.T) {
 	prefix := strings.Repeat("a", outputSampleMaxBytes-2)
 	got := sampleOutputParts(prefix, "bc", strings.Repeat("d", outputSampleMaxBytes))

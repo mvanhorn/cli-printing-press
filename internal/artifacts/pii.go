@@ -345,7 +345,12 @@ func redactPIIJSONKeyFragments(text string) (string, bool) {
 			return match
 		}
 		changed = true
-		return strings.Replace(match, `"`+pair[2]+`"`, strconv.Quote(PIIRedactedSentinel), 1)
+		target := `"` + pair[2] + `"`
+		valueIdx := strings.LastIndex(match, target)
+		if valueIdx == -1 {
+			return match
+		}
+		return match[:valueIdx] + strconv.Quote(PIIRedactedSentinel) + match[valueIdx+len(target):]
 	})
 	return redacted, changed
 }

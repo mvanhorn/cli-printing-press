@@ -778,7 +778,11 @@ func truncateUTF8(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
-	for maxBytes > 0 && !utf8.ValidString(s[:maxBytes]) {
+	for maxBytes > 0 {
+		r, size := utf8.DecodeLastRuneInString(s[:maxBytes])
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
 		maxBytes--
 	}
 	return s[:maxBytes]
