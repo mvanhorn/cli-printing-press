@@ -5200,17 +5200,18 @@ func isGoKeyword(s string) bool {
 const cacheDurationDefault = "6 * time.Hour"
 
 // staleAfterExpr renders the cache stale-after duration as a Go expression for
-// direct initialization. A spec literal that parses becomes e.g.
-// "168 * time.Hour"; an empty or unparseable value falls back to the 6h
-// default. Emitting the value directly avoids a dead "staleAfter := 6 *
-// time.Hour" initializer that is always overwritten by a ParseDuration call
+// direct initialization. A spec literal that parses to a non-negative duration
+// becomes e.g. "168 * time.Hour"; an empty, unparseable, or negative value
+// falls back to the 6h default (a negative stale-after would make the cache
+// permanently stale). Emitting the value directly avoids a dead "staleAfter :=
+// 6 * time.Hour" initializer that is always overwritten by a ParseDuration call
 // which cannot fail on a constant literal.
 func staleAfterExpr(lit string) string {
 	if lit == "" {
 		return cacheDurationDefault
 	}
 	d, err := time.ParseDuration(lit)
-	if err != nil {
+	if err != nil || d < 0 {
 		return cacheDurationDefault
 	}
 	return goDurationExpr(d)

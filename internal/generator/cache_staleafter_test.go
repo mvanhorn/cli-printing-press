@@ -55,6 +55,7 @@ func TestStaleAfterExpr(t *testing.T) {
 	}{
 		{"", "6 * time.Hour"},
 		{"garbage", "6 * time.Hour"},
+		{"-1h", "6 * time.Hour"}, // negative would mean a permanently-stale cache
 		{"168h", "168 * time.Hour"},
 		{"30m", "30 * time.Minute"},
 		{"45s", "45 * time.Second"},
