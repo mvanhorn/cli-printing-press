@@ -217,6 +217,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"cobraFlagFunc":         cobraFlagFunc,
 		"cobraFlagFuncForParam": cobraFlagFuncForParam,
 		"mcpBindingFunc":        mcpBindingFunc,
+		"recipeParamTypeString": func(t RecipeIntentParamType) string { return string(t) },
 		"defaultVal":            defaultVal,
 		"defaultValForParam":    defaultValForParam,
 		"isConstDefault":        paramIsConstDefault,
@@ -3060,6 +3061,8 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 	if g.VisionSet.MCP {
 		mcpTotal, mcpPublic := g.Spec.CountMCPTools()
 		domainCtx := g.buildDomainContext()
+		reservedIntentNames := reservedMCPToolNames(g.Spec, g.VisionSet, g.NovelFeatures)
+		recipeIntents := buildRecipeIntents(g.Spec.Name, g.Narrative, reservedIntentNames)
 		mcpData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
@@ -3070,6 +3073,8 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			MCPPublicCount    int
 			NovelFeatures     []NovelFeature
 			DomainContext     DomainContext
+			RecipeIntents     []RecipeIntent
+			HasMCPIntents     bool
 		}{
 			APISpec:           g.Spec,
 			SyncableResources: g.profile.SyncableResources,
@@ -3080,6 +3085,8 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			MCPPublicCount:    mcpPublic,
 			NovelFeatures:     g.NovelFeatures,
 			DomainContext:     domainCtx,
+			RecipeIntents:     recipeIntents,
+			HasMCPIntents:     len(g.Spec.MCP.Intents) > 0 || len(recipeIntents) > 0,
 		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
@@ -3089,9 +3096,14 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 				return fmt.Errorf("rendering MCP tools tests: %w", err)
 			}
 		}
-		if len(g.Spec.MCP.Intents) > 0 {
+		if mcpData.HasMCPIntents {
 			if err := g.renderTemplate("mcp_intents.go.tmpl", filepath.Join("internal", "mcp", "intents.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP intents: %w", err)
+			}
+		}
+		if len(recipeIntents) > 0 {
+			if err := g.renderTemplate("mcp_recipe_intents_test.go.tmpl", filepath.Join("internal", "mcp", "recipe_intents_test.go"), mcpData); err != nil {
+				return fmt.Errorf("rendering MCP recipe intent tests: %w", err)
 			}
 		}
 		if g.Spec.MCP.IsCodeOrchestration() {

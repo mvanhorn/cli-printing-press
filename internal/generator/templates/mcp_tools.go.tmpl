@@ -117,8 +117,8 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 {{- end}}
 {{- end}}
-{{- if .MCP.Intents}}
-	// Intent tools — higher-level compositions declared in the spec.
+{{- if .HasMCPIntents}}
+	// Intent tools — higher-level compositions declared in the spec or lifted from recipes.
 	RegisterIntents(s)
 {{- end}}
 {{- end}}

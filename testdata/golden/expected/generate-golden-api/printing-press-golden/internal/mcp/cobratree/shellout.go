@@ -4,6 +4,7 @@
 package cobratree
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -26,7 +27,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string) server.
 		finalArgs := append([]string{}, prefixArgs...)
 		finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
-			tokens := splitShellArgs(raw)
+			tokens := SplitShellArgs(raw)
 			for _, t := range tokens {
 				if strings.HasPrefix(t, "-") {
 					return mcplib.NewToolResultError(fmt.Sprintf("flag-like argument %q not allowed in positional args field; use structured tool parameters instead", t)), nil
@@ -34,12 +35,11 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string) server.
 			}
 			finalArgs = append(finalArgs, tokens...)
 		}
-		cmd := exec.CommandContext(ctx, lookupPath, finalArgs...)
-		out, err := cmd.CombinedOutput()
+		out, err := RunCLICommand(ctx, lookupPath, finalArgs)
 		if err != nil {
-			return mcplib.NewToolResultError(string(out)), nil
+			return mcplib.NewToolResultError(err.Error()), nil
 		}
-		return mcplib.NewToolResultText(string(out)), nil
+		return mcplib.NewToolResultText(out), nil
 	}
 }
 
@@ -97,8 +97,8 @@ func cliArgsFromMCP(args map[string]any) []string {
 	return out
 }
 
-// splitShellArgs whitespace-splits with double-quoted-token preservation.
-func splitShellArgs(s string) []string {
+// SplitShellArgs whitespace-splits with double-quoted-token preservation.
+func SplitShellArgs(s string) []string {
 	var tokens []string
 	var cur []rune
 	inQuote := false
@@ -119,4 +119,29 @@ func splitShellArgs(s string) []string {
 		tokens = append(tokens, string(cur))
 	}
 	return tokens
+}
+
+// RunCLICommand executes the companion CLI while preserving stdout as the
+// machine-readable channel. Stderr is included only in error text so post-run
+// telemetry or quota output cannot corrupt JSON results.
+func RunCLICommand(ctx context.Context, binPath string, args []string) (string, error) {
+	cmd := exec.CommandContext(ctx, binPath, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		if msg != "" {
+			label := "stderr"
+			if strings.TrimSpace(stderr.String()) == "" {
+				label = "output"
+			}
+			return stdout.String(), fmt.Errorf("cli %s: %w (%s: %s)", binPath, err, label, msg)
+		}
+		return stdout.String(), fmt.Errorf("cli %s: %w", binPath, err)
+	}
+	return stdout.String(), nil
 }
