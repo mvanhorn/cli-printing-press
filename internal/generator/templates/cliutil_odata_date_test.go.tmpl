@@ -41,6 +41,17 @@ func TestParseODataDate(t *testing.T) {
 		}
 	})
 
+	t.Run("rfc3339 non-UTC offset normalised to UTC", func(t *testing.T) {
+		t.Parallel()
+		got, ok := ParseODataDate("2026-05-17T12:34:56+05:30")
+		if !ok {
+			t.Fatal("expected ok=true for RFC3339 with non-UTC offset")
+		}
+		if got.Location() != time.UTC {
+			t.Fatalf("expected UTC location, got %v", got.Location())
+		}
+	})
+
 	t.Run("garbage returns zero and false", func(t *testing.T) {
 		t.Parallel()
 		got, ok := ParseODataDate("not-a-date")

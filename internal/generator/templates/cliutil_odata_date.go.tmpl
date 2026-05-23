@@ -9,17 +9,16 @@ import (
 	"time"
 )
 
-// odataDateRE matches an OData v3 "/Date(milliseconds)/" literal, with an
-// optional signed timezone offset that OData includes only as a display hint
-// (the millisecond count is already a UTC epoch value). Leading and trailing
-// slashes are optional so both the wrapped literal and a bare Date(...) form
-// decode.
-var odataDateRE = regexp.MustCompile(`^/?Date\((-?\d+)(?:[+-]\d{4})?\)/?$`)
+// odataDateRE matches the canonical OData v3 "/Date(milliseconds)/" literal,
+// with an optional signed timezone offset that OData includes only as a display
+// hint (the millisecond count is already a UTC epoch value). Both wrapping
+// slashes are required, matching the form real OData v3 producers emit.
+var odataDateRE = regexp.MustCompile(`^/Date\((-?\d+)(?:[+-]\d{4})?\)/$`)
 
 // ParseODataDate decodes an OData v3 "/Date(ms)/" literal to a UTC time.Time.
-// It falls back to RFC3339 so callers can pass any datetime field without
-// dispatching on format. Returns ok=false (and the zero time) when the input
-// matches neither form.
+// It falls back to RFC3339 (normalising the result to UTC) so callers can pass
+// any datetime field without dispatching on format. Returns ok=false (and the
+// zero time) when the input matches neither form.
 //
 // Why this exists: OData v3 APIs (Exact Online, Microsoft Dynamics 365
 // Business Central, Dynamics NAV) encode dates as "/Date(1715731200000)/"
@@ -32,7 +31,7 @@ func ParseODataDate(s string) (time.Time, bool) {
 		}
 	}
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t, true
+		return t.UTC(), true
 	}
 	return time.Time{}, false
 }
