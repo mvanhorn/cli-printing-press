@@ -1169,6 +1169,8 @@ import "github.com/spf13/cobra"
 
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "test-pp-cli"}
+	var agent bool
+	cmd.PersistentFlags().BoolVar(&agent, "agent", false, "Agent mode")
 	cmd.AddCommand(newInsightCmd())
 	return cmd
 }
