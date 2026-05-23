@@ -19,9 +19,16 @@ func buildCLI(dir string) (string, error) {
 		return "", fmt.Errorf("resolving binary path: %w", err)
 	}
 	binaryPath = platform.ExecutablePath(binaryPath)
+	if err := buildCLITo(dir, binaryPath); err != nil {
+		return "", err
+	}
+	return binaryPath, nil
+}
+
+func buildCLITo(dir, binaryPath string) error {
 	cmdDir, err := findCLICommandDir(dir)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -30,9 +37,9 @@ func buildCLI(dir string) (string, error) {
 	cmd.Dir = filepath.Dir(cmdDir)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go build: %s\n%s", err, string(out))
+		return fmt.Errorf("go build: %s\n%s", err, string(out))
 	}
-	return binaryPath, nil
+	return nil
 }
 
 func findCLICommandDir(dir string) (string, error) {

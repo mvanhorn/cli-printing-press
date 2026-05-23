@@ -51,14 +51,15 @@ const (
 // correctness cap on the Insight dimension — a Grade A scorecard with a
 // flagship feature returning wrong data shouldn't be possible.
 type LiveCheckResult struct {
-	Passed   int                 `json:"passed"`
-	Failed   int                 `json:"failed"`
-	Skipped  int                 `json:"skipped"`
-	PassRate float64             `json:"-"` // exposed via pass_rate_pct in MarshalJSON
-	Features []LiveFeatureResult `json:"features"`
-	Unable   bool                `json:"unable,omitempty"`
-	Reason   string              `json:"reason,omitempty"`
-	RanAt    time.Time           `json:"ran_at"`
+	Passed        int                     `json:"passed"`
+	Failed        int                     `json:"failed"`
+	Skipped       int                     `json:"skipped"`
+	PassRate      float64                 `json:"-"` // exposed via pass_rate_pct in MarshalJSON
+	Features      []LiveFeatureResult     `json:"features"`
+	BinaryRefresh *LiveCheckBinaryRefresh `json:"binary_refresh,omitempty"`
+	Unable        bool                    `json:"unable,omitempty"`
+	Reason        string                  `json:"reason,omitempty"`
+	RanAt         time.Time               `json:"ran_at"`
 }
 
 // Checked returns the total number of features that were sampled.
@@ -93,6 +94,15 @@ type LiveFeatureResult struct {
 	Reason       string     `json:"reason,omitempty"`
 	Warnings     []string   `json:"warnings,omitempty"`
 	OutputSample string     `json:"output_sample,omitempty"`
+}
+
+// LiveCheckBinaryRefresh records whether live-check refreshed the canonical
+// staged binary before sampling command examples.
+type LiveCheckBinaryRefresh struct {
+	Action     string `json:"action"`
+	StagePath  string `json:"stage_path,omitempty"`
+	BinaryPath string `json:"binary_path,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // outputSampleMaxBytes caps the captured-output snapshot stored on each
@@ -161,11 +171,24 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 		return out
 	}
 
+	refresh, err := refreshLiveCheckStageBinary(opts.CLIDir, opts.BinaryName)
+	if refresh.Action != "" {
+		out.BinaryRefresh = &refresh
+	}
+	if err != nil {
+		out.Unable = true
+		out.Reason = "rebuilding staged binary: " + err.Error()
+		return out
+	}
+
 	binaryPath, binErr := resolveBinaryPath(opts.CLIDir, opts.BinaryName)
 	if binErr != nil {
 		out.Unable = true
 		out.Reason = binErr.Error()
 		return out
+	}
+	if out.BinaryRefresh != nil {
+		out.BinaryRefresh.BinaryPath = binaryPath
 	}
 	features := pickFeatures(research)
 	if len(features) == 0 {
@@ -246,6 +269,173 @@ func findResearchDir(cliDir string) string {
 		dir = parent
 	}
 	return cliDir
+}
+
+func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, error) {
+	stagePath, stageCandidate := liveCheckExistingStageBinaryPath(cliDir, name)
+	if stagePath == "" {
+		return LiveCheckBinaryRefresh{Action: "no_stage", Reason: "no staged binary found"}, nil
+	}
+	refresh := LiveCheckBinaryRefresh{StagePath: stagePath}
+
+	stageInfo, err := os.Stat(stagePath)
+	if err != nil {
+		refresh.Action = "no_stage"
+		refresh.Reason = "staged binary disappeared before stat"
+		return refresh, nil
+	}
+
+	cmdDir, err := findCLICommandDir(cliDir)
+	if err != nil {
+		refresh.Action = "skipped"
+		refresh.Reason = "no CLI command directory found"
+		return refresh, nil
+	}
+
+	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir, cmdDir)
+	if err != nil {
+		refresh.Action = "failed"
+		refresh.Reason = err.Error()
+		return refresh, err
+	}
+	if !ok {
+		refresh.Action = "skipped"
+		refresh.Reason = "no Go source files found"
+		return refresh, nil
+	}
+	if !stageInfo.ModTime().Before(newestSource) {
+		refresh.Action = "fresh"
+		refresh.Reason = "staged binary is newer than Go sources"
+		return refresh, nil
+	}
+	if freshPath := liveCheckFreshRunnableBinaryPath(cliDir, stageCandidate, newestSource); freshPath != "" {
+		refresh.Action = "fresh_fallback"
+		refresh.BinaryPath = freshPath
+		refresh.Reason = "same-name runnable binary is newer than Go sources"
+		return refresh, nil
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(stagePath), "."+filepath.Base(stagePath)+".rebuild-*")
+	if err != nil {
+		refresh.Action = "failed"
+		return refresh, fmt.Errorf("creating staged rebuild temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		refresh.Action = "failed"
+		return refresh, fmt.Errorf("closing staged rebuild temp file: %w", err)
+	}
+	_ = os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if err := buildCLITo(cliDir, tmpPath); err != nil {
+		refresh.Action = "failed"
+		return refresh, err
+	}
+	if err := replaceLiveCheckStageBinary(tmpPath, stagePath); err != nil {
+		refresh.Action = "failed"
+		return refresh, fmt.Errorf("replacing staged binary: %w", err)
+	}
+	refresh.Action = "rebuilt"
+	refresh.BinaryPath = stagePath
+	refresh.Reason = "staged binary was older than Go sources"
+	return refresh, nil
+}
+
+func replaceLiveCheckStageBinary(src, dst string) error {
+	if runtime.GOOS != "windows" {
+		return os.Rename(src, dst)
+	}
+
+	backup, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".old-*")
+	if err != nil {
+		return err
+	}
+	backupPath := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(backupPath)
+		return err
+	}
+	_ = os.Remove(backupPath)
+
+	if err := os.Rename(dst, backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(src, dst); err != nil {
+		_ = os.Rename(backupPath, dst)
+		return err
+	}
+	_ = os.Remove(backupPath)
+	return nil
+}
+
+func liveCheckFreshRunnableBinaryPath(cliDir, name string, newestSource time.Time) string {
+	for _, candidate := range liveCheckBinaryNames(cliDir, name) {
+		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, runtime.GOOS) {
+			info, err := os.Stat(path)
+			if err != nil || !isLiveCheckExecutableForGOOS(path, info.Mode(), runtime.GOOS) {
+				continue
+			}
+			if !info.ModTime().Before(newestSource) {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+func liveCheckExistingStageBinaryPath(cliDir, name string) (string, string) {
+	stagedDir := filepath.Join(cliDir, "build", "stage", "bin")
+	for _, candidate := range liveCheckBinaryNames(cliDir, name) {
+		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, runtime.GOOS) {
+			cleanPath := filepath.Clean(path)
+			if filepath.Dir(cleanPath) != filepath.Clean(stagedDir) {
+				continue
+			}
+			if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(cleanPath), ".exe") {
+				continue
+			}
+			if _, err := os.Stat(cleanPath); err == nil {
+				return cleanPath, candidate
+			}
+		}
+	}
+	return "", ""
+}
+
+func newestLiveCheckSourceModTime(cliDir, cmdDir string) (time.Time, bool, error) {
+	var newest time.Time
+	found := false
+	for _, root := range []string{cmdDir, filepath.Join(cliDir, "internal")} {
+		if _, err := os.Stat(root); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return time.Time{}, false, err
+		}
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !found || info.ModTime().After(newest) {
+				newest = info.ModTime()
+				found = true
+			}
+			return nil
+		})
+		if err != nil {
+			return time.Time{}, false, err
+		}
+	}
+	return newest, found, nil
 }
 
 // resolveBinaryPath returns the absolute path to the CLI binary. When name

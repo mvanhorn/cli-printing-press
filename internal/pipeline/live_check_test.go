@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,6 +38,26 @@ func writeTestResearchJSON(t *testing.T, cliDir string, features []NovelFeature)
 	body, err := json.Marshal(data)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "research.json"), body, 0o644))
+}
+
+func writeLiveCheckGoCLI(t *testing.T, cliDir, binaryName, output string) string {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte("module example.com/live-check-test\n\ngo 1.23\n"), 0o644))
+	cmdDir := filepath.Join(cliDir, "cmd", binaryName)
+	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	mainPath := filepath.Join(cmdDir, "main.go")
+	mainSource := fmt.Sprintf(`package main
+
+import (
+	"fmt"
+)
+
+func main() {
+	fmt.Println(%q)
+}
+`, output)
+	require.NoError(t, os.WriteFile(mainPath, []byte(mainSource), 0o644))
+	return mainPath
 }
 
 // TestLiveCheck_UnableWhenNoResearch verifies the check gracefully reports
@@ -667,6 +688,193 @@ func TestLiveCheck_FindsBinaryInBuildStageBin(t *testing.T) {
 	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
 	require.Equal(t, 1, result.Checked())
 	assert.Equal(t, 1, result.Passed, "expected binary at build/stage/bin/ to be found and run")
+}
+
+func TestLiveCheck_RebuildsStaleStageBinaryBeforeSampling(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "sample-pp-cli"
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stub := filepath.Join(stagedBinDir, binaryName)
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho 'unknown command \"foo\"' >&2\nexit 2\n"), 0o755))
+	oldTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(stub, oldTime, oldTime))
+
+	writeLiveCheckGoCLI(t, dir, binaryName, `{"data":[{"source":"rebuilt"}]}`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Foo", Command: "foo", Example: binaryName + " foo --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: binaryName, Timeout: 5 * time.Second})
+	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+	require.Contains(t, result.Features[0].OutputSample, "rebuilt")
+	require.NotNil(t, result.BinaryRefresh)
+	require.Equal(t, "rebuilt", result.BinaryRefresh.Action)
+}
+
+func TestLiveCheck_SkipsStageRebuildWhenBinaryIsFresh(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "sample-pp-cli"
+	mainPath := writeLiveCheckGoCLI(t, dir, binaryName, `{"data":[{"source":"rebuilt"}]}`)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(mainPath, oldTime, oldTime))
+
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stub := filepath.Join(stagedBinDir, binaryName)
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho '{\"data\":[{\"source\":\"fresh-stage\"}]}'\n"), 0o755))
+	require.NoError(t, os.Chtimes(stub, time.Now(), time.Now()))
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Foo", Command: "foo", Example: binaryName + " foo --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: binaryName, Timeout: 5 * time.Second})
+	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+	require.Contains(t, result.Features[0].OutputSample, "fresh-stage")
+	require.NotContains(t, result.Features[0].OutputSample, "rebuilt")
+	require.NotNil(t, result.BinaryRefresh)
+	require.Equal(t, "fresh", result.BinaryRefresh.Action)
+}
+
+func TestLiveCheck_SkipsStageRebuildWhenFreshFallbackBinaryExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "sample-pp-cli"
+	mainPath := writeLiveCheckGoCLI(t, dir, binaryName, `{"data":[{"source":"rebuilt"}]}`)
+	sourceTime := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, os.Chtimes(mainPath, sourceTime, sourceTime))
+
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stub := filepath.Join(stagedBinDir, binaryName)
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho 'unknown command \"foo\"' >&2\nexit 2\n"), 0o755))
+	oldTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(stub, oldTime, oldTime))
+	writeStubBinary(t, dir, binaryName, `echo '{"data":[{"source":"fresh-root"}]}'`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Foo", Command: "foo", Example: binaryName + " foo --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: binaryName, Timeout: 5 * time.Second})
+	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+	require.Contains(t, result.Features[0].OutputSample, "fresh-root")
+	require.NotContains(t, result.Features[0].OutputSample, "rebuilt")
+	require.NotNil(t, result.BinaryRefresh)
+	require.Equal(t, "fresh_fallback", result.BinaryRefresh.Action)
+}
+
+func TestLiveCheck_RebuildsPreferredStageBinaryDespiteFreshLowerPriorityFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := filepath.Join(t.TempDir(), "sample")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	sourceName := "sample-pp-cli"
+	mainPath := writeLiveCheckGoCLI(t, dir, sourceName, `{"data":[{"source":"rebuilt"}]}`)
+	sourceTime := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, os.Chtimes(mainPath, sourceTime, sourceTime))
+
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stub := filepath.Join(stagedBinDir, sourceName)
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho 'unknown command \"foo\"' >&2\nexit 2\n"), 0o755))
+	oldTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(stub, oldTime, oldTime))
+	writeStubBinary(t, dir, "sample", `echo '{"data":[{"source":"fresh-root"}]}'`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Foo", Command: "foo", Example: sourceName + " foo --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, Timeout: 5 * time.Second})
+	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+	require.Contains(t, result.Features[0].OutputSample, "rebuilt")
+	require.NotContains(t, result.Features[0].OutputSample, "fresh-root")
+	require.NotNil(t, result.BinaryRefresh)
+	require.Equal(t, "rebuilt", result.BinaryRefresh.Action)
+}
+
+func TestLiveCheck_RebuildsStageBinaryWhenInternalSourceIsNewer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "sample-pp-cli"
+	mainPath := writeLiveCheckGoCLI(t, dir, binaryName, `{"data":[{"source":"rebuilt"}]}`)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(mainPath, oldTime, oldTime))
+
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stub := filepath.Join(stagedBinDir, binaryName)
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho 'unknown command \"foo\"' >&2\nexit 2\n"), 0o755))
+	stageTime := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, os.Chtimes(stub, stageTime, stageTime))
+
+	internalPath := filepath.Join(dir, "internal", "cli", "foo.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(internalPath), 0o755))
+	require.NoError(t, os.WriteFile(internalPath, []byte("package cli\n"), 0o644))
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Foo", Command: "foo", Example: binaryName + " foo --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: binaryName, Timeout: 5 * time.Second})
+	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+	require.Contains(t, result.Features[0].OutputSample, "rebuilt")
+	require.NotNil(t, result.BinaryRefresh)
+	require.Equal(t, "rebuilt", result.BinaryRefresh.Action)
+}
+
+func TestLiveCheck_BinaryRefreshReasonIncludesSourceWalkError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permission behavior differs on Windows")
+	}
+
+	dir := filepath.Join(t.TempDir(), "sample-pp-cli")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	binaryName := "sample-pp-cli"
+	writeLiveCheckGoCLI(t, dir, binaryName, `{"data":[{"source":"rebuilt"}]}`)
+
+	blockedDir := filepath.Join(dir, "cmd", binaryName, "blocked")
+	require.NoError(t, os.MkdirAll(blockedDir, 0o755))
+	require.NoError(t, os.Chmod(blockedDir, 0))
+	t.Cleanup(func() {
+		_ = os.Chmod(blockedDir, 0o755)
+	})
+
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stub := filepath.Join(stagedBinDir, binaryName)
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho '{\"data\":[{\"source\":\"stale\"}]}'\n"), 0o755))
+	oldTime := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(stub, oldTime, oldTime))
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Foo", Command: "foo", Example: binaryName + " foo --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: binaryName, Timeout: 5 * time.Second})
+	require.True(t, result.Unable)
+	require.NotNil(t, result.BinaryRefresh)
+	require.Equal(t, "failed", result.BinaryRefresh.Action)
+	require.NotEmpty(t, result.BinaryRefresh.Reason)
+	require.Contains(t, result.Reason, result.BinaryRefresh.Reason)
 }
 
 func TestLiveCheckBinaryCandidatesIncludeHostExecutableName(t *testing.T) {
