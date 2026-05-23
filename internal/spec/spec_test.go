@@ -2870,6 +2870,46 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	require.ErrorContains(t, invalid.Validate(), "http_transport must be one of")
 }
 
+func TestRateClassValidationAndSyncConcurrencyDefaults(t *testing.T) {
+	t.Parallel()
+
+	base := APISpec{
+		Name:    "demo",
+		BaseURL: "http://x",
+		Auth:    AuthConfig{Type: "none"},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	cases := []struct {
+		name      string
+		rateClass string
+		want      int
+	}{
+		{name: "absent", want: 4},
+		{name: "per-second", rateClass: RateClassPerSecond, want: 4},
+		{name: "unlimited", rateClass: RateClassUnlimited, want: 4},
+		{name: "daily", rateClass: RateClassDaily, want: 1},
+		{name: "monthly", rateClass: RateClassMonthly, want: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := base
+			s.RateClass = tc.rateClass
+			require.NoError(t, s.Validate())
+			assert.Equal(t, tc.want, s.SyncDefaultConcurrency())
+		})
+	}
+
+	invalid := base
+	invalid.RateClass = "weekly"
+	require.ErrorContains(t, invalid.Validate(), "rate_class must be one of")
+}
+
 func TestUsesBrowserLikeUserAgent(t *testing.T) {
 	t.Parallel()
 
