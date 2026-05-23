@@ -733,10 +733,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
 			if jsonRun.exitCode == 0 {
-				if jsonRun.stdoutTruncated {
-					jsonResult.Status = LiveDogfoodStatusFail
-					jsonResult.Reason = liveDogfoodInvalidJSONReason(jsonRun, "invalid JSON")
-				} else if !validLiveDogfoodJSONOutput(jsonRun.stdout) {
+				if jsonRun.stdoutTruncated || !validLiveDogfoodJSONOutput(jsonRun.stdout) {
 					jsonResult.Status = LiveDogfoodStatusFail
 					jsonResult.Reason = liveDogfoodInvalidJSONReason(jsonRun, "invalid JSON")
 				} else {

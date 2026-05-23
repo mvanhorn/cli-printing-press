@@ -265,9 +265,10 @@ func TestRunLiveDogfoodProcessPreservesLargeJSONUnderCap(t *testing.T) {
 
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "large-json")
+	payloadBytes := liveDogfoodMaxOutputBytes / 5
 	script := `#!/bin/sh
 printf '{"data":"'
-head -c 2097152 /dev/zero | tr '\0' 'x'
+head -c ` + fmt.Sprint(payloadBytes) + ` /dev/zero | tr '\0' 'x'
 printf '"}'
 `
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o700))
