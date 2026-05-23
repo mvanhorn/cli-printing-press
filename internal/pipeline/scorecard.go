@@ -1386,6 +1386,14 @@ func scoreWorkflows(dir string) int {
 	// also prevents dead-code removal from dropping the score: a file whose
 	// constructor isn't registered isn't counted in the first place.
 	registeredFiles := registeredCommandFiles(cliDir)
+	fileContent := map[string]string{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		fileContent[e.Name()] = readFileContent(filepath.Join(cliDir, e.Name()))
+	}
+	storeHelpers := storeHelperNames(fileContent)
 
 	// Some prefixes overlap with insightPrefixes intentionally — per Steinberger,
 	// analytics/insights ARE compound commands (the visionary research plan lists
@@ -1428,10 +1436,10 @@ func scoreWorkflows(dir string) int {
 			continue
 		}
 
-		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		content := fileContent[e.Name()]
 
 		// A command that uses the local data layer is a workflow command.
-		if hasStoreSignal(content) {
+		if hasStoreSignal(content) || callsStoreHelper(content, storeHelpers) {
 			compoundCommands++
 			continue
 		}

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2383,6 +2384,107 @@ func runAvailability() {
 `)
 
 		assert.GreaterOrEqual(t, scoreWorkflows(dir), 4) // 2 compound → 4
+	})
+
+	t.Run("counts commands that call package-local store helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func openLocalStore() (*store.Store, error) {
+	return store.Open("data.db")
+}
+
+func ensureLocalStore() error {
+	db, err := openLocalStore()
+	if err != nil {
+		return err
+	}
+	_ = db
+	return nil
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+		newReport4Cmd(nil),
+		newReport5Cmd(nil),
+		newReport6Cmd(nil),
+		newReport7Cmd(nil),
+		newLookupCmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 7; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d() error {
+	return ensureLocalStore()
+}
+`, i, i))
+		}
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+
+		assert.Equal(t, 10, scoreWorkflows(dir))
+	})
+
+	t.Run("counts direct store-helper calls and excludes non-store commands", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func openLocalStore() (*store.Store, error) {
+	return store.Open("data.db")
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+		newReport4Cmd(nil),
+		newLookupCmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 4; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d() error {
+	db, err := openLocalStore()
+	if err != nil {
+		return err
+	}
+	_ = db
+	return nil
+}
+`, i, i))
+		}
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+
+		assert.Equal(t, 6, scoreWorkflows(dir))
 	})
 
 	t.Run("counts multi-API-call files", func(t *testing.T) {

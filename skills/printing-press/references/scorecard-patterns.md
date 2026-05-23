@@ -21,6 +21,8 @@ Run the scorecard: `cli-printing-press scorecard --dir ./<api>-cli`
 | Agent Native | `internal/cli/root.go` + `helpers.go` | `json`(+2) `select`(+2) `dry-run`/`dryRun`/`dry_run`(+2) `non-interactive`/`nonInteractive`(+1) `stdin`(+1) `"yes"`(+1) `409`/`already exists`(+1) `human-friendly`/`humanFriendly`(+1) | 10 |
 | Local Cache | `internal/client/client.go` + `internal/cache/cache.go` | `cacheDir`/`readCache`/`writeCache`(+5) `no-cache`/`NoCache`(+2) `sqlite`/`bolt`/`badger` in cache.go or store.go(+3) | 10 |
 | Breadth | `internal/cli/*.go` file count | Excludes: helpers.go, root.go, doctor.go, auth.go. Thresholds: <5=0, 5-10=3, 11-20=5, 21-40=7, 41-60=9, 60+=10 | 10 |
+| Workflows | `internal/cli/*.go` registered commands | Workflow filename prefixes, direct store use, package-local store helpers, or 2+ client API calls | 10 |
+| Insight | `internal/cli/*.go` registered commands | Insight filename prefixes, store use plus aggregation patterns (`COUNT(`, `SUM(`, `GROUP BY`, rates), or manifest novel-feature hints | 10 |
 
 ## Key Gotchas
 
@@ -29,3 +31,4 @@ Run the scorecard: `cli-printing-press scorecard --dir ./<api>-cli`
 - Auth gives +2 just for `auth.go` existing as a file, regardless of content
 - Local Cache gives +3 for `sqlite`/`bolt`/`badger` strings in `internal/cache/cache.go` or `internal/store/store.go`
 - Breadth counts files, not commands - one file per endpoint beats one file per resource
+- Workflow scoring follows registered Cobra commands and recognizes package-local helpers that reach the store

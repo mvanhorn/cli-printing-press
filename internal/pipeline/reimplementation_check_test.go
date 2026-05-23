@@ -123,7 +123,7 @@ func newBottleneckCmd(flags *rootFlags) *cobra.Command {
 
 func TestCheckReimplementation_StoreHelperHop_Exempted(t *testing.T) {
 	files := map[string]string{
-		"types.go": `package cli
+		"helpers.go": `package cli
 
 import "example.com/mod/internal/store"
 
