@@ -159,6 +159,9 @@ type Generator struct {
 	funcs     template.FuncMap
 	templates map[string]*template.Template
 
+	htmlSyncStubComputed bool
+	htmlSyncStub         bool
+
 	mcpParamDescriptions *mcpdesc.ParamDescriptionCompactor
 }
 
@@ -626,6 +629,7 @@ type HelperFlags struct {
 	HasPathParams      bool // spec has path parameters → emit replacePathParam
 	HasMultiPositional bool // spec has endpoints with 2+ positional params → emit usageErr
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
+	HasSyncHelpers     bool // generated sync implementation calls sync-only helpers
 	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
 	HasEmbeddedPaged   bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
 	HasResponseUnwrap  bool // at least one generated command can call extractResponseData
@@ -769,6 +773,7 @@ type readmeTemplateData struct {
 	HasWriteCommands   bool
 	HasDelete          bool
 	HasAuth            bool
+	HasAutoRefresh     bool
 	FreshnessCommands  []string
 	TrafficAnalysis    *trafficAnalysisTemplateData
 	// PromotedResourceNames maps a resource name to true when the generator
@@ -827,6 +832,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
 		HasDelete:             computeHelperFlags(g.Spec).HasDelete,
 		HasAuth:               hasAuth(g.Spec.Auth),
+		HasAutoRefresh:        g.hasAutoRefresh(),
 		FreshnessCommands:     g.freshnessCommandPaths(),
 		TrafficAnalysis:       g.trafficAnalysisData(),
 		PromotedResourceNames: g.PromotedResourceNames,
@@ -917,7 +923,7 @@ func (g *Generator) skillDescription() string {
 // loose. Only the slice rendered into docs needs trimming, so users and
 // agents don't see phantom subcommands they can't actually invoke.
 func (g *Generator) freshnessCommandPaths() []string {
-	if !g.Spec.Cache.Enabled || g.profile == nil {
+	if !g.Spec.Cache.Enabled || g.shouldEmitHTMLSyncStub() || g.profile == nil {
 		return nil
 	}
 	seen := map[string]struct{}{}
@@ -1496,15 +1502,18 @@ func (g *Generator) prepareOutput() error {
 	// templates can check HasStore for data source resolution.
 	if g.VisionSet.IsZero() {
 		g.profile = profiler.Profile(g.Spec)
+		g.resetHTMLSyncStubCache()
 		plan := g.profile.ToVisionaryPlan(g.Spec.Name)
 		g.VisionSet = SelectVisionTemplates(plan)
 	}
 	if g.profile == nil {
 		g.profile = profiler.Profile(g.Spec)
+		g.resetHTMLSyncStubCache()
 	}
 	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet)
 	if g.renameActiveFrameworkResourceCollisions() {
 		g.profile = profiler.Profile(g.Spec)
+		g.resetHTMLSyncStubCache()
 	}
 	if err := g.validateFreshnessCommandCoverage(); err != nil {
 		return err
@@ -1581,6 +1590,7 @@ func (g *Generator) renderSingleFiles() error {
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
 			hFlags.HasDataLayer = g.VisionSet.Store
+			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
 			hFlags.HasResponseUnwrap = g.VisionSet.Store && promotedCommandsCanUnwrapResponse(g.PromotedCommands)
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
@@ -1637,7 +1647,7 @@ func (g *Generator) renderOptionalSupportFiles() error {
 	// or share and the CLI has a local store. Without a store there is
 	// nothing to check freshness against; without cache or share opt-in
 	// there is no caller that consumes the Decision.
-	if g.VisionSet.Store && (g.Spec.Cache.Enabled || g.Spec.Share.Enabled) {
+	if g.VisionSet.Store && ((g.Spec.Cache.Enabled && g.hasGeneratedSyncImplementation()) || g.Spec.Share.Enabled) {
 		if err := g.renderTemplate("cliutil_freshness.go.tmpl", filepath.Join("internal", "cliutil", "freshness.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering cliutil freshness: %w", err)
 		}
@@ -1663,7 +1673,7 @@ func (g *Generator) renderOptionalSupportFiles() error {
 	// and the CLI has both a store and a sync path to call. Without sync
 	// there is nothing to refresh with; without cache.enabled there is no
 	// read-path hook that would call autoRefreshIfStale.
-	if g.VisionSet.Store && g.VisionSet.Sync && g.Spec.Cache.Enabled {
+	if g.hasAutoRefresh() {
 		autoRefreshData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
@@ -2515,6 +2525,7 @@ type visionRenderData struct {
 	SearchBodyFields             []profiler.SearchBodyField
 	GraphQLFieldPaths            map[string]string
 	AgentMoneyWorkflow           AgentMoneyWorkflow
+	HTMLSyncStub                 bool
 }
 
 type resourceIDFieldOverrideEntry struct {
@@ -2620,7 +2631,106 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SearchBodyFields:             g.profile.SearchBodyFields,
 		GraphQLFieldPaths:            gqlFieldPaths,
 		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
+		HTMLSyncStub:                 g.shouldEmitHTMLSyncStub(),
 	}
+}
+
+const htmlSyncStubThreshold = 0.7
+
+func (g *Generator) shouldEmitHTMLSyncStub() bool {
+	if g == nil || isGraphQLSpec(g.Spec) {
+		return false
+	}
+	if g.htmlSyncStubComputed {
+		return g.htmlSyncStub
+	}
+	total, html := g.countHTMLPageModeSyncResources()
+	if total > 0 && html != total {
+		g.htmlSyncStubComputed = true
+		g.htmlSyncStub = false
+		return g.htmlSyncStub
+	}
+	if total == 0 {
+		total, html = countHTMLPageModeEndpoints(g.Spec)
+	}
+	if total == 0 {
+		g.htmlSyncStubComputed = true
+		g.htmlSyncStub = false
+		return g.htmlSyncStub
+	}
+	g.htmlSyncStubComputed = true
+	g.htmlSyncStub = float64(html)/float64(total) >= htmlSyncStubThreshold
+	return g.htmlSyncStub
+}
+
+func (g *Generator) hasGeneratedSyncImplementation() bool {
+	return g != nil && g.VisionSet.Sync && !g.shouldEmitHTMLSyncStub()
+}
+
+func (g *Generator) hasAutoRefresh() bool {
+	return g != nil && g.VisionSet.Store && g.hasGeneratedSyncImplementation() && g.Spec.Cache.Enabled
+}
+
+func (g *Generator) resetHTMLSyncStubCache() {
+	if g == nil {
+		return
+	}
+	g.htmlSyncStubComputed = false
+	g.htmlSyncStub = false
+}
+
+func (g *Generator) countHTMLPageModeSyncResources() (total int, html int) {
+	if g == nil || g.profile == nil {
+		return 0, 0
+	}
+	for _, resource := range g.profile.SyncableResources {
+		total++
+		if syncableResourceUsesHTMLPageMode(resource) {
+			html++
+		}
+	}
+	for _, resource := range g.profile.DependentSyncResources {
+		total++
+		if dependentResourceUsesHTMLPageMode(resource) {
+			html++
+		}
+	}
+	return total, html
+}
+
+func syncableResourceUsesHTMLPageMode(resource profiler.SyncableResource) bool {
+	return resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage
+}
+
+func dependentResourceUsesHTMLPageMode(resource profiler.DependentResource) bool {
+	return resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage
+}
+
+func countHTMLPageModeEndpoints(api *spec.APISpec) (total int, html int) {
+	if api == nil {
+		return 0, 0
+	}
+	for _, resource := range api.Resources {
+		resourceTotal, resourceHTML := countResourceHTMLPageModeEndpoints(resource)
+		total += resourceTotal
+		html += resourceHTML
+	}
+	return total, html
+}
+
+func countResourceHTMLPageModeEndpoints(resource spec.Resource) (total int, html int) {
+	for _, endpoint := range resource.Endpoints {
+		total++
+		if endpoint.UsesHTMLResponse() && endpoint.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+			html++
+		}
+	}
+	for _, sub := range resource.SubResources {
+		subTotal, subHTML := countResourceHTMLPageModeEndpoints(sub)
+		total += subTotal
+		html += subHTML
+	}
+	return total, html
 }
 
 func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
@@ -2647,6 +2757,8 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 		actualTmpl := tmplName
 		if tmplName == "sync.go.tmpl" && gqlSpec {
 			actualTmpl = "graphql_sync.go.tmpl"
+		} else if tmplName == "sync.go.tmpl" && visionData.HTMLSyncStub {
+			actualTmpl = "sync_stub.go.tmpl"
 		}
 		var tmplData any = g.Spec
 		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" {
@@ -2683,7 +2795,7 @@ func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, 
 			SearchableFields:   g.profile.SearchableFields,
 			Pagination:         g.profile.Pagination,
 			AgentMoneyWorkflow: visionData.AgentMoneyWorkflow,
-			SyncEnabled:        g.VisionSet.Sync,
+			SyncEnabled:        g.hasGeneratedSyncImplementation(),
 		}
 		if err := g.renderTemplate("channel_workflow.go.tmpl", filepath.Join("internal", "cli", "channel_workflow.go"), workflowData); err != nil {
 			return nil, fmt.Errorf("rendering workflow: %w", err)
@@ -3092,6 +3204,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		AsyncJobCount         int
 		HasAuthCommand        bool
 		HasDelete             bool
+		HasAutoRefresh        bool
 		CompactDescription    string
 	}{
 		APISpec:               g.Spec,
@@ -3108,6 +3221,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		AsyncJobCount:         len(g.AsyncJobs),
 		HasAuthCommand:        hasAuthCommand,
 		HasDelete:             helperFlags.HasDelete,
+		HasAutoRefresh:        g.hasAutoRefresh(),
 		CompactDescription:    g.compactDescription(),
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {

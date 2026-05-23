@@ -393,7 +393,7 @@ This CLI is designed for AI agent consumption:
 - **Agent-safe by default** - no colors or formatting unless `--human-friendly` is set
 
 Exit codes: `0` success, `2` usage error, `3` not found{{if .HasAuth}}, `4` auth error{{end}}, `5` API error, `7` rate limited, `10` config error.
-{{- if and .HasDataLayer .Cache.Enabled}}
+{{- if and .HasDataLayer .HasAutoRefresh}}
 
 ## Freshness
 
