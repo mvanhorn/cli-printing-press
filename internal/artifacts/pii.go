@@ -832,7 +832,7 @@ func runPIIAudit(dir string, persist bool) (PIIAuditResult, error) {
 	if persist {
 		ledger := &PIILedger{
 			Timestamp: time.Now().UTC(),
-			CLIDir:    dir,
+			CLIDir:    RedactCLIDirRoot(dir),
 			Findings:  findings,
 		}
 		if previous != nil {
