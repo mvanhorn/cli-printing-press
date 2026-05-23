@@ -107,17 +107,24 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 			continue
 		}
 		useEquals := hasValue
-		if !hasValue && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
-			value = tokens[i+1]
-			hasValue = true
-			i++
-		}
 		if recipeFlagIsStatic(name) {
 			intent.Command = append(intent.Command, "--"+name)
+			if !hasValue && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
+				value = tokens[i+1]
+				hasValue = true
+				i++
+			}
 			if hasValue && value != "" {
 				intent.Command = append(intent.Command, value)
 			}
 			continue
+		}
+		if !hasValue && i+1 < len(tokens) && isRecipePlaceholder(tokens[i+1]) {
+			value = tokens[i+1]
+			hasValue = true
+			i++
+		} else if !hasValue && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
+			return RecipeIntent{}, false
 		}
 
 		param := RecipeIntentParam{
@@ -210,7 +217,20 @@ func containsRecipeShellOperator(tokens []string) bool {
 		case "|", "||", "&&", ";", ">", ">>", "<", "<<":
 			return true
 		}
-		if strings.Contains(token, "$(") || strings.Contains(token, "`") {
+		if strings.Contains(token, "$(") || strings.Contains(token, "`") || containsRecipeShellVariable(token) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRecipeShellVariable(token string) bool {
+	for i := 0; i < len(token)-1; i++ {
+		if token[i] != '$' {
+			continue
+		}
+		next := token[i+1]
+		if next == '{' || next == '_' || (next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z') {
 			return true
 		}
 	}

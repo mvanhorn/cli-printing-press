@@ -79,6 +79,8 @@ func TestRecipeIntentHandlerOverridesAndRejectsArgs(t *testing.T) {
 		{{printf "%q" .InputName}}: false,
 {{- else if .Required}}
 		{{printf "%q" .InputName}}: "required-value",
+{{- else if eq (recipeParamTypeString .Type) "number"}}
+		{{printf "%q" .InputName}}: float64(42),
 {{- else}}
 		{{printf "%q" .InputName}}: "override-value",
 {{- end}}
@@ -98,7 +100,7 @@ func TestRecipeIntentHandlerOverridesAndRejectsArgs(t *testing.T) {
 		t.Fatalf("boolean false override should suppress {{printf "--%s" .FlagName}}: %q", got)
 	}
 {{- else}}
-	if !strings.Contains(got, {{printf "%q" (printf "--%s" .FlagName)}}) || !strings.Contains(got, {{if .Required}}"required-value"{{else}}"override-value"{{end}}) {
+	if !strings.Contains(got, {{printf "%q" (printf "--%s" .FlagName)}}) || !strings.Contains(got, {{if .Required}}"required-value"{{else if eq (recipeParamTypeString .Type) "number"}}"42"{{else}}"override-value"{{end}}) {
 		t.Fatalf("string override for {{printf "--%s" .FlagName}} missing from %q", got)
 	}
 {{- end}}

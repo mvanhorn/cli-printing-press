@@ -21,8 +21,13 @@ func TestRecipeNarrativeEmitsMCPIntentTools(t *testing.T) {
 		Recipes: []Recipe{
 			{
 				Title:       "Batch with quota guard",
-				Command:     "intentrecipes-pp-cli coin batch --file fixtures/certs.txt --dry-run --json",
+				Command:     "intentrecipes-pp-cli coin batch --file=fixtures/certs.txt --dry-run --json",
 				Explanation: "Forecast a batch without spending quota.",
+			},
+			{
+				Title:       "Rank with numeric limit",
+				Command:     "intentrecipes-pp-cli coin rank --limit=5 --json",
+				Explanation: "Rank recent coins with a bounded result count.",
 			},
 			{
 				Title:       "Plain lookup",
@@ -46,6 +51,8 @@ func TestRecipeNarrativeEmitsMCPIntentTools(t *testing.T) {
 	require.Contains(t, intents, `mcplib.NewTool("batch_with_quota_guard"`)
 	require.Contains(t, intents, `mcplib.WithString("file"`)
 	require.Contains(t, intents, `mcplib.WithBoolean("dry_run"`)
+	require.Contains(t, intents, `mcplib.NewTool("rank_with_numeric_limit"`)
+	require.Contains(t, intents, `mcplib.WithNumber("limit"`)
 	require.Contains(t, intents, `cobratree.RunCLICommand(ctx, recipeCLIPath, args)`)
 	require.NotContains(t, intents, "CombinedOutput")
 	require.NotContains(t, intents, `mcplib.NewTool("plain_lookup"`)
@@ -67,7 +74,7 @@ func TestRecipeIntentDerivationSkipsTrivialAndUnsafeRecipes(t *testing.T) {
 
 	intents := buildRecipeIntents("demo", &ReadmeNarrative{
 		Recipes: []Recipe{
-			{Title: "Verify and extract", Command: "demo-pp-cli cert verify --cert <cert> --select cert,grade --include-details=true --dry-run --dry_run --json"},
+			{Title: "Verify and extract", Command: "demo-pp-cli cert verify --cert <cert> --select=cert,grade --include-details=true --dry-run --dry_run --json"},
 			{Title: "Just list", Command: "demo-pp-cli cert list"},
 			{Title: "Pipeline", Command: "demo-pp-cli cert list --json | jq ."},
 		},
@@ -84,6 +91,7 @@ func TestRecipeIntentDerivationSkipsTrivialAndUnsafeRecipes(t *testing.T) {
 	require.Equal(t, "select", intents[0].Params[1].FlagName)
 	require.Equal(t, "select", intents[0].Params[1].InputName)
 	require.Equal(t, "cert,grade", intents[0].Params[1].Default)
+	require.True(t, intents[0].Params[1].UseEquals)
 	require.Equal(t, "include-details", intents[0].Params[2].FlagName)
 	require.Equal(t, "include_details", intents[0].Params[2].InputName)
 	require.Equal(t, recipeIntentParamString, intents[0].Params[2].Type)
@@ -97,13 +105,38 @@ func TestRecipeIntentDerivationSkipsTrivialAndUnsafeRecipes(t *testing.T) {
 	require.Equal(t, "DryRun2", intents[0].Params[4].GoName)
 }
 
+func TestRecipeIntentDerivationSkipsAmbiguousSeparatedFlagValue(t *testing.T) {
+	t.Parallel()
+
+	intents := buildRecipeIntents("demo", &ReadmeNarrative{
+		Recipes: []Recipe{
+			{Title: "Ambiguous bool and positional", Command: "demo-pp-cli generate --force artifacts/ --json"},
+		},
+	}, nil)
+
+	require.Empty(t, intents)
+}
+
+func TestRecipeIntentDerivationSkipsShellVariables(t *testing.T) {
+	t.Parallel()
+
+	intents := buildRecipeIntents("demo", &ReadmeNarrative{
+		Recipes: []Recipe{
+			{Title: "Shell env config", Command: "demo-pp-cli run --config=${CONFIG_FILE:-default.json} --json"},
+			{Title: "Bare env token", Command: "demo-pp-cli run --config $CONFIG_FILE --json"},
+		},
+	}, nil)
+
+	require.Empty(t, intents)
+}
+
 func TestRecipeIntentNameAvoidsSpecIntentCollisions(t *testing.T) {
 	t.Parallel()
 
 	intents := buildRecipeIntents("demo", &ReadmeNarrative{
 		Recipes: []Recipe{
-			{Title: "Batch report", Command: "demo-pp-cli batch run --file one.json --json"},
-			{Title: "Batch report", Command: "demo-pp-cli batch run --file two.json --json"},
+			{Title: "Batch report", Command: "demo-pp-cli batch run --file=one.json --json"},
+			{Title: "Batch report", Command: "demo-pp-cli batch run --file=two.json --json"},
 		},
 	}, map[string]bool{"batch_report": true})
 
@@ -128,10 +161,10 @@ func TestRecipeIntentNamesReserveGeneratedMCPSurface(t *testing.T) {
 	})
 	intents := buildRecipeIntents("demo", &ReadmeNarrative{
 		Recipes: []Recipe{
-			{Title: "Context", Command: "demo-pp-cli cert verify --cert one.pem --json"},
-			{Title: "Items list", Command: "demo-pp-cli cert verify --cert two.pem --json"},
-			{Title: "Search", Command: "demo-pp-cli cert verify --cert three.pem --json"},
-			{Title: "Batch report", Command: "demo-pp-cli cert verify --cert four.pem --json"},
+			{Title: "Context", Command: "demo-pp-cli cert verify --cert=one.pem --json"},
+			{Title: "Items list", Command: "demo-pp-cli cert verify --cert=two.pem --json"},
+			{Title: "Search", Command: "demo-pp-cli cert verify --cert=three.pem --json"},
+			{Title: "Batch report", Command: "demo-pp-cli cert verify --cert=four.pem --json"},
 		},
 	}, reserved)
 
