@@ -4747,10 +4747,11 @@ func exampleValue(p spec.Param) string {
 	if strings.Contains(nameLower, "name") || strings.Contains(nameLower, "title") {
 		return "example-resource"
 	}
-	if strings.Contains(nameLower, "date") || p.Format == "date" {
+	isNumericType := p.Type == "integer" || p.Type == "int" || p.Type == "number" || p.Type == "float"
+	if p.Format == "date" || (!isNumericType && strings.Contains(nameLower, "date")) {
 		return "2026-01-15"
 	}
-	if strings.Contains(nameLower, "time") || p.Format == "date-time" {
+	if p.Format == "date-time" || (!isNumericType && strings.Contains(nameLower, "time")) {
 		return "2026-01-15T09:00:00Z"
 	}
 	if strings.Contains(nameLower, "token") || strings.Contains(nameLower, "key") {
