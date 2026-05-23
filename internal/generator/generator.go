@@ -248,6 +248,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authCommandShort":       authCommandShort,
 		"authHarvestedEnvHint":   authHarvestedEnvHint,
 		"basicAuthEnvVars":       basicAuthEnvVars,
+		"hasNonCookieAuth":       hasNonCookieAuth,
+		"envVarsForBus":          envVarsForBus,
 		"authAgentEnvVars":       authAgentEnvVars,
 		"hasAuthEnvVarKind":      hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":    isRequestAuthEnvVar,
@@ -1053,6 +1055,38 @@ func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 		return envVars
 	}
 	return envVars[:2]
+}
+
+// hasNonCookieAuth reports whether the CLI has at least one env-var
+// based credential (bearer token, API key, OAuth client credentials,
+// etc.). The agentcookie secrets bus is gated on this so cookie-only
+// CLIs (instacart, airbnb, ebay, pagliacci, table-reservation-goat)
+// don't pick up the bus reader or grow an agentcookie dependency.
+func hasNonCookieAuth(auth spec.AuthConfig) bool {
+	if len(auth.EnvVarSpecs) > 0 {
+		return true
+	}
+	return len(auth.EnvVars) > 0
+}
+
+// envVarsForBus returns the unified list of auth env vars the
+// secrets-bus block iterates over. Prefers EnvVarSpecs when present;
+// falls back to synthesizing AuthEnvVar entries from EnvVars with
+// Sensitive=true defaulted, since auth env vars are credentials.
+func envVarsForBus(auth spec.AuthConfig) []spec.AuthEnvVar {
+	if len(auth.EnvVarSpecs) > 0 {
+		return auth.EnvVarSpecs
+	}
+	out := make([]spec.AuthEnvVar, 0, len(auth.EnvVars))
+	for _, name := range auth.EnvVars {
+		out = append(out, spec.AuthEnvVar{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: true,
+		})
+	}
+	return out
 }
 
 func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {

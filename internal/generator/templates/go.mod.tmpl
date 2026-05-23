@@ -13,6 +13,9 @@ require (
 {{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
 	github.com/gorilla/websocket v1.5.3
 {{- end}}
+{{- if hasNonCookieAuth .Auth}}
+	github.com/mvanhorn/agentcookie v0.14.0-beta.1
+{{- end}}
 	github.com/spf13/cobra v1.9.1
 {{- if .HasHTMLExtraction}}
 	golang.org/x/net v0.55.0
