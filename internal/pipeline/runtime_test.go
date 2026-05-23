@@ -62,6 +62,20 @@ func main() {
 	assert.FileExists(t, existingBinary)
 }
 
+func TestFindCLICommandDirResolvesRelativeDirFromCLIRoot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sample-cli")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "sample-cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "cmd", "sample-cli", "main.go"), `package main
+func main() {}
+`)
+
+	t.Chdir(dir)
+
+	cmdDir, err := findCLICommandDir(".")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "cmd", "sample-cli"), cmdDir)
+}
+
 func TestRunFreshnessContractTestPassesGeneratedSurface(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))

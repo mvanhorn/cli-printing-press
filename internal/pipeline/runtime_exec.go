@@ -14,11 +14,11 @@ import (
 )
 
 func buildCLI(dir string) (string, error) {
-	binaryPath, err := filepath.Abs(filepath.Join(dir, filepath.Base(dir)))
+	dir, err := resolveCLIDir(dir)
 	if err != nil {
-		return "", fmt.Errorf("resolving binary path: %w", err)
+		return "", fmt.Errorf("resolving CLI directory: %w", err)
 	}
-	binaryPath = platform.ExecutablePath(binaryPath)
+	binaryPath := platform.ExecutablePath(filepath.Join(dir, filepath.Base(dir)))
 	if err := buildCLITo(dir, binaryPath); err != nil {
 		return "", err
 	}
@@ -43,6 +43,10 @@ func buildCLITo(dir, binaryPath string) error {
 }
 
 func findCLICommandDir(dir string) (string, error) {
+	dir, err := resolveCLIDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving CLI directory: %w", err)
+	}
 	name := filepath.Base(dir)
 	apiName := naming.TrimCLISuffix(name)
 	candidates := []string{
@@ -89,6 +93,10 @@ func findCLICommandDir(dir string) (string, error) {
 	}
 
 	return "", fmt.Errorf("cannot find CLI cmd entry point in %s", dir)
+}
+
+func resolveCLIDir(dir string) (string, error) {
+	return filepath.Abs(dir)
 }
 
 func runCLI(binary string, args []string, env []string, timeout time.Duration) error {
