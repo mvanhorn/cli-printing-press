@@ -3,7 +3,6 @@
 package generator
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,8 +107,7 @@ func TestGenerateSyncConcurrencyDefaultHonorsRateClass(t *testing.T) {
 			syncSrc := string(syncGo)
 
 			wantDefault := apiSpec.SyncDefaultConcurrency()
-			assert.Contains(t, syncSrc, fmt.Sprintf(`cmd.Flags().IntVar(&concurrency, "concurrency", %d, "Number of parallel sync workers")`, wantDefault))
-			assert.Contains(t, syncSrc, fmt.Sprintf("concurrency = %d", wantDefault))
+			assertSyncDefaultConcurrency(t, syncSrc, wantDefault, tc.name)
 		})
 	}
 }
