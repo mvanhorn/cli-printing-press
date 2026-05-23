@@ -78,12 +78,9 @@ func sanitizeCookieValue(value string) string {
 
 // WriteCookieJarFromMap persists a name→value cookie set under the given
 // domain. Called from auth.go after Chrome extraction so subsequent requests
-// carry the user's session.
+// carry the user's session. Merges with any existing rows so server-pushed
+// cookies stored by persistLocked survive an auth login/refresh.
 func WriteCookieJarFromMap(domain string, cookies map[string]string) error {
-	path := cookieJarPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
 	rows := make([]persistedCookie, 0, len(cookies))
 	for name, value := range cookies {
 		rows = append(rows, persistedCookie{
@@ -94,8 +91,36 @@ func WriteCookieJarFromMap(domain string, cookies map[string]string) error {
 			Secure: true,
 		})
 	}
-	data, err := json.MarshalIndent(rows, "", "  ")
+	return mergeAndWriteCookieRows(cookieJarPath(), rows)
+}
+
+// mergeAndWriteCookieRows reads the on-disk cookie file, merges the new rows
+// by the (domain, path, name) identity triple (RFC 6265 §5.3), and writes
+// the union back atomically. Shared by the login flow (filtered required
+// cookies) and the http.CookieJar interface (server Set-Cookie response
+// headers) so neither write path silently clobbers the other.
+func mergeAndWriteCookieRows(path string, rows []persistedCookie) error {
+	existing, _ := os.ReadFile(path)
+	var all []persistedCookie
+	_ = json.Unmarshal(existing, &all)
+	idx := make(map[string]int, len(all))
+	for i, r := range all {
+		idx[r.Domain+"|"+r.Path+"|"+r.Name] = i
+	}
+	for _, r := range rows {
+		key := r.Domain + "|" + r.Path + "|" + r.Name
+		if i, ok := idx[key]; ok {
+			all[i] = r
+			continue
+		}
+		all = append(all, r)
+		idx[key] = len(all) - 1
+	}
+	data, err := json.MarshalIndent(all, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
@@ -148,16 +173,7 @@ func (j *cookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 }
 
 func (j *cookieJar) persistLocked(u *url.URL, cookies []*http.Cookie) {
-	// Read existing rows, merge, write back. The (domain,path,name) triple
-	// is the cookie identity per RFC 6265 §5.3 — a same-named cookie at a
-	// different path is a distinct row, not an update.
-	existing, _ := os.ReadFile(j.path)
-	var rows []persistedCookie
-	_ = json.Unmarshal(existing, &rows)
-	idx := make(map[string]int, len(rows))
-	for i, r := range rows {
-		idx[r.Domain+"|"+r.Path+"|"+r.Name] = i
-	}
+	rows := make([]persistedCookie, 0, len(cookies))
 	for _, c := range cookies {
 		domain := c.Domain
 		if domain == "" {
@@ -167,8 +183,7 @@ func (j *cookieJar) persistLocked(u *url.URL, cookies []*http.Cookie) {
 		if path == "" {
 			path = "/"
 		}
-		key := domain + "|" + path + "|" + c.Name
-		row := persistedCookie{
+		rows = append(rows, persistedCookie{
 			Name:    c.Name,
 			Value:   c.Value,
 			Domain:  domain,
@@ -176,18 +191,7 @@ func (j *cookieJar) persistLocked(u *url.URL, cookies []*http.Cookie) {
 			Expires: c.Expires,
 			Secure:  c.Secure,
 			HTTP:    c.HttpOnly,
-		}
-		if i, ok := idx[key]; ok {
-			rows[i] = row
-		} else {
-			rows = append(rows, row)
-			idx[key] = len(rows) - 1
-		}
+		})
 	}
-	data, err := json.MarshalIndent(rows, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(j.path), 0o700)
-	_ = os.WriteFile(j.path, data, 0o600)
+	_ = mergeAndWriteCookieRows(j.path, rows)
 }

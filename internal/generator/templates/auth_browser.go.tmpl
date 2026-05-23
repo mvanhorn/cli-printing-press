@@ -307,11 +307,18 @@ profile by name when the installed backend supports it.`,
 				return configErr(fmt.Errorf("saving auth: %w", err))
 			}
 {{- if .Auth.HasCookies}}
-			// Persist the cookie map so client.LoadCookieJar() picks it up on
-			// the next client construction; without this the static auth
-			// header reaches the wire but session cookies do not, and
-			// member endpoints silently return the anonymous shape.
-			if err := client.WriteCookieJarFromMap(domain, cookieMap); err != nil {
+			// Persist only the required cookies so client.LoadCookieJar()
+			// carries them on the next invocation. Filtering before write
+			// keeps WAF fingerprints, anti-bot tokens, and other unrelated
+			// cookies out of the Cookie header, which routinely trips
+			// upstream WAFs.
+			jarCookies := make(map[string]string, len(requiredCookies))
+			for _, name := range requiredCookies {
+				if v, ok := cookieMap[name]; ok {
+					jarCookies[name] = v
+				}
+			}
+			if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
 				fmt.Fprintf(w, "warning: persisting cookie jar: %v (auth header still saved)\n", err)
 			}
 {{- end}}
