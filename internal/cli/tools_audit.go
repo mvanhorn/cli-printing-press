@@ -335,13 +335,17 @@ func extractCommandFields(lit *ast.CompositeLit) commandFields {
 	return f
 }
 
+// Must match the generated helper name in
+// internal/generator/templates/cobratree/classify.go.tmpl.
+const parentNoSubcommandRunESentinel = "parentNoSubcommandRunE"
+
 func isParentNoSubcommandRunE(e ast.Expr) bool {
 	call, ok := e.(*ast.CallExpr)
 	if !ok {
 		return false
 	}
 	fn, ok := call.Fun.(*ast.Ident)
-	return ok && fn.Name == "parentNoSubcommandRunE"
+	return ok && fn.Name == parentNoSubcommandRunESentinel
 }
 
 func stringLit(e ast.Expr) string {
