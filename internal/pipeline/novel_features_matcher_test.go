@@ -313,17 +313,20 @@ func rootListSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "list
 `)
 	writeTestFile(t, filepath.Join(cli, "assets.go"), `package cli
 import "github.com/spf13/cobra"
+var assetsListCmd = assetsListSubcmd(nil)
 func newAssetsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "assets"}
 	grabCmd := assetsGrabSubcmd(nil)
 	cmd.AddCommand(grabCmd)
+	cmd.AddCommand(assetsListCmd)
 	return cmd
 }
 func assetsGrabSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "grab"} }
+func assetsListSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "list"} }
 `)
 
 	paths, _ := collectRegisteredCommands(dir)
-	for _, want := range []string{"grab", "list", "assets", "assets grab"} {
+	for _, want := range []string{"grab", "list", "assets", "assets grab", "assets list"} {
 		if !paths[want] {
 			t.Errorf("expected path %q, got paths: %v", want, paths)
 		}

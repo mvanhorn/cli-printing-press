@@ -882,7 +882,11 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			}
 			bodyVars := commandFactoryVars(body)
 			for _, cm := range addChildVarRe.FindAllStringSubmatch(body, -1) {
-				if fn := bodyVars[cm[1]]; fn != "" {
+				fn := bodyVars[cm[1]]
+				if fn == "" {
+					fn = vars[cm[1]]
+				}
+				if fn != "" {
 					entry.children = append(entry.children, fn)
 				}
 			}
