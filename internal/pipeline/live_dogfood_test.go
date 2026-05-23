@@ -300,6 +300,21 @@ printf '"}'
 	assert.Equal(t, "output exceeded capture cap", liveDogfoodInvalidJSONReason(run, "invalid JSON"))
 }
 
+func TestLiveDogfoodResultRedactsOutputSamplePII(t *testing.T) {
+	run := liveDogfoodRun{
+		stdout:   "{\"name\":\"Jane Doe\"}\n",
+		stderr:   "{\"email\":\"jane@example.com\"}",
+		exitCode: 0,
+	}
+
+	result := liveDogfoodResult("widgets list", LiveDogfoodTestHappy, []string{"widgets", "list"}, run)
+
+	require.NotContains(t, result.OutputSample, "Jane Doe")
+	require.NotContains(t, result.OutputSample, "jane@example.com")
+	require.Contains(t, result.OutputSample, `"name":"<redacted>"`)
+	require.Contains(t, result.OutputSample, `"email":"<redacted>"`)
+}
+
 func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
