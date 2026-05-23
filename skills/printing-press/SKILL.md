@@ -3450,7 +3450,15 @@ After `regen-merge` succeeds with no review-required verdicts, the live library 
 2. Guard the promote with an explicit lock-release on failure. Unlike Path A, where a promote-gate failure simply leaves the working dir alone, a Path B failure leaves the lock held on the live library because the gate fires before the swap and before `ReleaseLock`. Mirror the lock-release guards from the regen-merge error branches above.
 
 ```bash
-cp "$CLI_WORK_DIR/.printing-press-pii-polish.json" "$LIB_TARGET/.printing-press-pii-polish.json"
+if [ -f "$CLI_WORK_DIR/.printing-press-pii-polish.json" ]; then
+  cp "$CLI_WORK_DIR/.printing-press-pii-polish.json" "$LIB_TARGET/.printing-press-pii-polish.json"
+else
+  # Current run produced no PII findings (clean API or polish skipped).
+  # Remove the stale prior-reprint ledger so the gate sees a clean state
+  # — otherwise the old identity keys would replay against freshly
+  # line-shifted generator files and surface false-positive pendings.
+  rm -f "$LIB_TARGET/.printing-press-pii-polish.json"
+fi
 cli-printing-press lock promote --cli <api>-pp-cli --dir "$LIB_TARGET" || {
   cli-printing-press lock release --cli <api>-pp-cli
   echo "lock promote failed for $LIB_TARGET; lock released. " \
