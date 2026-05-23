@@ -82,15 +82,10 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
-		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
-		// cross-domain 3xx (open redirect or partner handoff) must not
-		// receive the auth credential, even though we are inside
-		// CheckRedirect where Go's automatic stripping has already run.
-		if req.URL.Host == via[0].URL.Host {
-			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
-				req.Header.Set("Cookie", h)
-			}
-		}
+		// Cookie-auth redirects: Go's http.Client + http.CookieJar handle
+		// cookie carriage on 3xx hops natively. Setting the Cookie header
+		// manually here would double the jar's cookies on the redirected
+		// request.
 		return nil
 	}
 	return c
@@ -483,7 +478,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 
 		if authHeader != "" {
-			req.Header.Set("Cookie", authHeader)
+			// Cookie-auth: LoadCookieJar is the sole source of outbound
+			// cookies. net/http's Client.send calls jar.Cookies + AddCookie
+			// for each cookie, which concatenates without dedup; a manual
+			// req.Header.Set here would ship every session cookie twice and
+			// trip upstream WAFs. auth login persists the same cookie set
+			// to both the jar and config, so the jar carries every value
+			// SaveTokens stores. authHeader is read only by the dry-run /
+			// signing paths above; intentionally not consumed on the live
+			// wire here.
 		}
 		if c.Config != nil {
 			for k, v := range c.Config.Headers {
