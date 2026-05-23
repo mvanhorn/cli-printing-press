@@ -46,6 +46,7 @@ const (
 	extensionRateClass             = "x-rate-class"
 	extensionMCP                   = "x-mcp"
 	extensionLegacyMCP             = "mcp"
+	extensionCache                 = "x-cache"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionAPIName               = "x-api-name"
 	extensionDisplayName           = "x-display-name"
@@ -581,6 +582,10 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	cacheConfig, err := parseTypedExtension[spec.CacheConfig](doc, extensionCache)
+	if err != nil {
+		return nil, err
+	}
 
 	templateVars, templateEnvOverrides, pathParamDefaults := parseEndpointTemplateExtensions(doc)
 	// Merge server-URL template placeholders into the endpoint-template-var
@@ -605,6 +610,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		Auth:                         auth,
 		TierRouting:                  tierRouting,
 		MCP:                          mcpConfig,
+		Cache:                        cacheConfig,
 		EndpointTemplateVars:         templateVars,
 		EndpointTemplateEnvOverrides: templateEnvOverrides,
 		EndpointPathParamDefaults:    pathParamDefaults,

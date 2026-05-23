@@ -40,6 +40,8 @@ printing-press-golden/internal/cliutil/verifyenv.go
 printing-press-golden/internal/cli/profile.go
 printing-press-golden/internal/cli/feedback.go
 printing-press-golden/internal/cli/sync.go
+printing-press-golden/internal/cli/auto_refresh.go
+printing-press-golden/internal/cliutil/freshness.go
 printing-press-golden/internal/cli/api_discovery.go
 printing-press-golden/internal/cli/import.go
 printing-press-golden/internal/cli/which.go

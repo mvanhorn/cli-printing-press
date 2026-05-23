@@ -910,19 +910,10 @@ func (g *Generator) skillDescription() string {
 	}
 }
 
-// freshnessCommandPaths returns the rendered slice of "covered command paths"
-// surfaced in user-facing docs (README.md and SKILL.md) for the freshness
-// section. The slice contains only paths whose subcommands actually exist in
-// the generated CLI — promoted single-endpoint resources emit only the bare
-// `<cli> <resource>` form, multi-endpoint resources emit the bare form plus
-// one entry per real endpoint name.
-//
-// The runtime fallback map in `internal/cli/auto_refresh.go` (rendered by
-// auto_refresh.go.tmpl) keeps its `<resource> list/get/search` no-op
-// variants because Cobra's argument resolution can land on any of them at
-// runtime — having the map accept those forms keeps freshness lookups
-// loose. Only the slice rendered into docs needs trimming, so users and
-// agents don't see phantom subcommands they can't actually invoke.
+// freshnessCommandPaths returns the command paths surfaced in README.md and
+// SKILL.md freshness sections. Keep this in lockstep with
+// auto_refresh.go.tmpl's readCommandResources map so the docs describe the
+// exact command paths that can trigger auto-refresh at runtime.
 func (g *Generator) freshnessCommandPaths() []string {
 	if !g.Spec.Cache.Enabled || g.shouldEmitHTMLSyncStub() || g.profile == nil {
 		return nil
@@ -939,28 +930,9 @@ func (g *Generator) freshnessCommandPaths() []string {
 	cliName := naming.CLI(g.Spec.Name)
 	for _, resource := range g.profile.SyncableResources {
 		prefix := cliName + " " + resource.Name
-		// Always emit the bare `<cli> <resource>` form. For promoted
-		// single-endpoint resources Cobra resolves this to the leaf
-		// command; for multi-endpoint resources it resolves to the
-		// parent help. Both are real, reachable paths.
 		add(prefix)
-
-		// Promoted resources have only one underlying endpoint and it
-		// is wired directly to the bare command — emitting endpoint
-		// names would create phantom paths users can't invoke.
-		if g.PromotedResourceNames[resource.Name] {
-			continue
-		}
-
-		// For multi-endpoint resources, emit one entry per real endpoint
-		// name. The endpoint map key matches the generated subcommand
-		// name (e.g., a `top` endpoint becomes `<cli> stories top`).
-		specResource, ok := g.Spec.Resources[resource.Name]
-		if !ok {
-			continue
-		}
-		for endpointName := range specResource.Endpoints {
-			add(prefix + " " + endpointName)
+		for _, subcommand := range []string{"list", "get", "search"} {
+			add(prefix + " " + subcommand)
 		}
 	}
 	for _, command := range g.Spec.Cache.Commands {

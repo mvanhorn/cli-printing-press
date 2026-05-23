@@ -9,23 +9,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestFreshnessCommandPaths_PromotedResourceEmitsBareOnly verifies that a
-// resource with a single endpoint (which the generator promotes to the
-// resource-level command) emits only the bare `<cli> <resource>` form in
-// the rendered freshness paths. Phantom variants like `<cli> <resource> list`
-// must NOT appear because the user can't invoke them — Cobra doesn't
-// register `list` as a subcommand for promoted resources.
-//
-// Regression guard for retro #350 finding F1: prior behavior emitted
-// `<resource> list / get / search` for every syncable resource regardless
-// of whether those subcommands actually exist.
-func TestFreshnessCommandPaths_PromotedResourceEmitsBareOnly(t *testing.T) {
+// TestFreshnessCommandPaths_PromotedResourceMirrorsRuntimeMap verifies that
+// rendered freshness docs use the same command-path coverage as the generated
+// auto-refresh hook, including the fallback list/get/search paths.
+func TestFreshnessCommandPaths_PromotedResourceMirrorsRuntimeMap(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("hn")
 	apiSpec.Cache.Enabled = true
-	// `ask` has a single endpoint named `list` — the generator will promote
-	// it. Freshness paths should emit only the bare `hn-pp-cli ask`.
+	// `ask` has a single endpoint named `list`; the generator promotes it to
+	// the resource-level command, but the runtime map still accepts the
+	// fallback resource paths.
 	apiSpec.Resources["ask"] = spec.Resource{
 		Description: "Ask HN",
 		Endpoints: map[string]spec.Endpoint{
@@ -45,22 +39,24 @@ func TestFreshnessCommandPaths_PromotedResourceEmitsBareOnly(t *testing.T) {
 	}
 
 	got := g.freshnessCommandPaths()
-	assert.Equal(t, []string{"hn-pp-cli ask"}, got,
-		"promoted single-endpoint resource should emit only the bare path")
+	assert.Equal(t, []string{
+		"hn-pp-cli ask",
+		"hn-pp-cli ask get",
+		"hn-pp-cli ask list",
+		"hn-pp-cli ask search",
+	}, got, "docs should mirror auto_refresh.go.tmpl command coverage")
 }
 
-// TestFreshnessCommandPaths_MultiEndpointResourceEmitsRealEndpointsOnly
-// verifies that a multi-endpoint resource emits the bare path plus one
-// entry per real endpoint name — and nothing else. The hardcoded
-// `list / get / search` variants from the prior implementation must NOT
-// appear unless those endpoint names actually exist on the resource.
-func TestFreshnessCommandPaths_MultiEndpointResourceEmitsRealEndpointsOnly(t *testing.T) {
+// TestFreshnessCommandPaths_MultiEndpointResourceMirrorsRuntimeMap verifies
+// that docs stay aligned with auto_refresh.go.tmpl instead of independently
+// deriving endpoint names from the spec.
+func TestFreshnessCommandPaths_MultiEndpointResourceMirrorsRuntimeMap(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("hn")
 	apiSpec.Cache.Enabled = true
-	// `stories` has 4 endpoints: top, new, best, get. None of them are
-	// `list` or `search`. The freshness paths must reflect that exactly.
+	// The freshness coverage should not drift to endpoint-specific names such
+	// as top/new/best; the generated hook accepts the fixed resource paths.
 	apiSpec.Resources["stories"] = spec.Resource{
 		Description: "Stories",
 		Endpoints: map[string]spec.Endpoint{
@@ -86,20 +82,19 @@ func TestFreshnessCommandPaths_MultiEndpointResourceEmitsRealEndpointsOnly(t *te
 
 	want := []string{
 		"hn-pp-cli stories",
-		"hn-pp-cli stories best",
 		"hn-pp-cli stories get",
-		"hn-pp-cli stories new",
-		"hn-pp-cli stories top",
-	}
-	assert.Equal(t, want, got, "should emit only real endpoint names")
-
-	// Negative assertions: the prior phantom variants must NOT be present.
-	for _, phantom := range []string{
 		"hn-pp-cli stories list",
 		"hn-pp-cli stories search",
+	}
+	assert.Equal(t, want, got, "should emit the runtime command coverage")
+
+	for _, endpointPath := range []string{
+		"hn-pp-cli stories best",
+		"hn-pp-cli stories new",
+		"hn-pp-cli stories top",
 	} {
-		assert.NotContains(t, got, phantom,
-			"phantom path %q must not appear — endpoint does not exist on the resource", phantom)
+		assert.NotContains(t, got, endpointPath,
+			"endpoint path %q must not appear unless auto_refresh.go.tmpl maps it", endpointPath)
 	}
 }
 
