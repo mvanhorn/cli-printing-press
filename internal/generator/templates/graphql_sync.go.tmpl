@@ -443,7 +443,9 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 func defaultSyncResources() []string {
 	return []string{
 {{- range .SyncableResources}}
+{{- if not .SkipDefaultSync}}
 		"{{.Name}}",
+{{- end}}
 {{- end}}
 	}
 }

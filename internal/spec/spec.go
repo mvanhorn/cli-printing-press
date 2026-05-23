@@ -1391,6 +1391,7 @@ type Endpoint struct {
 	RequestContentType string       `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
 	Response           ResponseDef  `yaml:"response" json:"response"`
 	ResponseFormat     string       `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	Tags               []string     `yaml:"tags,omitempty" json:"tags,omitempty"`                       // source operation tags; used for generated defaults, not command grouping
 	HTMLExtract        *HTMLExtract `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
 	Pagination         *Pagination  `yaml:"pagination" json:"pagination"`
 	// EmbeddedPagedSubresources names paged-envelope properties nested

@@ -1123,7 +1123,10 @@ func defaultSyncResources() []string {
 // flat resources plus any parent-child dependents. Used by --resource-param
 // validation to reject misspellings before they become silent no-ops.
 func knownSyncResourceNames() []string {
-	names := defaultSyncResources()
+	names := []string{
+		"currencies",
+		"projects",
+	}
 	for _, dep := range dependentResourceDefs() {
 		names = append(names, dep.Name)
 	}

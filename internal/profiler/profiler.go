@@ -93,6 +93,9 @@ type SyncableResource struct {
 	Path   string
 	Method string
 	Tier   string
+	// SkipDefaultSync keeps resources callable via --resources while excluding
+	// auth-flow endpoints from generated "sync all" defaults.
+	SkipDefaultSync bool
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
 	// turn populated by the OpenAPI parser's `x-resource-id` extension or the
@@ -1351,6 +1354,7 @@ type syncableMeta struct {
 	Path               string
 	Method             string
 	Tier               string
+	SkipDefaultSync    bool
 	IDField            string
 	Critical           bool
 	SinceParam         string
@@ -1389,6 +1393,7 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		Path:               e.Path,
 		Method:             strings.ToUpper(e.Method),
 		Tier:               s.EffectiveTier(resource, e),
+		SkipDefaultSync:    isAuthTaggedEndpoint(e),
 		IDField:            e.IDField,
 		Critical:           e.Critical,
 		SinceParam:         detectEndpointSinceParam(e.Params),
@@ -1401,6 +1406,18 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		IDWalkPageSize:     idWalkPageSize,
 		FieldSelector:      detectEndpointFieldSelector(e),
 		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+	}
+}
+
+func isAuthTaggedEndpoint(endpoint spec.Endpoint) bool {
+	if len(endpoint.Tags) == 0 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(endpoint.Tags[0])) {
+	case "auth", "authentication", "oauth":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1734,6 +1751,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			Path:               meta.Path,
 			Method:             meta.Method,
 			Tier:               meta.Tier,
+			SkipDefaultSync:    meta.SkipDefaultSync,
 			IDField:            meta.IDField,
 			Critical:           meta.Critical,
 			SinceParam:         meta.SinceParam,

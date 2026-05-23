@@ -276,7 +276,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 			defer s.Close()
 
-			resources := []string{ {{- range .SyncableResources}}"{{.Name}}", {{end}} }
+			resources := []string{ {{- range .SyncableResources}}{{if not .SkipDefaultSync}}"{{.Name}}", {{end}}{{end}} }
 			totalSynced := 0
 
 			// --full clears the cursor here because syncResource reads

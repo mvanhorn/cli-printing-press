@@ -2741,6 +2741,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				BodyRequired:       bodyRequired,
 				BodyIsArray:        bodyIsArray,
 				RequestContentType: requestContentType,
+				Tags:               append([]string{}, op.Tags...),
 			}
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if endpoint.Tier == "" {

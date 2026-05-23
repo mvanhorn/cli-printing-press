@@ -8487,3 +8487,35 @@ func TestDetectPaginationOffsetBeatsPage(t *testing.T) {
 	assert.Equal(t, "offset", pag.CursorParam)
 	assert.Equal(t, "offset", pag.Type)
 }
+
+func TestParsePreservesOperationTags(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.0
+info:
+  title: Tagged API
+  version: "1.0"
+paths:
+  /oauth_token:
+    get:
+      operationId: listOAuthToken
+      tags: [OAuth]
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+`))
+	require.NoError(t, err)
+	require.Contains(t, parsed.Resources, "oauth-token")
+	require.Contains(t, parsed.Resources["oauth-token"].Endpoints, "list")
+	assert.Equal(t, []string{"OAuth"}, parsed.Resources["oauth-token"].Endpoints["list"].Tags)
+}
