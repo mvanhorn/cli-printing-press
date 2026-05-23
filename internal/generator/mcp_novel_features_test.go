@@ -55,7 +55,7 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 
 	cobratreeCLIPath, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(cobratreeCLIPath), `const cliName = "noveltest-pp-cli"`)
+	assert.Contains(t, string(cobratreeCLIPath), `cliExecutableName(runtime.GOOS)`)
 	assert.Contains(t, string(cobratreeCLIPath), `os.Getenv("NOVELTEST_CLI_PATH")`)
 
 	cobratreeShellout, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "shellout.go"))
@@ -218,6 +218,36 @@ func TestFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
 }
 `)
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "framework_depth_test.go"), []byte(testSrc.String()), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
+}
+
+func TestMCPCobraTreeSiblingCLIPathUsesWindowsExecutableSuffix(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("pathcheck")
+	outputDir := filepath.Join(t.TempDir(), "pathcheck-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	var testSrc strings.Builder
+	testSrc.WriteString(`package cobratree
+
+import "testing"
+
+func TestCLIExecutableNameUsesWindowsSuffix(t *testing.T) {
+	if got := cliExecutableName("windows"); got != "pathcheck-pp-cli.exe" {
+		t.Fatalf("cliExecutableName(windows) = %q, want pathcheck-pp-cli.exe", got)
+	}
+	if got := cliExecutableName("linux"); got != "pathcheck-pp-cli" {
+		t.Fatalf("cliExecutableName(linux) = %q, want pathcheck-pp-cli", got)
+	}
+	if got := cliExecutableName("darwin"); got != "pathcheck-pp-cli" {
+		t.Fatalf("cliExecutableName(darwin) = %q, want pathcheck-pp-cli", got)
+	}
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path_extra_test.go"), []byte(testSrc.String()), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
 }

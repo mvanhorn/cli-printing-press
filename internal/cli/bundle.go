@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )
@@ -83,8 +84,9 @@ from another build pipeline.`,
 				binaryPath = pipeline.StagedMCPBinaryPath(cliDir, manifest.Name)
 			}
 			cliName := pipeline.ReadCLIBinaryName(cliDir)
+			cliArchiveName := bundleCLIBinaryArchiveName(cliName, goos)
 			if cliBinaryPath == "" && cliName != "" {
-				cliBinaryPath = pipeline.StagedMCPBinaryPath(cliDir, cliName)
+				cliBinaryPath = bundleCLIBinaryPath(cliDir, cliName, goos)
 			}
 			if err := buildBundleBinaries(cliDir, manifest.Name, binaryPath, skipBuild, cliName, cliBinaryPath, cliSkipBuild, goos, goarch); err != nil {
 				return err
@@ -97,7 +99,7 @@ from another build pipeline.`,
 			if err := pipeline.BuildMCPBBundle(pipeline.BundleParams{
 				CLIDir:        cliDir,
 				BinaryPath:    binaryPath,
-				CLIBinaryName: cliName,
+				CLIBinaryName: cliArchiveName,
 				CLIBinaryPath: cliBinaryPath,
 				OutputPath:    output,
 			}); err != nil {
@@ -156,9 +158,10 @@ func autoBundleForHost(cliDir string, w io.Writer) {
 	}
 	binaryPath := pipeline.StagedMCPBinaryPath(cliDir, manifest.Name)
 	cliName := pipeline.ReadCLIBinaryName(cliDir)
+	cliArchiveName := bundleCLIBinaryArchiveName(cliName, runtime.GOOS)
 	cliBinaryPath := ""
 	if cliName != "" {
-		cliBinaryPath = pipeline.StagedMCPBinaryPath(cliDir, cliName)
+		cliBinaryPath = bundleCLIBinaryPath(cliDir, cliName, runtime.GOOS)
 	}
 	if err := buildBundleBinaries(cliDir, manifest.Name, binaryPath, false, cliName, cliBinaryPath, false, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Fprintf(w, "warning: %v\n", err)
@@ -168,7 +171,7 @@ func autoBundleForHost(cliDir string, w io.Writer) {
 	if err := pipeline.BuildMCPBBundle(pipeline.BundleParams{
 		CLIDir:        cliDir,
 		BinaryPath:    binaryPath,
-		CLIBinaryName: cliName,
+		CLIBinaryName: cliArchiveName,
 		CLIBinaryPath: cliBinaryPath,
 		OutputPath:    output,
 	}); err != nil {
@@ -201,6 +204,20 @@ func buildBundleBinaries(cliDir, mcpName, mcpPath string, skipMCP bool, cliName,
 		})
 	}
 	return g.Wait()
+}
+
+func bundleCLIBinaryPath(cliDir, cliName, goos string) string {
+	if cliName == "" {
+		return ""
+	}
+	return pipeline.StagedMCPBinaryPath(cliDir, bundleCLIBinaryArchiveName(cliName, goos))
+}
+
+func bundleCLIBinaryArchiveName(cliName, goos string) string {
+	if cliName == "" {
+		return ""
+	}
+	return platform.ExecutablePathForGOOS(cliName, goos)
 }
 
 // resolvePlatform parses an optional "<os>/<arch>" string and falls back
