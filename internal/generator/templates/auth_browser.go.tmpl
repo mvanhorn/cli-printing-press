@@ -61,6 +61,9 @@ import (
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/chromedp"
 {{- end}}
+{{- if $hasCookieBrowserAuth}}
+	"github.com/gorilla/websocket"
+{{- end}}
 	"github.com/spf13/cobra"
 )
 
@@ -1994,11 +1997,82 @@ func extractViaCDP(targetURL, port string) (string, error) {
 		return "", fmt.Errorf("no Chrome tab found for %s", domain)
 	}
 
-	// wsURL found but we need a WebSocket client to evaluate JS.
-	// For now, report that the tab exists — a future version can add
-	// a lightweight WebSocket eval. The agent-browser and browser-use
-	// paths handle the common case.
-	_ = wsURL
-	return "", fmt.Errorf("CDP tab found for %s but WebSocket eval not yet implemented (install agent-browser or browser-use)", domain)
+	return evalDocumentCookieViaCDP(wsURL, domain)
+}
+
+// evalDocumentCookieViaCDP opens the per-tab DevTools WebSocket and runs a
+// single Runtime.evaluate of `document.cookie`. Bounded by a single 5-second
+// wall-clock deadline shared across the dial, write, and all subsequent frame
+// reads — net.Conn.SetReadDeadline is a single deadline covering all reads on
+// the connection, not a per-message reset, so heavy CDP event traffic chips
+// away at the same budget. Returns the cookie string verbatim (no parsing) so
+// the existing extractLiveCookies pipeline can hand it to refreshStoredBrowserCookies.
+func evalDocumentCookieViaCDP(wsURL, domain string) (string, error) {
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("CDP WebSocket dial failed for %s: %w", domain, err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	_ = conn.SetWriteDeadline(deadline)
+	_ = conn.SetReadDeadline(deadline)
+
+	const evalID = 1
+	evalReq := map[string]any{
+		"id":     evalID,
+		"method": "Runtime.evaluate",
+		"params": map[string]any{
+			"expression":    "document.cookie",
+			"returnByValue": true,
+			"awaitPromise":  true,
+		},
+	}
+	if err := conn.WriteJSON(evalReq); err != nil {
+		return "", fmt.Errorf("CDP Runtime.evaluate write failed for %s: %w", domain, err)
+	}
+
+	// Drain frames until we see our response. CDP can interleave events from
+	// other domains (Network, Page) on the same socket if those domains were
+	// enabled in this tab by another client; ignore them and keep reading
+	// until the shared 5-second deadline above fires. Heavy event traffic can
+	// exhaust the budget before our response arrives — that's by design (a
+	// stuck tab fails fast) rather than a per-read timeout.
+	for {
+		var msg struct {
+			ID     int             `json:"id"`
+			Result json.RawMessage `json:"result"`
+			Error  *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := conn.ReadJSON(&msg); err != nil {
+			return "", fmt.Errorf("CDP Runtime.evaluate read failed for %s: %w", domain, err)
+		}
+		if msg.ID != evalID {
+			continue
+		}
+		if msg.Error != nil {
+			return "", fmt.Errorf("CDP Runtime.evaluate error for %s: %s", domain, msg.Error.Message)
+		}
+		var result struct {
+			Result struct {
+				Type  string `json:"type"`
+				Value string `json:"value"`
+			} `json:"result"`
+			ExceptionDetails *struct {
+				Text string `json:"text"`
+			} `json:"exceptionDetails"`
+		}
+		if err := json.Unmarshal(msg.Result, &result); err != nil {
+			return "", fmt.Errorf("CDP Runtime.evaluate result parse failed for %s: %w", domain, err)
+		}
+		if result.ExceptionDetails != nil {
+			return "", fmt.Errorf("CDP page threw evaluating document.cookie for %s: %s", domain, result.ExceptionDetails.Text)
+		}
+		return result.Result.Value, nil
+	}
 }
 {{- end}}
