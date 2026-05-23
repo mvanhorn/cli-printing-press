@@ -123,10 +123,16 @@ func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArti
 func syncReadmeAuthNarrative(path, authNarrative string) (bool, error) {
 	return syncMarkdownFile(path, func(content string) string {
 		heading := "## Authentication"
+		staleHeading := ""
 		if findMarkdownHeading(content, "## Optional: API Key") >= 0 {
 			heading = "## Optional: API Key"
+			staleHeading = "## Authentication"
 		}
-		return replaceMarkdownSection(content, heading, renderAuthNarrativeSection(heading, authNarrative), []string{"## Quick Start"})
+		content = replaceMarkdownSection(content, heading, renderAuthNarrativeSection(heading, authNarrative), []string{"## Quick Start"})
+		if staleHeading != "" {
+			content = replaceMarkdownSection(content, staleHeading, "", nil)
+		}
+		return content
 	})
 }
 
@@ -178,7 +184,24 @@ func renderSkillAuthSetupSection(apiName, authNarrative string) string {
 	} else if !strings.HasSuffix(cliName, "-pp-cli") {
 		cliName += "-pp-cli"
 	}
+	if authNarrativeMentionsDoctor(authNarrative, cliName) {
+		return "## Auth Setup\n\n" + authNarrative
+	}
 	return "## Auth Setup\n\n" + authNarrative + "\n\nRun `" + cliName + " doctor` to verify setup."
+}
+
+func authNarrativeMentionsDoctor(authNarrative, cliName string) bool {
+	lower := strings.ToLower(authNarrative)
+	cliName = strings.ToLower(strings.TrimSpace(cliName))
+	for _, candidate := range []string{
+		"`" + cliName + " doctor`",
+		"`<cli> doctor`",
+	} {
+		if strings.Contains(lower, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderTroubleshootSubsection(troubleshoots []TroubleshootTip) string {
@@ -499,12 +522,11 @@ func markdownHeadings(content string, start, end, minLevel, maxLevel int) []mark
 
 		line := content[lineStart:lineEnd]
 		trimmed := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			marker := trimmed[:3]
+		if marker, ok := markdownFenceMarker(trimmed); ok {
 			if !inFence {
 				inFence = true
 				fenceMarker = marker
-			} else if marker == fenceMarker {
+			} else if marker[0] == fenceMarker[0] && len(marker) >= len(fenceMarker) {
 				inFence = false
 				fenceMarker = ""
 			}
@@ -520,6 +542,24 @@ func markdownHeadings(content string, start, end, minLevel, maxLevel int) []mark
 		lineStart = lineEnd + 1
 	}
 	return headings
+}
+
+func markdownFenceMarker(trimmedLine string) (string, bool) {
+	if len(trimmedLine) < 3 {
+		return "", false
+	}
+	ch := trimmedLine[0]
+	if ch != '`' && ch != '~' {
+		return "", false
+	}
+	end := 1
+	for end < len(trimmedLine) && trimmedLine[end] == ch {
+		end++
+	}
+	if end < 3 {
+		return "", false
+	}
+	return trimmedLine[:end], true
 }
 
 func parseMarkdownHeading(line string, start, minLevel, maxLevel int) (markdownHeading, bool) {
