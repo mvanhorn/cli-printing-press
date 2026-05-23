@@ -1410,15 +1410,13 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 }
 
 func isAuthTaggedEndpoint(endpoint spec.Endpoint) bool {
-	if len(endpoint.Tags) == 0 {
-		return false
+	for _, tag := range endpoint.Tags {
+		switch strings.ToLower(strings.TrimSpace(tag)) {
+		case "auth", "authentication", "authorization", "oauth", "oauth2":
+			return true
+		}
 	}
-	switch strings.ToLower(strings.TrimSpace(endpoint.Tags[0])) {
-	case "auth", "authentication", "oauth":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {

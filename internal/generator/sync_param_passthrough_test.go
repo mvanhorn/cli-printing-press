@@ -134,6 +134,14 @@ func TestGenerateSyncDefaultsSkipAuthTaggedResources(t *testing.T) {
 			Description: "OAuth token endpoint",
 			Endpoints:   map[string]spec.Endpoint{"list": paginated("/oauth_token", "OAuth")},
 		},
+		"oauth2-token": {
+			Description: "OAuth2 token endpoint",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/oauth2_token", "OAuth2")},
+		},
+		"authorization-grant": {
+			Description: "Authorization grant endpoint",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/authorization_grant", "Billing", "Authorization")},
+		},
 	}
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
@@ -146,10 +154,14 @@ func TestGenerateSyncDefaultsSkipAuthTaggedResources(t *testing.T) {
 	defaultsBlock := syncSrc[defaultsStart:knownStart]
 	assert.Contains(t, defaultsBlock, `"items"`)
 	assert.NotContains(t, defaultsBlock, `"oauth-token"`)
+	assert.NotContains(t, defaultsBlock, `"oauth2-token"`)
+	assert.NotContains(t, defaultsBlock, `"authorization-grant"`)
 
 	knownBlock := syncSrc[knownStart:]
 	assert.Contains(t, knownBlock, `"items"`)
 	assert.Contains(t, knownBlock, `"oauth-token"`, "explicit --resources should still accept auth-tagged sync endpoints")
+	assert.Contains(t, knownBlock, `"oauth2-token"`, "explicit --resources should still accept auth-tagged sync endpoints")
+	assert.Contains(t, knownBlock, `"authorization-grant"`, "explicit --resources should still accept auth-tagged sync endpoints")
 
 	workflowSrc := readGeneratedFile(t, outputDir, "internal", "cli", "channel_workflow.go")
 	archiveIdx := strings.Index(workflowSrc, "resources := []string")
@@ -157,6 +169,8 @@ func TestGenerateSyncDefaultsSkipAuthTaggedResources(t *testing.T) {
 	archiveBlock := workflowSrc[archiveIdx:]
 	assert.Contains(t, archiveBlock, `"items"`)
 	assert.NotContains(t, archiveBlock, `"oauth-token"`)
+	assert.NotContains(t, archiveBlock, `"oauth2-token"`)
+	assert.NotContains(t, archiveBlock, `"authorization-grant"`)
 }
 
 // dependentResourceSpec builds a minimal spec with a parent + child
