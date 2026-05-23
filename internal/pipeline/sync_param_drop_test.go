@@ -707,6 +707,101 @@ func sync(client *Client, menuParams map[string]string) error {
 	}
 }
 
+// Regression: a package-level `var syncFn = func(...) {...}` holding a
+// function literal is still walked. Under an earlier refactor of
+// walkSyncParamDropCalls that iterated `file.Decls` and filtered for
+// *ast.FuncDecl only, this shape regressed from checked to silently
+// unchecked. The walker must also descend into *ast.GenDecl /
+// *ast.ValueSpec values that are *ast.FuncLit.
+func TestCheckSyncParamDrop_PackageLevelFuncLit_DropsFlagged(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+var syncFn = func(client *Client) error {
+	menuParams := map[string]string{
+		"a": "1",
+		"b": "2",
+	}
+	return client.Get("/menu", menuParams)
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "a", "b", "c", "d"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings: want 1, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+	f := got.Findings[0]
+	wantDropped := []string{"c", "d"}
+	if strings.Join(f.DroppedKeys, ",") != strings.Join(wantDropped, ",") {
+		t.Errorf("DroppedKeys: want %v, got %v", wantDropped, f.DroppedKeys)
+	}
+}
+
+// Regression: a nested closure that re-declares a same-named map must
+// be resolved against its own scope, not the outer function's. The
+// outer `params` holds one key; the inner closure's `params` holds
+// three. The inner call passes the inner map, so the gate must read
+// 3 passed keys (not 4 from a union with the outer map) and flag the
+// captured-only key as dropped. Without scope-isolation in
+// resolveNamedMapKeys, the outer "a" would silently union into the
+// inner key set and hide drops inside the closure.
+func TestCheckSyncParamDrop_NestedClosure_SameNamedMap_NotUnioned(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func runSync(client *Client) error {
+	params := map[string]string{"a": "1"}
+	_ = params
+	inner := func() error {
+		params := map[string]string{
+			"a": "1",
+			"b": "2",
+			"c": "3",
+		}
+		return client.Get("/menu", params)
+	}
+	return inner()
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "a", "b", "c", "d"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings: want 1, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+	f := got.Findings[0]
+	wantPassed := map[string]bool{"a": true, "b": true, "c": true}
+	if len(f.PassedKeys) != len(wantPassed) {
+		t.Fatalf("PassedKeys count: want %d, got %d (%v)", len(wantPassed), len(f.PassedKeys), f.PassedKeys)
+	}
+	for _, k := range f.PassedKeys {
+		if !wantPassed[k] {
+			t.Errorf("unexpected passed key %q (closure scope leaked into outer)", k)
+		}
+	}
+	wantDropped := []string{"d"}
+	if strings.Join(f.DroppedKeys, ",") != strings.Join(wantDropped, ",") {
+		t.Errorf("DroppedKeys: want %v, got %v", wantDropped, f.DroppedKeys)
+	}
+}
+
 func TestCanonicalSyncPath(t *testing.T) {
 	cases := map[string]string{
 		"/menu":                        "/menu",
