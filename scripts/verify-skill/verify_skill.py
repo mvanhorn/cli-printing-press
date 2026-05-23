@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """verify_skill.py — validate that SKILL.md and README.md match the shipped CLI source.
 
-Four checks run in sequence:
+Five checks run in sequence:
 
   1. flag-names — every `--flag` used on a `<cli_binary> ...` invocation in
      a prose source (SKILL.md, plus README.md when present) is declared as
