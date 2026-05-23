@@ -39,6 +39,9 @@ const (
 	// Relevance matching only needs a few hundred bytes; a 1 MiB cap keeps a
 	// misbehaving feature from exhausting the scorecard process's memory.
 	MaxOutputBytes = 1 << 20
+	// MaxErrorOutputBytes keeps diagnostic stderr captures bounded separately
+	// from stdout.
+	MaxErrorOutputBytes = 1 << 20
 )
 
 // LiveCheckResult summarizes a live-behavior sampling of a printed CLI's
@@ -106,10 +109,10 @@ type LiveCheckBinaryRefresh struct {
 }
 
 // outputSampleMaxBytes caps the captured-output snapshot stored on each
-// LiveFeatureResult. The raw capture buffer allows up to MaxOutputBytes
-// (1 MiB) but the serialized sample is bounded much tighter so scorecard
-// JSON files stay readable and agentic reviewers don't blow through their
-// context window on one feature's output.
+// LiveFeatureResult. The raw capture buffer allows up to MaxOutputBytes but
+// the serialized sample is bounded much tighter so scorecard JSON files stay
+// readable and agentic reviewers don't blow through their context window on
+// one feature's output.
 const outputSampleMaxBytes = 4096
 
 // LiveCheckOptions bundles the optional knobs for RunLiveCheck. CLIDir is
@@ -657,7 +660,7 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 	stdoutCap := &bytes.Buffer{}
 	stderrCap := &bytes.Buffer{}
 	cmd.Stdout = &limitedWriter{w: stdoutCap, remaining: MaxOutputBytes}
-	cmd.Stderr = &limitedWriter{w: stderrCap, remaining: MaxOutputBytes}
+	cmd.Stderr = &limitedWriter{w: stderrCap, remaining: MaxErrorOutputBytes}
 	runErr := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		return fail(fmt.Sprintf("timed out after %s", timeout))
@@ -704,14 +707,34 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 	return result
 }
 
-// sampleOutput truncates captured stdout to outputSampleMaxBytes for
+// sampleOutput truncates captured output to outputSampleMaxBytes for
 // persistence on LiveFeatureResult.OutputSample. An ellipsis marker at the
 // boundary tells downstream readers the snapshot is truncated.
 func sampleOutput(s string) string {
-	if len(s) <= outputSampleMaxBytes {
-		return s
+	return sampleOutputParts(s)
+}
+
+func sampleOutputParts(parts ...string) string {
+	var sample strings.Builder
+	remaining := outputSampleMaxBytes
+	truncated := false
+	for _, part := range parts {
+		if remaining <= 0 {
+			truncated = truncated || len(part) > 0
+			continue
+		}
+		if len(part) > remaining {
+			sample.WriteString(part[:remaining])
+			truncated = true
+			break
+		}
+		sample.WriteString(part)
+		remaining -= len(part)
 	}
-	return s[:outputSampleMaxBytes] + "…[truncated]"
+	if truncated {
+		return sample.String() + "…[truncated]"
+	}
+	return sample.String()
 }
 
 // rawHTMLEntityRe matches numeric HTML character references, both decimal
@@ -775,10 +798,14 @@ func detectRawHTMLEntities(output string, args []string) string {
 type limitedWriter struct {
 	w         io.Writer
 	remaining int
+	truncated bool
 }
 
 func (lw *limitedWriter) Write(p []byte) (int, error) {
 	if lw.remaining <= 0 {
+		if len(p) > 0 {
+			lw.truncated = true
+		}
 		return len(p), nil
 	}
 	n := min(len(p), lw.remaining)
@@ -786,6 +813,9 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	lw.remaining -= n
+	if n < len(p) {
+		lw.truncated = true
+	}
 	return len(p), nil
 }
 
