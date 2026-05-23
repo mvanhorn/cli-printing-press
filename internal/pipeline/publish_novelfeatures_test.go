@@ -81,7 +81,8 @@ func TestLoadResearchForPromote_PipelineDir(t *testing.T) {
 	data, _ := json.Marshal(r)
 	require.NoError(t, os.WriteFile(filepath.Join(pipelineDir, "research.json"), data, 0o644))
 
-	got, source := loadResearchForPromote(state)
+	got, source, err := loadResearchForPromote(state)
+	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "From pipeline", got.NovelFeatures[0].Name)
 	assert.Equal(t, pipelineDir, source)
@@ -107,7 +108,8 @@ func TestLoadResearchForPromote_RunRoot(t *testing.T) {
 	data, _ := json.Marshal(r)
 	require.NoError(t, os.WriteFile(filepath.Join(runRoot, "research.json"), data, 0o644))
 
-	got, source := loadResearchForPromote(state)
+	got, source, err := loadResearchForPromote(state)
+	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "From run root", got.NovelFeatures[0].Name)
 	assert.Equal(t, runRoot, source)
@@ -148,7 +150,8 @@ func TestLoadResearchForPromote_MinimalStateGlob(t *testing.T) {
 	state := NewMinimalState("myapi-pp-cli", "/some/working/dir")
 	require.Empty(t, state.RunID, "NewMinimalState should not set RunID")
 
-	got, source := loadResearchForPromote(state)
+	got, source, err := loadResearchForPromote(state)
+	require.NoError(t, err)
 	require.NotNil(t, got, "should find a research.json via glob")
 	assert.Equal(t, "Recent myapi feature", got.NovelFeatures[0].Name,
 		"should pick the most recent matching API")
@@ -173,7 +176,8 @@ func TestLoadResearchForPromote_MinimalStateNoMatch(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(runDir, "research.json"), data, 0o644))
 
 	state := NewMinimalState("myapi-pp-cli", "/some/dir")
-	got, source := loadResearchForPromote(state)
+	got, source, err := loadResearchForPromote(state)
+	require.NoError(t, err)
 	assert.Nil(t, got, "no match for myapi should return nil")
 	assert.Empty(t, source)
 }
@@ -186,7 +190,25 @@ func TestLoadResearchForPromote_NoRunstateRoot(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
 
 	state := NewMinimalState("myapi-pp-cli", "/some/dir")
-	got, source := loadResearchForPromote(state)
+	got, source, err := loadResearchForPromote(state)
+	require.NoError(t, err)
 	assert.Nil(t, got)
 	assert.Empty(t, source)
+}
+
+func TestLoadResearchForPromote_MinimalStateGlobReportsMalformedResearch(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_HOME", t.TempDir())
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+
+	runDir := RunRoot("run-bad")
+	require.NoError(t, os.MkdirAll(runDir, 0o755))
+	path := filepath.Join(runDir, "research.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"api_name":"myapi","novel_features":[{"name":1}]}`), 0o644))
+
+	state := NewMinimalState("myapi-pp-cli", "/some/dir")
+	got, source, err := loadResearchForPromote(state)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.Empty(t, source)
+	assert.Contains(t, err.Error(), "research.json at "+path+" failed to parse:")
 }
