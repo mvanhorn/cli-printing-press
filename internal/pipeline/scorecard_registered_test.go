@@ -104,6 +104,42 @@ func newSearchQueryCmd(flags any) *cobra.Command { return &cobra.Command{} }`)
 	}
 }
 
+func TestScoreWorkflows_FollowsRegisteredChildCommandFiles(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newCoinCmd(nil)) }
+`)
+	writeFile(t, filepath.Join(cliDir, "coin.go"), `package cli
+import "github.com/spf13/cobra"
+func newCoinCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "coin"}
+	cmd.AddCommand(newBatchCmd(nil))
+	return cmd
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "coin_batch.go"), `package cli
+import (
+	"example.com/project/internal/store"
+	"github.com/spf13/cobra"
+)
+func newBatchCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "batch", RunE: func(cmd *cobra.Command, args []string) error {
+		_ = store.Open
+		return nil
+	}}
+}
+`)
+
+	if score := scoreWorkflows(dir); score != 2 {
+		t.Fatalf("expected registered child workflow command file to count, got %d", score)
+	}
+}
+
 func TestScoreErrorHandling_UsesReachableSiblingClientPackage(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
