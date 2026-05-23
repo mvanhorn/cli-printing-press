@@ -20,7 +20,7 @@ import (
 {{- if .HasDataLayer}}
 	"path/filepath"
 {{- end}}
-{{- if and (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer}}
+{{- if and (and .Auth.Type (ne .Auth.Type "none")) .HasSyncHelpers}}
 	"regexp"
 {{- end}}
 	"sort"
@@ -34,7 +34,7 @@ import (
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
-{{- if or .HasDataLayer (and .Auth.Type (ne .Auth.Type "none"))}}
+{{- if or .HasSyncHelpers (and .Auth.Type (ne .Auth.Type "none"))}}
 	"{{modulePath}}/internal/client"
 {{- end}}
 	"github.com/spf13/cobra"
@@ -242,7 +242,7 @@ func parentNoSubcommandRunE(flags *rootFlags) func(*cobra.Command, []string) err
 	}
 }
 
-{{- if .HasDataLayer}}
+{{- if .HasSyncHelpers}}
 
 // accessWarning describes an API access-denial that sync converts into a
 // non-fatal warning. It carries enough structured data for the sync_warning
@@ -405,7 +405,7 @@ func (p *syncUserParams) validateResourceNames(known []string) error {
 }
 {{- end}}
 
-{{- if and (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer}}
+{{- if and (and .Auth.Type (ne .Auth.Type "none")) .HasSyncHelpers}}
 
 // accessDenialPatterns matches API error bodies that indicate the request was
 // rejected for access-policy reasons rather than for input validity. Matching
@@ -484,7 +484,7 @@ func isSyncAccessWarning(err error) (*accessWarning, bool) {
 
 	return nil, false
 }
-{{- else if .HasDataLayer}}
+{{- else if .HasSyncHelpers}}
 
 // isSyncAccessWarning is a stub: this CLI has no auth, so the API cannot
 // reject sync requests on access-policy grounds. Every error stays a hard

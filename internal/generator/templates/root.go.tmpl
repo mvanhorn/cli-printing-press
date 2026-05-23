@@ -306,7 +306,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 			return fmt.Errorf("invalid --throttle-mode value %q: must be strict, lenient, or off", flags.throttleMode)
 		}
 {{- end}}
-{{- if .Cache.Enabled}}
+{{- if .HasAutoRefresh}}
 		// Auto-refresh stale local caches before serving read commands.
 		// Looks up the current command path in readCommandResources and
 		// consults cliutil.EnsureFresh against sync_state. When stale,
