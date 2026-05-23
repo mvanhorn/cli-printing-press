@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -682,15 +683,11 @@ func extractObjectID(obj map[string]any) string {
 // modernc.org/sqlite's FTS5 implementation may not support DELETE WHERE column=?
 // on virtual tables, so we use explicit rowids and DELETE WHERE rowid=? instead.
 func ftsRowID(scope, id string) int64 {
-	var h uint64
-	for _, c := range scope {
-		h = h*31 + uint64(c)
-	}
-	h *= 31
-	for _, c := range id {
-		h = h*31 + uint64(c)
-	}
-	return int64(h & 0x7FFFFFFFFFFFFFFF) // ensure positive
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(scope))
+	_, _ = h.Write([]byte{0}) // separator so ("ab","c") != ("a","bc")
+	_, _ = h.Write([]byte(id))
+	return int64(h.Sum64() & 0x7FFFFFFFFFFFFFFF) // ensure positive
 }
 
 // LookupFieldValue resolves a field value from a JSON object map, trying the
