@@ -33,6 +33,11 @@ var infraAllFiles = map[string]bool{
 }
 
 var actionableDoctorSuggestionRE = regexp.MustCompile(`(?i)\b(run|try)\b.{0,80}\bdoctor\b`)
+var clientAPICallRE = regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
+var resourcesSQLSearchRE = regexp.MustCompile(`(?is)\bSELECT\b.*\bFROM\s+resources\b.*\bresource_type\b`)
+var resourcesFTSSQLSearchRE = regexp.MustCompile(`(?is)\bSELECT\b.*\bresources_fts\b.*\bresource_type\b`)
+var sqlQueryCallRE = regexp.MustCompile(`\.\s*Query(Row)?\s*\(`)
+var quotaDailySignalRE = regexp.MustCompile(`(?i)\b(daily|per[-_\s]+day)\b`)
 
 // Scorecard holds the auto-scored evaluation of a generated CLI against the Steinberger bar.
 type Scorecard struct {
@@ -878,12 +883,29 @@ func scoreCacheFreshness(dir string) (int, bool) {
 	freshnessContent := readFileContent(freshnessPath)
 	if strings.Contains(autoRefreshContent, "autoRefreshIfStale") && strings.Contains(freshnessContent, "EnsureFresh") {
 		score += 5
+	} else if hasQuotaAwareFreshnessDesign(dir, storeContent) {
+		// Quota-aware CLIs deliberately omit auto-refresh, so rescale the
+		// remaining 5-point subtotal onto the full 10-point dimension.
+		score *= 2
 	}
 
 	if score > 10 {
 		score = 10
 	}
 	return score, true
+}
+
+func hasQuotaAwareFreshnessDesign(dir, storeContent string) bool {
+	if strings.Contains(storeContent, "lookup_log") {
+		return true
+	}
+	quotaContent := readFileContent(filepath.Join(dir, "internal", "cliutil", "quota.go"))
+	if quotaContent == "" || !strings.Contains(strings.ToLower(quotaContent), "quota") {
+		return false
+	}
+	return strings.Contains(quotaContent, "Daily") ||
+		strings.Contains(quotaContent, "PerDay") ||
+		quotaDailySignalRE.MatchString(quotaContent)
 }
 
 // scoreLiveAPIVerification returns a 0-10 score reflecting whether verify
@@ -1073,10 +1095,14 @@ func scoreBreadth(dir string) int {
 
 func scoreVision(dir string) int {
 	cliDir := filepath.Join(dir, "internal", "cli")
+	registeredFiles := registeredCommandFiles(cliDir)
+	commandContent := registeredCommandContent(cliDir, registeredFiles)
 
 	// Tier 1: Feature Presence (0-5 points)
 	tier1 := 0.0
 	if fileExists(filepath.Join(cliDir, "export.go")) {
+		tier1 += 1.0
+	} else if hasCommandContentMatching(commandContent, isVisionExportShape) {
 		tier1 += 1.0
 	}
 	if fileExists(filepath.Join(dir, "internal", "store", "store.go")) {
@@ -1095,17 +1121,17 @@ func scoreVision(dir string) int {
 		tier1 += 0.5
 	}
 	// Workflow or compound command files
-	entries, err := os.ReadDir(cliDir)
-	if err == nil {
-		for _, e := range entries {
-			name := e.Name()
-			if strings.Contains(name, "_workflow") || strings.Contains(name, "_compound") {
-				if strings.HasSuffix(name, ".go") {
-					tier1 += 0.5
-					break
-				}
+	hasWorkflowShape := false
+	for name := range commandContent {
+		if strings.Contains(name, "_workflow") || strings.Contains(name, "_compound") {
+			if strings.HasSuffix(name, ".go") {
+				hasWorkflowShape = true
+				break
 			}
 		}
+	}
+	if hasWorkflowShape || hasCommandContentMatching(commandContent, isVisionWorkflowShape) {
+		tier1 += 0.5
 	}
 	if tier1 > 5 {
 		tier1 = 5
@@ -1145,6 +1171,7 @@ func scoreVision(dir string) int {
 			}
 		}
 		tier2 += float64(wired) * 0.25
+		tier2 += float64(registeredVisionCapabilityFiles(commandContent)) * 0.75
 		if tier2 > 3.0 { // cap wiring contribution
 			tier2 = 3.0
 		}
@@ -1173,6 +1200,61 @@ func scoreVision(dir string) int {
 
 	score := min(int(tier1+tier2), 10)
 	return score
+}
+
+func registeredCommandContent(cliDir string, registeredFiles map[string]bool) map[string]string {
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		return nil
+	}
+	contentByName := map[string]string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || infraCoreFiles[name] {
+			continue
+		}
+		if len(registeredFiles) > 0 && !registeredFiles[name] {
+			continue
+		}
+		contentByName[name] = readFileContent(filepath.Join(cliDir, name))
+	}
+	return contentByName
+}
+
+func hasCommandContentMatching(commandContent map[string]string, match func(string) bool) bool {
+	for _, content := range commandContent {
+		if match(content) {
+			return true
+		}
+	}
+	return false
+}
+
+func registeredVisionCapabilityFiles(commandContent map[string]string) int {
+	count := 0
+	for _, content := range commandContent {
+		if isVisionExportShape(content) || isVisionWorkflowShape(content) {
+			count++
+		}
+	}
+	return count
+}
+
+func isVisionExportShape(content string) bool {
+	hasDataSource := hasStoreSignal(content) || hasGenericResourcesSQLSearchSignal(content)
+	if !hasDataSource {
+		return false
+	}
+	return strings.Contains(content, "json.NewEncoder") ||
+		strings.Contains(content, "csv.NewWriter")
+}
+
+func isVisionWorkflowShape(content string) bool {
+	return countClientAPICalls(content) >= 2
+}
+
+func countClientAPICalls(content string) int {
+	return len(clientAPICallRE.FindAllString(content, -1))
 }
 
 // cobraUseLeafRe extracts the leaf command name from a Cobra Use: literal.
@@ -1356,8 +1438,7 @@ func scoreWorkflows(dir string) int {
 
 		// Count files that make 2+ API calls (total occurrences, not unique methods).
 		// A command calling c.Get 3 times is a compound workflow even if it never uses POST.
-		apiCallRe := regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
-		apiCalls := len(apiCallRe.FindAllString(content, -1))
+		apiCalls := countClientAPICalls(content)
 		if strings.Contains(content, "store.") {
 			apiCalls++
 		}
@@ -1461,8 +1542,7 @@ func scoreInsight(dir string) int {
 		// Detects Go-level aggregation: sorting, percentage calculations, comparisons,
 		// summary statistics. Requires multi-source input (2+ API calls or store usage)
 		// to avoid counting simple pass-through commands.
-		apiCallRe := regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
-		apiCallCount := len(apiCallRe.FindAllString(content, -1))
+		apiCallCount := countClientAPICalls(content)
 		hasMultiSource := apiCallCount >= 2 || usesStore
 
 		hasGoAgg := strings.Contains(content, "sort.Slice") ||
@@ -2378,8 +2458,11 @@ func scoreDataPipelineIntegrity(dir string) int {
 	cliDir := filepath.Join(dir, "internal", "cli")
 	allCLIContent := readAllGoFiles(cliDir)
 	storeContent := readFileContent(filepath.Join(dir, "internal", "store", "store.go"))
+	registeredFiles := registeredCommandFiles(cliDir)
+	commandContent := registeredCommandContent(cliDir, registeredFiles)
+	hasGenericResourcesSearch := hasGenericResourcesSQLSearchSignalInCommands(commandContent)
 
-	if allCLIContent != "" && (strings.Contains(allCLIContent, "/store") || strings.Contains(allCLIContent, "store.")) {
+	if allCLIContent != "" && (strings.Contains(allCLIContent, "/store") || strings.Contains(allCLIContent, "store.") || hasGenericResourcesSearch) {
 		score++
 	}
 
@@ -2395,6 +2478,8 @@ func scoreDataPipelineIntegrity(dir string) int {
 	genericSearchRe := regexp.MustCompile(`\.Search\(`)
 	if domainSearchRe.MatchString(allCLIContent) {
 		score += 3
+	} else if hasGenericResourcesSearch {
+		score += 3
 	} else if genericSearchRe.MatchString(allCLIContent) {
 		score += 0
 	}
@@ -2404,6 +2489,31 @@ func scoreDataPipelineIntegrity(dir string) int {
 		score = 10
 	}
 	return score
+}
+
+func hasGenericResourcesSQLSearch(content string) bool {
+	if content == "" {
+		return false
+	}
+	if resourcesSQLSearchRE.MatchString(content) {
+		return true
+	}
+	return resourcesFTSSQLSearchRE.MatchString(content)
+}
+
+func hasGenericResourcesSQLSearchSignal(content string) bool {
+	return hasGenericResourcesSQLSearch(content) &&
+		sqlQueryCallRE.MatchString(content) &&
+		(rawSQLImportRe.MatchString(content) || hasStoreSignal(content))
+}
+
+func hasGenericResourcesSQLSearchSignalInCommands(commandContent map[string]string) bool {
+	for _, content := range commandContent {
+		if hasGenericResourcesSQLSearchSignal(content) {
+			return true
+		}
+	}
+	return false
 }
 
 func scoreSyncCorrectness(dir string) int {

@@ -744,6 +744,199 @@ CREATE TABLE bookings (
 		score := scoreDataPipelineIntegrity(dir)
 		assert.GreaterOrEqual(t, score, 7, "domain upserts in non-sync.go should score high")
 	})
+
+	t.Run("credits generic resources SQL search", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/coin_search.go", `
+package cli
+
+import "database/sql"
+
+func runCoinSearch(db *sql.DB, query string) error {
+	rows, err := db.Query(`+"`"+`
+SELECT resources.data
+FROM resources
+JOIN resources_fts ON resources_fts.rowid = resources.rowid
+WHERE resources.resource_type = ? AND resources_fts MATCH ?
+`+"`"+`, "coin", query)
+	_ = rows
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE resources_fts USING fts5(resource_type, data);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.GreaterOrEqual(t, score, 7, "raw SQL search over the generic resources store should get search credit")
+	})
+
+	t.Run("credits store-backed generic resources SQL search", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/coin_search.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func runCoinSearch(query string) error {
+	db := store.Open()
+	rows, err := db.Query(`+"`"+`
+SELECT resources.data
+FROM resources
+WHERE resources.resource_type = ? AND resources.data LIKE ?
+`+"`"+`, "coin", query)
+	_ = rows
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.GreaterOrEqual(t, score, 7, "store-backed raw SQL search over resources should get search credit")
+	})
+
+	t.Run("does not credit copied generic resources SQL without execution", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/notes.go", `
+package cli
+
+const copiedQuery = `+"`"+`
+SELECT resources.data
+FROM resources
+JOIN resources_fts ON resources_fts.rowid = resources.rowid
+WHERE resources.resource_type = ? AND resources_fts MATCH ?
+`+"`"+`
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.Equal(t, 3, score, "copied SQL text should not get local-store or search execution credit")
+	})
+
+	t.Run("does not combine generic SQL signals across files", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/notes.go", `
+package cli
+
+const copiedQuery = `+"`"+`
+SELECT resources.data
+FROM resources
+WHERE resources.resource_type = ?
+`+"`"+`
+`)
+		writeScorecardFixture(t, dir, "internal/cli/unrelated_sql.go", `
+package cli
+
+import "database/sql"
+
+func runOther(db *sql.DB) error {
+	rows, err := db.Query("SELECT id FROM accounts")
+	_ = rows
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.Equal(t, 3, score, "generic resources SQL and unrelated SQL execution in different files should not combine")
+	})
+
+	t.Run("does not credit orphan generic resources SQL command", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func newRootCmd() { rootCmd.AddCommand(newLookupCmd(nil)) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+
+func newLookupCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/coin_search.go", `
+package cli
+
+import "database/sql"
+
+func newCoinSearchCmd(flags any) {}
+
+func runCoinSearch(db *sql.DB, query string) error {
+	rows, err := db.Query(`+"`"+`
+SELECT resources.data
+FROM resources
+WHERE resources.resource_type = ?
+`+"`"+`, "coin")
+	_ = rows
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `
+package store
+
+const schema = `+"`"+`
+CREATE TABLE resources (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	data TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`+"`"+`
+`)
+
+		score := scoreDataPipelineIntegrity(dir)
+		assert.Equal(t, 3, score, "unregistered generic resources SQL commands should not get search execution credit")
+	})
 }
 
 func TestScoreDeadCode_FlagsPassedAsArg(t *testing.T) {
@@ -1914,6 +2107,172 @@ func collectCacheReport() {}`)
 		assert.True(t, scored)
 		assert.Equal(t, 5, score) // 3 (schema gate) + 2 (doctor cache section)
 	})
+
+	t.Run("lookup log excludes auto-refresh from denominator", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+	_ = "CREATE TABLE lookup_log (resource_type TEXT, looked_up_at TEXT)"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 10, score, "quota-aware CLIs should not be penalized for deliberately omitting auto-refresh")
+	})
+
+	t.Run("daily quota helper excludes auto-refresh from denominator", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+		writeScorecardFixture(t, dir, "internal/cliutil/quota.go", `package cliutil
+
+const DailyQuota = 1000
+`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 10, score, "per-day quota helpers should mark auto-refresh as intentionally not applicable")
+	})
+
+	t.Run("incidental day substring in quota helper does not exclude auto-refresh", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+		writeScorecardFixture(t, dir, "internal/cliutil/quota.go", `package cliutil
+
+const TotalQuota = 1000
+
+// Resets every Monday.
+`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 5, score, "incidental day-like words must not mark a CLI as quota-aware freshness")
+	})
+}
+
+func TestScoreVision_ResourceGroupedCapabilityShapes(t *testing.T) {
+	dir := t.TempDir()
+
+	writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func newRootCmd() {
+	rootCmd.AddCommand(newCoinCmd(nil))
+	rootCmd.AddCommand(newAuditCmd(nil))
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/coin.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func newCoinCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "coin"}
+	cmd.AddCommand(newBatchCmd(flags))
+	return cmd
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/coin_batch.go", `package cli
+
+import (
+	"encoding/json"
+	"example.com/project/internal/store"
+	"github.com/spf13/cobra"
+)
+
+func newBatchCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "batch --list-certs", RunE: func(cmd *cobra.Command, args []string) error {
+		db := store.Open()
+		rows := db.ListCoins()
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(rows)
+	}}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/audit.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func newAuditCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "audit", RunE: func(cmd *cobra.Command, args []string) error {
+		first := c.Get("/coins")
+		second := c.Get("/orders")
+		_, _ = first, second
+		return nil
+	}}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+func Open() DB { return DB{} }
+
+type DB struct{}
+
+func (DB) ListCoins() []string { return nil }
+`)
+
+	score := scoreVision(dir)
+	assert.GreaterOrEqual(t, score, 4, "resource-grouped export and workflow equivalents should contribute to Vision")
+}
+
+func TestIsVisionExportShapeRequiresStructuredExportWriter(t *testing.T) {
+	outputOnly := `package cli
+
+import (
+	"fmt"
+	"example.com/project/internal/store"
+	"github.com/spf13/cobra"
+)
+
+func newListCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "list", RunE: func(cmd *cobra.Command, args []string) error {
+		db := store.Open()
+		fmt.Fprintln(cmd.OutOrStdout(), db.List())
+		return nil
+	}}
+}
+`
+	assert.False(t, isVisionExportShape(outputOnly), "ordinary store-backed command output must not count as an export shape")
+}
+
+func TestScoreVision_IgnoresOrphanWorkflowFile(t *testing.T) {
+	dir := t.TempDir()
+
+	writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func newRootCmd() { rootCmd.AddCommand(newLookupCmd(nil)) }
+`)
+	writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+
+func newLookupCmd(flags any) {}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/coin_workflow.go", `package cli
+
+func newCoinWorkflowCmd(flags any) {}
+`)
+
+	score := scoreVision(dir)
+	assert.Equal(t, 0, score, "unregistered workflow-shaped filenames should not inflate Vision")
 }
 
 func TestScoreDoctorDetectsHTTPClientReachability(t *testing.T) {
