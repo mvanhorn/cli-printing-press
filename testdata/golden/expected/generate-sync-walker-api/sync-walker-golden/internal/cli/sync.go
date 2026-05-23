@@ -754,6 +754,14 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
 			if err := json.Unmarshal(raw, &items); err == nil && len(items) > 0 {
+				// Verify items are objects. If the first item is not an object
+				// (e.g. a string flag), skip this key and fall through.
+				if len(items) > 0 {
+					var obj map[string]json.RawMessage
+					if err := json.Unmarshal(items[0], &obj); err != nil {
+						continue
+					}
+				}
 				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
 				return items, nextCursor, hasMore
 			}
@@ -769,6 +777,12 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	for key, raw := range envelope {
 		var candidate []json.RawMessage
 		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) > 0 {
+			// Verify items are objects. If the first item is not an object,
+			// this isn't a resource collection; skip it.
+			var obj map[string]json.RawMessage
+			if err := json.Unmarshal(candidate[0], &obj); err != nil {
+				continue
+			}
 			arrayKey = key
 			arrayItems = candidate
 			arrayCount++
@@ -822,6 +836,15 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 		if raw, ok := envelope[key]; ok {
 			var items []json.RawMessage
 			if err := json.Unmarshal(raw, &items); err == nil && !isJSONNull(raw) {
+				// If the array is empty, we still consider it a match for the
+				// key-based strategy. If it's NOT empty, we verify it's an
+				// array of objects to stay consistent with extractPageItems.
+				if len(items) > 0 {
+					var obj map[string]json.RawMessage
+					if err := json.Unmarshal(items[0], &obj); err != nil {
+						continue
+					}
+				}
 				return len(items) == 0
 			}
 		}
@@ -830,8 +853,17 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 	arrayCount := 0
 	for _, raw := range envelope {
 		var candidate []json.RawMessage
-		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) == 0 && !isJSONNull(raw) {
-			arrayCount++
+		if err := json.Unmarshal(raw, &candidate); err == nil && !isJSONNull(raw) {
+			// Skip candidate arrays that contain primitives (not objects).
+			if len(candidate) > 0 {
+				var obj map[string]json.RawMessage
+				if err := json.Unmarshal(candidate[0], &obj); err != nil {
+					continue
+				}
+			}
+			if len(candidate) == 0 {
+				arrayCount++
+			}
 		}
 	}
 	return arrayCount == 1
@@ -1419,8 +1451,8 @@ var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", 
 // {"Items": [...]} envelopes fall through to the ambiguity scan and a
 // single-array sibling miscount silently truncates sync.
 var pageItemKeys = []string{
-	"data", "results", "items", "records", "nodes", "entries",
-	"Data", "Results", "Items", "Records", "Nodes", "Entries",
+	"data", "results", "items", "records", "nodes", "entries", "features",
+	"Data", "Results", "Items", "Records", "Nodes", "Entries", "Features",
 }
 
 // criticalResources is the template-time projection of per-resource Critical
