@@ -312,6 +312,35 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			},
 			want: "audio cancel-job",
 		},
+		{
+			// Issue #1853: PascalCase resource keys (sniffed .NET/Java
+			// enterprise APIs) must be kebab-cased to match the actual cobra
+			// command name. Without this the example advertises a phantom
+			// `cli ChangeOrders` path that exits "unknown command".
+			name: "PascalCase resource key is kebab-cased (promoted)",
+			resources: map[string]spec.Resource{
+				"ChangeOrders": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/ChangeOrders/Grid"},
+					},
+				},
+			},
+			want: "change-orders",
+		},
+		{
+			// Same kebab pass when the resource is not promoted (multiple
+			// endpoints): both the resource and endpoint segments are kebab.
+			name: "PascalCase resource key is kebab-cased (non-promoted)",
+			resources: map[string]spec.Resource{
+				"PurchaseOrders": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/PurchaseOrders"},
+						"get":  {Method: "GET", Path: "/api/PurchaseOrders/{id}"},
+					},
+				},
+			},
+			want: "purchase-orders list",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
