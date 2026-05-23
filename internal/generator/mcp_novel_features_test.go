@@ -61,7 +61,7 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 	cobratreeShellout, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "shellout.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(cobratreeShellout), "func shellOutToCLI(")
-	assert.Contains(t, string(cobratreeShellout), "func splitShellArgs(s string)")
+	assert.Contains(t, string(cobratreeShellout), "func SplitShellArgs(s string)")
 
 	root, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
