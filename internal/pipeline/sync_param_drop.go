@@ -219,7 +219,67 @@ func walkSyncParamDropCalls(fset *token.FileSet, file *ast.File, fileName string
 		}
 	}
 
-	ast.Inspect(file, func(n ast.Node) bool {
+	// Walk function bodies explicitly (rather than ast.Inspect over the
+	// whole file) so each recognized client call has its enclosing
+	// function-or-closure body in hand. walkBlockForSyncParamDropCalls
+	// uses that body as the scope when resolving a named-map arg back to
+	// its declaration + subsequent `m["k"] = v` assignments — the
+	// standard Go pattern for conditional query params, which a
+	// literal-only walker would silently skip.
+	//
+	// Two top-level shapes carry function bodies: ordinary `*ast.FuncDecl`
+	// entries and `var name = func(...) {...}` package-level value specs
+	// (a `*ast.GenDecl` holding `*ast.FuncLit` initializers). Both are
+	// real sync entry points in printed CLIs; ast.Inspect would have
+	// found their calls under the old implementation but the explicit
+	// decl walk drops the GenDecl path unless we handle it here.
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Body == nil {
+				continue
+			}
+			walkBlockForSyncParamDropCalls(fset, d.Body, fileName, captured, suppressionLines, result)
+		case *ast.GenDecl:
+			if d.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range d.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for _, v := range vs.Values {
+					if fl, ok := v.(*ast.FuncLit); ok && fl.Body != nil {
+						walkBlockForSyncParamDropCalls(fset, fl.Body, fileName, captured, suppressionLines, result)
+					}
+				}
+			}
+		}
+	}
+}
+
+// walkBlockForSyncParamDropCalls walks a single function/closure body
+// looking for recognized client calls. The `body` parameter is the
+// scope used for named-map resolution: when the walker encounters a
+// nested `*ast.FuncLit`, it recurses with the FuncLit's own Body so
+// calls inside the closure resolve their named-map args against the
+// closure's scope, not the outer function's. Without this, an inner
+// `params := map[string]string{...}` that shadows an outer same-named
+// map would have its key set silently unioned with the outer map's,
+// hiding real drops inside the closure.
+func walkBlockForSyncParamDropCalls(fset *token.FileSet, body *ast.BlockStmt, fileName string, captured capturedKeysIndex, suppressionLines map[int]bool, result *SyncParamDropResult) {
+	if body == nil {
+		return
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		if fl, ok := n.(*ast.FuncLit); ok {
+			// Recurse into the nested closure with its own body as the
+			// scope, then stop ast.Inspect from descending into it
+			// under the outer body's scope.
+			walkBlockForSyncParamDropCalls(fset, fl.Body, fileName, captured, suppressionLines, result)
+			return false
+		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -239,7 +299,7 @@ func walkSyncParamDropCalls(fset *token.FileSet, file *ast.File, fileName string
 		if path == "" {
 			return true
 		}
-		passedKeys := callPassedKeys(call.Args[1:])
+		passedKeys := callPassedKeys(call.Args[1:], body, call.Pos())
 		// Bodies / params that don't parse into a key set produce no
 		// signal — silently skip rather than guessing.
 		if passedKeys == nil {
@@ -339,25 +399,43 @@ func receiverLooksLikeHTTPClient(expr ast.Expr) bool {
 }
 
 // callPassedKeys extracts the param-or-body key set from the remaining
-// arguments of a recognized client call. Two shapes are supported:
+// arguments of a recognized client call. Three shapes are supported:
 //
 //   - A composite literal map[string]<T>{ "a": ..., "b": ... } — common
 //     for query params and form/JSON bodies built inline.
 //   - A struct literal whose field names form the key set —
 //     `MenuParams{Week: ..., Country: ...}` — common for typed param
 //     containers.
+//   - A named local variable that holds a map built up with an initial
+//     literal and subsequent `m["k"] = v` assignments — the standard Go
+//     pattern for conditional query params. The walker follows the
+//     ident back to its declaration in the same function scope and
+//     unions the initial keys with every string-keyed assignment that
+//     precedes the call site. Keys added inside `if`/`else`/`switch`
+//     branches count as present (loud-when-uncertain beats mute):
+//     false-positive risk on a never-taken branch is far smaller than
+//     the false-negative this resolution exists to close.
 //
 // nil return means "no recognizable key set" and the call is not
 // counted toward Checked. An empty (but non-nil) slice means "explicit
 // zero-key call" which is still counted: the capture for the same path
 // may hold keys, in which case all of them are reported as dropped.
-func callPassedKeys(args []ast.Expr) []string {
+//
+// Out of scope (would need broader analysis): for-range population, map
+// passed through helper functions, or alias chains (`m2 := m1`). Those
+// remain silent skips, captured as known limitations.
+func callPassedKeys(args []ast.Expr, scope *ast.BlockStmt, callPos token.Pos) []string {
 	if len(args) == 0 {
 		return []string{}
 	}
 	for _, arg := range args {
 		if keys, ok := extractCompositeLiteralKeys(arg); ok {
 			return keys
+		}
+		if ident, ok := arg.(*ast.Ident); ok && scope != nil {
+			if keys, ok := resolveNamedMapKeys(scope, ident.Name, callPos); ok {
+				return keys
+			}
 		}
 	}
 	// No composite literal we can read; if the only remaining arg is a
@@ -366,6 +444,126 @@ func callPassedKeys(args []ast.Expr) []string {
 		return []string{}
 	}
 	return nil
+}
+
+// resolveNamedMapKeys follows a named-map identifier back to its
+// declaration in the same scope (function body or closure body) and
+// collects the full key set: initial composite literal + every
+// `name["k"] = v` assignment that precedes callPos in source order.
+// Returns (keys, false) when the ident has no recognizable declaration
+// (e.g. it's a parameter, a closure capture, or a non-map type) —
+// caller treats false as "skip," matching the legacy behavior for
+// unrecognized shapes.
+//
+// Nested `*ast.FuncLit` bodies are NOT descended into: a same-named
+// map inside an inner closure is a separate binding, and unioning its
+// keys with the outer map would hide real drops inside the closure.
+// Each closure is walked independently with its own body as the scope
+// by walkBlockForSyncParamDropCalls.
+func resolveNamedMapKeys(scope *ast.BlockStmt, name string, callPos token.Pos) ([]string, bool) {
+	if scope == nil {
+		return nil, false
+	}
+	var (
+		found    bool
+		keys     []string
+		seen     = make(map[string]struct{})
+		declSeen bool
+	)
+	addKey := func(k string) {
+		if _, ok := seen[k]; ok {
+			return
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+	ast.Inspect(scope, func(n ast.Node) bool {
+		if n == nil || n.Pos() >= callPos {
+			// Stop at the call site: later assignments don't reflect
+			// what the call actually passes.
+			return false
+		}
+		// Do not descend into nested function literals — they introduce
+		// a new scope, and any same-named map inside is a separate
+		// binding from the one we're resolving.
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			// `name := map[string]X{...}` or `name = map[string]X{...}`
+			// — initial value or full-replacement assignment.
+			for i, lhs := range s.Lhs {
+				lhsIdent, ok := lhs.(*ast.Ident)
+				if !ok || lhsIdent.Name != name {
+					continue
+				}
+				if i >= len(s.Rhs) {
+					continue
+				}
+				rhs := s.Rhs[i]
+				if litKeys, ok := extractCompositeLiteralKeys(rhs); ok {
+					found = true
+					declSeen = true
+					for _, k := range litKeys {
+						addKey(k)
+					}
+				}
+			}
+			// `name["k"] = v` — index assignment adding a key.
+			if len(s.Lhs) == 1 && len(s.Rhs) == 1 {
+				if idx, ok := s.Lhs[0].(*ast.IndexExpr); ok {
+					if xIdent, ok := idx.X.(*ast.Ident); ok && xIdent.Name == name {
+						if keyLit, ok := idx.Index.(*ast.BasicLit); ok && keyLit.Kind == token.STRING {
+							if k, ok := syncParamStringLiteral(keyLit); ok {
+								found = true
+								addKey(k)
+							}
+						}
+					}
+				}
+			}
+		case *ast.GenDecl:
+			// `var name = map[string]X{...}` or `var name map[string]X`.
+			if s.Tok != token.VAR {
+				return true
+			}
+			for _, spec := range s.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, n := range vs.Names {
+					if n.Name != name || i >= len(vs.Values) {
+						continue
+					}
+					if litKeys, ok := extractCompositeLiteralKeys(vs.Values[i]); ok {
+						found = true
+						declSeen = true
+						for _, k := range litKeys {
+							addKey(k)
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+	if !found {
+		return nil, false
+	}
+	// If we only saw index assignments without ever seeing a declaration
+	// or full-replacement literal in this function, the ident likely
+	// refers to a map declared in an outer scope (a parameter, a struct
+	// field, a closure capture). The keys we collected are real but the
+	// initial-state of the map is unknown — skip to avoid a confidently
+	// wrong key set. The declaration-present case is the named-map
+	// pattern this resolver was written for.
+	if !declSeen {
+		return nil, false
+	}
+	sort.Strings(keys)
+	return keys, true
 }
 
 func extractCompositeLiteralKeys(expr ast.Expr) ([]string, bool) {
