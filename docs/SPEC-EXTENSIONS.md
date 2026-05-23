@@ -18,6 +18,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-origin` | `info` | Google Discovery resource fallback | No |
 | `x-providerName` | `info` | Google Discovery resource fallback | No |
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
+| `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -189,6 +190,33 @@ x-tier-routing:
         in: query
         header: api_key
         env_vars: [EXAMPLE_PAID_KEY]
+```
+
+### `x-rate-class`
+
+Declares the API's rate-limit operating point so generated sync defaults can
+avoid wasteful parallelism on low-total-budget APIs.
+
+Parsed field: `APISpec.RateClass`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- Must be a string.
+- Accepted values are `per-second`, `daily`, `monthly`, and `unlimited`.
+- `daily` and `monthly` generate `sync --concurrency` with a default of 1.
+  `per-second`, `unlimited`, and absent keep the default of 4.
+- This only changes generated sync worker defaults. It does not add runtime
+  rate limiting, retries, or backoff.
+
+Example:
+
+```yaml
+info:
+  title: Low Quota API
+  version: "1.0"
+  x-rate-class: monthly
 ```
 
 ### `x-mcp`
