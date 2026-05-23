@@ -15,6 +15,9 @@ auth:
   type: cookie
   header: "Cookie"
   cookie_domain: ".cookie-auth.example"
+  cookies:
+    - session_id
+    - csrf_token
   env_vars:
     - COOKIE_AUTH_SESSION
 

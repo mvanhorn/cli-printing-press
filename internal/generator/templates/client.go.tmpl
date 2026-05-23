@@ -396,7 +396,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 	}
 {{- else}}
+{{- if .Auth.HasCookies}}
+	httpClient := newHTTPClient(timeout, LoadCookieJar())
+{{- else}}
 	httpClient := newHTTPClient(timeout, nil)
+{{- end}}
 	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 {{- if .BasePath}}
