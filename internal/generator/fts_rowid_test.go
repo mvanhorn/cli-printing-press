@@ -16,7 +16,9 @@ func TestGenerateStoreFTSRowIDContract(t *testing.T) {
 
 	apiSpec := minimalSpec("fts-rowid")
 	outputDir := filepath.Join(t.TempDir(), "fts-rowid-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
 
 	testPath := filepath.Join(outputDir, "internal", "store", "fts_rowid_contract_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(`package store
