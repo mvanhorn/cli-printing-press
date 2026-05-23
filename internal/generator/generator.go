@@ -626,14 +626,15 @@ func buildWhichFallbackEntries(resources map[string]spec.Resource) []NovelFeatur
 
 // HelperFlags controls which helper functions are emitted in helpers.go.
 type HelperFlags struct {
-	HasDelete          bool // spec has DELETE endpoints → emit classifyDeleteError
-	HasPathParams      bool // spec has path parameters → emit replacePathParam
-	HasMultiPositional bool // spec has endpoints with 2+ positional params → emit usageErr
-	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
-	HasSyncHelpers     bool // generated sync implementation calls sync-only helpers
-	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
-	HasEmbeddedPaged   bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
-	HasResponseUnwrap  bool // at least one generated command can call extractResponseData
+	HasDelete            bool // spec has DELETE endpoints → emit classifyDeleteError
+	HasPathParams        bool // spec has path parameters → emit replacePathParam
+	HasMultiPositional   bool // spec has endpoints with 2+ positional params → emit usageErr
+	HasDataLayer         bool // CLI has a local store (sync/search) → emit provenance helpers
+	HasSyncHelpers       bool // generated sync implementation calls sync-only helpers
+	HasClientLimit       bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
+	HasEmbeddedPaged     bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
+	HasResponseUnwrap    bool // at least one generated command can call extractResponseData
+	HasMutationEndpoints bool // spec has POST/PUT/PATCH endpoints → emit partial-failure helpers + --allow-partial-failure flag
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -643,6 +644,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 		for _, e := range r.Endpoints {
 			if strings.EqualFold(e.Method, "DELETE") {
 				flags.HasDelete = true
+			}
+			if isMutationMethod(e.Method) {
+				flags.HasMutationEndpoints = true
 			}
 			if endpointNeedsClientLimit(e) {
 				flags.HasClientLimit = true
@@ -668,6 +672,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
 				}
+				if isMutationMethod(e.Method) {
+					flags.HasMutationEndpoints = true
+				}
 				if endpointNeedsClientLimit(e) {
 					flags.HasClientLimit = true
 				}
@@ -690,6 +697,20 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 		}
 	}
 	return flags
+}
+
+// isMutationMethod reports whether method is a mutation verb that reaches the
+// partial-failure detection call sites in command_endpoint.go.tmpl. The
+// template emits those call sites for every non-GET/HEAD endpoint, so the
+// predicate must match the same shape — otherwise a DELETE-only CLI would
+// reference undefined detectPartialFailure / partialFailureReport symbols.
+// Detection itself is a no-op for DELETE bodies in practice; the cost is one
+// dead function on truly-DELETE-only CLIs.
+func isMutationMethod(method string) bool {
+	if method == "" {
+		return false
+	}
+	return !strings.EqualFold(method, "GET") && !strings.EqualFold(method, "HEAD")
 }
 
 // helpersTemplateData wraps APISpec with flags controlling conditional helper emission.
@@ -3216,6 +3237,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		AsyncJobCount         int
 		HasAuthCommand        bool
 		HasDelete             bool
+		HasMutationEndpoints  bool
 		HasAutoRefresh        bool
 		CompactDescription    string
 	}{
@@ -3233,6 +3255,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		AsyncJobCount:         len(g.AsyncJobs),
 		HasAuthCommand:        hasAuthCommand,
 		HasDelete:             helperFlags.HasDelete,
+		HasMutationEndpoints:  helperFlags.HasMutationEndpoints,
 		HasAutoRefresh:        g.hasAutoRefresh(),
 		CompactDescription:    g.compactDescription(),
 	}
