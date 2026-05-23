@@ -2097,23 +2097,34 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 	if text == "" {
 		return text
 	}
-	masked := text
+	type credentialMask struct {
+		needle      string
+		replacement string
+	}
+	var masks []credentialMask
 	seen := map[string]struct{}{}
 	addValue := func(value string) {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			return
 		}
-		if _, ok := seen[value]; ok {
-			return
+		replacement := maskToken(value)
+		addMask := func(needle string) {
+			if needle == "" {
+				return
+			}
+			if _, ok := seen[needle]; ok {
+				return
+			}
+			seen[needle] = struct{}{}
+			masks = append(masks, credentialMask{needle: needle, replacement: replacement})
 		}
-		seen[value] = struct{}{}
-		masked = strings.ReplaceAll(masked, value, maskToken(value))
+		addMask(value)
 		if escaped := url.QueryEscape(value); escaped != value {
-			masked = strings.ReplaceAll(masked, escaped, maskToken(value))
+			addMask(escaped)
 		}
 		if escaped := url.PathEscape(value); escaped != value {
-			masked = strings.ReplaceAll(masked, escaped, maskToken(value))
+			addMask(escaped)
 		}
 	}
 	addCredential := func(value string) {
@@ -2126,32 +2137,38 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 	for _, value := range extraCredentials {
 		addCredential(value)
 	}
-	if c == nil || c.Config == nil {
-		return masked
-	}
-	addCredential(c.Config.AuthHeaderVal)
-	addCredential(c.Config.AuthHeader())
+	if c != nil && c.Config != nil {
+		addCredential(c.Config.AuthHeaderVal)
+		addCredential(c.Config.AuthHeader())
 {{- if .HasAuthCommand}}
-	addCredential(c.Config.AccessToken)
-	addCredential(c.Config.RefreshToken)
-	addCredential(c.Config.ClientSecret)
+		addCredential(c.Config.AccessToken)
+		addCredential(c.Config.RefreshToken)
+		addCredential(c.Config.ClientSecret)
 {{- end}}
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
 {{- if .Sensitive}}
-	addCredential(c.Config.{{resolveEnvVarField .Name}})
+		addCredential(c.Config.{{resolveEnvVarField .Name}})
 {{- end}}
 {{- end}}
 {{- else if .Auth.EnvVars}}
 {{- range .Auth.EnvVars}}
-	addCredential(c.Config.{{resolveEnvVarField .}})
+		addCredential(c.Config.{{resolveEnvVarField .}})
 {{- end}}
 {{- end}}
 {{- range .Auth.AdditionalHeaders}}
 {{- if .EnvVar.Sensitive}}
-	addCredential(c.Config.{{resolveEnvVarField .EnvVar.Name}})
+		addCredential(c.Config.{{resolveEnvVarField .EnvVar.Name}})
 {{- end}}
 {{- end}}
+	}
+	sort.SliceStable(masks, func(i, j int) bool {
+		return len(masks[i].needle) > len(masks[j].needle)
+	})
+	masked := text
+	for _, mask := range masks {
+		masked = strings.ReplaceAll(masked, mask.needle, mask.replacement)
+	}
 	return masked
 }
 

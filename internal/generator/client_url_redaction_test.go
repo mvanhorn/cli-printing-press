@@ -78,6 +78,19 @@ func newRedactionClient(secret string) *Client {
 	return c
 }
 
+func TestCredentialMaskingHandlesPrefixOverlaps(t *testing.T) {
+	const short = "a2d16a0d"
+	const long = short + "/8e81+e7fb9e6437ac=="
+	c := newRedactionClient(long)
+
+	got := c.maskCredentialText("raw="+long+"&escaped="+url.QueryEscape(long)+"&short="+short, short)
+
+	assertCredentialMasked(t, "prefix-overlap text", got, long, "****ac==", "****6a0d")
+	if strings.Contains(got, "/8e81") || strings.Contains(got, "%2F8e81") {
+		t.Fatalf("prefix-overlap text leaked long credential suffix: %s", got)
+	}
+}
+
 func forbiddenTransport() http.RoundTripper {
 	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{

@@ -914,23 +914,34 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 	if text == "" {
 		return text
 	}
-	masked := text
+	type credentialMask struct {
+		needle      string
+		replacement string
+	}
+	var masks []credentialMask
 	seen := map[string]struct{}{}
 	addValue := func(value string) {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			return
 		}
-		if _, ok := seen[value]; ok {
-			return
+		replacement := maskToken(value)
+		addMask := func(needle string) {
+			if needle == "" {
+				return
+			}
+			if _, ok := seen[needle]; ok {
+				return
+			}
+			seen[needle] = struct{}{}
+			masks = append(masks, credentialMask{needle: needle, replacement: replacement})
 		}
-		seen[value] = struct{}{}
-		masked = strings.ReplaceAll(masked, value, maskToken(value))
+		addMask(value)
 		if escaped := url.QueryEscape(value); escaped != value {
-			masked = strings.ReplaceAll(masked, escaped, maskToken(value))
+			addMask(escaped)
 		}
 		if escaped := url.PathEscape(value); escaped != value {
-			masked = strings.ReplaceAll(masked, escaped, maskToken(value))
+			addMask(escaped)
 		}
 	}
 	addCredential := func(value string) {
@@ -943,15 +954,21 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 	for _, value := range extraCredentials {
 		addCredential(value)
 	}
-	if c == nil || c.Config == nil {
-		return masked
+	if c != nil && c.Config != nil {
+		addCredential(c.Config.AuthHeaderVal)
+		addCredential(c.Config.AuthHeader())
+		addCredential(c.Config.AccessToken)
+		addCredential(c.Config.RefreshToken)
+		addCredential(c.Config.ClientSecret)
+		addCredential(c.Config.TierGlobalToken)
 	}
-	addCredential(c.Config.AuthHeaderVal)
-	addCredential(c.Config.AuthHeader())
-	addCredential(c.Config.AccessToken)
-	addCredential(c.Config.RefreshToken)
-	addCredential(c.Config.ClientSecret)
-	addCredential(c.Config.TierGlobalToken)
+	sort.SliceStable(masks, func(i, j int) bool {
+		return len(masks[i].needle) > len(masks[j].needle)
+	})
+	masked := text
+	for _, mask := range masks {
+		masked = strings.ReplaceAll(masked, mask.needle, mask.replacement)
+	}
 	return masked
 }
 
