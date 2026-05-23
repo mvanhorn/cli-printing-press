@@ -2148,6 +2148,30 @@ const DailyQuota = 1000
 		assert.True(t, scored)
 		assert.Equal(t, 10, score, "per-day quota helpers should mark auto-refresh as intentionally not applicable")
 	})
+
+	t.Run("incidental day substring in quota helper does not exclude auto-refresh", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+		writeScorecardFixture(t, dir, "internal/cliutil/quota.go", `package cliutil
+
+const TotalQuota = 1000
+
+// Resets every Monday.
+`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 5, score, "incidental day-like words must not mark a CLI as quota-aware freshness")
+	})
 }
 
 func TestScoreVision_ResourceGroupedCapabilityShapes(t *testing.T) {
@@ -2209,6 +2233,26 @@ func (DB) ListCoins() []string { return nil }
 
 	score := scoreVision(dir)
 	assert.GreaterOrEqual(t, score, 4, "resource-grouped export and workflow equivalents should contribute to Vision")
+}
+
+func TestIsVisionExportShapeRequiresStructuredExportWriter(t *testing.T) {
+	outputOnly := `package cli
+
+import (
+	"fmt"
+	"example.com/project/internal/store"
+	"github.com/spf13/cobra"
+)
+
+func newListCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "list", RunE: func(cmd *cobra.Command, args []string) error {
+		db := store.Open()
+		fmt.Fprintln(cmd.OutOrStdout(), db.List())
+		return nil
+	}}
+}
+`
+	assert.False(t, isVisionExportShape(outputOnly), "ordinary store-backed command output must not count as an export shape")
 }
 
 func TestScoreVision_IgnoresOrphanWorkflowFile(t *testing.T) {

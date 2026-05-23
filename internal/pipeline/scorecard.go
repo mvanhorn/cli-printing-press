@@ -37,6 +37,7 @@ var clientAPICallRE = regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
 var resourcesSQLSearchRE = regexp.MustCompile(`(?is)\bSELECT\b.*\bFROM\s+resources\b.*\bresource_type\b`)
 var resourcesFTSSQLSearchRE = regexp.MustCompile(`(?is)\bSELECT\b.*\bresources_fts\b.*\bresource_type\b`)
 var sqlQueryCallRE = regexp.MustCompile(`\.\s*Query(Row)?\s*\(`)
+var quotaDailySignalRE = regexp.MustCompile(`(?i)\b(daily|per[-_\s]+day)\b`)
 
 // Scorecard holds the auto-scored evaluation of a generated CLI against the Steinberger bar.
 type Scorecard struct {
@@ -883,7 +884,9 @@ func scoreCacheFreshness(dir string) (int, bool) {
 	if strings.Contains(autoRefreshContent, "autoRefreshIfStale") && strings.Contains(freshnessContent, "EnsureFresh") {
 		score += 5
 	} else if hasQuotaAwareFreshnessDesign(dir, storeContent) {
-		score = (score*10 + 2) / 5
+		// Quota-aware CLIs deliberately omit auto-refresh, so rescale the
+		// remaining 5-point subtotal onto the full 10-point dimension.
+		score *= 2
 	}
 
 	if score > 10 {
@@ -902,8 +905,7 @@ func hasQuotaAwareFreshnessDesign(dir, storeContent string) bool {
 	}
 	return strings.Contains(quotaContent, "Daily") ||
 		strings.Contains(quotaContent, "PerDay") ||
-		strings.Contains(quotaContent, "per-day") ||
-		strings.Contains(quotaContent, "day")
+		quotaDailySignalRE.MatchString(quotaContent)
 }
 
 // scoreLiveAPIVerification returns a 0-10 score reflecting whether verify
@@ -1244,9 +1246,7 @@ func isVisionExportShape(content string) bool {
 		return false
 	}
 	return strings.Contains(content, "json.NewEncoder") ||
-		strings.Contains(content, "csv.NewWriter") ||
-		strings.Contains(content, "cmd.OutOrStdout") ||
-		strings.Contains(content, "os.Stdout")
+		strings.Contains(content, "csv.NewWriter")
 }
 
 func isVisionWorkflowShape(content string) bool {
