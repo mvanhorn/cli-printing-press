@@ -1095,6 +1095,14 @@ exit 7
 	require.Contains(t, result.Reason, `"email":"<redacted>"`)
 }
 
+func TestTrimOutput_RedactsPIIBeforeTruncatingFailureReason(t *testing.T) {
+	got := trimOutput(strings.Repeat("x", 290) + " jane@example.com")
+
+	require.NotContains(t, got, "jane@")
+	require.NotContains(t, got, "example.com")
+	require.Contains(t, got, "<redacted")
+}
+
 func TestSampleOutput_TruncatesLargeCapture(t *testing.T) {
 	// Guard the serialized-sample size so one feature can't bloat the
 	// scorecard JSON or overwhelm an agentic reviewer's context window.

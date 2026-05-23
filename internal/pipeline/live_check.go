@@ -1022,14 +1022,11 @@ func normalizedOutputWords(s string) []string {
 }
 
 func trimOutput(s string) string {
-	s = strings.TrimSpace(s)
-	if redacted, ok := artifacts.RedactPIIJSONKeys(s); ok {
-		s = redacted
-	}
+	s = artifacts.RedactPIIText(strings.TrimSpace(s))
 	if len(s) > 300 {
 		s = truncateUTF8(s, 300) + "..."
 	}
-	return artifacts.RedactPIIText(s)
+	return s
 }
 
 // gracefulEmptyPhrases is the closed vocabulary of stderr substrings that
