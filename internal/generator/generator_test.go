@@ -6692,6 +6692,419 @@ func TestExampleLineUsesRenderedCommandAndFlagNames(t *testing.T) {
 	assert.NotContains(t, got, "--idempotencyKey")
 }
 
+func TestGeneratedCommandExamplePrefersNarrativeQuickStart(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-examples")
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/users",
+				Description: "List users",
+				Params: []spec.Param{
+					{Name: "pcgs_no", FlagName: "pcgs-no", Type: "string", Required: true, Description: "PCGS number"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/users/{id}",
+				Description: "Get a user",
+				Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-examples-pp-cli users list --pcgs-no 7356"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "users_list.go")
+	assert.Contains(t, source, `"  narrative-examples-pp-cli users list --pcgs-no 7356"`)
+	assert.NotContains(t, source, "--pcgs-no example-value")
+}
+
+func TestGeneratedCommandExampleFallsBackWhenNarrativeDoesNotMatchCommand(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-fallback")
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/users",
+				Description: "List users",
+				Params: []spec.Param{
+					{Name: "pcgs_no", FlagName: "pcgs-no", Type: "string", Required: true, Description: "PCGS number"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/users/{id}",
+				Description: "Get a user",
+				Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-fallback-pp-cli projects list --project-id p_12345"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "users_list.go")
+	assert.Contains(t, source, `narrative-fallback-pp-cli users list --pcgs-no example-value`)
+	assert.NotContains(t, source, "p_12345")
+}
+
+func TestGeneratedCommandExampleUsesNarrativeRecipeWhenQuickStartDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-recipes")
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/users",
+				Description: "List users",
+				Params: []spec.Param{
+					{Name: "pcgs_no", FlagName: "pcgs-no", Type: "string", Required: true, Description: "PCGS number"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/users/{id}",
+				Description: "Get a user",
+				Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-recipes-pp-cli projects list --project-id p_12345"},
+		},
+		Recipes: []Recipe{
+			{Title: "List users", Command: "narrative-recipes-pp-cli users list --pcgs-no 1106065"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "users_list.go")
+	assert.Contains(t, source, `"  narrative-recipes-pp-cli users list --pcgs-no 1106065"`)
+	assert.NotContains(t, source, "--pcgs-no example-value")
+}
+
+func TestGeneratedPromotedCommandExamplePrefersNarrativeQuickStart(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-promoted")
+	apiSpec.Resources["lookup"] = spec.Resource{
+		Description: "Lookup",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/lookup",
+				Description: "Lookup an item",
+				Body: []spec.Param{
+					{Name: "pcgs_no", FlagName: "pcgs-no", Type: "string", Required: true, Description: "PCGS number"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-promoted-pp-cli lookup --pcgs-no 7356"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_lookup.go")
+	assert.Contains(t, source, `"  narrative-promoted-pp-cli lookup --pcgs-no 7356"`)
+	assert.NotContains(t, source, "--pcgs-no example-value")
+}
+
+func TestGeneratedCommandExampleEscapesQuotedNarrativeArgs(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-quotes")
+	apiSpec.Resources["search"] = spec.Resource{
+		Description: "Search",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/search",
+				Description: "Search items",
+				Params: []spec.Param{
+					{Name: "query", Type: "string", Required: true, Description: "Search query"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/search/{id}",
+				Description: "Get a search result",
+				Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: `narrative-quotes-pp-cli search list --query "peace dollar"`},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "search_list.go")
+	assert.Contains(t, source, `"  narrative-quotes-pp-cli search list --query \"peace dollar\""`)
+	assert.NotContains(t, source, "--query example-value")
+}
+
+func TestGeneratedCommandExampleMatchesNarrativeWithLeadingGlobalFlag(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-global-flag")
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/users",
+				Description: "List users",
+				Params: []spec.Param{
+					{Name: "pcgs_no", FlagName: "pcgs-no", Type: "string", Required: true, Description: "PCGS number"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/users/{id}",
+				Description: "Get a user",
+				Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-global-flag-pp-cli --json users list --pcgs-no 7356"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "users_list.go")
+	assert.Contains(t, source, `"  narrative-global-flag-pp-cli --json users list --pcgs-no 7356"`)
+	assert.NotContains(t, source, "--pcgs-no example-value")
+}
+
+func TestGeneratedCommandExampleMatchesNarrativeAlias(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-alias")
+	apiSpec.Resources["accounts"] = spec.Resource{
+		Description: "Accounts",
+		Endpoints: map[string]spec.Endpoint{
+			"get-account": {
+				Method:      "GET",
+				Path:        "/accounts/{accountId}",
+				Description: "Get account",
+				Alias:       "get",
+				Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+			},
+			"list": {
+				Method:      "GET",
+				Path:        "/accounts",
+				Description: "List accounts",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-alias-pp-cli accounts get acct_123"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "accounts_get-account.go")
+	assert.Contains(t, source, `"  narrative-alias-pp-cli accounts get acct_123"`)
+	assert.NotContains(t, source, "550e8400-e29b-41d4-a716-446655440000")
+}
+
+func TestGeneratedCommandExampleMatchesLocalFlagBeforePositional(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-local-flag")
+	apiSpec.Resources["customers"] = spec.Resource{
+		Description: "Customers",
+		Endpoints: map[string]spec.Endpoint{
+			"get": {
+				Method:      "GET",
+				Path:        "/customers/{id}",
+				Description: "Get customer",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Positional: true},
+					{Name: "expand", Type: "string", Description: "Expansion"},
+				},
+			},
+			"list": {
+				Method:      "GET",
+				Path:        "/customers",
+				Description: "List customers",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-local-flag-pp-cli customers get --expand subscriptions cus_123"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "customers_get.go")
+	assert.Contains(t, source, `"  narrative-local-flag-pp-cli customers get --expand subscriptions cus_123"`)
+	assert.NotContains(t, source, "550e8400-e29b-41d4-a716-446655440000")
+}
+
+func TestGeneratedCommandExampleUsesMatchedNarrativeChainSegment(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-chain")
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        "/users",
+				Description: "List users",
+				Params: []spec.Param{
+					{Name: "pcgs_no", FlagName: "pcgs-no", Type: "string", Required: true, Description: "PCGS number"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/users/{id}",
+				Description: "Get a user",
+				Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-chain-pp-cli users list --pcgs-no 7356 && narrative-chain-pp-cli users get 7356"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "users_list.go")
+	assert.Contains(t, source, `"  narrative-chain-pp-cli users list --pcgs-no 7356"`)
+	assert.NotContains(t, source, "&& narrative-chain-pp-cli users get")
+	assert.NotContains(t, source, "--pcgs-no example-value")
+}
+
+func TestGeneratedPromotedCommandExampleRejectsNarrativeChildCommand(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-promoted-child")
+	apiSpec.Resources["account"] = spec.Resource{
+		Description: "Account",
+		Endpoints: map[string]spec.Endpoint{
+			"get": {
+				Method:      "GET",
+				Path:        "/account/{accountId}",
+				Description: "Get account",
+				Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+			},
+		},
+		SubResources: map[string]spec.Resource{
+			"cards": {
+				Description: "Cards",
+				Endpoints: map[string]spec.Endpoint{
+					"get-account": {
+						Method:      "GET",
+						Path:        "/account/{accountId}/cards",
+						Description: "Get cards",
+						Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-promoted-child-pp-cli account cards get-account 7356"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_account.go")
+	assert.Contains(t, source, `"  narrative-promoted-child-pp-cli account 550e8400-e29b-41d4-a716-446655440000"`)
+	assert.NotContains(t, source, "account cards get-account")
+}
+
+func TestGeneratedPromotedCommandExampleRejectsUnpromotedNarrativePath(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("narrative-unpromoted-path")
+	apiSpec.Resources["lookup"] = spec.Resource{
+		Description: "Lookup",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/lookup",
+				Description: "Lookup an item",
+				Body: []spec.Param{
+					{Name: "pcgs_no", FlagName: "pcgs-no", Type: "string", Required: true, Description: "PCGS number"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		QuickStart: []QuickStartStep{
+			{Command: "narrative-unpromoted-path-pp-cli lookup create --pcgs-no 7356"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_lookup.go")
+	assert.Contains(t, source, `"  narrative-unpromoted-path-pp-cli lookup --pcgs-no example-value"`)
+	assert.NotContains(t, source, `"  narrative-unpromoted-path-pp-cli lookup create --pcgs-no 7356"`)
+}
+
 func TestDetectAgentMoneyWorkflowFromGenericMoneyMovementShape(t *testing.T) {
 	t.Parallel()
 
