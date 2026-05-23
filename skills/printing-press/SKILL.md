@@ -1812,6 +1812,10 @@ refresh APIs unless the refresh path is cheap, bounded, and clearly valuable;
 those CLIs should rely on manual `sync` plus the generated `doctor` cache report
 instead of surprising users with pre-read upstream calls.
 
+Catalog-mode runs skip this step: keep the built-in catalog entry's cache
+settings unchanged. Do not pass a flag or patch generated files after the fact;
+cache freshness must come from the spec that drives generation.
+
 For internal YAML specs, add the cache block before the final `generate`
 invocation only when at least one generated syncable resource read command will
 be covered automatically, or `cache.commands` will register a real hand-authored
@@ -1833,6 +1837,7 @@ resource must be declared in `resources:` and classified as syncable.
 ```yaml
 cache:
   enabled: true
+  stale_after: 168h        # choose a domain-appropriate default
   commands:
     - name: <novel-read-command>
       resources: [<resource-name>]
