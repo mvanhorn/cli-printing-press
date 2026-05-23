@@ -43,6 +43,24 @@ func TestResolvePlatform(t *testing.T) {
 	})
 }
 
+func TestBundleCLIBinaryTargetPathUsesWindowsExecutableSuffix(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join("tmp", "demo")
+	assert.Equal(t,
+		filepath.Join("tmp", "demo", "build", "stage", "bin", "demo-pp-cli.exe"),
+		bundleCLIBinaryPath(dir, "demo-pp-cli", "windows"),
+	)
+	assert.Equal(t,
+		filepath.Join("tmp", "demo", "build", "stage", "bin", "demo-pp-cli"),
+		bundleCLIBinaryPath(dir, "demo-pp-cli", "linux"),
+	)
+	assert.Equal(t, "demo-pp-cli.exe", bundleCLIBinaryArchiveName("demo-pp-cli", "windows"))
+	assert.Equal(t, "demo-pp-cli", bundleCLIBinaryArchiveName("demo-pp-cli", "darwin"))
+	assert.Empty(t, bundleCLIBinaryPath(dir, "", "windows"))
+	assert.Empty(t, bundleCLIBinaryArchiveName("", "windows"))
+}
+
 func TestAutoBundleForHost(t *testing.T) {
 	t.Run("no manifest is silent", func(t *testing.T) {
 		dir := t.TempDir()
