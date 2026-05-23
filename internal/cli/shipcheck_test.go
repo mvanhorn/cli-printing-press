@@ -280,6 +280,26 @@ func TestShipcheck_DefaultArgvIncludesFixAndLiveCheck(t *testing.T) {
 	}
 }
 
+func TestShipcheck_NormalizesRelativeDirForLegs(t *testing.T) {
+	h := newShipcheckHarness(t)
+	t.Chdir(h.dir)
+
+	if err := runShipcheckCmd(t, "--dir", "."); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+	for i, arg := range verifyArgs {
+		if arg == "--dir" && i+1 < len(verifyArgs) {
+			if verifyArgs[i+1] != h.dir {
+				t.Fatalf("verify --dir = %q; want %q", verifyArgs[i+1], h.dir)
+			}
+			return
+		}
+	}
+	t.Fatalf("verify argv missing --dir: %v", verifyArgs)
+}
+
 // TestShipcheck_PassesSpecAndResearchDir: when --spec and --research-dir
 // are set, dogfood and scorecard receive both; verify receives --spec.
 func TestShipcheck_PassesSpecAndResearchDir(t *testing.T) {

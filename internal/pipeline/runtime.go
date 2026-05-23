@@ -91,6 +91,13 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		return nil, err
 	}
 	defer releaseHome()
+	// Keep this boundary safe for programmatic callers; CLI commands also
+	// normalize earlier when they need the stable path for follow-on argv.
+	absDir, err := filepath.Abs(cfg.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving CLI directory: %w", err)
+	}
+	cfg.Dir = absDir
 	if cfg.NoSpec {
 		return runStructuralVerify(cfg)
 	}

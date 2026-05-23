@@ -132,3 +132,27 @@ func TestVerifyCmdTextFailExitsWithLegacyCode(t *testing.T) {
 	assert.Equal(t, 1, *exitCode)
 	assert.Contains(t, output, "Verdict: FAIL")
 }
+
+func TestVerifyCmdNormalizesRelativeDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var gotDir string
+	cmd := newVerifyCmdWithOptions(verifyCmdOptions{
+		runVerify: func(cfg pipeline.VerifyConfig) (*pipeline.VerifyReport, error) {
+			gotDir = cfg.Dir
+			return &pipeline.VerifyReport{
+				Mode:     "mock",
+				Total:    1,
+				Passed:   1,
+				PassRate: 100,
+				Verdict:  "PASS",
+				Binary:   filepath.Join(cfg.Dir, "sample-cli"),
+			}, nil
+		},
+	})
+	cmd.SetArgs([]string{"--dir", "."})
+
+	_, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+	assert.Equal(t, dir, gotDir)
+}

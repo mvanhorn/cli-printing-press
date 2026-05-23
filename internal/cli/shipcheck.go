@@ -431,6 +431,11 @@ Each leg remains callable standalone — this command is additive orchestration.
 			if err := validateShipcheckDir(opts.dir); err != nil {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
+			absDir, err := filepath.Abs(opts.dir)
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving --dir: %w", err)}
+			}
+			opts.dir = absDir
 
 			binPath, err := resolveSelfBinary()
 			if err != nil {
