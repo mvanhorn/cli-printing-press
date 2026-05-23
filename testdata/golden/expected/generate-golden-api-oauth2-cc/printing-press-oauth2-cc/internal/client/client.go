@@ -500,7 +500,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, 0, ctxErr
 			}
-			lastErr = fmt.Errorf("%s %s: %w", method, path, err)
+			lastErr = fmt.Errorf("%s %s: %w", method, c.displayURL(path, authHeader), c.maskError(err, authHeader))
 			continue
 		}
 
@@ -536,9 +536,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 
 		apiErr := &APIError{
 			Method:     method,
-			Path:       path,
+			Path:       c.displayURL(path, authHeader),
 			StatusCode: resp.StatusCode,
-			Body:       truncateBody(respBody),
+			Body:       c.maskCredentialText(truncateBody(respBody), authHeader),
 		}
 
 		// Rate limited - adjust adaptive limiter and retry
@@ -575,7 +575,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 // using the auth material already resolved in `do()`. Never triggers a network
 // call — the caller is responsible for passing cached auth material only.
 func (c *Client) dryRun(method, targetURL, path string, params map[string]string, body []byte, headerOverrides map[string]string, authHeader string) (json.RawMessage, int, error) {
-	fmt.Fprintf(os.Stderr, "%s %s\n", method, targetURL)
+	fmt.Fprintf(os.Stderr, "%s %s\n", method, c.displayURL(targetURL, authHeader))
 	queryPrinted := false
 	if params != nil {
 		keys := make([]string, 0, len(params))
@@ -590,7 +590,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 			if queryPrinted {
 				sep = "&"
 			}
-			fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, k, params[k])
+			fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, k, c.maskCredentialText(params[k], authHeader))
 			queryPrinted = true
 		}
 	}
@@ -949,6 +949,92 @@ func maskToken(token string) string {
 		return "****"
 	}
 	return "****" + token[len(token)-4:]
+}
+
+type maskedError struct {
+	msg string
+}
+
+func (e maskedError) Error() string {
+	return e.msg
+}
+
+func (c *Client) displayURL(rawURL string, extraCredentials ...string) string {
+	return c.maskCredentialText(rawURL, extraCredentials...)
+}
+
+func (c *Client) maskError(err error, extraCredentials ...string) error {
+	if err == nil {
+		return nil
+	}
+	raw := err.Error()
+	msg := c.maskCredentialText(raw, extraCredentials...)
+	if msg == raw {
+		return err
+	}
+	return maskedError{msg: msg}
+}
+
+func (c *Client) maskCredentialText(text string, extraCredentials ...string) string {
+	if text == "" {
+		return text
+	}
+	type credentialMask struct {
+		needle      string
+		replacement string
+	}
+	var masks []credentialMask
+	seen := map[string]struct{}{}
+	addValue := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		replacement := maskToken(value)
+		addMask := func(needle string) {
+			if needle == "" {
+				return
+			}
+			if _, ok := seen[needle]; ok {
+				return
+			}
+			seen[needle] = struct{}{}
+			masks = append(masks, credentialMask{needle: needle, replacement: replacement})
+		}
+		addMask(value)
+		if escaped := url.QueryEscape(value); escaped != value {
+			addMask(escaped)
+		}
+		if escaped := url.PathEscape(value); escaped != value {
+			addMask(escaped)
+		}
+	}
+	addCredential := func(value string) {
+		value = strings.TrimSpace(value)
+		addValue(value)
+		if _, token, ok := strings.Cut(value, " "); ok {
+			addValue(token)
+		}
+	}
+	for _, value := range extraCredentials {
+		addCredential(value)
+	}
+	if c != nil && c.Config != nil {
+		addCredential(c.Config.AuthHeaderVal)
+		addCredential(c.Config.AuthHeader())
+		addCredential(c.Config.AccessToken)
+		addCredential(c.Config.RefreshToken)
+		addCredential(c.Config.ClientSecret)
+		addCredential(c.Config.PrintingPressOauth2ClientSecret)
+	}
+	sort.SliceStable(masks, func(i, j int) bool {
+		return len(masks[i].needle) > len(masks[j].needle)
+	})
+	masked := text
+	for _, mask := range masks {
+		masked = strings.ReplaceAll(masked, mask.needle, mask.replacement)
+	}
+	return masked
 }
 
 func truncateBody(b []byte) string {
