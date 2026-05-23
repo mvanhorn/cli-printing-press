@@ -1791,6 +1791,64 @@ spec, or `verify-skill canonical-sections` can drift.
 Catalog-mode runs skip this step: keep the built-in catalog entry's category
 unchanged, even if Phase 1 research would classify the API differently.
 
+### Pre-Generation Cache Enrichment
+
+Before generating, decide whether the spec should opt into generator-owned cache
+freshness. The generator already has the freshness helpers and auto-refresh hook,
+but it emits them only when the spec declares `cache.enabled: true` and the CLI
+has a real sync path. Stateful catalog-shaped CLIs otherwise serve local data
+exactly as it was last synced, which caps the cache freshness score and can leave
+agents reading stale SQLite rows without a warning.
+
+Enable cache freshness only when the resolved spec, profiler output, or absorb
+manifest shows at least one covered read path backed by a syncable resource that
+`sync` can refresh from the upstream API before serving. Do not enable it from
+Phase 1 research notes or scorecard goals alone. Leave it disabled for stateless
+read-through wrappers and for local stores that are primarily per-user working
+state, such as carts, drafts, or other session-owned data where a pre-read
+refresh could replace the user's local state with a different snapshot. Also
+leave it disabled for quota-metered, paid, rate-limited, or expensive bulk
+refresh APIs unless the refresh path is cheap, bounded, and clearly valuable;
+those CLIs should rely on manual `sync` plus the generated `doctor` cache report
+instead of surprising users with pre-read upstream calls.
+
+Catalog-mode runs skip this step: keep the built-in catalog entry's cache
+settings unchanged. Do not pass a flag or patch generated files after the fact;
+cache freshness must come from the spec that drives generation.
+
+For internal YAML specs, add the cache block before the final `generate`
+invocation only when at least one generated syncable resource read command will
+be covered automatically, or `cache.commands` will register a real hand-authored
+store-reading command:
+
+```yaml
+cache:
+  enabled: true
+  stale_after: 168h        # choose a domain-appropriate default
+  refresh_timeout: 30s     # optional; blank uses the generated runtime default
+```
+
+Generated resource list/get/search commands are covered automatically from the
+syncable resources profile. Use `cache.commands` only for hand-authored novel
+commands that read the local store and are not generated resource commands. The
+command `name` is the Cobra path without the binary name, and every listed
+resource must be declared in `resources:` and classified as syncable.
+
+```yaml
+cache:
+  enabled: true
+  stale_after: 168h        # choose a domain-appropriate default
+  commands:
+    - name: <novel-read-command>
+      resources: [<resource-name>]
+```
+
+Pick `stale_after` from the domain's update cadence: shorter for live feeds or
+rapidly changing inventory, longer for reference catalogs and archival data. Do
+not enable cache just to satisfy the scorecard if there is no upstream refresh
+path or no user value in pre-read freshness; the generator intentionally skips
+the helpers when they would be dead code.
+
 ### Pre-Generation Auth Enrichment
 
 Before generating, check whether the resolved spec has auth. This matters most for
