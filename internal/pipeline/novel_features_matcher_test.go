@@ -165,6 +165,13 @@ func TestNovelFeatureDepthMismatch(t *testing.T) {
 			want:    nil,
 		},
 		{
+			name:    "positional argument matching another command leaf is clean",
+			command: "upload",
+			example: `demo-pp-cli upload photo`,
+			paths:   map[string]bool{"upload": true, "photo": true},
+			want:    nil,
+		},
+		{
 			name:    "leaf-only fallback is clean when path is unknown",
 			command: "grab",
 			paths:   map[string]bool{},
@@ -293,13 +300,16 @@ func TestCollectRegisteredCommands_VariableWiring(t *testing.T) {
 
 	writeTestFile(t, filepath.Join(cli, "root.go"), `package cli
 import "github.com/spf13/cobra"
+var listCmd = rootListSubcmd(nil)
 func Execute() {
 	rootCmd := &cobra.Command{Use: "tool"}
 	grabCmd := rootGrabSubcmd(nil)
 	rootCmd.AddCommand(grabCmd)
+	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(newAssetsCmd())
 }
 func rootGrabSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "grab"} }
+func rootListSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "list"} }
 `)
 	writeTestFile(t, filepath.Join(cli, "assets.go"), `package cli
 import "github.com/spf13/cobra"
@@ -313,7 +323,7 @@ func assetsGrabSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "gr
 `)
 
 	paths, _ := collectRegisteredCommands(dir)
-	for _, want := range []string{"grab", "assets", "assets grab"} {
+	for _, want := range []string{"grab", "list", "assets", "assets grab"} {
 		if !paths[want] {
 			t.Errorf("expected path %q, got paths: %v", want, paths)
 		}

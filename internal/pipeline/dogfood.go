@@ -571,7 +571,12 @@ func exampleAdvertisedPath(example string, paths map[string]bool) string {
 		candidates = append(candidates, candidates[len(candidates)-1]+" "+token)
 	}
 	for i := len(candidates) - 1; i >= 0; i-- {
-		if matchPath(candidates[i], paths) || len(leafMatchedPaths(candidates[i], paths)) > 0 {
+		if matchPath(candidates[i], paths) {
+			return candidates[i]
+		}
+	}
+	for i := len(candidates) - 1; i >= 0; i-- {
+		if len(leafMatchedPaths(candidates[i], paths)) > 0 {
 			return candidates[i]
 		}
 	}
@@ -920,9 +925,13 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 }
 
 func commandFactoryVars(src string) map[string]string {
-	re := regexp.MustCompile(`\b(\w+)\s*:=\s*(\w+)\s*\(`)
+	shortRe := regexp.MustCompile(`\b(\w+)\s*:=\s*(\w+)\s*\(`)
+	varRe := regexp.MustCompile(`\bvar\s+(\w+)\s*=\s*(\w+)\s*\(`)
 	vars := map[string]string{}
-	for _, m := range re.FindAllStringSubmatch(src, -1) {
+	for _, m := range shortRe.FindAllStringSubmatch(src, -1) {
+		vars[m[1]] = m[2]
+	}
+	for _, m := range varRe.FindAllStringSubmatch(src, -1) {
 		vars[m[1]] = m[2]
 	}
 	return vars
