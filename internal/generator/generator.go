@@ -634,7 +634,7 @@ type HelperFlags struct {
 	HasClientLimit       bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
 	HasEmbeddedPaged     bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
 	HasResponseUnwrap    bool // at least one generated command can call extractResponseData
-	HasMutationEndpoints bool // spec has POST/PUT/PATCH endpoints → emit partial-failure helpers + --allow-partial-failure flag
+	HasMutationEndpoints bool // spec has any non-GET/HEAD endpoint → emit partial-failure helpers + --allow-partial-failure flag
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
