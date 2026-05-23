@@ -500,13 +500,16 @@ if [ ! -f "$PATCHES_INDEX" ]; then
   echo "ERROR: packaged CLI is missing .printing-press-patches.json. Reprint with a current cli-printing-press binary before publishing."
   exit 1
 fi
-jq -e '
+if ! jq -e '
   (.schema_version | type == "number") and
   (.applied_at | type == "string" and length > 0) and
   (.base_run_id | type == "string" and length > 0) and
   (.base_printing_press_version | type == "string" and length > 0) and
   (.patches | type == "array")
-' "$PATCHES_INDEX" >/dev/null
+' "$PATCHES_INDEX" >/dev/null; then
+  echo "ERROR: packaged CLI has malformed .printing-press-patches.json. Reprint with a current cli-printing-press binary before publishing."
+  exit 1
+fi
 ```
 
 Fresh prints from current `cli-printing-press generate` include this file with
@@ -542,7 +545,7 @@ Rules:
 - Include non-Go support files in `files` when they are part of the same
   code-level customization. README/SKILL.md-only polish does not need a patch
   manifest entry.
-- Inline `// PATCH:` source comments are optional navigation aids. The public
+- Inline `// PATCH(...)` source comments are optional navigation aids. The public
   library verifier currently requires the patches file to exist and
   `patches` to be an array; it does not require a marker/comment pairing.
 - If an entry exists only to work around an old verifier or pipeline bug that no
@@ -551,7 +554,7 @@ Rules:
 
 For the authoritative public-library authoring contract, read the
 `mvanhorn/printing-press-library` `AGENTS.md` section
-`.printing-press-patches.json` records library-side customizations`.
+"`.printing-press-patches.json` records library-side customizations".
 
 ## Step 7: Collision Detection & Resolution
 

@@ -203,12 +203,18 @@ func TestPublishSkillDocumentsPatchesIndexContract(t *testing.T) {
 
 	block := skill[step65:step7]
 	assert.Contains(t, block, ".printing-press-patches.json")
+	assert.Contains(t, block, "if ! jq -e")
 	assert.Contains(t, block, `(.schema_version | type == "number")`)
 	assert.Contains(t, block, `(.patches | type == "array")`)
 	assert.Contains(t, block, "Reprint with a current cli-printing-press binary before publishing")
-	assert.Contains(t, block, "rather than synthesizing the\ndeterministic provenance fields by hand")
-	assert.Contains(t, block, "append\none concise entry per customization to `patches[]`")
-	assert.Contains(t, block, "README/SKILL.md-only polish does not need a patch\n  manifest entry")
+	assert.Contains(t, block, "malformed .printing-press-patches.json")
+	assert.Contains(t, block, "rather than synthesizing the")
+	assert.Contains(t, block, "deterministic provenance fields by hand")
+	assert.Contains(t, block, "one concise entry per customization")
+	assert.Contains(t, block, "`patches[]`")
+	assert.Contains(t, block, "README/SKILL.md-only polish does not need a patch")
+	assert.Contains(t, block, "manifest entry")
+	assert.Contains(t, block, "Inline `// PATCH(...)` source comments are optional navigation aids")
 	assert.Contains(t, block, "does not require a marker/comment pairing")
 }
 
