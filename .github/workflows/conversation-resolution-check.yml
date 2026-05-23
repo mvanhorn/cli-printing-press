@@ -1,6 +1,13 @@
 name: Conversation resolution check
 
-# Surfaces unresolved review threads as a status check on the PR head SHA.
+# Surfaces unresolved review threads as a commit status on the PR head
+# SHA so authors get a specific cue when threads are the holdup. The
+# canonical signal lives in a commit status (latest-by-context), not the
+# workflow job's auto check_run; commit statuses with the same context
+# override on each push, so the rollup never holds a stale FAILURE next
+# to a later SUCCESS the way it did when the job conclusion was the
+# canonical signal (issue #1878).
+#
 # Not an enforcement gate — Mergify's `#review-threads-unresolved = 0`
 # condition in .mergify.yml is what actually blocks the merge queue. This
 # workflow exists for pre-label visibility: Mergify's `Mergify Merge
@@ -29,7 +36,7 @@ on:
   # Note: GitHub Actions does NOT support a `pull_request_review_thread`
   # event trigger (despite that event existing in the webhook payload set).
   # So clicking "Resolve conversation" in the UI does not auto-fire this
-  # workflow. The check_run will refresh on the next push, review, or
+  # workflow. The status will refresh on the next push, review, or
   # comment event. workflow_dispatch is the manual escape hatch.
   workflow_dispatch:
     inputs:
@@ -40,23 +47,31 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  # statuses: write lets the job POST a commit status with context
+  # "All conversations resolved" via the statuses API. Commit statuses
+  # dedupe by (sha, context) — the latest post wins for that context —
+  # so a successful re-run cleanly overrides any prior failure-state
+  # status from an earlier run of this workflow. Auto check_runs from
+  # workflow jobs don't dedupe that way (Feb 2025 GitHub change blocks
+  # GITHUB_TOKEN from PATCHing them), which is what produced the
+  # phantom-FAILURE rollup tie-breaker #1878 documents.
+  statuses: write
 
 jobs:
   evaluate:
-    # GitHub Actions auto-creates a check_run with this exact name when
-    # the job runs, and its conclusion mirrors the job's exit status.
-    # We rely on that auto-created check_run rather than POSTing our
-    # own because as of Feb 2025 the GitHub Actions runtime rejects
-    # external workflow attempts to update check_run status/conclusion
-    # via GITHUB_TOKEN (HTTP 403). The job exits non-zero when threads
-    # are unresolved, the auto check_run goes red, the merge widget
-    # shows the failure — no API calls, no duplicates, no PATCH races.
-    name: All conversations resolved
+    # The job's auto check_run is intentionally separated from the
+    # canonical "All conversations resolved" signal. The job exits 0 in
+    # both pass and fail cases; the actual pass/fail lives in the commit
+    # status posted below. Without this split, the auto check_runs from
+    # prior runs of the workflow on the same SHA accumulate as separate
+    # rollup entries (failure → cancelled → success), and consumers that
+    # don't dedupe by completed_at can pick the stale failure (#1878).
+    name: Evaluate conversation threads
     # Skip drafts across every event source. The original guard only
     # covered pull_request_target, but pull_request_review and
     # pull_request_review_comment events also carry a pull_request
     # object with .draft, and a review/comment on an in-progress draft
-    # should not post a failure check_run. workflow_dispatch has no
+    # should not post a failure status. workflow_dispatch has no
     # pull_request in the payload, so we fall through and let the
     # job run; manual dispatch is an explicit ask.
     if: github.event.pull_request == null || github.event.pull_request.draft == false
@@ -67,12 +82,9 @@ jobs:
     # check_run in `cancelled` state forever (we can't PATCH it post-Feb
     # 2025), and a single push commonly fires 3-5 events in seconds
     # (synchronize + Greptile's review.submitted + multiple
-    # review_comment.created), which left a row of `cancelled` check_runs
-    # making the PR look "partially failed" even when the real result
-    # was success. With cancel-in-progress: false, queued runs execute
-    # serially, each completes with a terminal success/failure, and the
-    # required-check rollup uses the latest by completed_at. UI shows
-    # N consistent entries instead of cancelled noise.
+    # review_comment.created). Serialized runs each complete with a
+    # terminal status, and the commit-status post at the end of each
+    # one overrides the (sha, context) entry; the latest post wins.
     concurrency:
       group: conversation-resolution-${{ github.event.pull_request.number || inputs.pr || github.run_id }}
       cancel-in-progress: false
@@ -100,7 +112,8 @@ jobs:
           echo "number=$(jq -r '.number' <<<"${pr_json}")" >> "${GITHUB_OUTPUT}"
           echo "head_sha=$(jq -r '.head.sha' <<<"${pr_json}")" >> "${GITHUB_OUTPUT}"
 
-      - name: Evaluate review threads and post check_run
+      - name: Evaluate review threads
+        id: eval
         env:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
@@ -160,12 +173,16 @@ jobs:
             printf '## All %s conversation(s) resolved\n\nNo unresolved review threads on this PR.\n' \
               "${total}" >> "${GITHUB_STEP_SUMMARY}"
             echo "PASS: 0 unresolved threads on ${HEAD_SHA}"
+            echo "state=success" >> "${GITHUB_OUTPUT}"
+            # Status descriptions are capped at 140 chars by GitHub. The
+            # pass-state copy is short by construction.
+            echo "description=All ${total} conversation(s) resolved" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
           # Build the detailed thread listing once, reused for the step
           # summary (rendered on the workflow run page) and the
-          # ::error:: annotation (rendered in the check_run UI).
+          # ::error:: annotation (rendered in the workflow-run UI).
           listing="$(jq -r '
             [.[] | select(.isResolved == false)] as $u |
             ($u | length) as $count |
@@ -190,9 +207,48 @@ jobs:
             printf '**To unblock the merge**, click "Resolve conversation" on each unresolved thread in the GitHub UI. Per repo convention every Greptile finding should be resolved (in code, or with a concrete reply explaining the deferral) before merge.\n'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          # ::error:: annotation surfaces in the check_run UI without
-          # needing a POST. The job's non-zero exit drives the auto
-          # check_run's conclusion to failure, which is what the merge
-          # widget displays.
+          # ::error:: annotation surfaces in the workflow-run UI as a
+          # red banner. The canonical pass/fail signal is the commit
+          # status posted by the next step (deduped by context, latest
+          # wins).
           echo "::error::${heading} on PR #${PR_NUMBER}. See the workflow run summary for the list. Click \"Resolve conversation\" on each thread to unblock."
-          exit 1
+          echo "state=failure" >> "${GITHUB_OUTPUT}"
+          # GitHub clips status descriptions at 140 chars. The heading
+          # variants we produce are well under that bound, but truncate
+          # defensively in case a future variant grows.
+          echo "description=${heading:0:140}" >> "${GITHUB_OUTPUT}"
+          # Always exit 0 so the auto check_run for this job conclusion
+          # is success regardless of thread state. The failure-state
+          # signal lives in the commit status, which dedupes cleanly
+          # and prevents stale check_runs from winning the rollup
+          # tie-breaker (#1878).
+          exit 0
+
+      - name: Post commit status
+        # if: always() — run even when the eval step failed mid-execution
+        # (gh api rate limit, transient graphql error). Without this, the
+        # default success() condition skips the post step and leaves the
+        # prior failure-state status pinned to the SHA — the exact stale-
+        # status problem this workflow is designed to fix. The head_sha
+        # guard skips when the PR-resolution step couldn't determine a
+        # target SHA, since there's nothing to post against.
+        if: always() && steps.pr.outputs.head_sha != ''
+        env:
+          # Fall back to an explicit 'error' state when the eval step
+          # didn't write outputs, so the canonical commit status carries
+          # a fresh signal on every run instead of silently inheriting
+          # the previous run's verdict.
+          STATE: ${{ steps.eval.outputs.state || 'error' }}
+          DESCRIPTION: ${{ steps.eval.outputs.description || 'Workflow error — see run logs' }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          # Use the canonical name as the status context so a single
+          # rollup entry "All conversations resolved" carries the
+          # current truth. Reposting with the same (sha, context)
+          # overrides — that's what fixes #1878.
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state="${STATE}" \
+            -f context="All conversations resolved" \
+            -f description="${DESCRIPTION}" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
