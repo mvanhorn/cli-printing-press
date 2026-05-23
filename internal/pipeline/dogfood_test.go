@@ -1565,6 +1565,148 @@ func newHealthCmd() *cobra.Command {
 		assert.Contains(t, stderr, "dogfood: synced internal/cli/root.go (Highlights) from novel_features_built")
 	})
 
+	t.Run("syncs narrative README and SKILL blocks from research", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+			"# Test CLI",
+			"",
+			"## Authentication",
+			"",
+			"Use the old auth command.",
+			"",
+			"## Quick Start",
+			"",
+			"```bash",
+			"test-pp-cli old quickstart",
+			"```",
+			"",
+			"## Unique Features",
+			"",
+			"These capabilities aren't available in any other tool for this API.",
+			"- **`health`** \u2014 planned health",
+			"",
+			"## Usage",
+			"",
+			"Run help.",
+			"",
+			"## Troubleshooting",
+			"",
+			"**Not found errors (exit code 3)**",
+			"- Check the resource ID is correct",
+			"",
+			"### API-specific",
+			"- **Old symptom** \u2014 Old fix",
+			"",
+			"## HTTP Transport",
+			"",
+			"Standard transport.",
+			"",
+		}, "\n"))
+		writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+			"# Test Skill",
+			"",
+			"## Unique Capabilities",
+			"",
+			"These capabilities aren't available in any other tool for this API.",
+			"- **`health`** \u2014 planned health",
+			"",
+			"## Recipes",
+			"",
+			"### Old recipe",
+			"",
+			"```bash",
+			"test-pp-cli old recipe",
+			"```",
+			"",
+			"## Auth Setup",
+			"",
+			"Use the old auth command.",
+			"",
+			"Run `test-pp-cli doctor` to verify setup.",
+			"",
+			"## Agent Mode",
+			"",
+			"Use --agent.",
+			"",
+		}, "\n"))
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health", Description: "See scheduling health metrics at a glance"},
+			},
+			Narrative: &ReadmeNarrative{
+				AuthNarrative: "Use `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.",
+				QuickStart: []QuickStartStep{
+					{Comment: "Check credentials", Command: "test-pp-cli doctor"},
+					{Comment: "Inspect health", Command: "test-pp-cli health --agent"},
+				},
+				Troubleshoots: []TroubleshootTip{
+					{Symptom: "OAuth scope rejected", Fix: "Run `test-pp-cli oauth-token --grant-type client_credentials --scope view_collection`.\n```text\n### not a section\n```"},
+				},
+				Recipes: []Recipe{
+					{Title: "Inspect health", Command: "test-pp-cli health --agent", Explanation: "Returns the verified health summary."},
+				},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		var stderr string
+		result := captureStderr(t, &stderr, func() NovelFeaturesCheckResult {
+			return checkNovelFeatures(cliDir, researchDir)
+		})
+		assert.Equal(t, 1, result.Found)
+
+		readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		readme := string(readmeData)
+		assert.Contains(t, readme, "## Authentication\n\nUse `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.")
+		assert.Contains(t, readme, "# Check credentials\ntest-pp-cli doctor")
+		assert.Contains(t, readme, "# Inspect health\ntest-pp-cli health --agent")
+		assert.Contains(t, readme, "- **OAuth scope rejected** \u2014 Run `test-pp-cli oauth-token --grant-type client_credentials --scope view_collection`.\n```text\n### not a section\n```")
+		assert.NotContains(t, readme, "old quickstart")
+		assert.NotContains(t, readme, "Old symptom")
+		requireBefore(t, readme, "## Quick Start", "## Unique Features")
+		requireBefore(t, readme, "### API-specific", "## HTTP Transport")
+
+		skillData, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+		require.NoError(t, err)
+		skill := string(skillData)
+		assert.Contains(t, skill, "## Recipes")
+		assert.Contains(t, skill, "### Inspect health")
+		assert.Contains(t, skill, "test-pp-cli health --agent")
+		assert.Contains(t, skill, "Returns the verified health summary.")
+		assert.Contains(t, skill, "## Auth Setup\n\nUse `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.")
+		assert.Contains(t, skill, "Run `test-pp-cli doctor` to verify setup.")
+		assert.NotContains(t, skill, "Old recipe")
+		requireBefore(t, skill, "## Recipes", "## Auth Setup")
+
+		assert.Contains(t, stderr, "dogfood: synced README.md (Quick Start) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced README.md (Authentication) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced README.md (Troubleshooting) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced SKILL.md (Recipes) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced SKILL.md (Auth Setup) from research.json narrative")
+
+		beforeReadme := readme
+		beforeSkill := skill
+		result = checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		afterReadme, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		afterSkill, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+		require.NoError(t, err)
+		assert.Equal(t, beforeReadme, string(afterReadme), "unchanged narrative should not rewrite README content")
+		assert.Equal(t, beforeSkill, string(afterSkill), "unchanged narrative should not rewrite SKILL content")
+	})
+
 	t.Run("inserts README and SKILL sections when absent", func(t *testing.T) {
 		cliDir := t.TempDir()
 		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
@@ -1979,6 +2121,16 @@ func captureStderr[T any](t *testing.T, captured *string, fn func() T) T {
 	require.NoError(t, r.Close())
 	*captured = string(out)
 	return result
+}
+
+func requireBefore(t *testing.T, content, before, after string) {
+	t.Helper()
+
+	beforeIdx := strings.Index(content, before)
+	require.NotEqual(t, -1, beforeIdx, "missing expected content %q", before)
+	afterIdx := strings.Index(content, after)
+	require.NotEqual(t, -1, afterIdx, "missing expected content %q", after)
+	require.Less(t, beforeIdx, afterIdx, "%q should appear before %q", before, after)
 }
 
 func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
