@@ -2477,6 +2477,19 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 			_, _ = w.Write([]byte(`<html><body>
 				<script id="ARTICLE_DATA" type="application/json">{"items":[{"slug":"a"},{"slug":"b"}]}</script>
 			</body></html>`))
+		case "/jsonld":
+			// Schema.org JSON-LD is emitted by browser-sniff reachability defaults as
+			// script[type="application/ld+json"]. The generated runtime must understand
+			// that attribute-selector shape, not only tag#id.
+			_, _ = w.Write([]byte(`<html><body>
+				<script type="application/ld+json">{"@context":"https://schema.org","@type":"ItemList","itemListElement":[{"name":"Tacos"},{"name":"Burritos"}]}</script>
+			</body></html>`))
+		case "/state-view":
+			// Browser-sniff also emits script.state-view for some SSR state blobs.
+			// Keep class selector support covered by the generated runtime test.
+			_, _ = w.Write([]byte(`<html><body>
+				<script class="state-view">{"items":[{"slug":"sv-a"},{"slug":"sv-b"}]}</script>
+			</body></html>`))
 		case "/missing":
 			// No matching script tag — should produce an extractor error.
 			_, _ = w.Write([]byte(`<html><body><p>nothing here</p></body></html>`))
@@ -2542,6 +2555,40 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 					},
 				},
 			},
+			"jsonld": {
+				Description: "Browse JSON-LD records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/jsonld",
+						Description:    "List records via schema.org JSON-LD",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:           spec.HTMLExtractModeEmbeddedJSON,
+							ScriptSelector: `script[type="application/ld+json"]`,
+							JSONPath:       "itemListElement",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "object"},
+					},
+				},
+			},
+			"stateview": {
+				Description: "Browse state-view records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/state-view",
+						Description:    "List records via state-view class selector",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:           spec.HTMLExtractModeEmbeddedJSON,
+							ScriptSelector: "script.state-view",
+							JSONPath:       "items",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "object"},
+					},
+				},
+			},
 		},
 	}
 
@@ -2582,6 +2629,32 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	require.Len(t, articleEnv.Results, 2)
 	assert.Equal(t, "a", articleEnv.Results[0]["slug"])
 	assert.Equal(t, "b", articleEnv.Results[1]["slug"])
+
+	// Attribute selector generated for schema.org JSON-LD pages.
+	cmd = exec.Command(binaryPath, "jsonld", "list", "--json")
+	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	var jsonldEnv struct {
+		Results []map[string]any `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(out, &jsonldEnv), string(out))
+	require.Len(t, jsonldEnv.Results, 2)
+	assert.Equal(t, "Tacos", jsonldEnv.Results[0]["name"])
+	assert.Equal(t, "Burritos", jsonldEnv.Results[1]["name"])
+
+	// Class selector generated for state-view SSR pages.
+	cmd = exec.Command(binaryPath, "stateview", "list", "--json")
+	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	var stateViewEnv struct {
+		Results []map[string]any `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(out, &stateViewEnv), string(out))
+	require.Len(t, stateViewEnv.Results, 2)
+	assert.Equal(t, "sv-a", stateViewEnv.Results[0]["slug"])
+	assert.Equal(t, "sv-b", stateViewEnv.Results[1]["slug"])
 
 	// Missing script tag: extractor reports an actionable error rather
 	// than silently returning empty data.
