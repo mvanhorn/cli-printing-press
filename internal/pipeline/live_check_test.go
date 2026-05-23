@@ -497,13 +497,12 @@ esac
 }
 
 // TestLiveCheck_OutputCap guards against OOM from a runaway feature that
-// streams megabytes of output. The cap is MaxOutputBytes (1 MiB); the test
-// writes 2 MiB so the limitedWriter has to truncate without blowing up the
-// process. The Example has only one positional so no relevance check fires
-// against the (mostly 'x') output.
+// streams megabytes of output. The test writes past MaxOutputBytes so the
+// limitedWriter has to truncate without blowing up the process. The Example
+// has only one positional so no relevance check fires against the output.
 func TestLiveCheck_OutputCap(t *testing.T) {
 	dir := t.TempDir()
-	writeStubBinary(t, dir, "stub", `head -c 2097152 /dev/zero | tr '\0' 'x'`)
+	writeStubBinary(t, dir, "stub", fmt.Sprintf(`head -c %d /dev/zero | tr '\0' 'x'`, MaxOutputBytes+1024))
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "Noisy", Command: "n", Example: `stub n`},
 	})
@@ -1035,6 +1034,12 @@ func TestSampleOutput_TruncatesLargeCapture(t *testing.T) {
 	got := sampleOutput(big)
 	require.Contains(t, got, "…[truncated]", "truncation marker missing")
 	require.LessOrEqual(t, len(got), outputSampleMaxBytes+len("…[truncated]"))
+}
+
+func TestSampleOutputParts_TruncatesWithoutConcatenatingFullCapture(t *testing.T) {
+	prefix := strings.Repeat("a", outputSampleMaxBytes-2)
+	got := sampleOutputParts(prefix, "bc", strings.Repeat("d", outputSampleMaxBytes))
+	require.Equal(t, prefix+"bc"+"…[truncated]", got)
 }
 
 func TestSampleOutput_ShortCapturePassesThrough(t *testing.T) {

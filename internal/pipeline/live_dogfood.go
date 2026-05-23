@@ -95,10 +95,11 @@ type liveDogfoodCommand struct {
 }
 
 type liveDogfoodRun struct {
-	stdout   string
-	stderr   string
-	exitCode int
-	err      error
+	stdout          string
+	stderr          string
+	stdoutTruncated bool
+	exitCode        int
+	err             error
 }
 
 func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
@@ -732,9 +733,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
 			if jsonRun.exitCode == 0 {
-				if !validLiveDogfoodJSONOutput(jsonRun.stdout) {
+				if jsonRun.stdoutTruncated || !validLiveDogfoodJSONOutput(jsonRun.stdout) {
 					jsonResult.Status = LiveDogfoodStatusFail
-					jsonResult.Reason = "invalid JSON"
+					jsonResult.Reason = liveDogfoodInvalidJSONReason(jsonRun, "invalid JSON")
 				} else {
 					jsonResult.Status = LiveDogfoodStatusPass
 					jsonResult.Reason = ""
@@ -795,9 +796,12 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 				case errorRun.exitCode != 0:
 					errorResult.Status = LiveDogfoodStatusPass
 					errorResult.Reason = ""
+				case suppliedJSON && errorRun.stdoutTruncated:
+					errorResult.Status = LiveDogfoodStatusFail
+					errorResult.Reason = liveDogfoodInvalidJSONReason(errorRun, "invalid JSON under --json")
 				case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
 					errorResult.Status = LiveDogfoodStatusFail
-					errorResult.Reason = "invalid JSON under --json"
+					errorResult.Reason = liveDogfoodInvalidJSONReason(errorRun, "invalid JSON under --json")
 				default:
 					errorResult.Status = LiveDogfoodStatusPass
 					errorResult.Reason = ""
@@ -884,15 +888,18 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 	cmd.Env = append(cmd.Env, dogfoodEnvVar+"=1")
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	cmd.Stdout = &limitedWriter{w: stdout, remaining: MaxOutputBytes}
-	cmd.Stderr = &limitedWriter{w: stderr, remaining: MaxOutputBytes}
+	stdoutCap := &limitedWriter{w: stdout, remaining: liveDogfoodMaxOutputBytes}
+	stderrCap := &limitedWriter{w: stderr, remaining: MaxErrorOutputBytes}
+	cmd.Stdout = stdoutCap
+	cmd.Stderr = stderrCap
 
 	err := cmd.Run()
 	result := liveDogfoodRun{
-		stdout:   stdout.String(),
-		stderr:   stderr.String(),
-		exitCode: 0,
-		err:      err,
+		stdout:          stdout.String(),
+		stderr:          stderr.String(),
+		stdoutTruncated: stdoutCap.truncated,
+		exitCode:        0,
+		err:             err,
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		result.exitCode = -1
@@ -910,6 +917,13 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 	return result
 }
 
+func liveDogfoodInvalidJSONReason(run liveDogfoodRun, fallback string) string {
+	if run.stdoutTruncated {
+		return "output exceeded capture cap"
+	}
+	return fallback
+}
+
 func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, run liveDogfoodRun) LiveDogfoodTestResult {
 	result := LiveDogfoodTestResult{
 		Command:      command,
@@ -917,7 +931,7 @@ func liveDogfoodResult(command string, kind LiveDogfoodTestKind, args []string, 
 		Args:         append([]string{}, args...),
 		Status:       LiveDogfoodStatusFail,
 		ExitCode:     run.exitCode,
-		OutputSample: sampleOutput(run.stdout + run.stderr),
+		OutputSample: sampleOutputParts(run.stdout, run.stderr),
 	}
 	if run.exitCode != 0 {
 		result.Reason = fmt.Sprintf("exit %d", run.exitCode)
@@ -954,6 +968,7 @@ const (
 	mcpReadOnlyAnnotation      = "mcp:read-only"
 	destructiveAuthAnnotation  = "pp:destructive-auth"
 	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
+	liveDogfoodMaxOutputBytes  = 10 << 20
 )
 
 // destructiveAuthTerms are case-insensitive command or endpoint tokens
