@@ -5783,6 +5783,30 @@ func TestClassifyAPIError409RequiresIdempotent(t *testing.T) {
 	requireNoopJSON(t, stdout, "already_exists")
 }
 
+func TestClassifyAPIErrorPreservesTypedCLIError(t *testing.T) {
+	cases := []struct {
+		name  string
+		err   error
+		flags *rootFlags
+	}{
+		{"semantic envelope error", usageErr(errors.New("semantic API envelope rejected input")), &rootFlags{}},
+		{"HTTP-like message with idempotent flags", usageErr(errors.New("HTTP 409: conflict")), &rootFlags{idempotent: true, asJSON: true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			classified := classifyAPIError(tc.err, tc.flags)
+
+			if classified != tc.err {
+				t.Fatalf("classifyAPIError should preserve typed cliError unchanged, got %#v", classified)
+			}
+			if got := ExitCode(classified); got != 2 {
+				t.Fatalf("ExitCode(classifyAPIError(usageErr(...))) = %d, want 2", got)
+			}
+		})
+	}
+}
+
 func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
 	err := classifyDeleteError(errors.New("HTTP 404: not found"), &rootFlags{})
 	if err == nil {

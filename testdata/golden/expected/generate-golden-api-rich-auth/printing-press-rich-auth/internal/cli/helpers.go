@@ -473,6 +473,11 @@ func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
 
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error, flags *rootFlags) error {
+	var typed *cliError
+	if errors.As(err, &typed) {
+		return err
+	}
+
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "HTTP 409"):
