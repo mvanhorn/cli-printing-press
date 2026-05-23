@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """verify_skill.py — validate that SKILL.md and README.md match the shipped CLI source.
 
-Four checks run in sequence:
+Five checks run in sequence:
 
   1. flag-names — every `--flag` used on a `<cli_binary> ...` invocation in
      a prose source (SKILL.md, plus README.md when present) is declared as
@@ -12,7 +12,9 @@ Four checks run in sequence:
      on that command (or as a persistent/root flag).
   3. positional-args — positional args in bash recipes match the command's
      `Use:` field signature (required + optional + variadic).
-  4. unknown-command — every command path referenced in a prose source (in
+  4. shell-var-quotes — every shell variable expanded inside a generated bash
+     code block is wrapped in double quotes.
+  5. unknown-command — every command path referenced in a prose source (in
      bash recipes from SKILL.md and README.md, plus inline backticks under
      SKILL.md's `## Command Reference`) maps to a real cobra `Use:`
      declaration in internal/cli/*.go. Catches docs that promise commands
@@ -35,6 +37,7 @@ USAGE
     python3 verify_skill.py --dir <cli-dir> --json
     python3 verify_skill.py --dir <cli-dir> --only flag-names
     python3 verify_skill.py --dir <cli-dir> --only unknown-command
+    python3 verify_skill.py --dir <cli-dir> --only shell-var-quotes
     python3 verify_skill.py --dir <cli-dir> --strict  # treat known-FPs as failures
 
 Exit codes:
@@ -67,9 +70,10 @@ def read_utf8(path: Path) -> str:
 # copy-paste examples cannot hide missing flags behind this whitelist.
 COMMON_FLAGS = {"help", "version"}
 
-CODEBLOCK_BASH = re.compile(r"```bash\n(.*?)\n```", re.DOTALL)
+CODEBLOCK_BASH = re.compile(r"^[ \t]*```bash[^\n]*\n(.*?)\n[ \t]*```[ \t]*$", re.DOTALL | re.MULTILINE)
 FENCED_CODE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
+SHELL_VAR_RE = re.compile(r"\$(?:\{[^}\n]+\}|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?])")
 COMMAND_REFERENCE_SECTION_RE = re.compile(
     r"^##\s+Command\s+Reference\s*$(.*?)(?=^##\s+|\Z)",
     re.DOTALL | re.MULTILINE | re.IGNORECASE,
@@ -782,9 +786,76 @@ def extract_recipes(skill: Path, cli_binary: str, cli_dir: Path | None = None) -
     ]
 
 
+def _bash_blocks_with_line_numbers(text: str) -> Iterable[tuple[int, str]]:
+    for match in CODEBLOCK_BASH.finditer(text):
+        first_line = text[:match.start(1)].count("\n") + 1
+        yield first_line, match.group(1)
+
+
+def _unquoted_shell_variables(line: str) -> list[str]:
+    vars_found: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < len(line):
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(line):
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or line[i - 1].isspace()):
+            break
+        if ch == "$":
+            match = SHELL_VAR_RE.match(line, i)
+            if match:
+                vars_found.append(match.group(0))
+                i = match.end()
+                continue
+        i += 1
+    return vars_found
+
+
 # ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
+
+
+def check_shell_var_quotes(sources: list[Path], report: Report) -> None:
+    for src in sources:
+        text = read_utf8(src)
+        seen: set[tuple[int, str]] = set()
+        for first_line, block in _bash_blocks_with_line_numbers(text):
+            for offset, raw_line in enumerate(block.splitlines()):
+                line_no = first_line + offset
+                for var in _unquoted_shell_variables(raw_line):
+                    key = (line_no, var)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    report.findings.append(
+                        Finding(
+                            check="shell-var-quotes",
+                            severity="error",
+                            command=f"(file: {src.name})",
+                            detail=f"{var} is expanded in a bash code block without double quotes",
+                            evidence=f"{src.name}:{line_no}: {raw_line.strip()}",
+                        )
+                    )
 
 
 def check_flag_names(cli_dir: Path, sources: list[Path], cli_binary: str, report: Report) -> None:
@@ -1079,7 +1150,7 @@ def run_checks(cli_dir: Path, only: set[str] | None) -> Report:
     report = Report(cli_dir=str(cli_dir), skill_path=str(skill))
     sources = prose_sources(cli_dir)
 
-    checks = only or {"flag-names", "flag-commands", "positional-args", "unknown-command"}
+    checks = only or {"flag-names", "flag-commands", "positional-args", "shell-var-quotes", "unknown-command"}
     if "flag-names" in checks:
         report.checks_run.append("flag-names")
         check_flag_names(cli_dir, sources, cli_binary, report)
@@ -1089,6 +1160,9 @@ def run_checks(cli_dir: Path, only: set[str] | None) -> Report:
     if "positional-args" in checks:
         report.checks_run.append("positional-args")
         check_positional_args(cli_dir, sources, cli_binary, report)
+    if "shell-var-quotes" in checks:
+        report.checks_run.append("shell-var-quotes")
+        check_shell_var_quotes(sources, report)
     if "unknown-command" in checks:
         report.checks_run.append("unknown-command")
         check_unknown_commands(cli_dir, sources, cli_binary, report)
@@ -1156,7 +1230,7 @@ def main():
     p.add_argument("--dir", required=True, help="CLI directory (contains SKILL.md + internal/cli/)")
     p.add_argument(
         "--only",
-        choices=["flag-names", "flag-commands", "positional-args", "unknown-command"],
+        choices=["flag-names", "flag-commands", "positional-args", "shell-var-quotes", "unknown-command"],
         action="append",
         help="Run only the named check(s). Pass multiple times to include multiple.",
     )

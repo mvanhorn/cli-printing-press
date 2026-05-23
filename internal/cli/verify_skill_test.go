@@ -323,6 +323,139 @@ func Execute() error {
 	require.NotContains(t, string(out), "--cli-only", "verifier must not mention an external-tool flag")
 }
 
+// TestVerifySkill_DetectsUnquotedShellVariable is the regression guard for
+// generated bash blocks teaching agents to expand shell variables without
+// double quotes.
+func TestVerifySkill_DetectsUnquotedShellVariable(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli export --output $OUT_FILE\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	var output string
+	cmd := &cobra.Command{Use: "export"}
+	cmd.Flags().StringVar(&output, "output", "", "Output file")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "shell-var-quotes").CombinedOutput()
+	require.Error(t, err, "unquoted shell variables in bash blocks must fail verify-skill")
+	require.Contains(t, string(out), "shell-var-quotes")
+	require.Contains(t, string(out), "$OUT_FILE")
+}
+
+func TestVerifySkill_DefaultChecksIncludeShellVarQuotes(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli export --output $OUT_FILE\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	var output string
+	cmd := &cobra.Command{Use: "export"}
+	cmd.Flags().StringVar(&output, "output", "", "Output file")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
+	require.Error(t, err, "default verify-skill run must include shell-var-quotes")
+	require.Contains(t, string(out), "shell-var-quotes")
+	require.Contains(t, string(out), "$OUT_FILE")
+}
+
+func TestVerifySkill_DetectsUnquotedShellVariableInIndentedFence(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n1. Export a file:\n   ```bash\n   fixture-pp-cli export --output $OUT_FILE\n   ```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	var output string
+	cmd := &cobra.Command{Use: "export"}
+	cmd.Flags().StringVar(&output, "output", "", "Output file")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "shell-var-quotes").CombinedOutput()
+	require.Error(t, err, "indented bash fences must still be scanned")
+	require.Contains(t, string(out), "$OUT_FILE")
+}
+
+func TestVerifySkill_AllowsQuotedShellVariable(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli export --output \"$OUT_FILE\"\nrm -f \"${TMPDIR:-/tmp}/fixture-output.json\"\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	var output string
+	cmd := &cobra.Command{Use: "export"}
+	cmd.Flags().StringVar(&output, "output", "", "Output file")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "shell-var-quotes").CombinedOutput()
+	require.NoError(t, err, "quoted shell variables should pass verify-skill: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+}
+
 // TestVerifySkill_CanonicalSectionsPassesOnFreshFixture confirms the
 // canonical-sections check exits 0 when a fixture's SKILL.md install
 // section matches what the generator would emit. The fixture is built
