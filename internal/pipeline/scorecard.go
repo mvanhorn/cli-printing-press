@@ -64,8 +64,8 @@ type SteinerScore struct {
 	MCPQuality            int `json:"mcp_quality"`              // 0-10
 	MCPDescriptionQuality int `json:"mcp_description_quality"`  // 0-10; unscored when no tools-manifest.json. Penalizes thin per-tool descriptions (the same threshold as `cli-printing-press tools-audit` thin-mcp-description).
 	MCPTokenEff           int `json:"mcp_token_efficiency"`     // 0-10; unscored when no MCP surface
-	MCPRemoteTransport    int `json:"mcp_remote_transport"`     // 0-10; unscored when no MCP surface. Rewards remote-capable servers per Anthropic's 2026-04 MCP guidance.
-	MCPToolDesign         int `json:"mcp_tool_design"`          // 0-10; unscored when no MCP surface or endpoint count below toolDesignMinEndpoints. Rewards intent-grouped tools vs. endpoint mirrors.
+	MCPRemoteTransport    int `json:"mcp_remote_transport"`     // 0-10; unscored when no MCP surface or small endpoint mirrors. Rewards remote-capable MCP servers.
+	MCPToolDesign         int `json:"mcp_tool_design"`          // 0-10; unscored when no MCP surface or endpoint count below mcpEnrichmentMinEndpoints. Rewards intent-grouped tools vs. endpoint mirrors.
 	MCPSurfaceStrategy    int `json:"mcp_surface_strategy"`     // 0-10; unscored unless the endpoint surface exceeds surfaceStrategyLargeThreshold or code-orchestration is explicitly used. Penalizes endpoint-mirror at scale.
 	LocalCache            int `json:"local_cache"`              // 0-10
 	CacheFreshness        int `json:"cache_freshness"`          // 0-10; unscored when the CLI has no local store
