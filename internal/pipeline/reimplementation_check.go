@@ -17,11 +17,13 @@ import (
 // behavior - a hand-rolled response, a constant return, or an empty
 // stub that pretends to do work.
 //
-// The check is structural, not semantic. It does not parse Go or try to
-// understand what the function returns. It looks at the file that
+// The check is structural, not semantic. It looks at the file that
 // implements the command and asks: does any part of this file call
-// through the generated client package, or read from the generated
-// store package? If neither, the command is flagged.
+// through the generated client package, read from the generated store package,
+// or call a package-local helper that reaches the store? If none do, the
+// command is flagged. Primitive client/store signals stay regex-based; helper
+// discovery uses Go AST parsing so declarations and comments do not look like
+// real helper calls.
 //
 // SQLite-derived commands (stale, bottleneck, health, reconcile) pass
 // this check because their files call `store.Open` and consult the
@@ -69,10 +71,9 @@ type ReimplementationFinding struct {
 	Reason  string `json:"reason"`
 }
 
-// These signals are intentionally string-match and regex based. AST
-// parsing would be more precise but adds scope and dependency weight
-// this check does not need at v1. If false-positive pressure grows,
-// we upgrade to AST in a follow-up.
+// The primitive store/client signals stay regex-based because they are broad
+// file-level probes. Helper discovery uses Go ASTs so declarations and comments
+// do not look like real helper calls.
 
 var (
 	// storeImportRe catches the generated store package import in any
@@ -172,6 +173,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	// We only index non-infrastructure, non-test source files.
 	leafToFiles := map[string][]string{}
 	fileContent := map[string]string{}
+	helperContent := map[string]string{}
 	infra := map[string]bool{
 		"helpers.go": true,
 		"root.go":    true,
@@ -187,14 +189,15 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if infra[name] {
-			continue
-		}
 		data, readErr := os.ReadFile(filepath.Join(cliFilesDir, name))
 		if readErr != nil {
 			continue
 		}
 		content := string(data)
+		helperContent[name] = content
+		if infra[name] {
+			continue
+		}
 		fileContent[name] = content
 		for _, m := range useLineRe.FindAllStringSubmatch(content, -1) {
 			leaf := m[1]
@@ -203,7 +206,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	}
 
 	result := ReimplementationCheckResult{}
-	storeHelpers := storeHelperNames(fileContent)
+	storeHelpers := storeHelperNames(helperContent)
 	for _, nf := range research.NovelFeatures {
 		leaf := lastPathSegment(commandPath(nf.Command))
 		if leaf == "" {
@@ -346,16 +349,34 @@ func hasStoreSignal(content string) bool {
 
 func storeHelperNames(fileContent map[string]string) map[string]bool {
 	helpers := map[string]bool{}
+	funcContent := map[string]string{}
 	for _, content := range fileContent {
-		if !hasStoreSignal(content) {
-			continue
+		forEachGoFuncContent(content, func(name, body string) {
+			funcContent[name] = body
+			if hasStoreSignal(body) || storeTypeRe.MatchString(body) {
+				helpers[name] = true
+			}
+		})
+	}
+	for {
+		changed := false
+		for name, body := range funcContent {
+			if helpers[name] {
+				continue
+			}
+			if callsStoreHelper(body, helpers) {
+				helpers[name] = true
+				changed = true
+			}
 		}
-		collectStoreHelpers(content, helpers)
+		if !changed {
+			break
+		}
 	}
 	return helpers
 }
 
-func collectStoreHelpers(content string, helpers map[string]bool) {
+func forEachGoFuncContent(content string, visit func(name, body string)) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "", content, 0)
 	if err != nil {
@@ -363,7 +384,7 @@ func collectStoreHelpers(content string, helpers map[string]bool) {
 	}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Name == nil {
+		if !ok || fn.Name == nil || fn.Recv != nil {
 			continue
 		}
 		start := fset.Position(fn.Pos()).Offset
@@ -371,20 +392,39 @@ func collectStoreHelpers(content string, helpers map[string]bool) {
 		if start < 0 || end > len(content) || start >= end {
 			continue
 		}
-		funcText := content[start:end]
-		if storeCallRe.MatchString(funcText) || storeTypeRe.MatchString(funcText) {
-			helpers[fn.Name.Name] = true
-		}
+		visit(fn.Name.Name, content[start:end])
 	}
 }
 
 func callsStoreHelper(content string, helpers map[string]bool) bool {
-	for name := range helpers {
-		if regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`).MatchString(content) {
+	if len(helpers) == 0 {
+		return false
+	}
+	source := content
+	if !strings.HasPrefix(strings.TrimSpace(source), "package ") {
+		source = "package cli\n" + source
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "", source, 0)
+	if err != nil {
+		return false
+	}
+	found := false
+	ast.Inspect(file, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
 			return true
 		}
-	}
-	return false
+		ident, ok := call.Fun.(*ast.Ident)
+		if ok && helpers[ident.Name] {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func hasClientSignal(content string) bool {
