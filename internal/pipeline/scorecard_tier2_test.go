@@ -2936,3 +2936,61 @@ func TestHasStructuralOAuthSurface(t *testing.T) {
 		assert.False(t, hasStructuralOAuthSurface(dir, "type RefreshTokenError struct{}"))
 	})
 }
+
+// TestScoreTerminalUX_TTYDetectionPatterns pins that the TTY-detection check
+// accepts all canonical Go idioms, not just the "isatty" literal. The
+// generator's own helpers.go template uses (fi.Mode() & os.ModeCharDevice),
+// so a substring-only "isatty" check penalized every generated CLI by 1pt.
+func TestScoreTerminalUX_TTYDetectionPatterns(t *testing.T) {
+	cases := []struct {
+		name       string
+		helpers    string
+		wantCredit bool
+	}{
+		{
+			name: "ModeCharDevice (generator template idiom) credited",
+			helpers: `package cli
+import "os"
+func isTerminal(f *os.File) bool {
+	fi, _ := f.Stat()
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}`,
+			wantCredit: true,
+		},
+		{
+			name: "term.IsTerminal (golang.org/x/term) credited",
+			helpers: `package cli
+import "golang.org/x/term"
+func isTerminal() bool { return term.IsTerminal(0) }`,
+			wantCredit: true,
+		},
+		{
+			name: "isatty literal (mattn/go-isatty) credited",
+			helpers: `package cli
+import "github.com/mattn/go-isatty"
+func isTerminal() bool { return isatty.IsTerminal(0) }`,
+			wantCredit: true,
+		},
+		{
+			name: "no TTY detection at all not credited",
+			helpers: `package cli
+func isTerminal() bool { return false }`,
+			wantCredit: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeScorecardFixture(t, dir, "internal/cli/helpers.go", tc.helpers)
+			writeScorecardFixture(t, dir, "internal/cli/root.go", "package cli")
+
+			score := scoreTerminalUX(dir)
+			if tc.wantCredit {
+				assert.GreaterOrEqual(t, score, 1, "TTY-detection check should award at least 1pt")
+			} else {
+				assert.Equal(t, 0, score, "no TTY detection should not award the TTY-detection point")
+			}
+		})
+	}
+}
