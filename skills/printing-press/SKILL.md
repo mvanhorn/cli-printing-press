@@ -3444,10 +3444,19 @@ if [ "$NEEDS_REVIEW" -gt 0 ]; then
 fi
 ```
 
-After `regen-merge` succeeds with no review-required verdicts, the live library directory is the new run. Do **not** then call `lock promote --dir "$CLI_WORK_DIR"` — that would atomically swap the working dir over the just-merged library and undo the preservation. Promote in place: point `lock promote --dir` at the library itself so the manifest write, run-pointer update, and lock release still run:
+After `regen-merge` succeeds with no review-required verdicts, the live library directory is the new run. Do **not** then call `lock promote --dir "$CLI_WORK_DIR"` — that would atomically swap the working dir over the just-merged library and undo the preservation. Promote in place: point `lock promote --dir` at the library itself so the manifest write, run-pointer update, and lock release still run. Two extra steps are required compared to Path A:
+
+1. Copy the current run's PII-polish ledger into `$LIB_TARGET` before promote. `lock promote --dir` internally runs `validatePIIGateForPromote` against the target directory, which reads `$LIB_TARGET/.printing-press-pii-polish.json`. After `regen-merge --apply` the generator-emitted Go files have fresh line numbers, so the prior reprint's ledger (still sitting in `$LIB_TARGET` from the last atomic swap) has stale `{file, line, kind, span}` identity keys for those files and previously-accepted findings re-surface as pending — the gate fails before the swap and the lock stays held. Bringing the current run's ledger over fixes the identity match for generator-emitted files; hand-authored files with new findings still surface correctly as pending.
+2. Guard the promote with an explicit lock-release on failure. Unlike Path A, where a promote-gate failure simply leaves the working dir alone, a Path B failure leaves the lock held on the live library because the gate fires before the swap and before `ReleaseLock`. Mirror the lock-release guards from the regen-merge error branches above.
 
 ```bash
-cli-printing-press lock promote --cli <api>-pp-cli --dir "$LIB_TARGET"
+cp "$CLI_WORK_DIR/.printing-press-pii-polish.json" "$LIB_TARGET/.printing-press-pii-polish.json"
+cli-printing-press lock promote --cli <api>-pp-cli --dir "$LIB_TARGET" || {
+  cli-printing-press lock release --cli <api>-pp-cli
+  echo "lock promote failed for $LIB_TARGET; lock released. " \
+       "Inspect the PII gate output above and resolve before re-running." >&2
+  exit 1
+}
 ```
 
 `TEMPLATED-WITH-ADDITIONS` and the other review verdicts represent inline hand-edits to generator-emitted files that need human review (see [**Hand-edits to generator-emitted files are not durable.**](#hand-edit-durability) for the separate-file pattern that avoids this in future). The dry-run report (omit `--apply`) is the right tool for inspection once the halt path fires.
