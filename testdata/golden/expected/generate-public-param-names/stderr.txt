@@ -1,2 +1,3 @@
 warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
+agentcookie: skipping public-param-golden (cookie-only or no env-var auth)
 Generated public-param-golden at <ARTIFACT_DIR>/generate-public-param-names/public-param-golden
