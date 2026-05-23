@@ -128,10 +128,10 @@ func TestScoreMCPToolDesign(t *testing.T) {
 		assert.Equal(t, 0, score)
 	})
 
-	t.Run("unscored when endpoint count under threshold", func(t *testing.T) {
+	t.Run("unscored when endpoint mirror count is below enrichment threshold", func(t *testing.T) {
 		dir := t.TempDir()
 		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", stdioOnlyMain)
-		writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(5))
+		writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(29))
 		score, scored := scoreMCPToolDesign(dir)
 		assert.False(t, scored, "small surfaces don't get docked for not using intents")
 		assert.Equal(t, 0, score)
@@ -140,10 +140,19 @@ func TestScoreMCPToolDesign(t *testing.T) {
 	t.Run("endpoint mirror at scale scores baseline", func(t *testing.T) {
 		dir := t.TempDir()
 		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", stdioOnlyMain)
-		writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(20))
+		writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(30))
 		score, scored := scoreMCPToolDesign(dir)
 		assert.True(t, scored)
 		assert.Equal(t, 5, score, "plain endpoint-mirror at scale gets baseline 5, not zero")
+	})
+
+	t.Run("large endpoint mirror still scores baseline", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", stdioOnlyMain)
+		writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(60))
+		score, scored := scoreMCPToolDesign(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 5, score, "plain endpoint-mirror above the large-surface threshold still gets baseline tool-design score")
 	})
 
 	t.Run("code orchestration wins full marks", func(t *testing.T) {
@@ -159,9 +168,9 @@ func TestScoreMCPToolDesign(t *testing.T) {
 	t.Run("intents with good coverage score full marks", func(t *testing.T) {
 		dir := t.TempDir()
 		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", stdioOnlyMain)
-		writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(10))
-		// 5 intents vs 10 endpoints → ratio 0.33, above 0.3 threshold.
-		writeMCPFile(t, dir, "internal/mcp/intents.go", buildToolsGo(5))
+		writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(15))
+		// 7 intents vs 15 endpoints gives ratio 0.318 (7/22), above 0.3 threshold.
+		writeMCPFile(t, dir, "internal/mcp/intents.go", buildToolsGo(7))
 		score, scored := scoreMCPToolDesign(dir)
 		assert.True(t, scored)
 		assert.Equal(t, 10, score)

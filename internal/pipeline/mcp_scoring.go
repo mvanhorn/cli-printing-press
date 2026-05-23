@@ -10,9 +10,9 @@ import (
 
 // Thresholds for the tool-design dimension. Intent-grouping is only worth
 // scoring when the endpoint mirror would otherwise emit enough tools for
-// agents to feel the pain — small APIs (under ~10 endpoints) are fine as a
+// agents to feel the pain — small APIs (under ~30 endpoint tools) are fine as a
 // plain mirror and shouldn't be docked for not using intents.
-const toolDesignMinEndpoints = 10
+const toolDesignMinEndpoints = 30
 
 // Threshold above which an endpoint-mirror surface counts as the article's
 // named anti-pattern for large APIs. Matches the spec's
@@ -138,9 +138,9 @@ func scoreMCPRemoteTransport(dir string) (int, bool) {
 //   - intents present + ratio <  0.3: 7  (some coverage)
 //   - endpoint-mirror only: 5 (baseline — works, but leaves value on the table)
 //
-// When present but endpoint count < toolDesignMinEndpoints, returns
-// (0, false) — the decision doesn't meaningfully affect an agent at small
-// surface sizes.
+// Endpoint-mirror-only surfaces with endpoint count < toolDesignMinEndpoints
+// return (0, false) — the decision doesn't meaningfully affect an agent at
+// small surface sizes.
 func scoreMCPToolDesign(dir string) (int, bool) {
 	s := detectMCPSurface(dir)
 	if !s.present {
@@ -149,15 +149,15 @@ func scoreMCPToolDesign(dir string) (int, bool) {
 	if s.codeOrchPresent {
 		return 10, true
 	}
-	if s.endpointTools < toolDesignMinEndpoints {
-		return 0, false
-	}
 	if s.intentsPresent && s.intentTools > 0 {
 		ratio := float64(s.intentTools) / float64(s.endpointTools+s.intentTools)
 		if ratio >= 0.3 {
 			return 10, true
 		}
 		return 7, true
+	}
+	if s.endpointTools < toolDesignMinEndpoints {
+		return 0, false
 	}
 	return 5, true
 }
