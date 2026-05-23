@@ -79,6 +79,39 @@ func TestGenerateSyncParamPassthrough(t *testing.T) {
 		"knownSyncResourceNames helper must be emitted alongside defaultSyncResources")
 }
 
+func TestGenerateSyncConcurrencyDefaultHonorsRateClass(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		rateClass string
+	}{
+		{name: "absent"},
+		{name: "per-second", rateClass: spec.RateClassPerSecond},
+		{name: "unlimited", rateClass: spec.RateClassUnlimited},
+		{name: "daily", rateClass: spec.RateClassDaily},
+		{name: "monthly", rateClass: spec.RateClassMonthly},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("sync-" + tc.name)
+			apiSpec.RateClass = tc.rateClass
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+			require.NoError(t, err)
+			syncSrc := string(syncGo)
+
+			wantDefault := apiSpec.SyncDefaultConcurrency()
+			assertSyncDefaultConcurrency(t, syncSrc, wantDefault, tc.name)
+		})
+	}
+}
+
 // dependentResourceSpec builds a minimal spec with a parent + child
 // resource so syncDependentResource is actually emitted. The
 // dependent-resource profiler requires paginated list endpoints (not
