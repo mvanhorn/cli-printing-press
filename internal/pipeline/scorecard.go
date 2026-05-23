@@ -41,12 +41,13 @@ var quotaDailySignalRE = regexp.MustCompile(`(?i)\b(daily|per[-_\s]+day)\b`)
 
 // Scorecard holds the auto-scored evaluation of a generated CLI against the Steinberger bar.
 type Scorecard struct {
-	APIName            string       `json:"api_name"`
-	Steinberger        SteinerScore `json:"steinberger"`
-	CompetitorScores   []CompScore  `json:"competitor_scores"`
-	OverallGrade       string       `json:"overall_grade"`
-	GapReport          []string     `json:"gap_report"`
-	UnscoredDimensions []string     `json:"unscored_dimensions,omitempty"`
+	APIName                     string                      `json:"api_name"`
+	Steinberger                 SteinerScore                `json:"steinberger"`
+	CompetitorScores            []CompScore                 `json:"competitor_scores"`
+	OverallGrade                string                      `json:"overall_grade"`
+	GapReport                   []string                    `json:"gap_report"`
+	UnscoredDimensions          []string                    `json:"unscored_dimensions,omitempty"`
+	NovelFeatureDepthMismatches []NovelFeatureDepthMismatch `json:"novel_feature_depth_mismatches,omitempty"`
 
 	verifyCalibrationFloor   int
 	browserSessionUnverified bool
@@ -266,6 +267,8 @@ func finalizeScorecard(sc *Scorecard, outputDir, pipelineDir string, verifyRepor
 
 	// Gap report for dimensions below 5
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
+	sc.NovelFeatureDepthMismatches = scorecardNovelFeatureDepthMismatches(outputDir, pipelineDir)
+	appendNovelFeatureDepthGaps(sc)
 
 	// MCP tool split from manifest (informational, does not affect score)
 	if manifest, err := loadCLIManifestForScorecard(outputDir); err == nil && manifest.MCPBinary != "" {
@@ -950,6 +953,36 @@ func ApplyLiveCheckToScorecard(sc *Scorecard, live *LiveCheckResult) {
 	applyScorecardCalibration(sc)
 	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
+	appendNovelFeatureDepthGaps(sc)
+}
+
+func scorecardNovelFeatureDepthMismatches(outputDir, pipelineDir string) []NovelFeatureDepthMismatch {
+	if pipelineDir == "" {
+		return nil
+	}
+	research, err := LoadResearch(pipelineDir)
+	if err != nil || len(research.NovelFeatures) == 0 {
+		return nil
+	}
+	paths, leaves := collectRegisteredCommands(outputDir)
+	var mismatches []NovelFeatureDepthMismatch
+	for _, nf := range research.NovelFeatures {
+		if !matchNovelFeature(nf, paths, leaves) {
+			continue
+		}
+		if mismatch := novelFeatureDepthMismatch(nf, paths); mismatch != nil {
+			mismatches = append(mismatches, *mismatch)
+		}
+	}
+	return mismatches
+}
+
+func appendNovelFeatureDepthGaps(sc *Scorecard) {
+	for _, mismatch := range sc.NovelFeatureDepthMismatches {
+		sc.GapReport = append(sc.GapReport, fmt.Sprintf(
+			"novel feature command-depth mismatch: %s advertised as %s but registered as %s",
+			mismatch.Command, mismatch.Advertised, mismatch.Actual))
+	}
 }
 
 func applyScorecardCalibration(sc *Scorecard) {

@@ -100,10 +100,17 @@ type TestPresenceResult struct {
 // NovelFeaturesCheckResult tracks whether transcendence features planned
 // during absorb actually survived the build as registered CLI commands.
 type NovelFeaturesCheckResult struct {
-	Planned int      `json:"planned"`
-	Found   int      `json:"found"`
-	Missing []string `json:"missing,omitempty"`
-	Skipped bool     `json:"skipped,omitempty"`
+	Planned         int                         `json:"planned"`
+	Found           int                         `json:"found"`
+	Missing         []string                    `json:"missing,omitempty"`
+	DepthMismatches []NovelFeatureDepthMismatch `json:"depth_mismatches,omitempty"`
+	Skipped         bool                        `json:"skipped,omitempty"`
+}
+
+type NovelFeatureDepthMismatch struct {
+	Command    string `json:"command"`
+	Advertised string `json:"advertised"`
+	Actual     string `json:"actual"`
 }
 
 type PathCheckResult struct {
@@ -439,6 +446,9 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 		if matched {
 			result.Found++
 			built = append(built, nf)
+			if mismatch := novelFeatureDepthMismatch(nf, paths); mismatch != nil {
+				result.DepthMismatches = append(result.DepthMismatches, *mismatch)
+			}
 		} else {
 			result.Missing = append(result.Missing, nf.Command)
 		}
@@ -515,6 +525,88 @@ func matchNovelFeature(nf NovelFeature, paths, leaves map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+func novelFeatureDepthMismatch(nf NovelFeature, paths map[string]bool) *NovelFeatureDepthMismatch {
+	advertised := advertisedNovelFeaturePath(nf, paths)
+	if advertised == "" || matchPath(advertised, paths) {
+		return nil
+	}
+	actualPaths := leafMatchedPaths(advertised, paths)
+	if len(actualPaths) == 0 {
+		return nil
+	}
+	return &NovelFeatureDepthMismatch{
+		Command:    nf.Command,
+		Advertised: advertised,
+		Actual:     strings.Join(actualPaths, ", "),
+	}
+}
+
+func advertisedNovelFeaturePath(nf NovelFeature, paths map[string]bool) string {
+	if advertised := exampleAdvertisedPath(nf.Example, paths); advertised != "" {
+		return advertised
+	}
+	return commandPath(nf.Command)
+}
+
+func exampleAdvertisedPath(example string, paths map[string]bool) string {
+	tokens := strings.Fields(strings.ToLower(example))
+	if len(tokens) < 2 || !looksLikePrintedCLIBinary(tokens[0]) {
+		return ""
+	}
+	var candidates []string
+	for _, token := range tokens[1:] {
+		token = strings.Trim(token, `"'`)
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			break
+		}
+		if len(candidates) == 0 {
+			candidates = append(candidates, token)
+			continue
+		}
+		candidates = append(candidates, candidates[len(candidates)-1]+" "+token)
+	}
+	for i := len(candidates) - 1; i >= 0; i-- {
+		if matchPath(candidates[i], paths) || len(leafMatchedPaths(candidates[i], paths)) > 0 {
+			return candidates[i]
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
+}
+
+func looksLikePrintedCLIBinary(token string) bool {
+	base := filepath.Base(strings.Trim(token, `"'`))
+	return strings.HasSuffix(base, "-pp-cli")
+}
+
+func leafMatchedPaths(plan string, paths map[string]bool) []string {
+	_, leaf := splitCommandPath(plan)
+	if leaf == "" {
+		return nil
+	}
+	var out []string
+	for path := range paths {
+		_, pathLeaf := splitCommandPath(path)
+		if pathLeaf == "" {
+			continue
+		}
+		if commandLeavesMatch(leaf, pathLeaf) {
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func commandLeavesMatch(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"-") || strings.HasPrefix(b, a+"-")
 }
 
 // matchCrossCuttingFeature handles novel features whose command string
@@ -664,7 +756,7 @@ func matchPath(plan string, paths map[string]bool) bool {
 		if pp != parent || pl == "" {
 			continue
 		}
-		if strings.HasPrefix(pl, leaf+"-") || strings.HasPrefix(leaf, pl+"-") {
+		if commandLeavesMatch(leaf, pl) {
 			return true
 		}
 	}
@@ -682,7 +774,7 @@ func matchLeaf(plan string, leaves map[string]bool) bool {
 		return true
 	}
 	for use := range leaves {
-		if strings.HasPrefix(use, leaf+"-") || strings.HasPrefix(leaf, use+"-") {
+		if commandLeavesMatch(leaf, use) {
 			return true
 		}
 	}
@@ -743,10 +835,12 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 
 	// Root detection scans the full file because the wiring function
 	// (Execute / helpers) isn't a new*Cmd constructor.
-	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(new\w+Cmd)\b`)
-	funcHeaderRe := regexp.MustCompile(`func\s+(new\w+Cmd)\s*\(`)
+	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\s*\(`)
+	rootVarAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\b`)
+	funcHeaderRe := regexp.MustCompile(`func\s+(\w+)\s*\(`)
 	useRe := cobraUseLeafRe
-	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(new\w+Cmd)\b`)
+	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\s*\(`)
+	addChildVarRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\b`)
 
 	for _, file := range files {
 		data, err := os.ReadFile(file)
@@ -754,8 +848,14 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			continue
 		}
 		src := string(data)
+		vars := commandFactoryVars(src)
 		for _, rm := range rootAddRe.FindAllStringSubmatch(src, -1) {
 			rootFuncs = append(rootFuncs, rm[1])
+		}
+		for _, rm := range rootVarAddRe.FindAllStringSubmatch(src, -1) {
+			if fn := vars[rm[1]]; fn != "" {
+				rootFuncs = append(rootFuncs, fn)
+			}
 		}
 		for _, u := range useRe.FindAllStringSubmatch(src, -1) {
 			if name := strings.Fields(u[1])[0]; name != "" {
@@ -774,6 +874,12 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			}
 			for _, cm := range addChildRe.FindAllStringSubmatch(body, -1) {
 				entry.children = append(entry.children, cm[1])
+			}
+			bodyVars := commandFactoryVars(body)
+			for _, cm := range addChildVarRe.FindAllStringSubmatch(body, -1) {
+				if fn := bodyVars[cm[1]]; fn != "" {
+					entry.children = append(entry.children, fn)
+				}
 			}
 			funcs[name] = entry
 		}
@@ -811,6 +917,15 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 		}
 	}
 	return paths, leaves
+}
+
+func commandFactoryVars(src string) map[string]string {
+	re := regexp.MustCompile(`\b(\w+)\s*:=\s*(\w+)\s*\(`)
+	vars := map[string]string{}
+	for _, m := range re.FindAllStringSubmatch(src, -1) {
+		vars[m[1]] = m[2]
+	}
+	return vars
 }
 
 // extractFuncBody returns the balanced-brace body of a Go function given
@@ -2037,7 +2152,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && !r.MCPSurfaceParityCheck.HandEdited && !r.MCPSurfaceParityCheck.Pass
 	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.NovelFeaturesCheck.Missing) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool {
+		return len(r.NovelFeaturesCheck.Missing) > 0 || len(r.NovelFeaturesCheck.DepthMismatches) > 0
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && r.MCPSurfaceParityCheck.HandEdited
 	}},
@@ -2114,6 +2231,16 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 			len(report.NovelFeaturesCheck.Missing),
 			report.NovelFeaturesCheck.Planned,
 			strings.Join(report.NovelFeaturesCheck.Missing, ", ")))
+	}
+	if len(report.NovelFeaturesCheck.DepthMismatches) > 0 {
+		parts := make([]string, 0, len(report.NovelFeaturesCheck.DepthMismatches))
+		for _, mismatch := range report.NovelFeaturesCheck.DepthMismatches {
+			parts = append(parts, fmt.Sprintf("%s advertised as %s but registered as %s",
+				mismatch.Command, mismatch.Advertised, mismatch.Actual))
+		}
+		issues = append(issues, fmt.Sprintf("%d novel feature command-depth mismatches: %s",
+			len(report.NovelFeaturesCheck.DepthMismatches),
+			strings.Join(parts, "; ")))
 	}
 	if mcpSurfaceCheckActive(report.MCPSurfaceParityCheck) && !report.MCPSurfaceParityCheck.Pass {
 		issues = append(issues, "MCP surface parity: "+report.MCPSurfaceParityCheck.Detail)

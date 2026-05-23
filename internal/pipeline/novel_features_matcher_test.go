@@ -118,6 +118,80 @@ func TestMatchNovelFeature_FallsBackToLeavesWhenPathsPartial(t *testing.T) {
 	}
 }
 
+func TestNovelFeatureDepthMismatch(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		example string
+		paths   map[string]bool
+		want    *NovelFeatureDepthMismatch
+	}{
+		{
+			name:    "known nested path mismatches advertised root command",
+			command: "grab",
+			paths:   map[string]bool{"assets": true, "assets grab": true},
+			want: &NovelFeatureDepthMismatch{
+				Command:    "grab",
+				Advertised: "grab",
+				Actual:     "assets grab",
+			},
+		},
+		{
+			name:    "example command wins over command field",
+			command: "assets grab",
+			example: `immich-pp-cli grab "sunset"`,
+			paths:   map[string]bool{"assets": true, "assets grab": true},
+			want: &NovelFeatureDepthMismatch{
+				Command:    "assets grab",
+				Advertised: "grab",
+				Actual:     "assets grab",
+			},
+		},
+		{
+			name:    "multiword example path can mismatch root registration",
+			command: "grab",
+			example: `demo-pp-cli assets grab --json`,
+			paths:   map[string]bool{"grab": true},
+			want: &NovelFeatureDepthMismatch{
+				Command:    "grab",
+				Advertised: "assets grab",
+				Actual:     "grab",
+			},
+		},
+		{
+			name:    "exact registered path is clean",
+			command: "assets grab",
+			paths:   map[string]bool{"assets": true, "assets grab": true},
+			want:    nil,
+		},
+		{
+			name:    "leaf-only fallback is clean when path is unknown",
+			command: "grab",
+			paths:   map[string]bool{},
+			want:    nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			feature := NovelFeature{Command: tc.command, Example: tc.example}
+			got := novelFeatureDepthMismatch(feature, tc.paths)
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("novelFeatureDepthMismatch() = %#v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("novelFeatureDepthMismatch() = nil, want mismatch")
+			}
+			if *got != *tc.want {
+				t.Fatalf("novelFeatureDepthMismatch() = %#v, want %#v", *got, *tc.want)
+			}
+		})
+	}
+}
+
 func TestCommandPath(t *testing.T) {
 	cases := map[string]string{
 		"portfolio perf":                       "portfolio perf",
@@ -206,6 +280,42 @@ func newOptionsChainCmd() *cobra.Command { return &cobra.Command{Use: "options-c
 	for _, w := range wantLeaves {
 		if !leaves[w] {
 			t.Errorf("expected leaf %q, got leaves: %v", w, leaves)
+		}
+	}
+}
+
+func TestCollectRegisteredCommands_VariableWiring(t *testing.T) {
+	dir := t.TempDir()
+	cli := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cli, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeTestFile(t, filepath.Join(cli, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func Execute() {
+	rootCmd := &cobra.Command{Use: "tool"}
+	grabCmd := rootGrabSubcmd(nil)
+	rootCmd.AddCommand(grabCmd)
+	rootCmd.AddCommand(newAssetsCmd())
+}
+func rootGrabSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "grab"} }
+`)
+	writeTestFile(t, filepath.Join(cli, "assets.go"), `package cli
+import "github.com/spf13/cobra"
+func newAssetsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "assets"}
+	grabCmd := assetsGrabSubcmd(nil)
+	cmd.AddCommand(grabCmd)
+	return cmd
+}
+func assetsGrabSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "grab"} }
+`)
+
+	paths, _ := collectRegisteredCommands(dir)
+	for _, want := range []string{"grab", "assets", "assets grab"} {
+		if !paths[want] {
+			t.Errorf("expected path %q, got paths: %v", want, paths)
 		}
 	}
 }
