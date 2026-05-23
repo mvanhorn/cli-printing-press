@@ -169,7 +169,7 @@ func TestScoreMCPToolDesign(t *testing.T) {
 		dir := t.TempDir()
 		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", stdioOnlyMain)
 		writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(15))
-		// 7 intents vs 15 endpoints → ratio 0.32, above 0.3 threshold.
+		// 7 intents vs 15 endpoints gives ratio 0.318 (7/22), above 0.3 threshold.
 		writeMCPFile(t, dir, "internal/mcp/intents.go", buildToolsGo(7))
 		score, scored := scoreMCPToolDesign(dir)
 		assert.True(t, scored)
