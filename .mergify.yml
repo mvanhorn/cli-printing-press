@@ -32,6 +32,17 @@ queue_rules:
       - check-success = golden
       - check-success = pr-title
       - check-success = test
+      # Mirrors .github/CODEOWNERS for security-sensitive paths, but lets
+      # code-owner-authored PRs enter the queue without requiring a second
+      # code owner to approve their own maintainer work. Non-code-owner PRs
+      # touching these paths still require an explicit approval from tmchow
+      # or mvanhorn.
+      - or:
+        - "-files ~= ^(\\.github/workflows/|\\.github/scripts/|scripts/|\\.github/CODEOWNERS$)"
+        - author = tmchow
+        - author = mvanhorn
+        - approved-reviews-by = tmchow
+        - approved-reviews-by = mvanhorn
       - or:
         - check-success = Greptile Review
         - check-neutral = Greptile Review
@@ -107,6 +118,14 @@ merge_protections:
       - check-success = golden
       - check-success = pr-title
       - check-success = test
+      # Mirrors .github/CODEOWNERS for security-sensitive paths, while
+      # allowing code-owner authors to merge their own maintainer PRs.
+      - or:
+        - "-files ~= ^(\\.github/workflows/|\\.github/scripts/|scripts/|\\.github/CODEOWNERS$)"
+        - author = tmchow
+        - author = mvanhorn
+        - approved-reviews-by = tmchow
+        - approved-reviews-by = mvanhorn
       - or:
         # Source PRs already had to pass Greptile in queue_conditions before
         # Mergify added this label. During merge, checks are evaluated against
