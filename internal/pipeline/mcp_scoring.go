@@ -8,11 +8,12 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
-// Thresholds for the tool-design dimension. Intent-grouping is only worth
-// scoring when the endpoint mirror would otherwise emit enough tools for
-// agents to feel the pain — small APIs (under ~30 endpoint tools) are fine as a
-// plain mirror and shouldn't be docked for not using intents.
-const toolDesignMinEndpoints = 30
+// Thresholds for MCP endpoint-mirror enrichment dimensions. Intent-grouping
+// and remote-reach pressure are only worth scoring when the endpoint mirror
+// would otherwise emit enough tools for agents to feel the pain — small APIs
+// (under ~30 endpoint tools) are fine as a plain mirror and shouldn't be
+// docked for not using enrichment.
+const mcpEnrichmentMinEndpoints = 30
 
 // Threshold above which an endpoint-mirror surface counts as the article's
 // named anti-pattern for large APIs. Matches the spec's
@@ -31,6 +32,7 @@ type mcpSurface struct {
 	codeOrchPresent bool   // internal/mcp/code_orch.go exists
 	endpointTools   int    // count of endpoint-mirror NewTool(...) registrations
 	intentTools     int    // count of intent tool registrations inside intents.go
+	totalTools      int    // count of agent-visible MCP tools when statically estimable
 }
 
 // mcpMainPath returns the path to the canonical cmd/<cli>-pp-mcp/main.go, or
@@ -91,6 +93,10 @@ func detectMCPSurface(dir string) mcpSurface {
 	if _, err := os.Stat(filepath.Join(dir, "internal", "mcp", "code_orch.go")); err == nil {
 		s.codeOrchPresent = true
 	}
+	s.totalTools = estimateMCPTokens(dir).ToolCount
+	if s.totalTools == 0 {
+		s.totalTools = s.endpointTools + s.intentTools
+	}
 	return s
 }
 
@@ -100,8 +106,9 @@ func detectMCPSurface(dir string) mcpSurface {
 // agents, so they score below the default line. Servers that compile in
 // both transports (stdio for local plus http for hosted) get full marks.
 //
-// Returns (0, false) when the CLI emits no MCP surface so the dimension can
-// be excluded from the tier-1 denominator.
+// Returns (0, false) when the CLI emits no MCP surface, or when a stdio-only
+// plain endpoint mirror is below the enrichment threshold, so the dimension
+// can be excluded from the tier-1 denominator.
 func scoreMCPRemoteTransport(dir string) (int, bool) {
 	s := detectMCPSurface(dir)
 	if !s.present {
@@ -114,6 +121,10 @@ func scoreMCPRemoteTransport(dir string) (int, bool) {
 	body := string(data)
 	hasStdio := strings.Contains(body, "server.ServeStdio")
 	hasHTTP := strings.Contains(body, "NewStreamableHTTPServer") || strings.Contains(body, "ServeStreamableHTTP")
+	plainEndpointMirror := !s.codeOrchPresent && !s.intentsPresent
+	if hasStdio && !hasHTTP && plainEndpointMirror && s.totalTools < mcpEnrichmentMinEndpoints {
+		return 0, false
+	}
 	switch {
 	case hasStdio && hasHTTP:
 		return 10, true
@@ -138,7 +149,7 @@ func scoreMCPRemoteTransport(dir string) (int, bool) {
 //   - intents present + ratio <  0.3: 7  (some coverage)
 //   - endpoint-mirror only: 5 (baseline — works, but leaves value on the table)
 //
-// Endpoint-mirror-only surfaces with endpoint count < toolDesignMinEndpoints
+// Endpoint-mirror-only surfaces with endpoint count < mcpEnrichmentMinEndpoints
 // return (0, false) — the decision doesn't meaningfully affect an agent at
 // small surface sizes.
 func scoreMCPToolDesign(dir string) (int, bool) {
@@ -156,7 +167,7 @@ func scoreMCPToolDesign(dir string) (int, bool) {
 		}
 		return 7, true
 	}
-	if s.endpointTools < toolDesignMinEndpoints {
+	if s.endpointTools < mcpEnrichmentMinEndpoints {
 		return 0, false
 	}
 	return 5, true

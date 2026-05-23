@@ -57,12 +57,36 @@ func TestScoreMCPRemoteTransport(t *testing.T) {
 		assert.Equal(t, 0, score)
 	})
 
-	t.Run("stdio only scores baseline", func(t *testing.T) {
+	t.Run("stdio only is unscored below enrichment threshold", func(t *testing.T) {
+		for _, endpointTools := range []int{17, 29} {
+			dir := t.TempDir()
+			writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", stdioOnlyMain)
+			writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(endpointTools))
+			score, scored := scoreMCPRemoteTransport(dir)
+			assert.False(t, scored, "small endpoint mirrors don't get docked for stdio-only transport")
+			assert.Equal(t, 0, score)
+		}
+	})
+
+	t.Run("large stdio only scores baseline", func(t *testing.T) {
+		for _, endpointTools := range []int{30, 100} {
+			dir := t.TempDir()
+			writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", stdioOnlyMain)
+			writeMCPFile(t, dir, "internal/mcp/tools.go", buildToolsGo(endpointTools))
+			score, scored := scoreMCPRemoteTransport(dir)
+			assert.True(t, scored)
+			assert.Equal(t, 5, score, "stdio-only gets middle-low band (remote-unreachable)")
+		}
+	})
+
+	t.Run("runtime-walked tools count toward enrichment threshold", func(t *testing.T) {
 		dir := t.TempDir()
 		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", stdioOnlyMain)
+		writeMCPFile(t, dir, "internal/mcp/tools.go", strings.Replace(buildToolsGo(20), "\n}", "\n\tcobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)\n}", 1))
+		writeNovelCommandTree(t, dir, 10)
 		score, scored := scoreMCPRemoteTransport(dir)
-		assert.True(t, scored)
-		assert.Equal(t, 5, score, "stdio-only gets middle-low band (remote-unreachable)")
+		assert.True(t, scored, "endpoint tools plus runtime-walked tools should cross the enrichment threshold")
+		assert.Equal(t, 5, score, "stdio-only remains penalized once the total agent-visible surface reaches the enrichment band")
 	})
 
 	t.Run("http only scores partial", func(t *testing.T) {
@@ -118,6 +142,45 @@ func buildToolsGo(n int) string {
 	}
 	b.WriteString("}\n")
 	return b.String()
+}
+
+func writeNovelCommandTree(t *testing.T, dir string, count int) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString(`package cli
+
+import "github.com/spf13/cobra"
+
+func RootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+`)
+	for i := range count {
+		b.WriteString("\trootCmd.AddCommand(newNovel")
+		b.WriteString(string(rune('A' + i%26)))
+		b.WriteString("Cmd())\n")
+	}
+	b.WriteString(`	return rootCmd
+}
+`)
+	for i := range count {
+		suffix := string(rune('A' + i%26))
+		b.WriteString(`
+func newNovel`)
+		b.WriteString(suffix)
+		b.WriteString(`Cmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "novel`)
+		b.WriteString(suffix)
+		b.WriteString(`",
+		Short: "Run novel command `)
+		b.WriteString(suffix)
+		b.WriteString(`.",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+`)
+	}
+	writeMCPCLISource(t, dir, "root.go", b.String())
 }
 
 func TestScoreMCPToolDesign(t *testing.T) {
