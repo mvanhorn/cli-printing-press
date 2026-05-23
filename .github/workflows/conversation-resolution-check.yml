@@ -225,9 +225,21 @@ jobs:
           exit 0
 
       - name: Post commit status
+        # if: always() — run even when the eval step failed mid-execution
+        # (gh api rate limit, transient graphql error). Without this, the
+        # default success() condition skips the post step and leaves the
+        # prior failure-state status pinned to the SHA — the exact stale-
+        # status problem this workflow is designed to fix. The head_sha
+        # guard skips when the PR-resolution step couldn't determine a
+        # target SHA, since there's nothing to post against.
+        if: always() && steps.pr.outputs.head_sha != ''
         env:
-          STATE: ${{ steps.eval.outputs.state }}
-          DESCRIPTION: ${{ steps.eval.outputs.description }}
+          # Fall back to an explicit 'error' state when the eval step
+          # didn't write outputs, so the canonical commit status carries
+          # a fresh signal on every run instead of silently inheriting
+          # the previous run's verdict.
+          STATE: ${{ steps.eval.outputs.state || 'error' }}
+          DESCRIPTION: ${{ steps.eval.outputs.description || 'Workflow error — see run logs' }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -euo pipefail
