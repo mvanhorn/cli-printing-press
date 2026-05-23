@@ -225,12 +225,18 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 				}
 			}
 			// Fallback: if exactly one top-level key is a non-empty array of
-			// objects, treat it as the list payload. This covers resource-named
-			// wrappers like {"events":[...]} without misclassifying ambiguous envelopes.
+			// objects AND every other top-level key is a known
+			// pagination/metadata key, treat that array as the list payload.
+			// This covers resource-named wrappers like {"events":[...]} or
+			// {"events":[...],"cursor":"x"} without misclassifying a detail
+			// object that merely carries one object-array field alongside its
+			// own scalar data (e.g. {"id":"order-1","line_items":[...]}), which
+			// must still cache as a single row.
 			if items == nil {
+				var arrayKey string
 				var arrayItems []json.RawMessage
 				arrayCount := 0
-				for _, raw := range envelope {
+				for key, raw := range envelope {
 					var candidate []json.RawMessage
 					if json.Unmarshal(raw, &candidate) != nil || len(candidate) == 0 {
 						continue
@@ -239,11 +245,24 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 					if json.Unmarshal(candidate[0], &obj) != nil {
 						continue
 					}
+					arrayKey = key
 					arrayItems = candidate
 					arrayCount++
 				}
 				if arrayCount == 1 {
-					items = arrayItems
+					onlyMetadataSiblings := true
+					for key := range envelope {
+						if key == arrayKey {
+							continue
+						}
+						if !listEnvelopeMetadataKeys[key] {
+							onlyMetadataSiblings = false
+							break
+						}
+					}
+					if onlyMetadataSiblings {
+						items = arrayItems
+					}
 				}
 			}
 			// Single object detail response: let UpsertBatch's existing

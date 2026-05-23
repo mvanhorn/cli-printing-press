@@ -45,6 +45,9 @@ func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 	writeThroughCache(ctx, "events", json.RawMessage(`+"`"+`{"events":[{"id":1,"name":"launch"}]}`+"`"+`))
 	writeThroughCache(ctx, "results", json.RawMessage(`+"`"+`{"results":[{"id":"r1","name":"ok"}]}`+"`"+`))
 	writeThroughCache(ctx, "orders", json.RawMessage(`+"`"+`{"id":"x","items":[],"status":"y"}`+"`"+`))
+	// Detail object carrying ONE multi-element object-array alongside a scalar
+	// id must cache as a single row, not have its sub-array misread as the list.
+	writeThroughCache(ctx, "lineitemorders", json.RawMessage(`+"`"+`{"id":"o-2","line_items":[{"id":"li-1","sku":"a"},{"id":"li-2","sku":"b"}]}`+"`"+`))
 
 	db, err := openStoreForRead(ctx, "writethrough-envelope-pp-cli")
 	if err != nil {
@@ -85,6 +88,14 @@ func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 	}
 	if got, ok := order["id"].(string); !ok || got != "x" {
 		t.Fatalf("expected cached detail object id to be x, got %#v", order["id"])
+	}
+
+	lineOrders, err := db.List("lineitemorders", 10)
+	if err != nil {
+		t.Fatalf("list lineitemorders: %v", err)
+	}
+	if len(lineOrders) != 1 {
+		t.Fatalf("detail object with a multi-element sub-array must cache as one row (not its line_items), got %d", len(lineOrders))
 	}
 }
 `), 0o644))
