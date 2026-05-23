@@ -3210,6 +3210,10 @@ func TestSyncExtractPaginationNestedCursor(t *testing.T) {
 		"paginationWrapperKeys must include response_metadata (Slack's envelope)")
 	assert.Contains(t, src, `"pagination"`,
 		"paginationWrapperKeys must include pagination (MongoDB Atlas-style)")
+	assert.Contains(t, src, `"features"`,
+		"pageItemKeys must include features (GeoJSON support)")
+	assert.Contains(t, src, `"Features"`,
+		"pageItemKeys must include Features (PascalCase GeoJSON support)")
 
 	// Tier 2: behavioral test, written into the generated tree as a
 	// same-package _test.go so it can call the unexported helper.
@@ -3219,6 +3223,62 @@ import (
 	"encoding/json"
 	"testing"
 )
+
+func TestExtractPageItemsGeoJSON(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"type": "FeatureCollection",
+		"bbox": [-180, -90, 180, 90],
+		"features": [{"id":"1"},{"id":"2"}]
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("GeoJSON: want 2 items, got %d", len(items))
+	}
+}
+
+func TestExtractPageItemsGeoJSONPascal(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"Type": "FeatureCollection",
+		"Bbox": [-180, -90, 180, 90],
+		"Features": [{"Id":"1"},{"Id":"2"}]
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("GeoJSON Pascal: want 2 items, got %d", len(items))
+	}
+}
+
+func TestExtractPageItemsNonArrayFeaturesFallback(t *testing.T) {
+	// features: true should fall through to ambiguity scan or return nil.
+	// In this case, there are NO arrays, so it returns nil.
+	body := []byte(` + "`" + `{
+		"features": true,
+		"other": "val"
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 0 {
+		t.Fatalf("Non-array features: want 0 items, got %d", len(items))
+	}
+}
+
+func TestExtractPageItemsFeaturesPrecedenceConflict(t *testing.T) {
+	// Greptile feedback: when "features" is a valid array of non-objects
+	// (e.g. strings) but another array (e.g. "markets") exists, the fast-path
+	// for "features" will fail unmarshal (into []RawMessage) if the items
+	// are not objects, and fall through to the ambiguity scan.
+	//
+	// However, if "features" IS an array of objects but they aren't the
+	// resources we want, the fast-path WILL match. This test confirms
+	// the behavior for non-object arrays.
+	body := []byte(` + "`" + `{
+		"markets": [{"id":"m1"}],
+		"features": ["dark_mode", "beta"]
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 1 {
+		t.Fatalf("Features conflict: want 1 item (from markets), got %d. Result should fall through 'features' because strings are not RawMessage objects.", len(items))
+	}
+}
 
 func TestExtractPageItemsSlackEnvelope(t *testing.T) {
 	body := []byte(` + "`" + `{
