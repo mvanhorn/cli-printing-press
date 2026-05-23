@@ -206,14 +206,16 @@ func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[str
 	if err := c.validateCachedRequestAuth(ctx); err != nil {
 		return nil, err
 	}
+	binaryResponse := c.wantsBinaryResponse(headers)
+	cacheEnabled := c.responseCacheEnabled(binaryResponse)
 	// Check cache for GET requests
-	if !c.NoCache && !c.DryRun && c.cacheDir != "" {
+	if cacheEnabled {
 		if cached, ok := c.readCache(path, params); ok {
 			return cached, nil
 		}
 	}
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
-	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
+	if err == nil && cacheEnabled {
 		c.writeCache(path, params, result)
 	}
 	return result, err
@@ -232,15 +234,48 @@ func (c *Client) GetNoCache(ctx context.Context, path string, params map[string]
 	return c.GetWithHeadersNoCache(ctx, path, params, nil)
 }
 
-// GetWithHeadersNoCache is GetWithHeaders that skips the cache read but
-// still writes the fresh response on success. See GetNoCache for when to
+// GetWithHeadersNoCache is GetWithHeaders that skips the cache read but still
+// writes cacheable fresh responses on success. See GetNoCache for when to
 // prefer this over Get/GetWithHeaders.
 func (c *Client) GetWithHeadersNoCache(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	binaryResponse := c.wantsBinaryResponse(headers)
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
-	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
+	if err == nil && c.responseCacheEnabled(binaryResponse) {
 		c.writeCache(path, params, result)
 	}
 	return result, err
+}
+
+func (c *Client) responseCacheEnabled(binaryResponse bool) bool {
+	return !binaryResponse && !c.NoCache && !c.DryRun && c.cacheDir != ""
+}
+
+// The response cache stores text/JSON bodies as <hash>.json. Binary callers
+// opt out so opaque blobs do not land under a misleading extension.
+func (c *Client) wantsBinaryResponse(headers map[string]string) bool {
+	binaryResponse := false
+	if c != nil && c.Config != nil {
+		if value, ok := binaryResponseHeaderValue(c.Config.Headers); ok {
+			binaryResponse = value
+		}
+	}
+	if value, ok := binaryResponseHeaderValue(headers); ok {
+		binaryResponse = value
+	}
+	return binaryResponse
+}
+
+func binaryResponseHeaderValue(headers map[string]string) (bool, bool) {
+	found := false
+	for k, v := range headers {
+		if strings.EqualFold(k, BinaryResponseHeader) {
+			found = true
+			if strings.EqualFold(v, "true") {
+				return true, true
+			}
+		}
+	}
+	return false, found
 }
 
 func (c *Client) validateCachedRequestAuth(ctx context.Context) error {
