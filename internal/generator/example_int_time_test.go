@@ -37,8 +37,16 @@ func TestExampleValueNumericTypeBeatsDateTimeNameHeuristics(t *testing.T) {
 			isNumeric: false,
 		},
 		{
-			name:      "number oldest stays numeric",
-			param:     spec.Param{Name: "oldest", Type: "number"},
+			// "end_time" contains "time", so the pre-fix code returned an
+			// RFC3339 string; the numeric type must now win.
+			name:      "number end_time stays numeric",
+			param:     spec.Param{Name: "end_time", Type: "number"},
+			isNumeric: true,
+		},
+		{
+			// "event_date" contains "date"; integer type must win.
+			name:      "integer event_date stays numeric",
+			param:     spec.Param{Name: "event_date", Type: "integer"},
 			isNumeric: true,
 		},
 	}
