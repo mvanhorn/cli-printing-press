@@ -2001,9 +2001,11 @@ func extractViaCDP(targetURL, port string) (string, error) {
 }
 
 // evalDocumentCookieViaCDP opens the per-tab DevTools WebSocket and runs a
-// single Runtime.evaluate of `document.cookie`. Bounded by a hard 5s total
-// deadline plus per-frame read deadlines so a stuck connection cannot hang
-// the calling auth flow. Returns the cookie string verbatim (no parsing) so
+// single Runtime.evaluate of `document.cookie`. Bounded by a single 5-second
+// wall-clock deadline shared across the dial, write, and all subsequent frame
+// reads — net.Conn.SetReadDeadline is a single deadline covering all reads on
+// the connection, not a per-message reset, so heavy CDP event traffic chips
+// away at the same budget. Returns the cookie string verbatim (no parsing) so
 // the existing extractLiveCookies pipeline can hand it to refreshStoredBrowserCookies.
 func evalDocumentCookieViaCDP(wsURL, domain string) (string, error) {
 	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
@@ -2034,7 +2036,9 @@ func evalDocumentCookieViaCDP(wsURL, domain string) (string, error) {
 	// Drain frames until we see our response. CDP can interleave events from
 	// other domains (Network, Page) on the same socket if those domains were
 	// enabled in this tab by another client; ignore them and keep reading
-	// until the per-message read deadline fires.
+	// until the shared 5-second deadline above fires. Heavy event traffic can
+	// exhaust the budget before our response arrives — that's by design (a
+	// stuck tab fails fast) rather than a per-read timeout.
 	for {
 		var msg struct {
 			ID     int             `json:"id"`
