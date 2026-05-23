@@ -54,6 +54,10 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
+			// Bypass the #1879 pre-emit guard so the test exercises the
+			// snapshot+merge path it was written for; the guard is exercised
+			// directly in TestGenerateCmdForceRefusesNovelWipe* below.
+			"--allow-novel-wipe",
 		})
 		require.NoError(t, cmd.Execute())
 	}
@@ -213,6 +217,7 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
+			"--allow-novel-wipe",
 		})
 		require.NoError(t, cmd.Execute())
 	}
@@ -334,6 +339,7 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
+			"--allow-novel-wipe",
 		})
 		require.NoError(t, cmd.Execute())
 	}
@@ -404,6 +410,7 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
+			"--allow-novel-wipe",
 		})
 		return cmd.Execute()
 	}
@@ -454,6 +461,7 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
+			"--allow-novel-wipe",
 		})
 		return cmd.Execute()
 	}
@@ -504,6 +512,7 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
+			"--allow-novel-wipe",
 		})
 		return cmd.Execute()
 	}
