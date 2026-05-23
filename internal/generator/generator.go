@@ -166,6 +166,7 @@ type Generator struct {
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
+	s.InferEndpointTemplateVarsFromBaseURLs()
 	if s.Owner == "" {
 		s.Owner = resolveOwnerForExisting(outputDir)
 	}

@@ -3809,6 +3809,140 @@ resources:
 	assert.Equal(t, "paid", s.EffectiveTier(s.Resources["results"], s.Resources["results"].Endpoints["premium"]))
 }
 
+func TestInferEndpointTemplateVarsFromBaseURLs(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:                 "templated",
+		BaseURL:              "https://{tenant}.api.example.com",
+		BasePath:             "/{base_path}",
+		GraphQLEndpointPath:  "/admin/{version}/graphql",
+		EndpointTemplateVars: []string{"explicit", "tenant"},
+		TierRouting: TierRoutingConfig{Tiers: map[string]TierConfig{
+			"z": {BaseURL: "https://{tier_z}.api.example.com"},
+			"a": {BaseURL: "https://{tier_a}.api.example.com"},
+		}},
+		Resources: map[string]Resource{
+			"z_resource": {
+				BaseURL: "https://{resource_z}.api.example.com",
+				Endpoints: map[string]Endpoint{
+					"z_endpoint": {BaseURL: "https://{endpoint_z}.api.example.com"},
+					"a_endpoint": {BaseURL: "https://{endpoint_a}.api.example.com"},
+				},
+				SubResources: map[string]Resource{
+					"z_sub": {BaseURL: "https://{sub_z}.api.example.com"},
+					"a_sub": {BaseURL: "https://{sub_a}.api.example.com"},
+				},
+			},
+			"a_resource": {
+				BaseURL: "https://{resource_a}.api.example.com/{tenant}",
+			},
+		},
+	}
+
+	s.InferEndpointTemplateVarsFromBaseURLs()
+
+	assert.Equal(t, []string{
+		"explicit",
+		"tenant",
+		"base_path",
+		"version",
+		"tier_a",
+		"tier_z",
+		"resource_a",
+		"resource_z",
+		"endpoint_a",
+		"endpoint_z",
+		"sub_a",
+		"sub_z",
+	}, s.EndpointTemplateVars)
+}
+
+func TestInferEndpointTemplateVarsFromBaseURLsFastPathSources(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(*APISpec)
+		want   string
+	}{
+		{
+			name: "base path",
+			mutate: func(s *APISpec) {
+				s.BasePath = "/{base_path}"
+			},
+			want: "base_path",
+		},
+		{
+			name: "graphql endpoint path",
+			mutate: func(s *APISpec) {
+				s.GraphQLEndpointPath = "/admin/{version}/graphql"
+			},
+			want: "version",
+		},
+		{
+			name: "tier base url",
+			mutate: func(s *APISpec) {
+				s.TierRouting = TierRoutingConfig{Tiers: map[string]TierConfig{
+					"paid": {BaseURL: "https://{tier}.api.example.com"},
+				}}
+			},
+			want: "tier",
+		},
+		{
+			name: "resource base url",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.BaseURL = "https://{resource}.api.example.com"
+				s.Resources["items"] = resource
+			},
+			want: "resource",
+		},
+		{
+			name: "endpoint base url",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.Endpoints["list"] = Endpoint{Method: "GET", Path: "/items", BaseURL: "https://{endpoint}.api.example.com"}
+				s.Resources["items"] = resource
+			},
+			want: "endpoint",
+		},
+		{
+			name: "subresource base url",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.SubResources = map[string]Resource{
+					"children": {BaseURL: "https://{subresource}.api.example.com"},
+				}
+				s.Resources["items"] = resource
+			},
+			want: "subresource",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{
+				Name:    "templated",
+				BaseURL: "https://api.example.com",
+				Resources: map[string]Resource{
+					"items": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items"},
+						},
+					},
+				},
+			}
+			tc.mutate(s)
+
+			s.InferEndpointTemplateVarsFromBaseURLs()
+
+			assert.Equal(t, []string{tc.want}, s.EndpointTemplateVars)
+		})
+	}
+}
+
 func TestValidateTierRouting(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
