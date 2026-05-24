@@ -1540,6 +1540,8 @@ func (g *Generator) renderSingleFiles() error {
 		"cliutil_extractnumber_test.go.tmpl":       filepath.Join("internal", "cliutil", "extractnumber_test.go"),
 		"cliutil_jwtshape.go.tmpl":                 filepath.Join("internal", "cliutil", "jwtshape.go"),
 		"cliutil_jwtshape_test.go.tmpl":            filepath.Join("internal", "cliutil", "jwtshape_test.go"),
+		"cliutil_duration.go.tmpl":                 filepath.Join("internal", "cliutil", "duration.go"),
+		"cliutil_duration_test.go.tmpl":            filepath.Join("internal", "cliutil", "duration_test.go"),
 		"cliutil_test.go.tmpl":                     filepath.Join("internal", "cliutil", "cliutil_test.go"),
 		"cobratree/walker.go.tmpl":                 filepath.Join("internal", "mcp", "cobratree", "walker.go"),
 		"cobratree/classify.go.tmpl":               filepath.Join("internal", "mcp", "cobratree", "classify.go"),
