@@ -16,7 +16,7 @@ func newHealthPromotedCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "health",
 		Short:       "Health check",
-		Long:        "Shortcut for 'health check'. Health check",
+		Long:        "Health check",
 		Example:     "  fastapi-operationids-golden-pp-cli health",
 		Annotations: map[string]string{"pp:endpoint": "health.check", "pp:method": "GET", "pp:path": "/health", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
