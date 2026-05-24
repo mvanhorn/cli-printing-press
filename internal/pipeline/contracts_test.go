@@ -123,7 +123,6 @@ func TestAgentBrowserInstallRequiresPostInstallSetup(t *testing.T) {
 		{name: "browser-sniff-capture", content: capture},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Contains(t, tt.content, "! agent-browser install")
 			assert.Contains(t, tt.content, "The leading `!` is intentional")
