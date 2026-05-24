@@ -9,7 +9,7 @@ info:
     needed for contact sync, password mirroring, configuration creation, and
     onboarding documentation.
   x-auth-key-url: https://api.itglue.com/developer/
-  x-auth-instructions: "Use the ITO Key Vault secret ItGlueApiKey; do not use the read-only ItGlueReadOnlyApiKey for write operations."
+  x-auth-instructions: "Generate an API key in your IT Glue account settings, then choose the base URL for your IT Glue data region."
 externalDocs:
   description: Official IT Glue developer documentation
   url: https://api.itglue.com/developer/
@@ -125,6 +125,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Unprocessable"
   /organizations/{organization_id}/relationships/contacts:
@@ -161,6 +163,8 @@ paths:
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
   /organizations/{organization_id}/relationships/contacts/{id}:
     patch:
       operationId: updateOrganizationContact
@@ -181,6 +185,10 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
   /passwords:
     get:
       operationId: listPasswords
@@ -226,6 +234,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
     patch:
       operationId: updatePassword
       tags: [Passwords]
@@ -302,6 +312,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
     patch:
       operationId: updateConfiguration
       tags: [Configurations]
@@ -353,6 +365,8 @@ paths:
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
   /documents:
     get:
       operationId: listDocuments
@@ -396,6 +410,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
     patch:
       operationId: updateDocument
       tags: [Documents]
@@ -447,6 +463,8 @@ paths:
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
+        "422":
+          $ref: "#/components/responses/Unprocessable"
 components:
   securitySchemes:
     ItGlueApiKey:
@@ -459,7 +477,7 @@ components:
           kind: per_call
           required: true
           sensitive: true
-          description: IT Glue read-write API key from the ITO Key Vault secret ItGlueApiKey.
+          description: IT Glue API key with permissions for the requested read and write operations.
   parameters:
     Id:
       name: id
@@ -610,6 +628,7 @@ components:
           additionalProperties: true
     ContactAttributes:
       type: object
+      required: [organization-id, name]
       properties:
         organization-id:
           type: integer
@@ -654,6 +673,7 @@ components:
           additionalProperties: true
     PasswordAttributes:
       type: object
+      required: [organization-id, name]
       properties:
         organization-id:
           type: integer
@@ -702,6 +722,7 @@ components:
           additionalProperties: true
     ConfigurationAttributes:
       type: object
+      required: [organization-id, name]
       properties:
         organization-id:
           type: integer
@@ -758,6 +779,7 @@ components:
           additionalProperties: true
     DocumentAttributes:
       type: object
+      required: [organization-id, name]
       properties:
         organization-id:
           type: integer
