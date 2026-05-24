@@ -256,6 +256,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"effectiveSubTier":       effectiveSubTier,
 		"add":                    func(a, b int) int { return a + b },
 		"chomp":                  func(s string) string { return strings.TrimRight(s, "\r\n") },
+		"staleAfterExpr":         staleAfterExpr,
 		"oneline":                naming.OneLine,
 		"composeMCPDesc":         composeMCPDesc,
 		"composeMCPSubDesc":      composeMCPSubDesc,
@@ -5194,6 +5195,44 @@ var goKeywords = map[string]bool{
 // isGoKeyword reports whether s is a reserved word in the Go language spec.
 func isGoKeyword(s string) bool {
 	return goKeywords[s]
+}
+
+// cacheDurationDefault is the global stale-after fallback used when the spec
+// declares no stale_after, or declares one that does not parse.
+const cacheDurationDefault = "6 * time.Hour"
+
+// staleAfterExpr renders the cache stale-after duration as a Go expression for
+// direct initialization. A spec literal that parses to a non-negative duration
+// becomes e.g. "168 * time.Hour"; an empty, unparseable, or negative value
+// falls back to the 6h default (a negative stale-after would make the cache
+// permanently stale). Emitting the value directly avoids a dead "staleAfter :=
+// 6 * time.Hour" initializer that is always overwritten by a ParseDuration call
+// which cannot fail on a constant literal.
+func staleAfterExpr(lit string) string {
+	if lit == "" {
+		return cacheDurationDefault
+	}
+	d, err := time.ParseDuration(lit)
+	if err != nil || d < 0 {
+		return cacheDurationDefault
+	}
+	return goDurationExpr(d)
+}
+
+// goDurationExpr renders a time.Duration as a readable Go expression, preferring
+// the largest whole unit (hours, then minutes, then seconds) and falling back
+// to a nanosecond-typed literal for sub-second or non-round values.
+func goDurationExpr(d time.Duration) string {
+	switch {
+	case d%time.Hour == 0:
+		return fmt.Sprintf("%d * time.Hour", d/time.Hour)
+	case d%time.Minute == 0:
+		return fmt.Sprintf("%d * time.Minute", d/time.Minute)
+	case d%time.Second == 0:
+		return fmt.Sprintf("%d * time.Second", d/time.Second)
+	default:
+		return fmt.Sprintf("time.Duration(%d)", int64(d))
+	}
 }
 
 // toKebab converts PascalCase, camelCase, or mixed names to kebab-case.

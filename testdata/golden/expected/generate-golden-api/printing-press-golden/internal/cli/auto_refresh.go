@@ -36,9 +36,6 @@ var readCommandResources = map[string][]string{
 // the CLI. Per-resource overrides from spec.Cache.Resources take priority.
 func cachePolicy() cliutil.Policy {
 	staleAfter := 6 * time.Hour
-	if d, err := time.ParseDuration("6h"); err == nil {
-		staleAfter = d
-	}
 	perResource := map[string]time.Duration{}
 	// Default env opt-out name is the CLI name normalized with the same
 	// ASCII-safe convention used in generated docs and config env vars.
