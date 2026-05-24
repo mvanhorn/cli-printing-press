@@ -5438,7 +5438,7 @@ func networkFallbackReason(s *spec.APISpec) string {
 	return "api_unreachable"
 }
 
-func localReadIsList(supportsAllPagination bool, endpointName string, endpoint spec.Endpoint) bool {
+func localReadIsList(supportsAllPagination bool, apiSpec *spec.APISpec, endpointName string, endpoint spec.Endpoint) bool {
 	if supportsAllPagination {
 		return true
 	}
@@ -5448,10 +5448,13 @@ func localReadIsList(supportsAllPagination bool, endpointName string, endpoint s
 	if strings.EqualFold(endpointName, "list") {
 		return true
 	}
-	return strings.EqualFold(endpoint.Response.Type, "array")
+	return networkFallbackReason(apiSpec) == "synthetic_anchor_fallback" && strings.EqualFold(endpoint.Response.Type, "array")
 }
 
 func endpointHasPathScope(endpoint spec.Endpoint) bool {
+	// Parsed specs and hand-authored fixtures may disagree between the path
+	// string and normalized Param flags; either signal means local List would
+	// over-return rows across parents.
 	if strings.Contains(endpoint.Path, "{") {
 		return true
 	}

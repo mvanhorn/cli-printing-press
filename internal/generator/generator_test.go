@@ -13528,6 +13528,7 @@ func TestLocalReadIsList(t *testing.T) {
 	cases := []struct {
 		name                  string
 		supportsAllPagination bool
+		apiSpec               *spec.APISpec
 		endpointName          string
 		endpoint              spec.Endpoint
 		want                  bool
@@ -13539,7 +13540,14 @@ func TestLocalReadIsList(t *testing.T) {
 			want:         true,
 		},
 		{
-			name:         "top-level array response",
+			name:         "non-synthetic array response without list name",
+			endpointName: "search",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/search", Response: spec.ResponseDef{Type: "array"}},
+			want:         false,
+		},
+		{
+			name:         "synthetic array response without list name",
+			apiSpec:      &spec.APISpec{Kind: spec.KindSynthetic},
 			endpointName: "search",
 			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/search", Response: spec.ResponseDef{Type: "array"}},
 			want:         true,
@@ -13579,7 +13587,7 @@ func TestLocalReadIsList(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			assert.Equal(t, tc.want, localReadIsList(tc.supportsAllPagination, tc.endpointName, tc.endpoint))
+			assert.Equal(t, tc.want, localReadIsList(tc.supportsAllPagination, tc.apiSpec, tc.endpointName, tc.endpoint))
 		})
 	}
 }

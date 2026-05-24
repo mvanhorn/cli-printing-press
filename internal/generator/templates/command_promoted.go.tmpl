@@ -188,7 +188,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
 {{- else if eq $method "GET"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)

@@ -45,7 +45,7 @@ Synthetic specs use anchor resources to define local store shape, but those reso
 Keep the endpoint command, but make the generated read path encode both pieces of information the local resolver needs:
 
 1. Synthetic specs, and specs whose placeholder base URL ends in `.local`, emit a generated fallback reason of `synthetic_anchor_fallback`.
-2. Non-paginated GET endpoints whose response type is an array are passed to `resolveRead` as list reads only when the endpoint has no path scope.
+2. Non-paginated GET endpoints whose response type is an array are passed to `resolveRead` as list reads only when the endpoint has no path scope and either has the canonical `list` endpoint name or belongs to a synthetic / `.local` spec.
 
 The generator-level helpers make the invariant explicit:
 
@@ -64,7 +64,7 @@ func networkFallbackReason(s *spec.APISpec) string {
     return "api_unreachable"
 }
 
-func localReadIsList(supportsAllPagination bool, endpointName string, endpoint spec.Endpoint) bool {
+func localReadIsList(supportsAllPagination bool, apiSpec *spec.APISpec, endpointName string, endpoint spec.Endpoint) bool {
     if supportsAllPagination {
         return true
     }
@@ -74,7 +74,7 @@ func localReadIsList(supportsAllPagination bool, endpointName string, endpoint s
     if strings.EqualFold(endpointName, "list") {
         return true
     }
-    return strings.EqualFold(endpoint.Response.Type, "array")
+    return networkFallbackReason(apiSpec) == "synthetic_anchor_fallback" && strings.EqualFold(endpoint.Response.Type, "array")
 }
 ```
 
@@ -88,7 +88,7 @@ The bug was not just that synthetic specs used a placeholder host. It was that l
 
 ## Prevention
 
-- When generated fallback code crosses from API transport to local store, carry the response shape and scope. Returning every cached row is correct for top-level synthetic anchors, but unsafe for path-scoped child collections.
+- When generated fallback code crosses from API transport to local store, carry response shape, scope, and spec kind. Returning every cached row is correct for top-level synthetic anchors, but unsafe for path-scoped child collections or non-synthetic search/filter endpoints.
 - Regression tests should execute a generated CLI command after seeding the local store, not only assert template text. This catches the `Get` vs `List` distinction.
 - Keep synthetic fallback metadata separate from fallback mechanics. `meta.reason` is an observability contract; `isList` is the data access contract.
 - Include a negative fixture for live APIs so fallback labels do not accidentally reclassify ordinary network failures as synthetic behavior.
