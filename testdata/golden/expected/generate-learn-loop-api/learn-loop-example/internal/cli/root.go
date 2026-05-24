@@ -353,7 +353,7 @@ func newVersionCliCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("learn-loop-example-pp-cli %s\n", version)
+			fmt.Printf("%s %s\n", cmd.Root().Name(), version)
 		},
 	}
 }
