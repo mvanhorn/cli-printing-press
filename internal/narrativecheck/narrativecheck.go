@@ -259,10 +259,11 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 	segments, err := splitShellChain(command)
 	if err != nil {
 		return Result{
-			Section: section,
-			Command: command,
-			Status:  StatusExampleFailed,
-			Error:   err.Error(),
+			Section:       section,
+			Command:       command,
+			Status:        StatusExampleFailed,
+			Error:         err.Error(),
+			StrictFailure: true,
 		}
 	}
 
@@ -299,9 +300,10 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 		// is no runnable head. Surface this as empty-words so the author
 		// notices, but keep the pipe-skipped notes for context.
 		return finish(Result{
-			Section: section,
-			Status:  StatusEmptyWords,
-			Error:   "command has no runnable segment (every chained segment is pipe-skipped)",
+			Section:       section,
+			Status:        StatusEmptyWords,
+			Error:         "command has no runnable segment (every chained segment is pipe-skipped)",
+			StrictFailure: true,
 		})
 	}
 

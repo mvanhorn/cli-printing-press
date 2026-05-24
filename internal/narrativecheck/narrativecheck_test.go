@@ -212,8 +212,40 @@ func TestValidateWithOptions_FullExamplesCatchesInvalidFlag(t *testing.T) {
 	if got.Status != StatusExampleFailed {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusExampleFailed)
 	}
+	if !got.StrictFailure {
+		t.Fatal("failed full example should be marked as a strict failure")
+	}
 	if !strings.Contains(got.Error, "--bad-flag") {
 		t.Errorf("Error %q should mention the invalid flag", got.Error)
+	}
+}
+
+func TestValidateWithOptions_FullExamplesMarksParseErrorAsStrictFailure(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub widgets list --message \"open"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.HasFailures() {
+		t.Fatal("parse errors should fail strict aggregation")
+	}
+	if report.ExampleFailed != 1 {
+		t.Fatalf("ExampleFailed = %d, want 1", report.ExampleFailed)
+	}
+	got := report.Results[0]
+	if got.Status != StatusExampleFailed {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusExampleFailed)
+	}
+	if !got.StrictFailure {
+		t.Fatal("parse error should be marked as a strict failure")
 	}
 }
 
@@ -774,6 +806,35 @@ func TestValidate_PipeRecipeValidatesLeadingSegment(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Notes, wantNotes) {
 		t.Errorf("Notes = %q, want %q", got.Notes, wantNotes)
+	}
+}
+
+func TestValidate_PipeOnlyRecipeMarksEmptyWordsAsStrictFailure(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"| jq '.'"}
+		]
+	}}`)
+
+	report, err := Validate(context.Background(), research, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.HasFailures() {
+		t.Fatal("pipe-only recipes should fail strict aggregation")
+	}
+	if report.Empty != 1 {
+		t.Fatalf("Empty = %d, want 1", report.Empty)
+	}
+	got := report.Results[0]
+	if got.Status != StatusEmptyWords {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusEmptyWords)
+	}
+	if !got.StrictFailure {
+		t.Fatal("pipe-only empty-words result should be marked as a strict failure")
 	}
 }
 
