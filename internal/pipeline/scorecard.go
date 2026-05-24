@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1290,6 +1293,65 @@ func countClientAPICalls(content string) int {
 	return len(clientAPICallRE.FindAllString(content, -1))
 }
 
+func clientHelperCallCounts(fileContent map[string]string) map[string]int {
+	helpers := map[string]int{}
+	for fileName, content := range fileContent {
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "", content, 0)
+		if err != nil {
+			continue
+		}
+		imports := clientImportAliases(file)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name == nil || fn.Recv != nil || fn.Body == nil {
+				continue
+			}
+			start := fset.Position(fn.Body.Pos()).Offset
+			end := fset.Position(fn.Body.End()).Offset
+			if start < 0 || end > len(content) || start >= end {
+				continue
+			}
+			body := content[start:end]
+			calls := countClientAPICalls(body) + countImportedClientCalls(fn.Body, imports, false)
+			if calls > 0 {
+				helpers[helperKey(fileName, fn.Name.Name)] = calls
+			}
+		}
+	}
+	return helpers
+}
+
+func helperKey(fileName, funcName string) string {
+	return fileName + ":" + funcName
+}
+
+func splitHelperKey(key string) (string, string) {
+	i := strings.LastIndexByte(key, ':')
+	if i < 0 {
+		return "", key
+	}
+	return key[:i], key[i+1:]
+}
+
+func countImportedClientCalls(body *ast.BlockStmt, imports map[string]clientImportKind, allowAnySiblingSelector bool) int {
+	if body == nil {
+		return 0
+	}
+	count := 0
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if isImportedClientCall(call.Fun, imports, allowAnySiblingSelector) {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
 // cobraUseLeafRe extracts the leaf command name from a Cobra Use: literal.
 // Accepts both Go string forms — double-quoted and backtick raw-string —
 // because authors reach for backticks when the value contains a literal
@@ -1427,6 +1489,7 @@ func scoreWorkflows(dir string) int {
 		fileContent[e.Name()] = readFileContent(filepath.Join(cliDir, e.Name()))
 	}
 	storeHelpers := storeHelperNames(fileContent)
+	clientHelpers := clientHelperCallCounts(fileContent)
 
 	// Some prefixes overlap with insightPrefixes intentionally — per Steinberger,
 	// analytics/insights ARE compound commands (the visionary research plan lists
@@ -1479,7 +1542,9 @@ func scoreWorkflows(dir string) int {
 
 		// Count files that make 2+ API calls (total occurrences, not unique methods).
 		// A command calling c.Get 3 times is a compound workflow even if it never uses POST.
-		apiCalls := countClientAPICalls(content)
+		apiCalls := countClientAPICalls(content) + countWeightedHelperCallsFiltered(content, clientHelpers, func(fileName, name string) bool {
+			return fileName != e.Name()
+		})
 		if strings.Contains(content, "store.") {
 			apiCalls++
 		}
