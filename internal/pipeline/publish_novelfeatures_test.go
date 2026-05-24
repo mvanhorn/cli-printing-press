@@ -212,3 +212,27 @@ func TestLoadResearchForPromote_MinimalStateGlobReportsMalformedResearch(t *test
 	assert.Empty(t, source)
 	assert.Contains(t, err.Error(), "research.json at "+path+" failed to parse:")
 }
+
+func TestLoadMatchingResearchSkipsVanishedCandidate(t *testing.T) {
+	dir := t.TempDir()
+	missingPath := filepath.Join(dir, "missing", "research.json")
+	validDir := filepath.Join(dir, "valid")
+	require.NoError(t, os.MkdirAll(validDir, 0o755))
+
+	r := ResearchResult{
+		APIName:       "myapi",
+		NovelFeatures: []NovelFeature{{Name: "From remaining candidate", Command: "cmd"}},
+	}
+	data, _ := json.Marshal(r)
+	validPath := filepath.Join(validDir, "research.json")
+	require.NoError(t, os.WriteFile(validPath, data, 0o644))
+
+	got, source, err := loadMatchingResearch([]researchCandidate{
+		{path: missingPath, mtime: time.Now()},
+		{path: validPath, mtime: time.Now().Add(-time.Minute)},
+	}, "myapi")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "From remaining candidate", got.NovelFeatures[0].Name)
+	assert.Equal(t, validPath, source)
+}

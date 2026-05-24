@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -66,6 +67,9 @@ func (f *flexibleResearchStrings) UnmarshalJSON(data []byte) error {
 
 	out := make([]string, 0, len(items))
 	for _, item := range items {
+		if bytes.Equal(bytes.TrimSpace(item), []byte("null")) {
+			return fmt.Errorf("expected research list item to be a string or object with name/reason, got null")
+		}
 		var text string
 		if err := json.Unmarshal(item, &text); err == nil {
 			out = append(out, text)

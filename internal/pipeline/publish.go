@@ -491,6 +491,9 @@ func loadMatchingResearch(candidates []researchCandidate, apiName string) (*Rese
 			}
 			continue
 		}
+		if r == nil {
+			continue
+		}
 		if apiName != "" && r.APIName != "" && r.APIName != apiName {
 			continue
 		}

@@ -136,6 +136,7 @@ func TestLoadResearchRejectsMalformedGapsAndPatterns(t *testing.T) {
 	}{
 		{name: "empty structured gap", body: `{"gaps":[{}]}`},
 		{name: "numeric pattern", body: `{"patterns":[42]}`},
+		{name: "null gap", body: `{"gaps":[null]}`},
 		{name: "non-array gaps", body: `{"gaps":{"name":"No JSON output"}}`},
 	}
 	for _, tt := range tests {
