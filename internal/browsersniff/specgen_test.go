@@ -156,6 +156,63 @@ func TestAnalyzeCapture_UsesCapturedCookieAuth(t *testing.T) {
 	assert.Equal(t, []string{"SPOTIFY_COOKIES"}, apiSpec.Auth.EnvVars)
 }
 
+func TestAnalyzeCapture_ReconcilesSearchAfterBodyCursorWireName(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://services.leadconnectorhq.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://services.leadconnectorhq.com/contacts/search",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"locationId":"loc","pageLimit":2,"filters":[]}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"contacts":[{"id":"1"}],"meta":{"startAfter":[1779142892078,"1"],"total":200}}`,
+				Classification:      "api",
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://services.leadconnectorhq.com/contacts/search",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"locationId":"loc","pageLimit":2,"filters":[],"searchAfter":[1779142892078,"1"]}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"contacts":[{"id":"2"}],"meta":{"startAfter":[1779142893000,"2"],"total":200}}`,
+				Classification:      "api",
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	endpoint := apiSpec.Resources["contacts"].Endpoints["create_search"]
+	require.NotEmpty(t, endpoint.Body)
+
+	cursor := findBodyParam(endpoint.Body, "startAfter")
+	require.NotNil(t, cursor)
+	assert.Equal(t, "searchAfter", cursor.BodyName)
+	assert.Equal(t, "array", cursor.Type)
+	assert.Nil(t, findBodyParam(endpoint.Body, "searchAfter"))
+}
+
+func TestReconcileObservedBodyCursorNamesKeepsDistinctBodyStartAfter(t *testing.T) {
+	t.Parallel()
+
+	body := []spec.Param{
+		{Name: "searchAfter", Type: "array"},
+		{Name: "startAfter", Type: "string"},
+	}
+	response := []spec.Param{
+		{Name: "meta", Type: "object", Fields: []spec.Param{{Name: "startAfter", Type: "array"}}},
+	}
+
+	got := reconcileObservedBodyCursorNames(body, response)
+	assert.Equal(t, body, got)
+}
+
 func TestAnalyzeCapture_ExpandsGraphQLBFFOperations(t *testing.T) {
 	t.Parallel()
 
@@ -1075,4 +1132,13 @@ func TestWriteEnrichedCaptureUsesPrivatePermissions(t *testing.T) {
 	info, err := os.Stat(outputPath)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+func findBodyParam(params []spec.Param, name string) *spec.Param {
+	for i := range params {
+		if params[i].Name == name {
+			return &params[i]
+		}
+	}
+	return nil
 }

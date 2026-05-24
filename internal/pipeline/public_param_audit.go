@@ -117,10 +117,14 @@ func auditPublicParams(resourceName, endpointName, location string, endpoint spe
 }
 
 func publicParamAuditWireName(location string, param spec.Param) string {
-	if location == "params" {
+	switch location {
+	case "body":
+		return param.BodyWireName()
+	case "params":
 		return param.WireName()
+	default:
+		return param.Name
 	}
-	return param.Name
 }
 
 func publicParamAuditPublicName(location string, param spec.Param, wireName string) string {
@@ -128,6 +132,9 @@ func publicParamAuditPublicName(location string, param spec.Param, wireName stri
 		return param.FlagName
 	}
 	if location == "params" && param.URLName != "" && param.Name != wireName {
+		return param.PublicInputName()
+	}
+	if location == "body" && param.BodyName != "" && param.Name != wireName {
 		return param.PublicInputName()
 	}
 	return ""

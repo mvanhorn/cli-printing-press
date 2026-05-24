@@ -62,9 +62,17 @@ type SearchBodyField struct {
 // SyncBodyField describes a request-body field on a syncable POST list endpoint.
 type SyncBodyField struct {
 	Name       string
+	WireName   string
 	Type       string
 	Default    any
 	HasDefault bool
+}
+
+func (f SyncBodyField) BodyWireName() string {
+	if f.WireName != "" {
+		return f.WireName
+	}
+	return f.Name
 }
 
 // FieldSelector describes a query param that asks sparse-response APIs to
@@ -1749,7 +1757,7 @@ func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {
 	}
 	fields := make([]SyncBodyField, 0, len(endpoint.Body))
 	for _, param := range endpoint.Body {
-		field := SyncBodyField{Name: param.Name, Type: param.Type}
+		field := SyncBodyField{Name: param.Name, WireName: param.BodyWireName(), Type: param.Type}
 		if defaultValue, ok := syncBodyDefault(param); ok {
 			field.Default = defaultValue
 			field.HasDefault = true

@@ -1048,10 +1048,15 @@ func splitSyncPostParams(resource string, params map[string]string) (map[string]
 	if len(bodyParamTypes) == 0 {
 		return params, body
 	}
+	bodyParamWireNames := syncResourceBodyParamWireNames(resource)
 	queryParams := map[string]string{}
 	for key, value := range params {
 		if typ, ok := bodyParamTypes[key]; ok {
-			body[key] = coerceSyncBodyParam(value, typ)
+			bodyKey := bodyParamWireNames[key]
+			if bodyKey == "" {
+				bodyKey = key
+			}
+			body[bodyKey] = coerceSyncBodyParam(value, typ)
 		} else {
 			queryParams[key] = value
 		}
@@ -1103,6 +1108,32 @@ func syncResourceBodyParamTypes(resource string) map[string]string {
 	return nil
 }
 
+func syncResourceBodyParamWireNames(resource string) map[string]string {
+	switch resource {
+{{- range .SyncableResources}}
+{{- if .BodyFields}}
+	case "{{.Name}}":
+		return map[string]string{
+{{- range .BodyFields}}
+			"{{.Name}}": "{{.BodyWireName}}",
+{{- end}}
+		}
+{{- end}}
+{{- end}}
+{{- range .DependentSyncResources}}
+{{- if .BodyFields}}
+	case "{{.Name}}":
+		return map[string]string{
+{{- range .BodyFields}}
+			"{{.Name}}": "{{.BodyWireName}}",
+{{- end}}
+		}
+{{- end}}
+{{- end}}
+	}
+	return nil
+}
+
 func coerceSyncBodyParam(value string, typ string) any {
 	switch typ {
 	case "integer", "int", "int64":
@@ -1132,7 +1163,7 @@ func syncResourceStaticBody(resource string) map[string]any {
 		return map[string]any{
 {{- range .BodyFields}}
 {{- if .HasDefault}}
-			"{{.Name}}": {{goLiteral .Default}},
+			"{{.BodyWireName}}": {{goLiteral .Default}},
 {{- end}}
 {{- end}}
 		}
@@ -1148,7 +1179,7 @@ func syncResourceStaticBody(resource string) map[string]any {
 		return map[string]any{
 {{- range .BodyFields}}
 {{- if .HasDefault}}
-			"{{.Name}}": {{goLiteral .Default}},
+			"{{.BodyWireName}}": {{goLiteral .Default}},
 {{- end}}
 {{- end}}
 		}

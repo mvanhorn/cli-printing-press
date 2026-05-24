@@ -3947,7 +3947,7 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 	for _, p := range endpoint.Body {
 		bindings = append(bindings, mcpParamBinding{
 			PublicName:         p.PublicInputName(),
-			WireName:           p.Name,
+			WireName:           p.BodyWireName(),
 			Location:           "body",
 			Format:             multipartBindingFormat(endpoint, p),
 			RequestContentType: requestContentType,
@@ -4087,7 +4087,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
 			renderBodyMap(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag)
 			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
-			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.Name, nestedMap)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), nestedMap)
 			fmt.Fprintf(b, "%s\t}\n", indent)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
@@ -4106,7 +4106,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
 			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
 			fmt.Fprintf(b, "%s\t}\n", indent)
-			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.Name, rhs)
+			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), rhs)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
@@ -4121,12 +4121,12 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
 			// the OpenAPI parser normalizes to "bool".
 			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
-			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
 		fmt.Fprintf(b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+		fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
 		fmt.Fprintf(b, "%s}\n", indent)
 	}
 }
@@ -4355,24 +4355,24 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		if isBinaryParam(p) {
 			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tfileFields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s\tfileFields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		if p.Type == "string" {
 			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(&b, "%s\tfields[%q] = fmt.Sprintf(\"%%v\", body%s)\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%s\tfields[%q] = fmt.Sprintf(\"%%v\", body%s)\n", indent, p.BodyWireName(), ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
@@ -4502,18 +4502,18 @@ func formBodyMaps(body []spec.Param, indent string) string {
 			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		if p.Type == "string" {
 			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.BodyWireName(), ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(&b, "%s\tfields.Set(%q, fmt.Sprintf(\"%%v\", body%s))\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%s\tfields.Set(%q, fmt.Sprintf(\"%%v\", body%s))\n", indent, p.BodyWireName(), ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()

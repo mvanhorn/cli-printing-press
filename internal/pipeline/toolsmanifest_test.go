@@ -285,7 +285,7 @@ func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
 						Path:        "/stores",
 						Description: "Create store",
 						Body: []spec.Param{
-							{Name: "store_code", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true, Description: "Store code"},
+							{Name: "store_code", BodyName: "storeCode", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true, Description: "Store code"},
 						},
 					},
 				},
@@ -314,7 +314,7 @@ func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
 
 	require.Len(t, create.Params, 1)
 	assert.Equal(t, "store-code", create.Params[0].Name)
-	assert.Equal(t, "store_code", create.Params[0].WireName)
+	assert.Equal(t, "storeCode", create.Params[0].WireName)
 	assert.Equal(t, []string{"code"}, create.Params[0].Aliases)
 }
 

@@ -304,8 +304,8 @@ func validatePublicFlagEntry(resKey, epName string, entry publicFlagEntry, reser
 // identifiers (via camel) or cobra flag names (via flagName). It is
 // IdentName when populated by the dedup pass and Name otherwise. The
 // resulting string must never be used for wire-side serialization;
-// callers writing URL params read paramWireName, while JSON keys, or
-// path substitutions read Name directly.
+// callers writing URL params read paramWireName, request bodies read
+// BodyWireName, and path substitutions read Name directly.
 func paramIdent(p spec.Param) string {
 	if p.IdentName != "" {
 		return p.IdentName
