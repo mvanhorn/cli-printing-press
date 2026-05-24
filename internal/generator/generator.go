@@ -5432,6 +5432,9 @@ func networkFallbackReason(s *spec.APISpec) string {
 		return "synthetic_anchor_fallback"
 	}
 	u, err := url.Parse(strings.TrimSpace(s.BaseURL))
+	// In Printing Press specs, .local base URLs are synthetic placeholders.
+	// Real mDNS/private hosts should use a non-.local alias to avoid being
+	// classified as synthetic fallback surfaces.
 	if err == nil && strings.HasSuffix(strings.ToLower(u.Hostname()), ".local") {
 		return "synthetic_anchor_fallback"
 	}

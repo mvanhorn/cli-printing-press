@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13598,9 +13599,15 @@ func TestGeneratedSyntheticAnchorCommandFallsBackToLocalStore(t *testing.T) {
 	apiSpec := adsCampaignSpec()
 	apiSpec.Name = "syntheticanchors"
 	apiSpec.Kind = spec.KindSynthetic
-	apiSpec.BaseURL = "http://127.0.0.1:1"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	unreachableAddr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	apiSpec.BaseURL = "http://" + unreachableAddr
 	campaigns := apiSpec.Resources["campaigns"]
 	listEndpoint := campaigns.Endpoints["list"]
+	// This exercises endpointNeedsClientLimit and truncateJSONArray after
+	// resolveRead falls back to the local store.
 	listEndpoint.Params = append(listEndpoint.Params, spec.Param{Name: "limit", Type: "int"})
 	campaigns.Endpoints["list"] = listEndpoint
 	apiSpec.Resources["campaigns"] = campaigns
