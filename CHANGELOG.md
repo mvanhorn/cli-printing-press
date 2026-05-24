@@ -1,5 +1,28 @@
 # Changelog
 
+## [4.14.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.13.1...v4.14.0) (2026-05-24)
+
+
+### Features
+
+* **cli:** emit cliutil.ParseDurationLoose for day/week duration flags ([#1953](https://github.com/mvanhorn/cli-printing-press/issues/1953)) ([e35c466](https://github.com/mvanhorn/cli-printing-press/commit/e35c46665000fab24f753475c67517cdd2927642))
+* **cli:** emit cliutil.ParseODataDate for OData v3 /Date(ms)/ literals ([#1954](https://github.com/mvanhorn/cli-printing-press/issues/1954)) ([476028b](https://github.com/mvanhorn/cli-printing-press/commit/476028bdcb0a54c6740fec63a26d275b5f750f38))
+* **installer:** add repo bootstrap script ([#2044](https://github.com/mvanhorn/cli-printing-press/issues/2044)) ([a1b96ff](https://github.com/mvanhorn/cli-printing-press/commit/a1b96ff74d135b9001ba878f09dab350d529e3b1))
+
+
+### Bug Fixes
+
+* **cli:** chomp trailing newline from auth setup instructions ([#1947](https://github.com/mvanhorn/cli-printing-press/issues/1947)) ([f878265](https://github.com/mvanhorn/cli-printing-press/commit/f878265505c4987cf1f7e6a9d018947bbdd69797))
+* **cli:** drop dead invocation path from promoted-command Long ([#1912](https://github.com/mvanhorn/cli-printing-press/issues/1912)) ([f434e2b](https://github.com/mvanhorn/cli-printing-press/commit/f434e2bb272c58382f721d02bdda0d7bdfc36a6e)), closes [#1697](https://github.com/mvanhorn/cli-printing-press/issues/1697)
+* **cli:** emit cache stale-after as a direct duration expression ([#1951](https://github.com/mvanhorn/cli-printing-press/issues/1951)) ([501964c](https://github.com/mvanhorn/cli-printing-press/commit/501964c00a8774ecd6093c18f155296bad946220))
+* **cli:** format CSV float64 cells without scientific notation ([#1905](https://github.com/mvanhorn/cli-printing-press/issues/1905)) ([dd1ee72](https://github.com/mvanhorn/cli-printing-press/commit/dd1ee72fe3ecf0f06bb125ffa0781d8ef8d3567e))
+* **cli:** kebab-case resource names in README/SKILL command examples ([#1948](https://github.com/mvanhorn/cli-printing-press/issues/1948)) ([11bb0b5](https://github.com/mvanhorn/cli-printing-press/commit/11bb0b53d5e97933de357dc312d13229a52284d5))
+* **cli:** keep integer-typed time params numeric in examples ([#1918](https://github.com/mvanhorn/cli-printing-press/issues/1918)) ([97e5ec4](https://github.com/mvanhorn/cli-printing-press/commit/97e5ec43237d69049afd5f5537d6584524176ded))
+* **cli:** only emit partial-failure helpers when spec has mutation endpoints ([#1991](https://github.com/mvanhorn/cli-printing-press/issues/1991)) ([b607511](https://github.com/mvanhorn/cli-printing-press/commit/b6075117e5415c1069ba7d1502f8d0801dfe2841))
+* **cli:** use FNV-1a hash for FTS rowid to avoid collisions ([#1908](https://github.com/mvanhorn/cli-printing-press/issues/1908)) ([258346b](https://github.com/mvanhorn/cli-printing-press/commit/258346b23e451594aa136bcbb05d05f8bf4a74ef))
+* **cli:** write feedback.jsonl to XDG data dir ([#1914](https://github.com/mvanhorn/cli-printing-press/issues/1914)) ([709fe74](https://github.com/mvanhorn/cli-printing-press/commit/709fe74cd516dcf2b9a32b3698ed0d7a2e828dfc)), closes [#1640](https://github.com/mvanhorn/cli-printing-press/issues/1640)
+* **generator:** support JSON-LD script selectors ([#1877](https://github.com/mvanhorn/cli-printing-press/issues/1877)) ([58380bb](https://github.com/mvanhorn/cli-printing-press/commit/58380bb82be8bbcf21768bd3a84a56d14ed67519))
+
 ## [4.13.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.13.0...v4.13.1) (2026-05-24)
 
 
