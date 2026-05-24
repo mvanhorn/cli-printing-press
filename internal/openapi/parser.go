@@ -3533,6 +3533,12 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		if strings.HasPrefix(paramName, "$") || strings.HasPrefix(paramName, ".") {
 			continue
 		}
+		// Skip phantom names ("" / "[]") that some specs emit for unnamed
+		// array query params. They are not usable MCP/CLI arguments and would
+		// send "?[]=value" on the wire. Legitimate "foo[]" names are kept.
+		if trimmed := strings.TrimSpace(paramName); trimmed == "" || trimmed == "[]" {
+			continue
+		}
 		description := strings.TrimSpace(parameter.Description)
 		if description == "" {
 			description = humanizeFieldName(paramName)
