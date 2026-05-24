@@ -251,6 +251,12 @@ func TestClientCredentialsLegacyEnvVarsSubstituteTenantTokenURL(t *testing.T) {
 			"LEGACY_ENTRA_CLIENT_SECRET",
 		},
 	}
+	ccEnvVars := clientCredentialsEnvVars(apiSpec.Auth)
+	require.Len(t, ccEnvVars, 2)
+	require.Equal(t, "LEGACY_ENTRA_CLIENT_ID", ccEnvVars[0].Name)
+	require.False(t, ccEnvVars[0].Sensitive, "legacy client ID must not be synthesized as sensitive")
+	require.Equal(t, "LEGACY_ENTRA_CLIENT_SECRET", ccEnvVars[1].Name)
+	require.True(t, ccEnvVars[1].Sensitive, "legacy client secret must stay sensitive")
 
 	outputDir := filepath.Join(t.TempDir(), "legacy-entra-cc-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
@@ -301,6 +307,35 @@ func TestClientCredentialsTenantPrefixDoesNotHideClientCredentials(t *testing.T)
 	clientContent := string(clientSrc)
 	require.Contains(t, clientContent, `id = os.Getenv("MULTITENANT_CLIENT_ID")`)
 	require.Contains(t, clientContent, `secret = os.Getenv("MULTITENANT_CLIENT_SECRET")`)
+}
+
+func TestClientCredentialsPerCallTenantIDDoesNotTriggerConfigBackedTenantSubstitution(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("per-call-tenant-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "PER_CALL_TENANT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "PER_CALL_CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "PER_CALL_CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "per-call-tenant-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(authSrc), `resolveClientCredentialsTokenURL(tokenURL`)
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(clientSrc), `resolveClientCredentialsTokenURL(tokenURL`)
 }
 
 func TestClientCredentialsDeclaredScopesSuppressMicrosoftDefaultScope(t *testing.T) {

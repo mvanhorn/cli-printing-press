@@ -1073,7 +1073,7 @@ func clientCredentialsEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 			Name:      name,
 			Kind:      spec.AuthEnvVarKindPerCall,
 			Required:  true,
-			Sensitive: true,
+			Sensitive: !isClientIDAuthEnvVar(name),
 		})
 	}
 	if len(envVars) < 2 {
@@ -1110,14 +1110,11 @@ func clientCredentialsTenantEnvVar(auth spec.AuthConfig) string {
 			return envVar.Name
 		}
 	}
-	for _, envVar := range auth.EnvVarSpecs {
-		if envVar.EffectiveKind() != spec.AuthEnvVarKindHarvested && isTenantAuthEnvVar(envVar.Name) {
-			return envVar.Name
-		}
-	}
-	for _, name := range auth.EnvVars {
-		if isTenantAuthEnvVar(name) {
-			return name
+	if len(auth.EnvVarSpecs) == 0 || spec.AllAuthEnvVarSpecsInferred(auth.EnvVarSpecs) {
+		for _, name := range auth.EnvVars {
+			if isTenantAuthEnvVar(name) {
+				return name
+			}
 		}
 	}
 	return ""
@@ -1155,6 +1152,11 @@ func isMicrosoftEntraTokenURL(raw string) bool {
 func isTenantAuthEnvVar(name string) bool {
 	placeholder := naming.EnvVarPlaceholder(name)
 	return placeholder == "tenant_id" || strings.HasSuffix(placeholder, "_tenant_id")
+}
+
+func isClientIDAuthEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
 }
 
 func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
