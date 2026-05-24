@@ -1090,6 +1090,71 @@ func (s *Store) ListField(resourceType, field string) ([]string, error) {
 	return values, rows.Err()
 }
 
+// ListFieldSets returns row-correlated values from the generic resources
+// table. Dependent sync uses this for multi-placeholder paths where values
+// such as owner/repo or server/webapp must stay paired per parent row.
+func (s *Store) ListFieldSets(resourceType string, fields []string) ([]map[string]string, error) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	for _, field := range fields {
+		if !validIdentifierRE.MatchString(field) {
+			return nil, fmt.Errorf("ListFieldSets: invalid field name %q (must match %s)", field, validIdentifierRE.String())
+		}
+	}
+
+	rows, err := s.db.Query(`SELECT id, data FROM resources WHERE resource_type = ?`, resourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []map[string]string
+	seenRows := map[string]bool{}
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		var obj map[string]any
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &obj); err != nil {
+				return nil, fmt.Errorf("decode %s parent row %s: %w", resourceType, id, err)
+			}
+		}
+		values := make(map[string]string, len(fields))
+		complete := true
+		for _, field := range fields {
+			var value any
+			if field == "id" {
+				value = id
+			} else {
+				value = LookupFieldValue(obj, field)
+			}
+			valueString := fmt.Sprint(value)
+			if value == nil || valueString == "" {
+				complete = false
+				break
+			}
+			values[field] = valueString
+		}
+		if complete {
+			keyParts := make([]string, 0, len(fields))
+			for _, field := range fields {
+				keyParts = append(keyParts, values[field])
+			}
+			key := strings.Join(keyParts, "\x00")
+			if seenRows[key] {
+				continue
+			}
+			seenRows[key] = true
+			out = append(out, values)
+		}
+	}
+	return out, rows.Err()
+}
+
 // GetLastSyncedAt returns the last sync timestamp for a resource type.
 func (s *Store) GetLastSyncedAt(resourceType string) string {
 	var ts sql.NullString
