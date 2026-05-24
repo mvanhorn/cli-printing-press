@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -209,7 +210,7 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	starters := substringBetween(t, skill, "**Starter templates for novel commands.**", "For flat-only resources")
 
 	assert.Contains(t, template, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {")
-	assert.Contains(t, template, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {\n        return cmd.Help()\n    }")
+	assert.Regexp(t, regexp.MustCompile(`if len\(args\) == 0 && cmd\.Flags\(\)\.NFlag\(\) == 0 \{\s+return cmd\.Help\(\)\s+\}`), template)
 	assert.Contains(t, template, "if dryRunOK(flags) {")
 	assert.Contains(t, template, "_ = cmd.Usage()")
 	assert.Contains(t, template, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`)
