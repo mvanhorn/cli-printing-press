@@ -35,6 +35,30 @@ var staleTimestampFields = []string{
 	"last_updated",
 }
 
+{{- if .SpecTimestampFields}}
+
+// init merges spec-declared date-time field names (format: date-time) into
+// staleTimestampFields, additively — the hardcoded entries above always win
+// order and are never removed, so APIs using updated_at keep current behavior
+// while APIs with a custom activity field (e.g. dateLastActivity) are covered.
+func init() {
+	seen := make(map[string]bool, len(staleTimestampFields))
+	for _, f := range staleTimestampFields {
+		seen[f] = true
+	}
+	for _, f := range []string{
+{{- range .SpecTimestampFields}}
+		{{printf "%q" .}},
+{{- end}}
+	} {
+		if !seen[f] {
+			staleTimestampFields = append(staleTimestampFields, f)
+			seen[f] = true
+		}
+	}
+}
+{{- end}}
+
 // buildStaleTimestampPredicate emits SQL clauses that match a row whose
 // modification timestamp is older than cutoff and sort rows by the
 // earliest non-null timestamp the row exposes.
