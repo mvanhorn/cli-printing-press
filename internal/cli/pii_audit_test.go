@@ -52,6 +52,34 @@ func TestPIIAuditCmd_JSON(t *testing.T) {
 	assert.Equal(t, artifacts.PIIKindEmail, findings[0].Kind)
 }
 
+func TestPIIAuditCmd_ManuscriptsRunDirUsesStagedPackagePaths(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(t.TempDir(), "manuscripts", "tenderned", "20260517-211252")
+	writeFile(t, filepath.Join(runDir, "research.json"), `{"narrative":{"auth_narrative":"Contact functioneelbeheer@tenderned.nl"}}`+"\n")
+	writeFile(t, filepath.Join(runDir, "research", "brief.md"), "Contact functioneelbeheer@tenderned.nl for API access.\n")
+	writeFile(t, filepath.Join(runDir, "research", "vendor-spec.yaml"), "email: functioneelbeheer@tenderned.nl\n")
+	writeFile(t, filepath.Join(runDir, "proofs", "shipcheck.md"), "Contact functioneelbeheer@tenderned.nl\n")
+
+	cmd := newPIIAuditCmd()
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{dir, "--manuscripts-dir", runDir, "--json"})
+
+	require.NoError(t, cmd.Execute())
+
+	var findings []artifacts.PIIFinding
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &findings))
+	files := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		files = append(files, finding.File)
+	}
+	assert.ElementsMatch(t, []string{
+		".manuscripts/20260517-211252/research.json",
+		".manuscripts/20260517-211252/research/brief.md",
+	}, files)
+}
+
 func TestPIIAuditCmd_StrictExitsNonZeroOnPending(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@example.com"`+"\n")

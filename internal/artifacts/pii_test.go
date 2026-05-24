@@ -421,6 +421,25 @@ paths:
 		"Swagger 2.0 JSON in manuscripts must be exempt")
 }
 
+func TestFindPIIWithOptions_ManuscriptsVendorSpecExemptUsesStagedPath(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(t.TempDir(), "manuscripts", "acme", "run1")
+	openapiJSON := `{
+  "openapi": "3.0.3",
+  "info": {"title": "Calendars"},
+  "paths": {"/users": {"post": {"requestBody": {"content": {"application/json": {"example": {"email": "user1@testemail.com"}}}}}}}
+}`
+	write(t, filepath.Join(runDir, "research.json"), openapiJSON)
+	write(t, filepath.Join(runDir, "research", "brief.md"), "Contact support@example.com for access.\n")
+
+	findings, err := FindPIIWithOptions(root, PIIAuditOptions{ManuscriptsDir: runDir})
+	require.NoError(t, err)
+
+	files := uniqueFiles(findings)
+	assert.NotContains(t, files, ".manuscripts/run1/research.json")
+	assert.Contains(t, files, ".manuscripts/run1/research/brief.md")
+}
+
 // Negative regression: vendor-spec content detection only applies inside
 // .manuscripts/. A file at docs/api.yaml or testdata/openapi.json with
 // OpenAPI markers still scans — those are committed, hand-curated
@@ -678,6 +697,36 @@ func TestRunPIIAudit_RedactsCLIDirInLedger(t *testing.T) {
 	got := ReadPIILedger(dir)
 	require.NotNil(t, got)
 	assert.Equal(t, filepath.Join(CLIDirPlaceholder, filepath.Base(dir)), got.CLIDir)
+}
+
+func TestRunPIIAuditWithOptions_ManuscriptAcceptCarriesIntoStagedPackage(t *testing.T) {
+	cliDir := t.TempDir()
+	runID := "20260517-211252"
+	runDir := filepath.Join(t.TempDir(), "manuscripts", "tenderned", runID)
+	contactLine := `{"narrative":{"auth_narrative":"Contact functioneelbeheer@tenderned.nl"}}` + "\n"
+	write(t, filepath.Join(runDir, "research.json"), contactLine)
+
+	_, err := RunPIIAuditWithOptions(cliDir, PIIAuditOptions{ManuscriptsDir: runDir})
+	require.NoError(t, err)
+	mutatePIILedger(t, cliDir, func(ledger *PIILedger) {
+		require.Len(t, ledger.Findings, 1)
+		ledger.Findings[0].Status = PIIStatusAccepted
+		ledger.Findings[0].Category = PIICategoryAPIProviderData
+		ledger.Findings[0].EvidenceContext = "vendor contact email surfaced in generated auth narrative"
+	})
+
+	stagedDir := t.TempDir()
+	write(t, filepath.Join(stagedDir, ".manuscripts", runID, "research.json"), contactLine)
+	ledgerData, err := os.ReadFile(filepath.Join(cliDir, PIILedgerFilename))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(stagedDir, PIILedgerFilename), ledgerData, 0644))
+
+	result, err := RunPIIAudit(stagedDir)
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, PIIStatusAccepted, result.Findings[0].Status)
+	assert.Equal(t, ".manuscripts/"+runID+"/research.json", result.Findings[0].File)
+	assert.Equal(t, 0, PIIPendingCount(result.Findings))
 }
 
 func TestReadPIILedger_CorruptDeletesFile(t *testing.T) {
@@ -1014,6 +1063,14 @@ func write(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+}
+
+func mutatePIILedger(t *testing.T, dir string, mutate func(*PIILedger)) {
+	t.Helper()
+	ledger := ReadPIILedger(dir)
+	require.NotNil(t, ledger)
+	mutate(ledger)
+	require.NoError(t, WritePIILedger(dir, ledger))
 }
 
 func scanLine(t *testing.T, line, filename string) []PIIFinding {
