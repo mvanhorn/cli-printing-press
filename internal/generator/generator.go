@@ -399,14 +399,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"hasDomainUpsert": func(name string) bool {
 			return domainUpsertMethodName(name) != "UpsertBatch"
 		},
-		// hasTypedTable is the single source of truth for "this table gets a
-		// typed Upsert<X>." Table creation, typed-Upsert generation, the
-		// UpsertBatch dispatch switch, and the populated-table tests must all
-		// gate on the same predicate; otherwise dead tables (created but never
-		// written to) leak in for resources whose names hit the framework-cobra
-		// rename and end up with only id/data/synced_at columns.
-		"hasTypedTable": func(t TableDef) bool {
-			return len(t.Columns) > 3 && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
+		// emitsDomainTable is the single source of truth for "this table gets
+		// a writable per-resource table and Upsert<X>." Table creation,
+		// typed-Upsert generation, the UpsertBatch dispatch switch, and the
+		// populated-table tests must all gate on the same predicate; otherwise
+		// dead tables (created but never written to) leak in for resources whose
+		// names hit the framework-cobra rename. JSONOnlyFallback intentionally
+		// keeps a writable per-resource table while dropping extracted columns.
+		"emitsDomainTable": func(t TableDef) bool {
+			return (len(t.Columns) > 3 || t.JSONOnlyFallback) && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
 		},
 		"pathContainsParam": func(path, name string) bool {
 			return strings.Contains(path, "{"+name+"}")
@@ -2431,13 +2432,15 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, workflowConstructors, insightConstructors)
 }
 
-// schemaWithDependentParents adds a parent_id column + index to every
-// dependent resource's table so sync can record which parent each row
-// belongs to. For walker-emitted dependents whose DependentResource.KeyField
-// is non-empty, parent_id stores the value of that field (not strictly a
-// parent's primary key); the column name is retained for backwards
-// compatibility with existing CLIs. The naming caveat is internal — the
-// column is not part of any user-visible API.
+// schemaWithDependentParents adds a parent_id column + index to dependent
+// resource tables so sync can record which parent each row belongs to.
+// JSON-only fallback tables keep only id/data/synced_at; parent context for
+// those rows remains available in the generic resources table. For
+// walker-emitted dependents whose DependentResource.KeyField is non-empty,
+// parent_id stores the value of that field (not strictly a parent's primary
+// key); the column name is retained for backwards compatibility with existing
+// CLIs. The naming caveat is internal — the column is not part of any
+// user-visible API.
 func (g *Generator) schemaWithDependentParents() []TableDef {
 	schema := BuildSchema(g.Spec)
 
@@ -2449,6 +2452,9 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 		}
 		for i, table := range schema {
 			if depSet[table.Name] {
+				if table.JSONOnlyFallback {
+					continue
+				}
 				hasParentID := false
 				for _, col := range table.Columns {
 					if col.Name == "parent_id" {
@@ -2457,6 +2463,16 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 					}
 				}
 				if !hasParentID {
+					if len(table.Columns)+1 > maxStoreDomainTableColumns {
+						schema[i].JSONOnlyFallback = true
+						schema[i].OriginalColumnCount = len(table.Columns) + 1
+						schema[i].Columns = append([]ColumnDef(nil), baseTableColumns...)
+						schema[i].Indexes = nil
+						schema[i].FTS5 = false
+						schema[i].FTS5Fields = nil
+						schema[i].FTS5Triggers = false
+						continue
+					}
 					schema[i].Columns = append(schema[i].Columns, ColumnDef{
 						Name: "parent_id",
 						Type: "TEXT",
@@ -2477,6 +2493,11 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 func (g *Generator) renderStoreFiles(schema []TableDef) error {
 	// Create store directory if needed
 	if g.VisionSet.Store {
+		for _, table := range schema {
+			if table.JSONOnlyFallback {
+				fmt.Fprintf(os.Stderr, "warning: store-fallback: %s (%d cols) -> JSON-only\n", table.Name, table.OriginalColumnCount)
+			}
+		}
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0755); err != nil {
 			return fmt.Errorf("creating store dir: %w", err)
 		}
