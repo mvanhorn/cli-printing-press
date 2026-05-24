@@ -1,12 +1,14 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle six signals the contract emits to stdout: `[setup-error]`, `[repo-upgrade-available]`, the `min-binary-version` compatibility check, `[upgrade-available]`, `[browser-tools-missing]`, and the always-emitted `PRINTING_PRESS_BIN=<abs-path>` marker (with optional `[binary-shadow]` advisory).
+Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle the contract output signals: `[setup-error]`, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
 
 Apply these in order. The preamble below runs unconditionally; each numbered section after it is conditional — do nothing if its trigger isn't present.
 
 ## Preamble: Capture the absolute binary path (unconditional)
 
-Before applying any numbered section below, capture the `PRINTING_PRESS_BIN=<absolute path to the binary>` line the contract emitted to stdout. Every generator invocation referenced anywhere below — including the `version --json` calls in sections 3 and 4 — must be made using that absolute path (substitute the captured value, not the literal `$PRINTING_PRESS_BIN` token). The contract's `export PATH=...` line only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells where bare `cli-printing-press` or legacy bare `printing-press` resolves against the user's default `PATH`, and a stale globally-installed binary (`$HOME/go/bin/cli-printing-press` from an earlier `go install`, a Homebrew copy, etc.) or the public catalog installer can silently shadow the local repo build the contract selected. Using the absolute path eliminates the shadow.
+Before applying any numbered section below, capture the `PRINTING_PRESS_BIN=<absolute path to the binary>` line the contract emitted to stdout. Every generator invocation referenced anywhere below — including the `version --json` calls in sections 4 and 5 — must be made using that absolute path (substitute the captured value, not the literal `$PRINTING_PRESS_BIN` token). The contract's `export PATH=...` line only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells where bare `cli-printing-press` or legacy bare `printing-press` resolves against the user's default `PATH`, and a stale globally-installed binary (`$HOME/go/bin/cli-printing-press` from an earlier `go install`, a Homebrew copy, etc.) or the public catalog installer can silently shadow the local repo build the contract selected. Using the absolute path eliminates the shadow.
+
+Also capture `PRESS_REPO_MODE=<true|false>`. When it is `true`, the current session is running from a repo checkout/plugin-dir and should use the checkout's skill files, not mutate the user's global skill install as part of this run. When it is `false`, run the global open-agent-skills freshness check in section 3, but treat a missing global open-agent-skills entry as a non-blocking signal that this skill may have been loaded from another install surface.
 
 If `PRINTING_PRESS_BIN` was emitted as an empty value (`PRINTING_PRESS_BIN=`), the contract was unable to resolve a binary; this should have already been surfaced as `[setup-error]` (handled in section 1 below). Treat an empty value here as a setup-error fallback and stop.
 
@@ -18,7 +20,7 @@ If the setup contract output contains a line starting with `[setup-error]`, a re
 
 **Stop the skill immediately.** Do not proceed to research, generation, or any other work. Surface the message the contract printed (it includes the exact install command or download URL) verbatim to the user.
 
-The user must install the missing prerequisite in their terminal before re-running. Do not offer to auto-install — the README's two-step install is the source of truth for the binary, and silent auto-install hides failure modes (network, wrong GOPATH, no Go toolchain) inside an opaque skill invocation.
+The user must install the missing prerequisite in their terminal before re-running. Do not offer to auto-install — the README's install flow is the source of truth for the binary, and silent auto-install hides failure modes (network, wrong GOPATH, no Go toolchain) inside an opaque skill invocation.
 
 ## 2. Interactive repo upgrade prompt
 
@@ -63,7 +65,52 @@ Prompt again only when `origin/main` advances to a different SHA.
 
 If no `[repo-upgrade-available]` line was emitted, skip this section entirely.
 
-## 3. Min-binary-version compatibility
+## 3. Global open-agent-skills freshness check
+
+If `PRESS_REPO_MODE=true`, skip this section entirely. The repo checkout/plugin-dir is the source of truth for skill files in that mode, and section 2 already handles updating the checkout from `origin/main`.
+
+If `PRESS_REPO_MODE=false`, run the targeted global open-agent-skills updater before continuing:
+
+```bash
+# PRINTING_PRESS_SKILL_UPDATE_START
+npx -y skills@latest update -g \
+  printing-press \
+  printing-press-amend \
+  printing-press-catalog \
+  printing-press-import \
+  printing-press-output-review \
+  printing-press-polish \
+  printing-press-publish \
+  printing-press-reprint \
+  printing-press-retro \
+  printing-press-score
+# PRINTING_PRESS_SKILL_UPDATE_END
+```
+
+Interpret the output as follows:
+
+- If it reports `✓ Updated N skill(s)` with `N > 0`, stop immediately. Tell the user:
+
+  > "Updated N Printing Press skill(s) on disk. This agent session may still have the old skill text loaded. Restart the agent session, then re-run `/printing-press` before continuing."
+
+  Do not proceed to research, generation, scoring, publishing, or any other workflow after a skill update.
+- If it reports `All global skills are up to date` or otherwise completes without an updated-skill summary, continue.
+- If it reports `No installed skills found matching: ...`, continue without blocking. The current skill is already running, so absence from the global open-agent-skills registry usually means this session was loaded from another install surface, such as the Claude Code plugin/marketplace channel, a project-scoped skill install, or a local plugin directory. Do not tell the user to reinstall through `npx skills` as a prerequisite. If they explicitly ask how to move to the global open-agent-skills install path, give them the skills-only installer command so they do not have to name individual skills:
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash -s -- --skills-only
+  ```
+
+  Then tell them to restart the agent session.
+- If it reports one or more `Failed to update ...` lines or exits non-zero, stop and surface the failure. For manual repair, tell the user to run the skills-only installer command below, then restart the agent session. Do not continue with potentially mixed skill files.
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash -s -- --skills-only
+  ```
+
+This command mutates global skill files, so never run it silently after user work has started. It belongs in preflight before any user-facing prompt.
+
+## 4. Min-binary-version compatibility
 
 Check binary version compatibility against the skill's declared minimum. Read the `min-binary-version` field from the skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` (using the absolute path captured in the preamble — not bare `cli-printing-press` or legacy bare `printing-press`, which would resolve against the user's default `PATH` and could interrogate a stale global or the public catalog installer) and parse the version from the output. Compare it to `min-binary-version` using semver rules.
 
@@ -73,7 +120,7 @@ If the installed binary is older than the minimum, stop the skill immediately an
 
 Do not proceed to research, scoring, publishing, or any other workflow when the binary is below `min-binary-version`. This is the compatibility floor, not a freshness advisory.
 
-## 4. Interactive standalone binary upgrade prompt
+## 5. Interactive standalone binary upgrade prompt
 
 If the setup contract output contains a line starting with `[upgrade-available]`, parse the two follow-up lines for the version values:
 
@@ -111,27 +158,13 @@ else
 fi
 ```
 
-Capture the new `PRINTING_PRESS_BIN=<abs-path>` value and use it for every subsequent generator invocation in the rest of this run, overriding the value captured in the preamble. Then confirm with `<PRINTING_PRESS_BIN> version --json` and tell the user `"Upgraded to v<new>."` **Continue this current setup run with the freshly installed binary on disk — do not stop, do not reload the session, do not skip the remaining checks (min-binary-version compatibility, etc.).**
-
-Separately, as out-of-band advice for the user's *next* session (not a stop signal for this run), tell them they can also refresh their installed skill files outside the repo checkout by running one of:
-
-```bash
-gh skill update
-```
-
-or:
-
-```bash
-npx skills update
-```
-
-These two commands update skill files that live outside the repo; they only take effect after the user reloads or restarts the agent session, which they should do *after* the current run finishes. Frame this clearly to the user as "for next time" guidance, then continue setup with the newly installed binary.
+Capture the new `PRINTING_PRESS_BIN=<abs-path>` value and use it for every subsequent generator invocation in the rest of this run, overriding the value captured in the preamble. Then confirm with `<PRINTING_PRESS_BIN> version --json` and tell the user `"Upgraded to v<new>."` **Continue this current setup run with the freshly installed binary on disk — do not stop, do not reload the session, do not skip the remaining checks (min-binary-version compatibility, etc.).** Skill freshness was already handled by section 3, so this binary-only update does not require a session restart.
 
 If the upgrade command fails (network error, auth error, etc.), surface the failure to the user and continue with the current binary — do not block the run on a failed upgrade. The user can re-run later.
 
 If no `[upgrade-available]` line was emitted, skip this section entirely.
 
-## 5. Interactive browser-sniff backend install prompt
+## 6. Interactive browser-sniff backend install prompt
 
 If the setup contract output contains a line starting with `[browser-tools-missing]`, parse the follow-up lines:
 
@@ -199,7 +232,7 @@ If the user picks **Skip for this run**, continue without prompting further this
 
 If no `[browser-tools-missing]` line was emitted, skip this section entirely.
 
-## 6. Optional shadow advisory
+## 7. Optional shadow advisory
 
 If the setup contract output contains a line starting with `[binary-shadow]`, parse the follow-up lines:
 
