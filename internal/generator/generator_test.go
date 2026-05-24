@@ -14045,6 +14045,111 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 		"UpsertBatch must still call upsertGenericResourceTx so renamed resources land in `resources`")
 }
 
+func TestGenerateStoreWideResourceFallsBackToJSONOnlyTable(t *testing.T) {
+	t.Parallel()
+
+	fields := []spec.TypeField{{Name: "id", Type: "string"}}
+	for i := range maxStoreDomainTableColumns {
+		fields = append(fields, spec.TypeField{Name: fmt.Sprintf("setting_%d", i), Type: "string"})
+	}
+
+	apiSpec := &spec.APISpec{
+		Name:    "widecontrol",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/widecontrol-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"control": {
+				Description: "Tenant-wide control settings",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:      "GET",
+						Path:        "/Control",
+						Description: "Get control settings",
+						Response:    spec.ResponseDef{Type: "object", Item: "Control"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Control": {Fields: fields},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+
+	controlCreate := regexp.MustCompile("(?s)`CREATE TABLE IF NOT EXISTS \"control\" \\((.*?)\\)`").FindStringSubmatch(store)
+	require.Len(t, controlCreate, 2, "control table should still be emitted as JSON-only")
+	assert.Contains(t, controlCreate[1], `"id" TEXT PRIMARY KEY`)
+	assert.Contains(t, controlCreate[1], `"data" JSON NOT NULL`)
+	assert.Contains(t, controlCreate[1], `"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP`)
+	assert.NotContains(t, controlCreate[1], "setting_1499", "wide typed columns must not be emitted")
+	assert.Contains(t, store, "func (s *Store) UpsertControl(", "JSON-only fallback table still needs a typed upsert")
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
+func TestSchemaWithDependentParentsFallsBackWhenParentColumnExceedsWideCap(t *testing.T) {
+	t.Parallel()
+
+	scalarFieldCount := maxStoreDomainTableColumns - len(baseTableColumns)
+	fields := []spec.TypeField{}
+	for i := range scalarFieldCount {
+		fields = append(fields, spec.TypeField{Name: fmt.Sprintf("setting_%d", i), Type: "string"})
+	}
+
+	apiSpec := &spec.APISpec{
+		Name:    "widechild",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/widechild-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"control": {
+				Description: "Tenant-wide child settings",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/parents/{parent_id}/control",
+						Description: "List child control settings",
+						Response:    spec.ResponseDef{Type: "array", Item: "Control"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Control": {Fields: fields},
+		},
+	}
+
+	gen := New(apiSpec, t.TempDir())
+	gen.profile = &profiler.APIProfile{
+		DependentSyncResources: []profiler.DependentResource{{Name: "control"}},
+	}
+
+	control := findTable(gen.schemaWithDependentParents(), "control")
+	require.NotNil(t, control)
+	assert.True(t, control.JSONOnlyFallback, "parent_id must not push dependent tables over the wide-table cap")
+	assert.Equal(t, maxStoreDomainTableColumns+1, control.OriginalColumnCount)
+
+	names := make([]string, 0, len(control.Columns))
+	for _, c := range control.Columns {
+		names = append(names, c.Name)
+	}
+	assert.ElementsMatch(t, []string{"id", "data", "synced_at"}, names)
+	assert.Empty(t, control.Indexes)
+	assert.False(t, control.FTS5)
+}
+
 // TestGenerateEndpointTemplateEnvOverridesWireThrough: when the spec
 // declares an explicit env-var name for a template placeholder (e.g.
 // ST_TENANT_ID for {tenant}), every emitted artifact that touches env-var
