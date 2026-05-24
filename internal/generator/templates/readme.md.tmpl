@@ -351,9 +351,9 @@ Run `{{.Name}}-pp-cli --help` for the full command reference and flag list.
 {{$resource.Description}}
 {{range $eName, $endpoint := $resource.Endpoints}}
 {{- if index $.PromotedResourceNames $name}}
-- **`{{$.Name}}-pp-cli {{$name}}{{positionalArgs $endpoint}}`** - {{$endpoint.Description}}
+- **`{{$.Name}}-pp-cli {{kebab $name}}{{positionalArgs $endpoint}}`** - {{$endpoint.Description}}
 {{- else}}
-- **`{{$.Name}}-pp-cli {{$name}} {{kebab $eName}}`** - {{$endpoint.Description}}
+- **`{{$.Name}}-pp-cli {{kebab $name}} {{kebab $eName}}`** - {{$endpoint.Description}}
 {{- end}}
 {{- end}}
 {{end}}

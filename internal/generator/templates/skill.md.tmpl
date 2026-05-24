@@ -138,9 +138,9 @@ This CLI was generated with browser-observed traffic context.
 **{{$name}}** — {{$resource.Description}}
 {{range $eName, $endpoint := $resource.Endpoints}}
 {{- if index $.PromotedResourceNames $name}}
-- `{{$.Name}}-pp-cli {{$name}}{{positionalArgs $endpoint}}` — {{oneline $endpoint.Description}}
+- `{{$.Name}}-pp-cli {{kebab $name}}{{positionalArgs $endpoint}}` — {{oneline $endpoint.Description}}
 {{- else}}
-- `{{$.Name}}-pp-cli {{$name}} {{kebab $eName}}` — {{oneline $endpoint.Description}}
+- `{{$.Name}}-pp-cli {{kebab $name}} {{kebab $eName}}` — {{oneline $endpoint.Description}}
 {{- end}}
 {{- end}}
 {{end}}
