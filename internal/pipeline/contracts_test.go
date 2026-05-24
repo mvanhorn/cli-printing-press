@@ -111,6 +111,35 @@ func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	assert.Contains(t, block, `https://go.dev/dl/`)
 }
 
+func TestAgentBrowserInstallRequiresPostInstallSetup(t *testing.T) {
+	setup := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "setup-checks.md"))
+	capture := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"))
+
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "setup-checks", content: setup},
+		{name: "browser-sniff-capture", content: capture},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Contains(t, tt.content, "! agent-browser install")
+			assert.Contains(t, tt.content, "The leading `!` is intentional")
+			assert.Contains(t, tt.content, "Do not treat `command -v agent-browser` alone as a complete install")
+		})
+	}
+
+	assert.Contains(t, setup, "Only do this post-install step when this section just installed `agent-browser`; if `PRESS_AGENT_BROWSER_MISSING=false`, skip redundant setup for the already-present binary.")
+	assert.Contains(t, setup, "If the user declines the manual step, it fails, or completion is unclear, do not run it through the agent shell")
+	assert.Contains(t, setup, "If `PRESS_AGENT_BROWSER_MISSING=false`, do not require post-install confirmation for the already-installed binary.")
+	assert.Contains(t, setup, "if a later browser-sniff step reports missing browser binaries, surface `! agent-browser install` then")
+
+	assert.Contains(t, capture, "If the user declines the manual step or completion is unclear, do not run it yourself; fall back to manual HAR.")
+	assert.Contains(t, capture, "do not let a second detection pass select the half-installed binary")
+	assert.Contains(t, capture, "If a pre-existing agent-browser later reports missing browser binaries, surface `! agent-browser install`")
+}
+
 func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 

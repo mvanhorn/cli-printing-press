@@ -182,7 +182,15 @@ else
 fi
 ```
 
-After install, verify with `command -v <tool>` and confirm to the user: `"Installed <tool>."` **Continue this current setup run with the newly available tools — do not stop, do not skip the remaining checks (min-binary-version compatibility, etc.).**
+After installing `agent-browser` through brew or npm, complete its browser-binary setup as a user-run step:
+
+```text
+! agent-browser install
+```
+
+The leading `!` is intentional: surface the command for the user to run manually instead of invoking it through the agent's shell tool. Some harness classifiers block installer subcommands from a newly installed tool when the agent runs them directly. Do not treat `command -v agent-browser` alone as a complete install after the package-manager step; the `agent-browser install` step must complete before browser-sniff flows rely on it. Only do this post-install step when this section just installed `agent-browser`; if `PRESS_AGENT_BROWSER_MISSING=false`, skip redundant setup for the already-present binary. This preflight does not launch agent-browser to prove browser-cache readiness for pre-existing installs; if a later browser-sniff step reports missing browser binaries, surface `! agent-browser install` then and use a fallback backend until the user confirms it completed.
+
+After install, verify `browser-use` with `command -v browser-use`. If this section just installed `agent-browser`, verify it with both `command -v agent-browser` and confirmation that the user-run `agent-browser install` step completed. If the user declines the manual step, it fails, or completion is unclear, do not run it through the agent shell; surface the incomplete setup and continue without treating `agent-browser` as available for browser-sniff. If `PRESS_AGENT_BROWSER_MISSING=false`, do not require post-install confirmation for the already-installed binary. Then confirm successful installs to the user: `"Installed <tool>."` **Continue this current setup run with the newly available tools — do not stop, do not skip the remaining checks (min-binary-version compatibility, etc.).**
 
 If an install command fails (no Python, no Node.js, network error), surface the failure to the user and continue without the missing backend. Do not block the run on a failed install — runs using vendor specs, `--spec`, or `--har` do not need these tools, and the lazy Step 1b prompt in `browser-sniff-capture.md` remains as a fallback if browser-sniff is later invoked.
 
