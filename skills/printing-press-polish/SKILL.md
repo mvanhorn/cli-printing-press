@@ -5,7 +5,7 @@ description: >
   diagnostics (dogfood, verify, scorecard, go vet), automatically fixes all
   issues (verify failures, dead code, descriptions, README, MCP tool quality),
   reports the before/after delta, and offers to publish. Use after any
-  /printing-press run, or on any CLI in ~/printing-press/library/. Trigger
+  /printing-press run, or on any CLI in $PRESS_LIBRARY/. Trigger
   phrases: "polish", "improve the CLI", "fix verify", "make it publish-ready",
   "clean up the CLI", "get this ready to ship".
 context: fork
@@ -29,7 +29,7 @@ The retro improves the Printing Press. Polish improves the generated CLI. This s
 ```bash
 /printing-press-polish redfin
 /printing-press-polish redfin-pp-cli
-/printing-press-polish ~/printing-press/library/redfin
+/printing-press-polish "$PRESS_LIBRARY/redfin"
 ```
 
 ## When to run
@@ -40,14 +40,14 @@ After any `/printing-press` generation, especially when:
 - The scorecard is below 85
 - You want the CLI publish-ready in one pass
 
-Can also be run standalone on any CLI in `~/printing-press/library/`.
+Can also be run standalone on any CLI in `$PRESS_LIBRARY/`.
 
 ## Setup
 
 ```bash
 # min-binary-version: 4.0.0
 
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_LIBRARY="$PRESS_HOME/library"
 
 if ! command -v cli-printing-press >/dev/null 2>&1; then
@@ -82,7 +82,7 @@ The argument string can contain a `--standalone` flag plus one positional value 
 The positional value can be:
 - A short name: `redfin` (looks up `$PRESS_LIBRARY/redfin`)
 - A full name: `redfin-pp-cli` (strips suffix, looks up `$PRESS_LIBRARY/redfin`)
-- A path: `~/printing-press/library/redfin` (used directly)
+- A path: `$PRESS_LIBRARY/redfin` (used directly)
 
 Resolution order for the positional value:
 1. If it is an absolute or `~`-prefixed path and exists, use it
@@ -94,7 +94,7 @@ Resolution order for the positional value:
 
 - **Standalone (user-invoked, `/printing-press-polish redfin`).** Invoked via the slash command. Treat as `STANDALONE_MODE=true` unconditionally — the slash-command form is the publish-intent surface, even when the user omits the flag. The arg is a slug or binary name; resolution lands on `$PRESS_LIBRARY/<slug>/`. This is the published copy and the right target.
 - **Mid-pipeline (main printing-press skill Phase 5.5, hold-path "Polish to retry").** Invoked via the Skill tool with `args: "$CLI_WORK_DIR"`. The arg is an absolute path to `~/printing-press/.runstate/.../runs/.../working/<api>-pp-cli/`; resolution must hit rule 1. `STANDALONE_MODE=false` by default — main SKILL owns the publish flow on this path, so polish defers. **Do not paraphrase the arg to the slug** — Phase 5.5 fires before the working CLI is promoted, so `$PRESS_LIBRARY/<slug>/` either doesn't exist or holds the *prior* run's stale CLI.
-- **Skill-tool standalone override.** A non-slash caller that genuinely wants polish to publish must opt in explicitly by including `--standalone` in `args` (e.g., `args: "--standalone ~/printing-press/library/redfin"`). Without that token, polish never publishes from a Skill-tool invocation — even if the resolved path happens to live under `$PRESS_LIBRARY/`. The flag is the contract; the path is not.
+- **Skill-tool standalone override.** A non-slash caller that genuinely wants polish to publish must opt in explicitly by including `--standalone` in `args` (e.g., `args: "--standalone $PRESS_LIBRARY/redfin"`). Without that token, polish never publishes from a Skill-tool invocation — even if the resolved path happens to live under `$PRESS_LIBRARY/`. The flag is the contract; the path is not.
 
 This caller-mode-driven gate replaces the older path-substring heuristic (`*.runstate/*`). The heuristic broke when the main SKILL's Phase 5.5/5.6 ordering inverted, or when polish was invoked from a non-`.runstate` scratch layout: polish would see a `$PRESS_LIBRARY/<slug>/` path, conclude "standalone," and fire its Publish Offer (fork, global git config, public PR) inside a mid-pipeline run. The flag is unambiguous and the safer default is no-publish.
 
@@ -419,7 +419,7 @@ sections, expect the next dogfood resync or regeneration to clobber the change.
 To find the manuscript source:
 
 ```bash
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 API_SLUG="${CLI_NAME%-pp-cli}"
 RESEARCH_JSON=""
 for f in "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json \
@@ -718,7 +718,7 @@ Present via `AskUserQuestion`. Two example shapes:
 > Recommendation: Publish.
 >
 > 1. **Publish now** (recommended) — validate, package, and open a PR
-> 2. **Done for now** — CLI is at ~/printing-press/library/<cli-name>"
+> 2. **Done for now** — CLI is at $PRESS_LIBRARY/<cli-name>"
 
 **Polish thinks another pass would help** (`remaining_issues` non-empty, `further_polish_recommended: yes`):
 
@@ -730,7 +730,7 @@ Present via `AskUserQuestion`. Two example shapes:
 >
 > 1. **Polish again** (recommended) — close the remaining <N> issues
 > 2. **Publish now** — ship as-is
-> 3. **Done for now** — CLI is at ~/printing-press/library/<cli-name>"
+> 3. **Done for now** — CLI is at $PRESS_LIBRARY/<cli-name>"
 
 The recommended option leads, carries the `(recommended)` label, and the leading `Recommendation:` line states the agent's call explicitly. Three reinforcing channels so the user does not have to infer from ordering.
 

@@ -68,7 +68,7 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			assert.Contains(t, block, `pwd -P`)
 
 			// Core workspace variables
-			assert.Contains(t, block, `PRESS_HOME="$HOME/printing-press"`)
+			assert.Contains(t, block, `PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"`)
 			assert.Contains(t, block, `PRESS_SCOPE=`)
 			assert.Contains(t, block, `PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"`)
 			assert.Contains(t, block, `PRESS_LIBRARY="$PRESS_HOME/library"`)
@@ -87,6 +87,98 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSkillFilesHonorPrintingPressHomeEnv(t *testing.T) {
+	skillPaths, err := filepath.Glob(filepath.Join("..", "..", "skills", "*", "SKILL.md"))
+	require.NoError(t, err)
+	require.NotEmpty(t, skillPaths)
+
+	referencePaths, err := filepath.Glob(filepath.Join("..", "..", "skills", "*", "references", "*"))
+	require.NoError(t, err)
+
+	for _, path := range append(skillPaths, referencePaths...) {
+		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
+			full := readContractFile(t, path)
+			assert.NotContains(t, full, `PRESS_HOME="$HOME/printing-press"`)
+			assert.NotContains(t, full, `$HOME/printing-press/`)
+			assert.NotContains(t, full, `"$HOME/printing-press"`)
+			assert.NotContains(t, full, `~/printing-press/library/`)
+			assert.NotContains(t, full, `~/printing-press/manuscripts/`)
+		})
+	}
+}
+
+func TestPrintingPressImportScriptsHonorPrintingPressHomeEnv(t *testing.T) {
+	pressHome := t.TempDir()
+	home := t.TempDir()
+	apiSlug := "fixture-api"
+
+	staging := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "README.md"), []byte("# fixture\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(staging, ".manuscripts", "run-1"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(staging, ".manuscripts", "run-1", "research.json"), []byte("{}\n"), 0o644))
+
+	placeScript := filepath.Join("..", "..", "skills", "printing-press-import", "references", "import-place.sh")
+	runContractScript(t, placeScript, []string{
+		"PRINTING_PRESS_HOME=" + pressHome,
+		"HOME=" + home,
+	}, staging, apiSlug)
+
+	assert.FileExists(t, filepath.Join(pressHome, "library", apiSlug, "README.md"))
+	assert.FileExists(t, filepath.Join(pressHome, "manuscripts", apiSlug, "run-1", "research.json"))
+	assert.NoDirExists(t, filepath.Join(home, "printing-press"))
+
+	defaultHome := t.TempDir()
+	defaultStaging := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(defaultStaging, "README.md"), []byte("# default\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(defaultStaging, ".manuscripts", "run-1"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(defaultStaging, ".manuscripts", "run-1", "research.json"), []byte("{}\n"), 0o644))
+	runContractScript(t, placeScript, []string{
+		"PRINTING_PRESS_HOME=",
+		"HOME=" + defaultHome,
+	}, defaultStaging, apiSlug)
+
+	assert.FileExists(t, filepath.Join(defaultHome, "printing-press", "library", apiSlug, "README.md"))
+	assert.FileExists(t, filepath.Join(defaultHome, "printing-press", "manuscripts", apiSlug, "run-1", "research.json"))
+
+	require.NoError(t, os.WriteFile(filepath.Join(pressHome, "library", apiSlug, "state.json"), []byte("{}\n"), 0o644))
+	fakeBin := t.TempDir()
+	fakeZip := filepath.Join(fakeBin, "zip")
+	require.NoError(t, os.WriteFile(fakeZip, []byte("#!/usr/bin/env bash\nset -euo pipefail\ntouch \"$2\"\n"), 0o755))
+
+	backupScript := filepath.Join("..", "..", "skills", "printing-press-import", "references", "import-backup.sh")
+	out := runContractScript(t, backupScript, []string{
+		"PRINTING_PRESS_HOME=" + pressHome,
+		"HOME=" + home,
+		"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}, apiSlug)
+
+	assert.Contains(t, out, "/tmp/printing-press/"+apiSlug+"-")
+	assert.NoDirExists(t, filepath.Join(home, "printing-press"))
+
+	defaultBackupHome := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(defaultBackupHome, "printing-press", "library", apiSlug), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(defaultBackupHome, "printing-press", "library", apiSlug, "state.json"), []byte("{}\n"), 0o644))
+	defaultFakeBin := t.TempDir()
+	defaultFakeZip := filepath.Join(defaultFakeBin, "zip")
+	require.NoError(t, os.WriteFile(defaultFakeZip, []byte("#!/usr/bin/env bash\nset -euo pipefail\ntouch \"$2\"\n"), 0o755))
+	defaultOut := runContractScript(t, backupScript, []string{
+		"PRINTING_PRESS_HOME=",
+		"HOME=" + defaultBackupHome,
+		"PATH=" + defaultFakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}, apiSlug)
+
+	assert.Contains(t, defaultOut, "/tmp/printing-press/"+apiSlug+"-")
+}
+
+func TestPrintingPressSetupChecksSkipSnippetIsSelfContained(t *testing.T) {
+	setupChecks := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "setup-checks.md"))
+	skipSnippet := substringBetween(t, setupChecks, "If the user picks **Skip**", "Prompt again only when")
+
+	assert.Contains(t, skipSnippet, `PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"`)
+	assert.Contains(t, skipSnippet, `> "$PRESS_HOME/.version-check"`)
+	assert.NotContains(t, skipSnippet, `> "$HOME/printing-press/.version-check"`)
 }
 
 func TestPrintingPressSkillUsesRunRootStateFile(t *testing.T) {
@@ -393,4 +485,14 @@ func runGoContractCommand(t *testing.T, dir string, args ...string) {
 	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(dir, ".cache", "go-build"))
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
+}
+
+func runContractScript(t *testing.T, path string, env []string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command(path, args...)
+	cmd.Env = append(os.Environ(), env...)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+	return string(output)
 }

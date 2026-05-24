@@ -70,9 +70,9 @@ When the user explicitly passed a target as the skill argument, skip auto-detect
 ### Path resolution for the chosen target
 
 Accept any of:
-- short name: `superhuman` → `~/printing-press/library/superhuman/`
+- short name: `superhuman` → `$PRESS_LIBRARY/superhuman/`
 - full name: `superhuman-pp-cli` → strip `-pp-cli`, resolve as short name
-- absolute path: `~/printing-press/library/superhuman` → use as-is
+- absolute path: `$PRESS_LIBRARY/superhuman` → use as-is
 
 If the resolved path doesn't exist locally, search `~/printing-press-library/library/*/` for a directory whose name matches the slug, and fall back to that as the target. The skill operates on the managed clone (per the Pre-Implementation Decisions in the plan), so the local-library path is informational; the actual edits land in the managed clone created in U7.
 
@@ -89,7 +89,7 @@ Phase 1 emits a structured finding list to the next phase:
 
 ```yaml
 target_cli: superhuman-pp-cli
-target_dir: ~/printing-press/library/superhuman   # may be informational; managed-clone path resolved later
+target_dir: $PRESS_LIBRARY/superhuman   # may be informational; managed-clone path resolved later
 target_category: productivity                      # resolved from the public library, used by U7
 findings:
   - id: F1
