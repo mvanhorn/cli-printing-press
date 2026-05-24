@@ -16,7 +16,7 @@ func newGamesPromotedCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "games",
 		Short:       "List games",
-		Long:        "Shortcut for 'games list'. List games",
+		Long:        "List games",
 		Example:     "  sync-walker-golden-pp-cli games",
 		Annotations: map[string]string{"pp:endpoint": "games.list", "pp:method": "GET", "pp:path": "/games", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
