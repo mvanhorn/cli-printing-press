@@ -1086,6 +1086,55 @@ func newSearchCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+func TestCheckReimplementation_IgnoresNonCobraCommandLikeLiteral_Passes(t *testing.T) {
+	files := map[string]string{
+		"search.go": `package cli
+
+import (
+	"example.com/mod/internal/algolia"
+	"github.com/spf13/cobra"
+)
+
+type commandExample struct {
+	Use string
+	RunE func(*cobra.Command, []string) error
+}
+
+var misleadingExample = commandExample{
+	Use: "search",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.Println(` + "`" + `{"status":"example"}` + "`" + `)
+		return nil
+	},
+}
+
+func newSearchCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "search",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ac := algolia.New(flags.timeout)
+			rows, err := ac.Search(cmd.Context(), args[0])
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Search", Command: "search"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
 // TestCheckReimplementation_WithoutMarker_StillFlagged confirms the
 // F3 fix doesn't silently exempt commands that lack the explicit
 // `// pp:novel-static-reference` marker. Same shape as the test above

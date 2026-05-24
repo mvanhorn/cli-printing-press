@@ -598,6 +598,9 @@ func scanCommandHandler(content, leaf string) commandHandlerScan {
 }
 
 func commandHandlerForLeaf(lit *ast.CompositeLit, leaf string) *ast.FuncLit {
+	if !isCommandCompositeType(lit.Type) {
+		return nil
+	}
 	matchesLeaf := false
 	var runHandler *ast.FuncLit
 	var runEHandler *ast.FuncLit
@@ -630,6 +633,19 @@ func commandHandlerForLeaf(lit *ast.CompositeLit, leaf string) *ast.FuncLit {
 		return runHandler
 	}
 	return nil
+}
+
+func isCommandCompositeType(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == "Command"
+	case *ast.SelectorExpr:
+		return e.Sel.Name == "Command"
+	case *ast.StarExpr:
+		return isCommandCompositeType(e.X)
+	default:
+		return false
+	}
 }
 
 func useExprLeaf(expr ast.Expr) string {
