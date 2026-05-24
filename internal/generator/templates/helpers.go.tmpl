@@ -120,6 +120,7 @@ func apiErr(err error) error      { return &cliError{code: 5, err: err} }
 func configErr(err error) error   { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 
+{{- if .HasMutationEndpoints}}
 // partialFailureErr signals that the upstream API returned a 2xx with a
 // body shape indicating some operations in a batch failed (e.g. Google
 // Ads `partialFailureError`, similar shapes from Drive batch, Sheets
@@ -194,6 +195,7 @@ func detectPartialFailure(data []byte) *partialFailureReport {
 	}
 	return nil
 }
+{{- end}}
 
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
