@@ -777,6 +777,13 @@ func resolveClientCredentials(cfg *config.Config) (string, string) {
 	return id, secret
 }
 
+func resolveClientCredentialsScope() string {
+	if scope := os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
+		return scope
+	}
+	return "read write"
+}
+
 func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecret string) error {
 	tokenURL := ""
 	if c.Config != nil {
@@ -792,6 +799,9 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 		"grant_type":    {"client_credentials"},
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
+	}
+	if scope := resolveClientCredentialsScope(); scope != "" {
+		form.Set("scope", scope)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {

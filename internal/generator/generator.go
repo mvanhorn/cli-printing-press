@@ -233,39 +233,44 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return zeroVal(t)
 		},
-		"positionalArgs":         positionalArgs,
-		"configTag":              configTag,
-		"camelToJSON":            camelToJSON,
-		"columnNames":            columnNames,
-		"columnPlaceholders":     columnPlaceholders,
-		"updateSet":              updateSet,
-		"envVarField":            envVarField,
-		"envVarPlaceholder":      naming.EnvVarPlaceholder,
-		"envVarIsBuiltinField":   envVarIsBuiltinField,
-		"envVarBuiltinFieldName": envVarBuiltinFieldName,
-		"resolveEnvVarField":     resolveEnvVarField,
-		"authPlacement":          authPlacement,
-		"authParameterName":      authParameterName,
-		"authCommandShort":       authCommandShort,
-		"authHarvestedEnvHint":   authHarvestedEnvHint,
-		"basicAuthEnvVars":       basicAuthEnvVars,
-		"authAgentEnvVars":       authAgentEnvVars,
-		"hasAuthEnvVarKind":      hasAuthEnvVarKind,
-		"isRequestAuthEnvVar":    isRequestAuthEnvVar,
-		"effectiveTier":          effectiveTier,
-		"effectiveSubTier":       effectiveSubTier,
-		"add":                    func(a, b int) int { return a + b },
-		"chomp":                  func(s string) string { return strings.TrimRight(s, "\r\n") },
-		"staleAfterExpr":         staleAfterExpr,
-		"oneline":                naming.OneLine,
-		"composeMCPDesc":         composeMCPDesc,
-		"composeMCPSubDesc":      composeMCPSubDesc,
-		"mcpParamDesc":           g.mcpParamDescription,
-		"flagName":               flagName,
-		"paramIdent":             paramIdent,
-		"paramWireName":          paramWireName,
-		"typeFieldIdent":         typeFieldIdent,
-		"safeTypeName":           safeTypeName,
+		"positionalArgs":                     positionalArgs,
+		"configTag":                          configTag,
+		"camelToJSON":                        camelToJSON,
+		"columnNames":                        columnNames,
+		"columnPlaceholders":                 columnPlaceholders,
+		"updateSet":                          updateSet,
+		"envVarField":                        envVarField,
+		"envVarPlaceholder":                  naming.EnvVarPlaceholder,
+		"envVarIsBuiltinField":               envVarIsBuiltinField,
+		"envVarBuiltinFieldName":             envVarBuiltinFieldName,
+		"resolveEnvVarField":                 resolveEnvVarField,
+		"authPlacement":                      authPlacement,
+		"authParameterName":                  authParameterName,
+		"authCommandShort":                   authCommandShort,
+		"authHarvestedEnvHint":               authHarvestedEnvHint,
+		"basicAuthEnvVars":                   basicAuthEnvVars,
+		"clientCredentialsEnvVars":           clientCredentialsEnvVars,
+		"clientCredentialsScope":             clientCredentialsScope,
+		"clientCredentialsScopeUsesClientID": clientCredentialsScopeUsesClientID,
+		"clientCredentialsTenantEnvVar":      clientCredentialsTenantEnvVar,
+		"clientCredentialsTokenURLHasTenant": clientCredentialsTokenURLHasTenant,
+		"authAgentEnvVars":                   authAgentEnvVars,
+		"hasAuthEnvVarKind":                  hasAuthEnvVarKind,
+		"isRequestAuthEnvVar":                isRequestAuthEnvVar,
+		"effectiveTier":                      effectiveTier,
+		"effectiveSubTier":                   effectiveSubTier,
+		"add":                                func(a, b int) int { return a + b },
+		"chomp":                              func(s string) string { return strings.TrimRight(s, "\r\n") },
+		"staleAfterExpr":                     staleAfterExpr,
+		"oneline":                            naming.OneLine,
+		"composeMCPDesc":                     composeMCPDesc,
+		"composeMCPSubDesc":                  composeMCPSubDesc,
+		"mcpParamDesc":                       g.mcpParamDescription,
+		"flagName":                           flagName,
+		"paramIdent":                         paramIdent,
+		"paramWireName":                      paramWireName,
+		"typeFieldIdent":                     typeFieldIdent,
+		"safeTypeName":                       safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
 			for _, td := range types {
 				for _, f := range td.Fields {
@@ -1034,6 +1039,125 @@ func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 		return envVars
 	}
 	return envVars[:2]
+}
+
+func clientCredentialsEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return nil
+	}
+	if len(auth.EnvVarSpecs) > 0 {
+		var candidates []spec.AuthEnvVar
+		tenantEnvVar := clientCredentialsTenantEnvVar(auth)
+		for _, envVar := range auth.EnvVarSpecs {
+			name := strings.TrimSpace(envVar.Name)
+			if name == "" || name == tenantEnvVar || envVar.EffectiveKind() == spec.AuthEnvVarKindHarvested {
+				continue
+			}
+			candidates = append(candidates, envVar)
+		}
+		clientID, clientSecret := clientCredentialsNamedPair(candidates)
+		if clientID.Name != "" && clientSecret.Name != "" {
+			return []spec.AuthEnvVar{clientID, clientSecret}
+		}
+		if len(candidates) >= 2 {
+			return candidates[:2]
+		}
+		return nil
+	}
+	var envVars []spec.AuthEnvVar
+	tenantEnvVar := clientCredentialsTenantEnvVar(auth)
+	for _, name := range auth.EnvVars {
+		if strings.TrimSpace(name) == "" || name == tenantEnvVar {
+			continue
+		}
+		envVars = append(envVars, spec.AuthEnvVar{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: !isClientIDAuthEnvVar(name),
+		})
+	}
+	if len(envVars) < 2 {
+		return nil
+	}
+	clientID, clientSecret := clientCredentialsNamedPair(envVars)
+	if clientID.Name != "" && clientSecret.Name != "" {
+		return []spec.AuthEnvVar{clientID, clientSecret}
+	}
+	return envVars[:2]
+}
+
+func clientCredentialsNamedPair(envVars []spec.AuthEnvVar) (spec.AuthEnvVar, spec.AuthEnvVar) {
+	var clientID spec.AuthEnvVar
+	var clientSecret spec.AuthEnvVar
+	for _, envVar := range envVars {
+		placeholder := naming.EnvVarPlaceholder(envVar.Name)
+		switch {
+		case clientID.Name == "" && (placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")):
+			clientID = envVar
+		case clientSecret.Name == "" && (placeholder == "client_secret" || strings.HasSuffix(placeholder, "_client_secret")):
+			clientSecret = envVar
+		}
+	}
+	return clientID, clientSecret
+}
+
+func clientCredentialsTenantEnvVar(auth spec.AuthConfig) string {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return ""
+	}
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.EffectiveKind() == spec.AuthEnvVarKindAuthFlowInput && isTenantAuthEnvVar(envVar.Name) {
+			return envVar.Name
+		}
+	}
+	if len(auth.EnvVarSpecs) == 0 || spec.AllAuthEnvVarSpecsInferred(auth.EnvVarSpecs) {
+		for _, name := range auth.EnvVars {
+			if isTenantAuthEnvVar(name) {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func clientCredentialsTokenURLHasTenant(auth spec.AuthConfig) bool {
+	return clientCredentialsTenantEnvVar(auth) != "" && isMicrosoftEntraTokenURL(auth.TokenURL) && strings.Contains(strings.ToLower(auth.TokenURL), "/common/")
+}
+
+func clientCredentialsScope(auth spec.AuthConfig) string {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return ""
+	}
+	if len(auth.Scopes) > 0 {
+		return strings.Join(auth.Scopes, " ")
+	}
+	if isMicrosoftEntraTokenURL(auth.TokenURL) {
+		return "api://{client_id}/.default"
+	}
+	return ""
+}
+
+func clientCredentialsScopeUsesClientID(scope string) bool {
+	return strings.Contains(scope, "{client_id}")
+}
+
+func isMicrosoftEntraTokenURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, "login.microsoftonline.com")
+}
+
+func isTenantAuthEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "tenant_id" || strings.HasSuffix(placeholder, "_tenant_id")
+}
+
+func isClientIDAuthEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
 }
 
 func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {

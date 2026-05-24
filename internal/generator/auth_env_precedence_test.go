@@ -58,6 +58,369 @@ func TestAuthHeader_ClientCredentialsDoesNotUseSetupEnvVars(t *testing.T) {
 	assert.Less(t, verifyIdx, mintIdx, "mock verification must not dial the real token endpoint")
 }
 
+func TestClientCredentialsEnvVarsSkipTenantSetupInput(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("entra-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://login.microsoftonline.com/COMMON/oauth2/v2.0/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "ENTRA_CC_TENANT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: false},
+			{Name: "ENTRA_CC_CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "ENTRA_CC_CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "entra-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authContent := string(authSrc)
+	require.Contains(t, authContent, `clientID = os.Getenv("ENTRA_CC_CLIENT_ID")`)
+	require.Contains(t, authContent, `clientSecret = os.Getenv("ENTRA_CC_CLIENT_SECRET")`)
+	require.NotContains(t, authContent, `clientID = os.Getenv("ENTRA_CC_TENANT_ID")`)
+	require.Contains(t, authContent, `resolveClientCredentialsTokenURL(tokenURL, cfg.`+resolveEnvVarField("ENTRA_CC_TENANT_ID")+`)`)
+	require.Contains(t, authContent, `os.Getenv("ENTRA_CC_OAUTH_SCOPE")`)
+	require.Contains(t, authContent, `strings.ReplaceAll("api://{client_id}/.default", "{client_id}", clientID)`)
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientContent := string(clientSrc)
+	require.Contains(t, clientContent, `id = os.Getenv("ENTRA_CC_CLIENT_ID")`)
+	require.Contains(t, clientContent, `secret = os.Getenv("ENTRA_CC_CLIENT_SECRET")`)
+	require.NotContains(t, clientContent, `id = os.Getenv("ENTRA_CC_TENANT_ID")`)
+	require.Contains(t, clientContent, `tenant = c.Config.`+resolveEnvVarField("ENTRA_CC_TENANT_ID"))
+	require.Contains(t, clientContent, `resolveClientCredentialsTokenURL(tokenURL, tenant)`)
+	require.Contains(t, clientContent, `form.Set("scope", scope)`)
+
+	const runtimeTest = `package client
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"entra-cc-pp-cli/internal/config"
+)
+
+func TestClientCredentialsRuntimeEntraTenantAndScope(t *testing.T) {
+	var gotPath string
+	var gotScope string
+	var gotClientID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		gotScope = r.Form.Get("scope")
+		gotClientID = r.Form.Get("client_id")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, ` + "`" + `{"access_token":"minted-token","expires_in":3600}` + "`" + `)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{TokenURL: server.URL + "/COMMON/oauth2/v2.0/token", Path: filepath.Join(t.TempDir(), "config.toml")}
+	cfg.{{TENANT_FIELD}} = "contoso"
+	c := &Client{Config: cfg, HTTPClient: server.Client()}
+	if err := c.mintClientCredentials(context.Background(), "client-123", "secret-456"); err != nil {
+		t.Fatalf("mintClientCredentials() error = %v", err)
+	}
+	if gotPath != "/contoso/oauth2/v2.0/token" {
+		t.Fatalf("token request path = %q, want /contoso/oauth2/v2.0/token", gotPath)
+	}
+	if gotScope != "api://client-123/.default" {
+		t.Fatalf("scope = %q, want api://client-123/.default", gotScope)
+	}
+	if gotClientID != "client-123" {
+		t.Fatalf("client_id = %q, want client-123", gotClientID)
+	}
+
+	t.Setenv("ENTRA_CC_OAUTH_SCOPE", "https://override.example/.default")
+	if err := c.mintClientCredentials(context.Background(), "client-789", "secret-456"); err != nil {
+		t.Fatalf("mintClientCredentials() with scope override error = %v", err)
+	}
+	if gotScope != "https://override.example/.default" {
+		t.Fatalf("override scope = %q, want https://override.example/.default", gotScope)
+	}
+}
+
+func TestClientCredentialsRuntimeEntraRequiresTenant(t *testing.T) {
+	cfg := &config.Config{TokenURL: "https://login.microsoftonline.com/COMMON/oauth2/v2.0/token"}
+	c := &Client{Config: cfg, HTTPClient: http.DefaultClient}
+	if err := c.mintClientCredentials(context.Background(), "client-123", "secret-456"); err == nil {
+		t.Fatalf("mintClientCredentials() error = nil, want tenant-required error")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(outputDir, "internal", "client", "entra_runtime_test.go"),
+		[]byte(strings.ReplaceAll(runtimeTest, "{{TENANT_FIELD}}", resolveEnvVarField("ENTRA_CC_TENANT_ID"))),
+		0o644,
+	))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestClientCredentialsRuntimeEntra")
+}
+
+func TestClientCredentialsStaticTokenURLDoesNotEmitTenantSubstitution(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("static-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://auth.example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "STATIC_CC_TENANT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false},
+			{Name: "STATIC_CC_CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "STATIC_CC_CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "static-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(authSrc), `resolveClientCredentialsTokenURL(tokenURL`)
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(clientSrc), `resolveClientCredentialsTokenURL(tokenURL`)
+
+	const runtimeTest = `package client
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"static-cc-pp-cli/internal/config"
+)
+
+func TestClientCredentialsRuntimeStaticTokenURLDoesNotSendDefaultScope(t *testing.T) {
+	var hasScope bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		_, hasScope = r.Form["scope"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, ` + "`" + `{"access_token":"minted-token","expires_in":3600}` + "`" + `)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{TokenURL: server.URL, Path: filepath.Join(t.TempDir(), "config.toml")}
+	c := &Client{Config: cfg, HTTPClient: server.Client()}
+	if err := c.mintClientCredentials(context.Background(), "client-123", "secret-456"); err != nil {
+		t.Fatalf("mintClientCredentials() error = %v", err)
+	}
+	if hasScope {
+		t.Fatalf("unexpected scope form value for static non-Microsoft token URL")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "static_runtime_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestClientCredentialsRuntimeStatic")
+}
+
+func TestClientCredentialsLegacyEnvVarsSubstituteTenantTokenURL(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("legacy-entra-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		EnvVars: []string{
+			"LEGACY_ENTRA_TENANT_ID",
+			"LEGACY_ENTRA_CLIENT_ID",
+			"LEGACY_ENTRA_CLIENT_SECRET",
+		},
+	}
+	ccEnvVars := clientCredentialsEnvVars(apiSpec.Auth)
+	require.Len(t, ccEnvVars, 2)
+	require.Equal(t, "LEGACY_ENTRA_CLIENT_ID", ccEnvVars[0].Name)
+	require.False(t, ccEnvVars[0].Sensitive, "legacy client ID must not be synthesized as sensitive")
+	require.Equal(t, "LEGACY_ENTRA_CLIENT_SECRET", ccEnvVars[1].Name)
+	require.True(t, ccEnvVars[1].Sensitive, "legacy client secret must stay sensitive")
+
+	outputDir := filepath.Join(t.TempDir(), "legacy-entra-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authContent := string(authSrc)
+	require.Contains(t, authContent, `clientID = os.Getenv("LEGACY_ENTRA_CLIENT_ID")`)
+	require.Contains(t, authContent, `clientSecret = os.Getenv("LEGACY_ENTRA_CLIENT_SECRET")`)
+	require.Contains(t, authContent, `resolveClientCredentialsTokenURL(tokenURL, cfg.`+resolveEnvVarField("LEGACY_ENTRA_TENANT_ID")+`)`)
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientContent := string(clientSrc)
+	require.Contains(t, clientContent, `id = os.Getenv("LEGACY_ENTRA_CLIENT_ID")`)
+	require.Contains(t, clientContent, `secret = os.Getenv("LEGACY_ENTRA_CLIENT_SECRET")`)
+	require.Contains(t, clientContent, `tenant = c.Config.`+resolveEnvVarField("LEGACY_ENTRA_TENANT_ID"))
+	require.Contains(t, clientContent, `resolveClientCredentialsTokenURL(tokenURL, tenant)`)
+}
+
+func TestClientCredentialsTenantPrefixDoesNotHideClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("multitenant-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://auth.example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "MULTITENANT_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: false},
+			{Name: "MULTITENANT_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "multitenant-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authContent := string(authSrc)
+	require.Contains(t, authContent, `clientID = os.Getenv("MULTITENANT_CLIENT_ID")`)
+	require.Contains(t, authContent, `clientSecret = os.Getenv("MULTITENANT_CLIENT_SECRET")`)
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientContent := string(clientSrc)
+	require.Contains(t, clientContent, `id = os.Getenv("MULTITENANT_CLIENT_ID")`)
+	require.Contains(t, clientContent, `secret = os.Getenv("MULTITENANT_CLIENT_SECRET")`)
+}
+
+func TestClientCredentialsPerCallTenantIDDoesNotTriggerConfigBackedTenantSubstitution(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("per-call-tenant-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "PER_CALL_TENANT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "PER_CALL_CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "PER_CALL_CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "per-call-tenant-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(authSrc), `resolveClientCredentialsTokenURL(tokenURL`)
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(clientSrc), `resolveClientCredentialsTokenURL(tokenURL`)
+}
+
+func TestClientCredentialsDeclaredScopesSuppressMicrosoftDefaultScope(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("scoped-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://login.microsoftonline.com/COMMON/oauth2/v2.0/token",
+		Scopes:      []string{"https://graph.microsoft.com/.default"},
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "SCOPED_CC_TENANT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false},
+			{Name: "SCOPED_CC_CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "SCOPED_CC_CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "scoped-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientContent := string(clientSrc)
+	require.Contains(t, clientContent, `return "https://graph.microsoft.com/.default"`)
+	require.NotContains(t, clientContent, `api://{client_id}/.default`)
+}
+
+func TestClientCredentialsMixedKindEnvVarsPreserveClientRoles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mixed-kind-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://auth.example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "MIXED_KIND_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: false},
+			{Name: "MIXED_KIND_CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "mixed-kind-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authContent := string(authSrc)
+	require.Contains(t, authContent, `clientID = os.Getenv("MIXED_KIND_CLIENT_ID")`)
+	require.Contains(t, authContent, `clientSecret = os.Getenv("MIXED_KIND_CLIENT_SECRET")`)
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientContent := string(clientSrc)
+	require.Contains(t, clientContent, `id = os.Getenv("MIXED_KIND_CLIENT_ID")`)
+	require.Contains(t, clientContent, `secret = os.Getenv("MIXED_KIND_CLIENT_SECRET")`)
+}
+
+func TestClientCredentialsHostileScopeEmitsValidGo(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("hostile-scope-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://auth.example.com/oauth/token",
+		Scopes:      []string{"read\"with\\escapes\nwrite"},
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "HOSTILE_SCOPE_CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "HOSTILE_SCOPE_CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "hostile-scope-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	runGoCommand(t, outputDir, "test", "./internal/client")
+	runGoCommand(t, outputDir, "test", "./internal/cli")
+}
+
 // TestAuthHeader_OAuth2DoesNotUseSetupEnvVars pins that for every OAuth2
 // grant (authorization_code via the default, client_credentials via explicit
 // OAuth2Grant) the configured env vars (e.g. CLIENT_ID / CLIENT_SECRET) are
