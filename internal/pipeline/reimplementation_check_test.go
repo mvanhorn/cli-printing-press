@@ -704,6 +704,437 @@ func newFlightsCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+func TestCheckReimplementation_ClientHelperHop_Passes(t *testing.T) {
+	files := map[string]string{
+		"novel_helpers.go": `package cli
+
+import "example.com/mod/internal/rappi"
+
+func fetchRestaurantListPage(city, category string) ([]rappi.RestaurantListItem, error) {
+	c := rappi.NewClient()
+	return c.FetchHTML(city, category)
+}
+`,
+		"restaurants_top.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newRestaurantsTopCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "restaurants-top",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rows, err := fetchRestaurantListPage("mx", "pizza")
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Restaurants top", Command: "restaurants-top"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if got.ExemptedViaClientDirective != 0 {
+		t.Fatalf("ExemptedViaClientDirective: want 0 (no marker needed), got %d", got.ExemptedViaClientDirective)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_HardcodedHelperHop_Flagged(t *testing.T) {
+	files := map[string]string{
+		"novel_helpers.go": `package cli
+
+type RestaurantListItem struct {
+	Name string
+}
+
+func fetchRestaurantListPage(city, category string) ([]RestaurantListItem, error) {
+	return []RestaurantListItem{{Name: "Hardcoded"}}, nil
+}
+`,
+		"restaurants_top.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newRestaurantsTopCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "restaurants-top",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rows, err := fetchRestaurantListPage("mx", "pizza")
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Restaurants top", Command: "restaurants-top"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if got.ExemptedViaClientDirective != 0 {
+		t.Fatalf("ExemptedViaClientDirective: want 0, got %d", got.ExemptedViaClientDirective)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+	if got.Suspicious[0].Command != "restaurants-top" {
+		t.Fatalf("Command: want restaurants-top, got %s", got.Suspicious[0].Command)
+	}
+}
+
+func TestCheckReimplementation_OutboundHTTPHelperHop_Passes(t *testing.T) {
+	files := map[string]string{
+		"novel_helpers.go": `package cli
+
+import "net/http"
+
+func fetchRestaurantListPage(city, category string) (*http.Response, error) {
+	return http.Get("https://example.test/restaurants")
+}
+`,
+		"restaurants_top.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newRestaurantsTopCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "restaurants-top",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := fetchRestaurantListPage("mx", "pizza")
+			if err != nil { return err }
+			_ = resp
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Restaurants top", Command: "restaurants-top"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_TwoHopClientHelper_Flagged(t *testing.T) {
+	files := map[string]string{
+		"novel_helpers.go": `package cli
+
+import "example.com/mod/internal/rappi"
+
+func fetchRestaurantListPage(city, category string) ([]rappi.RestaurantListItem, error) {
+	return requestRestaurantListPage(city, category)
+}
+
+func requestRestaurantListPage(city, category string) ([]rappi.RestaurantListItem, error) {
+	c := rappi.NewClient()
+	return c.FetchHTML(city, category)
+}
+`,
+		"restaurants_top.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newRestaurantsTopCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "restaurants-top",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rows, err := fetchRestaurantListPage("mx", "pizza")
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Restaurants top", Command: "restaurants-top"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1 (deeper helper chains need pp:client-call), got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+	if got.Suspicious[0].Command != "restaurants-top" {
+		t.Fatalf("Command: want restaurants-top, got %s", got.Suspicious[0].Command)
+	}
+}
+
+func TestCheckReimplementation_SameFileTwoHopClientHelper_Flagged(t *testing.T) {
+	files := map[string]string{
+		"restaurants_top.go": `package cli
+
+import (
+	"example.com/mod/internal/rappi"
+	"github.com/spf13/cobra"
+)
+
+func fetchRestaurantListPage(city, category string) ([]rappi.RestaurantListItem, error) {
+	return requestRestaurantListPage(city, category)
+}
+
+func requestRestaurantListPage(city, category string) ([]rappi.RestaurantListItem, error) {
+	c := rappi.NewClient()
+	return c.FetchHTML(city, category)
+}
+
+func newRestaurantsTopCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "restaurants-top",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rows, err := fetchRestaurantListPage("mx", "pizza")
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Restaurants top", Command: "restaurants-top"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1 (same-file deeper helper chains need pp:client-call), got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_CommentedClientCallInHelper_Flagged(t *testing.T) {
+	files := map[string]string{
+		"novel_helpers.go": `package cli
+
+type RestaurantListItem struct {
+	Name string
+}
+
+func fetchRestaurantListPage(city, category string) ([]RestaurantListItem, error) {
+	// TODO: replace the hardcoded data with http.Get("https://example.test/restaurants")
+	return []RestaurantListItem{{Name: "Hardcoded"}}, nil
+}
+`,
+		"restaurants_top.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newRestaurantsTopCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "restaurants-top",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rows, err := fetchRestaurantListPage("mx", "pizza")
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Restaurants top", Command: "restaurants-top"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_SiblingInternalUtilityHelper_Flagged(t *testing.T) {
+	files := map[string]string{
+		"novel_helpers.go": `package cli
+
+import "example.com/mod/internal/fixtures"
+
+func fetchRestaurantListPage(city, category string) ([]fixtures.RestaurantListItem, error) {
+	return fixtures.TopRestaurants(), nil
+}
+`,
+		"restaurants_top.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newRestaurantsTopCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "restaurants-top",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rows, err := fetchRestaurantListPage("mx", "pizza")
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Restaurants top", Command: "restaurants-top"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_DirectSiblingInternalClient_Passes(t *testing.T) {
+	files := map[string]string{
+		"search.go": `package cli
+
+import (
+	"example.com/mod/internal/algolia"
+	"github.com/spf13/cobra"
+)
+
+func newSearchCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "search",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ac := algolia.New(flags.timeout)
+			rows, err := ac.Search(cmd.Context(), args[0])
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Search", Command: "search"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_RunEPriorityOverRun_Passes(t *testing.T) {
+	files := map[string]string{
+		"search.go": `package cli
+
+import (
+	"example.com/mod/internal/algolia"
+	"github.com/spf13/cobra"
+)
+
+func newSearchCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "search",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ac := algolia.New(flags.timeout)
+			rows, err := ac.Search(cmd.Context(), args[0])
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.Println(` + "`" + `{"status":"cached"}` + "`" + `)
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Search", Command: "search"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_IgnoresNonCobraCommandLikeLiteral_Passes(t *testing.T) {
+	files := map[string]string{
+		"search.go": `package cli
+
+import (
+	"example.com/mod/internal/algolia"
+	"github.com/spf13/cobra"
+)
+
+type Command struct {
+	Use string
+	RunE func(*cobra.Command, []string) error
+}
+
+var misleadingExample = Command{
+	Use: "search",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.Println(` + "`" + `{"status":"example"}` + "`" + `)
+		return nil
+	},
+}
+
+func newSearchCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "search",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ac := algolia.New(flags.timeout)
+			rows, err := ac.Search(cmd.Context(), args[0])
+			if err != nil { return err }
+			_ = rows
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Search", Command: "search"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
 // TestCheckReimplementation_WithoutMarker_StillFlagged confirms the
 // F3 fix doesn't silently exempt commands that lack the explicit
 // `// pp:novel-static-reference` marker. Same shape as the test above
