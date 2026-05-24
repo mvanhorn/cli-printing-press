@@ -725,6 +725,19 @@ func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
 					},
 				},
 			},
+			"companies": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/companies/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "CompanyEnvelope"},
+					},
+				},
+			},
 			"tickets": {
 				Endpoints: map[string]spec.Endpoint{
 					"searchTickets": {
@@ -735,6 +748,15 @@ func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
 							LimitParam:  "limit",
 						},
 						Response: spec.ResponseDef{Type: "object", Item: "TicketEnvelope"},
+					},
+				},
+			},
+			"open-opportunities": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/opportunities/open",
+						Response: spec.ResponseDef{Type: "object", Item: "OpenOpportunityEnvelope"},
 					},
 				},
 			},
@@ -805,9 +827,21 @@ func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
 					{Name: "meta", Type: "object"},
 				},
 			},
+			"CompanyEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "companies", Type: "array"},
+					{Name: "errors", Type: "array"},
+					{Name: "meta", Type: "object"},
+				},
+			},
 			"TicketEnvelope": {
 				Fields: []spec.TypeField{
 					{Name: "tickets", Type: "array"},
+				},
+			},
+			"OpenOpportunityEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "openOpportunities", Type: "array"},
 				},
 			},
 			"SettingsResponse": {
@@ -846,7 +880,9 @@ func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
 
 	assert.Contains(t, syncNames, "opportunities", "GET list endpoint with plural wrapper array should be syncable")
 	assert.Contains(t, syncNames, "contacts", "paginated POST search endpoint with plural wrapper array should be syncable")
+	assert.Contains(t, syncNames, "companies", "ancillary errors arrays should not hide one resource-shaped wrapper array")
 	assert.Contains(t, syncNames, "tickets", "single array fields can match the endpoint name when the path is generic")
+	assert.Contains(t, syncNames, "open-opportunities", "compound array field names can match simple path segments")
 	assert.Contains(t, syncNames, "places", "multi-array GeoJSON-style envelope with known features wrapper should be syncable")
 	assert.NotContains(t, syncNames, "settings", "object envelopes without array fields should not be syncable")
 	assert.NotContains(t, syncNames, "empty-settings", "parsed zero-field response types should not fall back to type-name matching")

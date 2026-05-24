@@ -885,6 +885,13 @@ var wrapperArrayKeys = map[string]bool{
 	"nodes":    true,
 }
 
+var ancillaryArrayKeys = map[string]bool{
+	"errors":            true,
+	"warnings":          true,
+	"validations":       true,
+	"validation_errors": true,
+}
+
 // Field metadata is stronger than type-name guesses: once a type is present,
 // its fields decide whether the response is extractable.
 func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef, endpointName string, path string) bool {
@@ -895,11 +902,15 @@ func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef, endpoi
 			if !strings.EqualFold(field.Type, "array") {
 				continue
 			}
-			arrayFields++
-			arrayField = field.Name
-			if wrapperArrayKeys[strings.ToLower(field.Name)] {
+			fieldKey := normalizedFieldKey(field.Name)
+			if wrapperArrayKeys[fieldKey] {
 				return true
 			}
+			if ancillaryArrayKeys[fieldKey] {
+				continue
+			}
+			arrayFields++
+			arrayField = field.Name
 		}
 		if arrayFields == 1 && singleArrayFieldMatchesCollection(arrayField, endpointName, path) {
 			return true
@@ -942,7 +953,17 @@ func namesOverlap(a, b string) bool {
 			return true
 		}
 	}
+	aTokens := nameTokens(a)
+	for _, bv := range bVariants {
+		if slices.Contains(aTokens, bv) {
+			return true
+		}
+	}
 	return false
+}
+
+func normalizedFieldKey(name string) string {
+	return normalizeName(spec.ToSnakeCase(name))
 }
 
 func nameTokens(name string) []string {
