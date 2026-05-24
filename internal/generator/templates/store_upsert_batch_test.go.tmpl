@@ -258,15 +258,15 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 	}
 }
 
-{{- $hasTyped := false }}
+{{- $hasDomainTable := false }}
 {{- range .Tables}}
-{{- if hasTypedTable .}}
-{{- $hasTyped = true }}
+{{- if emitsDomainTable .}}
+{{- $hasDomainTable = true }}
 {{- end}}
 {{- end}}
-{{- if $hasTyped }}
+{{- if $hasDomainTable }}
 {{- range .Tables}}
-{{- if hasTypedTable .}}
+{{- if emitsDomainTable .}}
 {{- /* $parentFKCol captures buildSubResourceTable's NOT NULL parent FK
        (e.g. "domains_id"). The fixture must populate it or the typed
        insert fails the NOT NULL constraint. The predicate is

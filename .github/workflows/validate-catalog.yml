@@ -21,6 +21,63 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate catalog PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          body = os.environ.get("PR_BODY") or ""
+          required = [
+              "Embedded catalog fit",
+              "Distinct blueprint pattern",
+              "Closest existing entries checked",
+              "Source provenance",
+              "Auth and tenant assumptions",
+              "Safe default surface",
+              "Generation path",
+              "Stale-body check",
+          ]
+          next_field = "|".join(rf"^{re.escape(label)}:\s*" for label in required)
+
+          section_match = re.search(
+              r"(?ims)^## Catalog Justification\s*$(.*?)(?=^##\s+|\Z)",
+              body,
+          )
+          catalog_section = section_match.group(1) if section_match else ""
+
+          def field_has_content(label):
+              match = re.search(
+                  rf"(?ims)^{re.escape(label)}:\s*(.*?)(?={next_field}|^##\s+|\Z)",
+                  catalog_section,
+              )
+              if not match:
+                  return False
+              content = match.group(1).strip()
+              return bool(content and content.upper() != "N/A")
+
+          missing = []
+          if not section_match:
+              missing.append("## Catalog Justification")
+          for label in required:
+              if not field_has_content(label):
+                  missing.append(label)
+
+          if missing:
+              print("FAIL: catalog PRs must complete the Catalog Justification section.")
+              print("Missing or empty fields:")
+              for item in missing:
+                  print(f"  - {item}")
+              sys.exit(1)
+
+          print("PASS: Catalog Justification section is present and complete.")
+          PY
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

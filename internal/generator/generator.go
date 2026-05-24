@@ -204,64 +204,69 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		templates: make(map[string]*template.Template),
 	}
 	g.funcs = template.FuncMap{
-		"title":                         cases.Title(language.English).String,
-		"lower":                         strings.ToLower,
-		"upper":                         strings.ToUpper,
-		"join":                          strings.Join,
-		"camel":                         toCamel,
-		"snake":                         naming.Snake,
-		"pascal":                        toPascal,
-		"goType":                        goType,
-		"goStructType":                  goStructType,
-		"goTypeForParam":                goTypeForParam,
-		"goTypeForParamRequired":        goTypeForParamRequired,
-		"goStoreType":                   goStoreType,
-		"cobraFlagFunc":                 cobraFlagFunc,
-		"cobraFlagFuncForParam":         cobraFlagFuncForParam,
-		"cobraFlagFuncForParamRequired": cobraFlagFuncForParamRequired,
-		"mcpBindingFunc":                mcpBindingFunc,
-		"recipeParamTypeString":         func(t RecipeIntentParamType) string { return string(t) },
-		"defaultVal":                    defaultVal,
-		"defaultValForParam":            defaultValForParam,
-		"defaultValForParamRequired":    defaultValForParamRequired,
-		"hasDefault":                    paramHasDefault,
-		"isConstDefault":                paramIsConstDefault,
-		"zeroVal":                       zeroVal,
-		"zeroValForParam":               zeroValForParam,
-		"zeroValForParamRequired":       zeroValForParamRequired,
-		"positionalArgs":                positionalArgs,
-		"configTag":                     configTag,
-		"camelToJSON":                   camelToJSON,
-		"columnNames":                   columnNames,
-		"columnPlaceholders":            columnPlaceholders,
-		"updateSet":                     updateSet,
-		"envVarField":                   envVarField,
-		"envVarPlaceholder":             naming.EnvVarPlaceholder,
-		"envVarIsBuiltinField":          envVarIsBuiltinField,
-		"envVarBuiltinFieldName":        envVarBuiltinFieldName,
-		"resolveEnvVarField":            resolveEnvVarField,
-		"authPlacement":                 authPlacement,
-		"authParameterName":             authParameterName,
-		"authCommandShort":              authCommandShort,
-		"authHarvestedEnvHint":          authHarvestedEnvHint,
-		"basicAuthEnvVars":              basicAuthEnvVars,
-		"authAgentEnvVars":              authAgentEnvVars,
-		"hasAuthEnvVarKind":             hasAuthEnvVarKind,
-		"isRequestAuthEnvVar":           isRequestAuthEnvVar,
-		"effectiveTier":                 effectiveTier,
-		"effectiveSubTier":              effectiveSubTier,
-		"add":                           func(a, b int) int { return a + b },
-		"chomp":                         func(s string) string { return strings.TrimRight(s, "\r\n") },
-		"staleAfterExpr":                staleAfterExpr,
-		"oneline":                       naming.OneLine,
-		"composeMCPDesc":                composeMCPDesc,
-		"composeMCPSubDesc":             composeMCPSubDesc,
-		"mcpParamDesc":                  g.mcpParamDescription,
-		"flagName":                      flagName,
-		"paramIdent":                    paramIdent,
-		"paramWireName":                 paramWireName,
-		"typeFieldIdent":                typeFieldIdent,
-		"safeTypeName":                  safeTypeName,
+		"title":                              cases.Title(language.English).String,
+		"lower":                              strings.ToLower,
+		"upper":                              strings.ToUpper,
+		"join":                               strings.Join,
+		"camel":                              toCamel,
+		"snake":                              naming.Snake,
+		"pascal":                             toPascal,
+		"goType":                             goType,
+		"goStructType":                       goStructType,
+		"goTypeForParam":                     goTypeForParam,
+		"goTypeForParamRequired":             goTypeForParamRequired,
+		"goStoreType":                        goStoreType,
+		"cobraFlagFunc":                      cobraFlagFunc,
+		"cobraFlagFuncForParam":              cobraFlagFuncForParam,
+		"cobraFlagFuncForParamRequired":      cobraFlagFuncForParamRequired,
+		"mcpBindingFunc":                     mcpBindingFunc,
+		"recipeParamTypeString":              func(t RecipeIntentParamType) string { return string(t) },
+		"defaultVal":                         defaultVal,
+		"defaultValForParam":                 defaultValForParam,
+		"defaultValForParamRequired":         defaultValForParamRequired,
+		"hasDefault":                         paramHasDefault,
+		"isConstDefault":                     paramIsConstDefault,
+		"zeroVal":                            zeroVal,
+		"zeroValForParam":                    zeroValForParam,
+		"zeroValForParamRequired":            zeroValForParamRequired,
+		"positionalArgs":                     positionalArgs,
+		"configTag":                          configTag,
+		"camelToJSON":                        camelToJSON,
+		"columnNames":                        columnNames,
+		"columnPlaceholders":                 columnPlaceholders,
+		"updateSet":                          updateSet,
+		"envVarField":                        envVarField,
+		"envVarPlaceholder":                  naming.EnvVarPlaceholder,
+		"envVarIsBuiltinField":               envVarIsBuiltinField,
+		"envVarBuiltinFieldName":             envVarBuiltinFieldName,
+		"resolveEnvVarField":                 resolveEnvVarField,
+		"authPlacement":                      authPlacement,
+		"authParameterName":                  authParameterName,
+		"authCommandShort":                   authCommandShort,
+		"authHarvestedEnvHint":               authHarvestedEnvHint,
+		"basicAuthEnvVars":                   basicAuthEnvVars,
+		"clientCredentialsEnvVars":           clientCredentialsEnvVars,
+		"clientCredentialsScope":             clientCredentialsScope,
+		"clientCredentialsScopeUsesClientID": clientCredentialsScopeUsesClientID,
+		"clientCredentialsTenantEnvVar":      clientCredentialsTenantEnvVar,
+		"clientCredentialsTokenURLHasTenant": clientCredentialsTokenURLHasTenant,
+		"authAgentEnvVars":                   authAgentEnvVars,
+		"hasAuthEnvVarKind":                  hasAuthEnvVarKind,
+		"isRequestAuthEnvVar":                isRequestAuthEnvVar,
+		"effectiveTier":                      effectiveTier,
+		"effectiveSubTier":                   effectiveSubTier,
+		"add":                                func(a, b int) int { return a + b },
+		"chomp":                              func(s string) string { return strings.TrimRight(s, "\r\n") },
+		"staleAfterExpr":                     staleAfterExpr,
+		"oneline":                            naming.OneLine,
+		"composeMCPDesc":                     composeMCPDesc,
+		"composeMCPSubDesc":                  composeMCPSubDesc,
+		"mcpParamDesc":                       g.mcpParamDescription,
+		"flagName":                           flagName,
+		"paramIdent":                         paramIdent,
+		"paramWireName":                      paramWireName,
+		"typeFieldIdent":                     typeFieldIdent,
+		"safeTypeName":                       safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
 			for _, td := range types {
 				for _, f := range td.Fields {
@@ -396,14 +401,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"hasDomainUpsert": func(name string) bool {
 			return domainUpsertMethodName(name) != "UpsertBatch"
 		},
-		// hasTypedTable is the single source of truth for "this table gets a
-		// typed Upsert<X>." Table creation, typed-Upsert generation, the
-		// UpsertBatch dispatch switch, and the populated-table tests must all
-		// gate on the same predicate; otherwise dead tables (created but never
-		// written to) leak in for resources whose names hit the framework-cobra
-		// rename and end up with only id/data/synced_at columns.
-		"hasTypedTable": func(t TableDef) bool {
-			return len(t.Columns) > 3 && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
+		// emitsDomainTable is the single source of truth for "this table gets
+		// a writable per-resource table and Upsert<X>." Table creation,
+		// typed-Upsert generation, the UpsertBatch dispatch switch, and the
+		// populated-table tests must all gate on the same predicate; otherwise
+		// dead tables (created but never written to) leak in for resources whose
+		// names hit the framework-cobra rename. JSONOnlyFallback intentionally
+		// keeps a writable per-resource table while dropping extracted columns.
+		"emitsDomainTable": func(t TableDef) bool {
+			return (len(t.Columns) > 3 || t.JSONOnlyFallback) && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
 		},
 		"pathContainsParam": func(path, name string) bool {
 			return strings.Contains(path, "{"+name+"}")
@@ -1030,6 +1036,125 @@ func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 		return envVars
 	}
 	return envVars[:2]
+}
+
+func clientCredentialsEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return nil
+	}
+	if len(auth.EnvVarSpecs) > 0 {
+		var candidates []spec.AuthEnvVar
+		tenantEnvVar := clientCredentialsTenantEnvVar(auth)
+		for _, envVar := range auth.EnvVarSpecs {
+			name := strings.TrimSpace(envVar.Name)
+			if name == "" || name == tenantEnvVar || envVar.EffectiveKind() == spec.AuthEnvVarKindHarvested {
+				continue
+			}
+			candidates = append(candidates, envVar)
+		}
+		clientID, clientSecret := clientCredentialsNamedPair(candidates)
+		if clientID.Name != "" && clientSecret.Name != "" {
+			return []spec.AuthEnvVar{clientID, clientSecret}
+		}
+		if len(candidates) >= 2 {
+			return candidates[:2]
+		}
+		return nil
+	}
+	var envVars []spec.AuthEnvVar
+	tenantEnvVar := clientCredentialsTenantEnvVar(auth)
+	for _, name := range auth.EnvVars {
+		if strings.TrimSpace(name) == "" || name == tenantEnvVar {
+			continue
+		}
+		envVars = append(envVars, spec.AuthEnvVar{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: !isClientIDAuthEnvVar(name),
+		})
+	}
+	if len(envVars) < 2 {
+		return nil
+	}
+	clientID, clientSecret := clientCredentialsNamedPair(envVars)
+	if clientID.Name != "" && clientSecret.Name != "" {
+		return []spec.AuthEnvVar{clientID, clientSecret}
+	}
+	return envVars[:2]
+}
+
+func clientCredentialsNamedPair(envVars []spec.AuthEnvVar) (spec.AuthEnvVar, spec.AuthEnvVar) {
+	var clientID spec.AuthEnvVar
+	var clientSecret spec.AuthEnvVar
+	for _, envVar := range envVars {
+		placeholder := naming.EnvVarPlaceholder(envVar.Name)
+		switch {
+		case clientID.Name == "" && (placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")):
+			clientID = envVar
+		case clientSecret.Name == "" && (placeholder == "client_secret" || strings.HasSuffix(placeholder, "_client_secret")):
+			clientSecret = envVar
+		}
+	}
+	return clientID, clientSecret
+}
+
+func clientCredentialsTenantEnvVar(auth spec.AuthConfig) string {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return ""
+	}
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.EffectiveKind() == spec.AuthEnvVarKindAuthFlowInput && isTenantAuthEnvVar(envVar.Name) {
+			return envVar.Name
+		}
+	}
+	if len(auth.EnvVarSpecs) == 0 || spec.AllAuthEnvVarSpecsInferred(auth.EnvVarSpecs) {
+		for _, name := range auth.EnvVars {
+			if isTenantAuthEnvVar(name) {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func clientCredentialsTokenURLHasTenant(auth spec.AuthConfig) bool {
+	return clientCredentialsTenantEnvVar(auth) != "" && isMicrosoftEntraTokenURL(auth.TokenURL) && strings.Contains(strings.ToLower(auth.TokenURL), "/common/")
+}
+
+func clientCredentialsScope(auth spec.AuthConfig) string {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials {
+		return ""
+	}
+	if len(auth.Scopes) > 0 {
+		return strings.Join(auth.Scopes, " ")
+	}
+	if isMicrosoftEntraTokenURL(auth.TokenURL) {
+		return "api://{client_id}/.default"
+	}
+	return ""
+}
+
+func clientCredentialsScopeUsesClientID(scope string) bool {
+	return strings.Contains(scope, "{client_id}")
+}
+
+func isMicrosoftEntraTokenURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, "login.microsoftonline.com")
+}
+
+func isTenantAuthEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "tenant_id" || strings.HasSuffix(placeholder, "_tenant_id")
+}
+
+func isClientIDAuthEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
 }
 
 func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
@@ -2428,13 +2553,15 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, workflowConstructors, insightConstructors)
 }
 
-// schemaWithDependentParents adds a parent_id column + index to every
-// dependent resource's table so sync can record which parent each row
-// belongs to. For walker-emitted dependents whose DependentResource.KeyField
-// is non-empty, parent_id stores the value of that field (not strictly a
-// parent's primary key); the column name is retained for backwards
-// compatibility with existing CLIs. The naming caveat is internal — the
-// column is not part of any user-visible API.
+// schemaWithDependentParents adds a parent_id column + index to dependent
+// resource tables so sync can record which parent each row belongs to.
+// JSON-only fallback tables keep only id/data/synced_at; parent context for
+// those rows remains available in the generic resources table. For
+// walker-emitted dependents whose DependentResource.KeyField is non-empty,
+// parent_id stores the value of that field (not strictly a parent's primary
+// key); the column name is retained for backwards compatibility with existing
+// CLIs. The naming caveat is internal — the column is not part of any
+// user-visible API.
 func (g *Generator) schemaWithDependentParents() []TableDef {
 	schema := BuildSchema(g.Spec)
 
@@ -2446,6 +2573,9 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 		}
 		for i, table := range schema {
 			if depSet[table.Name] {
+				if table.JSONOnlyFallback {
+					continue
+				}
 				hasParentID := false
 				for _, col := range table.Columns {
 					if col.Name == "parent_id" {
@@ -2454,6 +2584,16 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 					}
 				}
 				if !hasParentID {
+					if len(table.Columns)+1 > maxStoreDomainTableColumns {
+						schema[i].JSONOnlyFallback = true
+						schema[i].OriginalColumnCount = len(table.Columns) + 1
+						schema[i].Columns = append([]ColumnDef(nil), baseTableColumns...)
+						schema[i].Indexes = nil
+						schema[i].FTS5 = false
+						schema[i].FTS5Fields = nil
+						schema[i].FTS5Triggers = false
+						continue
+					}
 					schema[i].Columns = append(schema[i].Columns, ColumnDef{
 						Name: "parent_id",
 						Type: "TEXT",
@@ -2474,6 +2614,11 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 func (g *Generator) renderStoreFiles(schema []TableDef) error {
 	// Create store directory if needed
 	if g.VisionSet.Store {
+		for _, table := range schema {
+			if table.JSONOnlyFallback {
+				fmt.Fprintf(os.Stderr, "warning: store-fallback: %s (%d cols) -> JSON-only\n", table.Name, table.OriginalColumnCount)
+			}
+		}
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0755); err != nil {
 			return fmt.Errorf("creating store dir: %w", err)
 		}

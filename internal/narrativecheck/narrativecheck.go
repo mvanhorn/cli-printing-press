@@ -47,10 +47,11 @@ const (
 	// StatusExampleFailed means the command path resolved, but the full
 	// narrative example failed when executed under the verify environment.
 	StatusExampleFailed Status = "example-failed"
-	// StatusUnsupported means full-example validation could not safely run
-	// because the command does not advertise --dry-run.
+	// StatusUnsupported means full-example validation could not safely run.
 	StatusUnsupported Status = "unsupported"
 )
+
+const sideEffectfulExampleSkipReason = "full-example validation skipped: command is side-effectful (auth/launch/apply)"
 
 type Result struct {
 	Section Section `json:"section"`
@@ -66,6 +67,10 @@ type Result struct {
 	// e.g. `pipe-skipped: jq '.items[]'` or `redirect-stripped: <
 	// keywords.txt`. Empty when the recipe is plain (no pipes, no redirects).
 	Notes []string `json:"notes,omitempty"`
+	// StrictFailure tells JSON consumers whether this result is part of
+	// Report.HasFailures. Some unsupported examples are warnings because the
+	// validator intentionally skips side-effectful commands.
+	StrictFailure bool `json:"strict_failure,omitempty"`
 }
 
 type Report struct {
@@ -170,10 +175,36 @@ func validateFrameworkOnly(commands []sectionCommand) *Report {
 	return report
 }
 
-// HasFailures reports whether the run found any missing or empty-words
-// entries. Callers gate --strict exit codes on this.
+func (r Result) isStrictFailure() bool {
+	switch r.Status {
+	case StatusMissing, StatusEmptyWords, StatusExampleFailed:
+		return true
+	case StatusUnsupported:
+		return r.StrictFailure
+	default:
+		return false
+	}
+}
+
+// HasFailures reports whether the run found entries that should fail strict
+// validation. Side-effectful full examples are intentionally skipped and remain
+// warnings so narratives can document real auth/login/apply flows.
 func (r *Report) HasFailures() bool {
-	return r.Missing > 0 || r.Empty > 0 || r.ExampleFailed > 0 || r.Unsupported > 0
+	if r == nil {
+		return false
+	}
+	if r.Missing > 0 || r.Empty > 0 || r.ExampleFailed > 0 {
+		return true
+	}
+	if r.Unsupported == 0 {
+		return false
+	}
+	for _, result := range r.Results {
+		if result.isStrictFailure() {
+			return true
+		}
+	}
+	return false
 }
 
 type sectionCommand struct {
@@ -228,10 +259,11 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 	segments, err := splitShellChain(command)
 	if err != nil {
 		return Result{
-			Section: section,
-			Command: command,
-			Status:  StatusExampleFailed,
-			Error:   err.Error(),
+			Section:       section,
+			Command:       command,
+			Status:        StatusExampleFailed,
+			Error:         err.Error(),
+			StrictFailure: true,
 		}
 	}
 
@@ -268,22 +300,35 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 		// is no runnable head. Surface this as empty-words so the author
 		// notices, but keep the pipe-skipped notes for context.
 		return finish(Result{
-			Section: section,
-			Status:  StatusEmptyWords,
-			Error:   "command has no runnable segment (every chained segment is pipe-skipped)",
+			Section:       section,
+			Status:        StatusEmptyWords,
+			Error:         "command has no runnable segment (every chained segment is pipe-skipped)",
+			StrictFailure: true,
 		})
 	}
 
 	var last Result
+	var warning Result
+	hasWarning := false
 	for i, seg := range runnable {
 		sub := classifySegment(ctx, binaryPath, section, seg.cleaned, opts, templateVarAssignments)
 		if sub.Status != StatusOK {
 			if len(runnable) > 1 {
 				sub.Error = fmt.Sprintf("segment %d (%q): %s", i+1, seg.cleaned, sub.Error)
 			}
+			if !sub.isStrictFailure() {
+				if !hasWarning {
+					warning = sub
+					hasWarning = true
+				}
+				continue
+			}
 			return finish(sub)
 		}
 		last = sub
+	}
+	if hasWarning {
+		return finish(warning)
 	}
 	return finish(last)
 }
@@ -533,6 +578,7 @@ func classifySegment(ctx context.Context, binaryPath string, section Section, co
 	if len(words) == 0 {
 		r.Status = StatusEmptyWords
 		r.Error = "command has no subcommand words to verify (bare binary or pure-flag invocation)"
+		r.StrictFailure = true
 		return r
 	}
 
@@ -541,6 +587,7 @@ func classifySegment(ctx context.Context, binaryPath string, section Section, co
 		if err := exec.CommandContext(ctx, binaryPath, helpArgs...).Run(); err != nil {
 			r.Status = StatusMissing
 			r.Error = fmt.Sprintf("%s %s --help failed: %v", binaryPath, r.Words, err)
+			r.StrictFailure = true
 			return r
 		}
 
@@ -552,6 +599,7 @@ func classifySegment(ctx context.Context, binaryPath string, section Section, co
 	if err != nil {
 		r.Status = StatusMissing
 		r.Error = fmt.Sprintf("%s %s --help failed: %v", binaryPath, r.Words, err)
+		r.StrictFailure = true
 		return r
 	}
 	return classifyFullExample(ctx, binaryPath, command, helpOut, r, templateVarAssignments)
@@ -562,24 +610,27 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 	if err != nil {
 		r.Status = StatusExampleFailed
 		r.Error = err.Error()
+		r.StrictFailure = true
 		return r
 	}
 	if len(tokens) <= 1 {
 		r.Status = StatusEmptyWords
 		r.Error = "command has no arguments to execute after the binary name"
+		r.StrictFailure = true
 		return r
 	}
 
 	args := append([]string(nil), tokens[1:]...)
 	if isSideEffectfulNarrativeExample(args) {
 		r.Status = StatusUnsupported
-		r.Error = "full-example validation skipped: command is side-effectful (auth/launch/apply)"
+		r.Error = sideEffectfulExampleSkipReason
 		return r
 	}
 	if !hasEnabledBoolFlag(args, "--dry-run") {
 		if !helpAdvertisesDryRun(helpOut) {
 			r.Status = StatusUnsupported
 			r.Error = "full-example validation skipped: command help does not advertise --dry-run"
+			r.StrictFailure = true
 			return r
 		}
 		args = append(args, "--dry-run")
@@ -602,6 +653,7 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 			err,
 			formatOutputSuffix(out),
 		)
+		r.StrictFailure = true
 		return r
 	}
 

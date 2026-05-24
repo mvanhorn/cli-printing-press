@@ -272,10 +272,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		resourcesFTSCreateSQL,
 {{- range .Tables}}
-{{- /* Gate: only create tables that have a typed Upsert. Otherwise the
+{{- /* Gate: only create tables that have a domain Upsert. Otherwise the
        table is dead — UpsertBatch's dispatch skips it and inserts go only
        to the generic `resources` table. */}}
-{{- if hasTypedTable .}}
+{{- if emitsDomainTable .}}
 		`CREATE TABLE IF NOT EXISTS {{safeName .Name}} (
 {{- range $i, $col := .Columns}}
 {{- if $i}},{{end}}
@@ -787,12 +787,13 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 }
 
 {{- range .Tables}}
-{{- if hasTypedTable .}}
-// upsert{{pascal .Name}}Tx writes the typed-table portion of a {{.Name}} upsert
-// inside an existing transaction. The caller is responsible for the generic
-// resources insert (via upsertGenericResourceTx) and for committing the tx.
-// Splitting this out lets UpsertBatch dispatch typed inserts per item without
-// opening a per-item transaction.
+{{- if emitsDomainTable .}}
+// upsert{{pascal .Name}}Tx writes the per-resource domain-table portion of a
+// {{.Name}} upsert inside an existing transaction{{if .JSONOnlyFallback}} (JSON-only fallback:
+// only id/data/synced_at; no typed columns){{end}}. The caller is
+// responsible for the generic resources insert (via upsertGenericResourceTx)
+// and for committing the tx. Splitting this out lets UpsertBatch dispatch
+// domain inserts per item without opening a per-item transaction.
 func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]any, data json.RawMessage) error {
 	if _, err := tx.Exec(
 		`INSERT INTO {{safeName .Name}} ({{columnNames .Columns}})
@@ -931,9 +932,9 @@ func ExtractResourceID(resourceType string, obj map[string]any) string {
 // rollback, so successful API fetches never strand in memory because one
 // downstream typed table is misconfigured. Failures are surfaced via a
 // trailing stderr warning rather than aborting the batch.
-{{- $hasTyped := false }}
+{{- $hasDomainTable := false }}
 {{- range .Tables}}
-{{- if hasTypedTable .}}{{$hasTyped = true}}{{end}}
+{{- if emitsDomainTable .}}{{$hasDomainTable = true}}{{end}}
 {{- end}}
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
 	s.writeMu.Lock()
@@ -944,8 +945,8 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	}
 	defer tx.Rollback()
 
-	var stored, skippedCount, extractFailures{{if $hasTyped}}, typedFailures{{end}} int
-	for {{if $hasTyped}}i, {{else}}_, {{end}}item := range items {
+	var stored, skippedCount, extractFailures{{if $hasDomainTable}}, typedFailures{{end}} int
+	for {{if $hasDomainTable}}i, {{else}}_, {{end}}item := range items {
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err != nil {
 			skippedCount++
@@ -969,7 +970,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 			return stored, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
 		}
 		stored++
-{{- if $hasTyped}}
+{{- if $hasDomainTable}}
 
 		savepoint := fmt.Sprintf("pp_typed_%d", i)
 		if _, err := tx.Exec("SAVEPOINT " + savepoint); err != nil {
@@ -979,7 +980,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		var typedErr error
 		switch resourceType {
 {{- range .Tables}}
-{{- if hasTypedTable .}}
+{{- if emitsDomainTable .}}
 		case "{{.Resource}}":
 			typedErr = s.upsert{{pascal .Name}}Tx(tx, id, obj, item)
 {{- end}}
@@ -1007,7 +1008,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	if skippedCount > 0 && len(items) > 0 && skippedCount*2 > len(items) {
 		fmt.Fprintf(os.Stderr, "warning: %d/%d %s items skipped (no extractable ID field found)\n", skippedCount, len(items), resourceType)
 	}
-{{- if $hasTyped}}
+{{- if $hasDomainTable}}
 	// Surface typed-table failures without aborting the batch. Generic rows
 	// already committed; only the typed projection failed.
 	if typedFailures > 0 {
