@@ -1253,6 +1253,151 @@ func (c *Config) AuthHeader() string {
 	assert.Equal(t, "Bearer ", result.GeneratedFmt)
 }
 
+func TestCheckAuthComposedLiteralFormat(t *testing.T) {
+	// Composed/cookie auth stores the literal Authorization header value in
+	// Config.AuthHeaderVal — no "<Scheme> " + token concat exists in generated
+	// source, so the concat detector returns "unknown". The literal-format
+	// branch classifies by the spec-declared auth.format prefix and confirms
+	// the wiring by checking that generated source still references
+	// Config.AuthHeaderVal.
+	composedAuthHeaderValConfig := `package config
+type Config struct {
+	AuthHeaderVal string
+}
+func (c *Config) AuthHeader() string {
+	if c.AuthHeaderVal != "" {
+		return c.AuthHeaderVal
+	}
+	return ""
+}
+`
+	composedClient := `package client
+func authHeader() string { return configAuthHeader() }
+`
+
+	tests := []struct {
+		name           string
+		auth           apispec.AuthConfig
+		clientGo       string
+		configGo       string
+		wantMatch      bool
+		wantGenerated  string
+		wantDetailLike string
+	}{
+		{
+			name:          "basic literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Basic MkFKYjlPeUlBMFZaNUpWNmlkb05vT1VGVWEyOg=="},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "basic auth",
+		},
+		{
+			name:          "bearer literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Bearer XYZ"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "bearer auth",
+		},
+		{
+			name:          "bot literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Bot DISCORD_TOKEN"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "bot auth",
+		},
+		{
+			name:           "unknown scheme classifies as custom-composed",
+			auth:           apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "FooScheme XYZ"},
+			clientGo:       composedClient,
+			configGo:       composedAuthHeaderValConfig,
+			wantMatch:      false,
+			wantGenerated:  "custom-composed",
+			wantDetailLike: "does not start with a recognized scheme prefix",
+		},
+		{
+			name:          "cookie type with cookie-prefixed format matches",
+			auth:          apispec.AuthConfig{Type: "cookie", Header: "Authorization", Format: "Cookie sessionid=abc"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "cookie auth",
+		},
+		{
+			name:           "stripped client falls through to concat detector and surfaces unknown",
+			auth:           apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Basic MkFKYjlPeUlBMFZaNUpWNmlkb05vT1VGVWEyOg=="},
+			clientGo:       `package client` + "\nfunc authHeader() string { return \"\" }\n",
+			configGo:       `package config` + "\ntype Config struct{}\nfunc (c *Config) AuthHeader() string { return \"\" }\n",
+			wantMatch:      false,
+			wantGenerated:  "unknown",
+			wantDetailLike: `spec expects "Basic"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+			writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), tc.clientGo)
+			writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), tc.configGo)
+
+			result := checkAuth(dir, tc.auth)
+			assert.Equal(t, tc.wantMatch, result.Match, "match")
+			assert.Equal(t, tc.wantGenerated, result.GeneratedFmt, "generated_format")
+			if tc.wantDetailLike != "" {
+				assert.Contains(t, result.Detail, tc.wantDetailLike, "detail")
+			}
+		})
+	}
+}
+
+func TestCheckAuthComposedEmptyFormatFallsThrough(t *testing.T) {
+	// auth.type: composed with an empty auth.format must NOT engage the
+	// literal-format branch — fall through to the concat detector so the
+	// existing behavior is preserved.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+type Config struct{ AuthHeaderVal string }
+func (c *Config) AuthHeader() string { return c.AuthHeaderVal }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "composed", Format: ""})
+	// No expectedPrefix derived; detail should be the existing
+	// "no bot/bearer/basic scheme detected" path.
+	assert.True(t, result.Match)
+	assert.Equal(t, "unknown", result.GeneratedFmt)
+}
+
+func TestCheckAuthAPIKeyTypeUnaffected(t *testing.T) {
+	// Negative-criterion guard: api_key with a "Basic ..." format must keep
+	// the existing concat-detection behavior — the literal-format branch only
+	// fires for composed/cookie types.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+type Config struct{ AuthHeaderVal string }
+func (c *Config) AuthHeader() string {
+	return "Basic " + encode(c.Username+":"+c.Password)
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", Format: "Basic {username}:{password}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Basic ", result.GeneratedFmt)
+}
+
 func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 	// Test that unregistered commands cause FAIL
 	report := &DogfoodReport{
