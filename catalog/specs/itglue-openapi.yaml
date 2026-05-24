@@ -118,10 +118,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/ContactRequest"
+              $ref: "#/components/schemas/ContactUpdateRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/ContactRequest"
+              $ref: "#/components/schemas/ContactUpdateRequest"
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
@@ -182,10 +182,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/ContactRequest"
+              $ref: "#/components/schemas/ContactUpdateRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/ContactRequest"
+              $ref: "#/components/schemas/ContactUpdateRequest"
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
@@ -251,10 +251,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/PasswordRequest"
+              $ref: "#/components/schemas/PasswordUpdateRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/PasswordRequest"
+              $ref: "#/components/schemas/PasswordUpdateRequest"
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
@@ -331,10 +331,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/ConfigurationRequest"
+              $ref: "#/components/schemas/ConfigurationUpdateRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/ConfigurationRequest"
+              $ref: "#/components/schemas/ConfigurationUpdateRequest"
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
@@ -435,10 +435,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/DocumentRequest"
+              $ref: "#/components/schemas/DocumentUpdateRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/DocumentRequest"
+              $ref: "#/components/schemas/DocumentUpdateRequest"
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
@@ -675,6 +675,50 @@ components:
           type: boolean
           description: Included for non-destructive deactivation where available in the tenant.
       additionalProperties: true
+    ContactUpdateRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [type, attributes]
+          properties:
+            type:
+              type: string
+              enum: [contacts]
+            attributes:
+              $ref: "#/components/schemas/ContactUpdateAttributes"
+          additionalProperties: true
+    ContactUpdateAttributes:
+      type: object
+      properties:
+        organization-id:
+          type: integer
+        first-name:
+          type: string
+        last-name:
+          type: string
+        name:
+          type: string
+        title:
+          type: string
+        email:
+          type: string
+          format: email
+        notes:
+          type: string
+          nullable: true
+        important:
+          type: boolean
+        contact-type-id:
+          type: integer
+        location-id:
+          type: integer
+          nullable: true
+        archived:
+          type: boolean
+          description: Included for non-destructive deactivation where available in the tenant.
+      additionalProperties: true
     PasswordRequest:
       type: object
       required: [data]
@@ -692,6 +736,51 @@ components:
     PasswordAttributes:
       type: object
       required: [organization-id, name]
+      properties:
+        organization-id:
+          type: integer
+        name:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+        url:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        password-category-id:
+          type: integer
+          nullable: true
+        password-folder-id:
+          type: integer
+          nullable: true
+        resource-id:
+          type: integer
+          nullable: true
+        resource-type:
+          type: string
+          nullable: true
+      additionalProperties: true
+    PasswordUpdateRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [type, attributes]
+          properties:
+            type:
+              type: string
+              enum: [passwords]
+            attributes:
+              $ref: "#/components/schemas/PasswordUpdateAttributes"
+          additionalProperties: true
+    PasswordUpdateAttributes:
+      type: object
       properties:
         organization-id:
           type: integer
@@ -778,6 +867,62 @@ components:
           type: string
           nullable: true
       additionalProperties: true
+    ConfigurationUpdateRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [type, attributes]
+          properties:
+            type:
+              type: string
+              enum: [configurations]
+            attributes:
+              $ref: "#/components/schemas/ConfigurationUpdateAttributes"
+            relationships:
+              type: object
+              additionalProperties: true
+          additionalProperties: true
+    ConfigurationUpdateAttributes:
+      type: object
+      properties:
+        organization-id:
+          type: integer
+        name:
+          type: string
+        hostname:
+          type: string
+          nullable: true
+        configuration-type-id:
+          type: integer
+        configuration-status-id:
+          type: integer
+        manufacturer-id:
+          type: integer
+          nullable: true
+        model-id:
+          type: integer
+          nullable: true
+        location-id:
+          type: integer
+          nullable: true
+        serial-number:
+          type: string
+          nullable: true
+        asset-tag:
+          type: string
+          nullable: true
+        primary-ip:
+          type: string
+          nullable: true
+        mac-address:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+      additionalProperties: true
     DocumentRequest:
       type: object
       required: [data]
@@ -798,6 +943,50 @@ components:
     DocumentAttributes:
       type: object
       required: [organization-id, name]
+      properties:
+        organization-id:
+          type: integer
+        name:
+          type: string
+        content:
+          type: string
+          nullable: true
+          description: Document body content, typically HTML or rich text from IT Glue.
+        restricted:
+          type: boolean
+          nullable: true
+        archived:
+          type: boolean
+          nullable: true
+        public:
+          type: boolean
+          nullable: true
+        document-folder-id:
+          type: integer
+          nullable: true
+        my-glue:
+          type: boolean
+          nullable: true
+      additionalProperties: true
+    DocumentUpdateRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [type, attributes]
+          properties:
+            type:
+              type: string
+              enum: [documents]
+            attributes:
+              $ref: "#/components/schemas/DocumentUpdateAttributes"
+            relationships:
+              type: object
+              additionalProperties: true
+          additionalProperties: true
+    DocumentUpdateAttributes:
+      type: object
       properties:
         organization-id:
           type: integer
