@@ -87,6 +87,14 @@ resources:
             aliases: [s]
             type: string
             description: Street address
+      search:
+        method: POST
+        path: /stores/search
+        body:
+          - name: startAfter
+            body_name: searchAfter
+            type: array
+            description: Pagination cursor
 `)
 	s, err := ParseBytes(yamlSpec)
 	require.NoError(t, err)
@@ -94,6 +102,9 @@ resources:
 	assert.Equal(t, "s", param.Name)
 	assert.Equal(t, "address", param.FlagName)
 	assert.Equal(t, []string{"s"}, param.Aliases)
+	bodyParam := s.Resources["stores"].Endpoints["search"].Body[0]
+	assert.Equal(t, "startAfter", bodyParam.Name)
+	assert.Equal(t, "searchAfter", bodyParam.BodyName)
 
 	jsonSpec := []byte(`{
   "name": "public-params-json",
@@ -186,6 +197,11 @@ func TestParamPublicInputName(t *testing.T) {
 	assert.Equal(t, "store_code", Param{Name: "store_code"}.PublicInputName())
 	assert.Equal(t, "id-2", Param{Name: "id", IdentName: "id_2"}.PublicInputName())
 	assert.Equal(t, "start-time-2", Param{Name: "StartTime>", IdentName: "StartTime>_2"}.PublicInputName())
+}
+
+func TestParamBodyWireName(t *testing.T) {
+	assert.Equal(t, "startAfter", Param{Name: "startAfter"}.BodyWireName())
+	assert.Equal(t, "searchAfter", Param{Name: "startAfter", BodyName: "searchAfter"}.BodyWireName())
 }
 
 func TestValidatePublicParamNames(t *testing.T) {

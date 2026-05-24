@@ -1686,7 +1686,8 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 type Param struct {
 	Name        string   `yaml:"name" json:"name"`
 	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
-	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"` // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
+	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
+	BodyName    string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
 	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	Type        string   `yaml:"type" json:"type"`
 	Required    bool     `yaml:"required" json:"required"`
@@ -1705,7 +1706,8 @@ type Param struct {
 	FieldSelectorDefault string `yaml:"field_selector_default,omitempty" json:"field_selector_default,omitempty"`
 	// IdentName, when set, overrides Name for Go identifier and CLI flag
 	// derivation (camel/flagName). Name remains the wire-side parameter name
-	// used in URLs, JSON keys, and path substitution. Populated by the
+	// used in URLs unless url_name is set, request-body keys unless body_name
+	// is set, and path substitution. Populated by the
 	// generator's flag-collision dedup pass when two params on the same
 	// endpoint would otherwise produce identical Go identifiers or CLI flag
 	// names — for example Twilio's StartTime/StartTime>/StartTime< all
@@ -1726,6 +1728,16 @@ type Param struct {
 func (p Param) WireName() string {
 	if p.URLName != "" {
 		return p.URLName
+	}
+	return p.Name
+}
+
+// BodyWireName returns the request-body key for this param when emitted in a
+// generated HTTP request body. BodyName takes precedence when set; otherwise
+// Name is used.
+func (p Param) BodyWireName() string {
+	if p.BodyName != "" {
+		return p.BodyName
 	}
 	return p.Name
 }

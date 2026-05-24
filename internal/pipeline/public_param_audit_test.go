@@ -91,6 +91,31 @@ func TestAuditPublicParamNamesMarksExistingFlagNamesResolved(t *testing.T) {
 	assert.Equal(t, []string{"s"}, street.Aliases)
 }
 
+func TestAuditPublicParamNamesUsesBodyWireName(t *testing.T) {
+	api := &spec.APISpec{
+		Name:    "body-wire",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"stores": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/stores",
+						Body: []spec.Param{
+							{Name: "street", BodyName: "s", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	findings := AuditPublicParamNames(api)
+	finding := requirePublicParamFinding(t, findings, "stores.create.body.s")
+	assert.Equal(t, "s", finding.WireName)
+}
+
 func TestPublicParamAuditSkipRequiresEvidence(t *testing.T) {
 	findings := []PublicParamAuditFinding{
 		{ID: "stores.find.params.s", WireName: "s", Decision: PublicParamDecisionSkip, SkipReason: "This is a public API field."},

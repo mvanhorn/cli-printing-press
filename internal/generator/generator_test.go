@@ -12839,6 +12839,38 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, skill, `public-params-pp-cli stores create --store-code example-value`)
 }
 
+func TestGenerateBodyNameAcrossCLISurfaces(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("body-wire")
+	delete(apiSpec.Resources, "items")
+	apiSpec.Resources["contacts"] = spec.Resource{
+		Description: "Contacts",
+		Endpoints: map[string]spec.Endpoint{
+			"search": {
+				Method:      "POST",
+				Path:        "/contacts/search",
+				Description: "Search contacts",
+				Body: []spec.Param{
+					{Name: "startAfter", BodyName: "searchAfter", Type: "array", Description: "Pagination cursor"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	searchSource := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_contacts.go")
+	assert.Contains(t, searchSource, `StringVar(&bodyStartAfter, "start-after", "", "Pagination cursor")`)
+	assert.Contains(t, searchSource, `body["searchAfter"] = parsedStartAfter`)
+	assert.NotContains(t, searchSource, `body["startAfter"] = parsedStartAfter`)
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assert.Contains(t, mcpSource, `mcplib.WithString("startAfter", mcplib.Description("Pagination cursor"))`)
+	assert.Contains(t, mcpSource, `PublicName: "startAfter", WireName: "searchAfter", Location: "body"`)
+}
+
 // TestMCPHandlerPassesBodyArgsMap pins that POST/PUT/PATCH branches forward
 // the bodyArgs map directly to the client, not via a pre-marshal. The client's
 // do() json.Marshals what it receives; passing []byte causes encoding/json to
