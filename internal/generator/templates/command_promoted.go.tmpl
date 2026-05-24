@@ -9,7 +9,7 @@
 {{- $isReadVerb := or (eq $method "GET") (eq $method "HEAD") (eq $method "OPTIONS")}}
 {{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH")}}
 {{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse)}}
-{{- $supportsAllPagination := and .Endpoint.Pagination (ne .Endpoint.Pagination.Type "id_walk")}}
+{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk")}}
 
 package cli
 
@@ -188,7 +188,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if $supportsAllPagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
 {{- else if eq $method "GET"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)

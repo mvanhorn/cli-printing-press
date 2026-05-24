@@ -21,6 +21,8 @@ import (
 	"printing-press-golden-pp-cli/internal/store"
 )
 
+const networkFallbackReason = "api_unreachable"
+
 // isNetworkError returns true for errors caused by network connectivity issues
 // (DNS, connection refused, timeout). HTTP 4xx/5xx errors are NOT network errors.
 func isNetworkError(err error) bool {
@@ -119,7 +121,7 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 			return nil, DataProvenance{}, err
 		}
 		// Network error — try local fallback
-		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, flags, hintWriter, resourceType, isList, path, params, "api_unreachable")
+		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, flags, hintWriter, resourceType, isList, path, params, networkFallbackReason)
 		if fallbackErr != nil {
 			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'printing-press-golden-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
 		}
@@ -153,7 +155,7 @@ func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlag
 		if !isNetworkError(err) {
 			return nil, DataProvenance{}, err
 		}
-		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, "api_unreachable")
+		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, networkFallbackReason)
 		if fallbackErr != nil {
 			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run 'printing-press-golden-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
 		}

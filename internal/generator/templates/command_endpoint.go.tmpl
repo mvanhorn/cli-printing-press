@@ -4,7 +4,7 @@
 {{- $isMultipart := endpointUsesMultipart .Endpoint}}
 {{- $isForm := endpointUsesForm .Endpoint}}
 {{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
-{{- $supportsAllPagination := and .Endpoint.Pagination (ne .Endpoint.Pagination.Type "id_walk")}}
+{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk")}}
 
 package cli
 
@@ -249,7 +249,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if $supportsAllPagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
 {{- else}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)

@@ -290,13 +290,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
 		},
-		"isGraphQL":           isGraphQLSpec,
-		"exportableResources": exportableResources,
-		"backtick":            func() string { return "`" },
-		"kebab":               toKebab,
-		"humanName":           naming.HumanName,
-		"envPrefix":           naming.EnvPrefix,
-		"mcpToolName":         naming.SnakeIdentifier,
+		"isGraphQL":             isGraphQLSpec,
+		"localReadIsList":       localReadIsList,
+		"networkFallbackReason": networkFallbackReason,
+		"exportableResources":   exportableResources,
+		"backtick":              func() string { return "`" },
+		"kebab":                 toKebab,
+		"humanName":             naming.HumanName,
+		"envPrefix":             naming.EnvPrefix,
+		"mcpToolName":           naming.SnakeIdentifier,
 		"lookupEndpoint": func(api *spec.APISpec, ref string) templateEndpoint {
 			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
@@ -5409,6 +5411,9 @@ func sortedEndpointNames(endpoints map[string]spec.Endpoint) []string {
 // isGraphQLSpec returns true if the spec was produced by a GraphQL SDL parser.
 // Detection heuristic: all list endpoints have path "/graphql".
 func isGraphQLSpec(s *spec.APISpec) bool {
+	if s == nil {
+		return false
+	}
 	hasListEndpoint := false
 	for _, r := range s.Resources {
 		for eName, ep := range r.Endpoints {
@@ -5421,6 +5426,51 @@ func isGraphQLSpec(s *spec.APISpec) bool {
 		}
 	}
 	return hasListEndpoint
+}
+
+func networkFallbackReason(s *spec.APISpec) string {
+	if s == nil {
+		return "api_unreachable"
+	}
+	if s.IsSynthetic() {
+		return "synthetic_anchor_fallback"
+	}
+	u, err := url.Parse(strings.TrimSpace(s.BaseURL))
+	// In Printing Press specs, .local base URLs are synthetic placeholders.
+	// Real mDNS/private hosts should use a non-.local alias to avoid being
+	// classified as synthetic fallback surfaces.
+	if err == nil && strings.HasSuffix(strings.ToLower(u.Hostname()), ".local") {
+		return "synthetic_anchor_fallback"
+	}
+	return "api_unreachable"
+}
+
+func localReadIsList(supportsAllPagination bool, apiSpec *spec.APISpec, endpointName string, endpoint spec.Endpoint) bool {
+	if supportsAllPagination {
+		return true
+	}
+	if endpointHasPathScope(endpoint) {
+		return false
+	}
+	if strings.EqualFold(endpointName, "list") {
+		return true
+	}
+	return networkFallbackReason(apiSpec) == "synthetic_anchor_fallback" && strings.EqualFold(endpoint.Response.Type, "array")
+}
+
+func endpointHasPathScope(endpoint spec.Endpoint) bool {
+	// Parsed specs and hand-authored fixtures may disagree between the path
+	// string and normalized Param flags; either signal means local List would
+	// over-return rows across parents.
+	if strings.Contains(endpoint.Path, "{") {
+		return true
+	}
+	for _, p := range endpoint.Params {
+		if p.PathParam {
+			return true
+		}
+	}
+	return false
 }
 
 // graphqlQueryField extracts the GraphQL query field name from a ResponsePath.
