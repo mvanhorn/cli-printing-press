@@ -1325,6 +1325,38 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	configData, _ := os.ReadFile(filepath.Join(dir, "internal", "config", "config.go"))
 
 	combinedSource := string(clientData) + string(configData)
+
+	// Composed/cookie auth stores the full header value (scheme prefix and
+	// token together) in Config.AuthHeaderVal and writes it to the wire
+	// verbatim. There is no source-level "<Scheme> " + token concat for the
+	// concat detector below to find. Classify by the spec-declared format
+	// instead, but only when the generated source still references
+	// AuthHeaderVal — a hand-stripped client must still surface as a miss.
+	if literalFmt, ok := classifyComposedAuthLiteral(auth, combinedSource); ok {
+		result.GeneratedFmt = literalFmt
+		switch {
+		case expectedPrefix != "" && literalFmt == composedAuthLabelFor(expectedPrefix):
+			result.Match = true
+			result.Detail = fmt.Sprintf(`spec format declares %q and generated client emits Config.AuthHeaderVal verbatim`, strings.TrimSpace(expectedPrefix))
+		case expectedPrefix == "" && literalFmt != composedAuthCustomFmt:
+			// Format-recognized prefix without a corresponding SpecScheme entry
+			// (e.g. composed + "Bearer ...", which the outer switch leaves
+			// expectedPrefix empty because the spec is not bearer_token typed).
+			// Populate SpecScheme from the literal so downstream readers see a
+			// matched pair, and treat the literal classification as the match.
+			result.SpecScheme = fmt.Sprintf(`%s format (composed/cookie literal in spec)`, literalFmt)
+			result.Match = true
+			result.Detail = `composed/cookie auth format declares a recognized scheme prefix and generated client emits Config.AuthHeaderVal verbatim`
+		case literalFmt == composedAuthCustomFmt:
+			result.Match = false
+			result.Detail = fmt.Sprintf(`composed auth format %q does not start with a recognized scheme prefix`, auth.Format)
+		default:
+			result.Match = false
+			result.Detail = fmt.Sprintf(`spec expects %q but composed auth format classifies as %q`, strings.TrimSpace(expectedPrefix), literalFmt)
+		}
+		return result
+	}
+
 	var tokenPreserving bool
 	var invalidDetail string
 	result.GeneratedFmt, tokenPreserving, invalidDetail = detectGeneratedAuthFormat(combinedSource, expectedPrefix)
@@ -1541,6 +1573,62 @@ var authPrefixCandidates = []authPrefixCandidate{
 	{prefix: "Bot ", concatRe: regexp.MustCompile(`"Bot "\s*\+`)},
 	{prefix: "Bearer ", concatRe: regexp.MustCompile(`"Bearer "\s*\+`)},
 	{prefix: "Basic ", concatRe: regexp.MustCompile(`"Basic "\s*\+`)},
+}
+
+// composedAuthLiteralScheme classifies the auth scheme that a composed-auth or
+// cookie-auth spec writes verbatim into Config.AuthHeaderVal. The literal
+// header value never gets a source-level "<Scheme> " + token concat, so the
+// concat-based detector in detectGeneratedAuthFormat returns "unknown" on this
+// path. Spec-side classification covers the gap.
+type composedAuthLiteralScheme struct {
+	prefix string
+	label  string
+}
+
+var composedAuthLiteralSchemes = []composedAuthLiteralScheme{
+	{prefix: "Bot ", label: "bot auth"},
+	{prefix: "Basic ", label: "basic auth"},
+	{prefix: "Bearer ", label: "bearer auth"},
+	{prefix: "Cookie ", label: "cookie auth"},
+	{prefix: "Token ", label: "token auth"},
+}
+
+const composedAuthCustomFmt = "custom-composed"
+
+// classifyComposedAuthLiteral returns the literal-format classification of a
+// composed/cookie auth spec when the generated source still wires
+// Config.AuthHeaderVal through to the wire. A stripped client (no
+// AuthHeaderVal reference in client.go or config.go) returns ok=false so the
+// caller falls through to the concat detector, which will surface "unknown".
+func classifyComposedAuthLiteral(auth apispec.AuthConfig, source string) (string, bool) {
+	authType := strings.ToLower(strings.TrimSpace(auth.Type))
+	if authType != "composed" && authType != "cookie" {
+		return "", false
+	}
+	if strings.TrimSpace(auth.Format) == "" {
+		return "", false
+	}
+	if !strings.Contains(source, "AuthHeaderVal") {
+		return "", false
+	}
+	for _, scheme := range composedAuthLiteralSchemes {
+		if strings.HasPrefix(auth.Format, scheme.prefix) {
+			return scheme.label, true
+		}
+	}
+	return composedAuthCustomFmt, true
+}
+
+// composedAuthLabelFor maps a concat-detector prefix ("Basic ", "Bearer ", ...)
+// to the composed-auth literal label so the new branch can reuse the existing
+// expectedPrefix value for the match decision.
+func composedAuthLabelFor(prefix string) string {
+	for _, scheme := range composedAuthLiteralSchemes {
+		if scheme.prefix == prefix {
+			return scheme.label
+		}
+	}
+	return ""
 }
 
 var applyAuthFormatInlineMapCallRe = regexp.MustCompile(`(?s)applyAuthFormat\("([^"]*)",\s*map\[string\]string\{(.*?)\}\)`)
