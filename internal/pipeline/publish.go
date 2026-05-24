@@ -208,9 +208,8 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 
 	// Carry forward metadata from the generated manifest when publish-time
 	// parsing is unavailable or lossy for the original spec format. NovelFeatures
-	// is carried forward as a defensive fallback in case the loadResearchForState
-	// lookup below misses (e.g., research.json moved or absent); when both are
-	// available, research.json wins as the post-dogfood source of truth.
+	// is carried forward as a defensive fallback in case research.json is absent;
+	// when both are available, research.json wins as the post-dogfood source of truth.
 	if existingData, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename)); err == nil {
 		var existing CLIManifest
 		if json.Unmarshal(existingData, &existing) == nil {
@@ -339,15 +338,12 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	// check passes without manual patching.
 	//
 	// Lookup order:
-	//   1. loadResearchForState — checks <RunRoot>/research.json (skill-flow
-	//      convention) then <state.PipelineDir>/research.json (generate-flow
-	//      convention). Covers both write conventions (cal-com retro #334 F2,
-	//      and food52 retro #337 F4 once #340 recovers RunID in NewMinimalState).
-	//   2. Minimal-state fallback: when loadResearchForState fails AND
-	//      state.RunID is empty (NewMinimalState had no registered runstate
-	//      to recover RunID from), glob the scoped runstate root for any
-	//      run whose research.json names this APIName and pick the most
-	//      recent by mtime. Backstop for orphaned plan-driven promotes.
+	//   1. Check <RunRoot>/research.json (skill-flow convention), then
+	//      <state.PipelineDir>/research.json (generate-flow convention).
+	//   2. With a RunID, glob matching run IDs across scopes as a recovery
+	//      path for recovered/minimal state.
+	//   3. Without a RunID, glob the scoped runstate root for the most recent
+	//      research.json whose APIName matches this API.
 	//
 	// Within the loaded ResearchResult, prefer NovelFeaturesBuilt
 	// (dogfood-verified subset) over NovelFeatures (planned list) — if
@@ -355,7 +351,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	// Falling back to the planned list when dogfood didn't run (or wrote
 	// an empty NovelFeaturesBuilt) keeps first-publish from failing the
 	// transcendence check on a CLI that genuinely shipped novel features.
-	research, source := loadResearchForPromote(state)
+	research, source, researchErr := loadResearchForPromote(state)
 	if research != nil {
 		nfs := pickNovelFeaturesForManifest(research)
 		// Override the existing-manifest carry-forward (line 221) with
@@ -371,6 +367,11 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			// user when novel_features came from the glob fallback.
 			fmt.Fprintf(os.Stderr, "publish: hydrated %d novel_features from %s\n", len(m.NovelFeatures), source)
 		}
+	} else if researchErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"debug: %v; skipping novel_features enrichment (state.RunID=%q)\n",
+			researchErr,
+			state.RunID)
 	} else {
 		// No research.json found by any lookup path. Emit a debug
 		// breadcrumb naming the canonical paths so the silent dropout
@@ -421,28 +422,31 @@ func applyPublishCatalogMetadata(parsed *spec.APISpec, apiName string) {
 // for non-canonical-source stderr visibility).
 //
 // Lookup order:
-//   - Delegate to loadResearchForState first (RunRoot then PipelineDir).
-//     This is the dominant path; with #340's NewMinimalState recovery,
-//     even plan-driven promotes hit this branch.
-//   - When loadResearchForState fails AND RunID is empty (the registry
-//     recovery had no prior runstate to borrow from), glob the scoped
-//     runstate root for any research.json whose APIName matches and
-//     pick the most recent by mtime. Backstop for orphaned promotes.
+//   - Check the canonical run-root path, then the pipeline path.
+//   - When RunID is set, glob matching run IDs across scopes.
+//   - When RunID is empty, glob the scoped runstate root for any
+//     research.json whose APIName matches and pick the most recent by mtime.
 //
-// Returns (nil, "") when neither lookup finds a usable research.json.
-func loadResearchForPromote(state *PipelineState) (*ResearchResult, string) {
-	if r, err := loadResearchForState(state); err == nil {
-		// loadResearchForState is the canonical loader; report the
-		// path it tried first (run-root) when RunID is set, since the
-		// caller's "is this a non-canonical source?" check compares
-		// against state.PipelineDir() and RunRoot(state.RunID).
-		if state.RunID != "" {
-			if _, statErr := os.Stat(filepath.Join(state.RunRoot(), "research.json")); statErr == nil {
-				return r, state.RunRoot()
-			}
-			return r, state.PipelineDir()
+// Returns (nil, "", nil) when neither lookup finds a usable research.json.
+func loadResearchForPromote(state *PipelineState) (*ResearchResult, string, error) {
+	canonicalCandidates := []struct {
+		path   string
+		source string
+	}{
+		{path: filepath.Join(state.RunRoot(), "research.json"), source: state.RunRoot()},
+		{path: filepath.Join(state.PipelineDir(), "research.json"), source: state.PipelineDir()},
+	}
+	for _, candidate := range canonicalCandidates {
+		r, err := loadResearchPath(candidate.path)
+		if err != nil {
+			return nil, "", err
 		}
-		return r, ""
+		if r != nil {
+			if state.RunID == "" {
+				return r, "", nil
+			}
+			return r, candidate.source, nil
+		}
 	}
 
 	if state.RunID != "" {
@@ -454,7 +458,7 @@ func loadResearchForPromote(state *PipelineState) (*ResearchResult, string) {
 	// files matching this APIName and pick the most recent.
 	candidates, err := globResearchCandidates(ScopedRunstateRoot())
 	if err != nil || len(candidates) == 0 {
-		return nil, ""
+		return nil, "", nil
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].mtime.After(candidates[j].mtime)
@@ -462,18 +466,43 @@ func loadResearchForPromote(state *PipelineState) (*ResearchResult, string) {
 	return loadMatchingResearch(candidates, state.APIName)
 }
 
-func loadMatchingResearch(candidates []researchCandidate, apiName string) (*ResearchResult, string) {
+func loadResearchPath(path string) (*ResearchResult, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("research.json at %s read failed: %w", path, err)
+	}
+	r, err := decodeResearch(data)
+	if err != nil {
+		return nil, fmt.Errorf("research.json at %s failed to parse: %w", path, err)
+	}
+	return r, nil
+}
+
+func loadMatchingResearch(candidates []researchCandidate, apiName string) (*ResearchResult, string, error) {
+	var loadErr error
 	for _, c := range candidates {
-		r, err := LoadResearch(filepath.Dir(c.path))
+		r, err := loadResearchPath(c.path)
 		if err != nil {
+			if loadErr == nil {
+				loadErr = err
+			}
+			continue
+		}
+		if r == nil {
 			continue
 		}
 		if apiName != "" && r.APIName != "" && r.APIName != apiName {
 			continue
 		}
-		return r, c.path
+		return r, c.path, nil
 	}
-	return nil, ""
+	if loadErr != nil {
+		return nil, "", loadErr
+	}
+	return nil, "", nil
 }
 
 func globResearchCandidatesForRunID(runID string) []researchCandidate {

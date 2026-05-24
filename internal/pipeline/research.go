@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -38,6 +39,72 @@ type ResearchResult struct {
 	// Optional: templates fall back to generic content when absent. Populated
 	// during the absorb phase alongside NovelFeatures.
 	Narrative *ReadmeNarrative `json:"narrative,omitempty"`
+}
+
+func (r *ResearchResult) UnmarshalJSON(data []byte) error {
+	type researchResultAlias ResearchResult
+	var decoded struct {
+		*researchResultAlias
+		Gaps     flexibleResearchStrings `json:"gaps"`
+		Patterns flexibleResearchStrings `json:"patterns"`
+	}
+	decoded.researchResultAlias = (*researchResultAlias)(r)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	r.Gaps = []string(decoded.Gaps)
+	r.Patterns = []string(decoded.Patterns)
+	return nil
+}
+
+type flexibleResearchStrings []string
+
+func (f *flexibleResearchStrings) UnmarshalJSON(data []byte) error {
+	var items []json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return err
+	}
+
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if bytes.Equal(bytes.TrimSpace(item), []byte("null")) {
+			return fmt.Errorf("expected research list item to be a string or object with name/reason, got null")
+		}
+		var text string
+		if err := json.Unmarshal(item, &text); err == nil {
+			out = append(out, text)
+			continue
+		}
+
+		var structured struct {
+			Name   string `json:"name"`
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(item, &structured); err != nil {
+			return err
+		}
+		rendered := renderResearchString(structured.Name, structured.Reason)
+		if rendered == "" {
+			return fmt.Errorf("expected research list item to be a string or object with name/reason")
+		}
+		out = append(out, rendered)
+	}
+
+	*f = out
+	return nil
+}
+
+func renderResearchString(name, reason string) string {
+	name = strings.TrimSpace(name)
+	reason = strings.TrimSpace(reason)
+	switch {
+	case name != "" && reason != "":
+		return name + ": " + reason
+	case name != "":
+		return name
+	default:
+		return reason
+	}
 }
 
 // NovelFeature represents a transcendence feature invented during the absorb
@@ -261,28 +328,15 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeResearch(data)
+}
+
+func decodeResearch(data []byte) (*ResearchResult, error) {
 	var r ResearchResult
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, err
 	}
 	return &r, nil
-}
-
-// loadResearchForState reads research.json from the run directory, supporting
-// both write conventions: the printing-press skill writes to RunRoot/research.json
-// directly, while cli-printing-press print writes to RunRoot/pipeline/research.json
-// alongside its phase artifacts. Tries the run-root path first (the dominant
-// case), falls back to pipeline-dir.
-//
-// The two-location lookup matters at promote/publish time, when downstream code
-// needs research.json to populate the published manifest's novel_features.
-// Without this fallback the publish-time read silently misses skill-flow runs
-// and ships manifests with empty novel_features (cal-com retro #334 F2).
-func loadResearchForState(state *PipelineState) (*ResearchResult, error) {
-	if r, err := LoadResearch(state.RunRoot()); err == nil {
-		return r, nil
-	}
-	return LoadResearch(state.PipelineDir())
 }
 
 // WriteNovelFeaturesBuilt updates research.json with the verified list of

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -99,6 +100,54 @@ func TestWriteAndLoadResearch(t *testing.T) {
 	assert.Equal(t, "proceed", loaded.Recommendation)
 	assert.Len(t, loaded.Alternatives, 1)
 	assert.Equal(t, "alt-1", loaded.Alternatives[0].Name)
+}
+
+func TestLoadResearchAcceptsStructuredGapsAndPatterns(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`{
+		"api_name": "test-api",
+		"gaps": [
+			{"name": "No JSON output", "reason": "Agents need structured responses"},
+			"limited auth support"
+		],
+		"patterns": [
+			{"name": "Workflow commands", "reason": "Competitors compose common tasks"},
+			"standard CRUD"
+		]
+	}`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), body, 0o644))
+
+	loaded, err := LoadResearch(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"No JSON output: Agents need structured responses",
+		"limited auth support",
+	}, loaded.Gaps)
+	assert.Equal(t, []string{
+		"Workflow commands: Competitors compose common tasks",
+		"standard CRUD",
+	}, loaded.Patterns)
+}
+
+func TestLoadResearchRejectsMalformedGapsAndPatterns(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty structured gap", body: `{"gaps":[{}]}`},
+		{name: "numeric pattern", body: `{"patterns":[42]}`},
+		{name: "null gap", body: `{"gaps":[null]}`},
+		{name: "non-array gaps", body: `{"gaps":{"name":"No JSON output"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), []byte(tt.body), 0o644))
+
+			_, err := LoadResearch(dir)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestParseGitHubURL(t *testing.T) {

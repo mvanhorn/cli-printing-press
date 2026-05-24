@@ -635,8 +635,50 @@ func TestWriteCLIManifestForPublish_NoResearchNoExistingManifest(t *testing.T) {
 	_, state := publishManifestEnvSetup(t, "20260427-empty-everything")
 
 	// No research.json, no existing manifest in WorkingDir.
-	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+	var stderr string
+	require.NoError(t, captureStderr(t, &stderr, func() error {
+		return writeCLIManifestForPublish(state, state.WorkingDir)
+	}))
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	assert.Empty(t, m.NovelFeatures, "no novel_features when neither research nor prior manifest has any")
+	assert.Contains(t, stderr, "debug: research.json not found at "+
+		filepath.Join(state.RunRoot(), "research.json")+" or "+
+		filepath.Join(state.PipelineDir(), "research.json"))
+	assert.NotContains(t, stderr, "read failed")
+	assert.NotContains(t, stderr, "failed to parse")
+}
+
+func TestWriteCLIManifestForPublishReportsMalformedResearchJSON(t *testing.T) {
+	_, state := publishManifestEnvSetup(t, "20260427-bad-research")
+
+	runRoot := RunRoot(state.RunID)
+	require.NoError(t, os.MkdirAll(runRoot, 0o755))
+	path := filepath.Join(runRoot, "research.json")
+	body := []byte(`{"api_name":"test-api","novel_features":[{"name":1}]}`)
+	require.NoError(t, os.WriteFile(path, body, 0o644))
+
+	var stderr string
+	require.NoError(t, captureStderr(t, &stderr, func() error {
+		return writeCLIManifestForPublish(state, state.WorkingDir)
+	}))
+
+	assert.Contains(t, stderr, "debug: research.json at "+path+" failed to parse:")
+	assert.NotContains(t, stderr, "research.json not found at")
+}
+
+func TestWriteCLIManifestForPublishReportsUnreadableResearchJSON(t *testing.T) {
+	_, state := publishManifestEnvSetup(t, "20260427-unreadable-research")
+
+	runRoot := RunRoot(state.RunID)
+	path := filepath.Join(runRoot, "research.json")
+	require.NoError(t, os.MkdirAll(path, 0o755))
+
+	var stderr string
+	require.NoError(t, captureStderr(t, &stderr, func() error {
+		return writeCLIManifestForPublish(state, state.WorkingDir)
+	}))
+
+	assert.Contains(t, stderr, "debug: research.json at "+path+" read failed:")
+	assert.NotContains(t, stderr, "research.json not found at")
 }
