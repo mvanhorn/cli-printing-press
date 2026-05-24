@@ -617,7 +617,8 @@ func scanCommandHandler(content, leaf string) commandHandlerScan {
 
 func commandHandlerForLeaf(lit *ast.CompositeLit, leaf string) *ast.FuncLit {
 	matchesLeaf := false
-	var handler *ast.FuncLit
+	var runHandler *ast.FuncLit
+	var runEHandler *ast.FuncLit
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
@@ -630,14 +631,21 @@ func commandHandlerForLeaf(lit *ast.CompositeLit, leaf string) *ast.FuncLit {
 		switch key.Name {
 		case "Use":
 			matchesLeaf = useExprLeaf(kv.Value) == leaf
-		case "Run", "RunE":
+		case "Run":
 			if fn, ok := kv.Value.(*ast.FuncLit); ok {
-				handler = fn
+				runHandler = fn
+			}
+		case "RunE":
+			if fn, ok := kv.Value.(*ast.FuncLit); ok {
+				runEHandler = fn
 			}
 		}
 	}
 	if matchesLeaf {
-		return handler
+		if runEHandler != nil {
+			return runEHandler
+		}
+		return runHandler
 	}
 	return nil
 }
