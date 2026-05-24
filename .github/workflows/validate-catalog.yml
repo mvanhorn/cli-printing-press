@@ -45,10 +45,16 @@ jobs:
           ]
           next_field = "|".join(rf"^{re.escape(label)}:\s*" for label in required)
 
+          section_match = re.search(
+              r"(?ims)^## Catalog Justification\s*$(.*?)(?=^##\s+|\Z)",
+              body,
+          )
+          catalog_section = section_match.group(1) if section_match else ""
+
           def field_has_content(label):
               match = re.search(
                   rf"(?ims)^{re.escape(label)}:\s*(.*?)(?={next_field}|^##\s+|\Z)",
-                  body,
+                  catalog_section,
               )
               if not match:
                   return False
@@ -56,7 +62,7 @@ jobs:
               return bool(content and content.upper() != "N/A")
 
           missing = []
-          if not re.search(r"(?im)^## Catalog Justification\s*$", body):
+          if not section_match:
               missing.append("## Catalog Justification")
           for label in required:
               if not field_has_content(label):

@@ -11,12 +11,14 @@ import (
 // and commit messages. The PR title GitHub Action enforces conventional shape;
 // this test keeps the repo's narrower documented scope list honest.
 //
-// Scopes: cli, catalog, skills, ci, main (required on all types).
+// Scopes: cli, catalog, skills, ci, plus chore(main) release PRs.
 // Breaking changes: ! after scope.
 var conventionalCommitPattern = regexp.MustCompile(
-	`^(feat|fix|docs|chore|refactor|test|ci|perf|build|style|revert)` +
-		`\((cli|catalog|skills|ci|main)\)` +
-		`!?` +
+	`^(` +
+		`(feat|fix|docs|chore|refactor|test|ci|perf|build|style|revert)` +
+		`\((cli|catalog|skills|ci)\)` +
+		`|chore\(main\)` +
+		`)!?` +
 		`: .+`)
 
 func TestConventionalCommitPatternAcceptsValid(t *testing.T) {
@@ -54,6 +56,7 @@ func TestConventionalCommitPatternRejectsInvalid(t *testing.T) {
 		"docs: missing scope",
 		"feat(random): invalid scope",
 		"fix(anything): invalid scope",
+		"feat(main): not a release",
 	}
 
 	for _, msg := range invalid {
