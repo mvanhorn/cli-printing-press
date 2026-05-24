@@ -14,10 +14,10 @@ externalDocs:
   description: Official IT Glue developer documentation
   url: https://api.itglue.com/developer/
 servers:
-  - url: https://api.eu.itglue.com
-    description: IT Glue EU data centre
   - url: https://api.itglue.com
     description: IT Glue default data centre
+  - url: https://api.eu.itglue.com
+    description: IT Glue EU data centre
   - url: https://api.au.itglue.com
     description: IT Glue Australia data centre
 security:
@@ -145,6 +145,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiCollection"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       operationId: createOrganizationContact
       tags: [Contacts]
@@ -163,6 +165,8 @@ paths:
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Unprocessable"
   /organizations/{organization_id}/relationships/contacts/{id}:
@@ -351,6 +355,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiCollection"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       operationId: createOrganizationConfiguration
       tags: [Configurations]
@@ -369,6 +375,8 @@ paths:
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Unprocessable"
   /documents:
@@ -451,6 +459,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiCollection"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       operationId: createOrganizationDocument
       tags: [Documents]
@@ -469,6 +479,8 @@ paths:
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Unprocessable"
 components:
@@ -791,6 +803,10 @@ components:
           type: integer
         name:
           type: string
+        content:
+          type: string
+          nullable: true
+          description: Document body content, typically HTML or rich text from IT Glue.
         restricted:
           type: boolean
           nullable: true
