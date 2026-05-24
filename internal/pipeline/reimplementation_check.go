@@ -568,6 +568,7 @@ func scanCommandHandler(content, leaf string) commandHandlerScan {
 		return commandHandlerScan{}
 	}
 	imports := clientImportAliases(file)
+	cobraAliases := cobraImportAliases(file)
 	var scan commandHandlerScan
 	ast.Inspect(file, func(n ast.Node) bool {
 		if scan.ok {
@@ -577,7 +578,7 @@ func scanCommandHandler(content, leaf string) commandHandlerScan {
 		if !ok {
 			return true
 		}
-		handler := commandHandlerForLeaf(lit, leaf)
+		handler := commandHandlerForLeaf(lit, leaf, cobraAliases)
 		if handler == nil || handler.Body == nil {
 			return true
 		}
@@ -597,8 +598,8 @@ func scanCommandHandler(content, leaf string) commandHandlerScan {
 	return scan
 }
 
-func commandHandlerForLeaf(lit *ast.CompositeLit, leaf string) *ast.FuncLit {
-	if !isCommandCompositeType(lit.Type) {
+func commandHandlerForLeaf(lit *ast.CompositeLit, leaf string, cobraAliases map[string]bool) *ast.FuncLit {
+	if !isCommandCompositeType(lit.Type, cobraAliases) {
 		return nil
 	}
 	matchesLeaf := false
@@ -635,14 +636,33 @@ func commandHandlerForLeaf(lit *ast.CompositeLit, leaf string) *ast.FuncLit {
 	return nil
 }
 
-func isCommandCompositeType(expr ast.Expr) bool {
+func cobraImportAliases(file *ast.File) map[string]bool {
+	aliases := map[string]bool{}
+	for _, spec := range file.Imports {
+		importPath := strings.Trim(spec.Path.Value, "`\"")
+		if importPath != "github.com/spf13/cobra" {
+			continue
+		}
+		if spec.Name != nil {
+			if spec.Name.Name != "_" {
+				aliases[spec.Name.Name] = true
+			}
+			continue
+		}
+		aliases["cobra"] = true
+	}
+	return aliases
+}
+
+func isCommandCompositeType(expr ast.Expr, cobraAliases map[string]bool) bool {
 	switch e := expr.(type) {
 	case *ast.Ident:
-		return e.Name == "Command"
+		return e.Name == "Command" && cobraAliases["."]
 	case *ast.SelectorExpr:
-		return e.Sel.Name == "Command"
+		id, ok := e.X.(*ast.Ident)
+		return ok && e.Sel.Name == "Command" && cobraAliases[id.Name]
 	case *ast.StarExpr:
-		return isCommandCompositeType(e.X)
+		return isCommandCompositeType(e.X, cobraAliases)
 	default:
 		return false
 	}

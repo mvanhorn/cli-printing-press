@@ -1095,12 +1095,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type commandExample struct {
+type Command struct {
 	Use string
 	RunE func(*cobra.Command, []string) error
 }
 
-var misleadingExample = commandExample{
+var misleadingExample = Command{
 	Use: "search",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cmd.Println(` + "`" + `{"status":"example"}` + "`" + `)
