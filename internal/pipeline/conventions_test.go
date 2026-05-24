@@ -7,23 +7,27 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// conventionalCommitPattern validates the format used in PR titles and
-// commit messages. This pattern is mirrored by the PR title GitHub Action
-// (.github/workflows/pr-title.yml) — keep them in sync.
+// conventionalCommitPattern validates the preferred format used in PR titles
+// and commit messages. The PR title GitHub Action enforces conventional shape;
+// this test keeps the repo's narrower documented scope list honest.
 //
-// Scopes: cli, skills, ci (required on all types).
+// Scopes: cli, catalog, skills, ci, plus chore(main) release PRs.
 // Breaking changes: ! after scope.
 var conventionalCommitPattern = regexp.MustCompile(
-	`^(feat|fix|docs|chore|refactor|test|ci|perf|build|style|revert)` +
-		`\((cli|skills|ci)\)` +
-		`!?` +
+	`^(` +
+		`(feat|fix|docs|chore|refactor|test|ci|perf|build|style|revert)` +
+		`\((cli|catalog|skills|ci)\)` +
+		`|chore\(main\)` +
+		`)!?` +
 		`: .+`)
 
 func TestConventionalCommitPatternAcceptsValid(t *testing.T) {
 	valid := []string{
 		"feat(cli): add catalog subcommands",
+		"feat(catalog): add maps blueprint",
 		"fix(skills): remove repo checkout requirement",
 		"feat(ci): add release-please",
+		"chore(main): release 4.12.0",
 		"feat(cli)!: rename catalog command to registry",
 		"docs(cli): update version flag examples",
 		"chore(ci): bump dependencies",
@@ -52,6 +56,7 @@ func TestConventionalCommitPatternRejectsInvalid(t *testing.T) {
 		"docs: missing scope",
 		"feat(random): invalid scope",
 		"fix(anything): invalid scope",
+		"feat(main): not a release",
 	}
 
 	for _, msg := range invalid {

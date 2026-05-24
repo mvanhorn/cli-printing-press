@@ -45,14 +45,21 @@ If an entry should be directly generatable from the catalog, provide a real `spe
 
 For each catalog PR, include the following in the PR body:
 
+- A `Catalog Justification` section from the PR template. This is required for PRs touching `catalog/*.yaml` or `catalog/specs/**`.
+- Why this entry belongs in the embedded curated catalog instead of only in the local/public library.
+- The distinct reusable blueprint pattern the entry adds, plus the closest existing catalog entries checked and why this is not a near-duplicate.
 - Source URL(s) and source type.
 - Live smoke evidence for the primary source path, with dates or command output summarized.
 - Auth requirements and which commands are public, optional-auth, or auth-required.
+- Tenant, region, base URL, and server-ordering assumptions. If an OpenAPI spec has multiple `servers`, the first one must be the correct generated default for the broadest public use case.
 - Scope boundaries for risky or personalized flows.
 - Whether `testdata/golden/expected/catalog-list/stdout.txt` changed, and why.
 - Verification commands actually run, or a clear reason they were not run.
+- A final body refresh statement. Do not leave stale raw diff excerpts, internal secret names, tenant-specific setup text, old endpoint counts, or outdated verification claims after review fixes.
 
 For HTML or scrape-backed entries, also verify crawlability and extractable data, not just page availability. A `200` on a marketing page is not enough; the PR must show that the data needed for the intended CLI surface is present in public HTML, embedded JSON, sitemaps, or documented endpoints.
+
+Good catalog PR bodies answer the judgment call before listing files. For example: "This belongs in the embedded catalog because it is the first map/routing/VRP blueprint; OpenRouteService was compared against Mapbox, Google, OSRM, and Nominatim; the docs-derived in-repo spec is reproducible from the linked SpringDoc route; auth is API-key based; mutating routes are included only where the generated CLI can surface them safely." File diffs and generation output support that argument, but they do not replace it.
 
 ## Wrapper-only entries
 

@@ -128,6 +128,7 @@ Format: `type(scope): description`. Both type and scope are required.
 
 **Allowed scopes:**
 - `cli` covers the Go binary, commands, flags, embedded catalog, and docs.
+- `catalog` covers embedded catalog entries, catalog specs, catalog fixtures, and catalog-only validation.
 - `skills` covers skill definitions (`SKILL.md`), references, and setup contract.
 - `ci` covers workflows, release config, and goreleaser.
 - `main` is reserved for release-please generated release PRs targeting `main`.
@@ -139,11 +140,17 @@ Format: `type(scope): description`. Both type and scope are required.
 - `refactor` — internal restructuring with no observable behavior change.
 - `chore` — build, tooling, dependency, or housekeeping work outside production code.
 - `test` — test-only additions or corrections.
+- `ci` — workflow and CI configuration changes.
+- `perf` — performance improvements.
+- `build` — build-system changes.
+- `style` — formatting-only changes.
+- `revert` — reverts a prior commit.
 
 **Breaking changes** use `!` after the scope: `feat(cli)!: rename catalog command to registry`. The `!` triggers a major version bump through release-please, so reserve it for changes that *break a downstream contract* — a renamed/removed command, a renamed/removed flag, a removed manifest field, an incompatible config-file shape. **What isn't breaking:** template wording changes, README updates, and generator-output diffs that don't remove or rename a documented surface are `docs(...)` or `fix(...)` — not `feat(...)!`. Even if every printed CLI's output changes on next regen, that alone doesn't qualify as breaking unless something downstream breaks too. The release-versioning consequence of `!` is intentional; if you're unsure, ask before adding it.
 
 **Examples:**
 - `feat(cli): add --select flag to all read commands`
+- `feat(catalog): add maps blueprint entry`
 - `feat(cli)!: rename catalog command to registry`
 - `fix(cli): correct trailing newline in skill.md.tmpl`
 - `docs(cli): clarify install instructions in generated README`
@@ -173,7 +180,10 @@ See [`docs/RELEASE.md`](docs/RELEASE.md) for the merge-the-release-PR flow.
 
 ## Adding Catalog Entries
 When adding or editing `catalog/*.yaml`, first decide whether the entry belongs in the curated blueprint catalog. The embedded catalog is not a public-library index or a shortcut for reprinting existing CLIs; reprint from the current local/public library artifact when that is the source of truth. Add catalog entries only when they represent a distinct, reusable Printing Press pattern and have a real user-facing workflow, a reachable maintained source, and a reproducible generation route: vendor spec, docs-derived in-repo spec, verified sniffed spec, or wrapper-only backing that truthfully describes what the generator can do today. Do not add aspirational entries, dead wrappers, unproven private endpoints, personalized app flows without an auth model, duplicate examples of an already-covered pattern, or scrape ideas without live crawl evidence.
-- Document provenance in the PR: source URL(s), source type (`official`, `docs`, `sniffed`, `community`, or wrapper-only), live smoke evidence, auth requirements, and what is intentionally out of scope.
+- Use the PR template's `Catalog Justification` section when the PR touches `catalog/*.yaml` or `catalog/specs/**`; `validate-catalog.yml` rejects catalog PRs without it.
+- Document why the entry belongs in the embedded catalog, not just why the files belong in this repo. Name the reusable blueprint pattern it adds, the closest existing catalog entries checked, and why this is not a duplicate or a public-library-only reprint.
+- Document provenance in the PR: source URL(s), source type (`official`, `docs`, `sniffed`, `community`, or wrapper-only), live smoke evidence, auth requirements, tenant/region/base-URL assumptions, and what is intentionally out of scope.
+- Refresh the PR body after the final code changes. Do not leave stale raw diff excerpts, tenant-specific instructions, internal secret names, old endpoint counts, or outdated verification claims in the description.
 - If the entry should make `cli-printing-press generate <name>` work, provide a real `spec_url` or in-repo spec; wrapper-only entries are discovery/backing notes unless the generator has a concrete spec path.
 - If catalog output intentionally changes, update `testdata/golden/expected/catalog-list/stdout.txt`.
 - The entry must pass `internal/catalog` validation.
