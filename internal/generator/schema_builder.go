@@ -122,6 +122,9 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 				table.OriginalColumnCount = len(table.Columns)
 				table.Columns = append([]ColumnDef(nil), baseTableColumns...)
 				table.Indexes = nil
+				table.FTS5 = false
+				table.FTS5Fields = nil
+				table.FTS5Triggers = false
 			}
 		}
 

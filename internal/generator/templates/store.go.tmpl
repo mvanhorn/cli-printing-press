@@ -788,11 +788,12 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 
 {{- range .Tables}}
 {{- if emitsDomainTable .}}
-// upsert{{pascal .Name}}Tx writes the typed-table portion of a {{.Name}} upsert
-// inside an existing transaction. The caller is responsible for the generic
-// resources insert (via upsertGenericResourceTx) and for committing the tx.
-// Splitting this out lets UpsertBatch dispatch typed inserts per item without
-// opening a per-item transaction.
+// upsert{{pascal .Name}}Tx writes the per-resource domain-table portion of a
+// {{.Name}} upsert inside an existing transaction{{if .JSONOnlyFallback}} (JSON-only fallback:
+// only id/data/synced_at; no typed columns){{end}}. The caller is
+// responsible for the generic resources insert (via upsertGenericResourceTx)
+// and for committing the tx. Splitting this out lets UpsertBatch dispatch
+// domain inserts per item without opening a per-item transaction.
 func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]any, data json.RawMessage) error {
 	if _, err := tx.Exec(
 		`INSERT INTO {{safeName .Name}} ({{columnNames .Columns}})
