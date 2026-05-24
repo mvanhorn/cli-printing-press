@@ -237,7 +237,7 @@ if [ -z "$PRESS_BASE" ]; then
 fi
 
 PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
 PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
@@ -403,7 +403,7 @@ If the user typed `/printing-press` with no arguments (no API name, no `--spec`,
 
 > The Printing Press generates a fully functional CLI for any API. You give it an API name, a spec file, or a URL. It researches the landscape, catalogs every feature that exists in any competing tool, invents novel features of its own, then generates a Go CLI that matches and beats everything out there — with offline search, agent-native output, and a local SQLite data layer.
 >
-> By the end, you'll have a working CLI in `~/printing-press/library/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
+> By the end, you'll have a working CLI in `$PRESS_LIBRARY/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
 >
 > The process takes 30-60 minutes depending on API complexity. Simple APIs with official specs (Stripe, GitHub) are faster. Undocumented APIs that need discovery (ESPN, Domino's) take longer.
 
@@ -456,7 +456,7 @@ Print as prose, matching the style of the example below:
 > 3. I shall present what I found and what I invented — you will have a chance to add your own ideas or adjust the plan before I build
 > 4. I shall generate a Go CLI, build every feature from the plan, then verify quality through dogfood, runtime verification, and scoring
 >
-> **What you will have at the end:** A fully functional CLI at `~/printing-press/library/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
+> **What you will have at the end:** A fully functional CLI at `$PRESS_LIBRARY/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
 >
 > **Time:** 30-60 minutes depending on API complexity.
 >
@@ -595,7 +595,7 @@ Short-lived command captures may use `/tmp/printing-press/` with unique `mktemp`
 paths and must be deleted after use.
 
 Examples of the current naming/layout:
-- `~/printing-press/library/notion/` — published CLI directory (keyed by API slug)
+- `$PRESS_LIBRARY/notion/` — published CLI directory (keyed by API slug)
 - `notion-pp-cli` — the binary name inside the directory
 - `/printing-press emboss notion` — emboss accepts both slug and CLI name
 - `discord-pp-cli/internal/store/store.go` — internal source paths still use CLI name

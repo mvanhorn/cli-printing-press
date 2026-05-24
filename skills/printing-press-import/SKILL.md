@@ -20,7 +20,7 @@ allowed-tools:
 
 Bring a published CLI from the public library
 ([`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library))
-into the internal library at `~/printing-press/library/` so it matches
+into the internal library at `$PRESS_LIBRARY/` so it matches
 the form the generator would produce. Manuscripts ride along.
 
 ```bash
@@ -45,7 +45,7 @@ library" or "from the repo", suggest running this skill first.
 ## Setup
 
 ```bash
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
 SCRIPTS_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")/references"
