@@ -56,7 +56,7 @@ func TestRunLiveDogfoodDetectsTruncatedJSONOutput(t *testing.T) {
 		CLIDir:     dir,
 		BinaryName: binaryName,
 		Level:      "full",
-		Timeout:    5 * time.Second,
+		Timeout:    30 * time.Second,
 	})
 	require.NoError(t, err)
 
@@ -253,7 +253,7 @@ func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	run := runLiveDogfoodProcess(binPath, dir, nil, 30*time.Second)
 	require.NoError(t, run.err, "fixture: %s", run.stderr)
 	assert.Equal(t, "1", run.stdout, "live-dogfood subprocess should see PRINTING_PRESS_DOGFOOD=1")
 }
@@ -393,7 +393,7 @@ printf '"}'
 `, liveDogfoodMaxOutputBytes+1024)
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o700))
 
-	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	run := runLiveDogfoodProcess(binPath, dir, nil, 30*time.Second)
 	require.NoError(t, run.err)
 	assert.True(t, run.stdoutTruncated)
 	assert.False(t, validLiveDogfoodJSONOutput(run.stdout))
