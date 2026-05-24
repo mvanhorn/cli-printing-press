@@ -705,7 +705,8 @@ def _split_before_shell_operator(line: str) -> str:
             if placeholder:
                 i += placeholder.end()
                 continue
-        if ch in "|;&<>":
+            return line[:_shell_operator_cut_index(line, i)].rstrip()
+        if ch in "|;&>":
             return line[:_shell_operator_cut_index(line, i)].rstrip()
         i += 1
     return line

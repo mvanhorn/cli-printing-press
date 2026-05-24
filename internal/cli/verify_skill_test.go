@@ -168,6 +168,7 @@ func TestVerifySkill_ShellOperatorsDoNotBecomePositionals(t *testing.T) {
 		"fixture-pp-cli export --format json < export.json\n" +
 		"fixture-pp-cli export --format json 2>export.err\n" +
 		"fixture-pp-cli export --filter \"score > 10\"\n" +
+		"fixture-pp-cli export --filter \"score>10\"\n" +
 		"fixture-pp-cli export --filter 'score > 10'\n" +
 		"fixture-pp-cli export --filter 'score \\' > export.json\n" +
 		"```\n"
