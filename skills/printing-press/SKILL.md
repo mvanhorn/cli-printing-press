@@ -1593,7 +1593,7 @@ For each tool, fill in what you know from the research. Stars and command_count 
 3. `value_prop` expands the headline to 2–3 sentences. Name specific novel features by command where helpful.
 4. `auth_narrative` tells the real auth story for this API (crumb handshake, cookie session, OAuth device flow). Omit for standard API-key auth where the generic branch is fine.
 5. `quickstart` is a 3–6 step flow using REAL arguments (symbols, IDs, resource names an agent can actually pass). Each step's `comment` explains *why* it runs. This replaces the generic "resource list" first-command fallback.
-   - Step 1 of `quickstart` MUST be verify-safe: it must exit 0 when `validate-narrative --full-examples` appends `--dry-run` in a no-credentials environment.
+   - Step 1 of `quickstart` should usually be verify-safe: it should exit 0 when `validate-narrative --full-examples` appends `--dry-run` in a no-credentials environment.
    - Use `<cli> doctor --dry-run` as step 1 (health check, works without auth). Do not use `<cli> auth set-token <token>` as step 1 because it requires a positional token and is not a verify-safe runnable first step. Auth setup instructions belong in `auth_narrative` prose only, not as an executable quickstart command.
 6. `troubleshoots` captures API-specific failure modes (rate-limit mitigation, cookie expiry, paginated quirks). Each `fix` must be actionable — a command or a concrete setting change.
 7. `when_to_use` is SKILL-only narrative. 2–4 sentences describing the kinds of agent tasks this CLI is the right choice for. Not rendered in README.
@@ -1601,7 +1601,7 @@ For each tool, fill in what you know from the research. Stars and command_count 
 9. `trigger_phrases` are natural-language phrases a user might say that should invoke this CLI's skill. Include 3–5 domain-specific phrases (e.g. for a finance CLI: "quote AAPL", "check my portfolio", "options for TSLA") and 2 generic phrases ("use <api-name>", "run <api-name>"). Domain verbs vary — don't just template "use X" variants.
 10. All `narrative` fields are optional. Omit fields you can't populate honestly rather than emit filler. The generator falls back to generic content gracefully.
 11. **Avoid hardcoded counts in narrative copy when the count tracks a runtime list.** A number embedded in `headline` or `value_prop` ("across N trusted sources", "from N retailers", "queries N vendors") propagates into root.go's Short/Long, the README, the SKILL, the MCP tools description, and `which.go` — every output surface that reads the narrative. When the underlying registry grows or shrinks, the count goes stale across all of those surfaces simultaneously, and a single-line edit to add a source requires hunting down ~10 hardcoded copies. Prefer plural-without-count phrasing ("across the major sources", "from a curated set of retailers") or describe the breadth qualitatively ("dozens of vendors") rather than committing to a specific integer. If a count is load-bearing for the value prop, keep the brief's narrative count-free and have the printed-CLI's README/SKILL author write the count once into a single hand-edited paragraph after generation — accepting that it will need a manual update whenever the registry changes.
-12. **Don't put side-effectful auth setup in `quickstart[0]`.** `validate-narrative --strict --full-examples` classifies `auth login`, `auth set-token`, `auth logout`, and `auth setup` as side-effectful for every auth type (see `isSideEffectfulNarrativeExample` in `internal/narrativecheck/narrativecheck.go`) and counts each as a strict-mode failure via `Report.HasFailures()`, so any quickstart whose step 0 is `<cli> auth login --chrome` or `<cli> auth set-token $KEY` guarantees a Phase 4 shipcheck round-trip. This applies unconditionally across every auth type the Printing Press supports — `api_key`, `bearer_token`, `cookie`, `composed`, `session_handshake`, and `oauth2` alike. Use `doctor` (or another read-only invocation like `account get` if auth-required-and-cookie-already-imported is the onboarding entry point) as the first quickstart step, and mention the one-time auth-setup step in that step's `comment` field. The auth flow itself belongs in `auth_narrative` prose, not in `quickstart`.
+12. **Use side-effectful examples only when they are the truthful workflow.** `validate-narrative --strict --full-examples` classifies `auth login`, `auth set-token`, `auth logout`, `auth setup`, `--launch`, and mutating `--apply` examples as side-effectful (see `isSideEffectfulNarrativeExample` in `internal/narrativecheck/narrativecheck.go`) and reports each as an `UNSUPPORTED` warning instead of executing it. These warnings do not fail strict aggregation, so it is valid to show an auth or apply command when that is the honest onboarding or bulk-operation shape. Prefer `doctor` or another read-only invocation as `quickstart[0]` when it teaches the same workflow, but do not strip a real auth or apply step just to appease shipcheck. Non-side-effect unsupported examples still fail strict mode when they cannot dry-run, and missing commands, empty command paths, and failed full examples remain failures.
 
 **Pre-render framework-command check.** Before running `generate --research-dir`,
 validate the framework command examples already present in `research.json`.
@@ -2496,9 +2496,11 @@ cli-printing-press validate-narrative --strict --full-examples \
 
 `--strict` exits non-zero on any missing command, empty subcommand-words entry, or
 empty narrative (both sections omitted). With `--full-examples`, it also fails on full
-examples that cannot dry-run or whose full invocation fails. Drop `--strict` to get a
-warn-only report, omit `--full-examples` only when you intentionally want the old
-offline path check, or add `--json` for machine-readable output.
+examples that cannot dry-run or whose full invocation fails. Side-effectful auth,
+launch, and mutating apply examples are reported as `UNSUPPORTED` warnings and do not
+fail strict aggregation. Drop `--strict` to get a warn-only report, omit
+`--full-examples` only when you intentionally want the old offline path check, or add
+`--json` for machine-readable output.
 
 If any commands are reported missing, fix them in `research.json` before continuing.
 Common causes:
