@@ -725,12 +725,51 @@ func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
 					},
 				},
 			},
+			"tickets": {
+				Endpoints: map[string]spec.Endpoint{
+					"searchTickets": {
+						Method: "POST",
+						Path:   "/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "cursor",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "TicketEnvelope"},
+					},
+				},
+			},
 			"settings": {
 				Endpoints: map[string]spec.Endpoint{
 					"get": {
 						Method:   "GET",
 						Path:     "/settings",
 						Response: spec.ResponseDef{Type: "object", Item: "SettingsResponse"},
+					},
+				},
+			},
+			"empty-settings": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/settings/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "EmptySettingsResponse"},
+					},
+				},
+			},
+			"audits": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/audits/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "AuditSearchResponse"},
 					},
 				},
 			},
@@ -766,10 +805,21 @@ func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
 					{Name: "meta", Type: "object"},
 				},
 			},
+			"TicketEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "tickets", Type: "array"},
+				},
+			},
 			"SettingsResponse": {
 				Fields: []spec.TypeField{
 					{Name: "featureFlags", Type: "object"},
 					{Name: "timezone", Type: "string"},
+				},
+			},
+			"EmptySettingsResponse": {},
+			"AuditSearchResponse": {
+				Fields: []spec.TypeField{
+					{Name: "errors", Type: "array"},
 				},
 			},
 			"ProfileResponse": {
@@ -796,8 +846,11 @@ func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
 
 	assert.Contains(t, syncNames, "opportunities", "GET list endpoint with plural wrapper array should be syncable")
 	assert.Contains(t, syncNames, "contacts", "paginated POST search endpoint with plural wrapper array should be syncable")
+	assert.Contains(t, syncNames, "tickets", "single array fields can match the endpoint name when the path is generic")
 	assert.Contains(t, syncNames, "places", "multi-array GeoJSON-style envelope with known features wrapper should be syncable")
 	assert.NotContains(t, syncNames, "settings", "object envelopes without array fields should not be syncable")
+	assert.NotContains(t, syncNames, "empty-settings", "parsed zero-field response types should not fall back to type-name matching")
+	assert.NotContains(t, syncNames, "audits", "collection-named endpoints should not make unrelated array fields syncable")
 	assert.NotContains(t, syncNames, "profile", "singleton object with one relationship array should not be syncable")
 	assert.Equal(t, "POST", syncByName["contacts"].Method)
 }

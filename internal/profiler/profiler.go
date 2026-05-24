@@ -885,8 +885,8 @@ var wrapperArrayKeys = map[string]bool{
 	"nodes":    true,
 }
 
-// Field metadata is stronger than type-name guesses: a typed non-array
-// *Response object should stay out of sync even though its name sounds listy.
+// Field metadata is stronger than type-name guesses: once a type is present,
+// its fields decide whether the response is extractable.
 func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef, endpointName string, path string) bool {
 	if typeDef, ok := types[typeName]; ok {
 		arrayFields := 0
@@ -904,13 +904,11 @@ func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef, endpoi
 		if arrayFields == 1 && singleArrayFieldMatchesCollection(arrayField, endpointName, path) {
 			return true
 		}
-		if len(typeDef.Fields) > 0 {
-			return false
-		}
+		return false
 	}
 
 	// Fallback: if the type name itself suggests a list wrapper, treat it
-	// as a wrapper even when the types map lacks field definitions.
+	// as a wrapper only when the types map lacks that type definition.
 	nameUpper := strings.ToUpper(typeName)
 	return strings.Contains(nameUpper, "RESPONSE") ||
 		strings.Contains(nameUpper, "LIST") ||
@@ -919,7 +917,7 @@ func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef, endpoi
 }
 
 func singleArrayFieldMatchesCollection(fieldName string, endpointName string, path string) bool {
-	if looksLikeCollectionEndpoint(strings.ToLower(endpointName)) {
+	if namesOverlap(fieldName, endpointName) {
 		return true
 	}
 	for _, segment := range staticPathSegments(path) {
@@ -938,7 +936,27 @@ func namesOverlap(a, b string) bool {
 			return true
 		}
 	}
+	bTokens := nameTokens(b)
+	for _, av := range aVariants {
+		if slices.Contains(bTokens, av) {
+			return true
+		}
+	}
 	return false
+}
+
+func nameTokens(name string) []string {
+	normalized := normalizeName(spec.ToSnakeCase(name))
+	if normalized == "" {
+		return nil
+	}
+	var tokens []string
+	for token := range strings.SplitSeq(normalized, "_") {
+		if token != "" {
+			tokens = append(tokens, nameVariants(token)...)
+		}
+	}
+	return tokens
 }
 
 // findEntityTypeEnum returns the first required enum query param on a list endpoint
