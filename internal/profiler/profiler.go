@@ -844,7 +844,7 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 	if method == "POST" {
 		return endpoint.Pagination != nil &&
 			looksLikeCollectionEndpoint(strings.ToLower(name)) &&
-			hasListShapedResponse(endpoint, types)
+			hasListShapedResponse(name, endpoint, types)
 	}
 
 	if method != "GET" {
@@ -853,52 +853,59 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 	if endpoint.Pagination != nil {
 		return true
 	}
-	if hasListShapedResponse(endpoint, types) {
+	if hasListShapedResponse(name, endpoint, types) {
 		return true
 	}
 
 	return looksLikeBasicGetListEndpoint(strings.ToLower(name))
 }
 
-func hasListShapedResponse(endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
+func hasListShapedResponse(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
 	if endpoint.Response.Type == "array" {
 		return true
 	}
 
 	// Check for wrapper-object responses: the endpoint returns type "object"
-	// and the referenced type has a field matching a known wrapper key. These
-	// are list endpoints that wrap their arrays (e.g., {events: [...]}).
-	// The key list matches extractPageItems in sync.go.tmpl plus "events".
+	// and the referenced type has a field that clearly carries the list items.
 	return endpoint.Response.Type == "object" &&
 		endpoint.Response.Item != "" &&
-		hasWrapperArrayField(endpoint.Response.Item, types)
+		hasWrapperArrayField(endpoint.Response.Item, types, name, endpoint.Path)
 }
 
-// wrapperArrayKeys are response object field names that indicate the object
-// wraps a list of items. Kept in sync with extractPageItems in sync.go.tmpl.
-// hasWrapperArrayField lowercases each field name before lookup, so
-// PascalCase variants ("Items", "Data") match the lowercase entries here.
+// Multi-array envelopes need a curated tie-breaker; single-array envelopes are
+// already unambiguous and can use any resource-shaped key.
 var wrapperArrayKeys = map[string]bool{
-	"data":    true,
-	"results": true,
-	"items":   true,
-	"events":  true,
-	"entries": true,
-	"records": true,
-	"nodes":   true,
+	"data":     true,
+	"results":  true,
+	"items":    true,
+	"events":   true,
+	"entries":  true,
+	"features": true,
+	"records":  true,
+	"nodes":    true,
 }
 
-// hasWrapperArrayField checks whether a named type in the spec's types map
-// has any field whose name matches a known wrapper key, or whether the type
-// name itself suggests a list wrapper (contains "Response", "List", "Result",
-// or "Collection"). The type-name heuristic is a fallback for specs where the
-// types map is empty or incomplete.
-func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef) bool {
+// Field metadata is stronger than type-name guesses: a typed non-array
+// *Response object should stay out of sync even though its name sounds listy.
+func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef, endpointName string, path string) bool {
 	if typeDef, ok := types[typeName]; ok {
+		arrayFields := 0
+		var arrayField string
 		for _, field := range typeDef.Fields {
+			if !strings.EqualFold(field.Type, "array") {
+				continue
+			}
+			arrayFields++
+			arrayField = field.Name
 			if wrapperArrayKeys[strings.ToLower(field.Name)] {
 				return true
 			}
+		}
+		if arrayFields == 1 && singleArrayFieldMatchesCollection(arrayField, endpointName, path) {
+			return true
+		}
+		if len(typeDef.Fields) > 0 {
+			return false
 		}
 	}
 
@@ -909,6 +916,29 @@ func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef) bool {
 		strings.Contains(nameUpper, "LIST") ||
 		strings.Contains(nameUpper, "RESULT") ||
 		strings.Contains(nameUpper, "COLLECTION")
+}
+
+func singleArrayFieldMatchesCollection(fieldName string, endpointName string, path string) bool {
+	if looksLikeCollectionEndpoint(strings.ToLower(endpointName)) {
+		return true
+	}
+	for _, segment := range staticPathSegments(path) {
+		if namesOverlap(fieldName, segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func namesOverlap(a, b string) bool {
+	aVariants := nameVariants(a)
+	bVariants := nameVariants(b)
+	for _, av := range aVariants {
+		if slices.Contains(bVariants, av) {
+			return true
+		}
+	}
+	return false
 }
 
 // findEntityTypeEnum returns the first required enum query param on a list endpoint
