@@ -396,6 +396,58 @@ func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	assert.Contains(t, skill, "ship cannot fire while publish validate fails")
 }
 
+func TestPolishPublishOfferRequiresFreshUserTurn(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+	reference := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "references", "publish-turn-boundary.md"))
+
+	assert.Contains(t, skill, "references/publish-turn-boundary.md")
+	assert.Contains(t, skill, "fresh user-authored message")
+	assert.Contains(t, skill, "Do not invoke `/printing-press-publish <cli-name>` from this same turn")
+	assert.Contains(t, skill, "After printing the handoff, stop")
+	assert.Contains(t, skill, "**Publish separately** (recommended)")
+	assert.Contains(t, skill, "show the publish command for the next user message")
+	assert.Contains(t, skill, "/printing-press-publish <cli-name> --from-polish")
+	assert.Contains(t, skill, "post-publish retro offer")
+	assert.Contains(t, reference, "--from-polish")
+	assert.Contains(t, reference, "Treat the menu answer as intent to hand off, not permission to execute")
+	assert.NotContains(t, skill, "Then invoke `/printing-press-publish <cli-name>`")
+	assert.NotContains(t, skill, "**Publish now** (recommended)")
+	assert.NotContains(t, skill, "validate, package, and open a PR")
+	assert.NotContains(t, reference, "Publish now")
+}
+
+func TestPublishSkillRejectsChainedPublishInvocations(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+	guardStart := strings.Index(skill, "## Direct User Invocation Required")
+	setupStart := strings.Index(skill, "## Setup")
+	require.NotEqual(t, -1, guardStart)
+	require.NotEqual(t, -1, setupStart)
+	require.Less(t, guardStart, setupStart)
+	guardBlock := skill[guardStart:setupStart]
+
+	assert.Contains(t, guardBlock, "chained continuation from `printing-press-polish`'s")
+	assert.Contains(t, guardBlock, "auto-resolved")
+	assert.Contains(t, guardBlock, "recommendation")
+	assert.Contains(t, guardBlock, "stop immediately")
+	assert.Contains(t, guardBlock, "fresh user-authored")
+	assert.Contains(t, guardBlock, "--from-polish")
+	assert.Contains(t, guardBlock, "POLISH_HANDOFF=true")
+	assert.Contains(t, guardBlock, "ignore that marker when")
+}
+
+func TestPublishSkillOffersRetroForPolishHandoff(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+	terminalStart := strings.Index(skill, "### Terminal state")
+	require.NotEqual(t, -1, terminalStart)
+	terminalBlock := skill[terminalStart:]
+
+	assert.Contains(t, terminalBlock, "direct human invocation without `--from-polish` just ends here")
+	assert.Contains(t, terminalBlock, "If `POLISH_HANDOFF=true`, offer retro")
+	assert.Contains(t, terminalBlock, "standalone polish")
+	assert.Contains(t, terminalBlock, "AskUserQuestion")
+	assert.Contains(t, terminalBlock, "/printing-press-retro")
+}
+
 func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
