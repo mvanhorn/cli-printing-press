@@ -2671,6 +2671,31 @@ func runReport%d(c apiClient) error {
 		assert.Equal(t, 6, scoreWorkflows(dir))
 	})
 
+	t.Run("counts package-local client helper weights greater than one", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+	package cli
+	
+	func fetchBundle(c apiClient) error {
+		if _, err := c.Get("/bundle/meta"); err != nil {
+			return err
+		}
+		_, err := c.Get("/bundle/items")
+		return err
+	}
+	`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+	package cli
+	
+	func runReport(c apiClient) error {
+		return fetchBundle(c)
+	}
+	`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
 	t.Run("ignores unregistered commands that call package-local client helpers", func(t *testing.T) {
 		dir := t.TempDir()
 

@@ -712,15 +712,23 @@ func callsStoreHelper(content string, helpers map[string]bool) bool {
 	return callsHelper(content, helpers)
 }
 
-func countWeightedHelperCallsFiltered(content string, helpers map[string]int, include func(string) bool) int {
+func countWeightedHelperCallsFiltered(content string, helpers map[string]int, include func(string, string) bool) int {
 	if len(helpers) == 0 {
 		return 0
 	}
 	return countHelperCalls(content, func(name string) int {
-		if include != nil && !include(name) {
-			return 0
+		count := 0
+		for key, weight := range helpers {
+			fileName, funcName := splitHelperKey(key)
+			if funcName != name {
+				continue
+			}
+			if include != nil && !include(fileName, funcName) {
+				continue
+			}
+			count += weight
 		}
-		return helpers[name]
+		return count
 	})
 }
 

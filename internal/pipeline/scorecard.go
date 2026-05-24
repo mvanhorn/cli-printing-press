@@ -1293,9 +1293,8 @@ func countClientAPICalls(content string) int {
 	return len(clientAPICallRE.FindAllString(content, -1))
 }
 
-func clientHelperCallCounts(fileContent map[string]string) (map[string]int, map[string]string) {
+func clientHelperCallCounts(fileContent map[string]string) map[string]int {
 	helpers := map[string]int{}
-	helperFiles := map[string]string{}
 	for fileName, content := range fileContent {
 		fset := token.NewFileSet()
 		file, err := parser.ParseFile(fset, "", content, 0)
@@ -1316,12 +1315,23 @@ func clientHelperCallCounts(fileContent map[string]string) (map[string]int, map[
 			body := content[start:end]
 			calls := countClientAPICalls(body) + countImportedClientCalls(fn.Body, imports, false)
 			if calls > 0 {
-				helpers[fn.Name.Name] = calls
-				helperFiles[fn.Name.Name] = fileName
+				helpers[helperKey(fileName, fn.Name.Name)] = calls
 			}
 		}
 	}
-	return helpers, helperFiles
+	return helpers
+}
+
+func helperKey(fileName, funcName string) string {
+	return fileName + ":" + funcName
+}
+
+func splitHelperKey(key string) (string, string) {
+	i := strings.LastIndexByte(key, ':')
+	if i < 0 {
+		return "", key
+	}
+	return key[:i], key[i+1:]
 }
 
 func countImportedClientCalls(body *ast.BlockStmt, imports map[string]clientImportKind, allowAnySiblingSelector bool) int {
@@ -1479,7 +1489,7 @@ func scoreWorkflows(dir string) int {
 		fileContent[e.Name()] = readFileContent(filepath.Join(cliDir, e.Name()))
 	}
 	storeHelpers := storeHelperNames(fileContent)
-	clientHelpers, clientHelperFiles := clientHelperCallCounts(fileContent)
+	clientHelpers := clientHelperCallCounts(fileContent)
 
 	// Some prefixes overlap with insightPrefixes intentionally — per Steinberger,
 	// analytics/insights ARE compound commands (the visionary research plan lists
@@ -1532,8 +1542,8 @@ func scoreWorkflows(dir string) int {
 
 		// Count files that make 2+ API calls (total occurrences, not unique methods).
 		// A command calling c.Get 3 times is a compound workflow even if it never uses POST.
-		apiCalls := countClientAPICalls(content) + countWeightedHelperCallsFiltered(content, clientHelpers, func(name string) bool {
-			return clientHelperFiles[name] != e.Name()
+		apiCalls := countClientAPICalls(content) + countWeightedHelperCallsFiltered(content, clientHelpers, func(fileName, name string) bool {
+			return fileName != e.Name()
 		})
 		if strings.Contains(content, "store.") {
 			apiCalls++
