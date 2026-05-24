@@ -106,7 +106,6 @@ func newGenerateCmd() *cobra.Command {
 	var validate bool
 	var refresh bool
 	var force bool
-	var allowNovelWipe bool
 	var lenient bool
 	var strictRefs bool
 	var docsURL string
@@ -181,7 +180,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, allowNovelWipe, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, true)
 				if err != nil {
 					return err
 				}
@@ -256,7 +255,7 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("plan contains no command definitions")}
 				}
 
-				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, allowNovelWipe, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
 				if err != nil {
 					return err
 				}
@@ -362,7 +361,7 @@ func newGenerateCmd() *cobra.Command {
 				return err
 			}
 
-			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, allowNovelWipe, !dryRun)
+			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
 			if err != nil {
 				return err
 			}
@@ -461,7 +460,8 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-edits to generated files via AST-based merge")
-	cmd.Flags().BoolVar(&allowNovelWipe, "allow-novel-wipe", false, "Permit --force against a directory whose .printing-press.json records novel features or whose internal/{cli,syncer,store} subtrees contain hand-authored files. Default is to refuse and recommend `regen-merge`.")
+	cmd.Flags().Bool("allow-novel-wipe", false, "Deprecated compatibility no-op; --force now preserves hand-authored files via regen-merge")
+	_ = cmd.Flags().MarkHidden("allow-novel-wipe")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().BoolVar(&strictRefs, "strict-refs", false, "Disable lenient stubbing for missing local schema refs (only meaningful with --lenient)")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
@@ -648,7 +648,7 @@ func normalizeHTTPTransport(value string) (string, error) {
 	}
 }
 
-func resolveGenerateOutputDir(outputDir, cliName string, force, allowNovelWipe bool, claim bool) (resolvedAbsOut string, explicitOutput bool, snapshotDir string, err error) {
+func resolveGenerateOutputDir(outputDir, cliName string, force, claim bool) (resolvedAbsOut string, explicitOutput bool, snapshotDir string, err error) {
 	explicitOutput = outputDir != ""
 	if outputDir == "" {
 		outputDir = pipeline.DefaultOutputDir(cliName)
@@ -660,7 +660,7 @@ func resolveGenerateOutputDir(outputDir, cliName string, force, allowNovelWipe b
 	if !claim {
 		return absOut, explicitOutput, "", nil
 	}
-	absOut, snapshotDir, err = claimOrForce(absOut, force, allowNovelWipe, explicitOutput)
+	absOut, snapshotDir, err = claimOrForce(absOut, force, explicitOutput)
 	if err != nil {
 		return "", false, "", &ExitError{Code: ExitInputError, Err: err}
 	}
@@ -1430,22 +1430,8 @@ func httpTransportPriority(value string) int {
 //   - default (no --output, no --force): auto-increment via ClaimOutputDir
 //
 // snapshotDir is non-empty only on the force=true path AND when the prior absOut had content. When non-empty it points to a sibling tempdir holding the pre-regen tree.
-//
-// When force=true and the existing absOut shows hand-authored evidence
-// (novel_features in .printing-press.json, or unmarked .go files under
-// internal/{cli,syncer,store}/), claimOrForce refuses unless allowNovelWipe
-// is set. The post-Generate merge usually preserves novels, but the safer
-// path for any library with non-trivial hand-edits is `regen-merge` against
-// a fresh-generated tree, which produces a previewable diff before any
-// destructive rename. The refusal points users there and documents the
-// override flag for the case where a caller really does want to wipe.
-func claimOrForce(absOut string, force, allowNovelWipe bool, explicitOutput bool) (resolvedAbsOut, snapshotDir string, err error) {
+func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOut, snapshotDir string, err error) {
 	if force {
-		if !allowNovelWipe {
-			if signal, found := detectNovelHandAuthored(absOut); found {
-				return "", "", novelWipeRefusalError(absOut, signal)
-			}
-		}
 		snapshotDir, err = snapshotForceRegen(absOut)
 		if err != nil {
 			return "", "", err
