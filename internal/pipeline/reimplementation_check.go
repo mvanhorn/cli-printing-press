@@ -712,10 +712,31 @@ func callsStoreHelper(content string, helpers map[string]bool) bool {
 	return callsHelper(content, helpers)
 }
 
+func countWeightedHelperCallsFiltered(content string, helpers map[string]int, include func(string) bool) int {
+	if len(helpers) == 0 {
+		return 0
+	}
+	return countHelperCalls(content, func(name string) int {
+		if include != nil && !include(name) {
+			return 0
+		}
+		return helpers[name]
+	})
+}
+
 func callsHelper(content string, helpers map[string]bool) bool {
 	if len(helpers) == 0 {
 		return false
 	}
+	return countHelperCalls(content, func(name string) int {
+		if helpers[name] {
+			return 1
+		}
+		return 0
+	}) > 0
+}
+
+func countHelperCalls(content string, weight func(string) int) int {
 	source := content
 	trimmed := strings.TrimSpace(source)
 	if !strings.HasPrefix(trimmed, "package ") {
@@ -727,25 +748,21 @@ func callsHelper(content string, helpers map[string]bool) bool {
 	}
 	file, err := parser.ParseFile(token.NewFileSet(), "", source, 0)
 	if err != nil {
-		return false
+		return 0
 	}
-	found := false
+	count := 0
 	ast.Inspect(file, func(n ast.Node) bool {
-		if found {
-			return false
-		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		ident, ok := call.Fun.(*ast.Ident)
-		if ok && helpers[ident.Name] {
-			found = true
-			return false
+		if ok {
+			count += weight(ident.Name)
 		}
 		return true
 	})
-	return found
+	return count
 }
 
 func hasClientSignal(content string) bool {
