@@ -475,6 +475,144 @@ func TestAnalyzeTraffic_ClassifiesBrowserClearanceReachability(t *testing.T) {
 	assert.Contains(t, analysis.GenerationHints, "requires_browser_auth")
 }
 
+func TestAnalyzeTraffic_IgnoresThirdPartyProtectionMarkersForReachability(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.skool.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api2.skool.com/self/groups",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"groups":[]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://js.stripe.com/v3/fingerprinted/js/controller.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `/* recaptcha challenge datadome perimeterx awswaf */`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://017ae153ccc5.edge.sdk.awswaf.com/017ae153ccc5/challenge.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `window.awsWafCookieDomainList = ["skool.com"];`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "standard_http", analysis.Reachability.Mode)
+	assert.NotContains(t, protectionLabels(analysis.Protections), "captcha")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "aws_waf")
+	assert.NotContains(t, analysis.GenerationHints, "requires_page_context")
+	assert.NotContains(t, analysis.GenerationHints, "requires_protected_client")
+}
+
+func TestAnalyzeTraffic_CountsFirstPartyChallengeScriptForReachability(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://assets.example.com/challenge.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `window.awsWafCookieDomainList = ["example.com"];`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_clearance_http", analysis.Reachability.Mode)
+	assert.Contains(t, protectionLabels(analysis.Protections), "aws_waf")
+	assert.Contains(t, analysis.GenerationHints, "browser_clearance_required")
+}
+
+func TestAnalyzeTraffic_CountsProtectionMarkersFromDiscoveredAPIHost(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.vendor-cdn.com/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"items":[]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.vendor-cdn.com/locked",
+				ResponseStatus:      403,
+				ResponseContentType: "text/html; charset=UTF-8",
+				ResponseHeaders:     map[string]string{"Server": "cloudflare", "CF-Mitigated": "challenge"},
+				ResponseBody:        `<html><title>Just a moment...</title><p>Cloudflare challenge</p></html>`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_clearance_http", analysis.Reachability.Mode)
+	assert.Contains(t, protectionLabels(analysis.Protections), "bot_challenge")
+	assert.Contains(t, analysis.GenerationHints, "browser_clearance_required")
+}
+
+func TestAnalyzeTraffic_InfersProtectionSiteFromAPIHostWhenTargetIsHostless(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "data:image/png;base64,AAAA",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"items":[]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/challenge.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `window.awsWafCookieDomainList = ["example.com"];`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://js.stripe.com/v3/fingerprinted/js/controller.js",
+				ResponseStatus:      200,
+				ResponseContentType: "application/javascript",
+				ResponseBody:        `/* recaptcha challenge datadome */`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.Equal(t, "browser_clearance_http", analysis.Reachability.Mode)
+	assert.Contains(t, protectionLabels(analysis.Protections), "aws_waf")
+	assert.NotContains(t, protectionLabels(analysis.Protections), "captcha")
+}
+
 func TestAnalyzeTraffic_TreatsCaptchaPrecheckAsInformational(t *testing.T) {
 	t.Parallel()
 
@@ -1713,6 +1851,13 @@ func TestSameRegisteredDomain(t *testing.T) {
 		{"example.co.uk", "example.com", false},
 		{"", "example.com", false},
 		{"EXAMPLE.com", "example.COM", true},
+		{"db.local", "db.local", true},
+		{"api.db.local", "www.db.local", true},
+		{"db.local", "other.local", false},
+		{"printer", "printer", true},
+		{"printer", "scanner", false},
+		{"192.168.1.1", "192.168.1.1", true},
+		{"192.168.1.1", "192.168.1.2", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
