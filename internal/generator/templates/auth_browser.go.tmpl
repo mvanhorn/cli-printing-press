@@ -50,7 +50,7 @@ import (
 	"strings"
 	"time"
 
-{{- if .Auth.RequiresBrowserSession}}
+{{- if or .Auth.RequiresBrowserSession .Auth.HasCookies}}
 	"{{modulePath}}/internal/client"
 {{- end}}
 {{- if not (eq .Auth.Type "none")}}
@@ -306,6 +306,22 @@ profile by name when the installed backend supports it.`,
 			if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving auth: %w", err))
 			}
+{{- if .Auth.HasCookies}}
+			// Persist only the required cookies so client.LoadCookieJar()
+			// carries them on the next invocation. Filtering before write
+			// keeps WAF fingerprints, anti-bot tokens, and other unrelated
+			// cookies out of the Cookie header, which routinely trips
+			// upstream WAFs.
+			jarCookies := make(map[string]string, len(requiredCookies))
+			for _, name := range requiredCookies {
+				if v, ok := cookieMap[name]; ok {
+					jarCookies[name] = v
+				}
+			}
+			if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
+				fmt.Fprintf(w, "warning: persisting cookie jar: %v (auth header still saved)\n", err)
+			}
+{{- end}}
 {{- if .Auth.RequiresBrowserSession}}
 			fmt.Fprintf(w, "Validating browser session...")
 			if err := validateAndWriteBrowserSessionProof(cmd.Context(), cfg, flags); err != nil {
@@ -355,6 +371,21 @@ profile by name when the installed backend supports it.`,
 			if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving cookies: %w", err))
 			}
+{{- if .Auth.HasCookies}}
+			// Persist the required cookies so client.LoadCookieJar() carries
+			// them on subsequent invocations; the SaveTokens blob above feeds
+			// the Authorization header path but is invisible to the HTTP
+			// client's cookie jar.
+			jarCookies := make(map[string]string, len(requiredCookies))
+			for _, name := range requiredCookies {
+				if v, ok := cookieMap[name]; ok {
+					jarCookies[name] = v
+				}
+			}
+			if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
+				fmt.Fprintf(w, "warning: persisting cookie jar: %v (cookies still saved to config)\n", err)
+			}
+{{- end}}
 {{- if .Auth.RequiresBrowserSession}}
 			fmt.Fprintf(w, "Validating browser session...")
 			if err := validateAndWriteBrowserSessionProof(cmd.Context(), cfg, flags); err != nil {
@@ -853,6 +884,20 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving auth: %w", err))
 	}
+{{- if .Auth.HasCookies}}
+	// Refresh path mirrors login: persist required cookies so the next
+	// client construction's LoadCookieJar() pickup carries the user's
+	// session, not just the static auth header.
+	jarCookies := make(map[string]string, len(requiredCookies))
+	for _, name := range requiredCookies {
+		if v, ok := cookieMap[name]; ok {
+			jarCookies[name] = v
+		}
+	}
+	if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
+		fmt.Fprintf(w, "warning: persisting cookie jar: %v (auth header still saved)\n", err)
+	}
+{{- end}}
 	fmt.Fprintf(w, "Updated stored browser auth from %d cookies.\n", len(requiredCookies))
 {{- else}}
 {{- if .Auth.Cookies}}
@@ -874,6 +919,19 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving cookies: %w", err))
 	}
+{{- if .Auth.HasCookies}}
+	// Refresh path mirrors login: persist required cookies into the jar so
+	// outbound requests carry the user's session on the next invocation.
+	jarCookies := make(map[string]string, len(requiredCookies))
+	for _, name := range requiredCookies {
+		if v, ok := cookieMap[name]; ok {
+			jarCookies[name] = v
+		}
+	}
+	if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
+		fmt.Fprintf(w, "warning: persisting cookie jar: %v (cookies still saved to config)\n", err)
+	}
+{{- end}}
 	count := len(strings.Split(cookies, ";"))
 	fmt.Fprintf(w, "Updated stored browser cookies for %s (%d cookies).\n", domain, count)
 {{- end}}

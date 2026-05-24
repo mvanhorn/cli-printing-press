@@ -396,7 +396,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 	}
 {{- else}}
+{{- if .Auth.HasCookies}}
+	httpClient := newHTTPClient(timeout, LoadCookieJar())
+{{- else}}
 	httpClient := newHTTPClient(timeout, nil)
+{{- end}}
 	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 {{- if .BasePath}}
@@ -456,6 +460,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 		// Auth lives on URL query; Go preserves the query on relative
 		// redirects, so nothing to re-derive.
+{{- else if eq .Auth.Type "cookie"}}
+		// Cookie-auth redirects: Go's http.Client + http.CookieJar handle
+		// cookie carriage on 3xx hops natively. Setting the Cookie header
+		// manually here would double the jar's cookies on the redirected
+		// request.
 {{- else}}
 		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
 		// cross-domain 3xx (open redirect or partner handoff) must not
@@ -1286,6 +1295,16 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			q := req.URL.Query()
 			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
 			req.URL.RawQuery = q.Encode()
+{{- else if eq .Auth.Type "cookie"}}
+			// Cookie-auth: LoadCookieJar is the sole source of outbound
+			// cookies. net/http's Client.send calls jar.Cookies + AddCookie
+			// for each cookie, which concatenates without dedup; a manual
+			// req.Header.Set here would ship every session cookie twice and
+			// trip upstream WAFs. auth login persists the same cookie set
+			// to both the jar and config, so the jar carries every value
+			// SaveTokens stores. authHeader is read only by the dry-run /
+			// signing paths above; intentionally not consumed on the live
+			// wire here.
 {{- else}}
 			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- end}}

@@ -4593,6 +4593,30 @@ func TestAuthHasCompanionHints(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthHasCookies pins the predicate that drives cookie-jar wiring in
+// client.go.tmpl and the WriteCookieJarFromMap call in auth_browser.go.tmpl.
+// It must gate on the cookie list, not Auth.Type, because composed-auth
+// specs without auth.cookies have nothing to persist.
+func TestAuthHasCookies(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want bool
+	}{
+		{name: "cookie-typed with cookie list", auth: AuthConfig{Type: "cookie", Cookies: []string{"session_id"}}, want: true},
+		{name: "composed-typed with cookie list", auth: AuthConfig{Type: "composed", Cookies: []string{"session_id", "csrf"}}, want: true},
+		{name: "composed-typed without cookie list", auth: AuthConfig{Type: "composed"}, want: false},
+		{name: "bearer with no cookies", auth: AuthConfig{Type: "bearer_token"}, want: false},
+		{name: "empty", auth: AuthConfig{}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.auth.HasCookies())
+		})
+	}
+}
+
 func TestPromoteParamsToBodyForWriteEndpoints(t *testing.T) {
 	t.Parallel()
 
