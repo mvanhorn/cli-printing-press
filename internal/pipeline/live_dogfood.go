@@ -42,6 +42,7 @@ const reasonMutatingErrorPath = "mutating command; error_path would call live AP
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
+const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
@@ -726,11 +727,15 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if liveDogfoodUnavailableForRunner(happyRun) {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = reasonUnavailableRunnerCredentials
+		} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(happyRun); requiredParamReason != "" {
+			happyResult.Status = LiveDogfoodStatusSkip
+			happyResult.Reason = requiredParamReason
 		}
 		results = append(results, happyResult)
 
-		if happyResult.Status == LiveDogfoodStatusSkip && happyResult.Reason == reasonUnavailableRunnerCredentials {
-			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonUnavailableRunnerCredentials))
+		if happyResult.Status == LiveDogfoodStatusSkip &&
+			(happyResult.Reason == reasonUnavailableRunnerCredentials || happyResult.Reason == reasonRequiredParamFixture) {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason))
 		} else if commandSupportsJSON(command.Help) {
 			jsonArgs := appendJSONArg(runArgs)
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
@@ -746,6 +751,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			} else if liveDogfoodUnavailableForRunner(jsonRun) {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = reasonUnavailableRunnerCredentials
+			} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(jsonRun); requiredParamReason != "" {
+				jsonResult.Status = LiveDogfoodStatusSkip
+				jsonResult.Reason = requiredParamReason
 			}
 			results = append(results, jsonResult)
 		} else {
@@ -995,6 +1003,16 @@ const (
 	liveDogfoodMaxOutputBytes  = 10 << 20
 )
 
+var liveDogfoodRequiredParamFixturePhrases = []string{
+	"missing parameter",
+	"missing param",
+	"required parameter",
+	"required param",
+	"must provide parameter",
+	"must provide param",
+	"please provide email",
+}
+
 // destructiveAuthTerms are case-insensitive command or endpoint tokens
 // classifying a command as destructive-at-auth.
 var destructiveAuthTerms = map[string]bool{
@@ -1168,6 +1186,20 @@ func liveDogfoodUnavailableForRunner(run liveDogfoodRun) bool {
 		liveDogfoodAuth401Output(output) ||
 		strings.Contains(output, "permission denied") ||
 		strings.Contains(output, "your credentials are valid but lack access")
+}
+
+func liveDogfoodRequiredParamFixtureReason(run liveDogfoodRun) string {
+	if run.exitCode == 0 {
+		return ""
+	}
+	output := strings.ToLower(run.stdout + " " + run.stderr)
+	if !strings.Contains(output, "http 400") && !strings.Contains(output, "http 422") {
+		return ""
+	}
+	if containsAnyOf(output, liveDogfoodRequiredParamFixturePhrases) {
+		return reasonRequiredParamFixture
+	}
+	return ""
 }
 
 func liveDogfoodAuth401(run liveDogfoodRun) bool {
