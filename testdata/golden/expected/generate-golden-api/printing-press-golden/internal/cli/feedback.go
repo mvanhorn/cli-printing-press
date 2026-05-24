@@ -35,7 +35,7 @@ func feedbackFilePath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving home dir: %w", err)
 	}
-	dir := filepath.Join(home, ".printing-press-golden-pp-cli")
+	dir := filepath.Join(home, ".local", "share", "printing-press-golden-pp-cli")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating state dir: %w", err)
 	}
@@ -100,7 +100,7 @@ func newFeedbackCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "feedback [text]",
 		Short: "Record feedback about this CLI (local by default; upstream opt-in)",
-		Long: `Feedback is captured locally first at ~/.printing-press-golden-pp-cli/feedback.jsonl.
+		Long: `Feedback is captured locally first at ~/.local/share/printing-press-golden-pp-cli/feedback.jsonl.
 When ` + "`PRINTING_PRESS_GOLDEN_FEEDBACK_ENDPOINT`" + ` is set and either --send is
 passed or ` + "`PRINTING_PRESS_GOLDEN_FEEDBACK_AUTO_SEND=true`" + `, the entry is
 POSTed as JSON after the local write.
