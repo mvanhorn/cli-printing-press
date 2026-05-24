@@ -18,6 +18,7 @@ import (
 	"printing-press-rich-pp-cli/internal/cliutil"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -1122,7 +1123,12 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 			if v == nil {
 				vals = append(vals, "")
 			} else {
-				s := fmt.Sprintf("%v", v)
+				var s string
+				if f, ok := v.(float64); ok {
+					s = strconv.FormatFloat(f, 'f', -1, 64)
+				} else {
+					s = fmt.Sprintf("%v", v)
+				}
 				if strings.ContainsAny(s, ",\"\n") {
 					s = `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 				}
