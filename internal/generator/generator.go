@@ -255,6 +255,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"effectiveTier":          effectiveTier,
 		"effectiveSubTier":       effectiveSubTier,
 		"add":                    func(a, b int) int { return a + b },
+		"chomp":                  func(s string) string { return strings.TrimRight(s, "\r\n") },
 		"oneline":                naming.OneLine,
 		"composeMCPDesc":         composeMCPDesc,
 		"composeMCPSubDesc":      composeMCPSubDesc,

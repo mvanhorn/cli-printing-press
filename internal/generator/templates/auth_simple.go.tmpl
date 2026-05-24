@@ -54,7 +54,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 {{- end}}
 {{- if .Auth.Instructions}}
-			fmt.Fprintln(w, {{printf "%q" (printf "  %s" .Auth.Instructions)}})
+			fmt.Fprintln(w, {{printf "%q" (printf "  %s" (chomp .Auth.Instructions))}})
 {{- end}}
 {{- if .Auth.EnvVarSpecs}}
 			fmt.Fprintln(w, "")
