@@ -507,25 +507,7 @@ func isPrimitiveClientCall(expr ast.Expr) bool {
 	if root == "flags" && last == "newClient" {
 		return true
 	}
-	if root == "http" {
-		switch last {
-		case "Get", "Post", "NewRequest", "NewRequestWithContext", "Do":
-			return true
-		}
-	}
-	if root == "c" {
-		switch last {
-		case "Do", "Get", "Post":
-			return true
-		}
-	}
-	if last == "Do" && len(parts) >= 3 {
-		switch parts[len(parts)-2] {
-		case "HTTPClient", "HTTP":
-			return true
-		}
-	}
-	return false
+	return outboundHTTPCallRe.MatchString(strings.Join(parts, ".") + "(")
 }
 
 func isImportedClientCall(expr ast.Expr, imports map[string]clientImportKind, allowAnySiblingSelector bool) bool {
