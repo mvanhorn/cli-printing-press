@@ -1,7 +1,7 @@
 ---
 title: "Scorecard scorers must follow reachable command surfaces"
 date: 2026-05-21
-last_updated: 2026-05-23
+last_updated: 2026-05-24
 category: logic-errors
 module: internal/pipeline
 problem_type: logic_error
@@ -11,6 +11,7 @@ symptoms:
   - "Dead generic REST scaffolding can look like the only scored surface"
   - "Re-adding dead scaffold would improve scores without improving the printed CLI"
   - "Capability-equivalent resource-grouped or generic-store commands score lower than literal-pattern command files"
+  - "Workflow scores stay low when registered command files delegate API calls to same-package helpers"
 root_cause: logic_error
 resolution_type: code_fix
 severity: medium
@@ -21,6 +22,7 @@ tags:
   - reachability
   - dead-code
   - json-rpc
+  - helper-indirection
 ---
 
 # Scorecard scorers must follow reachable command surfaces
@@ -31,6 +33,8 @@ Several scorecard dimensions assumed generated REST scaffolding was the canonica
 
 The same failure mode applies when a REST CLI exposes equivalent capability through a different reachable shape: resource-grouped subcommands instead of top-level literal filenames, generic `resources` SQL queries instead of typed store search methods, or quota-aware cache designs that intentionally omit auto-refresh.
 
+It also applies inside `internal/cli` when a registered command delegates real API work to a same-package helper. The scorer should not require `c.Get` or `c.Post` to appear in the command file itself when the reachable helper performs the client calls.
+
 ## Symptoms
 
 - Error handling, output modes, and sync correctness were under-scored even when a registered command delegated to richer sibling-package code.
@@ -38,6 +42,7 @@ The same failure mode applies when a REST CLI exposes equivalent capability thro
 - Nested Cobra subcommands were invisible when only the parent command's first `Use:` literal was scanned.
 - Broad scans risked rewarding unregistered command files or dead files inside imported sibling packages.
 - Generic resources SQL searches could be under-scored when the command used the local store directly instead of a typed `SearchX` wrapper.
+- Compound workflow commands could be under-scored when they called shared helpers such as `pxcommon.go` functions that performed multiple generated-client or sibling-client calls.
 
 ## What Didn't Work
 
@@ -53,6 +58,7 @@ Build scorer evidence from the registered command surface:
 - Reuse the local-data signal used by the reimplementation check, including raw `database/sql` access paired with `sql.Open` or `sql.OpenDB`.
 - Run sync correctness and pagination AST checks against the same reachable files used by output and error scoring.
 - When adding a new capability-equivalent heuristic, evaluate it against registered command content or reachable files. For paired signals such as SQL text plus `Query` execution, require the evidence to live in the same command file unless cross-file matching is explicitly designed and covered by tests.
+- For workflow scoring, count one-hop same-package helper calls from registered command files when the helper contains generated-client calls or calls into a recognized sibling internal client. Exclude helpers defined in the same command file from the helper credit so normal Cobra handler-to-runner wiring does not double-count a single inline API call.
 
 ## Why This Works
 
@@ -61,6 +67,8 @@ The scorer now evaluates behavior a user or agent can actually reach. It gives n
 ## Prevention
 
 When adding scorecard heuristics, prefer registered-command reachability over hardcoded filenames. If a dimension needs paired signals, keep those pairs within the same source unit unless cross-file matching is deliberately justified. Add both positive reachable-package tests and negative dead-code tests so future broadening does not reintroduce scorer inflation. For equivalent-capability scoring, pair each positive fixture with a negative fixture for copied SQL, split-file evidence, or unregistered command files so the scorer rewards real capability rather than plausible-looking source text.
+
+For helper-following heuristics, cover both sides of the boundary: a registered command that calls a shared helper should score when the helper performs real client/store work, while an unregistered command file or same-file runner wrapper should not inflate the score. Include sibling-internal-client fixtures when the blast radius includes combo or non-REST CLIs.
 
 ## Related
 

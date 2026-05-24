@@ -14,11 +14,12 @@ import (
 func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 	var flagS string
 	var flagC string
+	var flagLocationId string
 
 	cmd := &cobra.Command{
 		Use:         "find",
 		Short:       "Find nearby stores by address",
-		Example:     "  public-param-golden-pp-cli stores find --address example-value --city example-value",
+		Example:     "  public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000",
 		Annotations: map[string]string{"pp:endpoint": "stores.find", "pp:method": "GET", "pp:path": "/power/store-locator", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && !flags.dryRun {
@@ -26,6 +27,9 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			}
 			if !(cmd.Flags().Changed("city") || cmd.Flags().Changed("c")) && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "city")
+			}
+			if !cmd.Flags().Changed("location-id") && !flags.dryRun {
+				return fmt.Errorf("required flag \"%s\" not set", "location-id")
 			}
 			c, err := flags.newClient()
 			if err != nil {
@@ -39,6 +43,9 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			}
 			if flagC != "" {
 				params["c"] = fmt.Sprintf("%v", flagC)
+			}
+			if flagLocationId != "" {
+				params["location_id"] = fmt.Sprintf("%v", flagLocationId)
 			}
 			data, err := c.Get(cmd.Context(), path, params)
 			if err != nil {
@@ -65,6 +72,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&flagC, "city", "", "City, state, zip")
 	cmd.Flags().StringVar(&flagC, "c", "", "City, state, zip")
 	_ = cmd.Flags().MarkHidden("c")
+	cmd.Flags().StringVar(&flagLocationId, "location-id", "", "Location identifier sent with this endpoint's snake-case query key")
 
 	return cmd
 }

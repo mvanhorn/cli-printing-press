@@ -599,7 +599,8 @@ func buildEndpoint(group EndpointGroup) spec.Endpoint {
 		}
 	}
 
-	body := inferRequestBody(group.Entries)
+	responseFields := InferResponseSchema(responseBodies)
+	body := inferRequestBody(group.Entries, responseFields)
 	params := inferURLParams(group.Entries, group.NormalizedPath)
 	auth := detectAuth(nil, group.Entries, "")
 	if auth.Type == "api_key" && strings.EqualFold(auth.In, "query") && auth.Header != "" {
@@ -607,7 +608,6 @@ func buildEndpoint(group EndpointGroup) spec.Endpoint {
 	}
 
 	responseType := inferResponseType(responseBodies)
-	responseFields := InferResponseSchema(responseBodies)
 	if len(params) == 0 && len(responseFields) > 0 {
 		params = responseFields
 	}
@@ -891,7 +891,9 @@ func htmlChallengeBody(body string) bool {
 	return false
 }
 
-func inferRequestBody(entries []EnrichedEntry) []spec.Param {
+func inferRequestBody(entries []EnrichedEntry, responseFields []spec.Param) []spec.Param {
+	fields := map[string]*inferredField{}
+	sampleCount := 0
 	for _, entry := range entries {
 		body := strings.TrimSpace(entry.RequestBody)
 		if body == "" {
@@ -900,12 +902,66 @@ func inferRequestBody(entries []EnrichedEntry) []spec.Param {
 
 		contentType := getHeaderValue(entry.RequestHeaders, "Content-Type")
 		params := InferRequestSchema(body, contentType)
-		if len(params) > 0 {
-			return params
+		if len(params) == 0 {
+			continue
+		}
+		sampleCount++
+		for _, param := range params {
+			field := fields[param.Name]
+			if field == nil {
+				field = &inferredField{}
+				fields[param.Name] = field
+			}
+			field.count++
+			field.param = param
 		}
 	}
 
-	return nil
+	if len(fields) == 0 {
+		return nil
+	}
+
+	return reconcileObservedBodyCursorNames(buildParams(fields, sampleCount), responseFields)
+}
+
+func reconcileObservedBodyCursorNames(body []spec.Param, response []spec.Param) []spec.Param {
+	responseStartAfter := findParamNameRecursive(response, "startafter")
+	if responseStartAfter == "" || !hasParamName(body, "searchafter") || hasParamName(body, "startafter") {
+		return body
+	}
+
+	out := make([]spec.Param, 0, len(body))
+	for _, param := range body {
+		if strings.ToLower(param.Name) == "searchafter" {
+			param.BodyName = param.Name
+			param.Name = responseStartAfter
+			out = append(out, param)
+			continue
+		}
+		out = append(out, param)
+	}
+	return out
+}
+
+func hasParamName(params []spec.Param, lowerName string) bool {
+	for _, param := range params {
+		if strings.ToLower(param.Name) == lowerName {
+			return true
+		}
+	}
+	return false
+}
+
+func findParamNameRecursive(params []spec.Param, lowerName string) string {
+	for _, param := range params {
+		if strings.ToLower(param.Name) == lowerName {
+			return param.Name
+		}
+		if nested := findParamNameRecursive(param.Fields, lowerName); nested != "" {
+			return nested
+		}
+	}
+	return ""
 }
 
 func inferURLParams(entries []EnrichedEntry, normalizedPath string) []spec.Param {

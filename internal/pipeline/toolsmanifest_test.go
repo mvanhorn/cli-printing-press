@@ -285,7 +285,7 @@ func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
 						Path:        "/stores",
 						Description: "Create store",
 						Body: []spec.Param{
-							{Name: "store_code", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true, Description: "Store code"},
+							{Name: "store_code", BodyName: "storeCode", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true, Description: "Store code"},
 						},
 					},
 				},
@@ -314,8 +314,39 @@ func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
 
 	require.Len(t, create.Params, 1)
 	assert.Equal(t, "store-code", create.Params[0].Name)
-	assert.Equal(t, "store_code", create.Params[0].WireName)
+	assert.Equal(t, "storeCode", create.Params[0].WireName)
 	assert.Equal(t, []string{"code"}, create.Params[0].Aliases)
+}
+
+func TestWriteToolsManifest_ParamURLNameUsesWireName(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "param-url-name",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"opportunities": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "GET",
+						Path:   "/opportunities/search",
+						Params: []spec.Param{
+							{Name: "locationId", URLName: "location_id", Type: "string", Required: true, Description: "Location ID"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 1)
+	assert.Equal(t, "locationId", got.Tools[0].Params[0].Name)
+	assert.Equal(t, "location_id", got.Tools[0].Params[0].WireName)
 }
 
 func TestWriteToolsManifest_IdentNamePublicParamName(t *testing.T) {

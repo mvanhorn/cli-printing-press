@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
@@ -12839,6 +12841,38 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, skill, `public-params-pp-cli stores create --store-code example-value`)
 }
 
+func TestGenerateBodyNameAcrossCLISurfaces(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("body-wire")
+	delete(apiSpec.Resources, "items")
+	apiSpec.Resources["contacts"] = spec.Resource{
+		Description: "Contacts",
+		Endpoints: map[string]spec.Endpoint{
+			"search": {
+				Method:      "POST",
+				Path:        "/contacts/search",
+				Description: "Search contacts",
+				Body: []spec.Param{
+					{Name: "startAfter", BodyName: "searchAfter", Type: "array", Description: "Pagination cursor"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	searchSource := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_contacts.go")
+	assert.Contains(t, searchSource, `StringVar(&bodyStartAfter, "start-after", "", "Pagination cursor")`)
+	assert.Contains(t, searchSource, `body["searchAfter"] = parsedStartAfter`)
+	assert.NotContains(t, searchSource, `body["startAfter"] = parsedStartAfter`)
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assert.Contains(t, mcpSource, `mcplib.WithString("startAfter", mcplib.Description("Pagination cursor"))`)
+	assert.Contains(t, mcpSource, `PublicName: "startAfter", WireName: "searchAfter", Location: "body"`)
+}
+
 // TestMCPHandlerPassesBodyArgsMap pins that POST/PUT/PATCH branches forward
 // the bodyArgs map directly to the client, not via a pre-marshal. The client's
 // do() json.Marshals what it receives; passing []byte causes encoding/json to
@@ -13479,6 +13513,296 @@ func TestPMWorkflowCommandEmitsSyncHints(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli")
 }
 
+func TestNetworkFallbackReason(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "api_unreachable", networkFallbackReason(nil))
+
+	cases := []struct {
+		name    string
+		kind    string
+		baseURL string
+		want    string
+	}{
+		{
+			name:    "synthetic kind",
+			kind:    spec.KindSynthetic,
+			baseURL: "https://example.com",
+			want:    "synthetic_anchor_fallback",
+		},
+		{
+			name:    "local placeholder host",
+			baseURL: "https://example.local",
+			want:    "synthetic_anchor_fallback",
+		},
+		{
+			name:    "live api",
+			baseURL: "https://api.example.com",
+			want:    "api_unreachable",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := adsCampaignSpec()
+			apiSpec.Name = "fallback-" + strings.ReplaceAll(tc.name, " ", "-")
+			apiSpec.Kind = tc.kind
+			apiSpec.BaseURL = tc.baseURL
+			assert.Equal(t, tc.want, networkFallbackReason(apiSpec))
+		})
+	}
+}
+
+func TestLocalReadIsList(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name                  string
+		supportsAllPagination bool
+		apiSpec               *spec.APISpec
+		endpointName          string
+		endpoint              spec.Endpoint
+		want                  bool
+	}{
+		{
+			name:         "top-level list endpoint",
+			endpointName: "list",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns", Response: spec.ResponseDef{Type: "array"}},
+			want:         true,
+		},
+		{
+			name:         "non-synthetic array response without list name",
+			endpointName: "search",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/search", Response: spec.ResponseDef{Type: "array"}},
+			want:         false,
+		},
+		{
+			name:         "synthetic array response without list name",
+			apiSpec:      &spec.APISpec{Kind: spec.KindSynthetic},
+			endpointName: "search",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/search", Response: spec.ResponseDef{Type: "array"}},
+			want:         true,
+		},
+		{
+			name:         "path-scoped array response stays out of unscoped fallback",
+			endpointName: "list",
+			endpoint: spec.Endpoint{
+				Method:   "GET",
+				Path:     "/teams/{team_id}/users",
+				Params:   []spec.Param{{Name: "team_id", Type: "string", Positional: true, PathParam: true}},
+				Response: spec.ResponseDef{Type: "array"},
+			},
+			want: false,
+		},
+		{
+			name:                  "existing paginated local fallback behavior is preserved",
+			supportsAllPagination: true,
+			endpointName:          "list",
+			endpoint: spec.Endpoint{
+				Method:   "GET",
+				Path:     "/teams/{team_id}/users",
+				Params:   []spec.Param{{Name: "team_id", Type: "string", Positional: true, PathParam: true}},
+				Response: spec.ResponseDef{Type: "array"},
+			},
+			want: true,
+		},
+		{
+			name:         "single-object endpoint",
+			endpointName: "get",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/{id}", Response: spec.ResponseDef{Type: "object"}},
+			want:         false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tc.want, localReadIsList(tc.supportsAllPagination, tc.apiSpec, tc.endpointName, tc.endpoint))
+		})
+	}
+}
+
+func TestGeneratedSyntheticAnchorCommandFallsBackToLocalStore(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	apiSpec.Name = "syntheticanchors"
+	apiSpec.Kind = spec.KindSynthetic
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	unreachableAddr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	apiSpec.BaseURL = "http://" + unreachableAddr
+	campaigns := apiSpec.Resources["campaigns"]
+	listEndpoint := campaigns.Endpoints["list"]
+	// This exercises endpointNeedsClientLimit and truncateJSONArray after
+	// resolveRead falls back to the local store.
+	listEndpoint.Params = append(listEndpoint.Params, spec.Param{Name: "limit", Type: "int"})
+	campaigns.Endpoints["list"] = listEndpoint
+	apiSpec.Resources["campaigns"] = campaigns
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"testing"
+
+	"syntheticanchors-pp-cli/internal/store"
+)
+
+func TestSyntheticAnchorCommandFallsBackToLocalStore(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("syntheticanchors-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := db.DB().Exec(` + "`" + `INSERT INTO resources(resource_type, id, data) VALUES
+		(?, ?, ?),
+		(?, ?, ?),
+		(?, ?, ?),
+		(?, ?, ?)` + "`" + `,
+		"campaigns", "camp_1", ` + "`" + `{"id":"camp_1","name":"Launch","status":"active","account_id":"acct_1"}` + "`" + `,
+		"campaigns", "camp_2", ` + "`" + `{"id":"camp_2","name":"Sustain","status":"paused","account_id":"acct_1"}` + "`" + `,
+		"campaigns", "camp_3", ` + "`" + `{"id":"camp_3","name":"Winback","status":"active","account_id":"acct_2"}` + "`" + `,
+		"campaigns", "camp_4", ` + "`" + `{"id":"camp_4","name":"Nurture","status":"active","account_id":"acct_2"}` + "`" + `,
+	); err != nil {
+		t.Fatalf("seed campaigns: %v", err)
+	}
+	if err := db.SaveSyncState("campaigns", "", 1); err != nil {
+		t.Fatalf("save sync state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"campaigns", "--limit", "3", "--agent"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute campaigns: %v; stderr=%s", err, stderr.String())
+	}
+
+	var payload struct {
+		Meta struct {
+			Source       string ` + "`" + `json:"source"` + "`" + `
+			Reason       string ` + "`" + `json:"reason"` + "`" + `
+			ResourceType string ` + "`" + `json:"resource_type"` + "`" + `
+		} ` + "`" + `json:"meta"` + "`" + `
+		Results []json.RawMessage ` + "`" + `json:"results"` + "`" + `
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("parse output: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if payload.Meta.Source != "local" || payload.Meta.Reason != "synthetic_anchor_fallback" || payload.Meta.ResourceType != "campaigns" {
+		t.Fatalf("meta = %+v, want local synthetic_anchor_fallback campaigns", payload.Meta)
+	}
+	if len(payload.Results) != 3 {
+		t.Fatalf("results = %d, want 3; stdout=%s", len(payload.Results), stdout.String())
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "synthetic_anchor_fallback_test.go"), []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyntheticAnchorCommandFallsBackToLocalStore", "./internal/cli")
+}
+
+func TestGeneratedLiveCommandPrefersAPIOverLocalStore(t *testing.T) {
+	t.Parallel()
+
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		assert.Equal(t, "/campaigns", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"live_1","name":"Live","status":"active","account_id":"acct_live"}]`))
+	}))
+	defer server.Close()
+
+	apiSpec := adsCampaignSpec()
+	apiSpec.Name = "livefallback"
+	apiSpec.BaseURL = server.URL
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"testing"
+
+	"livefallback-pp-cli/internal/store"
+)
+
+func TestLiveCommandPrefersAPIOverLocalStore(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("livefallback-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := db.DB().Exec(` + "`" + `INSERT INTO resources(resource_type, id, data) VALUES (?, ?, ?)` + "`" + `,
+		"campaigns", "local_1", ` + "`" + `{"id":"local_1","name":"Local","status":"paused","account_id":"acct_local"}` + "`" + `,
+	); err != nil {
+		t.Fatalf("seed campaigns: %v", err)
+	}
+	if err := db.SaveSyncState("campaigns", "", 1); err != nil {
+		t.Fatalf("save sync state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"campaigns", "--agent"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute campaigns: %v; stderr=%s", err, stderr.String())
+	}
+
+	var payload struct {
+		Meta struct {
+			Source string ` + "`" + `json:"source"` + "`" + `
+			Reason string ` + "`" + `json:"reason"` + "`" + `
+		} ` + "`" + `json:"meta"` + "`" + `
+		Results []map[string]any ` + "`" + `json:"results"` + "`" + `
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("parse output: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if payload.Meta.Source != "live" || payload.Meta.Reason != "" {
+		t.Fatalf("meta = %+v, want live with no fallback reason", payload.Meta)
+	}
+	if len(payload.Results) != 1 || payload.Results[0]["id"] != "live_1" {
+		t.Fatalf("results = %#v, want live payload only", payload.Results)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "live_preferred_test.go"), []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestLiveCommandPrefersAPIOverLocalStore", "./internal/cli")
+	assert.Greater(t, requestCount.Load(), int32(0), "generated command should call the live API in auto mode")
+}
+
 // TestSearchTemplateEmptyTypeQueriesGenericFTS pins #1390 — the
 // no-type branch must include a generic db.Search(query, limit) call
 // alongside the per-table typed Search<Resource> loop. Rows indexed
@@ -13719,6 +14043,111 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 	// claim that UpsertBatch keeps writing to `resources` for unknown types.
 	assert.Contains(t, store, "upsertGenericResourceTx(tx, resourceType, id",
 		"UpsertBatch must still call upsertGenericResourceTx so renamed resources land in `resources`")
+}
+
+func TestGenerateStoreWideResourceFallsBackToJSONOnlyTable(t *testing.T) {
+	t.Parallel()
+
+	fields := []spec.TypeField{{Name: "id", Type: "string"}}
+	for i := range maxStoreDomainTableColumns {
+		fields = append(fields, spec.TypeField{Name: fmt.Sprintf("setting_%d", i), Type: "string"})
+	}
+
+	apiSpec := &spec.APISpec{
+		Name:    "widecontrol",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/widecontrol-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"control": {
+				Description: "Tenant-wide control settings",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:      "GET",
+						Path:        "/Control",
+						Description: "Get control settings",
+						Response:    spec.ResponseDef{Type: "object", Item: "Control"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Control": {Fields: fields},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+
+	controlCreate := regexp.MustCompile("(?s)`CREATE TABLE IF NOT EXISTS \"control\" \\((.*?)\\)`").FindStringSubmatch(store)
+	require.Len(t, controlCreate, 2, "control table should still be emitted as JSON-only")
+	assert.Contains(t, controlCreate[1], `"id" TEXT PRIMARY KEY`)
+	assert.Contains(t, controlCreate[1], `"data" JSON NOT NULL`)
+	assert.Contains(t, controlCreate[1], `"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP`)
+	assert.NotContains(t, controlCreate[1], "setting_1499", "wide typed columns must not be emitted")
+	assert.Contains(t, store, "func (s *Store) UpsertControl(", "JSON-only fallback table still needs a typed upsert")
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
+func TestSchemaWithDependentParentsFallsBackWhenParentColumnExceedsWideCap(t *testing.T) {
+	t.Parallel()
+
+	scalarFieldCount := maxStoreDomainTableColumns - len(baseTableColumns)
+	fields := []spec.TypeField{}
+	for i := range scalarFieldCount {
+		fields = append(fields, spec.TypeField{Name: fmt.Sprintf("setting_%d", i), Type: "string"})
+	}
+
+	apiSpec := &spec.APISpec{
+		Name:    "widechild",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/widechild-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"control": {
+				Description: "Tenant-wide child settings",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/parents/{parent_id}/control",
+						Description: "List child control settings",
+						Response:    spec.ResponseDef{Type: "array", Item: "Control"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Control": {Fields: fields},
+		},
+	}
+
+	gen := New(apiSpec, t.TempDir())
+	gen.profile = &profiler.APIProfile{
+		DependentSyncResources: []profiler.DependentResource{{Name: "control"}},
+	}
+
+	control := findTable(gen.schemaWithDependentParents(), "control")
+	require.NotNil(t, control)
+	assert.True(t, control.JSONOnlyFallback, "parent_id must not push dependent tables over the wide-table cap")
+	assert.Equal(t, maxStoreDomainTableColumns+1, control.OriginalColumnCount)
+
+	names := make([]string, 0, len(control.Columns))
+	for _, c := range control.Columns {
+		names = append(names, c.Name)
+	}
+	assert.ElementsMatch(t, []string{"id", "data", "synced_at"}, names)
+	assert.Empty(t, control.Indexes)
+	assert.False(t, control.FTS5)
 }
 
 // TestGenerateEndpointTemplateEnvOverridesWireThrough: when the spec

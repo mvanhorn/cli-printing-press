@@ -382,9 +382,13 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 			loc = "path"
 		}
 		name := p.PublicInputName()
+		wireName := p.WireName()
+		if loc == "path" {
+			wireName = p.Name
+		}
 		tool.Params = append(tool.Params, ManifestParam{
 			Name:        name,
-			WireName:    manifestWireName(name, p.Name),
+			WireName:    manifestWireName(name, wireName),
 			Type:        normalizeParamType(p.Type),
 			Location:    loc,
 			Description: describeParam(p),
@@ -398,7 +402,7 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		name := p.PublicInputName()
 		tool.Params = append(tool.Params, ManifestParam{
 			Name:        name,
-			WireName:    manifestWireName(name, p.Name),
+			WireName:    manifestWireName(name, p.BodyWireName()),
 			Type:        normalizeParamType(p.Type),
 			Location:    "body",
 			Description: describeParam(p),

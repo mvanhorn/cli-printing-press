@@ -25,23 +25,25 @@ import (
 func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
 		mcplib.NewTool("stores_create",
-			mcplib.WithDescription("Create a store record. Required: store-code. Returns the new Store."),
+			mcplib.WithDescription("Create a store record. Required: store-code. Optional: dry_run. Returns the new Store."),
+			mcplib.WithBoolean("dry_run", mcplib.Description("Preview without writing")),
 			mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code")),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/stores", false, false, nil, []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
+		makeAPIHandler("POST", "/stores", false, false, nil, []mcpParamBinding{{PublicName: "dry_run", WireName: "$dry_run", Location: "query"}, {PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("stores_find",
-			mcplib.WithDescription("Find nearby stores by address. Required: address, city. Returns array of Store."),
+			mcplib.WithDescription("Find nearby stores by address. Required: address, city, locationId. Returns array of Store."),
 			mcplib.WithString("address", mcplib.Required(), mcplib.Description("Street address")),
 			mcplib.WithString("city", mcplib.Required(), mcplib.Description("City, state, zip")),
+			mcplib.WithString("locationId", mcplib.Required(), mcplib.Description("Location identifier sent with this endpoint's snake-case query key")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/power/store-locator", true, false, nil, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}}, []string{}),
+		makeAPIHandler("GET", "/power/store-locator", true, false, nil, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}, {PublicName: "locationId", WireName: "location_id", Location: "query"}}, []string{}),
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.

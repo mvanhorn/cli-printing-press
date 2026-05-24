@@ -167,6 +167,20 @@ func TestBodyMap_IdentName(t *testing.T) {
 	}
 }
 
+func TestBodyMap_BodyNameOverridesJSONKey(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{Name: "startAfter", BodyName: "searchAfter", Type: "array"}}, "\t")
+	if !strings.Contains(got, "bodyStartAfter") {
+		t.Errorf("expected public name to drive variable identity, got: %s", got)
+	}
+	if !strings.Contains(got, `body["searchAfter"] = parsedStartAfter`) {
+		t.Errorf("expected body_name to drive JSON key, got: %s", got)
+	}
+	if strings.Contains(got, `body["startAfter"]`) {
+		t.Errorf("public name must not leak as JSON key when body_name is set, got: %s", got)
+	}
+}
+
 // TestBodyMap_NestedObject verifies that body params declaring
 // type=object with non-empty Fields render a nested-map block in
 // place of the JSON-string parse path. The wire key is the parent's

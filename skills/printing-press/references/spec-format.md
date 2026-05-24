@@ -233,9 +233,17 @@ types:
 
 ## 3. Public Parameter Names
 
-`name` is the upstream wire key. The generator uses it for query strings, path
-substitution, and JSON body keys. Do not change `name` just to make a prettier
-CLI.
+`name` is the upstream wire key by default and the parameter's public identity
+when no override is set. The generator uses it for path substitution and, unless
+`url_name` or `body_name` says otherwise, query strings and request-body keys.
+Do not change `name` just to make a prettier CLI.
+
+`url_name` is an optional query-string wire override. Use it when the CLI/MCP
+input should keep the `name` spelling but the URL key must differ.
+
+`body_name` is an optional request-body wire override. Use it when the CLI/MCP
+input should keep the `name` spelling but the JSON, form, or multipart body key
+must differ.
 
 `flag_name` is the preferred public name shown in generated CLI flags, examples,
 typed MCP schemas, and `tools-manifest.json`. Add it only when source evidence
@@ -266,6 +274,17 @@ params:
 
 Here `--address` and `--city` are the generated public names, `--s` and `--c`
 remain compatibility aliases, and requests still send upstream keys `s` and `c`.
+
+For body fields where the public cursor name and accepted body key diverge,
+keep the public identity in `name` and set `body_name` to the observed wire key:
+
+```yaml
+body:
+  - name: startAfter
+    body_name: searchAfter
+    type: array
+    description: Pagination cursor
+```
 
 ## 4. Validation Rules
 

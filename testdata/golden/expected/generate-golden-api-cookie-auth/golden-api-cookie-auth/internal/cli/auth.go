@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
+	"golden-api-cookie-auth-pp-cli/internal/client"
 	"golden-api-cookie-auth-pp-cli/internal/cliutil"
 	"golden-api-cookie-auth-pp-cli/internal/config"
 	"io"
@@ -162,6 +163,28 @@ profile by name when the installed backend supports it.`,
 					return authErr(fmt.Errorf("cookie tool returned no cookies for %s", domain))
 				}
 			} // end if !fromPressAuth
+			// Unfiltered, the persisted blob carries every cookie the target
+			// domain has set (CSRF, WAF, anti-bot fingerprints, etc.) into the
+			// Cookie header on every request, which routinely trips upstream
+			// WAFs and shadows the real credential.
+			cookieMap := parseCookieString(cookies)
+			requiredCookies := []string{"session_id", "csrf_token"}
+			kept := make([]string, 0, len(requiredCookies))
+			for _, name := range requiredCookies {
+				v, ok := cookieMap[name]
+				if !ok {
+					loginURL := "https://" + strings.TrimPrefix(domain, ".")
+					fmt.Fprintf(w, "\n%s Cookie %q not found for %s.\n", red("ERROR"), name, domain)
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "Log in to your account:")
+					fmt.Fprintf(w, "\n  %s\n\n", loginURL)
+					fmt.Fprintln(w, "Then run this command again:")
+					fmt.Fprintf(w, "\n  golden-api-cookie-auth-pp-cli auth login --chrome\n")
+					return authErr(fmt.Errorf("cookie %q not found for %s", name, domain))
+				}
+				kept = append(kept, name+"="+v)
+			}
+			cookies = strings.Join(kept, "; ")
 
 			// Step 5: Save to config
 			cfg, err := config.Load(flags.configPath)
@@ -171,6 +194,19 @@ profile by name when the installed backend supports it.`,
 
 			if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving cookies: %w", err))
+			}
+			// Persist the required cookies so client.LoadCookieJar() carries
+			// them on subsequent invocations; the SaveTokens blob above feeds
+			// the Authorization header path but is invisible to the HTTP
+			// client's cookie jar.
+			jarCookies := make(map[string]string, len(requiredCookies))
+			for _, name := range requiredCookies {
+				if v, ok := cookieMap[name]; ok {
+					jarCookies[name] = v
+				}
+			}
+			if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
+				fmt.Fprintf(w, "warning: persisting cookie jar: %v (cookies still saved to config)\n", err)
 			}
 
 			count := len(strings.Split(cookies, ";"))

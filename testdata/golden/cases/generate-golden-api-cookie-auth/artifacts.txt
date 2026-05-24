@@ -1,5 +1,10 @@
 # Locks the cookie-auth CDP WebSocket eval emission shape so future template
 # changes can't silently reorder the import block, rename the helper, or drop
 # the bounded-deadline calls without the golden suite catching the drift.
+# Also locks the cookie-jar wiring: client.go's New() calls LoadCookieJar()
+# when auth.cookies is declared, and a generalized cookiejar.go ships in the
+# client package so subsequent invocations carry the user's session.
 golden-api-cookie-auth/internal/cli/auth.go
+golden-api-cookie-auth/internal/client/client.go
+golden-api-cookie-auth/internal/client/cookiejar.go
 golden-api-cookie-auth/go.mod

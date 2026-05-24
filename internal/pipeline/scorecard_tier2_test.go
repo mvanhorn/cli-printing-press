@@ -2628,6 +2628,216 @@ func runLookup() error { return nil }
 		assert.Equal(t, 6, scoreWorkflows(dir))
 	})
 
+	t.Run("counts commands that call package-local client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func fetchMeta(c apiClient) error {
+	_, err := c.Get("/meta")
+	return err
+}
+
+func runQuery(c apiClient) error {
+	_, err := c.Post("/query", nil)
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 3; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d(c apiClient) error {
+	if err := fetchMeta(c); err != nil {
+		return err
+	}
+	return runQuery(c)
+}
+`, i, i))
+		}
+
+		assert.Equal(t, 6, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local client helper weights greater than one", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+	package cli
+	
+	func fetchBundle(c apiClient) error {
+		if _, err := c.Get("/bundle/meta"); err != nil {
+			return err
+		}
+		_, err := c.Get("/bundle/items")
+		return err
+	}
+	`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+	package cli
+	
+	func runReport(c apiClient) error {
+		return fetchBundle(c)
+	}
+	`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("ignores unregistered commands that call package-local client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/pxcommon.go", `
+package cli
+
+func runQuery(c apiClient) error {
+	_, err := c.Post("/query", nil)
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newLookupCmd(nil))
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {}
+
+func runReport(c apiClient) error {
+	return runQuery(c)
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local helpers using other generated client verbs", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func updateThing(c apiClient) error {
+	_, err := c.Put("/thing", nil)
+	return err
+}
+
+func deleteThing(c apiClient) error {
+	_, err := c.Delete("/thing")
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func runReport(c apiClient) error {
+	if err := updateThing(c); err != nil {
+		return err
+	}
+	return deleteThing(c)
+}
+`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local helpers that call sibling internal clients", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/pxcommon.go", `
+package cli
+
+import "example.com/project/internal/phgraphql"
+
+func fetchMeta() error {
+	_, err := phgraphql.FetchMeta()
+	return err
+}
+
+func runQuery() error {
+	_, err := phgraphql.Post()
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newReportCmd(nil))
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {}
+
+func runReport() error {
+	if err := fetchMeta(); err != nil {
+		return err
+	}
+	return runQuery()
+}
+`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("does not count commands that only call non-client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func staticRows() []string {
+	return []string{"cached"}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func runReport() []string {
+	return staticRows()
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
+	})
+
+	t.Run("does not double-count same-file command runners as helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {
+	runReport(flags)
+}
+
+func runReport(c apiClient) error {
+	_, err := c.Get("/report")
+	return err
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
+	})
+
 	t.Run("counts multi-API-call files", func(t *testing.T) {
 		dir := t.TempDir()
 
