@@ -690,6 +690,68 @@ func TestRunLiveDogfoodSkipsHappyPathOnMissingFileFixture(t *testing.T) {
 	assert.Equal(t, LiveDogfoodStatusPass, help.Status, "help check must still pass when the only failure is a missing fixture")
 }
 
+func TestRunLiveDogfoodSkipsHappyPathOnRequiredParam4xx(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodRequiredParamFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "PASS", report.Verdict)
+
+	happy := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected reports prospects happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, happy.Reason)
+
+	json := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestJSON)
+	require.NotNil(t, json, "expected reports prospects json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, json.Status)
+	assert.Equal(t, happy.Reason, json.Reason)
+
+	help := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestHelp)
+	require.NotNil(t, help, "expected reports prospects help result")
+	assert.Equal(t, LiveDogfoodStatusPass, help.Status, "help check must still pass when the only failure is an unsupplied required API parameter")
+
+	summaryHappy := findResultByCommandKind(report, "reports summary", LiveDogfoodTestHappy)
+	require.NotNil(t, summaryHappy, "expected reports summary happy_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, summaryHappy.Status)
+
+	summaryJSON := findResultByCommandKind(report, "reports summary", LiveDogfoodTestJSON)
+	require.NotNil(t, summaryJSON, "expected reports summary json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, summaryJSON.Status)
+	assert.Equal(t, reasonRequiredParamFixture, summaryJSON.Reason)
+}
+
+func TestRunLiveDogfoodKeepsOrdinary4xxFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodOrdinary4xxFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+
+	happy := findResultByCommandKind(report, "reports broken-filter", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected reports broken-filter happy_path result")
+	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
+	assert.Contains(t, happy.OutputSample, "invalid filter")
+}
+
 func writeLiveDogfoodFileFixtureScript(t *testing.T) (dir string, binaryName string) {
 	t.Helper()
 
@@ -743,6 +805,138 @@ exit 99
 	return dir, binaryName
 }
 
+func writeLiveDogfoodRequiredParamFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"reports","subcommands":[
+      {"name":"prospects"},
+      {"name":"summary"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List report prospects.
+
+Usage:
+  fixture-pp-cli reports prospects [flags]
+
+Examples:
+  fixture-pp-cli reports prospects
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ] && [ "${3:-}" = "--json" ]; then
+  echo 'unexpected reports prospects --json invocation' >&2
+  exit 9
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ]; then
+  echo 'HTTP 400: {"error":"Please provide email"}' >&2
+  exit 1
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show report summary.
+
+Usage:
+  fixture-pp-cli reports summary [flags]
+
+Examples:
+  fixture-pp-cli reports summary
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ] && [ "${3:-}" = "--json" ]; then
+  echo 'HTTP 400: {"error":"missing required parameter: email"}' >&2
+  exit 1
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ]; then
+  echo 'summary'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodOrdinary4xxFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"reports","subcommands":[
+      {"name":"broken-filter"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "broken-filter" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Run a report with an invalid upstream filter.
+
+Usage:
+  fixture-pp-cli reports broken-filter [flags]
+
+Examples:
+  fixture-pp-cli reports broken-filter
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "broken-filter" ]; then
+  echo 'HTTP 400: {"error":"invalid filter"}' >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
 func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
 	t.Parallel()
 
@@ -759,6 +953,64 @@ func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "your credentials are valid but lack access"}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"error":"Couldn't authenticate you"}`}))
 	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 404 NotFound"}))
+}
+
+func TestLiveDogfoodRequiredParamFixtureReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		run  liveDogfoodRun
+		want string
+	}{
+		{
+			name: "missing required parameter 4xx is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"missing required parameter: email"}`, exitCode: 1},
+			want: reasonRequiredParamFixture,
+		},
+		{
+			name: "please provide 4xx is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"Please provide email"}`, exitCode: 1},
+			want: reasonRequiredParamFixture,
+		},
+		{
+			name: "ordinary 4xx remains a failure",
+			run:  liveDogfoodRun{stderr: "HTTP 404 NotFound", exitCode: 1},
+		},
+		{
+			name: "401 auth requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 401: {"error":"api key is required"}`, exitCode: 1},
+		},
+		{
+			name: "403 subscription requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 403: {"error":"subscription is required"}`, exitCode: 1},
+		},
+		{
+			name: "404 not found requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"widget id is required"}`, exitCode: 1},
+		},
+		{
+			name: "generic 400 requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"subscription is required"}`, exitCode: 1},
+		},
+		{
+			name: "generic please provide 400 is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"Please provide subscription"}`, exitCode: 1},
+		},
+		{
+			name: "422 missing field validation is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 422: {"error":"missing field: status"}`, exitCode: 1},
+		},
+		{
+			name: "successful output is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"missing required parameter: email"}`, exitCode: 0},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, liveDogfoodRequiredParamFixtureReason(tc.run))
+		})
+	}
 }
 
 func TestRunLiveDogfoodSkipsDestructiveByDefault(t *testing.T) {
