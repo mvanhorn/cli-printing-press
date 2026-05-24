@@ -1291,8 +1291,8 @@ func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols 
 // sameRegisteredDomain compares two hosts at the eTLD+1 level so
 // subdomain splits like api.example.com / www.example.com qualify as
 // "same site." Literal-equality is checked first so private or unknown
-// TLDs (intranet hosts, raw IPs, .test/.local) still match themselves
-// even when publicsuffix can't resolve them.
+// hosts (intranet names, raw IPs) still match themselves even when
+// publicsuffix can't resolve them.
 func sameRegisteredDomain(hostA, hostB string) bool {
 	a := registeredDomainOrHost(hostA)
 	b := registeredDomainOrHost(hostB)

@@ -1854,6 +1854,8 @@ func TestSameRegisteredDomain(t *testing.T) {
 		{"db.local", "db.local", true},
 		{"api.db.local", "www.db.local", true},
 		{"db.local", "other.local", false},
+		{"printer", "printer", true},
+		{"printer", "scanner", false},
 		{"192.168.1.1", "192.168.1.1", true},
 		{"192.168.1.1", "192.168.1.2", false},
 	}
