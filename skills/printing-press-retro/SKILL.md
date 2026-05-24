@@ -356,7 +356,7 @@ For each candidate, ask in order:
 
 1. **Was this iteration noise?** Normal trial-and-error during generation —
    one-off retry, typo recovery, agent forgetting a flag, transient network blip. Drop.
-2. **Is this a printed-CLI fix?** The fix lives in `~/printing-press/library/<api>/`
+2. **Is this a printed-CLI fix?** The fix lives in `$PRESS_LIBRARY/<api>/`
    and helps only this one CLI. If the proposed change is "edit this command in
    this CLI" or "regenerate after fixing the spec," it's not a retro finding — it's
    a polish pass on that CLI. Drop.
@@ -439,7 +439,7 @@ RPC-style) and input methods (OpenAPI, crowd-sniffed, HAR-sniffed, no spec).
 
 **Step B: Name three concrete APIs from the catalog with direct evidence.** Not "every
 API with multi-word resources" or "any browser-sniffed CLI." Name three specific APIs
-already in `~/printing-press/library/` (or the embedded `catalog/` directory) where you
+already in `$PRESS_LIBRARY/` (or the embedded `catalog/` directory) where you
 can point to evidence the pattern exists: a path in their spec, a known endpoint shape,
 a header the vendor documents, an output you can reproduce. "Stripe, Notion, GitHub
 probably have this" is hand-waving; "Stripe (Stripe-Version header in spec line N),

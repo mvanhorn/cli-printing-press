@@ -103,6 +103,7 @@ func TestSkillFilesHonorPrintingPressHomeEnv(t *testing.T) {
 			assert.NotContains(t, full, `PRESS_HOME="$HOME/printing-press"`)
 			assert.NotContains(t, full, `$HOME/printing-press/`)
 			assert.NotContains(t, full, `"$HOME/printing-press"`)
+			assert.NotContains(t, full, `~/printing-press/library/`)
 			assert.NotContains(t, full, `~/printing-press/manuscripts/`)
 		})
 	}
@@ -155,6 +156,20 @@ func TestPrintingPressImportScriptsHonorPrintingPressHomeEnv(t *testing.T) {
 
 	assert.Contains(t, out, "/tmp/printing-press/"+apiSlug+"-")
 	assert.NoDirExists(t, filepath.Join(home, "printing-press"))
+
+	defaultBackupHome := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(defaultBackupHome, "printing-press", "library", apiSlug), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(defaultBackupHome, "printing-press", "library", apiSlug, "state.json"), []byte("{}\n"), 0o644))
+	defaultFakeBin := t.TempDir()
+	defaultFakeZip := filepath.Join(defaultFakeBin, "zip")
+	require.NoError(t, os.WriteFile(defaultFakeZip, []byte("#!/usr/bin/env bash\nset -euo pipefail\ntouch \"$2\"\n"), 0o755))
+	defaultOut := runContractScript(t, backupScript, []string{
+		"PRINTING_PRESS_HOME=",
+		"HOME=" + defaultBackupHome,
+		"PATH=" + defaultFakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}, apiSlug)
+
+	assert.Contains(t, defaultOut, "/tmp/printing-press/"+apiSlug+"-")
 }
 
 func TestPrintingPressSetupChecksSkipSnippetIsSelfContained(t *testing.T) {

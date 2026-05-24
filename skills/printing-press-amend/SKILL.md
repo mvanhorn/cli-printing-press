@@ -36,7 +36,7 @@ Turn a dogfood session into a PR for a printed CLI in the public library.
 /printing-press-amend                 # auto-detect target CLI from session
 /printing-press-amend superhuman      # explicit short name
 /printing-press-amend superhuman-pp-cli
-/printing-press-amend ~/printing-press/library/superhuman
+/printing-press-amend "$PRESS_LIBRARY/superhuman"
 ```
 
 This skill lives in this repo (the machine) and acts on a printed CLI in the public library. It is sibling to `/printing-press-publish` (adds a new CLI), `/printing-press-polish` (improves a CLI pre-publish), and `/printing-press-retro` (reflects on the machine itself). None of those cover post-publish CLI amendments driven by real-session friction.

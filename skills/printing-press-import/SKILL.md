@@ -20,7 +20,7 @@ allowed-tools:
 
 Bring a published CLI from the public library
 ([`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library))
-into the internal library at `~/printing-press/library/` so it matches
+into the internal library at `$PRESS_LIBRARY/` so it matches
 the form the generator would produce. Manuscripts ride along.
 
 ```bash
