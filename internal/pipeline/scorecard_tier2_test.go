@@ -1832,7 +1832,7 @@ func Load() {
 		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
 		assert.NoError(t, err)
 		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
-		assert.Less(t, sc.Steinberger.AuthProtocol, 8)
+		assert.Less(t, sc.Steinberger.AuthProtocol, 6)
 	})
 
 	t.Run("same-prefix standalone header scheme is not pulled into composed auth", func(t *testing.T) {
@@ -3023,6 +3023,33 @@ func Load() {
 	unrelatedScore, unrelatedScoreable := scoreAuthScheme(clientContent, configContent, "", false, unrelatedScheme)
 	assert.True(t, unrelatedScoreable)
 	assert.Equal(t, 0, unrelatedScore)
+}
+
+func TestConfigReadsSchemeEnvVarRequiresExactEnvLookup(t *testing.T) {
+	scheme := openAPISecurityScheme{
+		Key:     "APIToken",
+		Type:    "apikey",
+		In:      "query",
+		EnvVars: []string{"KEY"},
+	}
+
+	assert.True(t, configReadsSchemeEnvVar(`package config
+func Load() {
+	if v := os.Getenv("KEY"); v != "" {
+		cfg.Key = v
+	}
+}`, scheme))
+	assert.True(t, configReadsSchemeEnvVar(`package config
+func Load() {
+	if v, ok := os.LookupEnv("KEY"); ok {
+		cfg.Key = v
+	}
+}`, scheme))
+	assert.False(t, configReadsSchemeEnvVar(`package config
+// KEY is mentioned here, but not read.
+func Load() {
+	cfg.SomeOtherKey = "not-secret"
+}`, scheme))
 }
 
 func TestRunScorecard_APIKeyHeaderUsesCaseInsensitiveHeaderAndGenericAPIKeyEnv(t *testing.T) {

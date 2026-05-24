@@ -2222,6 +2222,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 	envMatched := false
 	scoreable := false
 	bearerStyle := false
+	exactQueryParamMatched := false
 
 	if strings.EqualFold(scheme.Type, "apikey") && (scheme.In == "header" || scheme.In == "query") && strings.TrimSpace(scheme.HeaderName) != "" {
 		headerName = scheme.HeaderName
@@ -2262,6 +2263,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 		}
 		if scheme.In == "query" && headerName != "" {
 			if queryAssignmentPresent(clientContent, headerName) {
+				exactQueryParamMatched = true
 				authHeaderMatched = true
 				headerNameMatched = true
 				queryMatched = true
@@ -2318,6 +2320,10 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 		strings.Contains(configContent, "chrome-composed") ||
 		strings.Contains(configContent, `"browser"`)) {
 		envMatched = true
+	}
+
+	if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "query" && strings.TrimSpace(headerName) != "" && !exactQueryParamMatched {
+		return 0, true
 	}
 
 	score := 0
@@ -2503,14 +2509,18 @@ func configReadsAPIKeyEnvForScheme(configContent string, scheme openAPISecurityS
 }
 
 func configReadsSchemeEnvVar(configContent string, scheme openAPISecurityScheme) bool {
-	upperConfig := strings.ToUpper(configContent)
 	for _, envVar := range scheme.EnvVars {
 		envVar = strings.TrimSpace(envVar)
-		if envVar != "" && strings.Contains(upperConfig, strings.ToUpper(envVar)) {
+		if envVar != "" && configReadsExactEnvVar(configContent, envVar) {
 			return true
 		}
 	}
 	return false
+}
+
+func configReadsExactEnvVar(configContent, envVar string) bool {
+	callPattern := `\bos\.(?:Getenv|LookupEnv)\(\s*"` + regexp.QuoteMeta(envVar) + `"\s*\)`
+	return regexp.MustCompile(callPattern).MatchString(configContent)
 }
 
 func isGenericAPIKeyScheme(scheme openAPISecurityScheme) bool {
