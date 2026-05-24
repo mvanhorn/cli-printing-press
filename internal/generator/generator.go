@@ -2510,6 +2510,7 @@ type visionRenderData struct {
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
 	PaginationSupportedResources []string
+	SpecTimestampFields          []string
 	SearchableFields             map[string][]string
 	Tables                       []TableDef
 	Pagination                   profiler.PaginationProfile
@@ -2603,6 +2604,56 @@ func paginationSupportedResources(syncable []profiler.SyncableResource, dependen
 	return names
 }
 
+func specDateTimeFieldNames(api *spec.APISpec) []string {
+	if api == nil {
+		return nil
+	}
+
+	fields := map[string]struct{}{}
+	addName := func(name, format string) {
+		if strings.EqualFold(format, "date-time") && strings.TrimSpace(name) != "" {
+			fields[name] = struct{}{}
+		}
+	}
+
+	var walkParams func(params []spec.Param)
+	walkParams = func(params []spec.Param) {
+		for _, p := range params {
+			addName(p.Name, p.Format)
+			if len(p.Fields) > 0 {
+				walkParams(p.Fields)
+			}
+		}
+	}
+
+	var walkResource func(resource spec.Resource)
+	walkResource = func(resource spec.Resource) {
+		for _, endpoint := range resource.Endpoints {
+			walkParams(endpoint.Params)
+			walkParams(endpoint.Body)
+		}
+		for _, sub := range resource.SubResources {
+			walkResource(sub)
+		}
+	}
+
+	for _, typeDef := range api.Types {
+		for _, f := range typeDef.Fields {
+			addName(f.Name, f.Format)
+		}
+	}
+	for _, resource := range api.Resources {
+		walkResource(resource)
+	}
+
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	gqlFieldPaths := map[string]string{}
 	for rName, r := range g.Spec.Resources {
@@ -2616,6 +2667,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
 		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
+		SpecTimestampFields:          specDateTimeFieldNames(g.Spec),
 		SearchableFields:             g.profile.SearchableFields,
 		Tables:                       schema,
 		Pagination:                   g.profile.Pagination,
@@ -2801,7 +2853,7 @@ func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, 
 	for _, tmpl := range g.VisionSet.Workflows {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
 		outPath := filepath.Join("internal", "cli", outName)
-		if err := g.renderTemplate(tmpl, outPath, g.Spec); err != nil {
+		if err := g.renderTemplate(tmpl, outPath, visionData); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: skipping workflow template %s: %v\n", tmpl, err)
 			continue
 		}
