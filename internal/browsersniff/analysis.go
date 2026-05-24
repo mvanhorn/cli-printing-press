@@ -486,7 +486,7 @@ func AnalyzeTraffic(capture *EnrichedCapture) (*TrafficAnalysis, error) {
 		SecondaryHosts:   secondaryHosts,
 		Protocols:        detectProtocols(classifiedEntries),
 		Auth:             detectTrafficAuth(capture, classifiedEntries),
-		Protections:      detectProtections(classifiedEntries),
+		Protections:      detectProtections(classifiedEntries, capture.TargetURL),
 		EndpointClusters: buildEndpointClusters(groups, classifiedEntries),
 		RequestSequences: detectRequestSequences(classifiedEntries),
 		Pagination:       detectPagination(classifiedEntries),
@@ -858,7 +858,7 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 	}
 }
 
-func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
+func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionObservation {
 	observations := map[string]*ProtectionObservation{}
 	add := func(label string, confidence float64, entry EnrichedEntry, index int, reason string, notes ...string) {
 		observation := observations[label]
@@ -873,7 +873,15 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 		observation.Notes = uniqueStrings(append(observation.Notes, notes...))
 	}
 
+	protectionSites := protectionSitesForEntries(entries, targetURL)
+	apiHosts := apiHostsForProtection(entries)
 	for index, entry := range entries {
+		entryHost := normalizedURLHost(entry.URL)
+		// If no real target or API host is known, keep the legacy broad scan
+		// instead of dropping possible protection evidence from a sparse capture.
+		if len(protectionSites) > 0 && !apiHosts[entryHost] && !protectionSites[registeredDomainOrHost(entryHost)] {
+			continue
+		}
 		body := strings.ToLower(entry.ResponseBody)
 		headers := lowerHeaderMap(entry.ResponseHeaders)
 		server := headers["server"]
@@ -925,6 +933,46 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 		return out[i].Confidence > out[j].Confidence
 	})
 	return out
+}
+
+func protectionSitesForEntries(entries []EnrichedEntry, targetURL string) map[string]bool {
+	sites := map[string]bool{}
+	if site := registeredDomainOrHost(httpURLHostname(targetURL)); site != "" {
+		sites[site] = true
+	}
+	for _, entry := range entries {
+		if entry.Classification != "api" {
+			continue
+		}
+		if site := registeredDomainOrHost(normalizedURLHost(entry.URL)); site != "" {
+			sites[site] = true
+		}
+	}
+	return sites
+}
+
+func apiHostsForProtection(entries []EnrichedEntry) map[string]bool {
+	hosts := map[string]bool{}
+	for _, entry := range entries {
+		if entry.Classification != "api" {
+			continue
+		}
+		if host := normalizedURLHost(entry.URL); host != "" {
+			hosts[host] = true
+		}
+	}
+	return hosts
+}
+
+func httpURLHostname(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
 }
 
 func isCaptchaPreflightCandidate(entry EnrichedEntry) bool {
@@ -1243,26 +1291,27 @@ func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols 
 // sameRegisteredDomain compares two hosts at the eTLD+1 level so
 // subdomain splits like api.example.com / www.example.com qualify as
 // "same site." Literal-equality is checked first so private or unknown
-// TLDs (intranet hosts, raw IPs, .test/.local) still match themselves
-// even when publicsuffix can't resolve them.
+// hosts (intranet names, raw IPs) still match themselves even when
+// publicsuffix can't resolve them.
 func sameRegisteredDomain(hostA, hostB string) bool {
-	a := strings.ToLower(strings.TrimSpace(hostA))
-	b := strings.ToLower(strings.TrimSpace(hostB))
+	a := registeredDomainOrHost(hostA)
+	b := registeredDomainOrHost(hostB)
 	if a == "" || b == "" {
 		return false
 	}
-	if a == b {
-		return true
+	return a == b
+}
+
+func registeredDomainOrHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return ""
 	}
-	aETLD, err := publicsuffix.EffectiveTLDPlusOne(a)
+	registered, err := publicsuffix.EffectiveTLDPlusOne(host)
 	if err != nil {
-		return false
+		return host
 	}
-	bETLD, err := publicsuffix.EffectiveTLDPlusOne(b)
-	if err != nil {
-		return false
-	}
-	return aETLD == bETLD
+	return registered
 }
 
 func hasAPIBrowserRenderedEntry(entries []EnrichedEntry) bool {
