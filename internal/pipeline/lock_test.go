@@ -645,6 +645,7 @@ func TestPromoteWorkingCLI_StagesRunstateManuscripts(t *testing.T) {
 
 	// Plant research and discovery alongside the phase5 marker so we can
 	// assert the whole runstate triplet gets staged into the published copy.
+	require.NoError(t, os.WriteFile(filepath.Join(state.RunRoot(), "research.json"), []byte(`{"summary":"root research"}`+"\n"), 0o644))
 	require.NoError(t, os.MkdirAll(state.ResearchDir(), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(state.ResearchDir(), "notes.md"), []byte("research notes\n"), 0o644))
 	require.NoError(t, os.MkdirAll(state.DiscoveryDir(), 0o755))
@@ -661,7 +662,11 @@ func TestPromoteWorkingCLI_StagesRunstateManuscripts(t *testing.T) {
 	_, err = os.Stat(filepath.Join(manuRoot, "proofs", Phase5AcceptanceFilename))
 	assert.NoError(t, err, "phase5 acceptance marker should be staged into the published copy")
 
-	data, err := os.ReadFile(filepath.Join(manuRoot, "research", "notes.md"))
+	data, err := os.ReadFile(filepath.Join(manuRoot, "research.json"))
+	require.NoError(t, err)
+	assert.Equal(t, "{\"summary\":\"root research\"}\n", string(data))
+
+	data, err = os.ReadFile(filepath.Join(manuRoot, "research", "notes.md"))
 	require.NoError(t, err)
 	assert.Equal(t, "research notes\n", string(data))
 
@@ -836,6 +841,11 @@ func setLockOwnerAliveForTest(t *testing.T, alive bool) {
 	t.Cleanup(func() { lockOwnerAliveFunc = original })
 }
 
+func TestShellQuote(t *testing.T) {
+	assert.Equal(t, "'/tmp/my project/run1'", shellQuote("/tmp/my project/run1"))
+	assert.Equal(t, "'/tmp/alice'\\''s project/run1'", shellQuote("/tmp/alice's project/run1"))
+}
+
 // ---------------------------------------------------------------------------
 // PII gate (U3)
 // ---------------------------------------------------------------------------
@@ -921,6 +931,57 @@ func TestPromoteWorkingCLI_PIIGatePassesWithValidAccepts(t *testing.T) {
 	// Ledger should be carried into the published library
 	_, statErr = os.Stat(filepath.Join(libDir, artifacts.PIILedgerFilename))
 	assert.NoError(t, statErr, "ledger should travel with the staged copy")
+}
+
+func TestPromoteWorkingCLI_PIIGatePreservesAcceptedRunResearch(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	_, err := AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	state := NewStateWithRun("test", workDir, "run-pii-manuscript", "test-scope")
+	writePhase5PassForState(t, state, "none")
+	require.NoError(t, os.WriteFile(
+		filepath.Join(state.RunRoot(), "research.json"),
+		[]byte(`{"narrative":{"auth_narrative":"Contact functioneelbeheer@tenderned.nl for access."}}`+"\n"),
+		0o644,
+	))
+
+	preflight, err := artifacts.FindPIIWithOptions(workDir, artifacts.PIIAuditOptions{ManuscriptsDir: state.RunRoot()})
+	require.NoError(t, err)
+	require.Len(t, preflight, 1)
+	require.Equal(t, ".manuscripts/run-pii-manuscript/research.json", preflight[0].File)
+	preflight[0].Status = artifacts.PIIStatusAccepted
+	preflight[0].Category = artifacts.PIICategoryAPIProviderData
+	preflight[0].EvidenceContext = "research narrative names the API provider's public support email"
+	require.NoError(t, artifacts.WritePIILedger(workDir, &artifacts.PIILedger{
+		Timestamp:           time.Now().UTC(),
+		CLIDir:              workDir,
+		Findings:            preflight,
+		FindingsCountBefore: 1,
+	}))
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	ledger := artifacts.ReadPIILedger(libDir)
+	require.NotNil(t, ledger)
+	require.Len(t, ledger.Findings, 1)
+	assert.Equal(t, ".manuscripts/run-pii-manuscript/research.json", ledger.Findings[0].File)
+	assert.Equal(t, artifacts.PIIStatusAccepted, ledger.Findings[0].Status)
+
+	result, err := artifacts.RunPIIAudit(libDir)
+	require.NoError(t, err)
+	assert.Zero(t, artifacts.PIIPendingCount(result.Findings))
 }
 
 func TestPromoteWorkingCLI_PIIGateHaltsOnGateFailure(t *testing.T) {

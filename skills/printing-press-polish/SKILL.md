@@ -170,6 +170,15 @@ fi
 #  2. Post-promote (standalone polish): research.json lives at
 #     manuscripts/<api>/<run-id>/research.json.
 RESEARCH_DIR=""
+MANIFEST_RUN_ID=""
+if [ -f "$CLI_DIR/.printing-press.json" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    MANIFEST_RUN_ID="$(jq -r '.run_id // empty' "$CLI_DIR/.printing-press.json" 2>/dev/null || true)"
+  fi
+  if [ -z "$MANIFEST_RUN_ID" ]; then
+    MANIFEST_RUN_ID="$(sed -nE 's/.*"run_id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$CLI_DIR/.printing-press.json" | head -1)"
+  fi
+fi
 case "$CLI_DIR" in
   *.runstate/*)
     _grandparent="$(dirname "$(dirname "$CLI_DIR")")"
@@ -178,12 +187,27 @@ case "$CLI_DIR" in
     fi
     ;;
   *)
-    for d in "$PRESS_HOME/manuscripts/$API_SLUG"/*/research.json "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json; do
-      if [ -f "$d" ]; then
-        RESEARCH_DIR="$(dirname "$d")"
-        break
-      fi
-    done
+    if [ -n "$MANIFEST_RUN_ID" ]; then
+      for base in "$PRESS_HOME/manuscripts/$API_SLUG" "$PRESS_HOME/manuscripts/$CLI_NAME"; do
+        if [ -f "$base/$MANIFEST_RUN_ID/research.json" ]; then
+          RESEARCH_DIR="$base/$MANIFEST_RUN_ID"
+          break
+        fi
+      done
+    fi
+    # Match publish package's fallback: API slug first, then CLI name, each
+    # using the lexicographically latest run id when the manifest has none.
+    if [ -z "$RESEARCH_DIR" ]; then
+      for base in "$PRESS_HOME/manuscripts/$API_SLUG" "$PRESS_HOME/manuscripts/$CLI_NAME"; do
+        if [ -d "$base" ]; then
+          _latest="$(find "$base" -mindepth 2 -maxdepth 2 -name research.json -type f 2>/dev/null | sort | tail -1)"
+          if [ -n "$_latest" ]; then
+            RESEARCH_DIR="$(dirname "$_latest")"
+            break
+          fi
+        fi
+      done
+    fi
     ;;
 esac
 
@@ -192,6 +216,15 @@ esac
 RESEARCH_ARGS=()
 if [ -n "$RESEARCH_DIR" ]; then
   RESEARCH_ARGS=(--research-dir "$RESEARCH_DIR")
+fi
+
+# pii-audit runs against the CLI dir, but publish package later copies the
+# same run archive under .manuscripts/<run-id> before enforcing the PII gate.
+# Pass the run dir here so polish sees the narrative manuscript files with
+# the same relative paths publish will scan.
+PII_ARGS=()
+if [ -n "$RESEARCH_DIR" ]; then
+  PII_ARGS=(--manuscripts-dir "$RESEARCH_DIR")
 fi
 ```
 
@@ -268,7 +301,7 @@ fi
 cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
 cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 cli-printing-press tools-audit "$CLI_DIR" --json > /tmp/polish-tools-audit-before.json 2>&1 || true
-cli-printing-press pii-audit "$CLI_DIR" --json > /tmp/polish-pii-audit-before.json 2>&1 || true
+cli-printing-press pii-audit "$CLI_DIR" "${PII_ARGS[@]}" --json > /tmp/polish-pii-audit-before.json 2>&1 || true
 go vet ./... 2>&1
 ```
 
@@ -515,7 +548,7 @@ Proceed to "After all fixes" only when the audit's summary line reads `no pendin
 
 Stop and:
 
-1. Run `cli-printing-press pii-audit "$CLI_DIR"` to surface pending findings (or read `/tmp/polish-pii-audit-before.json` from Phase 1's baseline).
+1. Run `cli-printing-press pii-audit "$CLI_DIR" "${PII_ARGS[@]}"` to surface pending findings (or read `/tmp/polish-pii-audit-before.json` from Phase 1's baseline). When `RESEARCH_DIR` exists, this includes that run's `research.json` and `research/*.md` with `.manuscripts/<run-id>/...` paths so accepts carry forward into `publish package`.
 2. You must read `references/pii-polish.md` and follow its per-finding decision tree — fix real values in source with non-matching placeholders, or accept with the `category` + `evidence_context` pre-decision fields.
 3. **Accepting PII findings carries a strict contract.** Missing fields, 6+ accepts sharing a rationale, or wholesale-accepting ≥10 findings without source fixes all fail the gate. See `references/pii-polish.md` "The accept contract" and "Forbidden accept patterns" for the full rules.
 
@@ -546,7 +579,7 @@ if [ "$STANDALONE_MODE" = "true" ]; then
 fi
 cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 cli-printing-press tools-audit "$CLI_DIR" 2>&1
-cli-printing-press pii-audit "$CLI_DIR" 2>&1
+cli-printing-press pii-audit "$CLI_DIR" "${PII_ARGS[@]}" 2>&1
 go vet ./... 2>&1
 ```
 

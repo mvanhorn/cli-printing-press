@@ -24,6 +24,7 @@ import (
 func newPIIAuditCmd() *cobra.Command {
 	var asJSON bool
 	var strict bool
+	var manuscriptsDir string
 
 	cmd := &cobra.Command{
 		Use:   "pii-audit <cli-dir>",
@@ -38,7 +39,11 @@ findings and applies judgment per item — fix in source or accept with
 pre-decision fields.
 
 Exit 0 by default (diagnostic). With --strict, exits non-zero when
-pending findings or gate failures remain.`,
+pending findings or gate failures remain.
+
+When --manuscripts-dir points at a manuscripts run directory, pii-audit also
+scans that run's research.json and research/*.md using the publish-staged
+.manuscripts/<run-id>/... paths so accepts carry forward into publish package.`,
 		Example: `  cli-printing-press pii-audit ~/printing-press/library/dub
   cli-printing-press pii-audit ~/printing-press/library/dub --json
   cli-printing-press pii-audit ~/printing-press/library/dub --strict`,
@@ -60,12 +65,13 @@ pending findings or gate failures remain.`,
 				return fmt.Errorf("cli-dir %q is not a directory", cliDir)
 			}
 
+			opts := artifacts.PIIAuditOptions{ManuscriptsDir: manuscriptsDir}
 			var result artifacts.PIIAuditResult
 			if asJSON {
 				// --json is a read-only probe; do not write the ledger.
-				result, err = artifacts.ScanPII(cliDir)
+				result, err = artifacts.ScanPIIWithOptions(cliDir, opts)
 			} else {
-				result, err = artifacts.RunPIIAudit(cliDir)
+				result, err = artifacts.RunPIIAuditWithOptions(cliDir, opts)
 			}
 			if err != nil {
 				return err
@@ -94,6 +100,7 @@ pending findings or gate failures remain.`,
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a human-readable table")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero when pending findings or gate failures remain")
+	cmd.Flags().StringVar(&manuscriptsDir, "manuscripts-dir", "", "optional manuscripts run directory; scans research.json and research/*.md using publish-staged paths")
 	return cmd
 }
 

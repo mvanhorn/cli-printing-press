@@ -90,6 +90,11 @@ type PIIFinding struct {
 	EvidenceContext string `json:"evidence_context,omitempty"`
 }
 
+// PIIAuditOptions controls optional scan inputs outside the printed CLI tree.
+type PIIAuditOptions struct {
+	ManuscriptsDir string
+}
+
 type piiDetector struct {
 	kind    string
 	pattern *regexp.Regexp
@@ -543,6 +548,33 @@ func FindPII(root string) ([]PIIFinding, error) {
 	if err != nil {
 		return nil, err
 	}
+	sortPIIFindings(findings)
+	return findings, nil
+}
+
+// FindPIIWithOptions walks root plus any explicitly supplied external
+// manuscript run inputs. External manuscript findings are reported using the
+// same .manuscripts/<run-id>/... paths that publish package later stages.
+func FindPIIWithOptions(root string, opts PIIAuditOptions) ([]PIIFinding, error) {
+	findings, err := FindPII(root)
+	if err != nil {
+		return nil, err
+	}
+	if opts.ManuscriptsDir == "" {
+		return findings, nil
+	}
+
+	manuscriptFindings, err := findPIIInManuscriptsRun(opts.ManuscriptsDir)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, manuscriptFindings...)
+	findings = dedupePIIFindings(findings)
+	sortPIIFindings(findings)
+	return findings, nil
+}
+
+func sortPIIFindings(findings []PIIFinding) {
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
 			return findings[i].File < findings[j].File
@@ -555,6 +587,59 @@ func FindPII(root string) ([]PIIFinding, error) {
 		}
 		return findings[i].Kind < findings[j].Kind
 	})
+}
+
+func dedupePIIFindings(findings []PIIFinding) []PIIFinding {
+	seen := make(map[string]bool, len(findings))
+	out := findings[:0]
+	for _, finding := range findings {
+		key := piiFindingKey(finding)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, finding)
+	}
+	return out
+}
+
+func findPIIInManuscriptsRun(runDir string) ([]PIIFinding, error) {
+	info, err := os.Stat(runDir)
+	if err != nil {
+		return nil, fmt.Errorf("manuscripts-dir %q: %w", runDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("manuscripts-dir %q is not a directory", runDir)
+	}
+
+	runID := filepath.Base(filepath.Clean(runDir))
+	candidates := []string{filepath.Join(runDir, "research.json")}
+	researchMarkdown, err := filepath.Glob(filepath.Join(runDir, "research", "*.md"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(researchMarkdown)
+	candidates = append(candidates, researchMarkdown...)
+
+	var findings []PIIFinding
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		rel, err := filepath.Rel(runDir, path)
+		if err != nil {
+			return nil, err
+		}
+		stagedRel := filepath.ToSlash(filepath.Join(manuscriptsDir, runID, rel))
+		fileFindings, err := scanPIIFileWithRel(path, stagedRel)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, fileFindings...)
+	}
 	return findings, nil
 }
 
@@ -594,6 +679,14 @@ func isHighRiskFile(relSlash string) bool {
 // Binary files (null-byte probe) are skipped. Returns findings keyed
 // to the file's path relative to root with forward-slash separators.
 func scanPIIFile(root, path string) ([]PIIFinding, error) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, err
+	}
+	return scanPIIFileWithRel(path, filepath.ToSlash(rel))
+}
+
+func scanPIIFileWithRel(path, relSlash string) ([]PIIFinding, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -608,12 +701,6 @@ func scanPIIFile(root, path string) ([]PIIFinding, error) {
 	if bytes.Contains(probe, []byte{0}) {
 		return nil, nil
 	}
-
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return nil, err
-	}
-	relSlash := filepath.ToSlash(rel)
 
 	// Vendor-published OpenAPI/Swagger source archived under .manuscripts/
 	// carries documentation `example:` values, not customer PII. Mirrors
@@ -1032,18 +1119,29 @@ type PIIAuditResult struct {
 // disk full), the audit result is still returned and a warning is
 // logged to stderr. The gate decision uses the in-memory result.
 func RunPIIAudit(dir string) (PIIAuditResult, error) {
-	return runPIIAudit(dir, true)
+	return RunPIIAuditWithOptions(dir, PIIAuditOptions{})
+}
+
+// RunPIIAuditWithOptions performs a full audit cycle with optional external
+// scan inputs and persists the reconciled ledger.
+func RunPIIAuditWithOptions(dir string, opts PIIAuditOptions) (PIIAuditResult, error) {
+	return runPIIAudit(dir, true, opts)
 }
 
 // ScanPII performs the audit without writing the ledger. The pii-audit
 // CLI's --json path uses this so a read-only probe doesn't have the
 // side effect of touching the filesystem.
 func ScanPII(dir string) (PIIAuditResult, error) {
-	return runPIIAudit(dir, false)
+	return ScanPIIWithOptions(dir, PIIAuditOptions{})
 }
 
-func runPIIAudit(dir string, persist bool) (PIIAuditResult, error) {
-	findings, err := FindPII(dir)
+// ScanPIIWithOptions performs the audit without writing the ledger.
+func ScanPIIWithOptions(dir string, opts PIIAuditOptions) (PIIAuditResult, error) {
+	return runPIIAudit(dir, false, opts)
+}
+
+func runPIIAudit(dir string, persist bool, opts PIIAuditOptions) (PIIAuditResult, error) {
+	findings, err := FindPIIWithOptions(dir, opts)
 	if err != nil {
 		return PIIAuditResult{}, fmt.Errorf("scanning %s for PII: %w", dir, err)
 	}

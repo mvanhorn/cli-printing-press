@@ -10,6 +10,8 @@ cli-printing-press pii-audit <cli-dir>
 
 The audit writes `<cli-dir>/.printing-press-pii-polish.json`. Promote and publish re-run the audit themselves, so the ledger header is the authority — they refuse if pending findings or gate failures remain.
 
+When polish resolved a manuscripts run directory, run the audit with `--manuscripts-dir <run-dir>`. That adds only `<run-dir>/research.json` and `<run-dir>/research/*.md` to the scan and reports them as `.manuscripts/<run-id>/...` paths, matching the publish-staged tree.
+
 ## The accept contract
 
 Every `status: "accepted"` entry must populate:
@@ -92,7 +94,7 @@ Don't manually mark findings as `fixed`. A real source fix makes the finding dis
 
 ## End-state checklist
 
-- [ ] `cli-printing-press pii-audit <cli-dir>` summary reads `no pending findings`, no `incomplete:` block.
+- [ ] `cli-printing-press pii-audit <cli-dir> ${PII_ARGS[@]}` summary reads `no pending findings`, no `incomplete:` block. Outside the polish shell, pass `--manuscripts-dir <run-dir>` when a manuscripts run was resolved.
 - [ ] Every accepted finding has `category` + `evidence_context`. `category: other` also has `note`.
 - [ ] No 6+ accepts share a normalized `note` + `category`.
 - [ ] Real PII fixes landed in source (`git diff`).
