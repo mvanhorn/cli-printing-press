@@ -1443,6 +1443,84 @@ func newHealthCmd() *cobra.Command {
 		assert.Equal(t, "health", (*updated.NovelFeaturesBuilt)[0].Command)
 	})
 
+	t.Run("warns when advertised command depth differs from registered path", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), `package cli
+func Execute() {
+	rootCmd.AddCommand(newAssetsCmd())
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets.go"), `package cli
+func newAssetsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "assets"}
+	cmd.AddCommand(newAssetsGrabCmd())
+	return cmd
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets_grab.go"), `package cli
+func newAssetsGrabCmd() *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Grab asset", Command: "grab", Example: `test-pp-cli grab "sunset"`},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Planned)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+		require.Len(t, result.DepthMismatches, 1)
+		assert.Equal(t, NovelFeatureDepthMismatch{
+			Command:    "grab",
+			Advertised: "grab",
+			Actual:     "assets grab",
+		}, result.DepthMismatches[0])
+	})
+
+	t.Run("does not warn when variable wiring resolves the advertised root command", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), `package cli
+func Execute() {
+	grabCmd := rootGrabSubcmd(nil)
+	rootCmd.AddCommand(grabCmd)
+	rootCmd.AddCommand(newAssetsCmd())
+}
+func rootGrabSubcmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets.go"), `package cli
+func newAssetsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "assets"}
+	cmd.AddCommand(assetsGrabSubcmd(nil))
+	return cmd
+}
+func assetsGrabSubcmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Grab asset", Command: "grab", Example: `test-pp-cli grab "sunset"`},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+		assert.Empty(t, result.DepthMismatches)
+	})
+
 	t.Run("syncs README and SKILL to verified subset", func(t *testing.T) {
 		cliDir := t.TempDir()
 		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
@@ -2151,6 +2229,18 @@ func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 3, Found: 1, Missing: []string{"triage", "utilization"}}
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
 
+	// Depth mismatches → WARN
+	base.NovelFeaturesCheck = NovelFeaturesCheckResult{
+		Planned: 1,
+		Found:   1,
+		DepthMismatches: []NovelFeatureDepthMismatch{{
+			Command:    "grab",
+			Advertised: "grab",
+			Actual:     "assets grab",
+		}},
+	}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+
 	// All found → PASS
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 2, Found: 2}
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(base, true))
@@ -2827,6 +2917,23 @@ func TestCollectDogfoodIssues_IncludesMissingTests(t *testing.T) {
 	}
 	issues := collectDogfoodIssues(report, false)
 	assert.Contains(t, issues, "pure-logic packages with no tests: recipes, goat")
+}
+
+func TestCollectDogfoodIssues_IncludesNovelFeatureDepthMismatch(t *testing.T) {
+	report := &DogfoodReport{
+		NovelFeaturesCheck: NovelFeaturesCheckResult{
+			Planned: 1,
+			Found:   1,
+			DepthMismatches: []NovelFeatureDepthMismatch{{
+				Command:    "grab",
+				Advertised: "grab",
+				Actual:     "assets grab",
+			}},
+		},
+	}
+
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "1 novel feature command-depth mismatches: grab advertised as grab but registered as assets grab")
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {
