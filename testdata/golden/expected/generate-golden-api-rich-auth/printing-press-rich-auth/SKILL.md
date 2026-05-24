@@ -101,7 +101,7 @@ printing-press-rich-pp-cli feedback --stdin < notes.txt
 printing-press-rich-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.printing-press-rich-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_RICH_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_RICH_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally at `~/.local/share/printing-press-rich-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_RICH_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_RICH_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 
