@@ -411,6 +411,36 @@ func TestMapParametersOnlyMarksQueryFieldSelectors(t *testing.T) {
 	assert.Equal(t, spec.ParamPurposeFieldSelector, byName["opt_fields"].Purpose)
 }
 
+// TestMapParametersDropsPhantomBracketName verifies that phantom parameter
+// names are dropped (issue #1670). A spec parameter literally named "[]" (or
+// empty) is not a usable MCP/CLI argument and would emit "?[]=value" on the
+// wire, so it must be dropped before reaching CLI flags, MCP tool schemas, and
+// tools-manifest.json. Legitimate array-style names like "tags[]" must be
+// preserved.
+func TestMapParametersDropsPhantomBracketName(t *testing.T) {
+	t.Parallel()
+
+	pathItem := &openapi3.PathItem{}
+	op := &openapi3.Operation{
+		Parameters: openapi3.Parameters{
+			{Value: &openapi3.Parameter{Name: "[]", In: openapi3.ParameterInQuery, Schema: openapi3.NewStringSchema().NewRef()}},
+			{Value: &openapi3.Parameter{Name: "  ", In: openapi3.ParameterInQuery, Schema: openapi3.NewStringSchema().NewRef()}},
+			{Value: &openapi3.Parameter{Name: "tags[]", In: openapi3.ParameterInQuery, Schema: openapi3.NewStringSchema().NewRef()}},
+			{Value: &openapi3.Parameter{Name: "limit", In: openapi3.ParameterInQuery, Schema: openapi3.NewInt64Schema().NewRef()}},
+		},
+	}
+
+	byName := make(map[string]bool)
+	for _, p := range mapParameters(pathItem, op) {
+		byName[p.Name] = true
+	}
+
+	assert.False(t, byName["[]"], "phantom []-named param must be dropped")
+	assert.False(t, byName["  "], "whitespace-only param name must be dropped")
+	assert.True(t, byName["tags[]"], "legitimate array-style param must be kept")
+	assert.True(t, byName["limit"], "normal param must be kept")
+}
+
 func readAICLargeSpec(tb testing.TB) []byte {
 	tb.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "artic-openapi.json"))
