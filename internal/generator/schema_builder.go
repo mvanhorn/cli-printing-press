@@ -18,6 +18,9 @@ type TableDef struct {
 	FTS5         bool
 	FTS5Fields   []string
 	FTS5Triggers bool
+
+	JSONOnlyFallback    bool
+	OriginalColumnCount int
 }
 
 type ColumnDef struct {
@@ -42,6 +45,10 @@ var baseTableColumns = []ColumnDef{
 	{Name: "data", Type: "JSON", NotNull: true},
 	{Name: "synced_at", Type: "DATETIME DEFAULT CURRENT_TIMESTAMP"},
 }
+
+// SQLite defaults to SQLITE_MAX_COLUMN=2000. Keep typed domain tables below
+// that hard limit with room for generator-added columns and future schema drift.
+const maxStoreDomainTableColumns = 1500
 
 // BuildSchema generates domain-specific table definitions from the API spec.
 // High-gravity entities (many endpoints, text fields, temporal fields) get
@@ -110,10 +117,19 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 					})
 				}
 			}
+			if len(table.Columns) > maxStoreDomainTableColumns {
+				table.JSONOnlyFallback = true
+				table.OriginalColumnCount = len(table.Columns)
+				table.Columns = append([]ColumnDef(nil), baseTableColumns...)
+				table.Indexes = nil
+				table.FTS5 = false
+				table.FTS5Fields = nil
+				table.FTS5Triggers = false
+			}
 		}
 
 		textFields := collectTextFieldNamesFromFields(fields)
-		if len(textFields) >= 2 && gravity >= 2 {
+		if len(textFields) >= 2 && gravity >= 2 && !table.JSONOnlyFallback {
 			table.FTS5 = true
 			table.FTS5Fields = textFields
 			// Only use content-sync triggers when ALL FTS fields are
