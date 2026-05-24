@@ -261,7 +261,7 @@ The library-preservation contract is owned by `/printing-press` Phase 5.6
 routes promotion through `cli-printing-press regen-merge "$LIB_TARGET"
 --fresh "$CLI_WORK_DIR" --apply` instead of the bare destructive swap, so
 hand-authored novels survive the reprint. This honors the prefer-`regen-merge`
-guidance under the **Hand-edits to generator-emitted files are not durable.**
+guidance under the **Hand-edits must be regen-mergeable.**
 section of `skills/printing-press/SKILL.md` (anchor `hand-edit-durability`).
 If a future edit to that phase changes the routing rule, update this paragraph
 in the same PR — the reprint skill is the dominant entry point that fires it.
