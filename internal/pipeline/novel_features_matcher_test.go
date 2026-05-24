@@ -310,6 +310,11 @@ func Execute() {
 }
 func rootGrabSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "grab"} }
 func rootListSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "list"} }
+func BuildExtras() {
+	grabCmd := wrongGrabSubcmd(nil)
+	_ = grabCmd
+}
+func wrongGrabSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "wrong"} }
 `)
 	writeTestFile(t, filepath.Join(cli, "assets.go"), `package cli
 import "github.com/spf13/cobra"
@@ -330,5 +335,8 @@ func assetsListSubcmd(flags any) *cobra.Command { return &cobra.Command{Use: "li
 		if !paths[want] {
 			t.Errorf("expected path %q, got paths: %v", want, paths)
 		}
+	}
+	if paths["wrong"] {
+		t.Errorf("did not expect same-file local variable collision path, got paths: %v", paths)
 	}
 }

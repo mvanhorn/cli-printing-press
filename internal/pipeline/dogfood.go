@@ -853,15 +853,7 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			continue
 		}
 		src := string(data)
-		vars := commandFactoryVars(src)
-		for _, rm := range rootAddRe.FindAllStringSubmatch(src, -1) {
-			rootFuncs = append(rootFuncs, rm[1])
-		}
-		for _, rm := range rootVarAddRe.FindAllStringSubmatch(src, -1) {
-			if fn := vars[rm[1]]; fn != "" {
-				rootFuncs = append(rootFuncs, fn)
-			}
-		}
+		packageVars := packageCommandFactoryVars(src)
 		for _, u := range useRe.FindAllStringSubmatch(src, -1) {
 			if name := strings.Fields(u[1])[0]; name != "" {
 				leaves[name] = true
@@ -873,6 +865,20 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			if body == "" {
 				continue
 			}
+			bodyVars := commandFactoryVars(body)
+			for _, rm := range rootAddRe.FindAllStringSubmatch(body, -1) {
+				rootFuncs = append(rootFuncs, rm[1])
+			}
+			for _, rm := range rootVarAddRe.FindAllStringSubmatch(body, -1) {
+				fn := bodyVars[rm[1]]
+				if fn == "" {
+					fn = packageVars[rm[1]]
+				}
+				if fn != "" {
+					rootFuncs = append(rootFuncs, fn)
+				}
+			}
+
 			entry := &cmdFunc{}
 			if u := useRe.FindStringSubmatch(body); u != nil {
 				entry.use = strings.Fields(u[1])[0]
@@ -880,11 +886,10 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			for _, cm := range addChildRe.FindAllStringSubmatch(body, -1) {
 				entry.children = append(entry.children, cm[1])
 			}
-			bodyVars := commandFactoryVars(body)
 			for _, cm := range addChildVarRe.FindAllStringSubmatch(body, -1) {
 				fn := bodyVars[cm[1]]
 				if fn == "" {
-					fn = vars[cm[1]]
+					fn = packageVars[cm[1]]
 				}
 				if fn != "" {
 					entry.children = append(entry.children, fn)
@@ -939,6 +944,46 @@ func commandFactoryVars(src string) map[string]string {
 		vars[m[1]] = m[2]
 	}
 	return vars
+}
+
+func packageCommandFactoryVars(src string) map[string]string {
+	vars := map[string]string{}
+	file, err := parser.ParseFile(token.NewFileSet(), "", src, 0)
+	if err != nil {
+		return vars
+	}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range valueSpec.Names {
+				if i >= len(valueSpec.Values) {
+					continue
+				}
+				if fn := commandFactoryCallName(valueSpec.Values[i]); fn != "" {
+					vars[name.Name] = fn
+				}
+			}
+		}
+	}
+	return vars
+}
+
+func commandFactoryCallName(expr ast.Expr) string {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return ""
+	}
+	if ident, ok := call.Fun.(*ast.Ident); ok {
+		return ident.Name
+	}
+	return ""
 }
 
 // extractFuncBody returns the balanced-brace body of a Go function given
