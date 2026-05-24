@@ -603,7 +603,7 @@ func TestProfileDateRangeParam(t *testing.T) {
 		Types: map[string]spec.TypeDef{
 			"ScoreboardResponse": {
 				Fields: []spec.TypeField{
-					{Name: "events", Type: "string"},
+					{Name: "events", Type: "array"},
 					{Name: "leagues", Type: "string"},
 				},
 			},
@@ -652,7 +652,7 @@ func TestProfileWrapperObjectDetection(t *testing.T) {
 		Types: map[string]spec.TypeDef{
 			"ScoreboardResponse": {
 				Fields: []spec.TypeField{
-					{Name: "events", Type: "string"},
+					{Name: "events", Type: "array"},
 					{Name: "leagues", Type: "string"},
 				},
 			},
@@ -697,6 +697,198 @@ func TestProfileWrapperObjectDetection_NoFalsePositive(t *testing.T) {
 		syncNames[i] = sr.Name
 	}
 	assert.NotContains(t, syncNames, "settings", "non-wrapper object should not be syncable")
+}
+
+func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "saas-crm",
+		Resources: map[string]spec.Resource{
+			"opportunities": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/opportunities",
+						Response: spec.ResponseDef{Type: "object", Item: "OpportunityEnvelope"},
+					},
+				},
+			},
+			"contacts": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/contacts/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "ContactEnvelope"},
+					},
+				},
+			},
+			"companies": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/companies/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "CompanyEnvelope"},
+					},
+				},
+			},
+			"tickets": {
+				Endpoints: map[string]spec.Endpoint{
+					"searchTickets": {
+						Method: "POST",
+						Path:   "/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "cursor",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "TicketEnvelope"},
+					},
+				},
+			},
+			"open-opportunities": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/opportunities/open",
+						Response: spec.ResponseDef{Type: "object", Item: "OpenOpportunityEnvelope"},
+					},
+				},
+			},
+			"settings": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/settings",
+						Response: spec.ResponseDef{Type: "object", Item: "SettingsResponse"},
+					},
+				},
+			},
+			"empty-settings": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/settings/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "EmptySettingsResponse"},
+					},
+				},
+			},
+			"audits": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/audits/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "AuditSearchResponse"},
+					},
+				},
+			},
+			"profile": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/profile",
+						Response: spec.ResponseDef{Type: "object", Item: "ProfileResponse"},
+					},
+				},
+			},
+			"places": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/places",
+						Response: spec.ResponseDef{Type: "object", Item: "GeoFeatureCollection"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"OpportunityEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "opportunities", Type: "array"},
+					{Name: "meta", Type: "object"},
+				},
+			},
+			"ContactEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "contacts", Type: "array"},
+					{Name: "meta", Type: "object"},
+				},
+			},
+			"CompanyEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "companies", Type: "array"},
+					{Name: "errors", Type: "array"},
+					{Name: "meta", Type: "object"},
+				},
+			},
+			"TicketEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "tickets", Type: "array"},
+				},
+			},
+			"OpenOpportunityEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "openOpportunities", Type: "array"},
+				},
+			},
+			"SettingsResponse": {
+				Fields: []spec.TypeField{
+					{Name: "featureFlags", Type: "object"},
+					{Name: "timezone", Type: "string"},
+				},
+			},
+			"EmptySettingsResponse": {},
+			"AuditSearchResponse": {
+				Fields: []spec.TypeField{
+					{Name: "errors", Type: "array"},
+				},
+			},
+			"ProfileResponse": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "roles", Type: "array"},
+				},
+			},
+			"GeoFeatureCollection": {
+				Fields: []spec.TypeField{
+					{Name: "features", Type: "array"},
+					{Name: "bbox", Type: "array"},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	syncByName := make(map[string]SyncableResource)
+	for _, sr := range profile.SyncableResources {
+		syncByName[sr.Name] = sr
+	}
+	syncNames := profile.SyncableResourceNames()
+
+	assert.Contains(t, syncNames, "opportunities", "GET list endpoint with plural wrapper array should be syncable")
+	assert.Contains(t, syncNames, "contacts", "paginated POST search endpoint with plural wrapper array should be syncable")
+	assert.Contains(t, syncNames, "companies", "ancillary errors arrays should not hide one resource-shaped wrapper array")
+	assert.Contains(t, syncNames, "tickets", "single array fields can match the endpoint name when the path is generic")
+	assert.Contains(t, syncNames, "open-opportunities", "compound array field names can match simple path segments")
+	assert.Contains(t, syncNames, "places", "multi-array GeoJSON-style envelope with known features wrapper should be syncable")
+	assert.NotContains(t, syncNames, "settings", "object envelopes without array fields should not be syncable")
+	assert.NotContains(t, syncNames, "empty-settings", "parsed zero-field response types should not fall back to type-name matching")
+	assert.NotContains(t, syncNames, "audits", "collection-named endpoints should not make unrelated array fields syncable")
+	assert.NotContains(t, syncNames, "profile", "singleton object with one relationship array should not be syncable")
+	assert.Equal(t, "POST", syncByName["contacts"].Method)
 }
 
 func TestProfileSimpleListEndpointSyncable(t *testing.T) {
