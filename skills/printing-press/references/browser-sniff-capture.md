@@ -101,7 +101,7 @@ If either MCP flag is true, extend the status report:
 
 #### Step 1b: Install capture tool (fallback — preflight should have prompted first)
 
-Preflight (`references/setup-checks.md` section 5) offers to install browser-use and agent-browser on every run, so most users arrive at Step 1 with one or both already installed. This step is a fallback for the case where the user declined the preflight prompt and the current run actually needs a browser backend.
+Preflight (`references/setup-checks.md` section 6) offers to install browser-use and agent-browser on every run, so most users arrive at Step 1 with one or both already installed. This step is a fallback for the case where the user declined the preflight prompt and the current run actually needs a browser backend.
 
 If neither tool is installed, offer to install via `AskUserQuestion`. Do not install automatically:
 
@@ -145,7 +145,7 @@ else
 fi
 ```
 
-After the brew or npm install succeeds, use the same post-install rule as preflight (`references/setup-checks.md` section 5): complete agent-browser's browser-binary setup as a user-run step:
+After the brew or npm install succeeds, use the same post-install rule as preflight (`references/setup-checks.md` section 6): complete agent-browser's browser-binary setup as a user-run step:
 
 ```text
 ! agent-browser install
