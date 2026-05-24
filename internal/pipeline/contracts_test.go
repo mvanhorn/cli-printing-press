@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -201,6 +202,25 @@ func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	assert.Contains(t, block, `if ! command -v go >/dev/null 2>&1; then`)
 	assert.Contains(t, block, `[setup-error] Go toolchain not found.`)
 	assert.Contains(t, block, `https://go.dev/dl/`)
+}
+
+func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	template := substringBetween(t, skill, "#### Verify-friendly RunE template", "If the command reads a file or directory")
+	starters := substringBetween(t, skill, "**Starter templates for novel commands.**", "For flat-only resources")
+
+	assert.Contains(t, template, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {")
+	assert.Regexp(t, regexp.MustCompile(`if len\(args\) == 0 && cmd\.Flags\(\)\.NFlag\(\) == 0 \{\s+return cmd\.Help\(\)\s+\}`), template)
+	assert.Contains(t, template, "if dryRunOK(flags) {")
+	assert.Contains(t, template, "_ = cmd.Usage()")
+	assert.Contains(t, template, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`)
+	assert.Contains(t, template, "Do not collapse the first and third branches")
+
+	assert.Equal(t, 2, strings.Count(starters, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {"))
+	assert.Equal(t, 2, strings.Count(starters, "return cmd.Help()"))
+	assert.Equal(t, 2, strings.Count(starters, "if dryRunOK(flags) {"))
+	assert.Equal(t, 2, strings.Count(starters, "_ = cmd.Usage()"))
+	assert.Equal(t, 2, strings.Count(starters, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`))
 }
 
 func TestAgentBrowserInstallRequiresPostInstallSetup(t *testing.T) {
