@@ -1,0 +1,79 @@
+{
+  "api_name": "public-param-golden",
+  "auth": {
+    "type": "none"
+  },
+  "base_url": "https://api.public-param.example/v1",
+  "description": "Public parameter name golden fixture",
+  "http_transport": "standard",
+  "mcp_ready": "full",
+  "required_headers": [],
+  "tools": [
+    {
+      "description": "Create a store record. Required: store-code. Optional: dry_run. Returns the new Store.",
+      "method": "POST",
+      "name": "stores_create",
+      "no_auth": true,
+      "params": [
+        {
+          "description": "Preview without writing",
+          "location": "query",
+          "name": "dry_run",
+          "type": "boolean",
+          "wire_name": "$dry_run"
+        },
+        {
+          "aliases": [
+            "code"
+          ],
+          "description": "Store code",
+          "location": "body",
+          "name": "store-code",
+          "required": true,
+          "type": "string",
+          "wire_name": "store_code"
+        }
+      ],
+      "path": "/stores"
+    },
+    {
+      "description": "Find nearby stores by address. Required: address, city, locationId. Returns array of Store.",
+      "method": "GET",
+      "name": "stores_find",
+      "no_auth": true,
+      "params": [
+        {
+          "aliases": [
+            "s"
+          ],
+          "description": "Street address",
+          "location": "query",
+          "name": "address",
+          "required": true,
+          "type": "string",
+          "wire_name": "s"
+        },
+        {
+          "aliases": [
+            "c"
+          ],
+          "description": "City, state, zip",
+          "location": "query",
+          "name": "city",
+          "required": true,
+          "type": "string",
+          "wire_name": "c"
+        },
+        {
+          "description": "Location identifier sent with this endpoint's snake-case query key",
+          "location": "query",
+          "name": "locationId",
+          "required": true,
+          "type": "string",
+          "wire_name": "location_id"
+        }
+      ],
+      "path": "/power/store-locator"
+    }
+  ]
+}

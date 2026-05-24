@@ -48,6 +48,8 @@ const (
 	extensionLegacyMCP             = "mcp"
 	extensionCache                 = "x-cache"
 	extensionSyncWalker            = "x-pp-sync-walker"
+	extensionParamURLName          = "x-url-name"
+	extensionParamURLNames         = "x-param-url-names"
 	extensionAPIName               = "x-api-name"
 	extensionDisplayName           = "x-display-name"
 	extensionWebsite               = "x-website"
@@ -3518,6 +3520,8 @@ func hasPathParams(path string) bool {
 
 func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.Param {
 	merged := mergeParameters(pathItem, op)
+	var urlNameOverrides map[string]string
+	urlNameOverridesRead := false
 	params := make([]spec.Param, 0, len(merged))
 	for _, parameter := range merged {
 		if parameter == nil {
@@ -3552,6 +3556,13 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 			Enum:        schemaEnum(schema),
 			Format:      schemaFormat(schema),
 		}
+		if parameter.In == openapi3.ParameterInQuery {
+			if !urlNameOverridesRead {
+				urlNameOverrides = readParamURLNameOverrides(pathItem, op)
+				urlNameOverridesRead = true
+			}
+			param.URLName = paramURLName(paramName, parameter.Extensions, urlNameOverrides)
+		}
 		if parameter.In == openapi3.ParameterInQuery && isFieldSelectorParameter(paramName, description) {
 			param.Purpose = spec.ParamPurposeFieldSelector
 		}
@@ -3570,6 +3581,72 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 	reclassifyPathParamModifiers(params)
 
 	return params
+}
+
+func readParamURLNameOverrides(pathItem *openapi3.PathItem, op *openapi3.Operation) map[string]string {
+	var out map[string]string
+	add := func(extensions map[string]any, context string) {
+		if len(extensions) == 0 {
+			return
+		}
+		raw, ok := extensions[extensionParamURLNames]
+		if !ok || raw == nil {
+			return
+		}
+		values, ok := raw.(map[string]any)
+		if !ok {
+			warnf("%s: %s must be an object mapping parameter names to URL names; ignoring", context, extensionParamURLNames)
+			return
+		}
+		for name, value := range values {
+			paramName := strings.TrimSpace(name)
+			urlName, ok := value.(string)
+			if !ok {
+				warnf("%s: %s.%s must be a string; ignoring", context, extensionParamURLNames, name)
+				continue
+			}
+			urlName = strings.TrimSpace(urlName)
+			if paramName == "" || urlName == "" {
+				warnf("%s: %s entries must have non-empty parameter and URL names; ignoring %q", context, extensionParamURLNames, name)
+				continue
+			}
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[paramName] = urlName
+		}
+	}
+	if pathItem != nil {
+		add(pathItem.Extensions, "path")
+	}
+	if op != nil {
+		add(op.Extensions, "operation")
+	}
+	return out
+}
+
+func paramURLName(paramName string, extensions map[string]any, overrides map[string]string) string {
+	if urlName, ok := overrides[paramName]; ok {
+		return urlName
+	}
+	if len(extensions) == 0 {
+		return ""
+	}
+	raw, ok := extensions[extensionParamURLName]
+	if !ok || raw == nil {
+		return ""
+	}
+	urlName, ok := raw.(string)
+	if !ok {
+		warnf("parameter %q: %s must be a string; ignoring", paramName, extensionParamURLName)
+		return ""
+	}
+	urlName = strings.TrimSpace(urlName)
+	if urlName == "" {
+		warnf("parameter %q: %s must be non-empty; ignoring", paramName, extensionParamURLName)
+		return ""
+	}
+	return urlName
 }
 
 func isFieldSelectorParameter(name, description string) bool {

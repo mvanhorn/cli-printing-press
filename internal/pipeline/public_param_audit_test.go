@@ -39,6 +39,34 @@ func TestAuditPublicParamNamesFindsDecisionRequiredCrypticParams(t *testing.T) {
 	assert.Equal(t, "s", requirePublicParamFinding(t, findings, "stores.find.params.s").WireName)
 }
 
+func TestAuditPublicParamNamesUsesURLNameForQueryWireName(t *testing.T) {
+	api := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"records": {
+				Endpoints: map[string]spec.Endpoint{
+					"query": {
+						Path: "/records",
+						Params: []spec.Param{
+							{Name: "limit", URLName: "$limit", Type: "integer", Description: "Max rows"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	findings := AuditPublicParamNames(api)
+
+	require.Len(t, findings, 1)
+	finding := requirePublicParamFinding(t, findings, "records.query.params.$limit")
+	assert.Equal(t, "$limit", finding.WireName)
+	assert.Equal(t, "limit", finding.CurrentPublicName)
+	assert.Equal(t, []string{"operator-like-wire-name"}, finding.Reasons)
+
+	ledger := NewPublicParamAuditLedger(findings)
+	assert.Equal(t, PublicParamAuditSummary{Total: 1, Resolved: 1}, ledger.Summary)
+}
+
 func TestAuditPublicParamNamesMarksExistingFlagNamesResolved(t *testing.T) {
 	api := &spec.APISpec{
 		Resources: map[string]spec.Resource{

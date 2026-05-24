@@ -89,6 +89,51 @@ func TestParamWithoutURLNameUnchanged(t *testing.T) {
 	require.Contains(t, content, `params["owner"]`, "plain Name owner must emit as URL key when URLName unset")
 }
 
+func TestParamURLNameOverridesWriteMethodQueryKeys(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("write-url-name")
+	apiSpec.Resources["records"] = spec.Resource{
+		Description: "Records",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/records",
+				Description: "Create record",
+				Params:      []spec.Param{{Name: "dry_run", URLName: "$dry_run", Type: "boolean", Description: "Preview"}},
+				Body:        []spec.Param{{Name: "name", Type: "string", Description: "Name"}},
+			},
+			"delete": {
+				Method:      "DELETE",
+				Path:        "/records",
+				Description: "Delete records",
+				Params:      []spec.Param{{Name: "dry_run", URLName: "$dry_run", Type: "boolean", Description: "Preview"}},
+			},
+			"update": {
+				Method:      "PUT",
+				Path:        "/records",
+				Description: "Update records",
+				Params:      []spec.Param{{Name: "dry_run", URLName: "$dry_run", Type: "boolean", Description: "Preview"}},
+				Body:        []spec.Param{{Name: "name", Type: "string", Description: "Name"}},
+			},
+			"patch": {
+				Method:      "PATCH",
+				Path:        "/records",
+				Description: "Patch records",
+				Params:      []spec.Param{{Name: "dry_run", URLName: "$dry_run", Type: "boolean", Description: "Preview"}},
+				Body:        []spec.Param{{Name: "name", Type: "string", Description: "Name"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "write-url-name-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	content := readGeneratedCLIHandlers(t, outputDir)
+	require.Equal(t, 4, strings.Count(content, `params["$dry_run"]`), "all write-method query maps must use URLName")
+	require.NotContains(t, content, `params["dry_run"]`, "plain Name must not be used as the URL key when URLName is set")
+}
+
 // readGeneratedHandler returns the contents of the generated CLI handler for a
 // resource. The generator may emit it as either `<resource>.go` (multi-endpoint
 // resource) or `promoted_<resource>.go` (single-endpoint promoted pattern), so
@@ -108,6 +153,25 @@ func readGeneratedHandler(t *testing.T, outputDir, resource string) string {
 	return ""
 }
 
+func readGeneratedCLIHandlers(t *testing.T, outputDir string) string {
+	t.Helper()
+	var out strings.Builder
+	cliDir := filepath.Join(outputDir, "internal", "cli")
+	require.NoError(t, filepath.WalkDir(cliDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".go" {
+			return err
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out.Write(src)
+		out.WriteByte('\n')
+		return nil
+	}))
+	return out.String()
+}
+
 // TestParamWireNameUnit exercises the spec.Param.WireName() method directly.
 func TestParamWireNameUnit(t *testing.T) {
 	t.Parallel()
@@ -125,4 +189,63 @@ func TestParamWireNameUnit(t *testing.T) {
 			require.Equal(t, c.want, p.WireName())
 		})
 	}
+}
+
+func TestMCPParamBindingsUseParamWireName(t *testing.T) {
+	t.Parallel()
+
+	bindings := mcpParamBindings(spec.Endpoint{
+		Params: []spec.Param{
+			{Name: "locationId", URLName: "location_id", Type: "string"},
+		},
+	}, "/opportunities/search")
+
+	require.Len(t, bindings, 1)
+	require.Equal(t, "locationId", bindings[0].PublicName)
+	require.Equal(t, "location_id", bindings[0].WireName)
+	require.Equal(t, "query", bindings[0].Location)
+}
+
+func TestCodeOrchQueryParamsUseParamWireName(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("code-orch-url-name")
+	apiSpec.MCP = spec.MCPConfig{Orchestration: "code"}
+	apiSpec.Resources["opportunities"] = spec.Resource{
+		Description: "Opportunities",
+		Endpoints: map[string]spec.Endpoint{
+			"search": {
+				Method:      "GET",
+				Path:        "/opportunities/search",
+				Description: "Search opportunities",
+				Params: []spec.Param{
+					{Name: "locationId", URLName: "location_id", Type: "string", Description: "Location id"},
+				},
+			},
+			"create": {
+				Method:      "POST",
+				Path:        "/opportunities",
+				Description: "Create opportunity",
+				Params: []spec.Param{
+					{Name: "locationId", URLName: "location_id", Type: "string", Description: "Location id"},
+				},
+				Body: []spec.Param{
+					{Name: "name", Type: "string", Description: "Opportunity name"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "code-orch-url-name-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	content := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
+	require.Contains(t, content, `QueryParams []codeOrchParamBinding`,
+		"code-orch endpoints must retain public-to-wire query bindings")
+	require.Equal(t, 2, strings.Count(content, `{PublicName: "locationId", WireName: "location_id"}`),
+		"GET and POST code-orch endpoints must preserve both public and wire query names")
+	require.Contains(t, content, `query[codeOrchWireQueryName(ep.QueryParams, k)]`,
+		"GET/DELETE code-orch routing must translate public names to wire names")
+	require.Contains(t, content, `uv.Set(q.WireName, fmt.Sprintf("%v", v))`,
+		"write-method code-orch routing must append wire query names")
 }

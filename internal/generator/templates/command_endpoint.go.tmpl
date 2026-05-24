@@ -262,11 +262,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
-				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+				params["{{paramWireName .}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -321,11 +321,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
-				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+				params["{{paramWireName .}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -369,11 +369,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
-				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+				params["{{paramWireName .}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -419,11 +419,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
-				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+				params["{{paramWireName .}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}

@@ -7311,6 +7311,105 @@ paths:
 	assert.False(t, byName["client_secret"].Required)
 }
 
+func TestParseQueryParamURLNameOverrides(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Param Override API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /opportunities/search:
+    get:
+      operationId: searchOpportunities
+      x-param-url-names:
+        " locationId ": location_id
+      parameters:
+        - $ref: "#/components/parameters/LocationId"
+        - name: pipeline_id
+          in: query
+          schema:
+            type: string
+        - name: contactId
+          in: query
+          x-url-name: contact_id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /opportunities/pipelines:
+    get:
+      operationId: listPipelines
+      parameters:
+        - $ref: "#/components/parameters/LocationId"
+      responses:
+        "200":
+          description: ok
+  /shared:
+    x-param-url-names:
+      accountId: account_id
+    get:
+      operationId: getShared
+      parameters:
+        - name: accountId
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+    delete:
+      operationId: deleteShared
+      x-param-url-names:
+        accountId: acct_id
+      parameters:
+        - name: accountId
+          in: query
+          schema:
+            type: string
+      responses:
+        "204":
+          description: deleted
+components:
+  parameters:
+    LocationId:
+      name: locationId
+      in: query
+      required: true
+      schema:
+        type: string
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	search := findParsedEndpointByPath(t, parsed, "GET", "/opportunities/search")
+	require.Len(t, search.Params, 3)
+	assert.Equal(t, "locationId", search.Params[0].Name)
+	assert.Equal(t, "location_id", search.Params[0].URLName)
+	assert.Equal(t, "locationId", search.Params[0].PublicInputName())
+	assert.Equal(t, "location_id", search.Params[0].WireName())
+	assert.Equal(t, "contactId", search.Params[2].Name)
+	assert.Equal(t, "contact_id", search.Params[2].URLName)
+
+	pipelines := findParsedEndpointByPath(t, parsed, "GET", "/opportunities/pipelines")
+	require.Len(t, pipelines.Params, 1)
+	assert.Equal(t, "locationId", pipelines.Params[0].Name)
+	assert.Empty(t, pipelines.Params[0].URLName)
+	assert.Equal(t, "locationId", pipelines.Params[0].WireName())
+
+	sharedGet := findParsedEndpointByPath(t, parsed, "GET", "/shared")
+	require.Len(t, sharedGet.Params, 1)
+	assert.Equal(t, "account_id", sharedGet.Params[0].URLName)
+
+	sharedDelete := findParsedEndpointByPath(t, parsed, "DELETE", "/shared")
+	require.Len(t, sharedDelete.Params, 1)
+	assert.Equal(t, "acct_id", sharedDelete.Params[0].URLName)
+}
+
 // TestParseJSONPreferredOverFormUrlencoded asserts the parser still picks
 // application/json when the spec offers both content types — keeping JSON-
 // declared specs byte-identical and letting form-only OAuth/legacy endpoints
