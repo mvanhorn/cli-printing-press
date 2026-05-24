@@ -1,5 +1,28 @@
 # Changelog
 
+## [4.13.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.13.0...v4.13.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* **cli:** align MCP remote transport scoring threshold ([#1979](https://github.com/mvanhorn/cli-printing-press/issues/1979)) ([d0cb79a](https://github.com/mvanhorn/cli-printing-press/commit/d0cb79ae73296c304fb0488605dc8c254242bcd3))
+* **cli:** count store helper workflows ([#2010](https://github.com/mvanhorn/cli-printing-press/issues/2010)) ([d78535a](https://github.com/mvanhorn/cli-printing-press/commit/d78535a53ece93e276b1e4d4bc0b3ac005a972b5))
+* **cli:** guard client flag in MCP shellouts ([#2003](https://github.com/mvanhorn/cli-printing-press/issues/2003)) ([60d7916](https://github.com/mvanhorn/cli-printing-press/commit/60d7916270d6b814a41d4729e7663be66df97cb5))
+* **cli:** include manuscript narratives in PII polish scan ([#2025](https://github.com/mvanhorn/cli-printing-press/issues/2025)) ([8f94f89](https://github.com/mvanhorn/cli-printing-press/commit/8f94f899b84e93113c9a7e9d4486992b983b8d02))
+* **cli:** infer template vars from base URLs ([#2002](https://github.com/mvanhorn/cli-printing-press/issues/2002)) ([e72ae7a](https://github.com/mvanhorn/cli-printing-press/commit/e72ae7af805aa468ccddebe9e0edab2bc17306cf))
+* **cli:** normalize verify directories ([#1994](https://github.com/mvanhorn/cli-printing-press/issues/1994)) ([b6e7bcc](https://github.com/mvanhorn/cli-printing-press/commit/b6e7bcc1274713346ea85aea081f000b04bce1c2))
+* **cli:** parse OpenAPI x-cache extension ([#1995](https://github.com/mvanhorn/cli-printing-press/issues/1995)) ([8ff3242](https://github.com/mvanhorn/cli-printing-press/commit/8ff32425b99f288545017995976501c4c12e6afe))
+* **cli:** redact live-check output samples ([#1997](https://github.com/mvanhorn/cli-printing-press/issues/1997)) ([0dab481](https://github.com/mvanhorn/cli-printing-press/commit/0dab48113de1e7d94c06b9d32924a2cc003b00bf))
+* **cli:** report malformed research json during publish ([#2008](https://github.com/mvanhorn/cli-printing-press/issues/2008)) ([9cd0c2b](https://github.com/mvanhorn/cli-printing-press/commit/9cd0c2b3a3e1fd33706671bac501570a59d3fdab))
+* **cli:** require quoted shell variables in skill bash blocks ([#2004](https://github.com/mvanhorn/cli-printing-press/issues/2004)) ([01afec0](https://github.com/mvanhorn/cli-printing-press/commit/01afec0970fba73cf8d173b3314763f5751ee221))
+* **cli:** retry live dogfood auth 401s ([#1996](https://github.com/mvanhorn/cli-printing-press/issues/1996)) ([13f5d99](https://github.com/mvanhorn/cli-printing-press/commit/13f5d99b1e538ab90500f9312380d97bb093af0e))
+* **cli:** route wrapper sync events off json stdout ([#1981](https://github.com/mvanhorn/cli-printing-press/issues/1981)) ([58a3c8d](https://github.com/mvanhorn/cli-printing-press/commit/58a3c8dd38ebbfc7fc48f1811ce3149a325bdfdc))
+* **cli:** warn on novel feature command depth drift ([#2009](https://github.com/mvanhorn/cli-printing-press/issues/2009)) ([8bcf5ae](https://github.com/mvanhorn/cli-printing-press/commit/8bcf5ae89be7d3d4308ffc0bf47ab523ebc60b8f))
+* **skills:** document patches index publish contract ([#1980](https://github.com/mvanhorn/cli-printing-press/issues/1980)) ([c0f33c6](https://github.com/mvanhorn/cli-printing-press/commit/c0f33c65d0f52f904894123a3cb15ab68bc2c451))
+* **skills:** honor PRINTING_PRESS_HOME in setup paths ([#2023](https://github.com/mvanhorn/cli-printing-press/issues/2023)) ([23cc0ce](https://github.com/mvanhorn/cli-printing-press/commit/23cc0ce2b3d13d52ea35988fe8ce67806a949f49))
+* **skills:** require agent-browser post-install setup ([#2022](https://github.com/mvanhorn/cli-printing-press/issues/2022)) ([bef08f5](https://github.com/mvanhorn/cli-printing-press/commit/bef08f5dfb1f669a9aa1e0113310b6d8a119dc28))
+* **skills:** require verify-safe quickstart first step ([#2021](https://github.com/mvanhorn/cli-printing-press/issues/2021)) ([0f30aa5](https://github.com/mvanhorn/cli-printing-press/commit/0f30aa50355d9873f4679056af5a22524a95fdf3))
+
 ## [4.13.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.12.0...v4.13.0) (2026-05-23)
 
 
