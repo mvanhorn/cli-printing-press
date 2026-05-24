@@ -334,7 +334,7 @@ func classifyReimplementation(leaf string, files []string, fileContent map[strin
 		if callsClientHelper(clientScanContent, clientHelpers) {
 			hasClient = true
 		}
-		if commandScan.ok && hasBlockClientSignal(commandScan.bodyNode, commandScan.imports) {
+		if commandScan.ok && hasBlockClientSignal(commandScan.bodyNode, commandScan.imports, true) {
 			hasClient = true
 		} else if !commandScan.ok && hasClientSignal(content) {
 			hasClient = true
@@ -472,10 +472,10 @@ func importAlias(spec *ast.ImportSpec, importPath string) string {
 }
 
 func hasFunctionClientSignal(fn *ast.FuncDecl, imports map[string]clientImportKind) bool {
-	return hasBlockClientSignal(fn.Body, imports)
+	return hasBlockClientSignal(fn.Body, imports, false)
 }
 
-func hasBlockClientSignal(body *ast.BlockStmt, imports map[string]clientImportKind) bool {
+func hasBlockClientSignal(body *ast.BlockStmt, imports map[string]clientImportKind, allowAnySiblingSelector bool) bool {
 	if body == nil {
 		return false
 	}
@@ -488,7 +488,7 @@ func hasBlockClientSignal(body *ast.BlockStmt, imports map[string]clientImportKi
 		if !ok {
 			return true
 		}
-		if isPrimitiveClientCall(call.Fun) || isImportedClientCall(call.Fun, imports) {
+		if isPrimitiveClientCall(call.Fun) || isImportedClientCall(call.Fun, imports, allowAnySiblingSelector) {
 			found = true
 			return false
 		}
@@ -528,7 +528,7 @@ func isPrimitiveClientCall(expr ast.Expr) bool {
 	return false
 }
 
-func isImportedClientCall(expr ast.Expr, imports map[string]clientImportKind) bool {
+func isImportedClientCall(expr ast.Expr, imports map[string]clientImportKind, allowAnySiblingSelector bool) bool {
 	parts := selectorParts(expr)
 	if len(parts) < 2 {
 		return false
@@ -538,6 +538,9 @@ func isImportedClientCall(expr ast.Expr, imports map[string]clientImportKind) bo
 		return false
 	}
 	if kind == generatedClientImport {
+		return true
+	}
+	if allowAnySiblingSelector {
 		return true
 	}
 	return isSiblingClientSelector(parts[len(parts)-1])
