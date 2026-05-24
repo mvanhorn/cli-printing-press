@@ -5,7 +5,7 @@ info:
   description: >
     Focused IT Glue REST API wrapper for MSP automation. The API follows the
     JSON:API media type and uses an x-api-key header. This spec covers the read
-    surface already used by JAIs BOT plus the non-destructive write endpoints
+    surface used by existing read-only integrations plus the non-destructive write endpoints
     needed for contact sync, password mirroring, configuration creation, and
     onboarding documentation.
   x-auth-key-url: https://api.itglue.com/developer/
@@ -254,6 +254,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Unprocessable"
   /configurations:
@@ -332,6 +334,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Unprocessable"
   /organizations/{organization_id}/relationships/configurations:
@@ -430,6 +434,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/Unprocessable"
   /organizations/{organization_id}/relationships/documents:
