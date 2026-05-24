@@ -67,6 +67,7 @@ func TestWriteSpec(t *testing.T) {
 		},
 		Types: map[string]spec.TypeDef{},
 	}
+	apiSpec.AuthWarnings = []string{`rejected auth candidate "keywords" from body: search input`}
 
 	outputPath := filepath.Join(t.TempDir(), "nested", "spec.yaml")
 	err := WriteSpec(apiSpec, outputPath)
@@ -74,11 +75,13 @@ func TestWriteSpec(t *testing.T) {
 
 	data, err := os.ReadFile(outputPath)
 	require.NoError(t, err)
+	assert.Contains(t, string(data), "auth_warnings:")
 
 	parsed, err := spec.ParseBytes(data)
 	require.NoError(t, err)
 	assert.Equal(t, apiSpec.Name, parsed.Name)
 	assert.Equal(t, apiSpec.BaseURL, parsed.BaseURL)
+	assert.Equal(t, apiSpec.AuthWarnings, parsed.AuthWarnings)
 }
 
 func TestDeriveNameFromURL(t *testing.T) {
@@ -651,6 +654,197 @@ func TestDetectAuth_FallsBackToHeaderInference(t *testing.T) {
 
 	assert.Equal(t, "bearer_token", auth.Type)
 	assert.Equal(t, "Authorization", auth.Header)
+}
+
+func TestDetectAuth_FallsBackToAPIKeyHeaderInference(t *testing.T) {
+	t.Parallel()
+
+	auth := detectAuth(nil, []EnrichedEntry{
+		{
+			Method:         "GET",
+			URL:            "https://www.example.com/v1/users",
+			RequestHeaders: map[string]string{"X-API-Key": "key-123"},
+		},
+		{
+			Method:         "GET",
+			URL:            "https://www.example.com/v1/orders",
+			RequestHeaders: map[string]string{"X-API-Key": "key-123"},
+		},
+		{
+			Method:         "GET",
+			URL:            "https://www.example.com/v1/invoices",
+			RequestHeaders: map[string]string{"X-API-Key": "key-123"},
+		},
+	}, "billing")
+
+	assert.Equal(t, "api_key", auth.Type)
+	assert.Equal(t, "X-API-Key", auth.Header)
+	assert.Equal(t, "header", auth.In)
+}
+
+func TestDetectAuth_DoesNotInferSearchKeywordsAsAPIKey(t *testing.T) {
+	t.Parallel()
+
+	auth := detectAuth(nil, []EnrichedEntry{
+		{
+			Method: "POST",
+			URL:    "https://www.example.com/resources/services/metadata/coin-explorer-listing/?keywords=morgan",
+			RequestHeaders: map[string]string{
+				"Content-Type": "application/json",
+			},
+			RequestBody: `{"keywords":"morgan"}`,
+		},
+	}, "ngccoin")
+
+	assert.Equal(t, "none", auth.Type)
+}
+
+func TestDetectAuth_DoesNotCorroborateCompoundSearchKeywordsAsAPIKey(t *testing.T) {
+	t.Parallel()
+
+	auth := detectAuth(nil, []EnrichedEntry{
+		{
+			Method: "GET",
+			URL:    "https://www.example.com/v1/coins?search_keywords=morgan",
+		},
+		{
+			Method: "GET",
+			URL:    "https://www.example.com/v1/notes?search_keywords=morgan",
+		},
+		{
+			Method: "GET",
+			URL:    "https://www.example.com/v1/sets?search_keywords=morgan",
+		},
+	}, "ngccoin")
+
+	assert.Equal(t, "none", auth.Type)
+}
+
+func TestDetectAuth_DoesNotInferBracketedSearchKeywordsAsAPIKey(t *testing.T) {
+	t.Parallel()
+
+	auth := detectAuth(nil, []EnrichedEntry{
+		{
+			Method: "GET",
+			URL:    "https://www.example.com/v1/coins?keywords%5B%5D=morgan",
+		},
+	}, "ngccoin")
+
+	assert.Equal(t, "none", auth.Type)
+}
+
+func TestAnalyzeCapture_ReportsRejectedSearchAuthCandidates(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := AnalyzeCapture(&EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://www.example.com/resources/services/metadata/coin-explorer-listing/",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"keywords":"morgan"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"coins":[{"id":"1","name":"Morgan Dollar"}]}`,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", apiSpec.Auth.Type)
+	require.Len(t, apiSpec.AuthWarnings, 1)
+	assert.Contains(t, apiSpec.AuthWarnings[0], `auth candidate "keywords"`)
+	assert.Contains(t, apiSpec.AuthWarnings[0], "body")
+	assert.Contains(t, apiSpec.AuthWarnings[0], "search input")
+}
+
+func TestDetectAuth_CorroboratesWeakQueryAuthAcrossDistinctEndpoints(t *testing.T) {
+	t.Parallel()
+
+	auth := detectAuth(nil, []EnrichedEntry{
+		{Method: "GET", URL: "https://www.example.com/v1/users?session_token=tok"},
+		{Method: "GET", URL: "https://www.example.com/v1/orders?session_token=tok"},
+		{Method: "GET", URL: "https://www.example.com/v1/invoices?session_token=tok"},
+	}, "billing")
+
+	assert.Equal(t, "api_key", auth.Type)
+	assert.Equal(t, "session_token", auth.Header)
+	assert.Equal(t, "query", auth.In)
+}
+
+func TestAnalyzeCapture_FiltersCorroboratedWeakQueryAuthFromEndpointParams(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := AnalyzeCapture(&EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/v1/users?session_token=tok&limit=10",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"users":[{"id":"1"}]}`,
+				Classification:      "api",
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/v1/orders?session_token=tok",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"orders":[{"id":"1"}]}`,
+				Classification:      "api",
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/v1/invoices?session_token=tok",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"invoices":[{"id":"1"}]}`,
+				Classification:      "api",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", apiSpec.Auth.Type)
+	assert.Equal(t, "query", apiSpec.Auth.In)
+	assert.Equal(t, "session_token", apiSpec.Auth.Header)
+
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			assert.Nil(t, findBodyParam(endpoint.Params, "session_token"))
+		}
+	}
+}
+
+func TestDetectAuth_DoesNotInferWeakQueryAuthFromSingleEndpoint(t *testing.T) {
+	t.Parallel()
+
+	auth := detectAuth(nil, []EnrichedEntry{
+		{Method: "GET", URL: "https://www.example.com/v1/users?session_token=tok"},
+	}, "billing")
+
+	assert.Equal(t, "none", auth.Type)
+}
+
+func TestDetectAuth_WarnsPaginationBeforeSearchInputs(t *testing.T) {
+	t.Parallel()
+
+	auth, warnings := detectAuthWithWarnings(nil, []EnrichedEntry{
+		{
+			Method:         "POST",
+			URL:            "https://www.example.com/v1/search?page_token=abc",
+			RequestHeaders: map[string]string{"Content-Type": "application/json"},
+			RequestBody:    `{"next_page_token":"def"}`,
+		},
+	}, "example")
+
+	assert.Equal(t, "none", auth.Type)
+	assert.Contains(t, warnings, authWarning("query", "page_token", "pagination token"))
+	assert.Contains(t, warnings, authWarning("body", "next_page_token", "pagination token"))
+	assert.NotContains(t, warnings, authWarning("query", "page_token", "search input"))
+	assert.NotContains(t, warnings, authWarning("body", "next_page_token", "search input"))
 }
 
 func TestObservedAuthHeaders(t *testing.T) {

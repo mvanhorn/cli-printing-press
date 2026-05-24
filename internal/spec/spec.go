@@ -184,6 +184,7 @@ type APISpec struct {
 	WebsiteURL                  string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
 	Category                    string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
 	Auth                        AuthConfig          `yaml:"auth" json:"auth"`
+	AuthWarnings                []string            `yaml:"auth_warnings,omitempty" json:"auth_warnings,omitempty"`
 	TierRouting                 TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
 	RequiredHeaders             []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
 	Config                      ConfigSpec          `yaml:"config" json:"config"`

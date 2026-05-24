@@ -24,6 +24,7 @@ auth:                             # object (AuthConfig)
     - EXAMPLE_API_TOKEN
   scheme: bearerAuth              # string optional OpenAPI security scheme name
   in: header                      # string optional: header | query | cookie
+auth_warnings:                    # []string optional sniffed-auth rejection notes
 
 config:                           # object (ConfigSpec)
   format: toml                    # string config format: toml | yaml (other values fall back to json tags)
