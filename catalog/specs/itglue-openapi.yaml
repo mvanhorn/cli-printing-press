@@ -158,10 +158,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/ContactRequest"
+              $ref: "#/components/schemas/OrganizationContactRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/ContactRequest"
+              $ref: "#/components/schemas/OrganizationContactRequest"
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
@@ -368,10 +368,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/ConfigurationRequest"
+              $ref: "#/components/schemas/OrganizationConfigurationRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/ConfigurationRequest"
+              $ref: "#/components/schemas/OrganizationConfigurationRequest"
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
@@ -472,10 +472,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/DocumentRequest"
+              $ref: "#/components/schemas/OrganizationDocumentRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/DocumentRequest"
+              $ref: "#/components/schemas/OrganizationDocumentRequest"
       responses:
         "201":
           $ref: "#/components/responses/JsonApiResource"
@@ -719,6 +719,49 @@ components:
           type: boolean
           description: Included for non-destructive deactivation where available in the tenant.
       additionalProperties: true
+    OrganizationContactRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [type, attributes]
+          properties:
+            type:
+              type: string
+              enum: [contacts]
+            attributes:
+              $ref: "#/components/schemas/OrganizationContactAttributes"
+          additionalProperties: true
+    OrganizationContactAttributes:
+      type: object
+      required: [name]
+      properties:
+        first-name:
+          type: string
+        last-name:
+          type: string
+        name:
+          type: string
+        title:
+          type: string
+        email:
+          type: string
+          format: email
+        notes:
+          type: string
+          nullable: true
+        important:
+          type: boolean
+        contact-type-id:
+          type: integer
+        location-id:
+          type: integer
+          nullable: true
+        archived:
+          type: boolean
+          description: Included for non-destructive deactivation where available in the tenant.
+      additionalProperties: true
     PasswordRequest:
       type: object
       required: [data]
@@ -923,6 +966,61 @@ components:
           type: string
           nullable: true
       additionalProperties: true
+    OrganizationConfigurationRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [type, attributes]
+          properties:
+            type:
+              type: string
+              enum: [configurations]
+            attributes:
+              $ref: "#/components/schemas/OrganizationConfigurationAttributes"
+            relationships:
+              type: object
+              additionalProperties: true
+          additionalProperties: true
+    OrganizationConfigurationAttributes:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        hostname:
+          type: string
+          nullable: true
+        configuration-type-id:
+          type: integer
+        configuration-status-id:
+          type: integer
+        manufacturer-id:
+          type: integer
+          nullable: true
+        model-id:
+          type: integer
+          nullable: true
+        location-id:
+          type: integer
+          nullable: true
+        serial-number:
+          type: string
+          nullable: true
+        asset-tag:
+          type: string
+          nullable: true
+        primary-ip:
+          type: string
+          nullable: true
+        mac-address:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+      additionalProperties: true
     DocumentRequest:
       type: object
       required: [data]
@@ -990,6 +1088,49 @@ components:
       properties:
         organization-id:
           type: integer
+        name:
+          type: string
+        content:
+          type: string
+          nullable: true
+          description: Document body content, typically HTML or rich text from IT Glue.
+        restricted:
+          type: boolean
+          nullable: true
+        archived:
+          type: boolean
+          nullable: true
+        public:
+          type: boolean
+          nullable: true
+        document-folder-id:
+          type: integer
+          nullable: true
+        my-glue:
+          type: boolean
+          nullable: true
+      additionalProperties: true
+    OrganizationDocumentRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [type, attributes]
+          properties:
+            type:
+              type: string
+              enum: [documents]
+            attributes:
+              $ref: "#/components/schemas/OrganizationDocumentAttributes"
+            relationships:
+              type: object
+              additionalProperties: true
+          additionalProperties: true
+    OrganizationDocumentAttributes:
+      type: object
+      required: [name]
+      properties:
         name:
           type: string
         content:
