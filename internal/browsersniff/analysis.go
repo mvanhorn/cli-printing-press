@@ -1909,10 +1909,11 @@ func anyHeaderPrefix(headers map[string]string, prefix string) bool {
 }
 
 func isAuthQueryName(lowerName string) bool {
-	if isPaginationTokenName(lowerName) {
+	lowerName = strings.ToLower(strings.TrimSpace(lowerName))
+	if isSearchInputName(lowerName) || isPaginationTokenName(lowerName) {
 		return false
 	}
-	return strings.Contains(lowerName, "key") || strings.Contains(lowerName, "token") || strings.Contains(lowerName, "auth")
+	return isStrongAuthQueryName(lowerName) || isWeakAuthQueryName(lowerName)
 }
 
 func isPaginationTokenName(lowerName string) bool {
