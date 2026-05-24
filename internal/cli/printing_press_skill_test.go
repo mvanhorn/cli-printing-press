@@ -8,6 +8,8 @@ import (
 )
 
 func TestPrintingPressSkillQuickstartFirstStepIsVerifySafe(t *testing.T) {
+	t.Parallel()
+
 	data, err := os.ReadFile("../../skills/printing-press/SKILL.md")
 	require.NoError(t, err)
 
