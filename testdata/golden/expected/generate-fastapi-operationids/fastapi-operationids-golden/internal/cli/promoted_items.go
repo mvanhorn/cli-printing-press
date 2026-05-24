@@ -16,7 +16,7 @@ func newItemsPromotedCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "items",
 		Short:       "Search items",
-		Long:        "Shortcut for 'items list'. Search items",
+		Long:        "Search items",
 		Example:     "  fastapi-operationids-golden-pp-cli items",
 		Annotations: map[string]string{"pp:endpoint": "items.list", "pp:method": "POST", "pp:path": "/api/items/search", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
