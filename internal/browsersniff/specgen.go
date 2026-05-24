@@ -25,6 +25,8 @@ type graphQLOperationGroup struct {
 	SamplePayload map[string]any
 }
 
+const authInferenceDistinctEndpointThreshold = 3
+
 func Analyze(capturePath string) (*spec.APISpec, error) {
 	capture, err := LoadCapture(capturePath)
 	if err != nil {
@@ -73,9 +75,16 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 		baseURL = normalizeBaseURL(capture.TargetURL)
 	}
 
+	nameSource := capture.TargetURL
+	if normalizeBaseURL(nameSource) == "" {
+		nameSource = baseURL
+	}
+	name := deriveNameFromURL(nameSource)
+	auth, authWarnings := detectAuthWithWarnings(capture, apiEntries, name)
+
 	groups := deduplicateSpecEndpoints(regularEntries, options)
 	for _, group := range groups {
-		endpoint := buildEndpoint(group)
+		endpoint := buildEndpoint(group, auth)
 		if options.PreserveHosts {
 			groupBaseURL := mostCommonBaseURL(group.Entries)
 			if groupBaseURL != "" && groupBaseURL != baseURL {
@@ -104,19 +113,14 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 		resources[resourceKey] = resource
 	}
 
-	nameSource := capture.TargetURL
-	if normalizeBaseURL(nameSource) == "" {
-		nameSource = baseURL
-	}
-	name := deriveNameFromURL(nameSource)
-
 	apiSpec := &spec.APISpec{
-		Name:        name,
-		Description: fmt.Sprintf("Discovered API spec for %s", name),
-		Version:     "0.1.0",
-		BaseURL:     baseURL,
-		SpecSource:  "sniffed",
-		Auth:        detectAuth(capture, apiEntries, name),
+		Name:         name,
+		Description:  fmt.Sprintf("Discovered API spec for %s", name),
+		Version:      "0.1.0",
+		BaseURL:      baseURL,
+		SpecSource:   "sniffed",
+		Auth:         auth,
+		AuthWarnings: authWarnings,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -133,7 +137,7 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 			}
 		}
 		if apiSpec.Auth.Type == "" {
-			apiSpec.Auth = spec.AuthConfig{Type: "none"}
+			apiSpec.Auth = spec.AuthConfig{Type: spec.TierAuthTypeNone}
 		}
 		if validateErr := apiSpec.Validate(); validateErr != nil {
 			return nil, fmt.Errorf("validating generated spec: %w", validateErr)
@@ -591,7 +595,7 @@ func DefaultCachePath(name string) string {
 	return filepath.Join(home, ".cache", "printing-press", "sniff", name+"-spec.yaml")
 }
 
-func buildEndpoint(group EndpointGroup) spec.Endpoint {
+func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) spec.Endpoint {
 	responseBodies := make([]string, 0, len(group.Entries))
 	for _, entry := range group.Entries {
 		if strings.TrimSpace(entry.ResponseBody) != "" {
@@ -602,8 +606,7 @@ func buildEndpoint(group EndpointGroup) spec.Endpoint {
 	responseFields := InferResponseSchema(responseBodies)
 	body := inferRequestBody(group.Entries, responseFields)
 	params := inferURLParams(group.Entries, group.NormalizedPath)
-	auth := detectAuth(nil, group.Entries, "")
-	if auth.Type == "api_key" && strings.EqualFold(auth.In, "query") && auth.Header != "" {
+	if auth.Type == spec.TierAuthTypeAPIKey && strings.EqualFold(auth.In, "query") && auth.Header != "" {
 		params = filterAuthQueryParam(params, auth.Header)
 	}
 
@@ -1026,6 +1029,11 @@ func inferURLParams(entries []EnrichedEntry, normalizedPath string) []spec.Param
 }
 
 func detectAuth(capture *EnrichedCapture, entries []EnrichedEntry, name string) spec.AuthConfig {
+	auth, _ := detectAuthWithWarnings(capture, entries, name)
+	return auth
+}
+
+func detectAuthWithWarnings(capture *EnrichedCapture, entries []EnrichedEntry, name string) (spec.AuthConfig, []string) {
 	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 	auth0SPA := detectAuth0SPAInMemory(entries)
 	if capture != nil && capture.Auth != nil {
@@ -1035,12 +1043,18 @@ func detectAuth(capture *EnrichedCapture, entries []EnrichedEntry, name string) 
 			// gets the subtype annotation so the generator routes to the CDP
 			// extractor; other auth shapes (cookie, composed, api_key) are
 			// reached by their own extractor paths and don't need the hint.
-			if auth0SPA && auth.Type == "bearer_token" {
+			if auth0SPA && auth.Type == spec.TierAuthTypeBearerToken {
 				auth.Subtype = spec.AuthSubtypeAuth0SPAInMemory
 			}
-			return auth
+			return auth, nil
 		}
 	}
+
+	var bearerAuth spec.AuthConfig
+	var headerAPIKeyAuth spec.AuthConfig
+	var strongQueryAuth spec.AuthConfig
+	weakQueryNames := map[string]map[string]bool{}
+	rejectedWarnings := map[string]bool{}
 
 	for _, entry := range entries {
 		for headerName, value := range entry.RequestHeaders {
@@ -1048,20 +1062,24 @@ func detectAuth(capture *EnrichedCapture, entries []EnrichedEntry, name string) 
 			switch {
 			case strings.EqualFold(headerName, "Authorization") && strings.HasPrefix(strings.TrimSpace(value), "Bearer "):
 				auth := spec.AuthConfig{
-					Type:    "bearer_token",
+					Type:    spec.TierAuthTypeBearerToken,
 					Header:  "Authorization",
 					EnvVars: envVarsOrNil(envPrefix, "TOKEN"),
 				}
 				if auth0SPA {
 					auth.Subtype = spec.AuthSubtypeAuth0SPAInMemory
 				}
-				return auth
-			case strings.Contains(lowerHeader, "api-key") || strings.Contains(lowerHeader, "api_key"):
-				return spec.AuthConfig{
-					Type:    "api_key",
-					Header:  headerName,
-					In:      "header",
-					EnvVars: envVarsOrNil(envPrefix, "API_KEY"),
+				if bearerAuth.Type == "" {
+					bearerAuth = auth
+				}
+			case isStrongAuthHeaderName(lowerHeader):
+				if headerAPIKeyAuth.Type == "" {
+					headerAPIKeyAuth = spec.AuthConfig{
+						Type:    spec.TierAuthTypeAPIKey,
+						Header:  headerName,
+						In:      "header",
+						EnvVars: envVarsOrNil(envPrefix, "API_KEY"),
+					}
 				}
 			}
 		}
@@ -1070,20 +1088,136 @@ func detectAuth(capture *EnrichedCapture, entries []EnrichedEntry, name string) 
 		if err != nil {
 			continue
 		}
+		endpointKey := authInferenceEndpointKey(entry)
 		for key := range parsed.Query() {
-			lowerKey := strings.ToLower(key)
-			if strings.Contains(lowerKey, "key") || strings.Contains(lowerKey, "token") {
-				return spec.AuthConfig{
-					Type:    "api_key",
-					Header:  key,
-					In:      "query",
-					EnvVars: envVarsOrNil(envPrefix, "API_KEY"),
+			lowerKey := strings.ToLower(strings.TrimSpace(key))
+			switch {
+			case isPaginationTokenName(lowerKey):
+				rejectedWarnings[authWarning("query", key, "pagination token")] = true
+			case isSearchInputName(lowerKey):
+				rejectedWarnings[authWarning("query", key, "search input")] = true
+			case isStrongAuthQueryName(lowerKey):
+				if strongQueryAuth.Type == "" {
+					strongQueryAuth = spec.AuthConfig{
+						Type:    spec.TierAuthTypeAPIKey,
+						Header:  key,
+						In:      "query",
+						EnvVars: envVarsOrNil(envPrefix, "API_KEY"),
+					}
 				}
+			case isWeakAuthQueryName(lowerKey):
+				if weakQueryNames[key] == nil {
+					weakQueryNames[key] = map[string]bool{}
+				}
+				weakQueryNames[key][endpointKey] = true
+			}
+		}
+
+		for _, param := range InferRequestSchema(entry.RequestBody, getHeaderValue(entry.RequestHeaders, "Content-Type")) {
+			lowerName := strings.ToLower(strings.TrimSpace(param.Name))
+			switch {
+			case isPaginationTokenName(lowerName):
+				rejectedWarnings[authWarning("body", param.Name, "pagination token")] = true
+			case isSearchInputName(lowerName):
+				rejectedWarnings[authWarning("body", param.Name, "search input")] = true
+			case isWeakAuthQueryName(lowerName):
+				rejectedWarnings[authWarning("body", param.Name, "request body field")] = true
 			}
 		}
 	}
 
-	return spec.AuthConfig{Type: "none"}
+	if bearerAuth.Type != "" {
+		return bearerAuth, sortedBoolKeys(rejectedWarnings)
+	}
+	if headerAPIKeyAuth.Type != "" {
+		return headerAPIKeyAuth, sortedBoolKeys(rejectedWarnings)
+	}
+	if strongQueryAuth.Type != "" {
+		return strongQueryAuth, sortedBoolKeys(rejectedWarnings)
+	}
+
+	names := make([]string, 0, len(weakQueryNames))
+	for name := range weakQueryNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, key := range names {
+		endpoints := weakQueryNames[key]
+		if len(endpoints) >= authInferenceDistinctEndpointThreshold {
+			return spec.AuthConfig{
+				Type:    spec.TierAuthTypeAPIKey,
+				Header:  key,
+				In:      "query",
+				EnvVars: envVarsOrNil(envPrefix, "API_KEY"),
+			}, sortedBoolKeys(rejectedWarnings)
+		}
+		rejectedWarnings[authWarning("query", key, "seen on fewer than 3 distinct endpoints")] = true
+	}
+
+	return spec.AuthConfig{Type: spec.TierAuthTypeNone}, sortedBoolKeys(rejectedWarnings)
+}
+
+func isStrongAuthHeaderName(lowerName string) bool {
+	switch lowerName {
+	case "x-api-key", "x_api_key", "api-key", "api_key", "x-auth-token":
+		return true
+	default:
+		return strings.Contains(lowerName, "api-key") || strings.Contains(lowerName, "api_key")
+	}
+}
+
+func isStrongAuthQueryName(lowerName string) bool {
+	switch lowerName {
+	case "key", "api_key", "api-key", "apikey", "x-api-key", "x_api_key", "token", "access_token", "auth_token":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWeakAuthQueryName(lowerName string) bool {
+	return strings.Contains(lowerName, "key") || strings.Contains(lowerName, "token") || strings.Contains(lowerName, "auth")
+}
+
+func isSearchInputName(lowerName string) bool {
+	for _, token := range authCandidateNameTokens(lowerName) {
+		switch token {
+		case "keywords", "keyword", "query", "q", "search", "term", "text", "filter", "sort", "page", "limit", "offset":
+			return true
+		}
+	}
+	return false
+}
+
+func authInferenceEndpointKey(entry EnrichedEntry) string {
+	return strings.ToUpper(strings.TrimSpace(entry.Method)) + " " + normalizeEntryPath(entry.URL)
+}
+
+func authWarning(location string, name string, reason string) string {
+	return fmt.Sprintf("rejected auth candidate %q from %s: %s", name, location, reason)
+}
+
+func authCandidateNameTokens(name string) []string {
+	normalized := strings.NewReplacer(
+		"[", "_",
+		"]", "_",
+		"-", "_",
+		".", "_",
+		" ", "_",
+	).Replace(strings.ToLower(strings.TrimSpace(name)))
+	parts := strings.FieldsFunc(normalized, func(r rune) bool {
+		return r == '_'
+	})
+	tokens := make([]string, 0, len(parts)+1)
+	for _, part := range parts {
+		if part != "" {
+			tokens = append(tokens, part)
+		}
+	}
+	if normalized != "" {
+		tokens = append(tokens, normalized)
+	}
+	return tokens
 }
 
 // observedAuthHeaders returns the sorted set of lowercased request header
@@ -1136,7 +1270,7 @@ func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig 
 		switch captureType {
 		case "bearer":
 			return spec.AuthConfig{
-				Type:    "bearer_token",
+				Type:    spec.TierAuthTypeBearerToken,
 				Header:  "Authorization",
 				EnvVars: envVarsOrNil(envPrefix, "TOKEN"),
 			}
@@ -1146,7 +1280,7 @@ func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig 
 				headerName = "X-API-Key"
 			}
 			return spec.AuthConfig{
-				Type:    "api_key",
+				Type:    spec.TierAuthTypeAPIKey,
 				Header:  headerName,
 				In:      "header",
 				EnvVars: envVarsOrNil(envPrefix, "API_KEY"),
