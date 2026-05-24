@@ -27,7 +27,7 @@ type htmlExtractionOptions struct {
 	ContentType    string
 	LinkPrefixes   []string
 	Limit          int
-	ScriptSelector string // for mode: embedded-json — selector "tag" or "tag#id"
+	ScriptSelector string // for mode: embedded-json — selector "tag", "tag#id", "tag.class", or "tag[attr=\"value\"]"
 	JSONPath       string // for mode: embedded-json — dot-notation walk
 }
 
@@ -160,8 +160,11 @@ func extractEmbeddedJSON(raw []byte, opts htmlExtractionOptions) (json.RawMessag
 	if selector == "" {
 		selector = "script#__NEXT_DATA__"
 	}
-	tag, idFilter := parseSimpleSelector(selector)
-	scriptText, found := findScriptByTagAndID(doc, tag, idFilter)
+	parsedSelector, err := parseSimpleSelector(selector)
+	if err != nil {
+		return nil, fmt.Errorf("embedded-json: invalid selector %q: %w", selector, err)
+	}
+	scriptText, found := findScriptBySelector(doc, parsedSelector)
 	if !found {
 		return nil, fmt.Errorf("embedded-json: no element matching selector %q found in page", selector)
 	}
@@ -180,32 +183,68 @@ func extractEmbeddedJSON(raw []byte, opts htmlExtractionOptions) (json.RawMessag
 	return json.RawMessage(out), nil
 }
 
-// parseSimpleSelector splits a "tag" or "tag#id" selector into its
-// components. Returns ("script", "__NEXT_DATA__") for the canonical
-// Next.js case; ("script", "") for a tag-only selector. Anything more
-// complex (CSS classes, attribute selectors) is out of scope for v1.
-func parseSimpleSelector(selector string) (tag, id string) {
-	if i := strings.Index(selector, "#"); i >= 0 {
-		return selector[:i], selector[i+1:]
-	}
-	return selector, ""
+type simpleSelector struct {
+	tag       string
+	id        string
+	className string
+	attrName  string
+	attrValue string
 }
 
-// findScriptByTagAndID walks the parsed HTML document looking for the
-// first element whose tag matches `tag` and (when `id` is non-empty)
-// whose id attribute matches `id`. Returns the element's concatenated
-// text content. Tags are matched case-insensitively; ids are
-// case-sensitive (per HTML5 spec).
-func findScriptByTagAndID(root *xhtml.Node, tag, id string) (string, bool) {
+// parseSimpleSelector parses the limited selector grammar used by generated
+// embedded-json extraction: "tag", "tag#id", "tag.class", or
+// "tag[attr=\"value\"]". This intentionally avoids a full CSS selector
+// engine while covering selectors emitted by browser sniffing for common SSR
+// state and JSON-LD script tags.
+func parseSimpleSelector(selector string) (simpleSelector, error) {
+	selector = strings.TrimSpace(selector)
+	out := simpleSelector{tag: selector}
+	if i := strings.Index(selector, "["); i >= 0 && strings.HasSuffix(selector, "]") {
+		out.tag = selector[:i]
+		expr := strings.TrimSuffix(selector[i+1:], "]")
+		if eq := strings.Index(expr, "="); eq >= 0 {
+			out.attrName = strings.TrimSpace(expr[:eq])
+			out.attrValue = strings.Trim(strings.TrimSpace(expr[eq+1:]), `"'`)
+			if out.attrName == "" {
+				return simpleSelector{}, fmt.Errorf("attribute selector is missing an attribute name")
+			}
+		} else {
+			return simpleSelector{}, fmt.Errorf("attribute selector %q must use tag[attr=\"value\"]", selector)
+		}
+		return out, nil
+	}
+	if i := strings.Index(selector, "#"); i >= 0 {
+		out.tag = selector[:i]
+		out.id = selector[i+1:]
+		return out, nil
+	}
+	if i := strings.Index(selector, "."); i >= 0 {
+		out.tag = selector[:i]
+		out.className = selector[i+1:]
+		return out, nil
+	}
+	return out, nil
+}
+
+// findScriptBySelector walks the parsed HTML document looking for the first
+// element matching the limited selector grammar. Tags are matched
+// case-insensitively; ids/classes/attribute values are case-sensitive.
+func findScriptBySelector(root *xhtml.Node, selector simpleSelector) (string, bool) {
 	var found *xhtml.Node
 	walkHTML(root, func(n *xhtml.Node) {
 		if found != nil || n.Type != xhtml.ElementNode {
 			return
 		}
-		if !strings.EqualFold(n.Data, tag) {
+		if selector.tag != "" && !strings.EqualFold(n.Data, selector.tag) {
 			return
 		}
-		if id != "" && attrValue(n, "id") != id {
+		if selector.id != "" && attrValue(n, "id") != selector.id {
+			return
+		}
+		if selector.className != "" && !hasHTMLClass(n, selector.className) {
+			return
+		}
+		if selector.attrName != "" && attrValue(n, selector.attrName) != selector.attrValue {
 			return
 		}
 		found = n
@@ -214,6 +253,15 @@ func findScriptByTagAndID(root *xhtml.Node, tag, id string) (string, bool) {
 		return "", false
 	}
 	return nodeText(found), true
+}
+
+func hasHTMLClass(n *xhtml.Node, className string) bool {
+	for _, part := range strings.Fields(attrValue(n, "class")) {
+		if part == className {
+			return true
+		}
+	}
+	return false
 }
 
 // walkJSONDotPath descends a parsed JSON value via dot-notation
