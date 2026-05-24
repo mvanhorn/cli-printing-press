@@ -3859,9 +3859,13 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
 			loc = "path"
 		}
+		wireName := p.WireName()
+		if loc == "path" {
+			wireName = p.Name
+		}
 		bindings = append(bindings, mcpParamBinding{
 			PublicName:         p.PublicInputName(),
-			WireName:           p.Name,
+			WireName:           wireName,
 			Location:           loc,
 			RequestContentType: requestContentType,
 		})

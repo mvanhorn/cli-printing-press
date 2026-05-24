@@ -862,6 +862,57 @@ components:
             read: Read access
 ```
 
+### `x-url-name` and `x-param-url-names`
+
+Overrides the URL query key for a parameter without changing the public
+CLI/MCP input name. Use this for APIs whose documented flag name or shared
+OpenAPI component name differs from the exact wire query key a specific
+endpoint accepts.
+
+Parsed field: `Param.URLName`
+
+Rules:
+
+- `x-url-name` is allowed on an OpenAPI Parameter Object and applies wherever
+  that parameter object is used.
+- `x-param-url-names` is allowed on a Path Item Object or Operation Object. It
+  is an object mapping parameter names to URL query keys. Operation entries
+  override path-item entries.
+- The parameter's `name` remains the public input identity used for generated
+  Go identifiers, CLI flags, MCP public names, and manifest public names.
+- The override only changes generated URL query emission, MCP `WireName`, and
+  manifest `wire_name`.
+- Empty names, empty URL keys, and non-string override values are ignored with
+  warnings.
+
+Example:
+
+```yaml
+paths:
+  /opportunities/search:
+    get:
+      x-param-url-names:
+        locationId: location_id
+      parameters:
+        - $ref: "#/components/parameters/LocationId"
+
+  /opportunities/pipelines:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/LocationId"
+
+components:
+  parameters:
+    LocationId:
+      name: locationId
+      in: query
+      schema:
+        type: string
+```
+
+In this example both endpoints keep the same public `locationId` input, but
+only `/opportunities/search` sends `?location_id=` on the wire.
+
 ## Path Item Extensions
 
 Path item extensions are read from a path object, beside its HTTP operations.

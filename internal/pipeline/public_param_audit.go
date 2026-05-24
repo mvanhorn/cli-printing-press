@@ -92,17 +92,18 @@ func auditPublicParams(resourceName, endpointName, location string, endpoint spe
 		if param.Positional {
 			continue
 		}
-		reasons := publicParamAuditReasons(param)
+		wireName := publicParamAuditWireName(location, param)
+		reasons := publicParamAuditReasons(wireName)
 		if len(reasons) == 0 {
 			continue
 		}
 		findings = append(findings, PublicParamAuditFinding{
-			ID:                  publicParamAuditID(resourceName, endpointName, location, param.Name),
+			ID:                  publicParamAuditID(resourceName, endpointName, location, wireName),
 			Resource:            resourceName,
 			Endpoint:            endpointName,
 			Location:            location,
-			WireName:            param.Name,
-			CurrentPublicName:   param.FlagName,
+			WireName:            wireName,
+			CurrentPublicName:   publicParamAuditPublicName(location, param, wireName),
 			Aliases:             append([]string(nil), param.Aliases...),
 			Type:                param.Type,
 			Required:            param.Required,
@@ -115,8 +116,25 @@ func auditPublicParams(resourceName, endpointName, location string, endpoint spe
 	return findings
 }
 
-func publicParamAuditReasons(param spec.Param) []string {
-	wire := strings.TrimSpace(param.Name)
+func publicParamAuditWireName(location string, param spec.Param) string {
+	if location == "params" {
+		return param.WireName()
+	}
+	return param.Name
+}
+
+func publicParamAuditPublicName(location string, param spec.Param, wireName string) string {
+	if param.FlagName != "" {
+		return param.FlagName
+	}
+	if location == "params" && param.URLName != "" && param.Name != wireName {
+		return param.PublicInputName()
+	}
+	return ""
+}
+
+func publicParamAuditReasons(wireName string) []string {
+	wire := strings.TrimSpace(wireName)
 	if wire == "" {
 		return nil
 	}

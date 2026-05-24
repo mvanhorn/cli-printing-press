@@ -60,11 +60,11 @@ type codeOrchEndpoint struct {
 	Tier       string
 	Summary    string
 	Positional []string
-	// QueryParams carries the wire names of spec-declared in:query
+	// QueryParams carries public-to-wire bindings for spec-declared in:query
 	// parameters. Write methods (POST/PUT/PATCH) route these to the query
 	// string instead of dumping them into the JSON body. Derived from the
 	// same mcpParamBindings location data the per-endpoint tools use.
-	QueryParams []string
+	QueryParams []codeOrchParamBinding
 	// HeaderOverrides carries per-endpoint request headers (e.g. an
 	// Accept override for binary-only response endpoints). Without
 	// threading these through, the code-orchestration execute path
@@ -79,6 +79,11 @@ type codeOrchEndpoint struct {
 	keywords    []string
 }
 
+type codeOrchParamBinding struct {
+	PublicName string
+	WireName   string
+}
+
 // codeOrchEndpoints is the generator-populated registry covering every
 // endpoint declared in the spec. Kept flat on purpose — the agent queries
 // via <api>_search, so hierarchy shows up as dotted IDs, not nested maps.
@@ -89,7 +94,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Path:        "/items",
 		Summary:     "List items",
 		Positional:  []string{},
-		QueryParams: []string{},
+		QueryParams: []codeOrchParamBinding{},
 		keywords:    codeOrchKeywords("items", "list", "List items", "/items"),
 	},
 }
@@ -226,7 +231,7 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	query := map[string]string{}
 	if ep.Method == "GET" || ep.Method == "DELETE" {
 		for k, v := range params {
-			query[k] = fmt.Sprintf("%v", v)
+			query[codeOrchWireQueryName(ep.QueryParams, k)] = fmt.Sprintf("%v", v)
 		}
 	} else {
 		// Route spec-declared in:query params to the query string for write
@@ -330,13 +335,28 @@ func codeOrchArrayBody(params map[string]any) any {
 // entries stay in the map for codeOrchWriteBody (the JSON body), so a write
 // method's query parameters never get buried in the body. Mutates params by
 // design (deletes the consumed query keys).
-func codeOrchSplitQuery(queryParams []string, params map[string]any) string {
+func codeOrchSplitQuery(queryParams []codeOrchParamBinding, params map[string]any) string {
 	uv := neturl.Values{}
 	for _, q := range queryParams {
-		if v, ok := params[q]; ok {
-			uv.Set(q, fmt.Sprintf("%v", v))
-			delete(params, q)
+		for _, key := range []string{q.PublicName, q.WireName} {
+			if key == "" {
+				continue
+			}
+			if v, ok := params[key]; ok {
+				uv.Set(q.WireName, fmt.Sprintf("%v", v))
+				delete(params, key)
+				break
+			}
 		}
 	}
 	return uv.Encode()
+}
+
+func codeOrchWireQueryName(queryParams []codeOrchParamBinding, name string) string {
+	for _, q := range queryParams {
+		if q.PublicName == name || q.WireName == name {
+			return q.WireName
+		}
+	}
+	return name
 }

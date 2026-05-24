@@ -158,6 +158,46 @@ types:
 	require.NoError(t, cmd.Execute())
 }
 
+func TestPublicParamAuditOpenAPIURLNameOverrideInventoriesWireName(t *testing.T) {
+	specPath := writePublicParamAuditSpec(t, `
+openapi: 3.0.3
+info:
+  title: Public Param URL Name API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /records:
+    get:
+      operationId: queryRecords
+      x-param-url-names:
+        limit: "$limit"
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+`)
+
+	var out bytes.Buffer
+	cmd := newPublicParamAuditCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--spec", specPath, "--json"})
+	require.NoError(t, cmd.Execute())
+
+	var ledger pipeline.PublicParamAuditLedger
+	require.NoError(t, json.Unmarshal(out.Bytes(), &ledger))
+	require.Len(t, ledger.Findings, 1)
+	assert.Equal(t, pipeline.PublicParamAuditSummary{Total: 1, Resolved: 1}, ledger.Summary)
+	assert.Equal(t, "records.query.params.$limit", ledger.Findings[0].ID)
+	assert.Equal(t, "$limit", ledger.Findings[0].WireName)
+	assert.Equal(t, "limit", ledger.Findings[0].CurrentPublicName)
+	assert.Equal(t, []string{"operator-like-wire-name"}, ledger.Findings[0].Reasons)
+}
+
 func TestPublicParamAuditStrictRefsDisablesLenientLocalSchemaStubs(t *testing.T) {
 	specPath := writePublicParamAuditSpec(t, `
 openapi: 3.0.3
