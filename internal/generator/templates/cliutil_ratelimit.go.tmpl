@@ -47,13 +47,15 @@ func (l *AdaptiveLimiter) Wait() {
 	l.mu.Lock()
 	delay := time.Duration(float64(time.Second) / l.rate)
 	elapsed := time.Since(l.lastRequest)
-	l.mu.Unlock()
+	var sleep time.Duration
 	if elapsed < delay {
-		time.Sleep(delay - elapsed)
+		sleep = delay - elapsed
 	}
-	l.mu.Lock()
-	l.lastRequest = time.Now()
+	l.lastRequest = time.Now().Add(sleep)
 	l.mu.Unlock()
+	if sleep > 0 {
+		time.Sleep(sleep)
+	}
 }
 
 func (l *AdaptiveLimiter) OnSuccess() {
