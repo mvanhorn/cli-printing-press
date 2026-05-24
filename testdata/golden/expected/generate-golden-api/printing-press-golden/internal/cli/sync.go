@@ -1158,18 +1158,26 @@ func syncResourcePath(resource string) (string, error) {
 // records' KeyField via json_extract rather than from the parent table's primary key.
 // Populated from a spec-declared walker (Endpoint.Walker.KeyField in internal YAML,
 // or `key_field` under `x-pp-sync-walker` in OpenAPI). Empty KeyField preserves the
-// existing parent-primary-key flow byte-for-byte.
+// parent-primary-key flow.
 type dependentResourceDef struct {
 	Name          string
 	ParentTable   string
 	ParentIDParam string
 	PathTemplate  string
 	KeyField      string
+	PathParams    []dependentPathParamDef
+}
+
+type dependentPathParamDef struct {
+	Param string
+	Field string
 }
 
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
-		{Name: "tasks", ParentTable: "projects", ParentIDParam: "projectId", PathTemplate: "/projects/{projectId}/tasks", KeyField: ""},
+		{Name: "tasks", ParentTable: "projects", ParentIDParam: "projectId", PathTemplate: "/projects/{projectId}/tasks", KeyField: "", PathParams: []dependentPathParamDef{
+			{Param: "projectId", Field: "id"},
+		}},
 	}
 }
 
@@ -1205,21 +1213,17 @@ func syncDependentResource(ctx context.Context, c interface {
 		syncEvents = io.Discard
 	}
 
-	// Query parent table for the keys to substitute into the child path.
-	// When KeyField is empty, use the parent's primary key via ListIDs
-	// (the original flat parent-child flow). When KeyField is set, the
-	// spec declared a walker that extracts a non-PK field from each parent
-	// record — ListField looks up the field in the parent's typed column
-	// if present, otherwise json_extract from the generic resources table.
-	var parentIDs []string
-	var err error
-	if dep.KeyField != "" {
-		parentIDs, err = db.ListField(dep.ParentTable, dep.KeyField)
-	} else {
-		parentIDs, err = db.ListIDs(dep.ParentTable)
+	pathParams := dep.PathParams
+	if len(pathParams) == 0 {
+		field := "id"
+		if dep.KeyField != "" {
+			field = dep.KeyField
+		}
+		pathParams = []dependentPathParamDef{{Param: dep.ParentIDParam, Field: field}}
 	}
-	if err != nil || len(parentIDs) == 0 {
-		if len(parentIDs) == 0 {
+	parentRows, err := dependentParentRows(db, dep.ParentTable, pathParams)
+	if err != nil || len(parentRows) == 0 {
+		if len(parentRows) == 0 {
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "  %s: skipping (parent table %s is empty, sync it first)\n", dep.Name, dep.ParentTable)
 			}
@@ -1229,7 +1233,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	}
 
 	if humanFriendly {
-		fmt.Fprintf(os.Stderr, "  %s: syncing for %d %s parents\n", dep.Name, len(parentIDs), dep.ParentTable)
+		fmt.Fprintf(os.Stderr, "  %s: syncing for %d %s parents\n", dep.Name, len(parentRows), dep.ParentTable)
 	}
 
 	var totalCount int
@@ -1254,13 +1258,19 @@ func syncDependentResource(ctx context.Context, c interface {
 	depAnomalyEmitted := false
 	parentFKKey := dep.ParentTable + "_id"
 
-	for idx, parentID := range parentIDs {
+	for idx, parentRow := range parentRows {
+		parentID := parentRow["id"]
+		if parentID == "" {
+			parentID = parentRow[pathParams[0].Field]
+		}
 		parentIDJSON, _ := json.Marshal(parentID)
-		// Build child endpoint path by replacing the param placeholder
-		path := strings.Replace(dep.PathTemplate, "{"+dep.ParentIDParam+"}", parentID, 1)
+		path := dep.PathTemplate
+		for _, pathParam := range pathParams {
+			path = replacePathParam(path, pathParam.Param, parentRow[pathParam.Field])
+		}
 
 		if humanFriendly {
-			fmt.Fprintf(os.Stderr, "\r  %s: syncing for %s (%d/%d parents)", dep.Name, dep.ParentTable, idx+1, len(parentIDs))
+			fmt.Fprintf(os.Stderr, "\r  %s: syncing for %s (%d/%d parents)", dep.Name, dep.ParentTable, idx+1, len(parentRows))
 		}
 
 		cursor := ""
@@ -1335,6 +1345,16 @@ func syncDependentResource(ctx context.Context, c interface {
 					obj["parent_id"] = parentIDJSON
 					if _, ok := obj[parentFKKey]; !ok {
 						obj[parentFKKey] = parentIDJSON
+					}
+					for _, pathParam := range pathParams {
+						if pathParam.Field == "id" {
+							continue
+						}
+						if _, ok := obj[pathParam.Field]; ok {
+							continue
+						}
+						valueJSON, _ := json.Marshal(parentRow[pathParam.Field])
+						obj[pathParam.Field] = valueJSON
 					}
 					if modified, err := json.Marshal(obj); err == nil {
 						items[i] = modified
@@ -1440,15 +1460,55 @@ func syncDependentResource(ctx context.Context, c interface {
 
 	// If every parent was access-denied and nothing was synced, surface as a
 	// warning so the run-level summary and exit code reflect insufficient access.
-	if deniedParents == len(parentIDs) && totalCount == 0 && firstDenial != nil {
+	if deniedParents == len(parentRows) && totalCount == 0 && firstDenial != nil {
 		return syncResult{
 			Resource: dep.Name,
 			Count:    0,
-			Warn:     fmt.Errorf("skipped %s: %s on all %d parents", dep.Name, firstDenial.Reason, len(parentIDs)),
+			Warn:     fmt.Errorf("skipped %s: %s on all %d parents", dep.Name, firstDenial.Reason, len(parentRows)),
 			Duration: time.Since(started),
 		}
 	}
 	return syncResult{Resource: dep.Name, Count: totalCount, Duration: time.Since(started)}
+}
+
+func dependentParentFields(pathParams []dependentPathParamDef) []string {
+	fields := []string{"id"}
+	seen := map[string]bool{"id": true}
+	for _, pathParam := range pathParams {
+		if pathParam.Field == "" || seen[pathParam.Field] {
+			continue
+		}
+		fields = append(fields, pathParam.Field)
+		seen[pathParam.Field] = true
+	}
+	return fields
+}
+
+func dependentParentRows(db *store.Store, parentTable string, pathParams []dependentPathParamDef) ([]map[string]string, error) {
+	fields := dependentParentFields(pathParams)
+	if len(fields) == 1 {
+		values, err := db.ListIDs(parentTable)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]map[string]string, 0, len(values))
+		for _, value := range values {
+			rows = append(rows, map[string]string{"id": value})
+		}
+		return rows, nil
+	}
+	if len(pathParams) == 1 && len(fields) == 2 && fields[0] == "id" {
+		values, err := db.ListField(parentTable, fields[1])
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]map[string]string, 0, len(values))
+		for _, value := range values {
+			rows = append(rows, map[string]string{"id": value, fields[1]: value})
+		}
+		return rows, nil
+	}
+	return db.ListFieldSets(parentTable, fields)
 }
 
 // resourceIDFieldOverrides projects per-resource IDField (set by the profiler

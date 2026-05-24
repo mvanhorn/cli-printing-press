@@ -4463,6 +4463,164 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncDependentResourcePopulatesTypedParentFK", "./internal/cli")
 }
 
+func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("dependent-chained-params")
+	apiSpec.Resources = map[string]spec.Resource{
+		"channels": {
+			Description: "Channels",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/channels",
+					Response: spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+		"messages": {
+			Description: "Messages",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/channels/{channelId}/messages",
+					Response: spec.ResponseDef{Type: "array"},
+					Params:   []spec.Param{{Name: "channelId", Type: "string", Required: true, Positional: true}},
+				},
+			},
+		},
+		"reactions": {
+			Description: "Reactions",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/channels/{channelId}/messages/{messageId}/reactions",
+					Response: spec.ResponseDef{Type: "array"},
+					Params: []spec.Param{
+						{Name: "channelId", Type: "string", Required: true, Positional: true},
+						{Name: "messageId", Type: "string", Required: true, Positional: true},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.profile = &profiler.APIProfile{
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "channels", Path: "/channels", Method: "GET"},
+		},
+		DependentSyncResources: []profiler.DependentResource{
+			{
+				Name:           "messages",
+				ParentResource: "channels",
+				ParentIDParam:  "channelId",
+				Path:           "/channels/{channelId}/messages",
+				Method:         "GET",
+				PathParams:     []profiler.DependentPathParam{{Param: "channelId", Field: "id"}},
+			},
+			{
+				Name:           "messages_reactions",
+				ParentResource: "messages",
+				ParentIDParam:  "messageId",
+				Path:           "/channels/{channelId}/messages/{messageId}/reactions",
+				Method:         "GET",
+				PathParams: []profiler.DependentPathParam{
+					{Param: "channelId", Field: "channels_id"},
+					{Param: "messageId", Field: "id"},
+				},
+			},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type dependentChainedParamClient struct {
+	t *testing.T
+}
+
+func (c dependentChainedParamClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	if path != "/channels/chan-1/messages/msg-1/reactions" {
+		c.t.Fatalf("path = %q, want /channels/chan-1/messages/msg-1/reactions", path)
+	}
+	return json.RawMessage(` + "`" + `[{"id":"react-1","emoji":"thumbsup"}]` + "`" + `), nil
+}
+
+func (dependentChainedParamClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Upsert("messages", "msg-1", []byte(` + "`" + `{"id":"msg-1","channels_id":"chan-1","text":"hello"}` + "`" + `)); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+
+	res := syncDependentResource(
+		context.Background(),
+		dependentChainedParamClient{t: t},
+		db,
+		dependentResourceDef{
+			Name: "messages_reactions",
+			ParentTable: "messages",
+			ParentIDParam: "messageId",
+			PathTemplate: "/channels/{channelId}/messages/{messageId}/reactions",
+			PathParams: []dependentPathParamDef{
+				{Param: "channelId", Field: "channels_id"},
+				{Param: "messageId", Field: "id"},
+			},
+		},
+		"", false, 1, false, nil, nil,
+	)
+	if res.Err != nil {
+		t.Fatalf("syncDependentResource error: %v", res.Err)
+	}
+	if res.Count != 1 {
+		t.Fatalf("synced count = %d, want 1", res.Count)
+	}
+
+	rows, err := db.DB().Query(` + "`" + `SELECT id, json_extract(data, '$.messages_id'), json_extract(data, '$.channels_id') FROM resources WHERE resource_type = 'messages_reactions'` + "`" + `)
+	if err != nil {
+		t.Fatalf("query reactions: %v", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		t.Fatalf("expected one reaction row")
+	}
+	var id, messagesID, channelsID string
+	if err := rows.Scan(&id, &messagesID, &channelsID); err != nil {
+		t.Fatalf("scan reaction: %v", err)
+	}
+	if id != "react-1" || messagesID != "msg-1" || channelsID != "chan-1" {
+		t.Fatalf("row = (%q, %q, %q), want (react-1, msg-1, chan-1)", id, messagesID, channelsID)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "dependent_chained_params_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncDependentResourceSubstitutesChainedPathParams", "./internal/cli")
+}
+
 func TestGenerateSimilarCommandUsesCompositeResourceKey(t *testing.T) {
 	t.Parallel()
 

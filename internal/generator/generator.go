@@ -644,34 +644,9 @@ type HelperFlags struct {
 func computeHelperFlags(s *spec.APISpec) HelperFlags {
 	var flags HelperFlags
 	for _, r := range s.Resources {
-		for _, e := range r.Endpoints {
-			if strings.EqualFold(e.Method, "DELETE") {
-				flags.HasDelete = true
-			}
-			if isMutationMethod(e.Method) {
-				flags.HasMutationEndpoints = true
-			}
-			if endpointNeedsClientLimit(e) {
-				flags.HasClientLimit = true
-			}
-			if len(e.EmbeddedPagedSubresources) > 0 {
-				flags.HasEmbeddedPaged = true
-			}
-			positionalCount := 0
-			for _, p := range e.Params {
-				if p.Positional || p.PathParam {
-					flags.HasPathParams = true
-				}
-				if p.Positional {
-					positionalCount++
-				}
-			}
-			if positionalCount >= 2 {
-				flags.HasMultiPositional = true
-			}
-		}
-		for _, sub := range r.SubResources {
-			for _, e := range sub.Endpoints {
+		var scan func(spec.Resource)
+		scan = func(resource spec.Resource) {
+			for _, e := range resource.Endpoints {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
 				}
@@ -683,6 +658,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				if len(e.EmbeddedPagedSubresources) > 0 {
 					flags.HasEmbeddedPaged = true
+				}
+				if strings.Contains(e.Path, "{") {
+					flags.HasPathParams = true
 				}
 				positionalCount := 0
 				for _, p := range e.Params {
@@ -697,7 +675,11 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 					flags.HasMultiPositional = true
 				}
 			}
+			for _, sub := range resource.SubResources {
+				scan(sub)
+			}
 		}
+		scan(r)
 	}
 	return flags
 }

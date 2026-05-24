@@ -3,6 +3,7 @@ package profiler
 import (
 	"bytes"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -1185,6 +1186,173 @@ func TestProfileDependentResources_MultiParamParentPath(t *testing.T) {
 
 	require.Contains(t, depsByName, "repos_commits", "walk-context parent wins over /repos/{owner}/...'s leading param")
 	assert.Equal(t, "repos", depsByName["repos_commits"].ParentResource)
+	assert.Equal(t, []DependentPathParam{
+		{Param: "owner", Field: "owner"},
+		{Param: "repo", Field: "repo"},
+	}, depsByName["repos_commits"].PathParams)
+}
+
+func TestProfileDependentResources_ChainedParentPathParams(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "nested",
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"messages": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/channels/{channelId}/messages",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+						SubResources: map[string]spec.Resource{
+							"reactions": {
+								Endpoints: map[string]spec.Endpoint{
+									"list": {
+										Method:     "GET",
+										Path:       "/channels/{channelId}/messages/{messageId}/reactions",
+										Response:   spec.ResponseDef{Type: "array"},
+										Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "messages_reactions")
+	assert.Equal(t, "messages", depsByName["messages_reactions"].ParentResource)
+	assert.Equal(t, []DependentPathParam{
+		{Param: "channelId", Field: "channels_id"},
+		{Param: "messageId", Field: "id"},
+	}, depsByName["messages_reactions"].PathParams)
+}
+
+func TestProfileDependentResources_FlatMultiPlaceholderPathDerivesLeaf(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "runcloud",
+		Resources: map[string]spec.Resource{
+			"servers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/servers",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"webapps": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/servers/{serverId}/webapps",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+							},
+							"domains": {
+								Method:     "GET",
+								Path:       "/servers/{serverId}/webapps/{webAppId}/domains",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "webapps")
+	require.Contains(t, depsByName, "webapps_domains")
+	assert.Equal(t, "servers", depsByName["webapps"].ParentResource)
+	assert.Equal(t, "webapps", depsByName["webapps_domains"].ParentResource)
+	assert.Equal(t, "/servers/{serverId}/webapps/{webAppId}/domains", depsByName["webapps_domains"].Path)
+	assert.Equal(t, []DependentPathParam{
+		{Param: "serverId", Field: "servers_id"},
+		{Param: "webAppId", Field: "id"},
+	}, depsByName["webapps_domains"].PathParams)
+}
+
+func TestProfileDependentResources_SlugParentIdentityAndTopoOrder(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "github",
+		Resources: map[string]spec.Resource{
+			"orgs": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/orgs",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"teams": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/orgs/{org}/teams",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+							},
+							"members": {
+								Method:     "GET",
+								Path:       "/orgs/{org}/teams/{team_slug}/members",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	var names []string
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		names = append(names, dep.Name)
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "teams")
+	require.Contains(t, depsByName, "teams_members")
+	assert.Less(t, slices.Index(names, "teams"), slices.Index(names, "teams_members"))
+	assert.Equal(t, "teams", depsByName["teams_members"].ParentResource)
+	assert.Equal(t, []DependentPathParam{
+		{Param: "org", Field: "orgs_id"},
+		{Param: "team_slug", Field: "slug"},
+	}, depsByName["teams_members"].PathParams)
 }
 
 // TestProfileDependentResources_TopLevelCollisionShards mirrors the schema

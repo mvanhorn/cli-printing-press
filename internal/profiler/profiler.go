@@ -2,6 +2,7 @@ package profiler
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -155,6 +156,7 @@ type DependentResource struct {
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
 	Method         string
 	Tier           string
+	PathParams     []DependentPathParam
 
 	// IDField is the primary-key field name resolved from the spec
 	// (x-resource-id extension or the four-tier fallback chain). Empty when
@@ -206,6 +208,11 @@ type DependentResource struct {
 	// in internal YAML, or the `key_field` key under `x-pp-sync-walker` in
 	// OpenAPI). When empty, the existing parent-primary-key flow runs.
 	KeyField string
+}
+
+type DependentPathParam struct {
+	Param string
+	Field string
 }
 
 // APIProfile describes the shape of an API and what power-user features it warrants.
@@ -444,7 +451,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// annotations on a child path-item flow into the override
 						// and critical-resource maps. Store raw names so
 						// detectDependentResources can snake-case downstream.
-						key := parentName + "/" + name
+						key := strings.ToUpper(endpoint.Method) + " " + endpoint.Path
 						if _, ok := parameterized[key]; !ok {
 							parameterized[key] = parameterizedEntry{
 								name:       name,
@@ -1117,60 +1124,213 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // detectDependentResources examines parameterized paths and identifies
 // parent-child relationships. For example, /channels/{channel_id}/messages
-// becomes a dependent resource of "channels" (only one level of nesting).
-// When the same leaf appears under multiple parents (or collides with a
-// top-level resource), each parent emits a sharded Name so its shard syncs
-// to its own table.
+// becomes a dependent resource of "channels", and deeper children can depend
+// on already-detected dependent resources. When the same leaf appears under
+// multiple parents (or collides with a top-level resource), each parent emits
+// a sharded Name so its shard syncs to its own table.
 func detectDependentResources(parameterized map[string]parameterizedEntry, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) []DependentResource {
 	var deps []DependentResource
-	for _, entry := range parameterized {
-		paramName, ok := firstPathParam(entry.meta.Path)
-		if !ok {
-			continue
-		}
-		parentResource := resolveParentResource(entry.parentName, paramName, syncable)
-		if parentResource == "" {
-			continue
-		}
-
-		emittedName := spec.ToSnakeCase(entry.name)
-		if shardedSubResources.IsSharded(entry.name) {
-			// Prefer the spec-walk parent so multi-param paths
-			// (e.g. /repos/{owner}/{repo}/commits) pick the right shard
-			// prefix; the path-param fallback would derive "owner".
-			shardParent := parentResource
-			if entry.parentName != "" {
-				shardParent = entry.parentName
-			}
-			emittedName = spec.ShardedSubResourceTableName(shardParent, entry.name)
-		}
-
-		deps = append(deps, DependentResource{
-			Name:               emittedName,
-			ParentResource:     parentResource,
-			ParentIDParam:      paramName,
-			Path:               entry.meta.Path,
-			Method:             entry.meta.Method,
-			Tier:               entry.meta.Tier,
-			IDField:            entry.meta.IDField,
-			Critical:           entry.meta.Critical,
-			SinceParam:         entry.meta.SinceParam,
-			SupportsPagination: entry.meta.SupportsPagination,
-			UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
-			HTMLExtract:        entry.meta.HTMLExtract,
-			BodyFields:         entry.meta.BodyFields,
-			IDWalkFilterParam:  entry.meta.IDWalkFilterParam,
-			IDWalkLimitParam:   entry.meta.IDWalkLimitParam,
-			IDWalkPageSize:     entry.meta.IDWalkPageSize,
-			FieldSelector:      entry.meta.FieldSelector,
-			Discriminator:      entry.meta.Discriminator,
-		})
+	knownParents := make(map[string]bool, len(syncable)+len(parameterized))
+	for resource := range syncable {
+		knownParents[resource] = true
 	}
-	// Sort for deterministic output
+	depthByResource := map[string]int{}
+
+	keys := sortedKeys(parameterized)
+	for len(keys) > 0 {
+		var next []string
+		progressed := false
+		for _, key := range keys {
+			entry := parameterized[key]
+			dep, ok := dependentResourceFromEntry(entry, knownParents, shardedSubResources)
+			if !ok {
+				next = append(next, key)
+				continue
+			}
+			deps = append(deps, dep)
+			knownParents[dep.Name] = true
+			depthByResource[dep.Name] = depthByResource[dep.ParentResource] + 1
+			if dep.Name == spec.ToSnakeCase(entry.name) {
+				knownParents[spec.ToSnakeCase(entry.name)] = true
+			}
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
+		keys = next
+	}
+	sortDependentResources(deps, depthByResource)
+	return deps
+}
+
+func sortDependentResources(deps []DependentResource, knownDepths map[string]int) {
+	depthByResource := make(map[string]int, len(knownDepths)+len(deps))
+	maps.Copy(depthByResource, knownDepths)
+	byName := make(map[string]DependentResource, len(deps))
+	for _, dep := range deps {
+		byName[dep.Name] = dep
+	}
+	var depthOf func(string, map[string]bool) int
+	depthOf = func(name string, visiting map[string]bool) int {
+		if depth, ok := depthByResource[name]; ok {
+			return depth
+		}
+		if visiting[name] {
+			return 1
+		}
+		dep, ok := byName[name]
+		if !ok {
+			return 0
+		}
+		visiting[name] = true
+		depth := depthOf(dep.ParentResource, visiting) + 1
+		delete(visiting, name)
+		depthByResource[name] = depth
+		return depth
+	}
+	for _, dep := range deps {
+		depthOf(dep.Name, map[string]bool{})
+	}
 	sort.Slice(deps, func(i, j int) bool {
+		if depthByResource[deps[i].Name] != depthByResource[deps[j].Name] {
+			return depthByResource[deps[i].Name] < depthByResource[deps[j].Name]
+		}
 		return deps[i].Name < deps[j].Name
 	})
-	return deps
+}
+
+func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (DependentResource, bool) {
+	ctx, ok := dependentPathContext(entry, knownParents, shardedSubResources)
+	if !ok {
+		return DependentResource{}, false
+	}
+
+	return DependentResource{
+		Name:               ctx.name,
+		ParentResource:     ctx.parentResource,
+		ParentIDParam:      dependentParentIDParam(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam),
+		Path:               entry.meta.Path,
+		Method:             entry.meta.Method,
+		Tier:               entry.meta.Tier,
+		PathParams:         dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, ""),
+		IDField:            entry.meta.IDField,
+		Critical:           entry.meta.Critical,
+		SinceParam:         entry.meta.SinceParam,
+		SupportsPagination: entry.meta.SupportsPagination,
+		UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
+		HTMLExtract:        entry.meta.HTMLExtract,
+		BodyFields:         entry.meta.BodyFields,
+		IDWalkFilterParam:  entry.meta.IDWalkFilterParam,
+		IDWalkLimitParam:   entry.meta.IDWalkLimitParam,
+		IDWalkPageSize:     entry.meta.IDWalkPageSize,
+		FieldSelector:      entry.meta.FieldSelector,
+		Discriminator:      entry.meta.Discriminator,
+	}, true
+}
+
+type dependentContext struct {
+	name              string
+	parentResource    string
+	parentPathSegment string
+	firstParam        string
+}
+
+func dependentPathContext(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (dependentContext, bool) {
+	firstParam, ok := firstPathParam(entry.meta.Path)
+	if !ok {
+		return dependentContext{}, false
+	}
+
+	segments := pathSegments(entry.meta.Path)
+	placeholderCount := len(orderedPathPlaceholders(entry.meta.Path))
+	parentSegment := spec.ToSnakeCase(entry.parentName)
+	childName := spec.ToSnakeCase(entry.name)
+	forceShard := false
+	if placeholderCount >= 2 {
+		if childSegment, parent, ok := pathCollectionContext(segments); ok {
+			childName = childSegment
+			parentSegment = parent
+			forceShard = true
+		}
+	}
+	if parentSegment == "" {
+		parentSegment = spec.ToSnakeCase(entry.parentName)
+	}
+
+	parentResource := resolvePathParentResource(parentSegment, segments, knownParents, shardedSubResources)
+	if parentResource == "" {
+		parentResource = resolveParentResourceName(entry.parentName, firstParam, knownParents)
+	}
+	if parentResource == "" {
+		return dependentContext{}, false
+	}
+
+	name := childName
+	if forceShard {
+		name = spec.ShardedSubResourceTableName(parentResource, childName)
+	} else if shardedSubResources.IsSharded(childName) {
+		shardParent := parentResource
+		if entry.parentName != "" {
+			shardParent = entry.parentName
+		}
+		name = spec.ShardedSubResourceTableName(shardParent, childName)
+	}
+	if parentSegment == "" {
+		parentSegment = parentResource
+	}
+
+	return dependentContext{
+		name:              name,
+		parentResource:    parentResource,
+		parentPathSegment: parentSegment,
+		firstParam:        firstParam,
+	}, true
+}
+
+func pathCollectionContext(segments []string) (child, parent string, ok bool) {
+	lastPlaceholder := -1
+	for i, segment := range segments {
+		if isPathPlaceholder(segment) {
+			lastPlaceholder = i
+		}
+	}
+	if lastPlaceholder < 0 {
+		return "", "", false
+	}
+	childIndex := nextStaticSegmentIndex(segments, lastPlaceholder+1)
+	parentIndex := previousStaticSegmentIndex(segments, lastPlaceholder-1)
+	if childIndex < 0 || parentIndex < 0 {
+		return "", "", false
+	}
+	return spec.ToSnakeCase(segments[childIndex]), spec.ToSnakeCase(segments[parentIndex]), true
+}
+
+func resolvePathParentResource(parentSegment string, segments []string, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) string {
+	if parentSegment == "" {
+		return ""
+	}
+	if knownParents[parentSegment] {
+		return parentSegment
+	}
+	parentIndex := lastStaticSegmentIndex(segments, parentSegment)
+	if parentIndex < 0 {
+		return ""
+	}
+	ancestorIndex := previousStaticSegmentIndex(segments, parentIndex-1)
+	if ancestorIndex >= 0 {
+		candidate := spec.ShardedSubResourceTableName(segments[ancestorIndex], parentSegment)
+		if knownParents[candidate] {
+			return candidate
+		}
+	}
+	if shardedSubResources.IsSharded(parentSegment) && ancestorIndex >= 0 {
+		candidate := spec.ShardedSubResourceTableName(segments[ancestorIndex], parentSegment)
+		if knownParents[candidate] {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // applySpecWalkers merges spec-declared walker configs (Endpoint.Walker,
@@ -1256,6 +1416,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 					deps[idx].ParentIDParam = keyParam
 				}
 				deps[idx].KeyField = keyField
+				deps[idx].PathParams = dependentPathParams(e.Path, parent, deps[idx].ParentIDParam, keyField)
 				continue
 			}
 			meta := metaFromEndpoint(s, r, e, types, resourceNameIndex)
@@ -1266,6 +1427,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				Path:               e.Path,
 				Method:             meta.Method,
 				Tier:               meta.Tier,
+				PathParams:         dependentPathParams(e.Path, parent, keyParam, keyField),
 				IDField:            meta.IDField,
 				Critical:           meta.Critical,
 				SinceParam:         meta.SinceParam,
@@ -1289,8 +1451,169 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 	for name, r := range s.Resources {
 		walk(name, r)
 	}
-	sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
+	sortDependentResources(deps, nil)
 	return deps
+}
+
+func dependentPathParams(path, parentResource, keyParam, keyField string) []DependentPathParam {
+	placeholders := orderedPathPlaceholders(path)
+	if len(placeholders) == 0 {
+		return nil
+	}
+
+	fields := dependentPathParamFields(path, parentResource)
+	params := make([]DependentPathParam, 0, len(placeholders))
+	for _, placeholder := range placeholders {
+		field := fields[placeholder]
+		if placeholder == keyParam && keyField != "" {
+			field = spec.ToSnakeCase(keyField)
+		}
+		if field == "" {
+			field = spec.ToSnakeCase(placeholder)
+		}
+		params = append(params, DependentPathParam{
+			Param: placeholder,
+			Field: field,
+		})
+	}
+	return params
+}
+
+func dependentParentIDParam(path, parentResource, fallback string) string {
+	for _, pathParam := range dependentPathParams(path, parentResource, fallback, "") {
+		if pathParam.Field == "id" {
+			return pathParam.Param
+		}
+	}
+	return fallback
+}
+
+func dependentPathParamFields(path, parentResource string) map[string]string {
+	fields := map[string]string{}
+	segments := pathSegments(path)
+	parentSegmentIndex := -1
+	childSegmentIndex := -1
+	normalizedParent := spec.ToSnakeCase(parentResource)
+	for i, segment := range segments {
+		if isPathPlaceholder(segment) {
+			continue
+		}
+		if spec.ToSnakeCase(segment) == normalizedParent {
+			parentSegmentIndex = i
+			childSegmentIndex = nextStaticSegmentIndex(segments, i+1)
+		}
+	}
+
+	parentIdentityParams := map[string]bool{}
+	if parentSegmentIndex >= 0 {
+		for i := parentSegmentIndex + 1; i < len(segments); i++ {
+			if i == childSegmentIndex {
+				break
+			}
+			if isPathPlaceholder(segments[i]) {
+				parentIdentityParams[strings.TrimSuffix(strings.TrimPrefix(segments[i], "{"), "}")] = true
+			}
+		}
+	}
+	parentUsesCompositeIdentity := len(parentIdentityParams) > 1
+
+	lastStatic := ""
+	for _, segment := range segments {
+		if isPathPlaceholder(segment) {
+			param := strings.TrimSuffix(strings.TrimPrefix(segment, "{"), "}")
+			switch {
+			case parentIdentityParams[param] && !parentUsesCompositeIdentity:
+				fields[param] = dependentIdentityField(param)
+			case parentIdentityParams[param] && parentUsesCompositeIdentity:
+				fields[param] = spec.ToSnakeCase(param)
+			case lastStatic != "":
+				fields[param] = spec.ToSnakeCase(lastStatic) + "_id"
+			default:
+				fields[param] = spec.ToSnakeCase(param)
+			}
+			continue
+		}
+		lastStatic = segment
+	}
+	return fields
+}
+
+func dependentIdentityField(param string) string {
+	field := spec.ToSnakeCase(param)
+	switch {
+	case field == "id" || strings.HasSuffix(field, "_id") || strings.HasSuffix(param, "Id") || strings.HasSuffix(param, "ID"):
+		return "id"
+	case strings.HasSuffix(field, "_slug"):
+		return "slug"
+	case strings.HasSuffix(field, "_name"):
+		return "name"
+	case strings.HasSuffix(field, "_key"):
+		return "key"
+	default:
+		return field
+	}
+}
+
+func orderedPathPlaceholders(path string) []string {
+	var params []string
+	seen := map[string]bool{}
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		param := path[i+1 : i+j]
+		if param != "" && !seen[param] {
+			params = append(params, param)
+			seen[param] = true
+		}
+		i += j
+	}
+	return params
+}
+
+func isPathPlaceholder(segment string) bool {
+	return strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") && len(segment) > 2
+}
+
+func pathSegments(path string) []string {
+	if strings.Trim(path, "/") == "" {
+		return nil
+	}
+	return strings.Split(strings.Trim(path, "/"), "/")
+}
+
+func nextStaticSegmentIndex(segments []string, start int) int {
+	for i := start; i < len(segments); i++ {
+		if !isPathPlaceholder(segments[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func previousStaticSegmentIndex(segments []string, start int) int {
+	for i := min(start, len(segments)-1); i >= 0; i-- {
+		if !isPathPlaceholder(segments[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastStaticSegmentIndex(segments []string, normalized string) int {
+	for i := len(segments) - 1; i >= 0; i-- {
+		if isPathPlaceholder(segments[i]) {
+			continue
+		}
+		if spec.ToSnakeCase(segments[i]) == normalized {
+			return i
+		}
+	}
+	return -1
 }
 
 // countPathPlaceholders counts the number of `{name}` substitution slots in
@@ -1323,14 +1646,15 @@ func firstPathParam(path string) (string, bool) {
 	return path[start+1 : end], true
 }
 
-// resolveParentResource picks a parent name that matches a syncable resource.
+// resolveParentResourceName picks a parent name that matches a known flat or
+// already-detected dependent resource.
 // Prefers the spec-walk parent (correct for multi-param paths like
 // /repos/{owner}/{repo}/commits) and falls back to stripping Id/_id from the
 // path param. Returns "" when no candidate matches.
-func resolveParentResource(walkParent, paramName string, syncable map[string]syncableMeta) string {
+func resolveParentResourceName(walkParent, paramName string, knownParents map[string]bool) string {
 	if walkParent != "" {
 		candidate := strings.ToLower(walkParent)
-		if _, ok := syncable[candidate]; ok {
+		if knownParents[candidate] {
 			return candidate
 		}
 	}
@@ -1340,7 +1664,7 @@ func resolveParentResource(walkParent, paramName string, syncable map[string]syn
 	stem = strings.TrimSuffix(stem, "ID")
 	stem = strings.ToLower(stem)
 	for _, candidate := range []string{stem, stem + "s", stem + "es"} {
-		if _, ok := syncable[candidate]; ok {
+		if knownParents[candidate] {
 			return candidate
 		}
 	}
