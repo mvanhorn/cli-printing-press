@@ -14,9 +14,11 @@ import (
 
 // BundleParams describes one MCPB bundle build. CLIDir must contain a
 // manifest.json (emitted by WriteMCPBManifest) and a built MCP binary at
-// BinaryPath. OutputPath is where the .mcpb file will be written; the
-// caller is responsible for choosing a path that includes platform
-// information so multi-platform builds don't overwrite each other.
+// BinaryPath. BinaryName optionally names the MCP binary inside the zip;
+// when empty, the manifest's server.entry_point is used as-is. OutputPath
+// is where the .mcpb file will be written; the caller is responsible for
+// choosing a path that includes platform information so multi-platform
+// builds don't overwrite each other.
 //
 // CLIBinaryPath is optional — when set, the bundle includes a second
 // binary at `bin/<CLIBinaryName>` so the MCP server can shell out to its
@@ -29,6 +31,7 @@ import (
 type BundleParams struct {
 	CLIDir        string
 	BinaryPath    string
+	BinaryName    string
 	CLIBinaryName string
 	CLIBinaryPath string
 	OutputPath    string
@@ -58,6 +61,16 @@ func BuildMCPBBundle(params BundleParams) error {
 	}
 	if manifest.Server.EntryPoint == "" {
 		return errors.New("manifest server.entry_point is empty")
+	}
+	if params.BinaryName != "" {
+		entryPoint := "bin/" + params.BinaryName
+		if entryPoint != manifest.Server.EntryPoint {
+			manifest.Server.EntryPoint = entryPoint
+			manifestData, err = rewriteMCPBManifestLaunch(manifestData, entryPoint)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(params.OutputPath), 0o755); err != nil {
@@ -92,6 +105,33 @@ func BuildMCPBBundle(params BundleParams) error {
 		return fmt.Errorf("finalizing bundle archive: %w", err)
 	}
 	return nil
+}
+
+func rewriteMCPBManifestLaunch(data []byte, entryPoint string) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parsing manifest document: %w", err)
+	}
+	server, ok := doc["server"].(map[string]any)
+	if !ok {
+		return nil, errors.New("manifest server must be an object")
+	}
+	server["entry_point"] = entryPoint
+	mcpConfig, ok := server["mcp_config"].(map[string]any)
+	if !ok {
+		mcpConfig = map[string]any{}
+		server["mcp_config"] = mcpConfig
+	}
+	mcpConfig["command"] = "${__dirname}/" + entryPoint
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return nil, fmt.Errorf("marshaling manifest document: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // zipFile streams srcPath into the zip at name, preserving exec bits.
