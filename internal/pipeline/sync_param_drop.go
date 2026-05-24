@@ -233,13 +233,21 @@ func walkSyncParamDropCalls(fset *token.FileSet, file *ast.File, fileName string
 	// real sync entry points in printed CLIs; ast.Inspect would have
 	// found their calls under the old implementation but the explicit
 	// decl walk drops the GenDecl path unless we handle it here.
+	// Index same-file top-level helpers by name. The named-map resolver
+	// follows `helperFn(mapName, ...)` calls — the `populate*` / `apply*`
+	// pattern hand-authored syncers reach for when key assignment grows
+	// past the inline `if/else` block — into the helper's body to union
+	// the keys it adds. Same-file only; same-package callees in other
+	// files would require a parser pass over those files and are out of
+	// scope for this gate's conservative-skip-on-uncertainty rule.
+	helpers := sameFileHelpers(file)
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
 			if d.Body == nil {
 				continue
 			}
-			walkBlockForSyncParamDropCalls(fset, d.Body, fileName, captured, suppressionLines, result)
+			walkBlockForSyncParamDropCalls(fset, d.Body, fileName, captured, suppressionLines, helpers, result)
 		case *ast.GenDecl:
 			if d.Tok != token.VAR {
 				continue
@@ -251,12 +259,35 @@ func walkSyncParamDropCalls(fset *token.FileSet, file *ast.File, fileName string
 				}
 				for _, v := range vs.Values {
 					if fl, ok := v.(*ast.FuncLit); ok && fl.Body != nil {
-						walkBlockForSyncParamDropCalls(fset, fl.Body, fileName, captured, suppressionLines, result)
+						walkBlockForSyncParamDropCalls(fset, fl.Body, fileName, captured, suppressionLines, helpers, result)
 					}
 				}
 			}
 		}
 	}
+}
+
+// sameFileHelpers indexes the file's top-level *ast.FuncDecl entries by
+// name so the named-map resolver can look up a helper called as
+// `name(...)`. Methods (receivers present) are excluded: a `(*Client).Set`
+// call doesn't fit the bare-Ident call shape resolveNamedMapKeys looks
+// for, and including methods would invite name collisions where a
+// function and a method share a base name.
+func sameFileHelpers(file *ast.File) map[string]*ast.FuncDecl {
+	out := make(map[string]*ast.FuncDecl)
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || fn.Recv != nil || fn.Name == nil {
+			continue
+		}
+		// First wins. Multiple top-level functions with the same name
+		// don't compile, so a duplicate here is a parse-time artifact we
+		// can ignore.
+		if _, exists := out[fn.Name.Name]; !exists {
+			out[fn.Name.Name] = fn
+		}
+	}
+	return out
 }
 
 // walkBlockForSyncParamDropCalls walks a single function/closure body
@@ -268,7 +299,7 @@ func walkSyncParamDropCalls(fset *token.FileSet, file *ast.File, fileName string
 // `params := map[string]string{...}` that shadows an outer same-named
 // map would have its key set silently unioned with the outer map's,
 // hiding real drops inside the closure.
-func walkBlockForSyncParamDropCalls(fset *token.FileSet, body *ast.BlockStmt, fileName string, captured capturedKeysIndex, suppressionLines map[int]bool, result *SyncParamDropResult) {
+func walkBlockForSyncParamDropCalls(fset *token.FileSet, body *ast.BlockStmt, fileName string, captured capturedKeysIndex, suppressionLines map[int]bool, helpers map[string]*ast.FuncDecl, result *SyncParamDropResult) {
 	if body == nil {
 		return
 	}
@@ -277,7 +308,7 @@ func walkBlockForSyncParamDropCalls(fset *token.FileSet, body *ast.BlockStmt, fi
 			// Recurse into the nested closure with its own body as the
 			// scope, then stop ast.Inspect from descending into it
 			// under the outer body's scope.
-			walkBlockForSyncParamDropCalls(fset, fl.Body, fileName, captured, suppressionLines, result)
+			walkBlockForSyncParamDropCalls(fset, fl.Body, fileName, captured, suppressionLines, helpers, result)
 			return false
 		}
 		call, ok := n.(*ast.CallExpr)
@@ -299,7 +330,7 @@ func walkBlockForSyncParamDropCalls(fset *token.FileSet, body *ast.BlockStmt, fi
 		if path == "" {
 			return true
 		}
-		passedKeys := callPassedKeys(call.Args[1:], body, call.Pos())
+		passedKeys := callPassedKeys(call.Args[1:], body, call.Pos(), helpers)
 		// Bodies / params that don't parse into a key set produce no
 		// signal — silently skip rather than guessing.
 		if passedKeys == nil {
@@ -415,16 +446,24 @@ func receiverLooksLikeHTTPClient(expr ast.Expr) bool {
 //     branches count as present (loud-when-uncertain beats mute):
 //     false-positive risk on a never-taken branch is far smaller than
 //     the false-negative this resolution exists to close.
+//   - The same named-local pattern where keys are added by a same-file
+//     helper called as `populateMenuParams(menuParams, ...)`. The
+//     resolver follows the helper's body, identifies the parameter
+//     positionally matched to the tracked map ident, and unions every
+//     `paramName["k"] = v` literal assignment it finds. Same-file
+//     helpers only; no transitive chains. See resolveNamedMapKeys for
+//     the conservative-skip rules.
 //
 // nil return means "no recognizable key set" and the call is not
 // counted toward Checked. An empty (but non-nil) slice means "explicit
 // zero-key call" which is still counted: the capture for the same path
 // may hold keys, in which case all of them are reported as dropped.
 //
-// Out of scope (would need broader analysis): for-range population, map
-// passed through helper functions, or alias chains (`m2 := m1`). Those
-// remain silent skips, captured as known limitations.
-func callPassedKeys(args []ast.Expr, scope *ast.BlockStmt, callPos token.Pos) []string {
+// Out of scope (would need broader analysis): for-range population,
+// helpers defined in other files of the same package, transitive
+// helper chains, or alias chains (`m2 := m1`). Those remain silent
+// skips, captured as known limitations.
+func callPassedKeys(args []ast.Expr, scope *ast.BlockStmt, callPos token.Pos, helpers map[string]*ast.FuncDecl) []string {
 	if len(args) == 0 {
 		return []string{}
 	}
@@ -433,7 +472,7 @@ func callPassedKeys(args []ast.Expr, scope *ast.BlockStmt, callPos token.Pos) []
 			return keys
 		}
 		if ident, ok := arg.(*ast.Ident); ok && scope != nil {
-			if keys, ok := resolveNamedMapKeys(scope, ident.Name, callPos); ok {
+			if keys, ok := resolveNamedMapKeys(scope, ident.Name, callPos, helpers); ok {
 				return keys
 			}
 		}
@@ -460,7 +499,7 @@ func callPassedKeys(args []ast.Expr, scope *ast.BlockStmt, callPos token.Pos) []
 // keys with the outer map would hide real drops inside the closure.
 // Each closure is walked independently with its own body as the scope
 // by walkBlockForSyncParamDropCalls.
-func resolveNamedMapKeys(scope *ast.BlockStmt, name string, callPos token.Pos) ([]string, bool) {
+func resolveNamedMapKeys(scope *ast.BlockStmt, name string, callPos token.Pos, helpers map[string]*ast.FuncDecl) ([]string, bool) {
 	if scope == nil {
 		return nil, false
 	}
@@ -488,6 +527,24 @@ func resolveNamedMapKeys(scope *ast.BlockStmt, name string, callPos token.Pos) (
 		// binding from the one we're resolving.
 		if _, ok := n.(*ast.FuncLit); ok {
 			return false
+		}
+		// Helper-function enrichment: `helperFn(name, ...)` calls in
+		// scope before the client call. The helper's body may carry
+		// `paramName["k"] = v` assignments that contribute to the key
+		// set; resolveHelperEnrichmentKeys handles the positional
+		// matching and conservative-skip rules.
+		if call, ok := n.(*ast.CallExpr); ok && helpers != nil {
+			if enrichKeys, ok := resolveHelperEnrichmentKeys(call, name, helpers); ok {
+				for _, k := range enrichKeys {
+					addKey(k)
+				}
+				found = true
+				// Helper enrichment does not by itself prove declSeen:
+				// the helper writes into a map declared somewhere else,
+				// and the named-map resolver still needs a local
+				// declaration or full-replacement literal to call the
+				// initial-state known. The declSeen gate below stays.
+			}
 		}
 		switch s := n.(type) {
 		case *ast.AssignStmt:
@@ -533,8 +590,8 @@ func resolveNamedMapKeys(scope *ast.BlockStmt, name string, callPos token.Pos) (
 				if !ok {
 					continue
 				}
-				for i, n := range vs.Names {
-					if n.Name != name || i >= len(vs.Values) {
+				for i, nameIdent := range vs.Names {
+					if nameIdent.Name != name || i >= len(vs.Values) {
 						continue
 					}
 					if litKeys, ok := extractCompositeLiteralKeys(vs.Values[i]); ok {
@@ -564,6 +621,197 @@ func resolveNamedMapKeys(scope *ast.BlockStmt, name string, callPos token.Pos) (
 	}
 	sort.Strings(keys)
 	return keys, true
+}
+
+// resolveHelperEnrichmentKeys detects calls of the form `helperFn(name, ...)`
+// — i.e. the tracked map ident appears as one of the helper's positional
+// arguments — and walks the helper's body for direct
+// `paramName["k"] = v` literal assignments, where `paramName` is the
+// helper's parameter name at the matching position. Returns
+// (keys, false) when no helper match is found or any of the
+// conservative-skip conditions fire; the caller treats false as "no
+// enrichment to add."
+//
+// The same-file lookup is sufficient for the hand-authored sync patterns
+// the gate targets — `populateMenuParams` / `applyMenuFilters` style
+// helpers usually sit next to the calling sync function. Cross-file
+// callees would require a parser pass over every file in the package
+// and are intentionally out of scope; #1875 captures them as a follow-up.
+//
+// Conservative-skip rules (any one returns false):
+//   - The call's Fun is not a bare Ident (selector calls like `s.populate(...)`
+//     are skipped because we'd need package-level method resolution).
+//   - The helper isn't in the same-file index.
+//   - The helper has no parameter at the position the named ident
+//     appears, or zero positions match (the ident is in a variadic tail,
+//     a struct literal field, etc.).
+//   - The matching parameter has no name (`_` placeholder) or the field
+//     declares multiple names sharing one type — we can't resolve which
+//     name corresponds to the matched position without type info.
+//   - The helper's body itself transitively calls another same-file
+//     helper that touches the parameter. One level only; nested chains
+//     remain a silent skip.
+//
+// Loud-when-uncertain still applies to the keys we DO collect: an
+// `if/else`-guarded `paramName["debug"] = "1"` counts as present even
+// if the runtime branch is never taken — same logic as the inline
+// named-map resolver.
+func resolveHelperEnrichmentKeys(call *ast.CallExpr, name string, helpers map[string]*ast.FuncDecl) ([]string, bool) {
+	calleeIdent, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return nil, false
+	}
+	helper, ok := helpers[calleeIdent.Name]
+	if !ok || helper == nil || helper.Body == nil {
+		return nil, false
+	}
+	// Find the positional index of the tracked map among the call's
+	// arguments. We accept the first match — passing the same ident
+	// twice is unusual and either position resolving identically is
+	// fine.
+	argIdx := -1
+	for i, arg := range call.Args {
+		ident, ok := arg.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if ident.Name == name {
+			argIdx = i
+			break
+		}
+	}
+	if argIdx < 0 {
+		return nil, false
+	}
+	paramName := paramNameAtPosition(helper.Type.Params, argIdx)
+	if paramName == "" {
+		return nil, false
+	}
+	// Reject helpers that themselves dispatch through another helper
+	// touching the param. Without recursion tracking the keys we'd add
+	// could be silently incomplete; conservative-skip-on-uncertainty
+	// keeps the gate's false-positive rate low.
+	if helperBodyDispatchesThroughHelper(helper.Body, paramName, helpers) {
+		return nil, false
+	}
+	var (
+		seen = make(map[string]struct{})
+		keys []string
+	)
+	addKey := func(k string) {
+		if _, ok := seen[k]; ok {
+			return
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+	ast.Inspect(helper.Body, func(n ast.Node) bool {
+		// Don't descend into nested closures — they introduce a fresh
+		// scope where paramName may be shadowed.
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+			return true
+		}
+		idx, ok := assign.Lhs[0].(*ast.IndexExpr)
+		if !ok {
+			return true
+		}
+		xIdent, ok := idx.X.(*ast.Ident)
+		if !ok || xIdent.Name != paramName {
+			return true
+		}
+		keyLit, ok := idx.Index.(*ast.BasicLit)
+		if !ok || keyLit.Kind != token.STRING {
+			return true
+		}
+		if k, ok := syncParamStringLiteral(keyLit); ok {
+			addKey(k)
+		}
+		return true
+	})
+	if len(keys) == 0 {
+		return nil, false
+	}
+	sort.Strings(keys)
+	return keys, true
+}
+
+// paramNameAtPosition returns the parameter name at the given positional
+// index across a *ast.FieldList. Returns "" when the position is out of
+// range, falls on an unnamed parameter, or the field at that position
+// declares multiple names sharing one type (`func(a, b string, m
+// map[string]string)` — position 2's "m" is resolvable; positions 0 and
+// 1 share a Field, and we'd need to decide whether index 0 names `a` or
+// `b` — the field declaration order is preserved so we count off names
+// within each Field. The caller treats "" as a conservative skip.
+func paramNameAtPosition(params *ast.FieldList, position int) string {
+	if params == nil {
+		return ""
+	}
+	pos := 0
+	for _, field := range params.List {
+		nameCount := len(field.Names)
+		if nameCount == 0 {
+			// Anonymous parameter — single position, no name we can use.
+			if pos == position {
+				return ""
+			}
+			pos++
+			continue
+		}
+		for _, n := range field.Names {
+			if pos == position {
+				if n == nil {
+					return ""
+				}
+				return n.Name
+			}
+			pos++
+		}
+	}
+	return ""
+}
+
+// helperBodyDispatchesThroughHelper returns true when the helper body
+// passes paramName as an argument to another same-file helper. Used to
+// short-circuit transitive chains where the gate would otherwise report
+// an incomplete key set — the gate prefers a silent skip to a confidently
+// wrong "passed" set.
+func helperBodyDispatchesThroughHelper(body *ast.BlockStmt, paramName string, helpers map[string]*ast.FuncDecl) bool {
+	if body == nil {
+		return false
+	}
+	dispatches := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		// Skip nested closures — paramName may be shadowed inside them,
+		// matching the symmetric guard in resolveHelperEnrichmentKeys so
+		// the two passes agree on what counts as a same-scope dispatch.
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		calleeIdent, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if _, isHelper := helpers[calleeIdent.Name]; !isHelper {
+			return true
+		}
+		for _, arg := range call.Args {
+			if ident, ok := arg.(*ast.Ident); ok && ident.Name == paramName {
+				dispatches = true
+				return false
+			}
+		}
+		return true
+	})
+	return dispatches
 }
 
 func extractCompositeLiteralKeys(expr ast.Expr) ([]string, bool) {

@@ -802,6 +802,246 @@ func runSync(client *Client) error {
 	}
 }
 
+// Helper-function enrichment: keys added inside a same-file helper called
+// as `populateMenuParams(menuParams, ...)` must contribute to the
+// resolved key set. This is the most common shape #1875 exists to cover.
+func TestCheckSyncParamDrop_HelperFn_AddsKeys_DropsFlagged(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func populateMenuParams(p map[string]string, sub string, sku string) {
+	p["subscription"] = sub
+	p["product-sku"] = sku
+}
+
+func sync(client *Client, sub string, sku string) error {
+	menuParams := map[string]string{
+		"week":   "w1",
+		"locale": "en",
+	}
+	populateMenuParams(menuParams, sub, sku)
+	return client.Get("/menu", menuParams)
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture(
+		"GET", "/menu",
+		"week", "locale", "subscription", "product-sku", "servings",
+	))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings: want 1, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+	f := got.Findings[0]
+	wantPassed := map[string]bool{"week": true, "locale": true, "subscription": true, "product-sku": true}
+	for _, k := range f.PassedKeys {
+		if !wantPassed[k] {
+			t.Errorf("unexpected passed key %q (helper enrichment did not contribute)", k)
+		}
+	}
+	if len(f.PassedKeys) != len(wantPassed) {
+		t.Errorf("PassedKeys count: want %d, got %d (%v)", len(wantPassed), len(f.PassedKeys), f.PassedKeys)
+	}
+	wantDropped := []string{"servings"}
+	if strings.Join(f.DroppedKeys, ",") != strings.Join(wantDropped, ",") {
+		t.Errorf("DroppedKeys: want %v, got %v", wantDropped, f.DroppedKeys)
+	}
+}
+
+// When the helper adds the same key the capture's only missing key, the
+// finding must NOT fire — keys-from-the-helper count as present, not
+// dropped.
+func TestCheckSyncParamDrop_HelperFn_CoversCapture_NotFlagged(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func applyMenuFilters(p map[string]string) {
+	p["country"] = "us"
+}
+
+func sync(client *Client) error {
+	menuParams := map[string]string{"week": "w1"}
+	applyMenuFilters(menuParams)
+	return client.Get("/menu", menuParams)
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "week", "country"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("Findings: want 0, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+}
+
+// Helper positional matching: the tracked ident may be at any positional
+// index in the helper's signature, not just position 0. Resolver must
+// pick the parameter name corresponding to the call-site position.
+func TestCheckSyncParamDrop_HelperFn_NonZeroPosition_DropsFlagged(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func enrichMenu(ctx string, p map[string]string) {
+	p["country"] = "us"
+}
+
+func sync(client *Client) error {
+	menuParams := map[string]string{"week": "w1"}
+	enrichMenu("ctx-value", menuParams)
+	return client.Get("/menu", menuParams)
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "week", "country", "servings"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings: want 1, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+	f := got.Findings[0]
+	wantDropped := []string{"servings"}
+	if strings.Join(f.DroppedKeys, ",") != strings.Join(wantDropped, ",") {
+		t.Errorf("DroppedKeys: want %v, got %v", wantDropped, f.DroppedKeys)
+	}
+}
+
+// Conservative-skip: a helper that itself dispatches to another helper
+// touching the same map parameter must NOT contribute its directly-added
+// keys, because the transitive helper's contribution is invisible to a
+// one-level resolver. The gate prefers a silent skip over a confidently
+// incomplete passed-key set, so we expect Checked=1, Findings=0 (the
+// named-map resolver still sees the inline literal, but the
+// transitive-chain helper gets ignored).
+func TestCheckSyncParamDrop_HelperFn_TransitiveDispatch_SkipsEnrichment(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func deeperHelper(p map[string]string) {
+	p["country"] = "us"
+}
+
+func populateMenuParams(p map[string]string) {
+	deeperHelper(p)
+}
+
+func sync(client *Client) error {
+	menuParams := map[string]string{"week": "w1"}
+	populateMenuParams(menuParams)
+	return client.Get("/menu", menuParams)
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "week", "country"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	// "country" is added by the transitive helper deeperHelper; the
+	// one-level resolver intentionally skips populateMenuParams when it
+	// sees the dispatch. Result: passed={"week"}, dropped={"country"}.
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings: want 1, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+	f := got.Findings[0]
+	wantDropped := []string{"country"}
+	if strings.Join(f.DroppedKeys, ",") != strings.Join(wantDropped, ",") {
+		t.Errorf("DroppedKeys: want %v, got %v", wantDropped, f.DroppedKeys)
+	}
+}
+
+// Conservative-skip: helpers reached via a selector chain
+// (`s.populate(...)`) are not in the same-file Ident-keyed index. The
+// resolver must skip — keys the method adds are invisible.
+func TestCheckSyncParamDrop_HelperFn_MethodCall_SkipsEnrichment(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+type syncer struct{}
+
+func (s *syncer) populate(p map[string]string) {
+	p["country"] = "us"
+}
+
+func runSync(client *Client, s *syncer) error {
+	menuParams := map[string]string{"week": "w1"}
+	s.populate(menuParams)
+	return client.Get("/menu", menuParams)
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "week", "country"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	// Inline literal "week" is visible; method-added "country" is not.
+	// The gate fires on the captured-only "country".
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings: want 1, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+	f := got.Findings[0]
+	wantDropped := []string{"country"}
+	if strings.Join(f.DroppedKeys, ",") != strings.Join(wantDropped, ",") {
+		t.Errorf("DroppedKeys: want %v, got %v", wantDropped, f.DroppedKeys)
+	}
+}
+
+// Multiple helper calls in scope unify their key contributions. Two
+// helpers each add one key; both must surface in the passed set.
+func TestCheckSyncParamDrop_HelperFn_MultipleCalls_UnifyKeys(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func addCountry(p map[string]string) { p["country"] = "us" }
+
+func addLocale(p map[string]string) { p["locale"] = "en" }
+
+func sync(client *Client) error {
+	menuParams := map[string]string{"week": "w1"}
+	addCountry(menuParams)
+	addLocale(menuParams)
+	return client.Get("/menu", menuParams)
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "week", "country", "locale"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("Findings: want 0, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+}
+
 func TestCanonicalSyncPath(t *testing.T) {
 	cases := map[string]string{
 		"/menu":                        "/menu",
