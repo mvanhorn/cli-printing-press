@@ -4849,10 +4849,15 @@ func exampleValue(p spec.Param) string {
 	if strings.Contains(nameLower, "name") || strings.Contains(nameLower, "title") {
 		return "example-resource"
 	}
-	if strings.Contains(nameLower, "date") || p.Format == "date" {
+	// Reuse isNumericOrBool (defined above): a numeric- or boolean-typed
+	// param must not pick up an RFC3339/date example from a "time"/"date"
+	// substring in its name (epoch cursors like start_time, oldest), while
+	// Format == date/date-time stays authoritative for genuinely temporal
+	// string params.
+	if p.Format == "date" || (!isNumericOrBool && strings.Contains(nameLower, "date")) {
 		return "2026-01-15"
 	}
-	if strings.Contains(nameLower, "time") || p.Format == "date-time" {
+	if p.Format == "date-time" || (!isNumericOrBool && strings.Contains(nameLower, "time")) {
 		return "2026-01-15T09:00:00Z"
 	}
 	if strings.Contains(nameLower, "token") || strings.Contains(nameLower, "key") {
