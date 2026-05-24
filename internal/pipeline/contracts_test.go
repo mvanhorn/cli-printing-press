@@ -115,14 +115,19 @@ func TestAgentBrowserInstallRequiresPostInstallSetup(t *testing.T) {
 	setup := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "setup-checks.md"))
 	capture := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"))
 
-	for name, content := range map[string]string{
-		"setup-checks":          setup,
-		"browser-sniff-capture": capture,
-	} {
-		t.Run(name, func(t *testing.T) {
-			assert.Contains(t, content, "! agent-browser install")
-			assert.Contains(t, content, "The leading `!` is intentional")
-			assert.Contains(t, content, "Do not treat `command -v agent-browser` alone as a complete install")
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "setup-checks", content: setup},
+		{name: "browser-sniff-capture", content: capture},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Contains(t, tt.content, "! agent-browser install")
+			assert.Contains(t, tt.content, "The leading `!` is intentional")
+			assert.Contains(t, tt.content, "Do not treat `command -v agent-browser` alone as a complete install")
 		})
 	}
 
