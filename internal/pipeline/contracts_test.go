@@ -215,6 +215,7 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Contains(t, template, "Do not collapse the first and third branches")
 
 	assert.Equal(t, 2, strings.Count(starters, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {"))
+	assert.Equal(t, 2, strings.Count(starters, "return cmd.Help()"))
 	assert.Equal(t, 2, strings.Count(starters, "if dryRunOK(flags) {"))
 	assert.Equal(t, 2, strings.Count(starters, "_ = cmd.Usage()"))
 	assert.Equal(t, 2, strings.Count(starters, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`))
