@@ -88,7 +88,7 @@ different PRs.
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
 PRESS_LIBRARY="$PRESS_HOME/library"
 RETRO_SCRATCH_DIR="/tmp/printing-press/retro"
@@ -373,7 +373,7 @@ For each candidate, ask in order:
    Don't re-raise at the same priority. Either drop it (the cost-benefit math has
    been "no" twice and the retro is becoming a wishlist), or reframe as a smaller
    incremental fix that addresses part of the friction. Search:
-   `grep -l "<finding keywords>" ~/printing-press/manuscripts/*/proofs/*-retro-*.md`
+   `grep -l "<finding keywords>" "$PRESS_MANUSCRIPTS"/*/proofs/*-retro-*.md`
 
 Survivors of these five questions go to Phase 3. Dropped candidates are recorded
 as one-line entries in the retro's "Dropped at triage" section — they exist for
@@ -455,7 +455,7 @@ correctness; it stays P2 only because it's gated on profiler-detected absence of
 paginator. Without that guard the same finding is unsafe to land.
 
 **Step D: Recurrence-cost check.** Search prior retros under
-`~/printing-press/manuscripts/*/proofs/*-retro-*.md` for the same finding. If the same
+`$PRESS_MANUSCRIPTS/*/proofs/*-retro-*.md` for the same finding. If the same
 finding has been raised in 2+ prior retros without being implemented, the prior cost-
 benefit math has been "no" twice. Don't re-raise it at the same priority — either move
 to P3 with a "raised N times, still not justified" annotation, or reframe the finding

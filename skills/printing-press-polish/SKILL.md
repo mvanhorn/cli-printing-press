@@ -47,7 +47,7 @@ Can also be run standalone on any CLI in `~/printing-press/library/`.
 ```bash
 # min-binary-version: 4.0.0
 
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_LIBRARY="$PRESS_HOME/library"
 
 if ! command -v cli-printing-press >/dev/null 2>&1; then
@@ -419,7 +419,7 @@ sections, expect the next dogfood resync or regeneration to clobber the change.
 To find the manuscript source:
 
 ```bash
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 API_SLUG="${CLI_NAME%-pp-cli}"
 RESEARCH_JSON=""
 for f in "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json \

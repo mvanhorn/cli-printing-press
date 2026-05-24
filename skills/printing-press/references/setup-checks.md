@@ -54,8 +54,9 @@ If the pull fails, surface the failure to the user and continue with the current
 If the user picks **Skip**, record the skipped target SHA so the same update is not prompted again:
 
 ```bash
-mkdir -p "$HOME/printing-press"
-printf "last_check=%s\nmode=repo\nskipped_repo_main=%s\n" "$(date +%s)" "$PRESS_REPO_MAIN" > "$HOME/printing-press/.version-check"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
+mkdir -p "$PRESS_HOME"
+printf "last_check=%s\nmode=repo\nskipped_repo_main=%s\n" "$(date +%s)" "$PRESS_REPO_MAIN" > "$PRESS_HOME/.version-check"
 ```
 
 Prompt again only when `origin/main` advances to a different SHA.
