@@ -80,6 +80,8 @@ if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$OPENAI_API_KEY" ] || [ -n "$BROWSER_USE
 fi
 ```
 
+Treat `command -v agent-browser` as sufficient only when agent-browser was already present before this step, or when this run just installed it and the user-run `agent-browser install` step completed. This detection step does not launch agent-browser to prove browser-cache readiness for pre-existing installs. If this run attempted the package-manager install but the post-install step was declined, failed, or unclear, set `SNIFF_BACKEND="none"` and fall back to manual HAR; do not let a second detection pass select the half-installed binary. If a pre-existing agent-browser later reports missing browser binaries, surface `! agent-browser install` and use a fallback backend until the user confirms it completed.
+
 If a tool is found, report: "Using **<tool>** for temporary traffic capture during generation (CLI-driven mode — no LLM key needed)." and proceed to Step 1c to verify compatibility.
 
 **Important:** browser-use has two modes: autonomous Agent mode (requires an LLM API key like ANTHROPIC_API_KEY) and CLI mode (open/eval/scroll — no key needed). **Always use CLI mode for browser-sniff.** It is more reliable, version-stable, and does not require the user to provide an additional API key. Do NOT attempt to use browser-use's Python `Agent` class — it requires an LLM key that may not be available.
@@ -143,7 +145,15 @@ else
 fi
 ```
 
-After install, re-run detection. If `agent-browser` is now available, set `SNIFF_BACKEND="agent-browser"` and proceed to Step 1c. If install failed, show the error and fall back to manual HAR.
+After the brew or npm install succeeds, use the same post-install rule as preflight (`references/setup-checks.md` section 5): complete agent-browser's browser-binary setup as a user-run step:
+
+```text
+! agent-browser install
+```
+
+The leading `!` is intentional: surface the command for the user to run manually instead of invoking it through the agent's shell tool. Do not treat `command -v agent-browser` alone as a complete install after the package-manager step; the `agent-browser install` step must complete before browser-sniff flows rely on it. If the user declines the manual step or completion is unclear, do not run it yourself; fall back to manual HAR. If agent-browser was already installed before this Step 1b fallback, do not rerun redundant setup here.
+
+After install, re-run detection. If `agent-browser` is now available and the user-run `agent-browser install` step completed, set `SNIFF_BACKEND="agent-browser"` and proceed to Step 1c. If install failed, show the error and fall back to manual HAR.
 
 **If user picks manual HAR**, ask the user for a HAR file path and skip to Step 3.
 
