@@ -40,7 +40,10 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	preferredVerbs := []string{"list", "get", "search", "query"}
 
 	pathFor := func(rName string, r spec.Resource, eName string, ep spec.Endpoint) string {
-		parts := []string{rName}
+		// Kebab the resource segment to match the actual cobra command name
+		// (mirrors toKebab(resourceName) in buildPromotedCommands). PascalCase
+		// or snake_case spec keys would otherwise advertise an unrunnable path.
+		parts := []string{toKebab(rName)}
 		if !isPromotableSingleEndpoint(rName, r) {
 			parts = append(parts, toKebab(eName))
 		}

@@ -72,6 +72,53 @@ func TestSkillAndReadmeKebabCaseMultiWordEndpoints(t *testing.T) {
 	}
 }
 
+// TestSkillAndReadmeKebabCasePascalResourceNames covers issue #1853. PascalCase
+// resource keys (sniffed .NET/Java enterprise APIs) must render in the SKILL.md
+// / README.md command lists using the actual cobra command name (kebab), not
+// the raw map key. Otherwise every copy-pasted example exits "unknown command".
+func TestSkillAndReadmeKebabCasePascalResourceNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("enterprise")
+	// Single endpoint -> cobra promotes the resource to a top-level command.
+	apiSpec.Resources["ChangeOrders"] = spec.Resource{
+		Description: "Change orders",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/api/ChangeOrders/Grid", Description: "List change orders"},
+		},
+	}
+	// Multiple endpoints -> per-endpoint emission; both segments must kebab.
+	apiSpec.Resources["PurchaseOrders"] = spec.Resource{
+		Description: "Purchase orders",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/api/PurchaseOrders", Description: "List purchase orders"},
+			"get":  {Method: "GET", Path: "/api/PurchaseOrders/{id}", Description: "Get a purchase order"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "enterprise-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	for _, file := range []string{"SKILL.md", "README.md"} {
+		t.Run(file, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(outputDir, file))
+			require.NoError(t, err)
+			content := string(body)
+
+			assert.Contains(t, content, "enterprise-pp-cli change-orders",
+				"promoted PascalCase resource ChangeOrders must invoke as change-orders")
+			assert.Contains(t, content, "enterprise-pp-cli purchase-orders",
+				"PascalCase resource PurchaseOrders must invoke as purchase-orders")
+
+			assert.NotContains(t, content, "enterprise-pp-cli ChangeOrders",
+				"raw PascalCase key must not appear as an invocation")
+			assert.NotContains(t, content, "enterprise-pp-cli PurchaseOrders",
+				"raw PascalCase key must not appear as an invocation")
+		})
+	}
+}
+
 // TestSkillAndReadmeSingleWordEndpointsUnchanged guards the negative case in
 // issue #1270's acceptance: single-word endpoint keys (list, create, get,
 // check) must pass through the kebab helper unchanged so existing CLIs do not
