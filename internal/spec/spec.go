@@ -1161,6 +1161,17 @@ func (c AuthConfig) HasCompanionHints() bool {
 	return strings.TrimSpace(c.LoginURL) != ""
 }
 
+// HasCookies reports whether the spec declares a non-empty cookie list,
+// which is the signal the generator uses to wire a persistent
+// net/http.CookieJar into the client and to persist Chrome-extracted
+// cookies after login. Gates on the cookie list rather than Auth.Type
+// because the two cookie-bearing types (cookie, composed) both declare
+// auth.cookies when they need jar plumbing, and a composed-auth spec
+// without auth.cookies has nothing to persist.
+func (c AuthConfig) HasCookies() bool {
+	return len(c.Cookies) > 0
+}
+
 // validateAuthCompanion enforces the small set of guardrails on the
 // press-auth companion fields: LoginURL must parse as a URL using https
 // (or http on localhost), LoginCompleteSelector is opaque, and a

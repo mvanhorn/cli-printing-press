@@ -1699,6 +1699,17 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	// Persistent cookie jar — emitted only when the spec declares cookies
+	// (cookie or composed auth). Non-cookie CLIs (api_key, bearer, oauth2,
+	// session_handshake, Auth0-SPA) don't need the helper and get the same
+	// byte-identical client.go they always did. The session_handshake path
+	// uses sess.CookieJar() and bypasses this file entirely.
+	if g.Spec.Auth.HasCookies() && g.Spec.Auth.Type != "session_handshake" {
+		if err := g.renderTemplate("cookiejar.go.tmpl", filepath.Join("internal", "client", "cookiejar.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cookie jar: %w", err)
+		}
+	}
+
 	// For GraphQL specs, emit additional client files (GraphQL transport + query constants)
 	if isGraphQLSpec(g.Spec) {
 		if err := g.renderTemplate("graphql_client.go.tmpl", filepath.Join("internal", "client", "graphql.go"), g.Spec); err != nil {
