@@ -217,6 +217,37 @@ func TestValidateWithOptions_FullExamplesCatchesInvalidFlag(t *testing.T) {
 	}
 }
 
+func TestValidateWithOptions_FullExamplesTreatsSideEffectSkipsAsWarnings(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub widgets list --launch"}
+		],
+		"recipes":[
+			{"command":"stub widgets show 42 --apply"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.Unsupported != 2 {
+		t.Fatalf("Unsupported = %d, want 2; results=%+v", report.Unsupported, report.Results)
+	}
+	if report.HasFailures() {
+		t.Fatalf("side-effectful full examples should warn without failing strict aggregation, got %+v", report)
+	}
+	for _, result := range report.Results {
+		if result.StrictFailure {
+			t.Fatalf("side-effectful unsupported result should serialize as non-strict-failure warning, got %+v", result)
+		}
+	}
+}
+
 func TestValidateWithOptions_FrameworkOnlyCatchesInventedFrameworkFlags(t *testing.T) {
 	t.Parallel()
 
@@ -420,6 +451,13 @@ func TestClassifyFullExample_ReportsUnsupportedWhenDryRunUnavailable(t *testing.
 	if !strings.Contains(got.Error, "does not advertise --dry-run") {
 		t.Errorf("Error %q should explain why the full example was not run", got.Error)
 	}
+	if !got.StrictFailure {
+		t.Fatal("dry-run-unavailable unsupported result should be marked as a strict failure")
+	}
+	report := &Report{Unsupported: 1, Results: []Result{got}}
+	if !report.HasFailures() {
+		t.Fatal("dry-run-unavailable unsupported examples should still fail strict aggregation")
+	}
 }
 
 func TestRunFullExample_SkipsAuthSetToken(t *testing.T) {
@@ -468,6 +506,11 @@ func TestIsSideEffectfulNarrativeExample_UsesExactFlagMatches(t *testing.T) {
 		args []string
 		want bool
 	}{
+		{
+			name: "auth login is side effectful",
+			args: []string{"auth", "login", "--client-id", "abc"},
+			want: true,
+		},
 		{
 			name: "launch flag is side effectful",
 			args: []string{"widgets", "create", "--launch"},
@@ -644,6 +687,32 @@ func TestValidateWithOptions_ChainedRecipeRunsBothFullExamples(t *testing.T) {
 	}
 	if report.Walked != 1 || report.HasFailures() {
 		t.Fatalf("chained full-example recipe should pass, got %+v", report)
+	}
+}
+
+func TestValidateWithOptions_ChainedSideEffectWarningDoesNotHideLaterFailure(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list --launch && stub typo-here"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Missing != 1 {
+		t.Fatalf("later hard failure should win over earlier side-effect warning, got %+v", report)
+	}
+	if !report.HasFailures() {
+		t.Fatal("later hard failure should still fail strict aggregation")
+	}
+	got := report.Results[0]
+	if !strings.Contains(got.Error, "segment 2") {
+		t.Errorf("error should attribute failure to segment 2: %s", got.Error)
 	}
 }
 
