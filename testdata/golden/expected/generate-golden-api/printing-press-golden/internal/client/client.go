@@ -91,6 +91,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("X-API-Key", h)
 			}
+		} else {
+			// Cross-host hop: Go strips standard auth headers (Authorization,
+			// Cookie) but not custom ones, so a custom API-key header would be
+			// forwarded verbatim to the redirect target. Delete it explicitly.
+			req.Header.Del("X-API-Key")
 		}
 		return nil
 	}
