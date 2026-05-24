@@ -956,10 +956,10 @@ func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
 			scopeSet[scope] = struct{}{}
 		}
 	}
-	headers := append([]spec.AdditionalAuthHeader(nil), auth.AdditionalHeaders...)
+	headers := mergeableAdditionalAuthHeaders(auth.AdditionalHeaders)
 	seenHeaders := make(map[string]struct{}, len(headers)+1)
 	seenEnvVars := make(map[string]struct{}, len(headers)+len(auth.EnvVarSpecs)+len(auth.EnvVars))
-	seedAuthHeaderDedupe(seenHeaders, seenEnvVars, auth)
+	seedAuthHeaderDedupe(seenHeaders, seenEnvVars, auth, headers)
 
 	for _, s := range specs {
 		if compatibleOAuthScopeAuth(auth, s.Auth) {
@@ -977,7 +977,7 @@ func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
 	return auth
 }
 
-func seedAuthHeaderDedupe(seenHeaders, seenEnvVars map[string]struct{}, auth spec.AuthConfig) {
+func seedAuthHeaderDedupe(seenHeaders, seenEnvVars map[string]struct{}, auth spec.AuthConfig, headers []spec.AdditionalAuthHeader) {
 	if header := strings.TrimSpace(auth.Header); header != "" {
 		seenHeaders[header] = struct{}{}
 	}
@@ -991,7 +991,7 @@ func seedAuthHeaderDedupe(seenHeaders, seenEnvVars map[string]struct{}, auth spe
 			seenEnvVars[name] = struct{}{}
 		}
 	}
-	for _, header := range auth.AdditionalHeaders {
+	for _, header := range headers {
 		if name := strings.TrimSpace(header.Header); name != "" {
 			seenHeaders[name] = struct{}{}
 		}
@@ -1029,6 +1029,9 @@ func appendUniqueAdditionalAuthHeaders(headers []spec.AdditionalAuthHeader, seen
 		}
 	}
 	for _, candidate := range candidates {
+		if !isMergeableAdditionalAuthHeader(candidate) {
+			continue
+		}
 		header := strings.TrimSpace(candidate.Header)
 		envVarName := strings.TrimSpace(candidate.EnvVar.Name)
 		if header == "" || envVarName == "" {
@@ -1045,6 +1048,20 @@ func appendUniqueAdditionalAuthHeaders(headers []spec.AdditionalAuthHeader, seen
 		headers = append(headers, candidate)
 	}
 	return headers
+}
+
+func mergeableAdditionalAuthHeaders(headers []spec.AdditionalAuthHeader) []spec.AdditionalAuthHeader {
+	mergeable := make([]spec.AdditionalAuthHeader, 0, len(headers))
+	for _, header := range headers {
+		if isMergeableAdditionalAuthHeader(header) {
+			mergeable = append(mergeable, header)
+		}
+	}
+	return mergeable
+}
+
+func isMergeableAdditionalAuthHeader(header spec.AdditionalAuthHeader) bool {
+	return !strings.EqualFold(strings.TrimSpace(header.In), "query")
 }
 
 func sortedScopes(scopeSet map[string]struct{}) []string {
