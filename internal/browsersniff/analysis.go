@@ -877,6 +877,8 @@ func detectProtections(entries []EnrichedEntry, targetURL string) []ProtectionOb
 	apiHosts := apiHostsForProtection(entries)
 	for index, entry := range entries {
 		entryHost := normalizedURLHost(entry.URL)
+		// If no real target or API host is known, keep the legacy broad scan
+		// instead of dropping possible protection evidence from a sparse capture.
 		if len(protectionSites) > 0 && !apiHosts[entryHost] && !protectionSites[registeredDomainOrHost(entryHost)] {
 			continue
 		}
