@@ -209,6 +209,7 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	starters := substringBetween(t, skill, "**Starter templates for novel commands.**", "For flat-only resources")
 
 	assert.Contains(t, template, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {")
+	assert.Contains(t, template, "return cmd.Help()")
 	assert.Contains(t, template, "if dryRunOK(flags) {")
 	assert.Contains(t, template, "_ = cmd.Usage()")
 	assert.Contains(t, template, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`)
