@@ -982,12 +982,12 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 // header on every Bearer-authenticated request. Only schemes co-located with
 // the winner in a requirement object are promoted.
 //
-// Only apiKey-typed siblings with `in: header` are considered. Rich
+// Only apiKey-typed siblings with `in: header` or `in: query` are considered. Rich
 // x-auth-vars per_call declarations win; legacy x-auth-env-vars supplies the
 // same credential name for specs that do not use the rich shape. For all-apiKey
 // AND groups, missing extension metadata falls back to a deterministic
-// scheme-derived env var so every required header reaches generated config and
-// client code.
+// scheme-derived env var so every required credential reaches generated config
+// and client code.
 func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []spec.AdditionalAuthHeader {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) <= 1 {
 		return nil
@@ -1008,17 +1008,17 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []s
 		if _, ok := req[winner]; !ok {
 			continue
 		}
-		allHeaderAPIKeys := requirementAllHeaderAPIKeys(doc, req)
+		allSupportedAPIKeys := requirementAllSupportedAPIKeys(doc, req)
 		for name := range req {
 			if name == winner {
 				continue
 			}
 			if _, dup := siblingSet[name]; dup {
-				fallbackEligible[name] = fallbackEligible[name] || allHeaderAPIKeys
+				fallbackEligible[name] = fallbackEligible[name] || allSupportedAPIKeys
 				continue
 			}
 			siblingSet[name] = struct{}{}
-			fallbackEligible[name] = allHeaderAPIKeys
+			fallbackEligible[name] = allSupportedAPIKeys
 			siblings = append(siblings, name)
 		}
 	}
@@ -1038,8 +1038,9 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []s
 			continue
 		}
 		// apiKey schemes must declare `in` per OpenAPI 3.x; an empty value is a
-		// spec authoring mistake and would otherwise silently emit a header.
-		if !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
+		// spec authoring mistake and would otherwise silently emit a credential.
+		placement := strings.ToLower(strings.TrimSpace(scheme.In))
+		if placement != "header" && placement != "query" {
 			continue
 		}
 		envVars := additionalHeaderEnvVars(scheme, name, envPrefix, fallbackEligible[name])
@@ -1052,7 +1053,7 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []s
 			}
 			headers = append(headers, spec.AdditionalAuthHeader{
 				Header: header,
-				In:     "header",
+				In:     placement,
 				Scheme: name,
 				EnvVar: ev,
 			})
@@ -1230,7 +1231,7 @@ func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string
 	}
 }
 
-func requirementAllHeaderAPIKeys(doc *openapi3.T, req openapi3.SecurityRequirement) bool {
+func requirementAllSupportedAPIKeys(doc *openapi3.T, req openapi3.SecurityRequirement) bool {
 	if doc == nil || doc.Components == nil || len(req) == 0 {
 		return false
 	}
@@ -1239,7 +1240,8 @@ func requirementAllHeaderAPIKeys(doc *openapi3.T, req openapi3.SecurityRequireme
 		if scheme == nil {
 			return false
 		}
-		if !strings.EqualFold(scheme.Type, "apiKey") || !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
+		placement := strings.ToLower(strings.TrimSpace(scheme.In))
+		if !strings.EqualFold(scheme.Type, "apiKey") || (placement != "header" && placement != "query") {
 			return false
 		}
 	}

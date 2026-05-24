@@ -4400,38 +4400,37 @@ paths:
 	assert.Empty(t, parsed.Auth.AdditionalHeaders)
 }
 
-// Sibling apiKey-in-query schemes are skipped: the issue this addresses is
-// header-only (ST-App-Key, Stripe-Signature, Atlassian-Token). A query-param
-// sibling would imply mixing query-auth with bearer Authorization, which is
-// not a shape this fix supports, and pretending it works would silently emit
-// broken code.
-func TestSiblingApiKeyInQueryIsSkipped(t *testing.T) {
+// Sibling apiKey-in-query schemes are required credentials just like
+// sibling header schemes. Trello-shaped specs declare two query apiKeys in one
+// AND group; dropping the second one makes every live call unauthenticated.
+func TestSiblingApiKeyInQueryIsCollected(t *testing.T) {
 	t.Parallel()
 
 	yamlSpec := []byte(`openapi: "3.0.3"
 info:
-  title: query-sibling
+  title: trello-shaped
   version: "1.0.0"
 servers:
-  - url: https://api.example.com
+  - url: https://api.trello.com/1
 security:
-  - bearer: []
-    queryKey: []
+  - APIKey: []
+    APIToken: []
 components:
   securitySchemes:
-    bearer:
-      type: http
-      scheme: bearer
-    queryKey:
+    APIKey:
       type: apiKey
       in: query
-      name: api_key
-      x-auth-vars:
-        - name: EXAMPLE_QUERY_KEY
-          kind: per_call
-          required: true
+      name: key
+      x-auth-env-vars:
+        - TRELLO_API_KEY
+    APIToken:
+      type: apiKey
+      in: query
+      name: token
+      x-auth-env-vars:
+        - TRELLO_TOKEN
 paths:
-  /items:
+  /members/me:
     get:
       responses:
         "200":
@@ -4439,7 +4438,20 @@ paths:
 `)
 	parsed, err := Parse(yamlSpec)
 	require.NoError(t, err)
-	assert.Empty(t, parsed.Auth.AdditionalHeaders)
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "APIKey", parsed.Auth.Scheme)
+	assert.Equal(t, "query", parsed.Auth.In)
+	assert.Equal(t, "key", parsed.Auth.Header)
+	assert.Equal(t, []string{"TRELLO_API_KEY"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 1, "AND-sibling query apiKey scheme must surface as an additional credential")
+	additional := parsed.Auth.AdditionalHeaders[0]
+	assert.Equal(t, "token", additional.Header)
+	assert.Equal(t, "query", additional.In)
+	assert.Equal(t, "APIToken", additional.Scheme)
+	assert.Equal(t, "TRELLO_TOKEN", additional.EnvVar.Name)
+	assert.Equal(t, spec.AuthEnvVarKindPerCall, additional.EnvVar.Kind)
+	assert.True(t, additional.EnvVar.Required)
+	assert.True(t, additional.EnvVar.Sensitive)
 }
 
 func TestOperationLevelHeterogeneousSiblingApiKeysAreSkipped(t *testing.T) {

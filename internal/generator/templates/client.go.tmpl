@@ -1291,16 +1291,22 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- end}}
 		}
 {{- if .Auth.AdditionalHeaders}}
-		// Composed-scheme per-call headers carried by sibling apiKey schemes.
+		// Composed-scheme per-call credentials carried by sibling apiKey schemes.
 		// Sent independently of authHeader: the API requires both the primary
-		// auth header and each sibling header on every request.
+		// auth credential and each sibling credential on every request.
 		if c.Config != nil {
 {{- range .Auth.AdditionalHeaders}}
 			if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
 				if authHeaderLooksLikePlaceholderCredential(v) {
 					return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
 				}
+{{- if eq .In "query"}}
+				q := req.URL.Query()
+				q.Set("{{.Header}}", v)
+				req.URL.RawQuery = q.Encode()
+{{- else}}
 				req.Header.Set("{{.Header}}", v)
+{{- end}}
 			}
 {{- end}}
 		}

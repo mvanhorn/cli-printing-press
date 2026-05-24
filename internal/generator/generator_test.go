@@ -1076,6 +1076,120 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 		"MCP context must expose sibling apiKey credentials to agents")
 }
 
+// Trello-shaped OpenAPI specs require two apiKey query credentials in the
+// same security requirement. The first key follows the primary auth path; the
+// sibling token must be loaded into config, counted by doctor, and attached to
+// the request URL as its own query parameter.
+func TestGenerateComposedQueryApiKeysEmitAdditionalQueryParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Trello Auth
+  version: "1.0.0"
+servers:
+  - url: https://api.trello.com/1
+security:
+  - APIKey: []
+    APIToken: []
+components:
+  securitySchemes:
+    APIKey:
+      type: apiKey
+      in: query
+      name: key
+      x-auth-env-vars:
+        - TRELLO_API_KEY
+    APIToken:
+      type: apiKey
+      in: query
+      name: token
+      x-auth-env-vars:
+        - TRELLO_TOKEN
+paths:
+  /members/me:
+    get:
+      operationId: getMe
+      responses:
+        "200":
+          description: OK
+`))
+	require.NoError(t, err)
+	apiSpec.Name = "trelloauth"
+	apiSpec.Config = spec.ConfigSpec{Format: "toml", Path: "~/.config/trelloauth-pp-cli/config.toml"}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configSrc := string(configBytes)
+	assert.Regexp(t, `TrelloToken\s+string`, configSrc,
+		"Config struct must carry a field for the sibling query apiKey env var")
+	assert.Contains(t, configSrc, `os.Getenv("TRELLO_TOKEN")`,
+		"Load() must read TRELLO_TOKEN from env")
+	assert.Contains(t, configSrc, `cfg.TrelloToken = v`,
+		"Load() must assign TRELLO_TOKEN into the Config field")
+
+	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientSrc := string(clientBytes)
+	assert.Contains(t, clientSrc, `q.Set("key", authHeader)`,
+		"client must keep setting the primary API key query parameter")
+	assert.Contains(t, clientSrc, `q.Set("token", v)`,
+		"client must set the sibling token query parameter on every outbound request")
+	assert.NotContains(t, clientSrc, `req.Header.Set("token", v)`,
+		"sibling query credentials must not be emitted as headers")
+
+	doctorBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctorSrc := string(doctorBytes)
+	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("TRELLO_TOKEN", configuredValue)`,
+		"doctor must check the sibling query apiKey env var")
+	assert.Contains(t, doctorSrc, `OK %d/%d available", len(authEnvSet), 2`,
+		"doctor must include sibling query apiKey credentials in the env-var count")
+
+	clientTest := `package client
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"trelloauth-pp-cli/internal/config"
+)
+
+func TestGeneratedClientSendsBothQueryCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if got := query.Get("key"); got != "key-value" {
+			t.Fatalf("key query param = %q, want key-value", got)
+		}
+		if got := query.Get("token"); got != "token-value" {
+			t.Fatalf("token query param = %q, want token-value", got)
+		}
+		w.Write([]byte(` + "`" + `{"ok":true}` + "`" + `))
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		BaseURL:      server.URL,
+		TrelloApiKey: "key-value",
+		TrelloToken:  "token-value",
+	}
+	c := New(cfg, 5*time.Second, 0)
+	if _, err := c.Get(context.Background(), "/members/me", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "additional_query_auth_test.go"), []byte(clientTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestGeneratedClientSendsBothQueryCredentials")
+}
+
 // OAuth2 client_credentials specs without a sibling apiKey scheme must not
 // emit the additional-header block. Guards against the previous emission
 // regressing into "every OAuth CLI now ships a useless extra Config field".

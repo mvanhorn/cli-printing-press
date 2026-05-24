@@ -345,6 +345,17 @@ func TestValidateAdditionalAuthHeadersErrors(t *testing.T) {
 			},
 		},
 		{
+			name: "happy path: per_call sibling with query validates",
+			auth: AuthConfig{
+				Type:   "api_key",
+				Header: "key",
+				In:     "query",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "token", In: "query", EnvVar: perCall("TRELLO_TOKEN")},
+				},
+			},
+		},
+		{
 			name: "missing header",
 			auth: AuthConfig{
 				Type: "bearer_token",
@@ -374,6 +385,16 @@ func TestValidateAdditionalAuthHeadersErrors(t *testing.T) {
 				},
 			},
 			wantErr: `auth.additional_headers contains duplicate header "X-Same"`,
+		},
+		{
+			name: "unsupported placement",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "X-Key", In: "cookie", EnvVar: perCall("COOKIE_KEY")},
+				},
+			},
+			wantErr: `auth.additional_headers[0].in must be "header" or "query" (got "cookie")`,
 		},
 		{
 			name: "duplicate env_var name",

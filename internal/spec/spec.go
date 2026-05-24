@@ -840,17 +840,15 @@ type AuthConfig struct {
 	// declare both schemes in components.securitySchemes; selectSecurityScheme
 	// picks one as the primary (Authorization-bearer half) and the parser then
 	// scans the rest for apiKey schemes carrying x-auth-vars[*].kind: per_call,
-	// so the apiKey header gets sent alongside the primary auth. Generator
-	// emits a Config field + os.Getenv loader per entry, plus a req.Header.Set
-	// after the primary auth header on every request.
+	// so the apiKey credential gets sent alongside the primary auth. Generator
+	// emits a Config field + os.Getenv loader per entry, then applies the
+	// credential according to In on every request.
 	AdditionalHeaders []AdditionalAuthHeader `yaml:"additional_headers,omitempty" json:"additional_headers,omitempty"`
 }
 
-// AdditionalAuthHeader pairs a sibling-scheme header destination with the
-// per-call env var that supplies its value. Only In == "header" is emitted by
-// the generator today; the field is serialized so parsed specs round-trip
-// cleanly and validators can distinguish placements without relying on the
-// destination string.
+// AdditionalAuthHeader pairs a sibling-scheme credential destination with the
+// per-call env var that supplies its value. Header stores the OpenAPI apiKey
+// scheme's name field; In distinguishes header and query placements.
 type AdditionalAuthHeader struct {
 	Header string     `yaml:"header" json:"header"`
 	In     string     `yaml:"in,omitempty" json:"in,omitempty"`
@@ -2630,6 +2628,11 @@ func validateAdditionalAuthHeaders(context string, auth AuthConfig) error {
 			return fmt.Errorf("%s.additional_headers contains duplicate header %q", context, header)
 		}
 		seenHeaders[header] = struct{}{}
+		switch strings.ToLower(strings.TrimSpace(ah.In)) {
+		case "", "header", "query":
+		default:
+			return fmt.Errorf("%s.additional_headers[%d].in must be \"header\" or \"query\" (got %q)", context, i, ah.In)
+		}
 		name := strings.TrimSpace(ah.EnvVar.Name)
 		if name == "" {
 			return fmt.Errorf("%s.additional_headers[%d].env_var.name is required", context, i)

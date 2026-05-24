@@ -1064,6 +1064,22 @@ func TestMergeSpecsUnionsAuthScopesAndAdditionalHeaders(t *testing.T) {
 		},
 		Types: map[string]spec.TypeDef{},
 	}
+	secondaryQuerySibling := &spec.APISpec{
+		Name:    "secondaryquery",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "bearer_token",
+			Header: "Authorization",
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{Header: "secondary_token", In: "query", EnvVar: spec.AuthEnvVar{Name: "SECONDARY_QUERY_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"secondaryquery": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/secondaryquery"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
 	standaloneKey := &spec.APISpec{
 		Name:    "standalone",
 		Version: "0.1.0",
@@ -1165,15 +1181,92 @@ func TestMergeSpecsUnionsAuthScopesAndAdditionalHeaders(t *testing.T) {
 		Types: map[string]spec.TypeDef{},
 	}
 
-	merged := mergeSpecs([]*spec.APISpec{primary, secondary, standaloneKey, queryKey, ambiguousKey, crossHostKey, foreignOAuth, noFlowOAuth}, "combo")
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary, secondaryQuerySibling, standaloneKey, queryKey, ambiguousKey, crossHostKey, foreignOAuth, noFlowOAuth}, "combo")
 
 	assert.Equal(t, []string{"read.primary", "read.secondary"}, merged.Auth.Scopes)
 	require.Len(t, merged.Auth.AdditionalHeaders, 3)
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Primary-Key", "PRIMARY_KEY")
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Secondary-Key", "SECONDARY_KEY")
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Standalone-Key", "STANDALONE_KEY")
+	assertNoAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "secondary_token")
 	assert.Equal(t, " STANDALONE_KEY ", standaloneKey.Auth.EnvVarSpecs[0].Name)
 	assert.Empty(t, standaloneKey.Auth.EnvVarSpecs[0].Kind)
+}
+
+func TestMergeSpecsDropsSelectedQueryAdditionalHeaders(t *testing.T) {
+	t.Parallel()
+
+	trelloShaped := &spec.APISpec{
+		Name:    "trello",
+		Version: "0.1.0",
+		BaseURL: "https://api.trello.com/1",
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "key",
+			In:     "query",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "TRELLO_API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{Header: "token", In: "query", EnvVar: spec.AuthEnvVar{Name: "TRELLO_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+				{Header: "X-Mergeable-Key", In: "header", EnvVar: spec.AuthEnvVar{Name: "MERGEABLE_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"cards": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/cards"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	otherOrigin := &spec.APISpec{
+		Name:    "other",
+		Version: "0.1.0",
+		BaseURL: "https://other.example.net",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{trelloShaped, otherOrigin}, "combo")
+
+	assertNoAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "token")
+	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Mergeable-Key", "MERGEABLE_KEY")
+
+	noAuthFirst := &spec.APISpec{
+		Name:    "none",
+		Version: "0.1.0",
+		BaseURL: "https://none.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"none": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/none"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	laterSelected := &spec.APISpec{
+		Name:    "oauthquery",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://accounts.example.com/auth",
+			TokenURL:         "https://accounts.example.com/token",
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{Header: "oauth_token_query", In: "query", EnvVar: spec.AuthEnvVar{Name: "OAUTH_QUERY_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+				{Header: "X-OAuth-Key", In: "header", EnvVar: spec.AuthEnvVar{Name: "OAUTH_HEADER_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"oauthquery": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/oauthquery"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	mergedLater := mergeSpecs([]*spec.APISpec{noAuthFirst, laterSelected, otherOrigin}, "combo")
+
+	assertNoAdditionalAuthHeader(t, mergedLater.Auth.AdditionalHeaders, "oauth_token_query")
+	assertAdditionalAuthHeader(t, mergedLater.Auth.AdditionalHeaders, "X-OAuth-Key", "OAUTH_HEADER_KEY")
 }
 
 func TestMergeSpecsUsesLaterOAuthAuthWhenPrimaryHasNoLogin(t *testing.T) {
@@ -1247,6 +1340,16 @@ func assertAdditionalAuthHeader(t *testing.T, headers []spec.AdditionalAuthHeade
 		}
 	}
 	assert.Failf(t, "missing additional auth header", "header %q with env var %q not found in %#v", wantHeader, wantEnvVar, headers)
+}
+
+func assertNoAdditionalAuthHeader(t *testing.T, headers []spec.AdditionalAuthHeader, wantHeader string) {
+	t.Helper()
+	for _, header := range headers {
+		if header.Header == wantHeader {
+			assert.Failf(t, "unexpected additional auth header", "header %q found in %#v", wantHeader, headers)
+			return
+		}
+	}
 }
 
 func TestGenerateMultiSpecUnionsOAuthScopes(t *testing.T) {
