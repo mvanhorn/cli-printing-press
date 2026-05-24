@@ -1019,6 +1019,12 @@ Two fields trip up hand-edits often enough to call out:
 - **`version`** is the literal string `"1"` — not semver, not `"1.0.0"`. The downstream parser rejects any other value with `unsupported traffic analysis version`.
 - **Confidence fields** are numbers from `0` to `1`, not strings such as `"high"`.
 
+Before hand-writing or repairing the sniffed YAML spec, check
+`spec-format.md`; two common traps are `types.X.fields` list shape (`- name:`
+items, not a map) and the `response_format` enum (`json`, `html`, or `binary`;
+use `html` only for GET/HEAD HTML and embedded-JSON surfaces, with
+`html_extract` when the built-in page, links, or embedded-json modes fit).
+
 #### Step 4: Report and update spec source
 
 Report: "Browser-Sniff discovered **N endpoints** across **M resources**. [X new endpoints not in the original spec.]"

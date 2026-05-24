@@ -69,6 +69,11 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
           type: cursor            # string pagination style: cursor | offset | page_token
           cursor_field: cursor    # string response field containing next cursor
           has_more_field: data.has_more # string response field indicating more results
+        response_format: json     # string optional: json | html | binary; defaults to json
+        html_extract:             # object optional, only with response_format: html
+          mode: page              # string optional: page | links | embedded-json
+          script_selector: ""     # string optional for embedded-json; defaults to script#__NEXT_DATA__
+          json_path: ""           # string optional for embedded-json; empty returns the full JSON
         response_path: data       # string optional path to extract list payload from wrapper response
 
 types:                            # map[string]TypeDef named response/body models
@@ -77,6 +82,18 @@ types:                            # map[string]TypeDef named response/body model
       - name: user_id             # string field name
         type: string              # string field type (typically string/int/bool/float)
 ```
+
+**`response_format` must be one of `json`, `html`, or `binary`.** Use `json`
+when the response body is JSON and can be parsed directly. Use `html` only for
+GET/HEAD HTML documents, including HTML pages with embedded JSON such as
+Next.js `__NEXT_DATA__` or schema.org JSON-LD; prefer `html_extract` modes
+`page`, `links`, or `embedded-json` before writing custom extraction code. Use
+`binary` for opaque byte payloads.
+
+**`types.X.fields` is a list, not a map.** Each field is an item with
+`- name: <field-name>` followed by `type:`, `description:`, and other field
+metadata. Map shape such as `field-name: {type: string}` fails to parse with
+`cannot unmarshal !!map into []spec.TypeField`.
 
 ## 2. Annotated Example (`testdata/stytch.yaml`)
 
