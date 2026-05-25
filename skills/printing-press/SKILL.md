@@ -1715,7 +1715,7 @@ Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest
 ```bash
 body_file="$(mktemp "${TMPDIR:-/tmp}/pp-reachability-body.XXXXXX")"
 trap 'rm -f "$body_file"' EXIT
-status="$(curl -s -L -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || printf '000')"
+status="$(curl -s -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || printf '000')"
 printf '%s\n' "$status"
 ```
 
@@ -1738,7 +1738,7 @@ Keep the evidence bounded: include only the lines that explain the access model,
 
 Do not probe arbitrary mutation endpoints to discover tier limits. A generic "try a PUT/POST/PATCH/DELETE" rule can create accounts, send messages, capture payments, or mutate user data. Mutation probing is allowed only when the resolved spec or OpenAPI operation explicitly marks that endpoint as probe-safe with `x-pp-safe-probe: true`; the endpoint must be idempotent or otherwise harmless for the real account being used. If no endpoint has that explicit marker, stop after the GET body capture above.
 
-If one or more probe-safe endpoints are declared and the user provided credentials, run exactly one declared probe-safe endpoint as a second reachability probe and apply the same 4xx body capture and tier-keyword extraction. Prefer the lowest-risk declared endpoint when more than one exists. Record which endpoint was probe-safe in the brief so later phases know the evidence came from an opt-in safe probe.
+If one or more probe-safe endpoints are declared and the user provided credentials, run exactly one declared probe-safe endpoint as a second reachability probe and apply the same 4xx body capture and tier-keyword extraction. When more than one exists, choose the lowest-risk declared endpoint by preferring methods in this order: HEAD/OPTIONS/GET, then PUT/PATCH, then POST, then DELETE only if it is the only declared safe option. Break ties by choosing the endpoint with the fewest required parameters and avoiding paths with account, billing, payment, deletion, or notification terms when any safer declared option exists. Record which endpoint was probe-safe in the brief so later phases know the evidence came from an opt-in safe probe.
 
 **If the check returns 403/429 with bot-protection evidence and `probe-reachability` has not already run for this URL during Phase 1.7's Direct HTTP challenge rule, run it now before consulting the decision matrix:**
 
