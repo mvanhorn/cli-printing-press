@@ -342,6 +342,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyExceedsFlagDepth":     bodyExceedsFlagDepth,
 		"multipartBodyMaps":        multipartBodyMaps,
 		"endpointUsesMultipart":    endpointUsesMultipart,
+		"endpointUsesCSVArray":     endpointUsesCSVArray,
 		"endpointHasQueryFlags":    endpointHasQueryFlags,
 		"endpointHasRequestParams": endpointHasRequestParams,
 		"endpointIsReadCommand":    endpointIsReadCommand,
@@ -354,6 +355,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"publicFlagName":           publicFlagName,
 		"publicFlagAliases":        publicFlagAliases,
 		"flagChangedExpr":          flagChangedExpr,
+		"graphqlListParams":        graphqlListParams,
+		"graphqlVariableType":      graphqlVariableType,
 		"mcpInputName":             mcpInputName,
 		"mcpToolInputParams":       mcpToolInputParams,
 		"mcpParamBindings":         mcpParamBindings,
@@ -1779,6 +1782,12 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 		if err := g.renderTemplate("cliutil_freshness_test.go.tmpl", filepath.Join("internal", "cliutil", "freshness_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering cliutil freshness test: %w", err)
+		}
+	}
+
+	if hasCSVArrayRequest(g.Spec) {
+		if err := g.renderTemplate("cliutil_csv.go.tmpl", filepath.Join("internal", "cliutil", "csv.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil csv: %w", err)
 		}
 	}
 
@@ -4434,6 +4443,12 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
+		if isStringCSVArrayParam(p) {
+			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), csvArrayValueExpr(p, "body"+ident))
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
 		isComplex := p.Type == "object" || p.Type == "array"
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
@@ -4760,6 +4775,32 @@ func hasFormRequest(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, endpointUsesForm)
 }
 
+func endpointUsesCSVArray(endpoint spec.Endpoint) bool {
+	if endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint) {
+		return false
+	}
+	var walk func([]spec.Param, int) bool
+	walk = func(params []spec.Param, depth int) bool {
+		if depth >= maxBodyFlagDepth {
+			return false
+		}
+		for _, p := range params {
+			if isStringCSVArrayParam(p) {
+				return true
+			}
+			if walk(p.Fields, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(endpoint.Body, 0)
+}
+
+func hasCSVArrayRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesCSVArray)
+}
+
 func endpointUsesBodyJSONFallback(endpoint spec.Endpoint) bool {
 	return endpoint.BodyJSONFallback
 }
@@ -4994,6 +5035,67 @@ func zeroVal(t string) string {
 		return "0.0"
 	default:
 		return `""`
+	}
+}
+
+func isStringCSVArrayParam(p spec.Param) bool {
+	return strings.EqualFold(strings.TrimSpace(p.Type), "string_csv_array")
+}
+
+func csvArrayValueExpr(p spec.Param, inputExpr string) string {
+	switch strings.ToLower(strings.TrimSpace(p.ItemType)) {
+	case "object":
+		return fmt.Sprintf("cliutil.CSVTemplateObjects(%s, %s)", inputExpr, csvItemTemplateLiteral(p.ItemTemplate))
+	default:
+		return fmt.Sprintf("cliutil.SplitCSV(%s)", inputExpr)
+	}
+}
+
+func csvItemTemplateLiteral(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return "nil"
+	case string:
+		return fmt.Sprintf("%q", val)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		if val == float64(int(val)) {
+			return strconv.Itoa(int(val))
+		}
+		return fmt.Sprintf("%g", val)
+	case []any:
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			parts = append(parts, csvItemTemplateLiteral(item))
+		}
+		return "[]any{" + strings.Join(parts, ", ") + "}"
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for key := range val {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			parts = append(parts, fmt.Sprintf("%q: %s", key, csvItemTemplateLiteral(val[key])))
+		}
+		return "map[string]any{" + strings.Join(parts, ", ") + "}"
+	case map[any]any:
+		converted := make(map[string]any, len(val))
+		for key, item := range val {
+			converted[fmt.Sprint(key)] = item
+		}
+		return csvItemTemplateLiteral(converted)
+	default:
+		return fmt.Sprintf("%q", fmt.Sprint(val))
 	}
 }
 
@@ -5826,6 +5928,44 @@ func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []str
 		return []string{"id"}
 	}
 	return fields
+}
+
+// graphqlListParams returns the GraphQL list arguments this generator knows how
+// to render into the query document and command variables map.
+func graphqlListParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params))
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam {
+			continue
+		}
+		switch p.Name {
+		case "first", "after", "query":
+		default:
+			continue
+		}
+		params = append(params, p)
+	}
+	return params
+}
+
+func graphqlVariableType(p spec.Param) string {
+	var typ string
+	switch primitiveKind(p.Type) {
+	case "int":
+		typ = "Int"
+	case "float":
+		typ = "Float"
+	case "bool":
+		typ = "Boolean"
+	case "array":
+		typ = "[String!]"
+	default:
+		typ = "String"
+	}
+	if p.Required || strings.EqualFold(p.Name, "first") {
+		typ += "!"
+	}
+	return typ
 }
 
 type templateEndpoint struct {

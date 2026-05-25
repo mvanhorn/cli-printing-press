@@ -189,12 +189,21 @@ var listEnvelopeMetadataKeys = map[string]bool{
 	"page": true, "page_size": true, "per_page": true,
 	// counts / totals
 	"total": true, "count": true, "size": true, "total_count": true, "totalCount": true,
+	// JSend / common status envelopes
+	"success": true, "status": true, "message": true, "error": true,
+	"errors": true, "Errors": true, "warnings": true, "Warnings": true,
 	// wrapper objects
 	"links": true, "meta": true, "pagination": true,
 	"response_metadata": true, "paging": true,
 	// links shape
 	"next": true, "prev": true, "previous": true, "first": true, "last": true,
 }
+
+var writeThroughListWrapperKeys = []string{
+	"data", "results", "items", "records", "nodes", "entries", "features",
+	"Data", "Results", "Items", "Records", "Nodes", "Entries", "Features",
+}
+var writeThroughNestedEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 
 // writeThroughCache upserts live API results into the local SQLite store so
 // FTS search covers everything the user has looked up — not just explicit syncs.
@@ -206,11 +215,6 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	}
 	defer db.Close()
 
-	pageItemKeys := []string{
-		"data", "results", "items", "records", "nodes", "entries", "features",
-		"Data", "Results", "Items", "Records", "Nodes", "Entries", "Features",
-	}
-
 	// Collect items to upsert from various response shapes
 	var items []json.RawMessage
 
@@ -220,55 +224,13 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 		// Try object — check for common envelope patterns (results, data, items)
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal(data, &envelope) == nil {
-			for _, key := range pageItemKeys {
-				if raw, ok := envelope[key]; ok {
-					var arr []json.RawMessage
-					if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
-						items = arr
-						break
-					}
-				}
+			matchedListEnvelope := false
+			if extracted, ok := extractWriteThroughListItems(envelope); ok {
+				matchedListEnvelope = true
+				items = extracted
 			}
-			// Fallback: if exactly one top-level key is a non-empty array of
-			// objects AND every other top-level key is a known
-			// pagination/metadata key, treat that array as the list payload.
-			// This covers resource-named wrappers like {"events":[...]} or
-			// {"events":[...],"cursor":"x"} without misclassifying a detail
-			// object that merely carries one object-array field alongside its
-			// own scalar data (e.g. {"id":"order-1","line_items":[...]}), which
-			// must still cache as a single row.
-			if items == nil {
-				var arrayKey string
-				var arrayItems []json.RawMessage
-				arrayCount := 0
-				for key, raw := range envelope {
-					var candidate []json.RawMessage
-					if json.Unmarshal(raw, &candidate) != nil || len(candidate) == 0 {
-						continue
-					}
-					var obj map[string]json.RawMessage
-					if json.Unmarshal(candidate[0], &obj) != nil {
-						continue
-					}
-					arrayKey = key
-					arrayItems = candidate
-					arrayCount++
-				}
-				if arrayCount == 1 {
-					onlyMetadataSiblings := true
-					for key := range envelope {
-						if key == arrayKey {
-							continue
-						}
-						if !listEnvelopeMetadataKeys[key] {
-							onlyMetadataSiblings = false
-							break
-						}
-					}
-					if onlyMetadataSiblings {
-						items = arrayItems
-					}
-				}
+			if matchedListEnvelope && len(items) == 0 {
+				return
 			}
 			// Single object detail response: let UpsertBatch's existing
 			// resourceIDFieldOverrides mechanism resolve the primary key.
@@ -281,10 +243,10 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 			// A detail object that happens to carry an empty wrapper-named
 			// field alongside real data (e.g. {"id":"order","items":[],
 			// "status":"pending"}) must still cache as a single row.
-			if items == nil && len(envelope) > 0 {
+			if items == nil && !matchedListEnvelope && len(envelope) > 0 {
 				looksLikeListEnvelope := false
 				hasListWrapperArray := false
-				for _, key := range pageItemKeys {
+				for _, key := range writeThroughListWrapperKeys {
 					raw, ok := envelope[key]
 					if !ok {
 						continue
@@ -319,6 +281,101 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	if len(items) > 0 {
 		_, _, _ = db.UpsertBatch(resourceType, items)
 	}
+}
+
+type writeThroughArrayDecoder func(json.RawMessage) ([]json.RawMessage, bool)
+
+func extractWriteThroughListItems(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	if items, ok := extractWriteThroughListWrapperItems(envelope, decodeWriteThroughNonEmptyArray); ok {
+		return items, true
+	}
+
+	for _, key := range writeThroughNestedEnvelopeKeys {
+		raw, ok := envelope[key]
+		if !ok || isRawJSONNull(raw) {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) != nil {
+			continue
+		}
+		if items, ok := extractNestedWriteThroughListItems(inner); ok {
+			return items, true
+		}
+	}
+
+	return extractWriteThroughSingleArraySibling(envelope, decodeWriteThroughNonEmptyArray)
+}
+
+func extractNestedWriteThroughListItems(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	if items, ok := extractWriteThroughListWrapperItems(envelope, decodeWriteThroughArray); ok {
+		return items, true
+	}
+	return extractWriteThroughSingleArraySibling(envelope, decodeWriteThroughArray)
+}
+
+func extractWriteThroughListWrapperItems(envelope map[string]json.RawMessage, decode writeThroughArrayDecoder) ([]json.RawMessage, bool) {
+	for _, key := range writeThroughListWrapperKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		if items, ok := decode(raw); ok {
+			return items, true
+		}
+	}
+	return nil, false
+}
+
+func extractWriteThroughSingleArraySibling(envelope map[string]json.RawMessage, decode writeThroughArrayDecoder) ([]json.RawMessage, bool) {
+	arrayCount := 0
+	var arrayItems []json.RawMessage
+	for key, raw := range envelope {
+		if listEnvelopeMetadataKeys[key] {
+			continue
+		}
+		if candidate, ok := decode(raw); ok {
+			if !writeThroughArrayItemsAreObjects(candidate) {
+				continue
+			}
+			arrayItems = candidate
+			arrayCount++
+			continue
+		}
+		return nil, false
+	}
+	if arrayCount == 1 {
+		return arrayItems, true
+	}
+	return nil, false
+}
+
+func writeThroughArrayItemsAreObjects(items []json.RawMessage) bool {
+	if len(items) == 0 {
+		return true
+	}
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(items[0], &obj) == nil
+}
+
+func decodeWriteThroughNonEmptyArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+	items, ok := decodeWriteThroughArray(raw)
+	if !ok || len(items) == 0 {
+		return nil, false
+	}
+	return items, true
+}
+
+func decodeWriteThroughArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil || items == nil {
+		return nil, false
+	}
+	return items, true
+}
+
+func isRawJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
 }
 
 func writeMutationResponseToStore(ctx context.Context, resourceType string, data json.RawMessage, responsePath string) {

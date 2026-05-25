@@ -24,6 +24,9 @@ import (
 {{- end}}
 	"os"
 
+{{ if endpointUsesCSVArray .Endpoint}}
+	"{{modulePath}}/internal/cliutil"
+{{- end}}
 	"github.com/spf13/cobra"
 )
 

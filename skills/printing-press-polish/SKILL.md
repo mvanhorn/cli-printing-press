@@ -370,6 +370,19 @@ If a polish fix adds or changes a runtime mode, data-source option, auth tier, t
 
 Keep the checklist in the polish notes or result block. Skip it for ordinary bug fixes that do not change runtime variants or defaults.
 
+### Cross-cutting API-call instrumentation
+
+When polish builds a feature class that must observe every outbound API call,
+such as a quota ledger, request log, or audit trail, instrument the generated
+client middleware in `internal/client/client.go` instead of individual command
+handlers. Prefer a shared pre-dispatch hook when one exists; otherwise cover
+both `do()` and `doRead()`. The `do()` path handles standard endpoint mirrors,
+sync iterations, and novel features that use the generated client, while
+`doRead()` handles read-only operations that ride POST-like transports, such as
+GraphQL queries, JSON-RPC reads, and POST-based searches marked
+`mcp:read-only`.
+Per-command hooks under-count because they only see the commands polish touched.
+
 ### Priority 0: MCP surface migration (legacy CLIs)
 
 If Phase 1's `dogfood` reported `MCP Surface: FAIL` with a parity mismatch, the CLI was generated before the runtime cobratree walker existed and is still on the static `internal/mcp/tools.go` surface. The fix is mechanical:

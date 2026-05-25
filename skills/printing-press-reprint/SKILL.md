@@ -195,6 +195,78 @@ Ask via `AskUserQuestion`:
 
 ## Phase D — Hand off to `/printing-press`
 
+Before invoking `/printing-press`, use the prior CLI's scorecard and manifest
+to decide whether the reprint should offer spec enrichment that the first print
+could not have used. Reprints have better evidence than fresh prints: they know
+which structural dimensions were weak, which Printing Press version produced
+the prior CLI, and what the user named as the reason for regenerating.
+
+Find the most recent scorecard JSON from the prior manuscript run. If no
+scorecard artifact exists, run a fresh structural scorecard against the local
+library copy:
+
+```bash
+SCORECARD_SOURCE=$(ls -1t "$PRESS_MANUSCRIPTS/$API_SLUG"/*/proofs/scorecard.json 2>/dev/null | head -1)
+SCORECARD_JSON=""
+if [[ -n "$SCORECARD_SOURCE" ]]; then
+  SCORECARD_JSON=$(cat "$SCORECARD_SOURCE" 2>/dev/null || true)
+elif [[ -d "$LIB_TARGET" ]]; then
+  SCORECARD_SOURCE=$(mktemp)
+  if cli-printing-press scorecard --dir "$LIB_TARGET" --json > "$SCORECARD_SOURCE" 2>/dev/null; then
+    SCORECARD_JSON=$(cat "$SCORECARD_SOURCE" 2>/dev/null || true)
+  fi
+  rm -f "$SCORECARD_SOURCE"
+  SCORECARD_SOURCE=""
+fi
+```
+
+If `SCORECARD_JSON` is empty, continue without enrichment prompting and say the
+reprint is proceeding without prior score evidence. Do not invent a prompt from
+the reprint reason alone.
+
+When `SCORECARD_JSON` is available, inspect only dimensions that map to a
+pre-generation spec edit and skip dimensions that already score 10/10:
+
+- `mcp_remote_transport`, `mcp_token_efficiency`, `mcp_tool_design`, and
+  `mcp_surface_strategy` below 10 can be lifted by the `/printing-press`
+  Phase 2 section **Pre-Generation MCP Enrichment**. Examples:
+  - remote transport is below 10: offer `mcp.transport: [stdio, http]` or the
+    OpenAPI `x-mcp.transport` equivalent before regeneration.
+  - token efficiency, tool design, or surface strategy is below 10: offer the
+    Phase 2 MCP surface decision, including intents for clear multi-step
+    workflows or the Cloudflare pattern for large surfaces.
+- `auth_protocol` below 10, or prior manifest evidence that the CLI used a
+  slug-derived env var where the ecosystem has a canonical env var, can be
+  lifted by **Pre-Generation Auth Enrichment**. Offer to carry canonical
+  `auth.env_vars` or OpenAPI `x-auth-env-vars` guidance into the spec.
+- `data_pipeline_integrity` below 10 is only an enrichment opportunity when the
+  prior CLI or research shows sync-eligible resources. In that case, point the
+  handoff at the relevant Phase 2 sync/cache enrichment decision rather than
+  treating the score alone as proof that a local store should exist.
+
+Use `AskUserQuestion` for each concrete opportunity before the handoff. Phrase
+the question around the scorecard evidence and the named canonical section, not
+around a freeform rewrite. Example:
+
+> Prior scorecard shows `mcp_remote_transport: 5/10`. Offer MCP transport
+> enrichment before regenerating, using `/printing-press` Phase 2
+> **Pre-Generation MCP Enrichment** as the source of truth?
+
+Options:
+
+1. **Apply enrichment to the handoff** - include the selected spec edit in the
+   `/printing-press` prompt so Phase 2 can update the spec before generation.
+2. **Skip for this reprint** - leave the spec unchanged for this dimension.
+3. **Show score evidence first** - print the relevant scorecard lines and then
+   re-ask between options 1 and 2.
+
+Do not auto-apply enrichment. If the prior scorecard already has
+`mcp_remote_transport: 10/10`, do not ask the redundant MCP transport question.
+If the user accepts any opportunity, add a `## Reprint Spec Enrichment`
+section to the `/printing-press` handoff. Keep it brief: name the weak
+dimension, the accepted enrichment, and the canonical `/printing-press` Phase 2
+section to execute. Do not duplicate the canonical enrichment text here.
+
 Invoke `/printing-press <api>` and bundle these into the prompt:
 
 1. **A header line** stating the user already chose to regenerate, so
@@ -206,7 +278,10 @@ Invoke `/printing-press <api>` and bundle these into the prompt:
    block. This propagates into the brief as `## User Vision` and becomes
    Pass 2(e) input to the novel-features subagent — the right hook for
    "I want better MCP support" → bias the brainstorm accordingly.
-4. **Prior patches** — only when Phase B found `$PATCH_COUNT > 0`.
+4. **Reprint spec enrichment** — only when the scorecard-driven prompt above
+   found an accepted opportunity. Include under a
+   `## Reprint Spec Enrichment` heading.
+5. **Prior patches** — only when Phase B found `$PATCH_COUNT > 0`.
    Include under a `## Prior Patches` heading.
 
    Lead the section with this framing sentence, verbatim:

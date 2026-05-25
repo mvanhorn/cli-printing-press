@@ -1086,6 +1086,99 @@ components:
 	}, byName["mixed"].Fields)
 }
 
+func TestParseStringArrayRequestBodyFieldsAsCSVArrays(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Mail API
+  version: 1.0.0
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schedules:
+                  type: array
+                  items:
+                    type: string
+                  description: Schedules to query
+                metadata:
+                  type: object
+                  properties:
+                    categories:
+                      type: array
+                      items:
+                        type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/messages")
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "string_csv_array", byName["schedules"].Type)
+	assert.Equal(t, "string", byName["schedules"].ItemType)
+	require.Len(t, byName["metadata"].Fields, 1)
+	assert.Equal(t, "categories", byName["metadata"].Fields[0].Name)
+	assert.Equal(t, "string_csv_array", byName["metadata"].Fields[0].Type)
+	assert.Equal(t, "string", byName["metadata"].Fields[0].ItemType)
+}
+
+func TestParseFormStringArrayRequestBodyKeepsArrayType(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Mail API
+  version: 1.0.0
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/messages")
+	require.Len(t, endpoint.Body, 1)
+	assert.Equal(t, "tags", endpoint.Body[0].Name)
+	assert.Equal(t, "array", endpoint.Body[0].Type)
+	assert.Empty(t, endpoint.Body[0].ItemType)
+}
+
 const dataEnvelopeAllOfTaskSpec = `
 openapi: 3.0.3
 info:
