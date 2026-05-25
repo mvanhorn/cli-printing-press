@@ -116,6 +116,8 @@ func uniquifyBodyTree(body []spec.Param, identPrefix, flagPrefix string, usedIde
 				flag := publicFlagName(p)
 				if _, flagTaken := usedFlags[flag]; flagTaken {
 					for n := 2; ; n++ {
+						// Name is the stable wire-root for suffix variants; IdentName
+						// is only the public override selected by this dedupe pass.
 						candidate := fmt.Sprintf("%s_%d", p.Name, n)
 						candFlag := flagName(candidate)
 						if _, flagTaken := usedFlags[candFlag]; !flagTaken {

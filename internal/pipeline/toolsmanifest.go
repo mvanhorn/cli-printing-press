@@ -443,6 +443,8 @@ func uniqueManifestParamName(name string, used map[string]struct{}) string {
 	}
 }
 
+// reservedManifestParamNames seeds generator-reserved public names only.
+// buildManifestTool adds endpoint params to the same map before body params.
 func reservedManifestParamNames(ep spec.Endpoint) map[string]struct{} {
 	names := map[string]struct{}{}
 	switch strings.ToUpper(ep.Method) {
