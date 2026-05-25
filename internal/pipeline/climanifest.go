@@ -706,7 +706,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
 			m.SpecURL = src
 		} else {
-			m.SpecPath = src
+			m.SpecPath = sanitizeManifestSpecPath(src)
 			// Compute checksum and format from the actual input spec file.
 			if data, err := os.ReadFile(src); err == nil {
 				m.SpecFormat = detectSpecFormat(data)
@@ -896,6 +896,20 @@ func sameGenerateManifestLineage(existing, generated CLIManifest) bool {
 func preserveExistingDescription(description string) bool {
 	description = strings.TrimSpace(description)
 	return description != "" && !naming.HasLiteralEllipsisSuffix(description)
+}
+
+// sanitizeManifestSpecPath reduces a local spec file path to its basename so the
+// published manifest never leaks the printer's filesystem layout. Only http(s)
+// URLs pass through unchanged — a file:// URL embeds the same local path we are
+// trying to keep out of the published manifest, so it is basenamed too.
+func sanitizeManifestSpecPath(specPath string) string {
+	if specPath == "" {
+		return ""
+	}
+	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
+		return specPath
+	}
+	return filepath.Base(specPath)
 }
 
 func lookupCatalogEntryForGenerate(apiName, specURL string) *catalogpkg.Entry {

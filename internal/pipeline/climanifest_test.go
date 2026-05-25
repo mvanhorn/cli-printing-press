@@ -74,6 +74,14 @@ func TestWriteCLIManifestSchemaVersionAlwaysOne(t *testing.T) {
 	assert.Equal(t, 1, got.SchemaVersion)
 }
 
+func TestSanitizeManifestSpecPath(t *testing.T) {
+	assert.Equal(t, "openapi.json", sanitizeManifestSpecPath("/Users/someone/Downloads/openapi.json"))
+	assert.Equal(t, "https://example.com/openapi.yaml", sanitizeManifestSpecPath("https://example.com/openapi.yaml"))
+	assert.Equal(t, "openapi.json", sanitizeManifestSpecPath("openapi.json"))
+	// file:// URLs embed the local path, so they are basenamed too.
+	assert.Equal(t, "openapi.json", sanitizeManifestSpecPath("file:///Users/someone/Downloads/openapi.json"))
+}
+
 func TestCLIManifestIsLocalDatastore(t *testing.T) {
 	tests := []struct {
 		name string
@@ -387,7 +395,7 @@ func TestPublishWorkingCLIWritesManifest(t *testing.T) {
 	assert.Equal(t, "test-api-pp-cli", got.CLIName)
 	assert.Equal(t, version.Version, got.PrintingPressVersion)
 	assert.Equal(t, "https://example.com/spec.json", got.SpecURL)
-	assert.Equal(t, "/tmp/test-spec.json", got.SpecPath)
+	assert.Equal(t, "test-spec.json", got.SpecPath)
 	assert.Equal(t, "openapi3", got.SpecFormat)
 	assert.NotEmpty(t, got.RunID)
 	assert.False(t, got.GeneratedAt.IsZero())
@@ -427,7 +435,7 @@ func TestPublishManifestNormalizesLocalPathInSpecURL(t *testing.T) {
 
 	// Local path should be in spec_path, NOT in spec_url
 	assert.Empty(t, got.SpecURL, "local file path should not appear in spec_url")
-	assert.Equal(t, "/tmp/my-spec.yaml", got.SpecPath)
+	assert.Equal(t, "my-spec.yaml", got.SpecPath)
 }
 
 func TestPublishManifestNormalizesURLDuplicatedInBothFields(t *testing.T) {
@@ -634,7 +642,7 @@ func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &got))
 
 	assert.Empty(t, got.SpecURL, "local path should not appear in spec_url")
-	assert.Equal(t, "/tmp/my-spec.yaml", got.SpecPath)
+	assert.Equal(t, "my-spec.yaml", got.SpecPath)
 }
 
 func TestWriteManifestForGenerateKeepsCatalogDisplayNameOverTitleFallback(t *testing.T) {
@@ -2030,7 +2038,7 @@ func TestWriteManifestForGenerateDoesNotPreserveStaleSpecURLWhenFreshSourceIsPat
 
 	got := readPublishedManifest(t, dir)
 	assert.Empty(t, got.SpecURL)
-	assert.Equal(t, specPath, got.SpecPath)
+	assert.Equal(t, filepath.Base(specPath), got.SpecPath)
 }
 
 func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *testing.T) {
