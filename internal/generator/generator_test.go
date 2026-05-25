@@ -4123,6 +4123,20 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 		t.Fatalf("status=fail null data envelope should be treated as an empty page")
 	}
 
+	pascalSuccessFalse := json.RawMessage(` + "`" + `{"Success": false, "Data": null}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(pascalSuccessFalse, "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("PascalCase failed JSend null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+	if !isEmptyPageResponse(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should be treated as an empty page")
+	}
+
+	pascalStatusFail := json.RawMessage(` + "`" + `{"Status": "Failed", "Data": null}` + "`" + `)
+	if !isEmptyPageResponse(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should be treated as an empty page")
+	}
+
 	statusSuccess := json.RawMessage(` + "`" + `{"status": "success", "data": null}` + "`" + `)
 	if isEmptyPageResponse(statusSuccess) {
 		t.Fatalf("status=success null data envelope should not be treated as an empty page")

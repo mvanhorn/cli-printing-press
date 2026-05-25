@@ -910,16 +910,23 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 }
 
 func envelopeReportsFailure(envelope map[string]json.RawMessage) bool {
-	if raw, ok := envelope["success"]; ok {
-		var success bool
-		return json.Unmarshal(raw, &success) == nil && !success
+	for _, key := range []string{"success", "Success"} {
+		if raw, ok := envelope[key]; ok {
+			var success bool
+			if json.Unmarshal(raw, &success) == nil {
+				return !success
+			}
+		}
 	}
-	if raw, ok := envelope["status"]; ok {
-		var status string
-		if json.Unmarshal(raw, &status) == nil {
-			switch strings.ToLower(status) {
-			case "error", "fail", "failed":
-				return true
+	for _, key := range []string{"status", "Status"} {
+		if raw, ok := envelope[key]; ok {
+			var status string
+			if json.Unmarshal(raw, &status) == nil {
+				switch strings.ToLower(status) {
+				case "error", "fail", "failed":
+					return true
+				}
+				return false
 			}
 		}
 	}
