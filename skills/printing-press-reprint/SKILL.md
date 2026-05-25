@@ -209,10 +209,13 @@ library copy:
 SCORECARD_SOURCE=$(ls -1t "$PRESS_MANUSCRIPTS/$API_SLUG"/*/proofs/scorecard.json 2>/dev/null | head -1)
 if [[ -z "$SCORECARD_SOURCE" && -d "$LIB_TARGET" ]]; then
   SCORECARD_SOURCE=$(mktemp)
+  SCORECARD_TEMP="$SCORECARD_SOURCE"
   cli-printing-press scorecard --dir "$LIB_TARGET" --json > "$SCORECARD_SOURCE" 2>/dev/null || {
     rm -f "$SCORECARD_SOURCE"
     SCORECARD_SOURCE=""
+    SCORECARD_TEMP=""
   }
+  [[ -n "$SCORECARD_TEMP" ]] && trap 'rm -f "$SCORECARD_TEMP"' EXIT
 fi
 ```
 
@@ -254,7 +257,7 @@ Options:
    `/printing-press` prompt so Phase 2 can update the spec before generation.
 2. **Skip for this reprint** - leave the spec unchanged for this dimension.
 3. **Show score evidence first** - print the relevant scorecard lines and then
-   re-ask.
+   re-ask between options 1 and 2.
 
 Do not auto-apply enrichment. If the prior scorecard already has
 `mcp_remote_transport: 10/10`, do not ask the redundant MCP transport question.
