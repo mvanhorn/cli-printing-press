@@ -149,6 +149,10 @@ Resource scoping:
 				}
 			}
 
+			if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages") {
+				maxPages = 10
+			}
+
 			// --latest-only narrows to the first page of each resource
 			// ignoring the historical resume cursor. We cap maxPages at 1
 			// here rather than re-interpreting it downstream so the rest
@@ -173,10 +177,10 @@ Resource scoping:
 			}
 			// effectiveLatestOnly drives the max_pages_cap_hit suppression
 			// below. It must reflect whether --latest-only is actually the
-			// cap source — i.e., only when --since is empty. If --since wins
+			// cap source, i.e. only when --since is empty. If --since wins
 			// (block above), --latest-only is a no-op for maxPages and any
-			// cap hit reflects the default --max-pages 100 limit, which is
-			// a real anomaly worth surfacing.
+			// cap hit reflects an explicit operator limit or the dogfood
+			// safety limit, which is a real anomaly worth surfacing.
 			effectiveLatestOnly := latestOnly && since == ""
 
 			// Resolve --since into an RFC3339 timestamp
@@ -354,7 +358,7 @@ Resource scoping:
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/printing-press-golden-pp-cli/data.db)")
-	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
+	cmd.Flags().IntVar(&maxPages, "max-pages", 0, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
 	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into flat-list sync requests (repeatable, key=value). Skipped on path-scoped dependent requests so a top-level scope like workspace=<id> does not double up on /parents/<id>/children calls. Use --global-param to inject everywhere. Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
