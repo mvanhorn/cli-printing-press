@@ -21,9 +21,15 @@ import (
 // non-entity Jaccard gate before substitution + verification.
 const DefaultJaccardMin = 0.6
 
-// Hit is one substituted-and-verified pattern hit. The recall path
-// translates these into its own envelope shape before merging with
-// direct teaches.
+// Hit is the pattern-side analogue of recall.Hit. Apply returns one
+// Hit per substituted-and-verified candidate. The CLI's recall
+// integration translates these into recall.Hit values before merging.
+//
+// We don't import recall.Hit directly because that would create an
+// import cycle (recall.go calls into patterns.Apply). The translation
+// is cheap and lossy in a useful direction: the recall layer adds its
+// own per-hit metadata (warnings, last_observed_at lookups against the
+// learning row) that the pattern layer doesn't have.
 type Hit struct {
 	ResourceID       string
 	ResourceType     string
@@ -33,8 +39,12 @@ type Hit struct {
 	EntityMatch      string
 	ResourceEntities []string
 	Source           string
-	PatternRow       Pattern
+	PatternID        int64
 	LastObservedAt   *time.Time
+	// Meta carries structured diagnostic reasons when a pattern matched
+	// textually but failed verification (substitution miss, resource
+	// not in store, etc.). Empty on success.
+	Meta map[string]string
 }
 
 // Opts tunes Apply behavior. Zero-value defaults:
@@ -44,8 +54,8 @@ type Hit struct {
 //	NoVerify      -> false (verify candidates against resources table)
 //
 // AdditionalKinds is the CLI-supplied list of table-backed lookup
-// kinds (e.g., from LearnConfig.EntityLookupSeeds) that Apply should
-// try ahead of the built-in computed kinds when a template's
+// kinds (e.g., from LearnConfig.EntityLookupSeeds) the pattern engine
+// should try ahead of the built-in computed kinds when a template's
 // entity_kind doesn't have a direct slot in the template string.
 type Opts struct {
 	JaccardMin      float64
@@ -55,10 +65,24 @@ type Opts struct {
 }
 
 // Apply walks search_patterns, finds patterns whose query_template
-// matches the live query (via token-set Jaccard on non-entity
-// tokens), substitutes the live query's entity via lookups.Lookup,
-// and verifies each substituted candidate exists in the resources
-// table. Returns verified hits.
+// matches the live query (via the same non-entity normalized form +
+// Jaccard threshold the direct recall path uses), substitutes the live
+// query's entity via lookups.Lookup, and verifies each substituted
+// candidate exists in the resources table (or matches a prefix LIKE
+// search for the prefix strategy). Returns the verified hits.
+//
+// queryEntities is the case-preserving entity slice extracted from the
+// live query by the caller (typically via learn.Normalize). The caller
+// passes it in to avoid re-running the extractor: Apply is invoked
+// from recall.Recall which already computed entities once.
+//
+// nonEntityNormalized is the sorted lowercased non-entity token string
+// the recall path computes. It's the same key
+// search_patterns.query_template stores (after extraction templated
+// the entity slot out).
+//
+// db must be non-nil. ctx is honored on every db.Query call so a
+// caller can bound the apply pass alongside the recall query itself.
 func Apply(ctx context.Context, db *sql.DB, query, nonEntityNormalized string, queryEntities []string, opts Opts) ([]Hit, error) {
 	if db == nil {
 		return nil, errors.New("patterns.Apply: db is nil")
@@ -66,6 +90,7 @@ func Apply(ctx context.Context, db *sql.DB, query, nonEntityNormalized string, q
 	if len(queryEntities) == 0 {
 		return nil, nil
 	}
+
 	jMin := opts.JaccardMin
 	if jMin == 0 {
 		jMin = DefaultJaccardMin
@@ -78,7 +103,8 @@ func Apply(ctx context.Context, db *sql.DB, query, nonEntityNormalized string, q
 		limit = 10
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT template, entity_kind, confidence, source, created_at
+	rows, err := db.QueryContext(ctx, `SELECT id, query_template, resource_template, resource_type,
+			COALESCE(venue, ''), strategy, entity_kind, confidence, source, created_at, last_observed_at
 		FROM search_patterns`)
 	if err != nil {
 		return nil, fmt.Errorf("patterns.Apply query: %w", err)
@@ -94,25 +120,24 @@ func Apply(ctx context.Context, db *sql.DB, query, nonEntityNormalized string, q
 
 	for rows.Next() {
 		var (
-			templateStr string
-			entityKind  string
-			confidence  int
-			source      string
-			createdAt   time.Time
+			id            int64
+			queryTemplate string
+			resourceTmpl  string
+			resourceType  string
+			venue         string
+			strategy      string
+			entityKind    string
+			confidence    int
+			source        string
+			createdAt     time.Time
+			lastObserved  sql.NullTime
 		)
-		if err := rows.Scan(&templateStr, &entityKind, &confidence, &source, &createdAt); err != nil {
+		if err := rows.Scan(&id, &queryTemplate, &resourceTmpl, &resourceType, &venue,
+			&strategy, &entityKind, &confidence, &source, &createdAt, &lastObserved); err != nil {
 			return nil, fmt.Errorf("patterns.Apply scan: %w", err)
 		}
-		var pat Pattern
-		if err := decodeTemplate(templateStr, &pat); err != nil {
-			continue
-		}
-		pat.EntityKind = entityKind
-		pat.Confidence = confidence
-		pat.Source = source
-		pat.CreatedAt = createdAt
 
-		tmplTokens := nonPlaceholderTokens(strings.Fields(pat.QueryTemplate))
+		tmplTokens := nonPlaceholderTokens(strings.Fields(queryTemplate))
 		score := jaccard(queryTokens, tmplTokens)
 		if score < jMin {
 			continue
@@ -121,20 +146,24 @@ func Apply(ctx context.Context, db *sql.DB, query, nonEntityNormalized string, q
 		var hit Hit
 		matched := false
 		for _, ent := range queryEntities {
-			candidate, ok := substituteCandidate(db, pat.ResourceTemplate, pat.EntityKind, ent, allKinds)
+			candidate, ok := substituteCandidate(db, resourceTmpl, entityKind, ent, allKinds)
 			if !ok {
 				continue
 			}
-			h, verified := verifyCandidate(ctx, db, candidate, pat.ResourceType, pat.Strategy, opts.NoVerify)
+			h, verified := verifyCandidate(ctx, db, candidate, resourceType, strategy, opts.NoVerify)
 			if !verified {
 				continue
 			}
-			h.Venue = pat.Venue
-			h.Confidence = pat.Confidence
+			h.Venue = venue
+			h.Confidence = confidence
 			h.MatchScore = score
-			h.EntityMatch = "exact"
+			h.EntityMatch = "exact" // substitution binding guarantees this
 			h.Source = "pattern"
-			h.PatternRow = pat
+			h.PatternID = id
+			if lastObserved.Valid {
+				t := lastObserved.Time
+				h.LastObservedAt = &t
+			}
 			hit = h
 			matched = true
 			break
@@ -152,18 +181,30 @@ func Apply(ctx context.Context, db *sql.DB, query, nonEntityNormalized string, q
 		if hits[i].MatchScore != hits[j].MatchScore {
 			return hits[i].MatchScore > hits[j].MatchScore
 		}
-		return hits[i].Confidence > hits[j].Confidence
+		if hits[i].Confidence != hits[j].Confidence {
+			return hits[i].Confidence > hits[j].Confidence
+		}
+		ai := time.Time{}
+		aj := time.Time{}
+		if hits[i].LastObservedAt != nil {
+			ai = *hits[i].LastObservedAt
+		}
+		if hits[j].LastObservedAt != nil {
+			aj = *hits[j].LastObservedAt
+		}
+		return ai.After(aj)
 	})
+
 	if len(hits) > limit {
 		hits = hits[:limit]
 	}
 	return hits, nil
 }
 
-// substituteCandidate fills in the {entity:kind} slot of the resource
-// template with lookups.Lookup(kind, entity). The slot may appear with
-// a typed kind (e.g. {entity:team_code}) or as a bare {entity} bound
-// to the recipe's default entity_kind.
+// substituteCandidate fills in the {entity:kind} slot of
+// resource_template with lookups.Lookup(kind, entity). The slot may
+// appear with a typed kind or as a bare {entity} bound to the
+// pattern's default entity_kind.
 func substituteCandidate(db *sql.DB, resourceTmpl, defaultKind, entity string, allKinds []string) (string, bool) {
 	typedSlot := "{entity:" + defaultKind + "}"
 	if strings.Contains(resourceTmpl, typedSlot) {

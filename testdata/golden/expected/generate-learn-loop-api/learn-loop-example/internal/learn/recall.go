@@ -6,7 +6,6 @@ package learn
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -46,6 +45,7 @@ type Hit struct {
 	ResourceEntities []string   `json:"resource_entities,omitempty"`
 	Source           string     `json:"source"`
 	LastObservedAt   *time.Time `json:"last_observed_at,omitempty"`
+	AliasTarget      string     `json:"alias_target,omitempty"`
 	Warnings         []string   `json:"warnings,omitempty"`
 }
 
@@ -97,7 +97,7 @@ type Opts struct {
 }
 
 // Recall is the entity-aware read path. db is the open *sql.DB
-// pointing at the local SQLite store with the v3 learn schema; the
+// pointing at the local SQLite store with the v6 learn schema; the
 // per-CLI entity extractor config is carried on opts.EntityConfig
 // (nil falls back to entities.NewConfig() defaults).
 //
@@ -144,9 +144,9 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		return result, nil
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT query_pattern, COALESCE(query_entities, '[]'),
-			COALESCE(resource_ids, '[]'), resource_type, COALESCE(venue, ''),
-			COALESCE(action, ''), confidence, COALESCE(source, ''), updated_at
+	rows, err := db.QueryContext(ctx, `SELECT query_pattern, COALESCE(query_entities, ''),
+		COALESCE(venue, ''), COALESCE(resource_type, ''), resource_id, action,
+		COALESCE(alias_target, ''), source, confidence, created_at, last_observed_at
 		FROM search_learnings
 		WHERE confidence >= ?`, minConf)
 	if err != nil {
@@ -161,16 +161,18 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		var (
 			queryPattern   string
 			storedEntities string
-			storedIDs      string
-			resourceType   string
 			venue          string
+			resourceType   string
+			resourceID     string
 			action         string
-			confidence     int
+			aliasTarget    string
 			source         string
-			updatedAt      time.Time
+			confidence     int
+			createdAt      time.Time
+			lastObserved   sql.NullTime
 		)
-		if err := rows.Scan(&queryPattern, &storedEntities, &storedIDs, &resourceType, &venue,
-			&action, &confidence, &source, &updatedAt); err != nil {
+		if err := rows.Scan(&queryPattern, &storedEntities, &venue, &resourceType,
+			&resourceID, &action, &aliasTarget, &source, &confidence, &createdAt, &lastObserved); err != nil {
 			return result, fmt.Errorf("recall scan: %w", err)
 		}
 
@@ -185,28 +187,25 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			storedEntitySlice = storedNorm.Entities
 		}
 
-		ids, _ := ParseStoredEntities(storedIDs)
-		obs := updatedAt
-		for _, resourceID := range ids {
-			if resourceID == "" {
-				continue
-			}
-			hit := Hit{
-				ResourceID:     resourceID,
-				ResourceType:   resourceType,
-				Venue:          venue,
-				Action:         action,
-				Confidence:     confidence,
-				MatchScore:     score,
-				Source:         source,
-				LastObservedAt: &obs,
-			}
-			validateResource(ctx, db, cfg, &hit, normalized.Entities, storedEntitySlice, opts.ResourceTypeFields)
-			if hit.EntityMatch == EntityMatchMismatch {
-				mismatches = append(mismatches, hit)
-			} else {
-				hits = append(hits, hit)
-			}
+		hit := Hit{
+			ResourceID:   resourceID,
+			ResourceType: resourceType,
+			Venue:        venue,
+			Action:       action,
+			Confidence:   confidence,
+			MatchScore:   score,
+			Source:       source,
+			AliasTarget:  aliasTarget,
+		}
+		if lastObserved.Valid {
+			t := lastObserved.Time
+			hit.LastObservedAt = &t
+		}
+		validateResource(ctx, db, cfg, &hit, normalized.Entities, storedEntitySlice, opts.ResourceTypeFields)
+		if hit.EntityMatch == EntityMatchMismatch {
+			mismatches = append(mismatches, hit)
+		} else {
+			hits = append(hits, hit)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -366,18 +365,4 @@ func entityMatchPriority(em string) int {
 	default:
 		return 4
 	}
-}
-
-// jsonStringSlice is a helper for tests that need to assemble a JSON
-// array literal at runtime; surfaced via a small helper so the doc
-// is right next to the call sites that wrap it.
-func jsonStringSlice(values []string) string {
-	if len(values) == 0 {
-		return "[]"
-	}
-	b, err := json.Marshal(values)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
 }

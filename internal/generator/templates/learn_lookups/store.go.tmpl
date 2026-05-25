@@ -13,8 +13,8 @@ import (
 )
 
 // LookupRow is the canonical seed-row shape used by both the seeds
-// driver and any runtime upsert path. The columns mirror the v3
-// entity_lookups schema: (canonical, alias, kind, source).
+// driver and any runtime upsert path. The columns mirror the
+// entity_lookups schema: (kind, canonical, value, source).
 //
 // Source is the provenance string: "seeded" for migration-time inserts,
 // "taught" for user / runtime adds, "inferred" for rows the pattern
@@ -22,7 +22,7 @@ import (
 type LookupRow struct {
 	Kind      string
 	Canonical string
-	Alias     string
+	Value     string
 	Source    string
 }
 
@@ -84,7 +84,7 @@ func capitalizeFirst(canonical string) string {
 	return string(runes)
 }
 
-// Lookup returns the alias mapped to the (kind, canonical) pair, or
+// Lookup returns the value mapped to the (kind, canonical) pair, or
 // ("", false) if no such mapping exists. Computed kinds short-circuit
 // the DB entirely.
 //
@@ -92,7 +92,7 @@ func capitalizeFirst(canonical string) string {
 // When multiple rows match the same (kind, canonical) pair, Lookup
 // returns the first one ordered by source priority
 // ('taught' > 'inferred' > 'seeded') then by created_at ascending.
-// For all-aliases access use LookupAll.
+// For all-values access use LookupAll.
 func Lookup(db *sql.DB, kind, canonical string) (string, bool, error) {
 	if v, ok := computedLookup(kind, canonical); ok {
 		return v, true, nil
@@ -101,7 +101,7 @@ func Lookup(db *sql.DB, kind, canonical string) (string, bool, error) {
 		return "", false, errors.New("lookups.Lookup: db is nil")
 	}
 	const q = `
-		SELECT alias
+		SELECT value
 		FROM entity_lookups
 		WHERE kind = ? AND LOWER(canonical) = LOWER(?)
 		ORDER BY CASE source
@@ -112,18 +112,18 @@ func Lookup(db *sql.DB, kind, canonical string) (string, bool, error) {
 		END ASC, created_at ASC
 		LIMIT 1
 	`
-	var alias string
-	err := db.QueryRow(q, kind, canonical).Scan(&alias)
+	var value string
+	err := db.QueryRow(q, kind, canonical).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("lookups.Lookup query: %w", err)
 	}
-	return alias, true, nil
+	return value, true, nil
 }
 
-// LookupAll returns every alias mapped to the (kind, canonical) pair,
+// LookupAll returns every value mapped to the (kind, canonical) pair,
 // deduplicated and ordered by source priority then created_at. For a
 // computed kind, the result has exactly one element. Returns an empty
 // slice on miss; never returns nil except on error.
@@ -135,7 +135,7 @@ func LookupAll(db *sql.DB, kind, canonical string) ([]string, error) {
 		return nil, errors.New("lookups.LookupAll: db is nil")
 	}
 	const q = `
-		SELECT DISTINCT alias
+		SELECT DISTINCT value
 		FROM entity_lookups
 		WHERE kind = ? AND LOWER(canonical) = LOWER(?)
 		ORDER BY CASE source
@@ -170,15 +170,14 @@ func LookupAll(db *sql.DB, kind, canonical string) ([]string, error) {
 	return values, nil
 }
 
-// Upsert inserts or no-ops a single (kind, canonical, alias) row with
-// the given source. Idempotent via the UNIQUE constraint on
-// (canonical, alias, kind). Different aliases for the same
-// (kind, canonical) DO create separate rows, so the same canonical
-// can carry multiple aliases.
+// Upsert inserts or no-ops a single (kind, canonical, value) row with
+// the given source. Idempotent via the PRIMARY KEY (kind, canonical,
+// value). Different values for the same (kind, canonical) DO create
+// separate rows.
 //
-// Computed kinds cannot be Upsert'd — they have no table representation.
-// Source defaults to "taught" when empty.
-func Upsert(db *sql.DB, kind, canonical, alias, source string) error {
+// Computed kinds cannot be Upsert'd. Source defaults to "taught"
+// when empty.
+func Upsert(db *sql.DB, kind, canonical, value, source string) error {
 	if IsComputedKind(kind) {
 		return fmt.Errorf("lookups.Upsert: %q is a computed kind, not table-backed", kind)
 	}
@@ -191,16 +190,16 @@ func Upsert(db *sql.DB, kind, canonical, alias, source string) error {
 	if strings.TrimSpace(canonical) == "" {
 		return errors.New("lookups.Upsert: canonical is required")
 	}
-	if strings.TrimSpace(alias) == "" {
-		return errors.New("lookups.Upsert: alias is required")
+	if strings.TrimSpace(value) == "" {
+		return errors.New("lookups.Upsert: value is required")
 	}
 	if source == "" {
 		source = "taught"
 	}
 	_, err := db.Exec(`
-		INSERT OR IGNORE INTO entity_lookups (canonical, alias, kind, source)
+		INSERT OR IGNORE INTO entity_lookups (kind, canonical, value, source)
 		VALUES (?, ?, ?, ?)
-	`, canonical, alias, kind, source)
+	`, kind, canonical, value, source)
 	if err != nil {
 		return fmt.Errorf("lookups.Upsert exec: %w", err)
 	}
@@ -209,16 +208,13 @@ func Upsert(db *sql.DB, kind, canonical, alias, source string) error {
 
 // SeedBatch inserts every row in seeds via INSERT OR IGNORE inside a
 // caller-supplied transaction. Returns the count of rows actually
-// inserted (i.e., not skipped by the OR IGNORE conflict resolution).
-//
-// Takes a *sql.Tx so the caller can run table creation and seeding in
-// one atomic unit. Pass an already-begun tx.
+// inserted.
 func SeedBatch(tx *sql.Tx, seeds []LookupRow) (int, error) {
 	if tx == nil {
 		return 0, errors.New("lookups.SeedBatch: tx is nil")
 	}
 	stmt, err := tx.Prepare(`
-		INSERT OR IGNORE INTO entity_lookups (canonical, alias, kind, source)
+		INSERT OR IGNORE INTO entity_lookups (kind, canonical, value, source)
 		VALUES (?, ?, ?, ?)
 	`)
 	if err != nil {
@@ -232,9 +228,9 @@ func SeedBatch(tx *sql.Tx, seeds []LookupRow) (int, error) {
 		if source == "" {
 			source = "seeded"
 		}
-		res, err := stmt.Exec(r.Canonical, r.Alias, r.Kind, source)
+		res, err := stmt.Exec(r.Kind, r.Canonical, r.Value, source)
 		if err != nil {
-			return inserted, fmt.Errorf("insert seed (%s, %s, %s): %w", r.Kind, r.Canonical, r.Alias, err)
+			return inserted, fmt.Errorf("insert seed (%s, %s, %s): %w", r.Kind, r.Canonical, r.Value, err)
 		}
 		n, err := res.RowsAffected()
 		if err == nil {

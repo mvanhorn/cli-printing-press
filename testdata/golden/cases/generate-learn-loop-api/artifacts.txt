@@ -34,6 +34,14 @@ learn-loop-example/internal/cli/root.go
 learn-loop-example/internal/store/store.go
 learn-loop-example/internal/store/extras.go
 
+# Apply engine: the rerank orchestrator ported from prediction-goat.
+# Includes Apply / Upsert / List / Forget / store-side Recall on *Store,
+# the LearnedHit / Applier interface, and NormalizeQuery + jaccard
+# helpers. Without this file no per-command applier can call db.Apply,
+# which is the orchestrator the rerank wiring depends on.
+learn-loop-example/internal/store/learnings.go
+learn-loop-example/internal/store/learnings_test.go
+
 # Learn package shape — one representative file per subpackage so a
 # template rename / signature change in any subpackage trips the gate:
 #   - internal/learn (top-level): recall.go is the read-path entrypoint

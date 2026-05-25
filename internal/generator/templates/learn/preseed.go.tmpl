@@ -170,8 +170,9 @@ func RunWith(ctx context.Context, db *sql.DB, opts RunOpts) (int, error) {
 }
 
 // insertOne is the per-row write path. Skips when a row exists for
-// the same (query_pattern, resource_type); preseed is a pure-insert
-// operation, never a confidence bump.
+// the same (query_pattern, resource_id, action); preseed is a
+// pure-insert operation, never a confidence bump. The unique index
+// idx_learn_unique enforces this on the DB side too.
 func insertOne(ctx context.Context, db *sql.DB, row PreseedRow) (bool, error) {
 	if row.ResourceID == "" || row.QueryPattern == "" || row.ResourceType == "" {
 		return false, nil
@@ -180,14 +181,14 @@ func insertOne(ctx context.Context, db *sql.DB, row PreseedRow) (bool, error) {
 	if source == "" {
 		source = SourcePreseed
 	}
-	// Existence check: any row at the (query_pattern, resource_type)
-	// PK blocks the insert. Preseed never overwrites or bumps; the
-	// recall path will read whatever is already there.
-	var existing string
+	// Existence check: any row matching (query_pattern, resource_id,
+	// "boost") blocks the insert. Preseed never overwrites or bumps;
+	// the recall path will read whatever is already there.
+	var existingID int64
 	err := db.QueryRowContext(ctx,
-		`SELECT resource_ids FROM search_learnings WHERE query_pattern = ? AND resource_type = ?`,
-		row.QueryPattern, row.ResourceType,
-	).Scan(&existing)
+		`SELECT id FROM search_learnings WHERE query_pattern = ? AND resource_id = ? AND action = 'boost'`,
+		row.QueryPattern, row.ResourceID,
+	).Scan(&existingID)
 	if err == nil {
 		return false, nil
 	}
@@ -203,19 +204,15 @@ func insertOne(ctx context.Context, db *sql.DB, row PreseedRow) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("preseed marshal entities: %w", err)
 	}
-	idsJSON, err := json.Marshal([]string{row.ResourceID})
-	if err != nil {
-		return false, fmt.Errorf("preseed marshal ids: %w", err)
-	}
 
 	now := time.Now().UTC()
 	_, err = db.ExecContext(ctx,
 		`INSERT INTO search_learnings
-		 (query_pattern, query_entities, resource_ids, resource_type, venue, action,
-		  confidence, source, created_at, updated_at)
+		 (query_pattern, query_entities, venue, resource_type, resource_id,
+		  action, source, confidence, created_at, last_observed_at)
 		 VALUES (?, ?, ?, ?, ?, 'boost', ?, ?, ?, ?)`,
-		row.QueryPattern, string(entitiesJSON), string(idsJSON), row.ResourceType, row.Venue,
-		preseedConfidenceFloor, source, now, now,
+		row.QueryPattern, string(entitiesJSON), row.Venue, row.ResourceType, row.ResourceID,
+		source, preseedConfidenceFloor, now, now,
 	)
 	if err != nil {
 		return false, fmt.Errorf("preseed insert: %w", err)
@@ -230,7 +227,7 @@ func dedupRows(in []PreseedRow) []PreseedRow {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]PreseedRow, 0, len(in))
 	for _, r := range in {
-		key := r.QueryPattern + "|" + r.ResourceType + "|" + r.ResourceID
+		key := r.QueryPattern + "|" + r.ResourceID
 		if _, dup := seen[key]; dup {
 			continue
 		}

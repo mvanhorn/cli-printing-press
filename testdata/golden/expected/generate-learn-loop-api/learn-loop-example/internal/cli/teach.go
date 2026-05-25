@@ -16,8 +16,6 @@
 package cli
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -147,8 +145,8 @@ func learnDBPath(explicit string) string {
 
 // newTeachCmd builds the `teach` cobra command — the LLM-facing write
 // surface. Silent on success, safe to background, errors only to
-// teach.log. Requires --resource-type so the v3 schema's typed
-// primary key always carries a real value.
+// teach.log. Requires --resource-type so recalls can validate returned
+// IDs against the typed resources table.
 func newTeachCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
 	var query string
 	var resources []string
@@ -207,15 +205,16 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				if rid == "" {
 					continue
 				}
-				_, terr := learn.Teach(cmd.Context(), s.DB(), learnCfg, learn.TeachInput{
-					Query:        query,
-					ResourceID:   rid,
-					ResourceType: resourceType,
-					Venue:        venueArg,
-					Entities:     normalized.Entities,
-				})
-				if terr != nil {
-					writeTeachErrLog(fmt.Sprintf("teach: write %q for query=%q: %v", rid, query, terr))
+				if _, _, uerr := s.UpsertLearning(store.UpsertLearningInput{
+					Query:         query,
+					QueryEntities: normalized.Entities,
+					ResourceID:    rid,
+					ResourceType:  resourceType,
+					Venue:         venueArg,
+					Source:        store.LearningSourceTaught,
+					Notes:         notes,
+				}); uerr != nil {
+					writeTeachErrLog(fmt.Sprintf("teach: upsert %q for query=%q: %v", rid, query, uerr))
 					return silentCodeErr(1)
 				}
 
@@ -226,6 +225,13 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 						}
 					}
 				}
+			}
+
+			// Post-teach pattern extraction. The call is cheap and
+			// idempotent (search_patterns unique index silences
+			// duplicates); errors are non-fatal.
+			if _, exErr := patterns.Extract(s.DB(), nil); exErr != nil {
+				writeTeachErrLog(fmt.Sprintf("teach: patterns.Extract: %v", exErr))
 			}
 
 			if auditErr := appendLearningsAudit(map[string]any{
@@ -279,6 +285,7 @@ type recallEnvelopeResult struct {
 	ResourceType     string     `json:"resource_type,omitempty"`
 	Venue            string     `json:"venue,omitempty"`
 	Action           string     `json:"action"`
+	AliasTarget      string     `json:"alias_target,omitempty"`
 	Confidence       int        `json:"confidence"`
 	MatchScore       float64    `json:"match_score"`
 	EntityMatch      string     `json:"entity_match,omitempty"`
@@ -383,6 +390,7 @@ func toEnvelopeResults(in []learn.Hit) []recallEnvelopeResult {
 			ResourceType:     h.ResourceType,
 			Venue:            h.Venue,
 			Action:           h.Action,
+			AliasTarget:      h.AliasTarget,
 			Confidence:       h.Confidence,
 			MatchScore:       h.MatchScore,
 			EntityMatch:      h.EntityMatch,
@@ -422,122 +430,52 @@ search_learnings table that the LLM populates via the 'teach' command.`,
 		RunE:        parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newLearningsListCmd(flags))
-	cmd.AddCommand(newLearningsForgetCmd(flags, learnCfg))
+	cmd.AddCommand(newLearningsForgetCmd(flags))
 	return cmd
 }
 
-// learningRow is the JSON output shape for `learnings list`.
+// learningRow is the JSON output shape for `learnings list`. Mirrors
+// store.LearningRow but locks the JSON contract at the CLI layer so
+// agents that key on it across PP versions stay stable across
+// generator upgrades.
 type learningRow struct {
-	QueryPattern string    `json:"query_pattern"`
-	ResourceIDs  []string  `json:"resource_ids"`
-	ResourceType string    `json:"resource_type,omitempty"`
-	Venue        string    `json:"venue,omitempty"`
-	Action       string    `json:"action"`
-	Confidence   int       `json:"confidence"`
-	Source       string    `json:"source"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID             int64      `json:"id"`
+	QueryPattern   string     `json:"query_pattern"`
+	ResourceID     string     `json:"resource_id"`
+	ResourceType   string     `json:"resource_type,omitempty"`
+	Venue          string     `json:"venue,omitempty"`
+	Action         string     `json:"action"`
+	AliasTarget    string     `json:"alias_target,omitempty"`
+	Confidence     int        `json:"confidence"`
+	Source         string     `json:"source"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastObservedAt *time.Time `json:"last_observed_at,omitempty"`
+	Notes          string     `json:"notes,omitempty"`
 }
 
-// listLearningsFilter narrows listLearnings.
-type listLearningsFilter struct {
-	Query         string
-	Source        string
-	ResourceID    string
-	Action        string
-	MinConfidence int
-	Limit         int
-}
-
-// listLearnings reads rows from the search_learnings table the v3
-// schema provides. Filters are AND'd. resource_id filter matches when
-// the JSON array contains the supplied id.
-func listLearnings(ctx context.Context, db *sql.DB, f listLearningsFilter) ([]learningRow, error) {
-	if db == nil {
-		return nil, errors.New("listLearnings: db is nil")
-	}
-	clauses := []string{}
-	args := []any{}
-	if strings.TrimSpace(f.Query) != "" {
-		clauses = append(clauses, "query_pattern LIKE ?")
-		args = append(args, "%"+f.Query+"%")
-	}
-	if strings.TrimSpace(f.Source) != "" {
-		clauses = append(clauses, "source = ?")
-		args = append(args, f.Source)
-	}
-	if strings.TrimSpace(f.Action) != "" {
-		clauses = append(clauses, "action = ?")
-		args = append(args, f.Action)
-	}
-	if f.MinConfidence > 0 {
-		clauses = append(clauses, "confidence >= ?")
-		args = append(args, f.MinConfidence)
-	}
-	where := ""
-	if len(clauses) > 0 {
-		where = "WHERE " + strings.Join(clauses, " AND ")
-	}
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 200
-	}
-	args = append(args, limit)
-
-	q := fmt.Sprintf(`SELECT query_pattern, COALESCE(resource_ids, '[]'), resource_type,
-			COALESCE(venue, ''), COALESCE(action, ''), confidence, COALESCE(source, ''), updated_at
-		FROM search_learnings
-		%s
-		ORDER BY updated_at DESC
-		LIMIT ?`, where)
-
-	rows, err := db.QueryContext(ctx, q, args...)
+// listLearningsRows queries the store via the canonical ListLearnings
+// API and translates each row into the CLI envelope shape.
+func listLearningsRows(s *store.Store, f store.ListLearningsFilter) ([]learningRow, error) {
+	stored, err := s.ListLearnings(f)
 	if err != nil {
-		return nil, fmt.Errorf("listLearnings query: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	out := make([]learningRow, 0)
-	for rows.Next() {
-		var (
-			pattern    string
-			idsJSON    string
-			rt         string
-			venue      string
-			action     string
-			confidence int
-			source     string
-			updatedAt  time.Time
-		)
-		if err := rows.Scan(&pattern, &idsJSON, &rt, &venue, &action, &confidence, &source, &updatedAt); err != nil {
-			return nil, fmt.Errorf("listLearnings scan: %w", err)
-		}
-		var ids []string
-		_ = json.Unmarshal([]byte(idsJSON), &ids)
-		if f.ResourceID != "" {
-			matched := false
-			for _, id := range ids {
-				if id == f.ResourceID {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
+	out := make([]learningRow, 0, len(stored))
+	for _, r := range stored {
 		out = append(out, learningRow{
-			QueryPattern: pattern,
-			ResourceIDs:  ids,
-			ResourceType: rt,
-			Venue:        venue,
-			Action:       action,
-			Confidence:   confidence,
-			Source:       source,
-			UpdatedAt:    updatedAt,
+			ID:             r.ID,
+			QueryPattern:   r.QueryPattern,
+			ResourceID:     r.ResourceID,
+			ResourceType:   r.ResourceType,
+			Venue:          r.Venue,
+			Action:         r.Action,
+			AliasTarget:    r.AliasTarget,
+			Confidence:     r.Confidence,
+			Source:         r.Source,
+			CreatedAt:      r.CreatedAt,
+			LastObservedAt: r.LastObservedAt,
+			Notes:          r.Notes,
 		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listLearnings rows: %w", err)
 	}
 	return out, nil
 }
@@ -598,7 +536,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer s.Close()
 
-			rows, err := listLearnings(cmd.Context(), s.DB(), listLearningsFilter{
+			rows, err := listLearningsRows(s, store.ListLearningsFilter{
 				Query:         queryFilter,
 				Source:        sourceFilter,
 				ResourceID:    resourceFilter,
@@ -618,8 +556,8 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 			for _, r := range rows {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%v\tconf=%d\tsource=%s\n",
-					r.QueryPattern, r.Action, r.ResourceIDs, r.Confidence, r.Source)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\tconf=%d\tsource=%s\n",
+					r.QueryPattern, r.Action, r.ResourceID, r.Confidence, r.Source)
 			}
 			return nil
 		},
@@ -635,121 +573,22 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
-// forgetLearningsFilter narrows forgetLearnings.
-type forgetLearningsFilter struct {
-	Query      string
-	ResourceID string
-	Action     string
-	All        bool
+// forgetLearningsRows deletes search_learnings rows matching the
+// canonical store.ForgetLearningsFilter and returns the count
+// removed. Requires at least one of ResourceID, Action, or All on the
+// filter (enforced by the store side).
+func forgetLearningsRows(s *store.Store, query string, f store.ForgetLearningsFilter) (int64, error) {
+	if s == nil {
+		return 0, errors.New("forgetLearningsRows: store is nil")
+	}
+	if strings.TrimSpace(query) == "" {
+		return 0, errors.New("forgetLearningsRows: query is required")
+	}
+	f.Query = query
+	return s.ForgetLearnings(f)
 }
 
-// forgetLearnings deletes rows matching the filter and returns the
-// count removed. Requires at least one of ResourceID, Action, or All;
-// otherwise an empty filter would silently wipe every row for the
-// supplied query. The supplied query is normalized through cfg before
-// matching against the stored query_pattern column.
-func forgetLearnings(ctx context.Context, db *sql.DB, cfg *entities.Config, f forgetLearningsFilter) (int64, error) {
-	if db == nil {
-		return 0, errors.New("forgetLearnings: db is nil")
-	}
-	if strings.TrimSpace(f.Query) == "" {
-		return 0, errors.New("forgetLearnings: query is required")
-	}
-	if !f.All && strings.TrimSpace(f.ResourceID) == "" && strings.TrimSpace(f.Action) == "" {
-		return 0, errors.New("pass --all, --resource, or --action")
-	}
-
-	normalized := learn.Normalize(f.Query, cfg).NonEntityNormalized
-	// Find candidate rows by normalized query first, then filter in-Go
-	// for resource_id (which lives inside the JSON array column).
-	rows, err := db.QueryContext(ctx,
-		`SELECT rowid, COALESCE(resource_ids, '[]'), COALESCE(action, '') FROM search_learnings WHERE query_pattern = ?`,
-		normalized,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("forgetLearnings query: %w", err)
-	}
-	type victim struct {
-		rowID int64
-		ids   []string
-	}
-	var victims []victim
-	for rows.Next() {
-		var (
-			rowID   int64
-			idsJSON string
-			action  string
-		)
-		if err := rows.Scan(&rowID, &idsJSON, &action); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("forgetLearnings scan: %w", err)
-		}
-		if f.Action != "" && action != f.Action {
-			continue
-		}
-		var ids []string
-		_ = json.Unmarshal([]byte(idsJSON), &ids)
-		if f.ResourceID != "" {
-			matched := false
-			for _, id := range ids {
-				if id == f.ResourceID {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				continue
-			}
-		}
-		victims = append(victims, victim{rowID: rowID, ids: ids})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("forgetLearnings rows: %w", err)
-	}
-
-	var deleted int64
-	for _, v := range victims {
-		// Targeted forget: drop just the matching ID; if the row's IDs
-		// becomes empty, drop the row entirely. --all bypasses the
-		// partial path and drops the row outright.
-		if f.All || f.ResourceID == "" {
-			res, err := db.ExecContext(ctx, `DELETE FROM search_learnings WHERE rowid = ?`, v.rowID)
-			if err != nil {
-				return deleted, fmt.Errorf("forgetLearnings delete: %w", err)
-			}
-			n, _ := res.RowsAffected()
-			deleted += n
-			continue
-		}
-		remaining := v.ids[:0]
-		for _, id := range v.ids {
-			if id != f.ResourceID {
-				remaining = append(remaining, id)
-			}
-		}
-		if len(remaining) == 0 {
-			res, err := db.ExecContext(ctx, `DELETE FROM search_learnings WHERE rowid = ?`, v.rowID)
-			if err != nil {
-				return deleted, fmt.Errorf("forgetLearnings delete: %w", err)
-			}
-			n, _ := res.RowsAffected()
-			deleted += n
-			continue
-		}
-		newJSON, _ := json.Marshal(remaining)
-		if _, err := db.ExecContext(ctx,
-			`UPDATE search_learnings SET resource_ids = ?, updated_at = ? WHERE rowid = ?`,
-			string(newJSON), time.Now().UTC(), v.rowID,
-		); err != nil {
-			return deleted, fmt.Errorf("forgetLearnings update: %w", err)
-		}
-		deleted++
-	}
-	return deleted, nil
-}
-
-func newLearningsForgetCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
+func newLearningsForgetCmd(flags *rootFlags) *cobra.Command {
 	var resourceArg string
 	var actionArg string
 	var all bool
@@ -779,8 +618,7 @@ Requires at least one of --resource, --action, or --all.`,
 			}
 			defer s.Close()
 
-			n, err := forgetLearnings(cmd.Context(), s.DB(), learnCfg, forgetLearningsFilter{
-				Query:      query,
+			n, err := forgetLearningsRows(s, query, store.ForgetLearningsFilter{
 				ResourceID: resourceArg,
 				Action:     actionArg,
 				All:        all,
@@ -867,7 +705,7 @@ a whole family.`,
 			}
 			defer s.Close()
 
-			inserted, err := patterns.Upsert(s.DB(), patterns.Pattern{
+			id, inserted, err := patterns.Upsert(s.DB(), patterns.Pattern{
 				QueryTemplate:    queryTemplate,
 				ResourceTemplate: resourceTemplate,
 				ResourceType:     resourceType,
@@ -882,6 +720,7 @@ a whole family.`,
 			return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 				"recorded":          true,
 				"newly_inserted":    inserted,
+				"pattern_id":        id,
 				"query_template":    queryTemplate,
 				"resource_template": resourceTemplate,
 				"resource_type":     resourceType,
@@ -905,17 +744,17 @@ a whole family.`,
 func newTeachLookupCmd(flags *rootFlags) *cobra.Command {
 	var kind string
 	var canonical string
-	var alias string
+	var value string
 	var dbPath string
 
 	cmd := &cobra.Command{
 		Use:   "teach-lookup",
-		Short: "Install a manual entity-lookup row (kind, canonical, alias)",
+		Short: "Install a manual entity-lookup row (kind, canonical, value)",
 		Long: `Adds one row to entity_lookups. Used by the recall path's pattern
-engine to substitute aliases for canonical names at substitution time.
+engine to substitute values for canonical names at substitution time.
 Computed kinds (lowercase, uppercase, kebab-case, capitalize-first, slug)
 cannot be taught — they are derived from the canonical input.`,
-		Example: `  learn-loop-example-pp-cli teach-lookup --kind country --canonical "United States" --alias USA`,
+		Example: `  learn-loop-example-pp-cli teach-lookup --kind country --canonical "United States" --value USA`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
 				return nil
@@ -929,8 +768,8 @@ cannot be taught — they are derived from the canonical input.`,
 			if strings.TrimSpace(canonical) == "" {
 				return usageErr(fmt.Errorf("--canonical is required"))
 			}
-			if strings.TrimSpace(alias) == "" {
-				return usageErr(fmt.Errorf("--alias is required"))
+			if strings.TrimSpace(value) == "" {
+				return usageErr(fmt.Errorf("--value is required"))
 			}
 			if lookups.IsComputedKind(kind) {
 				return usageErr(fmt.Errorf("--kind %q is a computed kind and cannot be taught", kind))
@@ -942,20 +781,20 @@ cannot be taught — they are derived from the canonical input.`,
 			}
 			defer s.Close()
 
-			if err := lookups.Upsert(s.DB(), kind, canonical, alias, "taught"); err != nil {
+			if err := lookups.Upsert(s.DB(), kind, canonical, value, "taught"); err != nil {
 				return fmt.Errorf("teach-lookup: %w", err)
 			}
 			return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 				"recorded":  true,
 				"kind":      kind,
 				"canonical": canonical,
-				"alias":     alias,
+				"value":     value,
 			}, flags)
 		},
 	}
 	cmd.Flags().StringVar(&kind, "kind", "", "Entity kind, e.g. country, team (required, must not be a computed kind)")
 	cmd.Flags().StringVar(&canonical, "canonical", "", "Canonical entity name (required)")
-	cmd.Flags().StringVar(&alias, "alias", "", "Alias that should resolve to the canonical (required)")
+	cmd.Flags().StringVar(&value, "value", "", "Value/alias that should resolve to the canonical (required)")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
 	return cmd
 }

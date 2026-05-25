@@ -14,26 +14,17 @@ import (
 )
 
 // extractWindow caps how many of the most-recently-observed
-// search_learnings rows the extractor considers per call. Keeping the
-// window bounded keeps Extract O(1) in steady state.
+// search_learnings rows the extractor considers per call.
 const extractWindow = 50
 
 // candidateKinds is the ordered set of lookup kinds Extract tries when
-// searching for an entity_kind binding. Computed kinds are tried last
-// because table-backed kinds carry the strongest "user meant this
-// specific alias" signal. The list is deliberately short and CLI-
-// neutral; a CLI that needs additional table-backed kinds can extend
-// this slice by seeding rows under that kind via lookups.SeedFromConfig
-// and adding the kind name to its own dispatch as needed.
-//
-// The set here is intentionally limited to the lookup kinds the
-// generator can always emit safely (lowercase / uppercase / etc are
-// computed and need no schema, "alias" is a generic catch-all that any
-// CLI's seeded data can hang off). For CLI-specific kinds the consumer
-// supplies via LearnConfig.EntityLookupSeeds, the recall integration
-// passes those kinds through Opts.AdditionalKinds.
+// searching for an entity_kind binding. Order is significant:
+// table-backed kinds (registered via the CLI's LearnConfig) are tried
+// before computed kinds (lowercase, kebab-case, slug). The generator
+// emits only the computed kinds here. Per-CLI seeded kinds are passed
+// in via Opts.AdditionalKinds at Apply time so the template stays
+// domain-neutral.
 var candidateKinds = []string{
-	// Computed kinds (no DB rows; pure transforms).
 	"lowercase",
 	"uppercase",
 	"capitalize-first",
@@ -42,9 +33,8 @@ var candidateKinds = []string{
 }
 
 // teachRow is the subset of search_learnings columns Extract reads.
-// Kept locally so this package can stand alone without depending on
-// the store package's column-set evolution.
 type teachRow struct {
+	id            int64
 	queryPattern  string
 	queryEntities []string
 	resourceID    string
@@ -57,30 +47,30 @@ type teachRow struct {
 // and writes one search_patterns row per successful inference. Returns
 // the count of NEW rows created.
 //
-// Idempotent: re-running Extract on the same DB state produces zero
-// new rows and bumps confidence on the matching existing rows.
+// Idempotency: re-running Extract on the same DB state produces zero
+// new rows. The unique index on (query_template, resource_template,
+// strategy) catches duplicates; Upsert flips them into confidence
+// bumps.
 //
-// additionalKinds is the CLI-supplied list of table-backed lookup kinds
-// (from LearnConfig.EntityLookupSeeds) that Extract should try ahead of
-// the built-in computed kinds. Empty means computed-only.
+// additionalKinds lets the CLI inject its registered table-backed
+// lookup kinds (e.g., seeded country codes, team abbreviations) so
+// Extract tries them ahead of the computed-only kinds list. Pass nil
+// to use only the built-in computed kinds.
+//
+// A nil db returns an error; an empty learnings table returns (0, nil).
 func Extract(db *sql.DB, additionalKinds []string) (int, error) {
 	if db == nil {
 		return 0, fmt.Errorf("patterns.Extract: db is nil")
 	}
+	allKinds := make([]string, 0, len(additionalKinds)+len(candidateKinds))
+	allKinds = append(allKinds, additionalKinds...)
+	allKinds = append(allKinds, candidateKinds...)
 
-	kinds := make([]string, 0, len(additionalKinds)+len(candidateKinds))
-	for _, k := range additionalKinds {
-		if k == "" {
-			continue
-		}
-		kinds = append(kinds, k)
-	}
-	kinds = append(kinds, candidateKinds...)
-
-	rows, err := db.Query(`SELECT query_pattern, COALESCE(query_entities, '[]'),
-			COALESCE(resource_ids, '[]'), resource_type, COALESCE(venue, '')
+	rows, err := db.Query(`SELECT id, query_pattern, COALESCE(query_entities, ''),
+			resource_id, COALESCE(resource_type, ''), COALESCE(venue, '')
 		FROM search_learnings
-		ORDER BY updated_at DESC
+		WHERE source IN ('taught', 'inferred-followup', 'inferred-reach', 'inferred-pair')
+		ORDER BY last_observed_at DESC, id DESC
 		LIMIT ?`, extractWindow)
 	if err != nil {
 		return 0, fmt.Errorf("patterns.Extract query: %w", err)
@@ -89,34 +79,23 @@ func Extract(db *sql.DB, additionalKinds []string) (int, error) {
 
 	var teaches []teachRow
 	for rows.Next() {
-		var (
-			qp, entJSON, idsJSON, rt, venue string
-		)
-		if err := rows.Scan(&qp, &entJSON, &idsJSON, &rt, &venue); err != nil {
+		var r teachRow
+		var entJSON string
+		if err := rows.Scan(&r.id, &r.queryPattern, &entJSON, &r.resourceID, &r.resourceType, &r.venue); err != nil {
 			return 0, fmt.Errorf("patterns.Extract scan: %w", err)
 		}
-		ents, err := parseStringArray(entJSON)
-		if err != nil || len(ents) != 1 {
-			// Skip multi-entity rows (single-entity binding only) and
-			// malformed-JSON rows.
-			continue
-		}
-		ids, err := parseStringArray(idsJSON)
+		ents, err := parseEntityJSON(entJSON)
 		if err != nil {
 			continue
 		}
-		for _, rid := range ids {
-			if rid == "" {
-				continue
-			}
-			teaches = append(teaches, teachRow{
-				queryPattern:  qp,
-				queryEntities: ents,
-				resourceID:    rid,
-				resourceType:  rt,
-				venue:         venue,
-			})
+		if len(ents) == 0 {
+			continue
 		}
+		if len(ents) > 1 {
+			continue
+		}
+		r.queryEntities = ents
+		teaches = append(teaches, r)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("patterns.Extract rows: %w", err)
@@ -136,8 +115,7 @@ func Extract(db *sql.DB, additionalKinds []string) (int, error) {
 		groups[key] = append(groups[key], t)
 	}
 
-	// Stable iteration order so test assertions on emitted recipes are
-	// deterministic.
+	created := 0
 	keys := make([]groupKey, 0, len(groups))
 	for k := range groups {
 		keys = append(keys, k)
@@ -152,17 +130,16 @@ func Extract(db *sql.DB, additionalKinds []string) (int, error) {
 		return keys[i].venue < keys[j].venue
 	})
 
-	created := 0
 	for _, key := range keys {
 		members := groups[key]
 		if len(members) < 2 {
 			continue
 		}
-		pat, ok := inferPattern(db, key, members, kinds)
+		pat, ok := inferPattern(db, key, members, allKinds)
 		if !ok {
 			continue
 		}
-		inserted, err := Upsert(db, pat)
+		_, inserted, err := Upsert(db, pat)
 		if err != nil {
 			continue
 		}
@@ -229,7 +206,6 @@ func tryExactBinding(db *sql.DB, kind string, members []teachRow) (string, bool)
 		pos += idx
 		prefix := first.resourceID[:pos]
 		suffix := first.resourceID[pos+len(values[0]):]
-
 		allMatch := true
 		for i, m := range members {
 			if m.resourceID != prefix+values[i]+suffix {
@@ -266,7 +242,6 @@ func tryPrefixBinding(db *sql.DB, kind string, members []teachRow) (string, bool
 		pos += idx
 		prefix := first.resourceID[:pos]
 		suffixFirst := first.resourceID[pos+len(values[0]):]
-
 		sharedSuffix := suffixFirst
 		ok := true
 		for i := 1; i < len(members); i++ {
@@ -293,7 +268,6 @@ func tryPrefixBinding(db *sql.DB, kind string, members []teachRow) (string, bool
 			return "", false
 		}
 		if isFullyShared(sharedSuffix, suffixFirst, members, values, prefix) {
-			// Exact in disguise; let tryExactBinding catch it.
 			return "", false
 		}
 		return prefix + entitySlot(kind) + sharedSuffix + "*", true
@@ -359,14 +333,14 @@ func longestCommonPrefix(a, b string) string {
 	return a[:n]
 }
 
-func parseStringArray(raw string) ([]string, error) {
+func parseEntityJSON(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "null" {
 		return nil, nil
 	}
 	var out []string
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse entities: %w", err)
 	}
 	return out, nil
 }

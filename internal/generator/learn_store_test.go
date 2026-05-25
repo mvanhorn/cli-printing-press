@@ -25,13 +25,13 @@ func TestGenerateStoreSchemaVersion_DisabledStaysV2(t *testing.T) {
 	require.NoError(t, err)
 	src := string(storeGo)
 	require.Contains(t, src, "const StoreSchemaVersion = 2")
-	require.NotContains(t, src, "const StoreSchemaVersion = 3")
-	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups", "teach_log_metadata", "search_learnings_fts"} {
+	require.NotContains(t, src, "const StoreSchemaVersion = 6")
+	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups"} {
 		require.NotContains(t, src, table, "learn-disabled spec must not emit %s migration", table)
 	}
 }
 
-func TestGenerateStoreSchemaVersion_EnabledAdvancesToV3WithLearnTables(t *testing.T) {
+func TestGenerateStoreSchemaVersion_EnabledAdvancesToV6WithLearnTables(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-version-enabled")
@@ -44,16 +44,21 @@ func TestGenerateStoreSchemaVersion_EnabledAdvancesToV3WithLearnTables(t *testin
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 3")
+	require.Contains(t, src, "const StoreSchemaVersion = 6")
 	require.NotContains(t, src, "const StoreSchemaVersion = 2")
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS search_learnings",
 		"CREATE TABLE IF NOT EXISTS search_patterns",
 		"CREATE TABLE IF NOT EXISTS entity_lookups",
-		"CREATE TABLE IF NOT EXISTS teach_log_metadata",
-		"CREATE VIRTUAL TABLE IF NOT EXISTS search_learnings_fts",
+		"CREATE INDEX IF NOT EXISTS idx_learn_query",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_learn_unique",
+		"CREATE INDEX IF NOT EXISTS idx_entity_lookup_canonical",
 	} {
 		require.Contains(t, src, want, "learn-enabled spec must emit %q", want)
+	}
+	// Divergent tables removed in the canonical-restore pass.
+	for _, gone := range []string{"teach_log_metadata", "search_learnings_fts"} {
+		require.NotContains(t, src, gone, "canonical schema must not emit divergent table %s", gone)
 	}
 }
 
@@ -72,7 +77,7 @@ func TestGenerateStoreLearnMigrationsGated(t *testing.T) {
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups", "teach_log_metadata", "search_learnings_fts"} {
+	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups"} {
 		require.NotContains(t, src, table, "learn-disabled spec must not emit %s migration", table)
 	}
 }
@@ -99,18 +104,17 @@ func TestGenerateStoreLearnMigrationsPresent(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS search_learnings",
 		"CREATE TABLE IF NOT EXISTS search_patterns",
 		"CREATE TABLE IF NOT EXISTS entity_lookups",
-		"CREATE TABLE IF NOT EXISTS teach_log_metadata",
-		"CREATE VIRTUAL TABLE IF NOT EXISTS search_learnings_fts",
 	} {
 		require.Contains(t, src, want, "learn-enabled spec must emit %q", want)
 	}
-	require.Contains(t, src, "tokenize='porter unicode61'", "FTS5 must use the porter/unicode61 tokenizer mirroring resources_fts")
 }
 
 // TestGenerateStoreLearnRenamedFromRecipes verifies the schema rename landed.
-// Per the plan, the prediction-goat `learn_recipes` table is renamed to
-// `search_patterns` everywhere in the emitted store; a `learn_recipes` leak
-// would mean a partial rename slipped past the template.
+// Per the predecessor plan, the prediction-goat `search_recipes` table is
+// renamed to `search_patterns` everywhere in the emitted store; a
+// `search_recipes` leak would mean a partial rename slipped past the
+// template. The unrelated `Recipes`/`recipe` identifiers from the workflow
+// recipe system stay; this check is scoped to the learn-pattern rename.
 func TestGenerateStoreLearnRenamedFromRecipes(t *testing.T) {
 	t.Parallel()
 
@@ -124,8 +128,7 @@ func TestGenerateStoreLearnRenamedFromRecipes(t *testing.T) {
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := strings.ToLower(string(storeGo))
-	require.NotContains(t, src, "learn_recipes", "the legacy learn_recipes table name must not appear in the generated store")
-	require.NotContains(t, src, "recipe ", "the legacy Recipe identifier must not appear in the generated store")
+	require.NotContains(t, src, "search_recipes", "the legacy search_recipes table name must not appear in the generated store")
 }
 
 // TestGenerateStoreCompilesUnderLearnEnabled drives the emitted store package

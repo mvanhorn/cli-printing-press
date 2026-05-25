@@ -5,7 +5,6 @@ package patterns
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -13,45 +12,45 @@ import (
 )
 
 // Default confidence floor for an inferred pattern. Mirrors the
-// search_learnings teach-side floor so pattern hits and direct teaches
-// sort comparably when recall merges them.
+// search_learnings teach-side floor in store.UpsertLearning (also 2) so
+// pattern hits and direct teaches sort comparably when recall merges
+// them.
 const DefaultConfidence = 2
 
-// Strategy values for Pattern.Strategy. Stable column-encoded constants
-// so the recall path can branch on them.
+// Strategy values for Pattern.Strategy. Kept as const strings to keep
+// the column a stable schema for tests and the LLM-readable envelope.
 const (
 	// StrategySubstitute names a fully-deterministic resource ID:
-	// substituting the entity into the resource template yields exactly
+	// substituting the entity into the resource_template yields exactly
 	// one candidate which Apply verifies by direct lookup in the
 	// resources table.
 	StrategySubstitute = "substitute"
 
 	// StrategySubstituteThenSearchPrefix names a partially-deterministic
-	// resource ID: the resource template ends with "*" and Apply does a
-	// LIKE prefix search after substitution.
+	// resource ID: the resource_template ends with "*" and Apply does a
+	// LIKE prefix search in the resources table after substitution.
 	StrategySubstituteThenSearchPrefix = "substitute-then-search-prefix"
 )
 
-// Source values for Pattern.Source.
+// Source values for Pattern.Source. "inferred" rows come from Extract;
+// "taught" rows come from the teach-pattern CLI command.
 const (
 	SourceInferred = "inferred"
 	SourceTaught   = "taught"
 )
 
-// Pattern is the in-memory shape of one search_patterns row. The v3
-// schema stores patterns as (template TEXT, entity_kind TEXT,
-// confidence INTEGER, source TEXT, created_at); we encode the richer
-// shape (query template, resource template, resource type, venue,
-// strategy, examples) as a JSON envelope in the `template` column so
-// the package surface stays expressive without changing the schema.
+// Pattern is one row of the search_patterns table. It encodes a
+// template-with-typed-entity-slot pattern: given an input query that
+// matches QueryTemplate (modulo one entity slot), the engine
+// substitutes the live query's entity via lookups.Lookup(EntityKind,
+// ...) into ResourceTemplate and returns the result as a candidate
+// resource.
 //
-// QueryTemplate carries the non-entity stem of the queries this
-// pattern matches, with an {entity} placeholder. ResourceTemplate
-// carries the resource-id shape with a typed entity slot
-// (e.g. "PREFIX-{entity:team_code}"). EntityKind is the lookup kind
-// used to substitute the live query's entity into the resource slot.
+// Field order matches the table column order so callers writing
+// Pattern literals can mirror the schema. JSON tags exist because the
+// teach-pattern CLI and `patterns list --json` emit Pattern envelopes.
 type Pattern struct {
-	ID               int64      `json:"id,omitempty"`
+	ID               int64      `json:"id"`
 	QueryTemplate    string     `json:"query_template"`
 	ResourceTemplate string     `json:"resource_template"`
 	ResourceType     string     `json:"resource_type"`
@@ -60,13 +59,15 @@ type Pattern struct {
 	EntityKind       string     `json:"entity_kind"`
 	Confidence       int        `json:"confidence"`
 	Source           string     `json:"source"`
-	CreatedAt        time.Time  `json:"created_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	LastObservedAt   *time.Time `json:"last_observed_at,omitempty"`
 	ExampleQuery     string     `json:"example_query,omitempty"`
 	ExampleResource  string     `json:"example_resource,omitempty"`
 }
 
-// ListFilter narrows List. Zero-value fields are unfiltered;
-// Limit defaults to 200.
+// ListFilter narrows List. Zero values are unfiltered. EntityKind,
+// Strategy, Source, ResourceType, Venue match by equality; Limit
+// defaults to 200 when zero.
 type ListFilter struct {
 	EntityKind   string
 	Strategy     string
@@ -86,74 +87,33 @@ type ForgetFilter struct {
 	All              bool
 }
 
-// templateEnvelope is the JSON shape persisted in the schema's
-// `template` column. The schema PK is (template, entity_kind), so the
-// envelope's combination of QueryTemplate + ResourceTemplate +
-// Strategy + ResourceType + Venue forms the dedup key in tandem with
-// EntityKind.
-type templateEnvelope struct {
-	QueryTemplate    string `json:"q"`
-	ResourceTemplate string `json:"r"`
-	ResourceType     string `json:"rt"`
-	Venue            string `json:"v,omitempty"`
-	Strategy         string `json:"s"`
-	ExampleQuery     string `json:"eq,omitempty"`
-	ExampleResource  string `json:"er,omitempty"`
-}
-
-func encodeTemplate(p Pattern) (string, error) {
-	env := templateEnvelope{
-		QueryTemplate:    p.QueryTemplate,
-		ResourceTemplate: p.ResourceTemplate,
-		ResourceType:     p.ResourceType,
-		Venue:            p.Venue,
-		Strategy:         p.Strategy,
-		ExampleQuery:     p.ExampleQuery,
-		ExampleResource:  p.ExampleResource,
-	}
-	b, err := json.Marshal(env)
-	if err != nil {
-		return "", fmt.Errorf("encode template: %w", err)
-	}
-	return string(b), nil
-}
-
-func decodeTemplate(s string, into *Pattern) error {
-	var env templateEnvelope
-	if err := json.Unmarshal([]byte(s), &env); err != nil {
-		return fmt.Errorf("decode template: %w", err)
-	}
-	into.QueryTemplate = env.QueryTemplate
-	into.ResourceTemplate = env.ResourceTemplate
-	into.ResourceType = env.ResourceType
-	into.Venue = env.Venue
-	into.Strategy = env.Strategy
-	into.ExampleQuery = env.ExampleQuery
-	into.ExampleResource = env.ExampleResource
-	return nil
-}
-
-// Upsert inserts a pattern row, or — when a row with the same encoded
-// template + entity_kind already exists — bumps confidence by 1.
-// Returns whether the row was newly inserted.
-func Upsert(db *sql.DB, p Pattern) (bool, error) {
+// Upsert inserts a pattern row, or — when (query_template,
+// resource_template, strategy) already exists — bumps confidence by 1
+// and refreshes last_observed_at. Returns the row ID and a bool
+// indicating whether the row was newly inserted.
+//
+// Idempotency is built on the unique index idx_patterns_unique. This
+// is the contract Extract relies on: a re-Extract pass over the same
+// learnings produces zero new rows but bumps confidence on the
+// matching existing rows.
+func Upsert(db *sql.DB, p Pattern) (int64, bool, error) {
 	if db == nil {
-		return false, errors.New("patterns.Upsert: db is nil")
+		return 0, false, errors.New("patterns.Upsert: db is nil")
 	}
 	if strings.TrimSpace(p.QueryTemplate) == "" {
-		return false, errors.New("patterns.Upsert: query_template is required")
+		return 0, false, errors.New("patterns.Upsert: query_template is required")
 	}
 	if strings.TrimSpace(p.ResourceTemplate) == "" {
-		return false, errors.New("patterns.Upsert: resource_template is required")
+		return 0, false, errors.New("patterns.Upsert: resource_template is required")
 	}
 	if strings.TrimSpace(p.Strategy) == "" {
-		return false, errors.New("patterns.Upsert: strategy is required")
+		return 0, false, errors.New("patterns.Upsert: strategy is required")
 	}
 	if strings.TrimSpace(p.EntityKind) == "" {
-		return false, errors.New("patterns.Upsert: entity_kind is required")
+		return 0, false, errors.New("patterns.Upsert: entity_kind is required")
 	}
 	if strings.TrimSpace(p.ResourceType) == "" {
-		return false, errors.New("patterns.Upsert: resource_type is required")
+		return 0, false, errors.New("patterns.Upsert: resource_type is required")
 	}
 	if p.Confidence <= 0 {
 		p.Confidence = DefaultConfidence
@@ -161,52 +121,73 @@ func Upsert(db *sql.DB, p Pattern) (bool, error) {
 	if strings.TrimSpace(p.Source) == "" {
 		p.Source = SourceInferred
 	}
-	encoded, err := encodeTemplate(p)
-	if err != nil {
-		return false, err
-	}
+
+	now := time.Now().UTC()
 
 	tx, err := db.Begin()
 	if err != nil {
-		return false, fmt.Errorf("patterns.Upsert begin: %w", err)
+		return 0, false, fmt.Errorf("patterns.Upsert begin: %w", err)
 	}
 	defer tx.Rollback()
 
-	var existingConfidence int
+	var existingID int64
 	err = tx.QueryRow(
-		`SELECT confidence FROM search_patterns WHERE template = ? AND entity_kind = ?`,
-		encoded, p.EntityKind,
-	).Scan(&existingConfidence)
+		`SELECT id FROM search_patterns
+		 WHERE query_template = ? AND resource_template = ? AND strategy = ?`,
+		p.QueryTemplate, p.ResourceTemplate, p.Strategy,
+	).Scan(&existingID)
 	if err == nil {
 		if _, err := tx.Exec(
-			`UPDATE search_patterns SET confidence = confidence + 1 WHERE template = ? AND entity_kind = ?`,
-			encoded, p.EntityKind,
+			`UPDATE search_patterns
+			 SET confidence = confidence + 1, last_observed_at = ?
+			 WHERE id = ?`,
+			now, existingID,
 		); err != nil {
-			return false, fmt.Errorf("patterns.Upsert bump: %w", err)
+			return 0, false, fmt.Errorf("patterns.Upsert bump confidence: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
-			return false, err
+			return 0, false, err
 		}
-		return false, nil
+		return existingID, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("patterns.Upsert lookup: %w", err)
+		return 0, false, fmt.Errorf("patterns.Upsert lookup: %w", err)
 	}
 
-	if _, err := tx.Exec(
-		`INSERT INTO search_patterns (template, entity_kind, confidence, source) VALUES (?, ?, ?, ?)`,
-		encoded, p.EntityKind, p.Confidence, p.Source,
-	); err != nil {
-		return false, fmt.Errorf("patterns.Upsert insert: %w", err)
+	var venue, exampleQuery, exampleResource any
+	if p.Venue != "" {
+		venue = p.Venue
+	}
+	if p.ExampleQuery != "" {
+		exampleQuery = p.ExampleQuery
+	}
+	if p.ExampleResource != "" {
+		exampleResource = p.ExampleResource
+	}
+
+	res, err := tx.Exec(
+		`INSERT INTO search_patterns
+		 (query_template, resource_template, resource_type, venue, strategy, entity_kind,
+		  confidence, source, created_at, last_observed_at, example_query, example_resource)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.QueryTemplate, p.ResourceTemplate, p.ResourceType, venue, p.Strategy, p.EntityKind,
+		p.Confidence, p.Source, now, now, exampleQuery, exampleResource,
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf("patterns.Upsert insert: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, false, fmt.Errorf("patterns.Upsert last id: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return 0, false, err
 	}
-	return true, nil
+	return id, true, nil
 }
 
-// List returns patterns filtered by f, ordered by confidence DESC then
-// created_at DESC. A nil db returns an error.
+// List returns patterns filtered by f, ordered by last_observed_at
+// DESC, then confidence DESC, then id DESC. A nil db returns an error.
 func List(db *sql.DB, f ListFilter) ([]Pattern, error) {
 	if db == nil {
 		return nil, errors.New("patterns.List: db is nil")
@@ -217,9 +198,21 @@ func List(db *sql.DB, f ListFilter) ([]Pattern, error) {
 		clauses = append(clauses, "entity_kind = ?")
 		args = append(args, f.EntityKind)
 	}
+	if f.Strategy != "" {
+		clauses = append(clauses, "strategy = ?")
+		args = append(args, f.Strategy)
+	}
 	if f.Source != "" {
 		clauses = append(clauses, "source = ?")
 		args = append(args, f.Source)
+	}
+	if f.ResourceType != "" {
+		clauses = append(clauses, "resource_type = ?")
+		args = append(args, f.ResourceType)
+	}
+	if f.Venue != "" {
+		clauses = append(clauses, "venue = ?")
+		args = append(args, f.Venue)
 	}
 	where := ""
 	if len(clauses) > 0 {
@@ -231,9 +224,11 @@ func List(db *sql.DB, f ListFilter) ([]Pattern, error) {
 	}
 	args = append(args, limit)
 
-	q := fmt.Sprintf(`SELECT template, entity_kind, confidence, source, created_at
+	q := fmt.Sprintf(`SELECT id, query_template, resource_template, resource_type, COALESCE(venue, ''),
+		strategy, entity_kind, confidence, source, created_at, last_observed_at,
+		COALESCE(example_query, ''), COALESCE(example_resource, '')
 		FROM search_patterns %s
-		ORDER BY confidence DESC, created_at DESC
+		ORDER BY last_observed_at DESC, confidence DESC, id DESC
 		LIMIT ?`, where)
 
 	rows, err := db.Query(q, args...)
@@ -244,34 +239,16 @@ func List(db *sql.DB, f ListFilter) ([]Pattern, error) {
 
 	out := make([]Pattern, 0)
 	for rows.Next() {
-		var (
-			templateStr string
-			kind        string
-			confidence  int
-			source      string
-			createdAt   time.Time
-		)
-		if err := rows.Scan(&templateStr, &kind, &confidence, &source, &createdAt); err != nil {
+		var p Pattern
+		var lastObs sql.NullTime
+		if err := rows.Scan(&p.ID, &p.QueryTemplate, &p.ResourceTemplate, &p.ResourceType, &p.Venue,
+			&p.Strategy, &p.EntityKind, &p.Confidence, &p.Source, &p.CreatedAt, &lastObs,
+			&p.ExampleQuery, &p.ExampleResource); err != nil {
 			return nil, fmt.Errorf("patterns.List scan: %w", err)
 		}
-		var p Pattern
-		if err := decodeTemplate(templateStr, &p); err != nil {
-			// Malformed envelope: skip rather than fail the whole list.
-			continue
-		}
-		p.EntityKind = kind
-		p.Confidence = confidence
-		p.Source = source
-		p.CreatedAt = createdAt
-		// Post-decode filters that need the envelope's contents:
-		if f.Strategy != "" && p.Strategy != f.Strategy {
-			continue
-		}
-		if f.ResourceType != "" && p.ResourceType != f.ResourceType {
-			continue
-		}
-		if f.Venue != "" && p.Venue != f.Venue {
-			continue
+		if lastObs.Valid {
+			t := lastObs.Time
+			p.LastObservedAt = &t
 		}
 		out = append(out, p)
 	}
@@ -282,8 +259,9 @@ func List(db *sql.DB, f ListFilter) ([]Pattern, error) {
 }
 
 // Forget deletes patterns matching f and returns the count removed.
-// Pass All=true to wipe; otherwise at least one of EntityKind,
-// QueryTemplate, or ResourceTemplate must be set.
+// Pass All=true to delete every row (the kill-switch for the manual
+// CLI surface); otherwise at least one of EntityKind, QueryTemplate,
+// or ResourceTemplate must be set, mirroring store.ForgetLearnings.
 func Forget(db *sql.DB, f ForgetFilter) (int64, error) {
 	if db == nil {
 		return 0, errors.New("patterns.Forget: db is nil")
@@ -291,63 +269,31 @@ func Forget(db *sql.DB, f ForgetFilter) (int64, error) {
 	if !f.All && f.EntityKind == "" && f.QueryTemplate == "" && f.ResourceTemplate == "" {
 		return 0, errors.New("patterns.Forget: pass --all, --entity-kind, --query-template, or --resource-template")
 	}
-	if f.All && f.EntityKind == "" && f.QueryTemplate == "" && f.ResourceTemplate == "" {
-		res, err := db.Exec(`DELETE FROM search_patterns`)
-		if err != nil {
-			return 0, fmt.Errorf("patterns.Forget all: %w", err)
-		}
-		n, _ := res.RowsAffected()
-		return n, nil
-	}
-
-	// EntityKind is the only column directly filterable in the v3
-	// schema; QueryTemplate and ResourceTemplate live inside the JSON
-	// envelope. Do a per-row decode + delete dance.
 	clauses := []string{}
 	args := []any{}
 	if f.EntityKind != "" {
 		clauses = append(clauses, "entity_kind = ?")
 		args = append(args, f.EntityKind)
 	}
-	where := ""
-	if len(clauses) > 0 {
-		where = "WHERE " + strings.Join(clauses, " AND ")
+	if f.QueryTemplate != "" {
+		clauses = append(clauses, "query_template = ?")
+		args = append(args, f.QueryTemplate)
 	}
-	q := fmt.Sprintf(`SELECT template, entity_kind FROM search_patterns %s`, where)
-	rows, err := db.Query(q, args...)
+	if f.ResourceTemplate != "" {
+		clauses = append(clauses, "resource_template = ?")
+		args = append(args, f.ResourceTemplate)
+	}
+	var q string
+	if len(clauses) == 0 {
+		// f.All == true path: wipe everything.
+		q = "DELETE FROM search_patterns"
+	} else {
+		q = "DELETE FROM search_patterns WHERE " + strings.Join(clauses, " AND ")
+	}
+	res, err := db.Exec(q, args...)
 	if err != nil {
-		return 0, fmt.Errorf("patterns.Forget query: %w", err)
+		return 0, fmt.Errorf("patterns.Forget: %w", err)
 	}
-	type toDelete struct{ template, kind string }
-	var victims []toDelete
-	for rows.Next() {
-		var templateStr, kind string
-		if err := rows.Scan(&templateStr, &kind); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("patterns.Forget scan: %w", err)
-		}
-		var p Pattern
-		if err := decodeTemplate(templateStr, &p); err != nil {
-			continue
-		}
-		if f.QueryTemplate != "" && p.QueryTemplate != f.QueryTemplate {
-			continue
-		}
-		if f.ResourceTemplate != "" && p.ResourceTemplate != f.ResourceTemplate {
-			continue
-		}
-		victims = append(victims, toDelete{template: templateStr, kind: kind})
-	}
-	rows.Close()
-	var deleted int64
-	for _, v := range victims {
-		res, err := db.Exec(`DELETE FROM search_patterns WHERE template = ? AND entity_kind = ?`,
-			v.template, v.kind)
-		if err != nil {
-			return deleted, fmt.Errorf("patterns.Forget delete: %w", err)
-		}
-		n, _ := res.RowsAffected()
-		deleted += n
-	}
-	return deleted, nil
+	n, _ := res.RowsAffected()
+	return n, nil
 }

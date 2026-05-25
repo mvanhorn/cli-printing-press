@@ -12,8 +12,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// openTestDB creates a fresh empty SQLite database with the
-// entity_lookups table from the v3 schema.
+// openTestDB creates a fresh empty SQLite database with the canonical
+// entity_lookups table.
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "lookups.db")
@@ -24,12 +24,12 @@ func openTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	if _, err := db.Exec(`
 		CREATE TABLE entity_lookups (
-			canonical TEXT NOT NULL,
-			alias TEXT NOT NULL,
 			kind TEXT NOT NULL,
-			source TEXT,
+			canonical TEXT NOT NULL,
+			value TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'seeded',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE (canonical, alias, kind)
+			PRIMARY KEY (kind, canonical, value)
 		)
 	`); err != nil {
 		t.Fatalf("create entity_lookups: %v", err)
@@ -94,7 +94,7 @@ func TestLookup_TableBackedRoundTrip(t *testing.T) {
 	if !ok || got != "ALP" {
 		t.Errorf("Lookup = (%q, %v), want (\"ALP\", true)", got, ok)
 	}
-	got, ok, err = Lookup(db, "team_code", "alpha") // case-insensitive
+	got, ok, err = Lookup(db, "team_code", "alpha")
 	if err != nil {
 		t.Fatalf("Lookup lowercase: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestUpsert_IdempotentOnSameTriple(t *testing.T) {
 	}
 }
 
-func TestUpsert_DifferentAliasesForSameCanonical(t *testing.T) {
+func TestUpsert_DifferentValuesForSameCanonical(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	if err := Upsert(db, "team_code", "Alpha", "AL", "seeded"); err != nil {
@@ -211,19 +211,19 @@ func TestUpsert_ValidationErrors(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	cases := []struct {
-		name                      string
-		kind, canonical, alias    string
-		expectErrSubstr           string
+		name                   string
+		kind, canonical, value string
+		expectErrSubstr        string
 	}{
 		{"empty kind", "", "Alpha", "ALP", "kind is required"},
 		{"whitespace kind", "  ", "Alpha", "ALP", "kind is required"},
 		{"empty canonical", "team_code", "", "ALP", "canonical is required"},
-		{"empty alias", "team_code", "Alpha", "", "alias is required"},
+		{"empty value", "team_code", "Alpha", "", "value is required"},
 		{"computed kind", "lowercase", "Alpha", "alpha", "computed kind"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Upsert(db, tc.kind, tc.canonical, tc.alias, "taught")
+			err := Upsert(db, tc.kind, tc.canonical, tc.value, "taught")
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.expectErrSubstr)
 			}
@@ -254,9 +254,9 @@ func TestSeedBatch_InsertsAndIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	seeds := []LookupRow{
-		{Kind: "team_code", Canonical: "Alpha", Alias: "ALP", Source: "seeded"},
-		{Kind: "team_code", Canonical: "Bravo", Alias: "BRV", Source: "seeded"},
-		{Kind: "team_long", Canonical: "Alpha", Alias: "Alpha United", Source: "seeded"},
+		{Kind: "team_code", Canonical: "Alpha", Value: "ALP", Source: "seeded"},
+		{Kind: "team_code", Canonical: "Bravo", Value: "BRV", Source: "seeded"},
+		{Kind: "team_long", Canonical: "Alpha", Value: "Alpha United", Source: "seeded"},
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -303,7 +303,7 @@ func TestSeedBatch_DefaultsSource(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	seeds := []LookupRow{
-		{Kind: "team_code", Canonical: "Alpha", Alias: "ALP"}, // empty source
+		{Kind: "team_code", Canonical: "Alpha", Value: "ALP"},
 	}
 	tx, err := db.Begin()
 	if err != nil {

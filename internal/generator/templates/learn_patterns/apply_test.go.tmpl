@@ -30,20 +30,28 @@ func openApplyTestDB(t *testing.T) *sql.DB {
 			PRIMARY KEY (resource_type, id)
 		)`,
 		`CREATE TABLE search_patterns (
-			template TEXT NOT NULL,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_template TEXT NOT NULL,
+			resource_template TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			venue TEXT,
+			strategy TEXT NOT NULL,
 			entity_kind TEXT NOT NULL,
-			confidence INTEGER NOT NULL DEFAULT 0,
-			source TEXT,
+			confidence INTEGER NOT NULL DEFAULT 2,
+			source TEXT NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (template, entity_kind)
+			last_observed_at DATETIME,
+			example_query TEXT,
+			example_resource TEXT
 		)`,
+		`CREATE UNIQUE INDEX idx_patterns_unique ON search_patterns(query_template, resource_template, strategy)`,
 		`CREATE TABLE entity_lookups (
-			canonical TEXT NOT NULL,
-			alias TEXT NOT NULL,
 			kind TEXT NOT NULL,
-			source TEXT,
+			canonical TEXT NOT NULL,
+			value TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'seeded',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE (canonical, alias, kind)
+			PRIMARY KEY (kind, canonical, value)
 		)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -60,10 +68,10 @@ func seedResource(t *testing.T, db *sql.DB, rt, id, data string) {
 	}
 }
 
-func seedLookup(t *testing.T, db *sql.DB, kind, canonical, alias string) {
+func seedLookup(t *testing.T, db *sql.DB, kind, canonical, value string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO entity_lookups (canonical, alias, kind, source) VALUES (?, ?, ?, 'seeded')`,
-		canonical, alias, kind); err != nil {
+	if _, err := db.Exec(`INSERT INTO entity_lookups (kind, canonical, value, source) VALUES (?, ?, ?, 'seeded')`,
+		kind, canonical, value); err != nil {
 		t.Fatalf("seed lookup: %v", err)
 	}
 }
@@ -77,7 +85,7 @@ func TestApply_SubstituteVerified(t *testing.T) {
 	db := openApplyTestDB(t)
 	seedLookup(t, db, "team_code", "Charlie", "CH")
 	seedResource(t, db, "widgets", "PREFIX-CH", `{"title":"Charlie widget"}`)
-	if _, err := Upsert(db, Pattern{
+	if _, _, err := Upsert(db, Pattern{
 		QueryTemplate:    "{entity} widget",
 		ResourceTemplate: "PREFIX-{entity:team_code}",
 		ResourceType:     "widgets",
@@ -113,7 +121,7 @@ func TestApply_SubstituteVerified(t *testing.T) {
 func TestApply_LookupMissNoHit(t *testing.T) {
 	t.Parallel()
 	db := openApplyTestDB(t)
-	if _, err := Upsert(db, Pattern{
+	if _, _, err := Upsert(db, Pattern{
 		QueryTemplate:    "{entity} widget",
 		ResourceTemplate: "PREFIX-{entity:team_code}",
 		ResourceType:     "widgets",
@@ -140,8 +148,7 @@ func TestApply_NoVerifySkipsResourcesLookup(t *testing.T) {
 	t.Parallel()
 	db := openApplyTestDB(t)
 	seedLookup(t, db, "team_code", "Charlie", "CH")
-	// No seeded resource — verify mode would return 0 hits.
-	if _, err := Upsert(db, Pattern{
+	if _, _, err := Upsert(db, Pattern{
 		QueryTemplate:    "{entity} widget",
 		ResourceTemplate: "PREFIX-{entity:team_code}",
 		ResourceType:     "widgets",
@@ -170,7 +177,7 @@ func TestApply_PrefixSearchPattern(t *testing.T) {
 	t.Parallel()
 	db := openApplyTestDB(t)
 	seedResource(t, db, "items", "slug-charlie-foo-318", `{"id":"slug-charlie-foo-318"}`)
-	if _, err := Upsert(db, Pattern{
+	if _, _, err := Upsert(db, Pattern{
 		QueryTemplate:    "{entity} widget",
 		ResourceTemplate: "slug-{entity:lowercase}-foo-*",
 		ResourceType:     "items",
@@ -198,7 +205,7 @@ func TestApply_PrefixSearchPattern(t *testing.T) {
 func TestApply_NoEntitiesNoHits(t *testing.T) {
 	t.Parallel()
 	db := openApplyTestDB(t)
-	if _, err := Upsert(db, Pattern{
+	if _, _, err := Upsert(db, Pattern{
 		QueryTemplate:    "{entity} widget",
 		ResourceTemplate: "PREFIX-{entity:team_code}",
 		ResourceType:     "widgets",
@@ -225,7 +232,7 @@ func TestApply_BelowJaccardThresholdNoHit(t *testing.T) {
 	db := openApplyTestDB(t)
 	seedLookup(t, db, "team_code", "Charlie", "CH")
 	seedResource(t, db, "widgets", "PREFIX-CH", `{}`)
-	if _, err := Upsert(db, Pattern{
+	if _, _, err := Upsert(db, Pattern{
 		QueryTemplate:    "{entity} widget",
 		ResourceTemplate: "PREFIX-{entity:team_code}",
 		ResourceType:     "widgets",
@@ -236,7 +243,6 @@ func TestApply_BelowJaccardThresholdNoHit(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	// Query about Charlie's something else entirely.
 	hits, err := Apply(context.Background(), db, "Charlie election results", "election results", []string{"Charlie"}, Opts{AdditionalKinds: []string{"team_code"}})
 	if err != nil {
 		t.Fatalf("apply: %v", err)

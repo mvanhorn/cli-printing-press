@@ -68,7 +68,7 @@ func initLearn(ctx context.Context, db *sql.DB) error {
 {{- range $kind, $entries := .Learn.EntityLookupSeeds}}
 		{{printf "%q" $kind}}: {
 {{- range $entries}}
-			{Canonical: {{printf "%q" .Canonical}}, Aliases: []string{
+			{Canonical: {{printf "%q" .Canonical}}, Values: []string{
 {{- range $i, $alias := .Aliases}}{{if $i}}, {{end}}{{printf "%q" $alias}}{{end -}}
 			}},
 {{- end}}

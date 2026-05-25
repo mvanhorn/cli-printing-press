@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"{{modulePath}}/internal/learn"
 	"{{modulePath}}/internal/learn/entities"
 	"{{modulePath}}/internal/store"
 )
@@ -66,22 +67,15 @@ func TestTeachCommand_SilentOnSuccess(t *testing.T) {
 		t.Fatalf("reopen db: %v", err)
 	}
 	defer s.Close()
-	rows, err := listLearnings(context.Background(), s.DB(), listLearningsFilter{})
+	rows, err := listLearningsRows(s, store.ListLearningsFilter{})
 	if err != nil {
 		t.Fatalf("listLearnings: %v", err)
 	}
 	if len(rows) != 1 {
 		t.Fatalf("expected one row, got %d (%#v)", len(rows), rows)
 	}
-	found := false
-	for _, id := range rows[0].ResourceIDs {
-		if id == "widget-42" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected widget-42 in resource_ids, got %v", rows[0].ResourceIDs)
+	if rows[0].ResourceID != "widget-42" {
+		t.Errorf("expected resource_id widget-42, got %q", rows[0].ResourceID)
 	}
 }
 
@@ -151,7 +145,7 @@ func TestTeachCommand_RespectsNoLearnEnvVar(t *testing.T) {
 	if _, statErr := os.Stat(dbPath); statErr == nil {
 		s, _ := store.OpenWithContext(context.Background(), dbPath)
 		defer s.Close()
-		rows, _ := listLearnings(context.Background(), s.DB(), listLearningsFilter{})
+		rows, _ := listLearningsRows(s, store.ListLearningsFilter{})
 		if len(rows) != 0 {
 			t.Errorf("NO_LEARN should leave DB empty; got %d rows", len(rows))
 		}
@@ -206,6 +200,26 @@ func TestRecallCommand_FoundAndNotFound(t *testing.T) {
 	}
 }
 
+func TestRecallEnvelopeResultsCarryAliasTarget(t *testing.T) {
+	got := toEnvelopeResults([]learn.Hit{
+		{
+			ResourceID:   "old-id",
+			Action:       store.LearningActionAlias,
+			AliasTarget:  "new-id",
+			Confidence:   3,
+			MatchScore:   1,
+			EntityMatch:  learn.EntityMatchExact,
+			ResourceType: "items",
+		},
+	})
+	if len(got) != 1 {
+		t.Fatalf("want 1 result, got %d", len(got))
+	}
+	if got[0].AliasTarget != "new-id" {
+		t.Fatalf("AliasTarget = %q, want new-id", got[0].AliasTarget)
+	}
+}
+
 func TestRecallCommand_RespectsNoLearnEnvVar(t *testing.T) {
 	home := withTempLearnHome(t)
 	dbPath := filepath.Join(home, "data.db")
@@ -253,8 +267,8 @@ func TestLearningsList_FiltersByQuery(t *testing.T) {
 		t.Fatalf("seed B: %v", err)
 	}
 
-	// Use --json (no --compact) so the resource_ids array isn't
-	// stripped by the agent-allow-list pass in printJSONFiltered.
+	// --json so the row shape isn't stripped by the agent-allow-list
+	// pass in printJSONFiltered.
 	stdout, _, err := runRootArgs(t,
 		"learnings", "list",
 		"--query", "widget",
@@ -271,14 +285,8 @@ func TestLearningsList_FiltersByQuery(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("list filter: want 1 row, got %d (%+v)", len(rows), rows)
 	}
-	hasA := false
-	for _, id := range rows[0].ResourceIDs {
-		if id == "A" {
-			hasA = true
-		}
-	}
-	if !hasA {
-		t.Errorf("expected resource A in filtered row, got %+v", rows[0].ResourceIDs)
+	if rows[0].ResourceID != "A" {
+		t.Errorf("expected resource A in filtered row, got %q", rows[0].ResourceID)
 	}
 }
 
@@ -387,7 +395,7 @@ func TestTeachLookup_HappyPath(t *testing.T) {
 		"teach-lookup",
 		"--kind", "country",
 		"--canonical", "United States",
-		"--alias", "USA",
+		"--value", "USA",
 		"--db", dbPath,
 		"--agent",
 	)

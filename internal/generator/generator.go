@@ -1935,6 +1935,26 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderLearnFiles(); err != nil {
 			return err
 		}
+		// learnings.go ports prediction-goat's canonical Apply engine
+		// (Apply/Recall/UpsertLearning/ListLearnings/ForgetLearnings +
+		// LearnedHit/Applier types + NormalizeQuery/MarshalLearnings
+		// helpers) into the generator's internal/store/ output. The
+		// engine is a method on *store.Store, so it lives next to
+		// store.go rather than under internal/learn/.
+		//
+		// The internal/store directory is created by renderStoreFiles()
+		// later in Generate(), but the learn-emission block runs first.
+		// Ensure the directory exists before writing into it. Idempotent
+		// with the subsequent MkdirAll in renderStoreFiles.
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0o755); err != nil {
+			return fmt.Errorf("creating store dir for learn engine: %w", err)
+		}
+		if err := g.renderTemplate("learnings.go.tmpl", filepath.Join("internal", "store", "learnings.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store learnings engine: %w", err)
+		}
+		if err := g.renderTemplate("learnings_test.go.tmpl", filepath.Join("internal", "store", "learnings_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store learnings engine test: %w", err)
+		}
 		// teach.go and teach_test.go are emitted into internal/cli/
 		// (not the learn package) because they wire cobra commands;
 		// the learn package itself stays cobra-free per the boundary

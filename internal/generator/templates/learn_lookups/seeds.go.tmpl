@@ -9,7 +9,7 @@ import (
 	"fmt"
 )
 
-// SeedConfig is the canonical-+-aliases shape supplied by the consumer
+// SeedConfig is the canonical-+-values shape supplied by the consumer
 // CLI's spec (LearnConfig.EntityLookupSeeds). Use SeedFromConfig to
 // materialize one or many of these into the entity_lookups table on
 // first start (or on every start; INSERT OR IGNORE is idempotent).
@@ -19,7 +19,7 @@ import (
 // shape is denormalized at insert time.
 type SeedConfig struct {
 	Canonical string
-	Aliases   []string
+	Values    []string
 }
 
 // SeedFromConfig walks the supplied per-kind seed map and inserts
@@ -52,21 +52,21 @@ func SeedFromConfig(db *sql.DB, seedsByKind map[string][]SeedConfig) (int, error
 	rows := make([]LookupRow, 0)
 	for kind, seeds := range seedsByKind {
 		for _, s := range seeds {
-			// The canonical itself counts as an alias of itself so a
+			// The canonical itself counts as a value of itself so a
 			// query that types the canonical name resolves back. The
-			// UNIQUE constraint protects against duplicates if the
-			// spec author also lists the canonical in Aliases.
+			// PRIMARY KEY constraint protects against duplicates if the
+			// spec author also lists the canonical in Values.
 			rows = append(rows, LookupRow{
 				Kind:      kind,
 				Canonical: s.Canonical,
-				Alias:     s.Canonical,
+				Value:     s.Canonical,
 				Source:    "seeded",
 			})
-			for _, alias := range s.Aliases {
+			for _, value := range s.Values {
 				rows = append(rows, LookupRow{
 					Kind:      kind,
 					Canonical: s.Canonical,
-					Alias:     alias,
+					Value:     value,
 					Source:    "seeded",
 				})
 			}
