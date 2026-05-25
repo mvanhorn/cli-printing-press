@@ -39,6 +39,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
+| `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 
 ## `info` Extensions
@@ -1006,6 +1007,35 @@ paths:
   /premium/search:
     get:
       x-tier: paid
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-safe-probe`
+
+Marks a mutation endpoint as explicitly safe for the Phase 1.9 reachability gate
+to call once as an optional second probe after the low-risk GET/body capture.
+This extension is consumed by Printing Press skill guidance rather than the Go
+OpenAPI parser; it documents author intent for agents reviewing a resolved spec.
+
+Parsed field: none; consumed by skill guidance only
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Accepts native boolean `true` only.
+- Use only for idempotent or otherwise harmless operations for the real account
+  being used.
+- Absence or any value other than native boolean `true` means mutation probing
+  is not allowed; agents must stop after the GET/body reachability capture.
+
+Example:
+
+```yaml
+paths:
+  /webhooks/test:
+    post:
+      x-pp-safe-probe: true
       responses:
         "200": {description: ok}
 ```
