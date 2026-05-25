@@ -1693,11 +1693,11 @@ func previousStaticSegmentIndex(segments []string, start int) int {
 }
 
 func lastStaticSegmentIndex(segments []string, normalized string) int {
-	for i := len(segments) - 1; i >= 0; i-- {
-		if isPathPlaceholder(segments[i]) {
+	for i, segment := range slices.Backward(segments) {
+		if isPathPlaceholder(segment) {
 			continue
 		}
-		if spec.ToSnakeCase(segments[i]) == normalized {
+		if spec.ToSnakeCase(segment) == normalized {
 			return i
 		}
 	}

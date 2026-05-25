@@ -833,6 +833,12 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if err := WritePatchesIndex(p.OutputDir, runID, version.Version); err != nil {
 		return err
 	}
+	// Emit agentcookie.toml so the user's agentcookie source can ship
+	// per-CLI auth tokens to the sink at tier "explicit-manifest". Skips
+	// cookie-only CLIs and authors with the manual-override marker.
+	if err := WriteAgentcookieManifest(p); err != nil {
+		return err
+	}
 	// Emit MCPB manifest.json next to .printing-press.json. Pass the
 	// in-memory struct so we don't re-read the file we just wrote.
 	return WriteMCPBManifestFromStruct(p.OutputDir, m)

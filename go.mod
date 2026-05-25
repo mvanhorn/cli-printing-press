@@ -21,7 +21,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.2.1 // indirect
-	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc // indirect
+	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/dave/jennifer v1.7.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect

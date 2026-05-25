@@ -4,13 +4,17 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/mvanhorn/agentcookie/pkg/agentcookiesecret"
 )
 
 type Config struct {
@@ -63,6 +67,34 @@ func Load(configPath string) (*Config, error) {
 	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET"); v != "" {
 		cfg.PrintingPressOauth2ClientSecret = v
 		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_SECRET"
+	}
+
+	// agentcookie secrets-bus overrides: per v0.13 wire-format section 11.2,
+	// bus values win over both process env and config-file values. The reader
+	// merges process env internally at lower priority, so this block only
+	// applies values that actually came from the bus (plain or sealed). When
+	// the bus is empty or unreachable, the existing env/config values stand.
+	if busRes, busErr := agentcookiesecret.LoadDetailed("printing-press-oauth2-pp-cli", ""); busErr != nil {
+		if !errors.Is(busErr, agentcookiesecret.ErrInvalidCLIName) {
+			log.Printf("agentcookiesecret: %v; continuing with config + env", busErr)
+		}
+	} else if busRes != nil {
+		var busAuthSources []string
+		if v, ok := busRes.Env["PRINTING_PRESS_OAUTH2_CLIENT_ID"]; ok && v != "" {
+			if src := busRes.Sources["PRINTING_PRESS_OAUTH2_CLIENT_ID"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
+				cfg.PrintingPressOauth2ClientId = v
+				busAuthSources = append(busAuthSources, "PRINTING_PRESS_OAUTH2_CLIENT_ID")
+			}
+		}
+		if v, ok := busRes.Env["PRINTING_PRESS_OAUTH2_CLIENT_SECRET"]; ok && v != "" {
+			if src := busRes.Sources["PRINTING_PRESS_OAUTH2_CLIENT_SECRET"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
+				cfg.PrintingPressOauth2ClientSecret = v
+				busAuthSources = append(busAuthSources, "PRINTING_PRESS_OAUTH2_CLIENT_SECRET")
+			}
+		}
+		if len(busAuthSources) > 0 {
+			cfg.AuthSource = "bus:" + strings.Join(busAuthSources, ",")
+		}
 	}
 
 	// Label config-file-derived credentials so doctor can distinguish

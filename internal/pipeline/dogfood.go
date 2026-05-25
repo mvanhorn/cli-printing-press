@@ -575,14 +575,14 @@ func exampleAdvertisedPath(example string, paths map[string]bool) string {
 		}
 		candidates = append(candidates, candidates[len(candidates)-1]+" "+token)
 	}
-	for i := len(candidates) - 1; i >= 0; i-- {
-		if matchPath(candidates[i], paths) {
-			return candidates[i]
+	for _, candidate := range slices.Backward(candidates) {
+		if matchPath(candidate, paths) {
+			return candidate
 		}
 	}
-	for i := len(candidates) - 1; i >= 0; i-- {
-		if len(leafMatchedPaths(candidates[i], paths)) > 0 {
-			return candidates[i]
+	for _, candidate := range slices.Backward(candidates) {
+		if len(leafMatchedPaths(candidate, paths)) > 0 {
+			return candidate
 		}
 	}
 	if len(candidates) == 0 {

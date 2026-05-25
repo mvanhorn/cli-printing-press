@@ -3005,7 +3005,7 @@ func runReport%d(c apiClient) error {
 
 		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
 	package cli
-	
+
 	func fetchBundle(c apiClient) error {
 		if _, err := c.Get("/bundle/meta"); err != nil {
 			return err
@@ -3016,7 +3016,7 @@ func runReport%d(c apiClient) error {
 	`)
 		writeScorecardFixture(t, dir, "internal/cli/report.go", `
 	package cli
-	
+
 	func runReport(c apiClient) error {
 		return fetchBundle(c)
 	}
