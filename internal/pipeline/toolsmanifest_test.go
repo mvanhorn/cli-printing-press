@@ -320,6 +320,74 @@ func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
 	assert.Equal(t, []string{"code"}, create.Params[0].Aliases)
 }
 
+func TestWriteToolsManifest_NestedBodyParamsMatchPublicSurface(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "rich-body",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"graphql": {
+				Endpoints: map[string]spec.Endpoint{
+					"execute": {
+						Method: "POST",
+						Path:   "/graphql",
+						Body: []spec.Param{
+							{Name: "query", Type: "string", Description: "GraphQL document", Required: true},
+							{Name: "variables", Type: "object", Description: "GraphQL variables"},
+							{
+								Name: "serializerSettings",
+								Type: "object",
+								Fields: []spec.Param{
+									{Name: "includeNulls", Type: "bool", Description: "Include null values"},
+								},
+							},
+							{
+								Name: "queries",
+								Type: "array",
+								Fields: []spec.Param{
+									{Name: "query", Type: "string"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 4)
+	assert.Equal(t, ManifestParam{
+		Name:        "query",
+		Type:        "string",
+		Location:    "body",
+		Description: "GraphQL document",
+		Required:    true,
+	}, got.Tools[0].Params[0])
+	assert.Equal(t, ManifestParam{
+		Name:        "variables",
+		Type:        "object",
+		Location:    "body",
+		Description: "GraphQL variables",
+	}, got.Tools[0].Params[1])
+	assert.Equal(t, ManifestParam{
+		Name:        "serializer-settings-include-nulls",
+		WireName:    "serializerSettings.includeNulls",
+		Type:        "bool",
+		Location:    "body",
+		Description: "Include null values",
+	}, got.Tools[0].Params[2])
+	assert.Equal(t, ManifestParam{
+		Name:     "queries",
+		Type:     "array",
+		Location: "body",
+	}, got.Tools[0].Params[3])
+}
+
 func TestWriteToolsManifest_ParamURLNameUsesWireName(t *testing.T) {
 	dir := t.TempDir()
 	parsed := &spec.APISpec{

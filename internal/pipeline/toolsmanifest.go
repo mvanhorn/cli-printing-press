@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpoverrides"
@@ -398,12 +399,14 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		})
 	}
 
-	// Body params → body.
-	for _, p := range ep.Body {
+	// Body params → body. JSON object bodies use the same nested field
+	// expansion as the generated CLI and MCP tools.
+	for _, bodyParam := range manifestBodyParams(ep) {
+		p := bodyParam.Param
 		name := uniqueManifestParamName(p.PublicInputName(), publicNames)
 		tool.Params = append(tool.Params, ManifestParam{
 			Name:        name,
-			WireName:    manifestWireName(name, p.BodyWireName()),
+			WireName:    manifestWireName(name, bodyParam.WireName),
 			Type:        normalizeParamType(p.Type),
 			Location:    "body",
 			Description: describeParam(p),
@@ -426,6 +429,139 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 	return tool
 }
 
+type manifestBodyParam struct {
+	Param    spec.Param
+	WireName string
+}
+
+const manifestMaxBodyFlagDepth = 3
+
+func manifestBodyParams(ep spec.Endpoint) []manifestBodyParam {
+	if ep.BodyJSONFallback {
+		return nil
+	}
+	if manifestBodyUsesFlatEmission(ep) {
+		params := make([]manifestBodyParam, 0, len(ep.Body))
+		for _, p := range ep.Body {
+			params = append(params, manifestBodyParam{Param: p, WireName: p.BodyWireName()})
+		}
+		return params
+	}
+	body := manifestFlattenCollidingBodyFields(ep.Body)
+	params := make([]manifestBodyParam, 0, len(body))
+	collectManifestBodyParams(&params, body, 0, "", nil)
+	return params
+}
+
+func manifestBodyUsesFlatEmission(ep spec.Endpoint) bool {
+	contentType := strings.TrimSpace(strings.ToLower(ep.RequestContentType))
+	return contentType == "multipart/form-data" || contentType == "application/x-www-form-urlencoded"
+}
+
+func collectManifestBodyParams(params *[]manifestBodyParam, body []spec.Param, depth int, flagPrefix string, bodyPath []string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= manifestMaxBodyFlagDepth {
+				continue
+			}
+			nextPath := append(append([]string(nil), bodyPath...), p.BodyWireName())
+			collectManifestBodyParams(params, p.Fields, depth+1, manifestJoinFlag(flagPrefix, manifestPublicFlagName(p)), nextPath)
+			continue
+		}
+		if flagPrefix != "" {
+			p.FlagName = manifestJoinFlag(flagPrefix, manifestPublicFlagName(p))
+			p.Aliases = nil
+		}
+		wireName := p.BodyWireName()
+		if len(bodyPath) > 0 {
+			wireName = strings.Join(append(append([]string(nil), bodyPath...), p.BodyWireName()), ".")
+		}
+		*params = append(*params, manifestBodyParam{Param: p, WireName: wireName})
+	}
+}
+
+func manifestFlattenCollidingBodyFields(body []spec.Param) []spec.Param {
+	counts := manifestCountBodyLeaves(body, "")
+	for _, n := range counts {
+		if n > 1 {
+			return manifestClearCollidingParents(body, "", counts)
+		}
+	}
+	return body
+}
+
+func manifestCountBodyLeaves(params []spec.Param, prefix string) map[string]int {
+	counts := map[string]int{}
+	var walk func([]spec.Param, string)
+	walk = func(ps []spec.Param, pfx string) {
+		for _, p := range ps {
+			ident := pfx + manifestToCamel(manifestParamIdent(p))
+			if p.Type == "object" && len(p.Fields) > 0 {
+				walk(p.Fields, ident)
+				continue
+			}
+			counts[ident]++
+		}
+	}
+	walk(params, prefix)
+	return counts
+}
+
+func manifestClearCollidingParents(params []spec.Param, prefix string, counts map[string]int) []spec.Param {
+	out := make([]spec.Param, len(params))
+	copy(out, params)
+	for i := range out {
+		p := &out[i]
+		if p.Type != "object" || len(p.Fields) == 0 {
+			continue
+		}
+		ident := prefix + manifestToCamel(manifestParamIdent(*p))
+		if manifestSubtreeHasCollidingLeaf(p.Fields, ident, counts) {
+			p.Fields = nil
+			continue
+		}
+		p.Fields = manifestClearCollidingParents(p.Fields, ident, counts)
+	}
+	return out
+}
+
+func manifestSubtreeHasCollidingLeaf(params []spec.Param, prefix string, counts map[string]int) bool {
+	for _, p := range params {
+		ident := prefix + manifestToCamel(manifestParamIdent(p))
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if manifestSubtreeHasCollidingLeaf(p.Fields, ident, counts) {
+				return true
+			}
+			continue
+		}
+		if counts[ident] > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func manifestParamIdent(p spec.Param) string {
+	if p.IdentName != "" {
+		return p.IdentName
+	}
+	return p.Name
+}
+
+func manifestPublicFlagName(p spec.Param) string {
+	if p.FlagName != "" {
+		return p.FlagName
+	}
+	return manifestFlagName(manifestParamIdent(p))
+}
+
+func manifestJoinFlag(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "-" + name
+}
+
 func uniqueManifestParamName(name string, used map[string]struct{}) string {
 	if name == "" {
 		name = "param"
@@ -441,6 +577,51 @@ func uniqueManifestParamName(name string, used map[string]struct{}) string {
 			return candidate
 		}
 	}
+}
+
+func manifestToCamel(s string) string {
+	s = strings.TrimLeft(s, "$")
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for i, p := range parts {
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	result := strings.Join(parts, "")
+	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
+		result = "V" + result
+	}
+	return result
+}
+
+func manifestFlagName(name string) string {
+	name = strings.TrimLeft(name, "$")
+	var b strings.Builder
+	runes := []rune(name)
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			if b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			continue
+		}
+		if i > 0 && unicode.IsUpper(r) {
+			prev := runes[i-1]
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				b.WriteByte('-')
+			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
+				b.WriteByte('-')
+			}
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	result := b.String()
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	return strings.Trim(result, "-")
 }
 
 // reservedManifestParamNames seeds generator-reserved public names only.

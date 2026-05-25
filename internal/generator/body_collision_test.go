@@ -241,9 +241,9 @@ func TestGenerateRenamesObjectBodyFieldCollidingWithPathParam(t *testing.T) {
 	require.NoError(t, err)
 	mcpSource := string(mcpTools)
 	assert.Contains(t, mcpSource, `mcplib.WithString("id", mcplib.Required(), mcplib.Description("Widget ID"))`)
-	assert.Contains(t, mcpSource, `mcplib.WithString("id-2", mcplib.Required(), mcplib.Description("Linked object"))`)
+	assert.Contains(t, mcpSource, `mcplib.WithString("id-2-name", mcplib.Description("Linked object name"))`)
 	assert.Contains(t, mcpSource, `PublicName: "id", WireName: "id", Location: "path"`)
-	assert.Contains(t, mcpSource, `PublicName: "id-2", WireName: "id", Location: "body"`)
+	assert.Contains(t, mcpSource, `PublicName: "id-2-name", WireName: "name", Location: "body", BodyPath: []string{"id", "name"}`)
 }
 
 // TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent guards the
