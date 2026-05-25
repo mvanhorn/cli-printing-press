@@ -1748,13 +1748,12 @@ default:
 - `redirect_uri`: the redirect URI declared in the spec or auth metadata.
 - `response_type=code` for authorization-code grants, or the spec's documented
   response type for implicit grants.
-- For authorization-code grants, include a safe probe PKCE pair:
-  `code_challenge_method=plain` and
-  `code_challenge=probe_reachability_check_pkce_probe_literal`. The literal
-  challenge is 43 unreserved characters, satisfying the RFC 7636 minimum for a
-  `plain` PKCE verifier/challenge. Providers that do not require PKCE ignore
-  these params; providers that enforce PKCE should advance to the login or
-  consent page instead of returning a false `invalid_request`.
+- For authorization-code grants, include a safe probe PKCE pair using `S256`.
+  Use `probe_reachability_check_pkce_probe_literal` as the code verifier and
+  compute the URL-safe SHA-256 challenge from it. The verifier is 43 unreserved
+  characters, satisfying the RFC 7636 minimum; providers that do not require
+  PKCE ignore these params, and providers that enforce PKCE should advance to
+  the login or consent page instead of returning a false `invalid_request`.
 - `scope`, `audience`, `tenant`, `state`, `prompt`, or other provider-required
   params when the spec or vendor docs require them. Use a benign probe value for
   `state` if required.
@@ -1763,7 +1762,10 @@ Use a redirect-limited GET and inspect the final URL, response body, and
 response class:
 
 ```bash
+PKCE_VERIFIER="probe_reachability_check_pkce_probe_literal"
+PKCE_CHALLENGE=$(printf "%s" "$PKCE_VERIFIER" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
 AUTH_URL="<authorization_url_with_required_query_params>"
+# Add code_challenge_method=S256 and code_challenge=$PKCE_CHALLENGE to AUTH_URL.
 PROBE_BODY_AND_META=$(curl -sS -L --max-redirs 10 -m 15 -w "\n%{http_code} %{url_effective}" -o - "$AUTH_URL" 2>/dev/null)
 PROBE_META=$(printf "%s\n" "$PROBE_BODY_AND_META" | tail -n 1)
 PROBE_BODY=$(printf "%s\n" "$PROBE_BODY_AND_META" | sed '$d')
