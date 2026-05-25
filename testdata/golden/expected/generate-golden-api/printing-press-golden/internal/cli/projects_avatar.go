@@ -9,9 +9,10 @@ import (
 
 func newProjectsAvatarCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "avatar",
-		Short: "Upload avatar for projects",
-		RunE:  parentNoSubcommandRunE(flags),
+		Use:         "avatar",
+		Short:       "Upload avatar for projects",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE:        parentNoSubcommandRunE(flags),
 	}
 
 	cmd.AddCommand(newProjectsAvatarUploadProjectCmd(flags))

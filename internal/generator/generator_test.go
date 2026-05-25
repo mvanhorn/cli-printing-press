@@ -8441,7 +8441,7 @@ func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing
 
 	orders, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "orders.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(orders), "Hidden: true",
+	assert.Regexp(t, `Hidden:\s+true`, string(orders),
 		"raw resource parent must be Hidden so the api browser finds it")
 }
 
@@ -14116,8 +14116,7 @@ func TestToKebab_SnakeCaseInput(t *testing.T) {
 //
 // Templates intentionally NOT in this list because they mutate state
 // or write user-visible files outside the local cache:
-// export.go.tmpl (--output writes user files), share_commands.go.tmpl
-// (snapshot dirs, git pushes), import/sync/feedback/graphql_sync (writes).
+// export.go.tmpl (--output writes user files), import/sync/feedback/graphql_sync (writes).
 func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 	t.Parallel()
 	annotationRE := regexp.MustCompile(`Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`)
@@ -14135,8 +14134,9 @@ func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 		{"agent_context.go.tmpl", 1, "walks cobra tree, emits introspection JSON"},
 		{"api_discovery.go.tmpl", 1, "walks cobra tree, prints help"},
 		{"tail.go.tmpl", 1, "polls API GETs, NDJSON to stdout"},
-		{"jobs.go.tmpl", 2, "list and get; prune is omitted (mutates ledger)"},
-		{"channel_workflow.go.tmpl", 2, "status and generated payment-plan are read-only; workflow parent and archive omitted"},
+		{"jobs.go.tmpl", 3, "parent help, list, and get; prune is omitted (mutates ledger)"},
+		{"channel_workflow.go.tmpl", 3, "parent help, status, and generated payment-plan are read-only; archive omitted"},
+		{"share_commands.go.tmpl", 1, "parent help only; share subcommands write files, local cache, or git state"},
 		{"workflows/pm_stale.go.tmpl", 1, "queries the local store for stale items"},
 		{"workflows/pm_orphans.go.tmpl", 1, "queries the local store for missing fields"},
 		{"workflows/pm_load.go.tmpl", 1, "queries the local store for workload distribution"},
@@ -15179,6 +15179,33 @@ func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(shareSrc),
 		"the share parent shares the same bug class and must wire the helper too")
+}
+
+func TestGenerateParentGroupersEmitReadOnlyAnnotation(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("parent-grouper-readonly")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items", Description: "List items"},
+				"get":  {Method: "GET", Path: "/items/{id}", Description: "Get one item"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	parentSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`, string(parentSrc),
+		"parent groupers must always emit mcp:read-only=true so cobratree/tools-audit treat them as read-only")
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(parentSrc),
+		"test fixture must exercise a parent grouper command, not a promoted single-endpoint command")
 }
 
 func TestGenerateParentCommandShorts_AreAgentGradeForGroupers(t *testing.T) {

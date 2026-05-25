@@ -23,9 +23,10 @@ import (
 
 func newWorkflowCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "workflow",
-		Short: "Compound workflows that combine multiple API operations",
-		RunE:  parentNoSubcommandRunE(flags),
+		Use:         "workflow",
+		Short:       "Compound workflows that combine multiple API operations",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE:        parentNoSubcommandRunE(flags),
 	}
 
 {{- if .SyncEnabled}}
