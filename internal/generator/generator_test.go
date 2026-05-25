@@ -10250,6 +10250,8 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 	require.NoError(t, err)
 
 	assertVerifyEnvConcurrencyPin(t, string(syncGo), naming.CLI(gqlSpec.Name)+"/internal/cliutil", "GraphQL sync.go")
+	assert.Contains(t, string(syncGo), "sinceTS = ts.UTC().Format(time.RFC3339)",
+		"GraphQL sync --since must normalize duration-derived timestamps to UTC before query filters consume them")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
