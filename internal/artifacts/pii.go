@@ -495,12 +495,53 @@ var skippedDirs = map[string]bool{
 
 func isSyntheticPIIPlaceholder(kind, matched string) bool {
 	switch kind {
+	case PIIKindEmail:
+		return isRFCReservedEmail(matched)
+	case PIIKindPhoneUS:
+		return isNANPFictionalPhone(matched)
 	case PIIKindOrderID:
 		return piiplaceholders.IsSyntheticOrderID(matched)
 	case PIIKindASIN:
 		return piiplaceholders.IsSyntheticASIN(matched)
 	case PIIKindPostalAddress:
 		return piiplaceholders.IsSyntheticPostalAddress(matched)
+	default:
+		return false
+	}
+}
+
+func isRFCReservedEmail(matched string) bool {
+	at := strings.LastIndexByte(matched, '@')
+	if at == -1 || at == len(matched)-1 {
+		return false
+	}
+	domain := strings.ToLower(strings.Trim(matched[at+1:], "."))
+	if domain == "example.com" || domain == "example.org" || domain == "example.net" {
+		return true
+	}
+	return strings.HasSuffix(domain, ".example.com") ||
+		strings.HasSuffix(domain, ".example.org") ||
+		strings.HasSuffix(domain, ".example.net") ||
+		strings.HasSuffix(domain, ".example") ||
+		strings.HasSuffix(domain, ".test") ||
+		strings.HasSuffix(domain, ".invalid") ||
+		strings.HasSuffix(domain, ".localhost")
+}
+
+func isNANPFictionalPhone(matched string) bool {
+	var digits strings.Builder
+	for _, r := range matched {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	normalized := digits.String()
+	if len(normalized) == 11 && normalized[0] == '1' {
+		normalized = normalized[1:]
+	}
+	switch len(normalized) {
+	case 10:
+		return normalized[3:6] == "555" && strings.HasPrefix(normalized[6:], "01")
 	default:
 		return false
 	}

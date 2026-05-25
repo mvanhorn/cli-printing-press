@@ -512,10 +512,10 @@ func TestLiveCheck_OutputCap(t *testing.T) {
 }
 
 func TestLiveCheck_OutputSampleRedactsPII(t *testing.T) {
-	got := sampleOutput(`{"name":"Jane Doe","email":"jane@example.com","address":"123 Main Street","id":42,"status":"active"}`)
+	got := sampleOutput(`{"name":"Jane Doe","email":"jane@gmail.com","address":"123 Main Street","id":42,"status":"active"}`)
 
 	require.NotContains(t, got, "Jane Doe")
-	require.NotContains(t, got, "jane@example.com")
+	require.NotContains(t, got, "jane@gmail.com")
 	require.NotContains(t, got, "123 Main Street")
 	require.Contains(t, got, `"name":"<redacted>"`)
 	require.Contains(t, got, `"email":"<redacted>"`)
@@ -532,11 +532,11 @@ func TestLiveCheck_OutputSampleLeavesStructuralJSONUnchanged(t *testing.T) {
 
 func TestLiveCheck_OutputSampleRedactsPIIBeforeTruncatingJSON(t *testing.T) {
 	longNote := strings.Repeat("x", outputSampleMaxBytes)
-	got := sampleOutput(fmt.Sprintf(`{"name":"Jane Doe","email":"jane@example.com","note":%q}`, longNote))
+	got := sampleOutput(fmt.Sprintf(`{"name":"Jane Doe","email":"jane@gmail.com","note":%q}`, longNote))
 
 	require.Contains(t, got, "…[truncated]")
 	require.NotContains(t, got, "Jane Doe")
-	require.NotContains(t, got, "jane@example.com")
+	require.NotContains(t, got, "jane@gmail.com")
 	require.Contains(t, got, `"name":"<redacted>"`)
 	require.Contains(t, got, `"email":"<redacted>"`)
 }
@@ -551,10 +551,10 @@ func TestLiveCheck_OutputSampleRedactsNDJSONAndMixedParts(t *testing.T) {
 }
 
 func TestLiveCheck_OutputSampleRedactsPIIAcrossTruncationBoundary(t *testing.T) {
-	got := sampleOutput(strings.Repeat("x", outputSampleMaxBytes-8) + " jane@example.com")
+	got := sampleOutput(strings.Repeat("x", outputSampleMaxBytes-8) + " jane@gmail.com")
 
 	require.Contains(t, got, "…[truncated]")
-	require.NotContains(t, got, "jane@example.com")
+	require.NotContains(t, got, "jane@gmail.com")
 	require.NotContains(t, got, "jane@")
 	require.Contains(t, got, "<redacted>")
 }
@@ -1078,7 +1078,7 @@ printf 'Hello cookie world\n'
 
 func TestRunOneFeatureCheck_RedactsPIIFromFailureReason(t *testing.T) {
 	binary := buildFakeCLI(t, `#!/usr/bin/env bash
-printf '{"name":"Jane Doe","email":"jane@example.com"}' >&2
+printf '{"name":"Jane Doe","email":"jane@gmail.com"}' >&2
 exit 7
 `)
 	feature := NovelFeature{
@@ -1090,16 +1090,16 @@ exit 7
 
 	require.Equal(t, StatusFail, result.Status)
 	require.NotContains(t, result.Reason, "Jane Doe")
-	require.NotContains(t, result.Reason, "jane@example.com")
+	require.NotContains(t, result.Reason, "jane@gmail.com")
 	require.Contains(t, result.Reason, `"name":"<redacted>"`)
 	require.Contains(t, result.Reason, `"email":"<redacted>"`)
 }
 
 func TestTrimOutput_RedactsPIIBeforeTruncatingFailureReason(t *testing.T) {
-	got := trimOutput(strings.Repeat("x", 290) + " jane@example.com")
+	got := trimOutput(strings.Repeat("x", 290) + " jane@gmail.com")
 
 	require.NotContains(t, got, "jane@")
-	require.NotContains(t, got, "example.com")
+	require.NotContains(t, got, "gmail.com")
 	require.Contains(t, got, "<redacted")
 }
 
