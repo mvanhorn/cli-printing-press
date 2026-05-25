@@ -28,6 +28,8 @@ import (
 
 var As = errors.As
 
+const paginatedGetMaxPages = 100
+
 // noColor is set by the --no-color flag
 var noColor bool
 
@@ -540,7 +542,7 @@ func replacePathParam(path, name, value string) string {
 // endpoint has no per-endpoint header overrides.
 func paginatedGet(ctx context.Context, c interface {
 	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
-}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
+}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
 	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
 	// APIs send offset=0 on the first page.
 	clean := map[string]string{}
@@ -594,18 +596,30 @@ func paginatedGet(ctx context.Context, c interface {
 				if nextCursorPath != "" {
 					if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
 						if token := paginationCursorToken(tokenRaw); token != "" {
+							if page >= paginatedGetMaxPages {
+								emitPaginatedGetMaxPagesWarning()
+								break
+							}
 							clean[cursorParam] = token
 							continue
 						}
 					}
 				}
 
-				// Check has_more. A has-more flag without an extracted cursor
-				// proves truncation but cannot advance the request safely.
+				// Check has_more. Page and offset paginators can advance
+				// client-side; cursor-based APIs still need a body cursor.
 				if hasMoreField != "" {
 					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
 						var more bool
 						if json.Unmarshal(moreRaw, &more) == nil && more {
+							if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, limitParam); ok {
+								if page >= paginatedGetMaxPages {
+									emitPaginatedGetMaxPagesWarning()
+									break
+								}
+								clean[cursorParam] = next
+								continue
+							}
 							emitMissingPaginationCursorWarning(nextCursorPath)
 							break
 						}
@@ -630,6 +644,40 @@ func paginatedGet(ctx context.Context, c interface {
 	}
 	result, _ := json.Marshal(allItems)
 	return json.RawMessage(result), nil
+}
+
+func nextClientSidePaginationCursor(params map[string]string, cursorParam, paginationType, limitParam string) (string, bool) {
+	if cursorParam == "" {
+		return "", false
+	}
+	switch paginationType {
+	case "page":
+		current := params[cursorParam]
+		if current == "" {
+			current = "1"
+		}
+		n, err := strconv.Atoi(current)
+		if err != nil {
+			return "", false
+		}
+		return strconv.Itoa(n + 1), true
+	case "offset":
+		current := params[cursorParam]
+		if current == "" {
+			current = "0"
+		}
+		n, err := strconv.Atoi(current)
+		if err != nil {
+			return "", false
+		}
+		limit, err := strconv.Atoi(params[limitParam])
+		if err != nil || limit <= 0 {
+			return "", false
+		}
+		return strconv.Itoa(n + limit), true
+	default:
+		return "", false
+	}
 }
 
 // Silent page-1 truncation is the worst-possible mode for agents,
@@ -682,6 +730,14 @@ func emitMissingPaginationSignalWarning() {
 		fmt.Fprintf(os.Stderr, "warning: --all requested, but this endpoint does not declare a next cursor or has-more field; returning page 1 only.\n")
 	} else {
 		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_signal_missing","message":"--all requested but this endpoint does not declare a next cursor or has-more field; returning page 1 only"}`+"\n")
+	}
+}
+
+func emitPaginatedGetMaxPagesWarning() {
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: --all reached the %d-page safety limit; returning fetched pages only.\n", paginatedGetMaxPages)
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"max_pages_cap_hit","message":"--all reached the %d-page safety limit; returning fetched pages only"}`+"\n", paginatedGetMaxPages)
 	}
 }
 

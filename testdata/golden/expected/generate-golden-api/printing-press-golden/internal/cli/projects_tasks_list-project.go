@@ -51,7 +51,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 				"priority": fmt.Sprintf("%v", flagPriority),
 				"limit":    fmt.Sprintf("%v", flagLimit),
 				"cursor":   fmt.Sprintf("%v", flagCursor),
-			}, nil, flagAll, "cursor", "", "", cmd.ErrOrStderr())
+			}, nil, flagAll, "cursor", "cursor", "limit", "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
