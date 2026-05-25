@@ -36,6 +36,9 @@ payments:
   plaid                Banking API for account linking, transactions, identity verification, and income
   stripe               Payment processing and financial infrastructure API
 
+productivity:
+  itglue               IT Glue JSON:API surface for organizations, contacts, passwords, configurations, and documents, including the write endpoints needed for MSP automation
+
 project-management:
   asana                Work management and project tracking API
   jira                 Issue tracking and project management API for Jira Cloud
