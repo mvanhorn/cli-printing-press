@@ -3,6 +3,8 @@ package docspec
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -110,6 +112,148 @@ func TestEndpointName(t *testing.T) {
 	assert.Equal(t, "create_users", endpointName("POST", "/v1/users"))
 	assert.Equal(t, "get_users", endpointName("GET", "/v1/users/{id}"))
 	assert.Equal(t, "delete_items", endpointName("DELETE", "/items/{id}"))
+}
+
+func TestPreserveDocumentedEndpointPathsRestoresLLMNormalizedSegments(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"tp-sl": {
+				Endpoints: map[string]spec.Endpoint{
+					"get_pending_tp_sl_order": {
+						Method: "GET",
+						Path:   "/api/v1/futures/tpsl/get_pending_order",
+					},
+				},
+			},
+			"market": {
+				Endpoints: map[string]spec.Endpoint{
+					"get_funding_rate_batch": {
+						Method: "GET",
+						Path:   "/api/v1/futures/market/funding_rate_batch",
+					},
+				},
+			},
+		},
+	}
+
+	preserveDocumentedEndpointPaths(apiSpec, []rawEndpoint{
+		{Method: "GET", Path: "/api/v1/futures/tpsl/get_pending_orders"},
+		{Method: "GET", Path: "/api/v1/futures/market/funding_rate/batch"},
+	})
+
+	assert.Equal(t, "/api/v1/futures/tpsl/get_pending_orders", apiSpec.Resources["tp-sl"].Endpoints["get_pending_tp_sl_order"].Path)
+	assert.Equal(t, "/api/v1/futures/market/funding_rate/batch", apiSpec.Resources["market"].Endpoints["get_funding_rate_batch"].Path)
+}
+
+func TestGenerateFromDocsLLMPreservesDocumentedEndpointPaths(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><body>
+<p>Base URL: https://api.bitunix.com</p>
+<pre>GET /api/v1/futures/tpsl/get_pending_orders</pre>
+<pre>GET /api/v1/futures/market/funding_rate/batch</pre>
+<pre>GET /api/v1/users/{id}</pre>
+</body></html>`))
+	}))
+	defer srv.Close()
+
+	fakeBinDir := t.TempDir()
+	fakeClaude := filepath.Join(fakeBinDir, "claude")
+	require.NoError(t, os.WriteFile(fakeClaude, []byte(`#!/bin/sh
+cat <<'YAML'
+name: bitunix
+description: "CLI for bitunix"
+version: "1.0.0"
+base_url: "https://api.bitunix.com"
+auth:
+  type: "none"
+config:
+  format: "toml"
+  path: "~/.config/bitunix-pp-cli/config.toml"
+resources:
+  tp_sl:
+    description: "Operations on tp_sl"
+    endpoints:
+      get_pending_tp_sl_order:
+        method: GET
+        path: "/api/v1/futures/tpsl/get_pending_order"
+        description: "Get pending TP SL order"
+        params: []
+        response:
+          type: object
+  market:
+    description: "Operations on market"
+    endpoints:
+      get_funding_rate_batch:
+        method: GET
+        path: "/api/v1/futures/market/funding_rate_batch"
+        description: "Get funding rate batch"
+        params: []
+        response:
+          type: object
+  users:
+    description: "Operations on users"
+    endpoints:
+      get_user:
+        method: GET
+        path: "/api/v1/users/{user}"
+        description: "Get user"
+        params:
+          - name: user
+            type: string
+            required: true
+            positional: true
+            description: "stale placeholder"
+        response:
+          type: object
+YAML
+`), 0o755))
+	t.Setenv("PATH", fakeBinDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	apiSpec, err := GenerateFromDocsLLM(srv.URL, "bitunix")
+	require.NoError(t, err)
+
+	assert.Equal(t, "/api/v1/futures/tpsl/get_pending_orders", apiSpec.Resources["tp_sl"].Endpoints["get_pending_tp_sl_order"].Path)
+	assert.Equal(t, "/api/v1/futures/market/funding_rate/batch", apiSpec.Resources["market"].Endpoints["get_funding_rate_batch"].Path)
+	users := apiSpec.Resources["users"].Endpoints["get_user"]
+	assert.Equal(t, "/api/v1/users/{id}", users.Path)
+	require.Len(t, users.Params, 1)
+	assert.Equal(t, "id", users.Params[0].Name)
+	assert.True(t, users.Params[0].Positional)
+}
+
+func TestPreserveDocumentedEndpointPathsLeavesExactAndAmbiguousPaths(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/api/v1/users",
+					},
+					"ambiguous": {
+						Method: "GET",
+						Path:   "/api/v1/orderitems",
+					},
+					"wrong_method": {
+						Method: "POST",
+						Path:   "/api/v1/funding_rate_batch",
+					},
+				},
+			},
+		},
+	}
+
+	preserveDocumentedEndpointPaths(apiSpec, []rawEndpoint{
+		{Method: "GET", Path: "/api/v1/users"},
+		{Method: "GET", Path: "/api/v1/order/item"},
+		{Method: "GET", Path: "/api/v1/order_item"},
+		{Method: "GET", Path: "/api/v1/funding_rate/batch"},
+	})
+
+	assert.Equal(t, "/api/v1/users", apiSpec.Resources["users"].Endpoints["list"].Path)
+	assert.Equal(t, "/api/v1/orderitems", apiSpec.Resources["users"].Endpoints["ambiguous"].Path)
+	assert.Equal(t, "/api/v1/funding_rate_batch", apiSpec.Resources["users"].Endpoints["wrong_method"].Path)
 }
 
 func TestExtractParams(t *testing.T) {
