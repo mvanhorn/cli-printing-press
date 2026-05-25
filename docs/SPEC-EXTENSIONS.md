@@ -35,6 +35,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
 | `x-auth-companion` | `components.securitySchemes.<name>` or `info` | `APISpec.Auth.LoginURL`, `LoginCompleteSelector`, `JWTCarrierCookie` | No |
+| `x-oauth-device-flow` | `components.securitySchemes.<name>` | `APISpec.Auth.OAuth2Grant`, `DeviceAuthorizationURL`, `TokenURL`, `Scopes`, `DefaultClientID` | No |
 | `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
@@ -809,6 +810,47 @@ info:
     login_url: https://www.example.com/account/login
     login_complete_selector: "a[href*=signout]"
     jwt_carrier_cookie: guestsession
+```
+
+### `x-oauth-device-flow`
+
+Declares OAuth 2.0 device authorization grant metadata for CLI-first OAuth
+flows. OpenAPI 3.0 does not have a native `deviceCode` flow, so the Printing
+Press reads this extension from an OAuth2 security scheme and emits a generated
+`auth login --device-code` command plus refresh-token handling.
+
+Parsed fields: `APISpec.Auth.OAuth2Grant=device_code`,
+`APISpec.Auth.DeviceAuthorizationURL`, `APISpec.Auth.TokenURL`,
+`APISpec.Auth.Scopes`, `APISpec.Auth.DefaultClientID`.
+
+Rules:
+
+- Optional. When present, the parser treats the security scheme as a bearer
+  OAuth flow backed by stored access tokens.
+- Must be an object.
+- `deviceAuthorizationUrl` (or `device_authorization_url`) and `tokenUrl` (or
+  `token_url`) are required by `APISpec.Validate()` when
+  `oauth2_grant: device_code`.
+- `scopes` may be a string or list of strings. Lists are sorted for stable
+  generation.
+- `defaultClientId` (or `default_client_id`) is optional. When absent, the
+  generated CLI prompts for `--client-id` or the inferred `<API>_CLIENT_ID`
+  environment variable.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.example.com/common/oauth2/v2.0/devicecode
+        tokenUrl: https://login.example.com/common/oauth2/v2.0/token
+        defaultClientId: public-client-id
+        scopes:
+          - Calendars.Read
+          - Mail.Read
 ```
 
 ### `x-oauth-refresh-token-mechanism`

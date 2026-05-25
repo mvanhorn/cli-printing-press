@@ -19,6 +19,7 @@ metadata:
 ---
 
 # {{.ProseName}} — Printing Press CLI
+{{- $deviceEnvVars := deviceCodeEnvVars .Auth}}
 
 ## Prerequisites: Install the CLI
 
@@ -211,6 +212,20 @@ export {{.Name}}="<your-key>"
 
 Or persist it in `{{$.Config.Path}}`.
 {{- end}}
+{{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
+
+Run `{{.Name}}-pp-cli auth setup` for setup details if needed. Then authenticate:
+
+```bash
+{{- if or .Auth.DefaultClientID (not $deviceEnvVars)}}
+{{.Name}}-pp-cli auth login --device-code
+{{- else}}
+export {{(index $deviceEnvVars 0).Name}}=<client-id>
+{{.Name}}-pp-cli auth login --device-code
+{{- end}}
+```
+
+Open the verification URL, enter the printed user code, and return to the CLI. Tokens are stored locally and refreshed automatically.
 {{- else if eq .Auth.Type "oauth2"}}
 
 Run `{{.Name}}-pp-cli auth setup` for the registration URL and steps (add `--launch` to open the URL). Then authenticate:

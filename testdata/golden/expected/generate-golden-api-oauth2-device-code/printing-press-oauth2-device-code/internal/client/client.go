@@ -22,7 +22,6 @@ import (
 	"printing-press-oauth2-pp-cli/internal/config"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -38,10 +37,6 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
-	// ccMu serializes OAuth2 client_credentials token mints so concurrent
-	// API calls inside the 60s pre-expiry window don't all dial the token
-	// endpoint and race on Config field writes / file persistence.
-	ccMu *sync.Mutex
 }
 
 // APIError carries HTTP status information for structured exit codes.
@@ -70,7 +65,6 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
-		ccMu:       &sync.Mutex{},
 	}
 	// CheckRedirect re-derives auth on each hop. Go's default replays the
 	// original Authorization header verbatim, which breaks nonce-bound
@@ -195,10 +189,6 @@ func binaryResponseHeaderValue(headers map[string]string) (bool, bool) {
 func (c *Client) validateCachedRequestAuth(ctx context.Context) error {
 	if c == nil || c.Config == nil {
 		return nil
-	}
-	clientID, clientSecret := resolveClientCredentials(c.Config)
-	if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
-		return authPlaceholderCredentialError(c.Config)
 	}
 	if authHeaderLooksLikePlaceholderCredential(c.Config.AuthHeader()) {
 		return authPlaceholderCredentialError(c.Config)
@@ -680,31 +670,13 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
-	if c.Config.AccessToken == "" && cliutil.IsVerifyEnv() {
-		c.Config.AccessToken = "mock-token-for-testing"
-		return c.Config.AuthHeader(), nil
-	}
-	// 60s window avoids in-flight requests racing the expiry boundary.
-	// Double-checked lock so only one goroutine mints under contention.
-	if needsClientCredentialsMint(c.Config) {
-		if c.ccMu == nil {
-			c.ccMu = &sync.Mutex{}
+	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
+		if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
+			return "", authPlaceholderCredentialError(c.Config)
 		}
-		c.ccMu.Lock()
-		if needsClientCredentialsMint(c.Config) {
-			clientID, clientSecret := resolveClientCredentials(c.Config)
-			if clientID != "" && clientSecret != "" {
-				if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
-					c.ccMu.Unlock()
-					return "", authPlaceholderCredentialError(c.Config)
-				}
-				if err := c.mintClientCredentials(ctx, clientID, clientSecret); err != nil {
-					c.ccMu.Unlock()
-					return "", err
-				}
-			}
+		if err := c.refreshAccessToken(ctx); err != nil {
+			return "", err
 		}
-		c.ccMu.Unlock()
 	}
 	authHeader := c.Config.AuthHeader()
 	if authHeaderLooksLikePlaceholderCredential(authHeader) {
@@ -759,7 +731,7 @@ func looksLikeCredentialPlaceholder(value string) bool {
 }
 
 func authPlaceholderCredentialError(cfg *config.Config) error {
-	return authPlaceholderCredentialErrorWithSetup(cfg, "printing-press-oauth2-pp-cli auth login or printing-press-oauth2-pp-cli auth set-token <token>")
+	return authPlaceholderCredentialErrorWithSetup(cfg, "printing-press-oauth2-pp-cli auth login --device-code or printing-press-oauth2-pp-cli auth set-token <token>")
 }
 
 func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {
@@ -768,95 +740,6 @@ func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) e
 		location = cfg.Path
 	}
 	return fmt.Errorf("%w configured in %s; set a real token with: %s", ErrPlaceholderCredential, location, setup)
-}
-
-func needsClientCredentialsMint(cfg *config.Config) bool {
-	if cfg.AccessToken == "" {
-		return true
-	}
-	if cfg.TokenExpiry.IsZero() {
-		return false
-	}
-	return time.Until(cfg.TokenExpiry) < 60*time.Second
-}
-
-// resolveClientCredentials prefers what was passed to `auth login` (cached
-// in config) and falls back to environment variables so first-time users
-// can ship without a separate login step.
-func resolveClientCredentials(cfg *config.Config) (string, string) {
-	id := cfg.ClientID
-	secret := cfg.ClientSecret
-	if id == "" {
-		id = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID")
-	}
-	if secret == "" {
-		secret = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET")
-	}
-	return id, secret
-}
-
-func resolveClientCredentialsScope() string {
-	if scope := os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
-		return scope
-	}
-	return "read write"
-}
-
-func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecret string) error {
-	tokenURL := ""
-	if c.Config != nil {
-		tokenURL = c.Config.TokenURL
-	}
-	if tokenURL == "" {
-		tokenURL = "https://api.cc.example/oauth/token"
-	}
-	if tokenURL == "" {
-		return nil
-	}
-	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
-	}
-	if scope := resolveClientCredentialsScope(); scope != "" {
-		form.Set("scope", scope)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("building token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("calling token endpoint: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("OAuth client_credentials mint: HTTP %d: %s", resp.StatusCode, cliutil.SanitizeErrorBody(string(body)))
-	}
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return fmt.Errorf("parsing token response: %w", err)
-	}
-	if tokenResp.AccessToken == "" {
-		return fmt.Errorf("OAuth client_credentials mint: response missing access_token")
-	}
-	// Guard against non-conformant servers that return expires_in: 0.
-	// A zero-duration expiry resolves to time.Now(), which authHeader()
-	// then treats as expired, causing every request to re-mint in a loop.
-	expiry := time.Time{}
-	if tokenResp.ExpiresIn > 0 {
-		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	}
-	c.Config.AuthHeaderVal = "" // force AuthHeader() to use the new AccessToken path
-	if err := c.Config.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, "", expiry); err != nil {
-		return fmt.Errorf("saving minted token: %w", err)
-	}
-	return nil
 }
 
 func (c *Client) refreshAccessToken(ctx context.Context) error {
@@ -869,7 +752,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 
 	tokenURL := c.Config.TokenURL
 	if tokenURL == "" {
-		tokenURL = "https://api.cc.example/oauth/token"
+		tokenURL = "https://login.device.example/oauth/token"
 	}
 
 	params := url.Values{
@@ -1094,7 +977,6 @@ func (c *Client) maskCredentialText(text string, extraCredentials ...string) str
 		addCredential(c.Config.AccessToken)
 		addCredential(c.Config.RefreshToken)
 		addCredential(c.Config.ClientSecret)
-		addCredential(c.Config.PrintingPressOauth2ClientSecret)
 	}
 	sort.SliceStable(masks, func(i, j int) bool {
 		return len(masks[i].needle) > len(masks[j].needle)

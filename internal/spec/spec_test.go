@@ -1199,6 +1199,22 @@ func TestOAuth2GrantValidate(t *testing.T) {
 		{name: "explicit authorization_code is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}},
 		{name: "client_credentials is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}},
 		{
+			name: "device_code is valid with required endpoints",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "https://login.example.com/token",
+			},
+		},
+		{
+			name: "device_code allows localhost http endpoints",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "http://localhost:8080/device",
+				TokenURL:               "http://127.0.0.1:8080/token",
+			},
+		},
+		{
 			// Cross-checking against AuthConfig.Type is intentionally skipped
 			// (the field is meaningless for non-oauth2 types but harmless to
 			// declare); validation should accept this combo.
@@ -1206,9 +1222,32 @@ func TestOAuth2GrantValidate(t *testing.T) {
 			cfg:  AuthConfig{Type: "api_key", OAuth2Grant: OAuth2GrantClientCredentials},
 		},
 		{
-			name:    "unknown grant is rejected with valid set in error",
-			cfg:     AuthConfig{OAuth2Grant: "device_code"},
-			wantErr: `auth.oauth2_grant "device_code" is not recognized`,
+			name:    "device_code requires device endpoint",
+			cfg:     AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode, TokenURL: "https://login.example.com/token"},
+			wantErr: `auth.device_authorization_url is required`,
+		},
+		{
+			name:    "device_code requires token endpoint",
+			cfg:     AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode, DeviceAuthorizationURL: "https://login.example.com/device"},
+			wantErr: `auth.token_url is required`,
+		},
+		{
+			name: "device_code rejects plain http device endpoint",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "http://login.example.com/device",
+				TokenURL:               "https://login.example.com/token",
+			},
+			wantErr: `auth.device_authorization_url uses http://`,
+		},
+		{
+			name: "device_code rejects plain http token endpoint",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "http://login.example.com/token",
+			},
+			wantErr: `auth.token_url uses http://`,
 		},
 		{
 			name:    "typo (e.g. authorisation) is rejected",
@@ -1332,6 +1371,7 @@ func TestEffectiveOAuth2Grant(t *testing.T) {
 		{name: "whitespace-only also defaults", cfg: AuthConfig{OAuth2Grant: "   "}, want: OAuth2GrantAuthorizationCode},
 		{name: "explicit authorization_code round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}, want: OAuth2GrantAuthorizationCode},
 		{name: "client_credentials round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}, want: OAuth2GrantClientCredentials},
+		{name: "device_code round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode}, want: OAuth2GrantDeviceCode},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

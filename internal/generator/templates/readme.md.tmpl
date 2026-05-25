@@ -1,5 +1,6 @@
 # {{.ProseName}} CLI
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
+{{- $deviceEnvVars := deviceCodeEnvVars .Auth}}
 {{- if and .Narrative .Narrative.Headline}}
 
 **{{.Narrative.Headline}}**
@@ -98,6 +99,18 @@ The bundle reuses your local browser session — set it up first if you haven't:
 
 ```bash
 {{.Name}}-pp-cli auth login --chrome
+```
+{{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
+
+The bundle reuses your local OAuth tokens — authenticate first if you haven't:
+
+```bash
+{{- if or .Auth.DefaultClientID (not $deviceEnvVars)}}
+{{.Name}}-pp-cli auth login --device-code
+{{- else}}
+export {{(index $deviceEnvVars 0).Name}}=<client-id>
+{{.Name}}-pp-cli auth login --device-code
+{{- end}}
 ```
 {{- else if eq .Auth.Type "oauth2"}}
 
@@ -208,6 +221,22 @@ export {{.Name}}="<paste-your-key>"
 
 You can also persist this in your config file at `{{$.Config.Path}}`.
 {{- end}}
+{{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
+
+### 2. Authenticate
+
+Authorize with the OAuth2 device-code flow:
+
+```bash
+{{- if or .Auth.DefaultClientID (not $deviceEnvVars)}}
+{{.Name}}-pp-cli auth login --device-code
+{{- else}}
+export {{(index $deviceEnvVars 0).Name}}=<client-id>
+{{.Name}}-pp-cli auth login --device-code
+{{- end}}
+```
+
+Open the verification URL, enter the printed user code, and return to the CLI. Your tokens are stored locally and refreshed automatically.
 {{- else if eq .Auth.Type "oauth2"}}
 
 ### 2. Authenticate
