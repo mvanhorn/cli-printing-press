@@ -4,3 +4,4 @@ sync-walker-golden/internal/cli/sync.go
 sync-walker-golden/internal/cli/promoted_games.go
 sync-walker-golden/internal/cli/promoted_leagues.go
 sync-walker-golden/internal/store/store.go
+sync-walker-golden/internal/store/extras.go

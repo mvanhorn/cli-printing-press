@@ -13,6 +13,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpoverrides"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/paramnames"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -398,12 +399,14 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		})
 	}
 
-	// Body params → body.
-	for _, p := range ep.Body {
+	// Body params → body. JSON object bodies use the same nested field
+	// expansion as the generated CLI and MCP tools.
+	for _, bodyParam := range manifestBodyParams(ep) {
+		p := bodyParam.Param
 		name := uniqueManifestParamName(p.PublicInputName(), publicNames)
 		tool.Params = append(tool.Params, ManifestParam{
 			Name:        name,
-			WireName:    manifestWireName(name, p.BodyWireName()),
+			WireName:    manifestWireName(name, bodyParam.WireName),
 			Type:        normalizeParamType(p.Type),
 			Location:    "body",
 			Description: describeParam(p),
@@ -424,6 +427,57 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 	}
 
 	return tool
+}
+
+type manifestBodyParam struct {
+	Param    spec.Param
+	WireName string
+}
+
+const manifestMaxBodyFlagDepth = 3
+
+func manifestBodyParams(ep spec.Endpoint) []manifestBodyParam {
+	if ep.BodyJSONFallback {
+		return nil
+	}
+	if manifestBodyUsesFlatEmission(ep) {
+		params := make([]manifestBodyParam, 0, len(ep.Body))
+		for _, p := range ep.Body {
+			params = append(params, manifestBodyParam{Param: p, WireName: p.BodyWireName()})
+		}
+		return params
+	}
+	body := paramnames.FlattenCollidingBodyFields(ep.Body)
+	params := make([]manifestBodyParam, 0, len(body))
+	collectManifestBodyParams(&params, body, 0, "", nil)
+	return params
+}
+
+func manifestBodyUsesFlatEmission(ep spec.Endpoint) bool {
+	contentType := strings.TrimSpace(strings.ToLower(ep.RequestContentType))
+	return contentType == "multipart/form-data" || contentType == "application/x-www-form-urlencoded"
+}
+
+func collectManifestBodyParams(params *[]manifestBodyParam, body []spec.Param, depth int, flagPrefix string, bodyPath []string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= manifestMaxBodyFlagDepth {
+				continue
+			}
+			nextPath := append(append([]string(nil), bodyPath...), p.BodyWireName())
+			collectManifestBodyParams(params, p.Fields, depth+1, naming.JoinFlag(flagPrefix, paramnames.PublicFlagName(p)), nextPath)
+			continue
+		}
+		if flagPrefix != "" {
+			p.FlagName = naming.JoinFlag(flagPrefix, paramnames.PublicFlagName(p))
+			p.Aliases = nil
+		}
+		wireName := p.BodyWireName()
+		if len(bodyPath) > 0 {
+			wireName = strings.Join(append(append([]string(nil), bodyPath...), p.BodyWireName()), ".")
+		}
+		*params = append(*params, manifestBodyParam{Param: p, WireName: wireName})
+	}
 }
 
 func uniqueManifestParamName(name string, used map[string]struct{}) string {

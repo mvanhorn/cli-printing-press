@@ -159,6 +159,7 @@ func TestRecall_ConfidenceFloor(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
 	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 1)
+	// MinConfidence=3 should drop the row.
 	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig(), MinConfidence: 3})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
@@ -173,6 +174,7 @@ func TestRecall_EntityMismatchFiltersToMismatches(t *testing.T) {
 	db := openRecallTestDB(t)
 	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
 	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
+	// Query a different entity entirely.
 	got, err := Recall(context.Background(), db, "Bravo widget", Opts{
 		EntityConfig:       testConfig(),
 		DebugMismatches:    true,

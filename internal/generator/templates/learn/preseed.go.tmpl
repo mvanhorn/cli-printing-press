@@ -227,7 +227,7 @@ func dedupRows(in []PreseedRow) []PreseedRow {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]PreseedRow, 0, len(in))
 	for _, r := range in {
-		key := r.QueryPattern + "|" + r.ResourceType + "|" + r.ResourceID
+		key := r.QueryPattern + "|" + r.ResourceID
 		if _, dup := seen[key]; dup {
 			continue
 		}

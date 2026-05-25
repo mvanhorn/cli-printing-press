@@ -470,6 +470,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 
 	const maxRetries = 3
 	var lastErr error
+	refreshedAfterUnauthorized := false
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// Proactive rate limiting — wait before sending
@@ -579,6 +580,23 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			Path:       c.displayURL(path, authHeader),
 			StatusCode: resp.StatusCode,
 			Body:       c.maskCredentialText(truncateBody(respBody), authHeader),
+		}
+		// OAuth providers can expire tokens early, omit expires_in, or disagree
+		// with the local clock. Retry one unauthorized response after refreshing.
+		if resp.StatusCode == http.StatusUnauthorized && !refreshedAfterUnauthorized && attempt < maxRetries && c.Config != nil && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
+			if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
+				return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+			}
+			if err := c.refreshAccessToken(ctx); err != nil {
+				return nil, resp.StatusCode, fmt.Errorf("refreshing access token after 401: %w", err)
+			}
+			authHeader = c.Config.AuthHeader()
+			if authHeaderLooksLikePlaceholderCredential(authHeader) {
+				return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+			}
+			refreshedAfterUnauthorized = true
+			lastErr = apiErr
+			continue
 		}
 
 		// Rate limited - adjust adaptive limiter and retry
@@ -876,7 +894,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, truncateBody(body))
+		return fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, cliutil.SanitizeErrorBody(truncateBody(body)))
 	}
 
 	var tokenResp struct {
@@ -901,6 +919,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
 
+	c.Config.AuthHeaderVal = "" // force AuthHeader() to use the refreshed AccessToken path
 	if err := c.Config.SaveTokens(c.Config.ClientID, c.Config.ClientSecret, tokenResp.AccessToken, refreshToken, expiry); err != nil {
 		return fmt.Errorf("saving refreshed token: %w", err)
 	}

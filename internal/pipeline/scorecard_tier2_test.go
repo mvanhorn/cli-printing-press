@@ -565,10 +565,10 @@ func init() {
 }
 `)
 
-		assert.Equal(t, 0, scoreTypeFidelity(dir))
+		assert.Equal(t, 0, scoreTypeFidelity(dir, nil))
 	})
 
-	t.Run("scores string id flags and clear descriptions high", func(t *testing.T) {
+	t.Run("scores string id flags but does not treat them as full type fidelity", func(t *testing.T) {
 		dir := t.TempDir()
 
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
@@ -582,9 +582,243 @@ func init() {
 }
 `)
 
-		// +2 ID flags are all StringVar, +1 descriptions average well over 5 words,
-		// +1 no dummy `var _ = strings.ReplaceAll` / `var _ = fmt.Sprintf` guards.
-		assert.Equal(t, 4, scoreTypeFidelity(dir))
+		// String-backed ID flags are valid, but by themselves they do not prove
+		// positional arg handling or typed parser coverage.
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores mixed id flag typing with partial credit", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAfterID, "after-id", "", "Snowflake ID")
+	cmd.Flags().IntVar(&flagChannelID, "channel-id", 0, "Channel ID")
+}
+`)
+
+		assert.Equal(t, 1, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("caps multiple cobra arg validator types at two points", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+var getCmd = &cobra.Command{
+	Use:  "get <event_id>",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		_ = args[0]
+		return nil
+	},
+}
+
+var exportCmd = &cobra.Command{
+	Use:  "export <resource> [id]",
+	Args: cobra.MinimumNArgs(1),
+}
+
+var searchCmd = &cobra.Command{
+	Use:  "search [query]",
+	Args: cobra.MaximumNArgs(1),
+}
+`)
+
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores typed parser coverage plus positional command shape high", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:  "get <calendar_id> <event_id>",
+		Args: cobra.ExactArgs(2),
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/graph/events.go", `
+package graph
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID      string `+"`json:\"id\"`"+`
+	Subject string `+"`json:\"subject\"`"+`
+}
+
+func ParseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/graph/events_test.go", `
+package graph
+
+import "testing"
+
+func TestParseGraphEvent(t *testing.T) {
+	_, _ = ParseGraphEvent([]byte("{}"))
+}
+`)
+
+		assert.Equal(t, 4, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores typed parser coverage plus generated positional use without Args validators", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "get <event_id>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			_ = args[0]
+			return nil
+		},
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events.go", `
+package cli
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID      string `+"`json:\"id\"`"+`
+	Subject string `+"`json:\"subject\"`"+`
+}
+
+func parseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events_test.go", `
+package cli
+
+import "testing"
+
+func TestParseGraphEvent(t *testing.T) {
+	_, _ = parseGraphEvent([]byte("{}"))
+}
+`)
+
+		assert.Equal(t, 4, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score spec positionals without CLI positional handling", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+func init() {
+	cmd := eventsCmd
+	cmd.Flags().StringVar(&flagQuery, "query", "", "Text query")
+}
+`)
+
+		assert.Equal(t, 0, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score advertised positionals without consuming or validating args", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "get <event_id>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
+	}
+}
+`)
+
+		assert.Equal(t, 0, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score parser-looking code without tests that mention the parser", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:  "get <event_id>",
+		Args: cobra.ExactArgs(1),
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events.go", `
+package cli
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID string `+"`json:\"id\"`"+`
+}
+
+func parseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events_test.go", `
+package cli
+
+import "testing"
+
+func TestSomethingElse(t *testing.T) {}
+`)
+
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores generic string flags without typed parsing low", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagQuery, "query", "", "Text query used to filter the list of messages")
+	cmd.Flags().StringVar(&flagStatus, "status", "", "Status value used to filter the list of messages")
+}
+`)
+
+		assert.LessOrEqual(t, scoreTypeFidelity(dir, nil), 2)
 	})
 }
 
@@ -616,10 +850,8 @@ func TestIsIDFlagName(t *testing.T) {
 }
 
 // TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine pins that consecutive
-// Flags() calls capture their own description, not the next call's flag name.
-// Before the [^,\n]+ fix the greedy [^,]+ spanned newlines, so the first
-// flag's description capture pulled in the next flag's name (a short kebab
-// token) and dragged the description word-count average below the >5 threshold.
+// Flags() calls stay isolated when detecting ID flag names. Before the
+// [^,\n]+ fix the greedy [^,]+ spanned newlines into the next Flags() call.
 func TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine(t *testing.T) {
 	dir := t.TempDir()
 	writeScorecardFixture(t, dir, "internal/cli/messages.go", `
@@ -627,19 +859,13 @@ package cli
 
 func init() {
 	cmd := messagesCmd
-	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
-	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
-	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+	cmd.Flags().StringVar(&flagAlphaID, "alpha-id", "", "Alpha identifier")
+	cmd.Flags().StringVar(&flagBravoID, "bravo-id", "", "Bravo identifier")
+	cmd.Flags().StringVar(&flagCharlieID, "charlie-id", "", "Charlie identifier")
 }
 `)
 
-	// With the pre-fix greedy [^,]+ regex, the description capture for "alpha"
-	// absorbed the next line's `&flagBravo` token, dragging descWordCount and
-	// descCount so the average dropped to ≤5, costing the +1 description point
-	// (score 3). The bounded [^,\n]+ regex keeps each capture inside its own
-	// statement: +2 ID-flag check (no ID flags), +1 descriptions averaging >5
-	// words, +1 no dummy guards = 4.
-	assert.Equal(t, 4, scoreTypeFidelity(dir))
+	assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
 }
 
 // TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired pins that
@@ -675,7 +901,7 @@ func init() {
 }
 `)
 
-	assert.Equal(t, scoreTypeFidelity(withoutRequired), scoreTypeFidelity(withRequired),
+	assert.Equal(t, scoreTypeFidelity(withoutRequired, nil), scoreTypeFidelity(withRequired, nil),
 		"MarkFlagRequired must not earn a scorecard point — it is forbidden by the SKILL's verify-friendly RunE rule")
 }
 
@@ -3699,6 +3925,48 @@ resources:
 		info, err := loadOpenAPISpec(specPath)
 		assert.NoError(t, err)
 		assert.NotNil(t, info, "internal-YAML branch should produce a non-nil info")
+	})
+
+	t.Run("OpenAPI path templates count positional parameters", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "path-params.json")
+		writeScorecardFixture(t, dir, "path-params.json", `{
+  "openapi": "3.0.3",
+  "paths": {
+    "/calendars/{calendar_id}/events/{event_id}": {},
+    "/submissions/CIK{cik}.json": {}
+  }
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Equal(t, 3, info.PositionalParamCount)
+	})
+
+	t.Run("internal YAML positional params count from Param metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "internal-positionals.yaml")
+		writeScorecardFixture(t, dir, "internal-positionals.yaml", `name: example
+display_name: Example API
+description: Test fixture for internal positional metadata
+base_url: https://api.example.com
+resources:
+  events:
+    description: Events
+    endpoints:
+      get:
+        method: GET
+        path: /events/{event_id}
+        params:
+          - name: event_id
+            type: string
+            required: true
+            positional: true
+`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, info.PositionalParamCount)
 	})
 
 	t.Run("leading whitespace before { still detects JSON", func(t *testing.T) {

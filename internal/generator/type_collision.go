@@ -3,6 +3,7 @@ package generator
 import (
 	"fmt"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -31,15 +32,25 @@ func uniquifyTypeFieldIdentifiers(fields []spec.TypeField) []spec.TypeField {
 	used := make(map[string]struct{}, len(fields))
 	out := make([]spec.TypeField, len(fields))
 	for i, f := range fields {
-		f.IdentName = "" // ensure idempotence when callers reuse the same APISpec
-		ident := toCamel(f.Name)
+		baseName := f.IdentName
+		if baseName == "" {
+			baseName = naming.ASCIIFold(f.Name)
+		}
+		if baseName == "" {
+			baseName = f.Name
+		}
+		f.IdentName = ""
+		if baseName != f.Name {
+			f.IdentName = baseName
+		}
+		ident := toCamel(baseName)
 		if _, taken := used[ident]; !taken {
 			used[ident] = struct{}{}
 			out[i] = f
 			continue
 		}
 		for n := 2; ; n++ {
-			candidate := fmt.Sprintf("%s_%d", f.Name, n)
+			candidate := fmt.Sprintf("%s_%d", baseName, n)
 			candidateIdent := toCamel(candidate)
 			if _, taken := used[candidateIdent]; !taken {
 				f.IdentName = candidate

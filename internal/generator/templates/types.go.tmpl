@@ -8,7 +8,10 @@ import "encoding/json"
 {{range $name, $typeDef := .Types}}
 type {{safeTypeName $name}} struct {
 {{- range $typeDef.Fields}}
-	{{camel (typeFieldIdent .)}} {{goStructType .Type}} `json:"{{.Name}}"`
+{{- with typeFieldJSONTagComment .}}
+	// JSON tag: {{.}}
+{{- end}}
+	{{camel (typeFieldIdent .)}} {{goStructType .Type}} `json:"{{.Name}}{{if .OmitEmpty}},omitempty{{end}}"`
 {{- end}}
 }
 {{end}}

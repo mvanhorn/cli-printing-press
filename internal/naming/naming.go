@@ -180,6 +180,63 @@ func Snake(s string) string {
 	return result.String()
 }
 
+// JoinFlag appends a nested flag segment to an existing public flag prefix.
+func JoinFlag(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "-" + name
+}
+
+// CamelIdentifier converts a public or wire name into the CamelCase identifier
+// suffix used by generated Go variables and structs.
+func CamelIdentifier(s string) string {
+	s = strings.TrimLeft(s, "$")
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for i, p := range parts {
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	result := strings.Join(parts, "")
+	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
+		result = "V" + result
+	}
+	return result
+}
+
+// FlagName converts an identifier-ish input into the kebab-case public flag
+// shape used by generated CLIs and MCP tools.
+func FlagName(name string) string {
+	name = strings.TrimLeft(name, "$")
+	var b strings.Builder
+	runes := []rune(name)
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			if b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			continue
+		}
+		if i > 0 && unicode.IsUpper(r) {
+			prev := runes[i-1]
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				b.WriteByte('-')
+			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
+				b.WriteByte('-')
+			}
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	result := b.String()
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	return strings.Trim(result, "-")
+}
+
 // EnvVarPlaceholder derives the placeholder name from an environment variable.
 // DUB_TOKEN -> token, STYTCH_PROJECT_ID -> project_id.
 func EnvVarPlaceholder(envVar string) string {

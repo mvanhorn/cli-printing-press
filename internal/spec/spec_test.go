@@ -133,6 +133,296 @@ resources:
 	assert.Equal(t, []string{"c"}, param.Aliases)
 }
 
+func TestParseBodyObjectSchema(t *testing.T) {
+	yamlSpec := []byte(`
+name: rich-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      execute:
+        method: POST
+        path: /graphql
+        body:
+          type: object
+          required: [query]
+          properties:
+            query:
+              type: string
+              description: GraphQL document
+            variables:
+              type: object
+              description: GraphQL variables
+            options:
+              type: object
+              properties:
+                includeNulls:
+                  type: bool
+                  required: true
+            queries:
+              type: array
+              items:
+                type: object
+                required: [query]
+                properties:
+                  query:
+                    type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["queries"].Endpoints["execute"].Body
+	require.Len(t, body, 4)
+	assert.Equal(t, Param{Name: "query", Type: "string", Required: true, Description: "GraphQL document"}, body[0])
+	assert.Equal(t, "variables", body[1].Name)
+	assert.Equal(t, "object", body[1].Type)
+	assert.Equal(t, "GraphQL variables", body[1].Description)
+	require.Len(t, body[2].Fields, 1)
+	assert.Equal(t, "includeNulls", body[2].Fields[0].Name)
+	assert.Equal(t, "bool", body[2].Fields[0].Type)
+	assert.True(t, body[2].Fields[0].Required)
+	assert.Equal(t, "queries", body[3].Name)
+	assert.Equal(t, "array", body[3].Type)
+	require.Len(t, body[3].Fields, 1)
+	assert.Equal(t, "query", body[3].Fields[0].Name)
+	assert.True(t, body[3].Fields[0].Required)
+}
+
+func TestParseCSVArrayBodyParamMetadata(t *testing.T) {
+	yamlSpec := []byte(`
+name: csv-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          - name: attendees
+            type: string_csv_array
+            item_type: object
+            item_template:
+              emailAddress:
+                address: $value
+              type: required
+            description: Attendees
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	param := s.Resources["messages"].Endpoints["send"].Body[0]
+	assert.Equal(t, "string_csv_array", param.Type)
+	assert.Equal(t, "object", param.ItemType)
+	require.IsType(t, map[string]any{}, param.ItemTemplate)
+	template := param.ItemTemplate.(map[string]any)
+	assert.Equal(t, "required", template["type"])
+}
+
+func TestParseCSVArrayObjectTemplateMustBeObject(t *testing.T) {
+	yamlSpec := []byte(`
+name: csv-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          - name: attendees
+            type: string_csv_array
+            item_type: object
+            item_template:
+              - not
+              - an
+              - object
+`)
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "string_csv_array item_type object requires item_template to be an object")
+}
+
+func TestParseBodySchemaWrapper(t *testing.T) {
+	yamlSpec := []byte(`
+name: rich-body-wrapper
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  datasets:
+    endpoints:
+      execute:
+        method: POST
+        path: /datasets/{datasetId}/executeQueries
+        params:
+          - name: datasetId
+            type: string
+            positional: true
+        body:
+          schema:
+            type: object
+            properties:
+              queries:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    query:
+                      type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	endpoint := s.Resources["datasets"].Endpoints["execute"]
+	assert.True(t, endpoint.BodySet)
+	require.Len(t, endpoint.Body, 1)
+	assert.Equal(t, "queries", endpoint.Body[0].Name)
+	assert.Equal(t, "array", endpoint.Body[0].Type)
+	require.Len(t, endpoint.Body[0].Fields, 1)
+	assert.Equal(t, "query", endpoint.Body[0].Fields[0].Name)
+}
+
+func TestParseBodyObjectSchemaJSON(t *testing.T) {
+	jsonSpec := []byte(`{
+  "name": "rich-body-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "graphql": {
+      "endpoints": {
+        "execute": {
+          "method": "POST",
+          "path": "/graphql",
+          "body": {
+            "properties": {
+              "query": {"type": "string", "required": true},
+              "variables": {"type": "object"}
+            }
+          }
+        }
+      }
+    }
+  }
+}`)
+	s, err := ParseBytes(jsonSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["graphql"].Endpoints["execute"].Body
+	require.Len(t, body, 2)
+	assert.Equal(t, "query", body[0].Name)
+	assert.True(t, body[0].Required)
+	assert.Equal(t, "variables", body[1].Name)
+	assert.Equal(t, "object", body[1].Type)
+}
+
+func TestParseBodyNullIsEmpty(t *testing.T) {
+	yamlSpec := []byte(`
+name: null-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      yamlNull:
+        method: POST
+        path: /graphql
+        body: ~
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, s.Resources["queries"].Endpoints["yamlNull"].Body)
+
+	jsonSpec := []byte(`{
+  "name": "null-body-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "queries": {
+      "endpoints": {
+        "jsonNull": {
+          "method": "POST",
+          "path": "/graphql",
+          "body": null
+        }
+      }
+    }
+  }
+}`)
+	s, err = ParseBytes(jsonSpec)
+	require.NoError(t, err)
+	assert.Empty(t, s.Resources["queries"].Endpoints["jsonNull"].Body)
+}
+
+func TestParseBodyObjectSchemaMalformed(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "missing properties",
+			body: `
+          schema:
+            type: object`,
+			want: "must declare properties",
+		},
+		{
+			name: "non object root",
+			body: `
+          type: string
+          properties:
+            query:
+              type: string`,
+			want: `must be type object with properties, got "string"`,
+		},
+		{
+			name: "non mapping properties",
+			body: `
+          properties:
+            - query`,
+			want: "body properties at line",
+		},
+		{
+			name: "non mapping property schema",
+			body: `
+          properties:
+            tags:
+              - string`,
+			want: `body property "tags"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yamlSpec := []byte(`
+name: malformed-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      execute:
+        method: POST
+        path: /graphql
+        body:` + tt.body + `
+`)
+			_, err := ParseBytes(yamlSpec)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			assert.NotContains(t, err.Error(), "cannot unmarshal")
+		})
+	}
+}
+
 func TestValidateNameRequiresKebabSlug(t *testing.T) {
 	baseSpec := func(name string) []byte {
 		return []byte(`
@@ -1140,6 +1430,22 @@ func TestOAuth2GrantValidate(t *testing.T) {
 		{name: "explicit authorization_code is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}},
 		{name: "client_credentials is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}},
 		{
+			name: "device_code is valid with required endpoints",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "https://login.example.com/token",
+			},
+		},
+		{
+			name: "device_code allows localhost http endpoints",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "http://localhost:8080/device",
+				TokenURL:               "http://127.0.0.1:8080/token",
+			},
+		},
+		{
 			// Cross-checking against AuthConfig.Type is intentionally skipped
 			// (the field is meaningless for non-oauth2 types but harmless to
 			// declare); validation should accept this combo.
@@ -1147,9 +1453,32 @@ func TestOAuth2GrantValidate(t *testing.T) {
 			cfg:  AuthConfig{Type: "api_key", OAuth2Grant: OAuth2GrantClientCredentials},
 		},
 		{
-			name:    "unknown grant is rejected with valid set in error",
-			cfg:     AuthConfig{OAuth2Grant: "device_code"},
-			wantErr: `auth.oauth2_grant "device_code" is not recognized`,
+			name:    "device_code requires device endpoint",
+			cfg:     AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode, TokenURL: "https://login.example.com/token"},
+			wantErr: `auth.device_authorization_url is required`,
+		},
+		{
+			name:    "device_code requires token endpoint",
+			cfg:     AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode, DeviceAuthorizationURL: "https://login.example.com/device"},
+			wantErr: `auth.token_url is required`,
+		},
+		{
+			name: "device_code rejects plain http device endpoint",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "http://login.example.com/device",
+				TokenURL:               "https://login.example.com/token",
+			},
+			wantErr: `auth.device_authorization_url uses http://`,
+		},
+		{
+			name: "device_code rejects plain http token endpoint",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "http://login.example.com/token",
+			},
+			wantErr: `auth.token_url uses http://`,
 		},
 		{
 			name:    "typo (e.g. authorisation) is rejected",
@@ -1273,6 +1602,7 @@ func TestEffectiveOAuth2Grant(t *testing.T) {
 		{name: "whitespace-only also defaults", cfg: AuthConfig{OAuth2Grant: "   "}, want: OAuth2GrantAuthorizationCode},
 		{name: "explicit authorization_code round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}, want: OAuth2GrantAuthorizationCode},
 		{name: "client_credentials round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}, want: OAuth2GrantClientCredentials},
+		{name: "device_code round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode}, want: OAuth2GrantDeviceCode},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3250,6 +3580,48 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.ErrorContains(t, badMethod.Validate(), "html response_format is only supported")
 }
 
+func TestEffectiveDataSourceStrategy(t *testing.T) {
+	t.Parallel()
+
+	resource := Resource{DataSourceStrategy: DataSourceStrategyLocal}
+	endpoint := Endpoint{}
+	assert.Equal(t, DataSourceStrategyLocal, EffectiveDataSourceStrategy(resource, endpoint))
+
+	endpoint.DataSourceStrategy = DataSourceStrategyLive
+	assert.Equal(t, DataSourceStrategyLive, EffectiveDataSourceStrategy(resource, endpoint))
+
+	assert.Equal(t, DataSourceStrategyAuto, EffectiveDataSourceStrategy(Resource{}, Endpoint{}))
+}
+
+func TestValidateDataSourceStrategy(t *testing.T) {
+	t.Parallel()
+
+	base := APISpec{
+		Name:    "strategy",
+		Version: "1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    AuthConfig{Type: "none"},
+		Config:  ConfigSpec{Format: "toml", Path: "~/.config/strategy/config.toml"},
+		Resources: map[string]Resource{
+			"items": {
+				DataSourceStrategy: DataSourceStrategyAuto,
+				Endpoints: map[string]Endpoint{
+					"list": {Method: "GET", Path: "/items", DataSourceStrategy: DataSourceStrategyLocal},
+				},
+			},
+		},
+	}
+	require.NoError(t, base.Validate())
+
+	bad := base
+	items := bad.Resources["items"]
+	endpoint := items.Endpoints["list"]
+	endpoint.DataSourceStrategy = "remote"
+	items.Endpoints["list"] = endpoint
+	bad.Resources["items"] = items
+	require.ErrorContains(t, bad.Validate(), "data_source_strategy")
+}
+
 func TestHTMLExtract_EmbeddedJSONMode(t *testing.T) {
 	t.Parallel()
 
@@ -3747,6 +4119,72 @@ resources:
         method: GET
         path: /health
         description: Health
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("login resource is rejected for oauth2 auth-code CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: oauth2
+  authorization_url: https://auth.example.com/oauth/authorize
+  token_url: https://auth.example.com/oauth/token
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"login"`)
+		assert.Contains(t, err.Error(), "shadow framework cobra command")
+	})
+
+	t.Run("login resource is rejected for bearer auth-code CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  authorization_url: https://auth.example.com/oauth/authorize
+  token_url: https://auth.example.com/oauth/token
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"login"`)
+		assert.Contains(t, err.Error(), "shadow framework cobra command")
+	})
+
+	t.Run("login resource passes for non-oauth CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
 `
 		_, err := ParseBytes([]byte(input))
 		require.NoError(t, err)

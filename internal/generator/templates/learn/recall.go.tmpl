@@ -97,7 +97,7 @@ type Opts struct {
 }
 
 // Recall is the entity-aware read path. db is the open *sql.DB
-// pointing at the local SQLite store with the v3 learn schema; the
+// pointing at the local SQLite store with the v6 learn schema; the
 // per-CLI entity extractor config is carried on opts.EntityConfig
 // (nil falls back to entities.NewConfig() defaults).
 //

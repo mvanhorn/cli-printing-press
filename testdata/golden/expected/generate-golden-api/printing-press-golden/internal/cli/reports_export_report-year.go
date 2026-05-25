@@ -36,7 +36,7 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 				"X-Printing-Press-Binary-Response": "true",
 			}
 			params := map[string]string{}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "export", false, path, params, headerOverrides, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "export", false, path, params, headerOverrides, cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

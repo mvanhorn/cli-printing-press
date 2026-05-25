@@ -143,15 +143,15 @@ func TestReservedCobraUseNames_CobratreeIsSubset(t *testing.T) {
 }
 
 // TestReservedCobraUseNames_NoSubcommandLeakage pins the negative: common
-// subcommand verbs (e.g., `auth login`, `jobs list`) must not appear in
+// subcommand-only verbs (e.g., `jobs list`) must not appear in
 // ReservedCobraUseNames. Including them would falsely block very common
 // API resource names. The constructor-resolution mechanism excludes them
 // by construction; this test fails loudly if that mechanism regresses.
 func TestReservedCobraUseNames_NoSubcommandLeakage(t *testing.T) {
-	subcommandVerbs := []string{"login", "logout", "list", "archive", "prune", "refresh", "save", "use"}
+	subcommandVerbs := []string{"logout", "list", "archive", "prune", "refresh", "save", "use"}
 	for _, verb := range subcommandVerbs {
 		if _, ok := spec.ReservedCobraUseNames[verb]; ok {
-			t.Errorf("ReservedCobraUseNames contains %q which is a subcommand verb (e.g., `auth login`, `jobs list`); blocking it would falsely reject very common API resource names.", verb)
+			t.Errorf("ReservedCobraUseNames contains %q which is a subcommand-only verb (e.g., `jobs list`); blocking it would falsely reject very common API resource names.", verb)
 		}
 	}
 }

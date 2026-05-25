@@ -39,6 +39,7 @@ const (
 	extensionAuthDescription       = "x-auth-description"
 	extensionAuthCompanion         = "x-auth-companion"
 	extensionAuthSubtype           = "x-auth-subtype"
+	extensionOAuthDeviceFlow       = "x-oauth-device-flow"
 	extensionOAuthRefreshTokenMech = "x-oauth-refresh-token-mechanism"
 	extensionSpeakeasyExample      = "x-speakeasy-example"
 	extensionTierRouting           = "x-tier-routing"
@@ -46,6 +47,7 @@ const (
 	extensionRateClass             = "x-rate-class"
 	extensionMCP                   = "x-mcp"
 	extensionLegacyMCP             = "mcp"
+	extensionDataSourceStrategy    = "x-data-source-strategy"
 	extensionCache                 = "x-cache"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionParamURLName          = "x-url-name"
@@ -1352,6 +1354,7 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	if auth == nil || len(extensions) == 0 {
 		return
 	}
+	applyOAuthDeviceFlowExtension(auth, extensions)
 	if envVars := stringListExtension(extensions, extensionAuthEnvVars); len(envVars) > 0 {
 		applyAuthEnvVars(auth, envVars)
 	} else if len(auth.EnvVars) == 1 {
@@ -1389,6 +1392,72 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 		auth.RefreshTokenMechanism = mech
 	}
 	applyAuthCompanionExtension(auth, extensions)
+}
+
+// applyOAuthDeviceFlowExtension reads x-oauth-device-flow from an OAuth2
+// security scheme. OpenAPI 3.0 has no native device-code flow field, so the
+// extension carries the device authorization endpoint plus token metadata.
+func applyOAuthDeviceFlowExtension(auth *spec.AuthConfig, extensions map[string]any) {
+	if auth == nil || len(extensions) == 0 {
+		return
+	}
+	raw, ok := extensions[extensionOAuthDeviceFlow]
+	if !ok {
+		return
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		warnf("%s is malformed: expected an object", extensionOAuthDeviceFlow)
+		return
+	}
+	auth.Type = "bearer_token"
+	auth.Header = "Authorization"
+	auth.OAuth2Grant = spec.OAuth2GrantDeviceCode
+	auth.EnvVars = nil
+	auth.EnvVarSpecs = nil
+	if v := stringObjectField(obj, "deviceAuthorizationUrl", "device_authorization_url"); v != "" {
+		auth.DeviceAuthorizationURL = v
+	}
+	if v := stringObjectField(obj, "tokenUrl", "token_url"); v != "" {
+		auth.TokenURL = v
+	}
+	if v := stringObjectField(obj, "defaultClientId", "default_client_id"); v != "" {
+		auth.DefaultClientID = v
+	}
+	if scopes := stringListObjectField(obj, "scopes"); len(scopes) > 0 {
+		auth.Scopes = scopes
+		sort.Strings(auth.Scopes)
+	}
+}
+
+func stringObjectField(obj map[string]any, names ...string) string {
+	for _, name := range names {
+		raw, ok := obj[name]
+		if !ok {
+			continue
+		}
+		s, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		if s = strings.TrimSpace(s); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func stringListObjectField(obj map[string]any, names ...string) []string {
+	for _, name := range names {
+		raw, ok := obj[name]
+		if !ok {
+			continue
+		}
+		if values := stringListValue(raw); len(values) > 0 {
+			return values
+		}
+	}
+	return nil
 }
 
 // applyAuthCompanionExtension reads x-auth-companion from a map of OpenAPI
@@ -1481,6 +1550,23 @@ func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
 			},
 		}
 		auth.EnvVars = []string{auth.EnvVarSpecs[0].Name, auth.EnvVarSpecs[1].Name}
+		return
+	}
+	if auth.OAuth2Grant == spec.OAuth2GrantDeviceCode {
+		envVarName := envPrefix + "_CLIENT_ID"
+		if len(auth.EnvVars) > 0 && strings.TrimSpace(auth.EnvVars[0]) != "" {
+			envVarName = strings.TrimSpace(auth.EnvVars[0])
+		}
+		auth.EnvVarSpecs = []spec.AuthEnvVar{
+			{
+				Name:      envVarName,
+				Kind:      spec.AuthEnvVarKindAuthFlowInput,
+				Required:  strings.TrimSpace(auth.DefaultClientID) == "",
+				Sensitive: false,
+				Inferred:  true,
+			},
+		}
+		auth.EnvVars = []string{auth.EnvVarSpecs[0].Name}
 		return
 	}
 	if len(auth.EnvVars) == 0 {
@@ -1736,6 +1822,10 @@ func stringListExtension(extensions map[string]any, name string) []string {
 	if !ok {
 		return nil
 	}
+	return stringListValue(value)
+}
+
+func stringListValue(value any) []string {
 	switch v := value.(type) {
 	case []string:
 		var out []string
@@ -2501,6 +2591,9 @@ func schemePriorityScore(scheme *openapi3.SecurityScheme) int {
 		}
 		return schemePriorityHTTPOther
 	case "oauth2":
+		if _, ok := scheme.Extensions[extensionOAuthDeviceFlow]; ok {
+			return schemePriorityOAuth2AuthCode
+		}
 		if scheme.Flows != nil {
 			if cc := scheme.Flows.ClientCredentials; cc != nil && strings.TrimSpace(cc.TokenURL) != "" {
 				return schemePriorityOAuth2CC
@@ -2643,6 +2736,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		pathResourceIDOverride := readPathItemResourceID(pathItem, path)
 		pathCritical := readPathItemCritical(pathItem, path)
 		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
+		pathDataSourceStrategy := readDataSourceStrategyExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 
 		methods := make([]string, 0, len(operations))
 		for method := range operations {
@@ -2741,6 +2835,10 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if endpoint.Tier == "" {
 				endpoint.Tier = pathTier
+			}
+			endpoint.DataSourceStrategy = readDataSourceStrategyExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			if endpoint.DataSourceStrategy == "" {
+				endpoint.DataSourceStrategy = pathDataSourceStrategy
 			}
 
 			// Namespace the inline-item synthetic name with the resource so
@@ -3965,6 +4063,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	if len(properties) == 0 {
 		return nil, "", false, false, false
 	}
+	inferCSVArrays := isJSONContentType(requestContentType)
 
 	names := make([]string, 0, len(properties))
 	for name := range properties {
@@ -3991,12 +4090,15 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		}
 		param := spec.Param{
 			Name:        name,
-			Type:        mapSchemaType(paramSchema),
+			Type:        mapBodyParamType(paramSchema, inferCSVArrays),
 			Required:    isRequired(required, name),
 			Description: description,
-			Fields:      mapBodyFields(paramSchema),
+			Fields:      mapBodyFields(paramSchema, inferCSVArrays),
 			Enum:        schemaEnum(paramSchema),
 			Format:      schemaFormat(paramSchema),
+		}
+		if inferCSVArrays && isStringArraySchema(paramSchema) {
+			param.ItemType = "string"
 		}
 		if paramSchema != nil && paramSchema.Default != nil {
 			param.Default = paramSchema.Default
@@ -4136,13 +4238,13 @@ func hasDirectObjectShape(schema *openapi3.Schema) bool {
 	return len(schema.Properties) > 0
 }
 
-func mapBodyFields(schema *openapi3.Schema) []spec.Param {
-	return mapBodyFieldsDepth(schema, map[*openapi3.Schema]struct{}{}, 0)
+func mapBodyFields(schema *openapi3.Schema, inferCSVArrays bool) []spec.Param {
+	return mapBodyFieldsDepth(schema, inferCSVArrays, map[*openapi3.Schema]struct{}{}, 0)
 }
 
 const maxBodyFieldDepth = 8
 
-func mapBodyFieldsDepth(schema *openapi3.Schema, visited map[*openapi3.Schema]struct{}, depth int) []spec.Param {
+func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited map[*openapi3.Schema]struct{}, depth int) []spec.Param {
 	if !isObjectSchema(schema) || len(schema.Properties) == 0 {
 		return nil
 	}
@@ -4178,13 +4280,16 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, visited map[*openapi3.Schema]st
 		}
 		fields = append(fields, spec.Param{
 			Name:        name,
-			Type:        mapSchemaType(fieldSchema),
+			Type:        mapBodyParamType(fieldSchema, inferCSVArrays),
 			Required:    isRequired(required, name),
 			Description: description,
-			Fields:      mapBodyFieldsDepth(fieldSchema, visited, depth+1),
+			Fields:      mapBodyFieldsDepth(fieldSchema, inferCSVArrays, visited, depth+1),
 			Enum:        schemaEnum(fieldSchema),
 			Format:      schemaFormat(fieldSchema),
 		})
+		if inferCSVArrays && isStringArraySchema(fieldSchema) {
+			fields[len(fields)-1].ItemType = "string"
+		}
 	}
 	return fields
 }
@@ -4510,6 +4615,31 @@ func readTierExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(tier)
+}
+
+func readDataSourceStrategyExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionDataSourceStrategy]
+	if !ok || raw == nil {
+		return ""
+	}
+	strategy, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionDataSourceStrategy, raw)
+		return ""
+	}
+	strategy = strings.ToLower(strings.TrimSpace(strategy))
+	switch strategy {
+	case spec.DataSourceStrategyAuto, spec.DataSourceStrategyLocal, spec.DataSourceStrategyLive:
+		return strategy
+	case "":
+		return ""
+	default:
+		warnf("%s: %s must be one of auto, local, live, got %q; ignoring", context, extensionDataSourceStrategy, strategy)
+		return ""
+	}
 }
 
 // readWalkerExtension reads the `x-pp-sync-walker` extension from an
@@ -5087,6 +5217,21 @@ func mapSchemaType(schema *openapi3.Schema) string {
 	default:
 		return "string"
 	}
+}
+
+func mapBodyParamType(schema *openapi3.Schema, inferCSVArrays bool) string {
+	if inferCSVArrays && isStringArraySchema(schema) {
+		return "string_csv_array"
+	}
+	return mapSchemaType(schema)
+}
+
+func isStringArraySchema(schema *openapi3.Schema) bool {
+	if schema == nil || schema.Type == nil || !schema.Type.Includes(openapi3.TypeArray) {
+		return false
+	}
+	itemSchema := schemaRefValue(schema.Items)
+	return itemSchema != nil && itemSchema.Type != nil && itemSchema.Type.Includes(openapi3.TypeString)
 }
 
 func schemaEnum(schema *openapi3.Schema) []string {

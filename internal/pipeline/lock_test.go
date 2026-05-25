@@ -862,7 +862,7 @@ func TestPromoteWorkingCLI_PIIGateHaltsOnPendingFindings(t *testing.T) {
 	// Plant real-shaped PII in a high-risk file
 	require.NoError(t, os.WriteFile(
 		filepath.Join(workDir, "data.json"),
-		[]byte(`{"customer_email": "alice@example.com"}`+"\n"),
+		[]byte(`{"customer_email": "alice@gmail.com"}`+"\n"),
 		0o644,
 	))
 
@@ -895,7 +895,7 @@ func TestPromoteWorkingCLI_PIIGatePassesWithValidAccepts(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(workDir, "data.json"),
-		[]byte(`{"customer_email": "alice@example.com"}`+"\n"),
+		[]byte(`{"customer_email": "alice@gmail.com"}`+"\n"),
 		0o644,
 	))
 
@@ -997,7 +997,7 @@ func TestPromoteWorkingCLI_PIIGateHaltsOnGateFailure(t *testing.T) {
 	// duplicate-rationale gate (threshold 5)
 	var lines []string
 	for i := range 6 {
-		lines = append(lines, `"email": "user`+string(rune('A'+i))+`@example.com"`)
+		lines = append(lines, `"email": "user`+string(rune('A'+i))+`@gmail.com"`)
 	}
 	require.NoError(t, os.WriteFile(
 		filepath.Join(workDir, "data.json"),

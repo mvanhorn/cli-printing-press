@@ -1086,6 +1086,99 @@ components:
 	}, byName["mixed"].Fields)
 }
 
+func TestParseStringArrayRequestBodyFieldsAsCSVArrays(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Mail API
+  version: 1.0.0
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schedules:
+                  type: array
+                  items:
+                    type: string
+                  description: Schedules to query
+                metadata:
+                  type: object
+                  properties:
+                    categories:
+                      type: array
+                      items:
+                        type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/messages")
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "string_csv_array", byName["schedules"].Type)
+	assert.Equal(t, "string", byName["schedules"].ItemType)
+	require.Len(t, byName["metadata"].Fields, 1)
+	assert.Equal(t, "categories", byName["metadata"].Fields[0].Name)
+	assert.Equal(t, "string_csv_array", byName["metadata"].Fields[0].Type)
+	assert.Equal(t, "string", byName["metadata"].Fields[0].ItemType)
+}
+
+func TestParseFormStringArrayRequestBodyKeepsArrayType(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Mail API
+  version: 1.0.0
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/messages")
+	require.Len(t, endpoint.Body, 1)
+	assert.Equal(t, "tags", endpoint.Body[0].Name)
+	assert.Equal(t, "array", endpoint.Body[0].Type)
+	assert.Empty(t, endpoint.Body[0].ItemType)
+}
+
 const dataEnvelopeAllOfTaskSpec = `
 openapi: 3.0.3
 info:
@@ -1525,6 +1618,132 @@ paths:
 	assert.Equal(t, "https://example.auth0.com/oauth/token", parsed.Auth.TokenURL)
 	assert.Empty(t, parsed.Auth.AuthorizationURL, "client_credentials flow has no user redirect")
 	assert.Equal(t, []string{"read:users", "write:users"}, parsed.Auth.Scopes)
+}
+
+func TestParseOAuth2DeviceCodeExtension(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: DeviceAuth
+  version: "1.0"
+servers:
+  - url: https://graph.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.example.com/common/oauth2/v2.0/devicecode
+        tokenUrl: https://login.example.com/common/oauth2/v2.0/token
+        defaultClientId: public-client-id
+        scopes:
+          - Calendars.Read
+          - Mail.Read
+paths:
+  /me/messages:
+    get:
+      operationId: list messages
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, spec.OAuth2GrantDeviceCode, parsed.Auth.OAuth2Grant)
+	assert.Equal(t, "https://login.example.com/common/oauth2/v2.0/devicecode", parsed.Auth.DeviceAuthorizationURL)
+	assert.Equal(t, "https://login.example.com/common/oauth2/v2.0/token", parsed.Auth.TokenURL)
+	assert.Equal(t, "public-client-id", parsed.Auth.DefaultClientID)
+	assert.Equal(t, []string{"Calendars.Read", "Mail.Read"}, parsed.Auth.Scopes)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, "DEVICEAUTH_CLIENT_ID", parsed.Auth.EnvVarSpecs[0].Name)
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Required, "default client id makes env override optional")
+}
+
+func TestParseOAuth2DeviceCodeExtensionPreservesExplicitClientIDEnvVar(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: DeviceAuth
+  version: "1.0"
+servers:
+  - url: https://graph.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-auth-env-vars:
+        - CUSTOM_CLIENT_ID
+      x-oauth-device-flow:
+        device_authorization_url: https://login.example.com/device
+        token_url: https://login.example.com/token
+        scopes:
+          - Mail.Read
+          - Calendars.Read
+paths:
+  /me/messages:
+    get:
+      operationId: list messages
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, spec.OAuth2GrantDeviceCode, parsed.Auth.OAuth2Grant)
+	assert.Equal(t, "https://login.example.com/device", parsed.Auth.DeviceAuthorizationURL)
+	assert.Equal(t, "https://login.example.com/token", parsed.Auth.TokenURL)
+	assert.Equal(t, []string{"Calendars.Read", "Mail.Read"}, parsed.Auth.Scopes)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, "CUSTOM_CLIENT_ID", parsed.Auth.EnvVarSpecs[0].Name)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Required, "no spec default makes client ID required")
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+}
+
+func TestParseOAuth2DeviceCodeSecuritySchemeBeatsAPIKeyAlternative(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: DeviceAuth
+  version: "1.0"
+servers:
+  - url: https://graph.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2Device:
+      type: oauth2
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.example.com/device
+        tokenUrl: https://login.example.com/token
+paths:
+  /me/messages:
+    get:
+      operationId: list messages
+      security:
+        - ApiKeyAuth: []
+        - OAuth2Device: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "OAuth2Device", parsed.Auth.Scheme)
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, spec.OAuth2GrantDeviceCode, parsed.Auth.OAuth2Grant)
 }
 
 func TestParseOAuth2BothFlowsPrefersClientCredentials(t *testing.T) {
@@ -5666,6 +5885,58 @@ paths:
 			assert.Equal(t, tt.wantCritical, ep.Critical, "Critical")
 		})
 	}
+}
+
+func TestParseDataSourceStrategyExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /reports:
+    x-data-source-strategy: local
+    get:
+      operationId: listReports
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+  /reports/live:
+    x-data-source-strategy: local
+    get:
+      operationId: listLiveReports
+      x-data-source-strategy: live
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	local := findEndpoint(t, parsed, "/reports")
+	require.Equal(t, spec.DataSourceStrategyLocal, local.DataSourceStrategy)
+
+	live := findEndpoint(t, parsed, "/reports/live")
+	require.Equal(t, spec.DataSourceStrategyLive, live.DataSourceStrategy)
 }
 
 func TestParseIDFieldFallbackChain(t *testing.T) {
