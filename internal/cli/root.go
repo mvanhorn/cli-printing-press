@@ -1908,6 +1908,7 @@ func loadResearchSources(gen *generator.Generator, researchDir string) []pipelin
 			})
 		}
 		if research.NovelFeaturesBuilt != nil {
+			manifestNovel = []pipeline.NovelFeatureManifest{}
 			for _, nf := range *research.NovelFeaturesBuilt {
 				manifestNovel = append(manifestNovel, pipeline.NovelFeatureManifest{
 					Name:        nf.Name,

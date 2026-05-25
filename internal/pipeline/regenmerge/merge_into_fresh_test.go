@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,6 +197,32 @@ func TestMergeIntoFreshTreeSweepsNonClassifiedFiles(t *testing.T) {
 	got, err = os.ReadFile(filepath.Join(fresh, "Makefile"))
 	require.NoError(t, err)
 	assert.Equal(t, "# custom\n", string(got))
+}
+
+func TestMergeIntoFreshTreePreservesManuscripts(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join(".manuscripts", "20260523-171100", "research.json")
+	path := filepath.Join(snap, rel)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`{"status":"accepted"}`), 0o640))
+	wantModTime := time.Date(2026, 5, 23, 17, 11, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(path, wantModTime, wantModTime))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true}))
+
+	gotPath := filepath.Join(fresh, rel)
+	got, err := os.ReadFile(gotPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"status":"accepted"}`, string(got))
+
+	info, err := os.Stat(gotPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+	assert.True(t, info.ModTime().Equal(wantModTime), "mtime should survive force-regen sweep")
 }
 
 // TestMergeIntoFreshTreeNovelOnlySkipsValueDrift verifies that the

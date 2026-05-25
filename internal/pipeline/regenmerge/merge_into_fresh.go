@@ -3,6 +3,7 @@ package regenmerge
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -140,16 +141,50 @@ func copyPreserveFile(snapshotDir, freshDir, rel string) error {
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refusing to preserve symlinked snapshot file: %s", rel)
 	}
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return fmt.Errorf("reading snapshot file %s: %w", rel, err)
-	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("creating parent for %s: %w", rel, err)
 	}
-	if err := writeFileAtomic(dst, data); err != nil {
+	if err := copyFileAtomic(src, dst, info.Mode().Perm()); err != nil {
 		return fmt.Errorf("writing preserved %s: %w", rel, err)
 	}
+	if err := os.Chmod(dst, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("preserving mode for %s: %w", rel, err)
+	}
+	if err := os.Chtimes(dst, info.ModTime(), info.ModTime()); err != nil {
+		return fmt.Errorf("preserving mtime for %s: %w", rel, err)
+	}
+	return nil
+}
+
+func copyFileAtomic(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("opening source: %w", err)
+	}
+	defer func() { _ = in.Close() }()
+
+	tmp := dst + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return fmt.Errorf("creating temporary destination: %w", err)
+	}
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return fmt.Errorf("copying bytes: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("closing temporary destination: %w", err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return fmt.Errorf("replacing destination: %w", err)
+	}
+	removeTmp = false
 	return nil
 }
 
@@ -171,6 +206,9 @@ func sweepNonClassifiedFiles(snapshotDir, freshDir string) error {
 		}
 		relSlash := filepath.ToSlash(rel)
 		if d.IsDir() {
+			if isManuscriptsPath(relSlash) {
+				return nil
+			}
 			if !shouldWalkDir(d.Name()) {
 				return filepath.SkipDir
 			}
@@ -179,14 +217,11 @@ func sweepNonClassifiedFiles(snapshotDir, freshDir string) error {
 			}
 			return nil
 		}
-		if !shouldWalkDir(filepath.Base(filepath.Dir(path))) {
+		if !isManuscriptsPath(relSlash) && !shouldWalkDir(filepath.Base(filepath.Dir(path))) {
 			return nil
 		}
 		if shouldClassifyFile(relSlash) {
 			return nil
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to sweep symlinked snapshot file: %s", relSlash)
 		}
 		dst := filepath.Join(freshDir, rel)
 		if _, err := os.Stat(dst); err == nil {
@@ -195,18 +230,15 @@ func sweepNonClassifiedFiles(snapshotDir, freshDir string) error {
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("statting fresh path %s: %w", relSlash, err)
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading snapshot file %s: %w", relSlash, err)
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return fmt.Errorf("creating parent for swept %s: %w", relSlash, err)
-		}
-		if err := writeFileAtomic(dst, data); err != nil {
-			return fmt.Errorf("writing swept %s: %w", relSlash, err)
+		if err := copyPreserveFile(snapshotDir, freshDir, rel); err != nil {
+			return fmt.Errorf("sweeping snapshot file %s: %w", relSlash, err)
 		}
 		return nil
 	})
+}
+
+func isManuscriptsPath(relSlash string) bool {
+	return relSlash == ".manuscripts" || strings.HasPrefix(relSlash, ".manuscripts/")
 }
 
 // isGeneratorOwnedInternalDir reports whether relSlash names a directory
