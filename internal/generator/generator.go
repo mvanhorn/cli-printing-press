@@ -745,6 +745,7 @@ type clientTemplateData struct {
 	HasGraphQLPersistedQueries bool
 	HasMultipartRequest        bool
 	HasFormRequest             bool
+	UseChromeImpersonation     bool
 	// Populated by Generator.shouldEmitAuth() so this template gate stays in
 	// sync with auth.go emission, root.go registration, and scoreAuth.
 	HasAuthCommand bool
@@ -1546,6 +1547,13 @@ func (g *Generator) hasTrafficAnalysisHint(hint string) bool {
 	return slices.Contains(g.TrafficAnalysis.GenerationHints, hint)
 }
 
+func (g *Generator) shouldUseChromeImpersonation() bool {
+	if g == nil || g.TrafficAnalysis == nil || g.TrafficAnalysis.Reachability == nil || g.TrafficAnalysis.Reachability.ImpersonationSafe == nil {
+		return true
+	}
+	return *g.TrafficAnalysis.Reachability.ImpersonationSafe
+}
+
 func appendLimited(values []string, value string, limit int) []string {
 	value = strings.TrimSpace(value)
 	if value == "" || len(values) >= limit {
@@ -1832,6 +1840,7 @@ func (g *Generator) renderSingleFiles() error {
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
 				HasMultipartRequest:        hasMultipartRequest(g.Spec),
 				HasFormRequest:             hasFormRequest(g.Spec),
+				UseChromeImpersonation:     g.shouldUseChromeImpersonation(),
 				HasAuthCommand:             g.shouldEmitAuth(),
 			}
 		case "config.go.tmpl":

@@ -53,6 +53,22 @@ func ok200(_ *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+func json200(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"application/json; charset=utf-8"}},
+		Body:       respBody(`{"ok":true}`),
+	}, nil
+}
+
+func xml200(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"application/xml; charset=utf-8"}},
+		Body:       respBody(`<StoreModel><ok>true</ok></StoreModel>`),
+	}, nil
+}
+
 func cloudflareChallenge(_ *http.Request) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: 403,
@@ -83,10 +99,23 @@ func TestProbe_StdlibPasses(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, ModeStandardHTTP, result.Mode)
-	assert.Len(t, result.Probes, 1, "should stop at first clear pass")
+	assert.Len(t, result.Probes, 2, "full probes compare surf against stdlib for content negotiation drift")
 	assert.Equal(t, TransportStdlib, result.Probes[0].Transport)
 	assert.False(t, result.Partial)
 	assert.False(t, result.Recommendation.NeedsBrowserCapture)
+}
+
+func TestProbe_StdlibJSONSurfXMLMarksImpersonationUnsafe(t *testing.T) {
+	result, err := Probe(context.Background(), "https://example.com/api/stores/123", Options{
+		HTTPClientFactory: fakeFactory(json200, xml200),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ModeStandardHTTP, result.Mode)
+	require.NotNil(t, result.ImpersonationSafe)
+	assert.False(t, *result.ImpersonationSafe)
+	assert.Contains(t, result.Recommendation.Rationale, "Surf Chrome impersonation")
+	assert.Equal(t, "application/json; charset=utf-8", result.Probes[0].ContentType)
+	assert.Equal(t, "application/xml; charset=utf-8", result.Probes[1].ContentType)
 }
 
 func TestProbe_StdlibChallengedSurfClears_FoodS52Pattern(t *testing.T) {

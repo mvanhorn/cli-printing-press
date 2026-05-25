@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
@@ -64,6 +65,56 @@ func TestBrowserTransport_OverridesResponseHeaderTimeout(t *testing.T) {
 		"surfClient.GetTransport() must be type-asserted to *enetxhttp.Transport — surf returns the enetx HTTP fork's RoundTripper, not stdlib's, so a stdlib type-assertion is impossible")
 	require.Contains(t, src, "t.ResponseHeaderTimeout = timeout",
 		"ResponseHeaderTimeout must be set to the user-supplied timeout so --timeout reaches the transport layer")
+}
+
+func TestBrowserTransport_DropsChromeImpersonationWhenTrafficAnalysisMarksUnsafe(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:       "transport-content-negotiation-canary",
+		Version:    "0.1.0",
+		BaseURL:    "https://www.example.com",
+		SpecSource: "sniffed",
+		Owner:      "test-owner",
+		OwnerName:  "Test Author",
+		Auth:       spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/transport-content-negotiation-canary-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"stores": {
+				Description: "Browse stores",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Method: "GET", Path: "/api/Stores/{id}", Description: "Get store"},
+				},
+			},
+		},
+	}
+	impersonationSafe := false
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.TrafficAnalysis = &browsersniff.TrafficAnalysis{
+		Reachability: &browsersniff.ReachabilityAnalysis{
+			Mode:              "standard_http",
+			Confidence:        0.95,
+			ImpersonationSafe: &impersonationSafe,
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	src := string(clientSrc)
+
+	require.Contains(t, src, `"github.com/enetx/surf"`,
+		"sniffed CLIs still use surf transport when the spec defaults to browser transport")
+	require.NotContains(t, src, "Impersonate()",
+		"content-type flip evidence must suppress Chrome impersonation")
+	require.NotContains(t, src, "Chrome()",
+		"content-type flip evidence must suppress Chrome Accept-header impersonation")
+	require.Contains(t, src, "ForceHTTP2()",
+		"the existing sniffed browser transport default should still force HTTP/2")
 }
 
 // TestNonBrowserTransport_DoesNotEmitOverride asserts the override only
