@@ -748,23 +748,21 @@ type configTemplateData struct {
 	HasAuthCommand bool
 }
 
-// endpointTemplateData is the data passed to command_endpoint.go.tmpl
-// for both top-level resource endpoints and sub-resource endpoints.
-// ResourceBaseURL carries the endpoint's effective BaseURL override. The
-// template prepends it to Endpoint.Path so per-request hosts produce absolute
-// URLs.
+// endpointTemplateData is the data passed to command_endpoint.go.tmpl for both
+// top-level resource endpoints and sub-resource endpoints. EffectivePath is
+// either the relative endpoint path or a full URL when the endpoint declares
+// one directly or inherits a per-resource/per-endpoint BaseURL override.
 type endpointTemplateData struct {
-	ResourceName    string
-	ResourceBaseURL string
-	EffectivePath   string
-	EffectiveTier   string
-	FuncPrefix      string
-	CommandPath     string
-	EndpointName    string
-	Endpoint        spec.Endpoint
-	HasStore        bool
-	IsAsync         bool
-	Async           AsyncJobInfo
+	ResourceName  string
+	EffectivePath string
+	EffectiveTier string
+	FuncPrefix    string
+	CommandPath   string
+	EndpointName  string
+	Endpoint      spec.Endpoint
+	HasStore      bool
+	IsAsync       bool
+	Async         AsyncJobInfo
 	// IsReadOnly mirrors !endpointIsWriteCommand(endpoint, name). The
 	// emitted command sets Annotations["mcp:read-only"] = "true" when
 	// it's true so the cobratree MCP walker marks the tool with
@@ -2367,19 +2365,18 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
-				ResourceName:    name,
-				ResourceBaseURL: effectiveEndpointBaseURL(resource, endpoint),
-				EffectivePath:   effectiveEndpointPath(resource, endpoint),
-				EffectiveTier:   g.Spec.EffectiveTier(resource, endpoint),
-				FuncPrefix:      name,
-				CommandPath:     name,
-				EndpointName:    eName,
-				Endpoint:        endpoint,
-				HasStore:        g.VisionSet.Store,
-				IsAsync:         isAsync,
-				Async:           asyncInfo,
-				IsReadOnly:      endpointIsReadCommand(endpoint, eName),
-				APISpec:         g.Spec,
+				ResourceName:  name,
+				EffectivePath: effectiveEndpointPath(resource, endpoint),
+				EffectiveTier: g.Spec.EffectiveTier(resource, endpoint),
+				FuncPrefix:    name,
+				CommandPath:   name,
+				EndpointName:  eName,
+				Endpoint:      endpoint,
+				HasStore:      g.VisionSet.Store,
+				IsAsync:       isAsync,
+				Async:         asyncInfo,
+				IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+				APISpec:       g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
 			if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -2419,19 +2416,18 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					effectiveResource.Tier = resource.Tier
 				}
 				epData := endpointTemplateData{
-					ResourceName:    subName,
-					ResourceBaseURL: effectiveSubEndpointBaseURL(resource, subResource, endpoint),
-					EffectivePath:   effectiveSubEndpointPath(resource, subResource, endpoint),
-					EffectiveTier:   g.Spec.EffectiveTier(effectiveResource, endpoint),
-					FuncPrefix:      name + "-" + subName,
-					CommandPath:     name + " " + subName,
-					EndpointName:    eName,
-					Endpoint:        endpoint,
-					HasStore:        g.VisionSet.Store,
-					IsAsync:         isAsync,
-					Async:           asyncInfo,
-					IsReadOnly:      endpointIsReadCommand(endpoint, eName),
-					APISpec:         g.Spec,
+					ResourceName:  subName,
+					EffectivePath: effectiveSubEndpointPath(resource, subResource, endpoint),
+					EffectiveTier: g.Spec.EffectiveTier(effectiveResource, endpoint),
+					FuncPrefix:    name + "-" + subName,
+					CommandPath:   name + " " + subName,
+					EndpointName:  eName,
+					Endpoint:      endpoint,
+					HasStore:      g.VisionSet.Store,
+					IsAsync:       isAsync,
+					Async:         asyncInfo,
+					IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+					APISpec:       g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
 				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -3327,37 +3323,31 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	// promotedCommands was computed earlier so promoted resources can replace their raw parents.
 	for _, pc := range promotedCommands {
 		// Look up the full resource to pass sibling endpoints/sub-resources.
-		// Trim trailing slash on BaseURL so the promoted handler's
-		// `path := <ResourceBaseURL><Endpoint.Path>` concat doesn't
-		// produce `https://x.com/v1//search`.
 		resource := g.Spec.Resources[pc.ResourceName]
-		resourceBaseURL := effectiveEndpointBaseURL(resource, pc.Endpoint)
 		promotedData := struct {
-			PromotedName    string
-			ResourceName    string
-			EndpointName    string
-			ResourceBaseURL string
-			EffectivePath   string
-			Endpoint        spec.Endpoint
-			EffectiveTier   string
-			HasStore        bool
-			Resource        spec.Resource
-			FuncPrefix      string
-			IsReadOnly      bool
+			PromotedName  string
+			ResourceName  string
+			EndpointName  string
+			EffectivePath string
+			Endpoint      spec.Endpoint
+			EffectiveTier string
+			HasStore      bool
+			Resource      spec.Resource
+			FuncPrefix    string
+			IsReadOnly    bool
 			*spec.APISpec
 		}{
-			PromotedName:    pc.PromotedName,
-			ResourceName:    pc.ResourceName,
-			EndpointName:    pc.EndpointName,
-			ResourceBaseURL: resourceBaseURL,
-			EffectivePath:   effectiveEndpointPath(resource, pc.Endpoint),
-			Endpoint:        pc.Endpoint,
-			EffectiveTier:   g.Spec.EffectiveTier(resource, pc.Endpoint),
-			HasStore:        g.VisionSet.Store,
-			Resource:        resource,
-			FuncPrefix:      pc.ResourceName,
-			IsReadOnly:      endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
-			APISpec:         g.Spec,
+			PromotedName:  pc.PromotedName,
+			ResourceName:  pc.ResourceName,
+			EndpointName:  pc.EndpointName,
+			EffectivePath: effectiveEndpointPath(resource, pc.Endpoint),
+			Endpoint:      pc.Endpoint,
+			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
+			HasStore:      g.VisionSet.Store,
+			Resource:      resource,
+			FuncPrefix:    pc.ResourceName,
+			IsReadOnly:    endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			APISpec:       g.Spec,
 		}
 		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
@@ -5752,7 +5742,7 @@ func effectiveSubEndpointBaseURL(parent spec.Resource, sub spec.Resource, endpoi
 
 func endpointPathWithBase(baseURL, path string) string {
 	baseURL = strings.TrimRight(baseURL, "/")
-	if baseURL == "" {
+	if baseURL == "" || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
 		return path
 	}
 	return baseURL + path
