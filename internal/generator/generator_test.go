@@ -77,6 +77,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/client/client_test.go",
 		"internal/client/client_verify_short_circuit_test.go",
 		"internal/config/config.go",
+		"internal/store/extras.go",
 		"internal/mcp/cobratree/walker.go",
 		"internal/mcp/cobratree/classify.go",
 		"internal/mcp/cobratree/typemap.go",
@@ -95,9 +96,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 69},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 74},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 71},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 70},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 75},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 72},
 	}
 
 	for _, tt := range tests {
@@ -127,6 +128,33 @@ func TestGenerateProjectsCompile(t *testing.T) {
 			runGoCommand(t, outputDir, "build", "./...")
 		})
 	}
+}
+
+func TestGenerateStoreExtrasHook(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("storeextras")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	extrasSrc := readGeneratedFile(t, outputDir, "internal", "store", "extras.go")
+	assert.NotContains(t, extrasSrc, "DO NOT EDIT")
+	assert.Contains(t, extrasSrc, "func (s *Store) migrateExtras(ctx context.Context, conn *sql.Conn) error")
+	assert.Contains(t, extrasSrc, "Add CREATE TABLE IF NOT EXISTS statements here")
+
+	storeSrc := readGeneratedFile(t, outputDir, "internal", "store", "store.go")
+	migrationIndex := strings.Index(storeSrc, "for _, m := range migrations")
+	extrasIndex := strings.Index(storeSrc, "s.migrateExtras(ctx, conn)")
+	stampIndex := strings.Index(storeSrc, "PRAGMA user_version = %d")
+	require.NotEqual(t, -1, migrationIndex, "store.go must still run generated migrations")
+	require.NotEqual(t, -1, extrasIndex, "store.go must call migrateExtras")
+	require.NotEqual(t, -1, stampIndex, "store.go must still stamp user_version")
+	assert.Less(t, migrationIndex, extrasIndex, "extras must run after generated migrations")
+	assert.Less(t, extrasIndex, stampIndex, "extras must run before the schema version stamp")
+
+	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
 // TestGenerateCliutilPackage verifies that every generated CLI ships with

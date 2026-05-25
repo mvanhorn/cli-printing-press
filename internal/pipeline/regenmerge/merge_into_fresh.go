@@ -52,10 +52,11 @@ var regenmergeGeneratorOwnedDirs = map[string]struct{}{
 //
 // When opts.NovelOnly is true, only NOVEL and NOVEL-COLLISION verdicts are
 // preserved; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT, and
-// TEMPLATED-VALUE-DRIFT files are left as fresh emitted them, and lost
-// AddCommand re-injection is skipped. The non-classified file sweep and
-// go.mod merge still run because both are spec-orthogonal — non-Go files
-// and go.mod require additions are valid preservation targets even when
+// TEMPLATED-VALUE-DRIFT files are left as fresh emitted them unless the file
+// is a generated editable hook whose whole purpose is to carry agent-authored
+// additions. Lost AddCommand re-injection is skipped. The non-classified file
+// sweep and go.mod merge still run because both are spec-orthogonal — non-Go
+// files and go.mod require additions are valid preservation targets even when
 // the fresh spec differs from the snapshot's.
 func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts Options) error {
 	if report == nil {
@@ -79,7 +80,7 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 			}
 			fc.Applied = true
 		case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
-			if opts.NovelOnly {
+			if opts.NovelOnly && !preserveTemplatedDriftInNovelOnly(fc.Path) {
 				continue
 			}
 			if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
@@ -126,6 +127,18 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 
 	report.Applied = true
 	return nil
+}
+
+func preserveTemplatedDriftInNovelOnly(rel string) bool {
+	_, ok := novelOnlyEditableHookPaths[filepath.ToSlash(rel)]
+	return ok
+}
+
+// novelOnlyEditableHookPaths lists generator-emitted files whose intended
+// purpose is to carry agent-authored edits. Add future editable hooks here
+// when they need NovelOnly regen to preserve templated drift.
+var novelOnlyEditableHookPaths = map[string]struct{}{
+	"internal/store/extras.go": {},
 }
 
 // copyPreserveFile copies snapshot/rel → fresh/rel, refusing symlinks and

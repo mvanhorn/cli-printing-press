@@ -2846,6 +2846,9 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
 		}
+		if err := g.renderTemplate("store_extras.go.tmpl", filepath.Join("internal", "store", "extras.go"), storeData); err != nil {
+			return fmt.Errorf("rendering store extras: %w", err)
+		}
 		if err := g.renderTemplate("store_schema_version_test.go.tmpl", filepath.Join("internal", "store", "schema_version_test.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store schema version test: %w", err)
 		}
