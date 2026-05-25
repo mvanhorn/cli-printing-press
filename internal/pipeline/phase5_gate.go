@@ -14,6 +14,10 @@ const (
 
 	phase5AcceptanceLevelQuick = "quick"
 	phase5AcceptanceLevelFull  = "full"
+
+	phase5SkipReasonAuthRequiredNoCredential    = "auth_required_no_credential"
+	phase5SkipReasonLANUnreachableFromHost      = "lan-unreachable-from-generation-host"
+	phase5SkipReasonLocalSourceRequiresDatabase = "local_source_requires_operator_database"
 )
 
 var phase5AcceptedAcceptanceLevels = []string{
@@ -26,6 +30,7 @@ type Phase5AuthContext struct {
 	APIKeyAvailable         bool   `json:"api_key_available,omitempty"`
 	BrowserSessionAvailable bool   `json:"browser_session_available,omitempty"`
 	LocalSQLite             bool   `json:"local_sqlite,omitempty"`
+	LocalNetworkOnly        bool   `json:"local_network_only,omitempty"`
 }
 
 type Phase5GateMarker struct {
@@ -259,7 +264,17 @@ func phase5SkipAllowed(marker Phase5GateMarker, manifest CLIManifest) (bool, str
 		return false, fmt.Sprintf("phase5 skip marker auth type %q does not match manifest auth type %q", marker.AuthContext.Type, manifest.AuthType)
 	}
 	if authType == "" || authType == "none" {
+		skipReason := phase5SkipReason(marker)
 		if manifest.IsLocalDatastore() {
+			if skipReason == phase5SkipReasonLocalSourceRequiresDatabase {
+				return true, ""
+			}
+			return false, fmt.Sprintf("phase5 skip reason %q is not valid for local datastore no-auth APIs", marker.SkipReason)
+		}
+		if skipReason == phase5SkipReasonLANUnreachableFromHost {
+			if !marker.AuthContext.LocalNetworkOnly {
+				return false, "phase5 LAN-unreachable skip requires auth_context.local_network_only=true"
+			}
 			return true, ""
 		}
 		return false, "no-auth APIs require a phase5 pass marker, not a skip marker"
@@ -268,6 +283,9 @@ func phase5SkipAllowed(marker Phase5GateMarker, manifest CLIManifest) (bool, str
 		return false, "phase5 skip claims an API key was available"
 	}
 	if authRequiresCredential(authType) {
+		if phase5SkipReason(marker) == phase5SkipReasonLANUnreachableFromHost {
+			return false, fmt.Sprintf("phase5 skip reason %q is not valid for auth type %q", marker.SkipReason, authType)
+		}
 		return true, ""
 	}
 	switch authType {
@@ -276,4 +294,8 @@ func phase5SkipAllowed(marker Phase5GateMarker, manifest CLIManifest) (bool, str
 	default:
 		return false, fmt.Sprintf("phase5 skip not allowed for auth type %q", authType)
 	}
+}
+
+func phase5SkipReason(marker Phase5GateMarker) string {
+	return strings.ToLower(strings.TrimSpace(marker.SkipReason))
 }

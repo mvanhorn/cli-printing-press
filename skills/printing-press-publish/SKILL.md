@@ -46,8 +46,9 @@ If the fresh user-authored request includes `--skip-live-test=<reason>`, record
 the exact non-empty reason as `SKIP_LIVE_TEST_REASON` and remove the flag before
 resolving the CLI name. This is the only supported escape valve for the
 publish-time live test gate. Use it only for auth-unavailable, known upstream
-outage, or similarly concrete operator-approved cases; never infer a skip from
-ordinary latency or from the presence of an older Phase 5 marker.
+outage, LAN-unreachable hardware APIs, or similarly concrete operator-approved
+cases; never infer a skip from ordinary latency or from the presence of an
+older Phase 5 marker.
 
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
@@ -340,10 +341,10 @@ case "$AUTH_TYPE" in
     ;;
   none)
     case "$SKIP_REASON_LOWER" in
-      *upstream*outage*)
+      *upstream*outage*|lan-unreachable-from-generation-host)
         ;;
       *)
-        echo "ERROR: --skip-live-test is only valid for auth_type=none during a known upstream outage."
+        echo "ERROR: --skip-live-test is only valid for auth_type=none during a known upstream outage or LAN-unreachable hardware case."
         exit 1
         ;;
     esac
@@ -380,6 +381,11 @@ jq -n \
       browser_session_available: $browser_session_available
     }
   }' > "$PROOFS_DIR/phase5-skip.json"
+if [ "$SKIP_REASON_LOWER" = "lan-unreachable-from-generation-host" ]; then
+  tmp_marker=$(mktemp "${TMPDIR:-/tmp}/phase5-skip.XXXXXX")
+  jq '.auth_context.local_network_only = true' "$PROOFS_DIR/phase5-skip.json" > "$tmp_marker" &&
+    mv "$tmp_marker" "$PROOFS_DIR/phase5-skip.json"
+fi
 LIVE_GATE_JSON=""
 ```
 
