@@ -417,6 +417,24 @@ func TestValidatePhase5Gate_LocalDatastoreNoAuthRejectsUnrecognizedSkipReason(t 
 	assert.Contains(t, result.Detail, "local datastore")
 }
 
+func TestValidatePhase5Gate_LocalDatastoreNoAuthRejectsLANUnreachableSkip(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none", SpecFormat: "sqlite"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "none", LocalNetworkOnly: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "local datastore")
+}
+
 func TestValidatePhase5Gate_APIKeyMissingSkipAllowed(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "api_key"}

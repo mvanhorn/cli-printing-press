@@ -265,17 +265,17 @@ func phase5SkipAllowed(marker Phase5GateMarker, manifest CLIManifest) (bool, str
 	}
 	if authType == "" || authType == "none" {
 		skipReason := phase5SkipReason(marker)
-		if skipReason == phase5SkipReasonLANUnreachableFromHost {
-			if !marker.AuthContext.LocalNetworkOnly {
-				return false, "phase5 LAN-unreachable skip requires auth_context.local_network_only=true"
-			}
-			return true, ""
-		}
 		if manifest.IsLocalDatastore() {
 			if skipReason == phase5SkipReasonLocalSourceRequiresDatabase {
 				return true, ""
 			}
 			return false, fmt.Sprintf("phase5 skip reason %q is not valid for local datastore no-auth APIs", marker.SkipReason)
+		}
+		if skipReason == phase5SkipReasonLANUnreachableFromHost {
+			if !marker.AuthContext.LocalNetworkOnly {
+				return false, "phase5 LAN-unreachable skip requires auth_context.local_network_only=true"
+			}
+			return true, ""
 		}
 		return false, "no-auth APIs require a phase5 pass marker, not a skip marker"
 	}
