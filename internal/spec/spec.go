@@ -280,7 +280,8 @@ func (s *APISpec) IsEndpointTemplateVar(placeholder string) bool {
 // InferEndpointTemplateVarsFromBaseURLs preserves existing explicit
 // placeholders, then appends placeholders found in URL-bearing spec fields.
 // It intentionally ignores endpoint paths: ordinary path params are command
-// inputs, while BaseURL placeholders need runtime config/env substitution.
+// inputs, while BaseURL placeholders and absolute endpoint-path placeholders
+// need runtime config/env substitution.
 func (s *APISpec) InferEndpointTemplateVarsFromBaseURLs() {
 	if s == nil {
 		return
@@ -369,7 +370,13 @@ func visitResourceURLTemplateSources(r Resource, deterministic bool, visit func(
 	}
 
 	visitEndpoint := func(endpoint Endpoint) bool {
-		return visit(endpoint.BaseURL)
+		if !visit(endpoint.BaseURL) {
+			return false
+		}
+		if isAbsoluteRequestPath(endpoint.Path) {
+			return visit(endpoint.Path)
+		}
+		return true
 	}
 	if deterministic {
 		for _, name := range sortedStringKeys(r.Endpoints) {
@@ -1472,14 +1479,29 @@ func DefaultResourceDescription(name string) string {
 }
 
 // HasResourceBaseURLOverride reports whether any resource or endpoint declares
-// a BaseURL override. Used by the client template to gate the absolute-URL
-// detection branch — specs that don't opt in regenerate byte-identically.
+// a BaseURL override.
 func (s *APISpec) HasResourceBaseURLOverride() bool {
 	if s == nil {
 		return false
 	}
 	for _, resource := range s.Resources {
 		if resourceHasBaseURLOverride(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAbsoluteRequestPath reports whether generated commands can pass a full
+// URL to the HTTP client instead of a path relative to BaseURL. Resource or
+// endpoint BaseURL overrides synthesize absolute paths at generation time, and
+// internal YAML specs may also declare absolute endpoint paths directly.
+func (s *APISpec) HasAbsoluteRequestPath() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasAbsoluteRequestPath(resource) {
 			return true
 		}
 	}
@@ -1501,6 +1523,27 @@ func resourceHasBaseURLOverride(resource Resource) bool {
 		}
 	}
 	return false
+}
+
+func resourceHasAbsoluteRequestPath(resource Resource) bool {
+	if resource.BaseURL != "" {
+		return true
+	}
+	for _, endpoint := range resource.Endpoints {
+		if endpoint.BaseURL != "" || isAbsoluteRequestPath(endpoint.Path) {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasAbsoluteRequestPath(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAbsoluteRequestPath(path string) bool {
+	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
 }
 
 type Endpoint struct {
@@ -2460,8 +2503,8 @@ func (s *APISpec) Validate() error {
 	if err := validateTierRouting(s); err != nil {
 		return err
 	}
-	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
-		return fmt.Errorf("resource or endpoint base_url overrides are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-request overrides would be silently ignored")
+	if s.ClientPattern == "proxy-envelope" && s.HasAbsoluteRequestPath() {
+		return fmt.Errorf("resource or endpoint base_url overrides and absolute endpoint paths are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-request hosts would be silently ignored")
 	}
 	if s.ClientPattern == "proxy-envelope" && s.BasePath != "" {
 		return fmt.Errorf("base_path is incompatible with client_pattern=proxy-envelope; the proxy routes via the envelope's Service/Path fields, not a URL-level prefix — fold the prefix into base_url instead")
@@ -2841,8 +2884,8 @@ func validateTierRouting(s *APISpec) error {
 			return err
 		}
 	}
-	if anyTierBaseURL && s.HasResourceBaseURLOverride() {
-		return fmt.Errorf("resource or endpoint base_url overrides are incompatible with tier_routing tier base_url overrides; choose one routing source")
+	if anyTierBaseURL && s.HasAbsoluteRequestPath() {
+		return fmt.Errorf("resource or endpoint base_url overrides and absolute endpoint paths are incompatible with tier_routing tier base_url overrides; choose one routing source")
 	}
 	for name, resource := range s.Resources {
 		if err := validateTierRoutingResource(s, name, resource, "", ""); err != nil {
