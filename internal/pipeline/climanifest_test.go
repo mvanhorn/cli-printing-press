@@ -1636,6 +1636,28 @@ func TestPopulateMCPMetadata(t *testing.T) {
 	assert.Equal(t, "Use this test credential.", m.AuthDescription)
 }
 
+func TestPopulateMCPMetadataMCPBinaryUsesAPINameWhenPresent(t *testing.T) {
+	t.Run("uses canonical api_name slug over parsed title slug", func(t *testing.T) {
+		m := CLIManifest{APIName: "youtube"}
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name: "youtube-data",
+			Auth: spec.AuthConfig{Type: "none"},
+		})
+
+		assert.Equal(t, "youtube-pp-mcp", m.MCPBinary)
+	})
+
+	t.Run("falls back to parsed name when api_name missing", func(t *testing.T) {
+		var m CLIManifest
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name: "youtube-data",
+			Auth: spec.AuthConfig{Type: "none"},
+		})
+
+		assert.Equal(t, "youtube-data-pp-mcp", m.MCPBinary)
+	})
+}
+
 func TestPopulateMCPMetadataIncludesTierEnvVars(t *testing.T) {
 	var m CLIManifest
 	populateMCPMetadata(&m, &spec.APISpec{
