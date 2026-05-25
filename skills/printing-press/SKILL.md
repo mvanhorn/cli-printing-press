@@ -1715,7 +1715,11 @@ Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest
 ```bash
 body_file="$(mktemp "${TMPDIR:-/tmp}/pp-reachability-body.XXXXXX")"
 trap 'rm -f "$body_file"' EXIT
-status="$(curl -s --max-filesize 65536 -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || printf '000')"
+status="$(curl -s --max-filesize 65536 -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || true)"
+case "$status" in
+  [0-9][0-9][0-9]) ;;
+  *) status="000" ;;
+esac
 printf '%s\n' "$status"
 ```
 
