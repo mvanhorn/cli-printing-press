@@ -9,110 +9,9 @@ import (
 	"testing"
 )
 
-func TestTeach_HappyPathFirstInsert(t *testing.T) {
-	t.Parallel()
-	db := openRecallTestDB(t)
-	inserted, err := Teach(context.Background(), db, testConfig(), TeachInput{
-		Query:        "alpha widget",
-		ResourceID:   "PREFIX-AL",
-		ResourceType: "widgets",
-	})
-	if err != nil {
-		t.Fatalf("teach: %v", err)
-	}
-	if !inserted {
-		t.Errorf("first teach: want inserted=true")
-	}
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM search_learnings`).Scan(&count); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("learnings count = %d, want 1", count)
-	}
-}
-
-func TestTeach_DuplicateBumpsConfidence(t *testing.T) {
-	t.Parallel()
-	db := openRecallTestDB(t)
-	in := TeachInput{
-		Query:        "alpha widget",
-		ResourceID:   "PREFIX-AL",
-		ResourceType: "widgets",
-	}
-	if _, err := Teach(context.Background(), db, testConfig(), in); err != nil {
-		t.Fatalf("first: %v", err)
-	}
-	inserted, err := Teach(context.Background(), db, testConfig(), in)
-	if err != nil {
-		t.Fatalf("second: %v", err)
-	}
-	if inserted {
-		t.Errorf("second teach: want inserted=false")
-	}
-	var confidence int
-	if err := db.QueryRow(`SELECT confidence FROM search_learnings`).Scan(&confidence); err != nil {
-		t.Fatalf("confidence: %v", err)
-	}
-	if confidence != 3 {
-		t.Errorf("confidence after second teach = %d, want 3", confidence)
-	}
-}
-
-func TestTeach_AppendsResourceIDToExistingRow(t *testing.T) {
-	t.Parallel()
-	db := openRecallTestDB(t)
-	cfg := testConfig()
-	if _, err := Teach(context.Background(), db, cfg, TeachInput{
-		Query: "alpha widget", ResourceID: "PREFIX-AL", ResourceType: "widgets",
-	}); err != nil {
-		t.Fatalf("first: %v", err)
-	}
-	// Same query, same resource_type, NEW resource_id.
-	if _, err := Teach(context.Background(), db, cfg, TeachInput{
-		Query: "alpha widget", ResourceID: "PREFIX-AL2", ResourceType: "widgets",
-	}); err != nil {
-		t.Fatalf("second: %v", err)
-	}
-	var ids string
-	if err := db.QueryRow(`SELECT resource_ids FROM search_learnings`).Scan(&ids); err != nil {
-		t.Fatalf("ids: %v", err)
-	}
-	if !strings.Contains(ids, "PREFIX-AL") || !strings.Contains(ids, "PREFIX-AL2") {
-		t.Errorf("resource_ids = %q, want both ids present", ids)
-	}
-}
-
-func TestTeach_RefusesMissingFields(t *testing.T) {
-	t.Parallel()
-	db := openRecallTestDB(t)
-	cfg := testConfig()
-	cases := []struct {
-		name string
-		in   TeachInput
-	}{
-		{"empty query", TeachInput{ResourceID: "X", ResourceType: "widgets"}},
-		{"empty resource_id", TeachInput{Query: "alpha widget", ResourceType: "widgets"}},
-		{"empty resource_type", TeachInput{Query: "alpha widget", ResourceID: "X"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := Teach(context.Background(), db, cfg, tc.in); err == nil {
-				t.Errorf("expected error for %s", tc.name)
-			}
-		})
-	}
-}
-
-func TestTeach_StopwordsOnlyQueryRefused(t *testing.T) {
-	t.Parallel()
-	db := openRecallTestDB(t)
-	if _, err := Teach(context.Background(), db, testConfig(), TeachInput{
-		Query: "the of for", ResourceID: "X", ResourceType: "widgets",
-	}); err == nil {
-		t.Errorf("expected error for stopwords-only query")
-	}
-}
+// Teach writes go through store.UpsertLearning; learn.Teach was removed
+// in the canonical-restore pass. Tests for the write path live next to
+// the store package.
 
 func TestValidateResourceShape_MismatchEmitsWarning(t *testing.T) {
 	t.Parallel()
@@ -120,8 +19,8 @@ func TestValidateResourceShape_MismatchEmitsWarning(t *testing.T) {
 	seedRecallResource(t, db, "widgets", "PREFIX-BR", `{"title":"Bravo widget"}`)
 	got := ValidateResourceShape(
 		context.Background(), db, testConfig(),
-		"Alpha widget",  // query carrying entity "Alpha" (capitalized)
-		"PREFIX-BR",     // taught Bravo
+		"Alpha widget", // query carrying entity "Alpha" (capitalized)
+		"PREFIX-BR",    // taught Bravo
 		"widgets",
 		[]string{"title"},
 	)
@@ -142,7 +41,7 @@ func TestValidateResourceShape_QueryWithoutEntitiesNoWarning(t *testing.T) {
 	seedRecallResource(t, db, "widgets", "PREFIX-BR", `{"title":"Bravo widget"}`)
 	got := ValidateResourceShape(
 		context.Background(), db, testConfig(),
-		"some lowercase content", // no entities
+		"some lowercase content",
 		"PREFIX-BR",
 		"widgets",
 		[]string{"title"},
@@ -157,7 +56,7 @@ func TestValidateResourceShape_ResourceMissingNoWarning(t *testing.T) {
 	db := openRecallTestDB(t)
 	got := ValidateResourceShape(
 		context.Background(), db, testConfig(),
-		"Alpha widget", // query carries entity Alpha, but the resource isn't seeded
+		"Alpha widget",
 		"PREFIX-MISSING",
 		"widgets",
 		[]string{"title"},

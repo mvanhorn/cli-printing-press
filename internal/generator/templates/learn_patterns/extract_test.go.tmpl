@@ -23,33 +23,43 @@ func openExtractTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	for _, q := range []string{
 		`CREATE TABLE search_learnings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			query_pattern TEXT NOT NULL,
-			query_entities TEXT NOT NULL DEFAULT '[]',
-			resource_ids TEXT NOT NULL DEFAULT '[]',
-			resource_type TEXT NOT NULL,
+			query_entities TEXT,
 			venue TEXT,
-			action TEXT,
-			confidence INTEGER NOT NULL DEFAULT 0,
-			source TEXT,
+			resource_type TEXT,
+			resource_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			alias_target TEXT,
+			source TEXT NOT NULL,
+			confidence INTEGER DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (query_pattern, resource_type)
+			last_observed_at DATETIME,
+			notes TEXT
 		)`,
 		`CREATE TABLE search_patterns (
-			template TEXT NOT NULL,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_template TEXT NOT NULL,
+			resource_template TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			venue TEXT,
+			strategy TEXT NOT NULL,
 			entity_kind TEXT NOT NULL,
-			confidence INTEGER NOT NULL DEFAULT 0,
-			source TEXT,
+			confidence INTEGER NOT NULL DEFAULT 2,
+			source TEXT NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (template, entity_kind)
+			last_observed_at DATETIME,
+			example_query TEXT,
+			example_resource TEXT
 		)`,
+		`CREATE UNIQUE INDEX idx_patterns_unique ON search_patterns(query_template, resource_template, strategy)`,
 		`CREATE TABLE entity_lookups (
-			canonical TEXT NOT NULL,
-			alias TEXT NOT NULL,
 			kind TEXT NOT NULL,
-			source TEXT,
+			canonical TEXT NOT NULL,
+			value TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'seeded',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE (canonical, alias, kind)
+			PRIMARY KEY (kind, canonical, value)
 		)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -59,34 +69,32 @@ func openExtractTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func insertLearning(t *testing.T, db *sql.DB, qp, entities, ids, rt, venue string) {
+func insertLearning(t *testing.T, db *sql.DB, qp, entities, resourceID, rt, venue string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO search_learnings (query_pattern, query_entities, resource_ids, resource_type, venue, action, confidence, source)
+	if _, err := db.Exec(`INSERT INTO search_learnings (query_pattern, query_entities, resource_id, resource_type, venue, action, confidence, source)
 		VALUES (?, ?, ?, ?, ?, 'boost', 2, 'taught')`,
-		qp, entities, ids, rt, venue); err != nil {
+		qp, entities, resourceID, rt, venue); err != nil {
 		t.Fatalf("insert learning: %v", err)
 	}
 }
 
-func insertLookup(t *testing.T, db *sql.DB, kind, canonical, alias string) {
+func insertLookup(t *testing.T, db *sql.DB, kind, canonical, value string) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO entity_lookups (canonical, alias, kind, source) VALUES (?, ?, ?, 'seeded')`,
-		canonical, alias, kind); err != nil {
+	if _, err := db.Exec(`INSERT INTO entity_lookups (kind, canonical, value, source) VALUES (?, ?, ?, 'seeded')`,
+		kind, canonical, value); err != nil {
 		t.Fatalf("insert lookup: %v", err)
 	}
 }
 
 // TestExtract_ExactSubstitute_TwoTeachesProducePattern is the flagship
-// "two teaches with a single-token swap" extraction story. Two
-// learnings of the form "alpha widget" -> PREFIX-AL and "bravo widget"
-// -> PREFIX-BR should produce a {entity:team_code} substitute pattern.
+// "two teaches with a single-token swap" extraction story.
 func TestExtract_ExactSubstitute_TwoTeachesProducePattern(t *testing.T) {
 	t.Parallel()
 	db := openExtractTestDB(t)
 	insertLookup(t, db, "team_code", "Alpha", "AL")
 	insertLookup(t, db, "team_code", "Bravo", "BR")
-	insertLearning(t, db, "alpha widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "")
-	insertLearning(t, db, "bravo widget", `["Bravo"]`, `["PREFIX-BR"]`, "widgets", "")
+	insertLearning(t, db, "alpha widget", `["Alpha"]`, "PREFIX-AL", "widgets", "")
+	insertLearning(t, db, "bravo widget", `["Bravo"]`, "PREFIX-BR", "widgets", "")
 
 	created, err := Extract(db, []string{"team_code"})
 	if err != nil {
@@ -115,15 +123,12 @@ func TestExtract_ExactSubstitute_TwoTeachesProducePattern(t *testing.T) {
 	}
 }
 
-// TestExtract_PrefixSearch_TwoTeachesProducePrefixPattern: two slug-
-// style resource IDs that share a literal core but carry an
-// unpredictable trailing segment. Extract should bind lowercase and
-// emit substitute-then-search-prefix.
+// TestExtract_PrefixSearch_TwoTeachesProducePrefixPattern.
 func TestExtract_PrefixSearch_TwoTeachesProducePrefixPattern(t *testing.T) {
 	t.Parallel()
 	db := openExtractTestDB(t)
-	insertLearning(t, db, "alpha widget", `["Alpha"]`, `["slug-alpha-foo-912"]`, "items", "")
-	insertLearning(t, db, "bravo widget", `["Bravo"]`, `["slug-bravo-foo-467"]`, "items", "")
+	insertLearning(t, db, "alpha widget", `["Alpha"]`, "slug-alpha-foo-912", "items", "")
+	insertLearning(t, db, "bravo widget", `["Bravo"]`, "slug-bravo-foo-467", "items", "")
 
 	if _, err := Extract(db, nil); err != nil {
 		t.Fatalf("extract: %v", err)
@@ -144,7 +149,7 @@ func TestExtract_PrefixSearch_TwoTeachesProducePrefixPattern(t *testing.T) {
 func TestExtract_SingleTeachProducesNoPattern(t *testing.T) {
 	t.Parallel()
 	db := openExtractTestDB(t)
-	insertLearning(t, db, "alpha widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "")
+	insertLearning(t, db, "alpha widget", `["Alpha"]`, "PREFIX-AL", "widgets", "")
 	if _, err := Extract(db, nil); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -157,13 +162,12 @@ func TestExtract_SingleTeachProducesNoPattern(t *testing.T) {
 	}
 }
 
-// TestExtract_UnrelatedTeachesProduceNoPattern: two teaches with
-// different query stems and different resource shapes do not group.
+// TestExtract_UnrelatedTeachesProduceNoPattern.
 func TestExtract_UnrelatedTeachesProduceNoPattern(t *testing.T) {
 	t.Parallel()
 	db := openExtractTestDB(t)
-	insertLearning(t, db, "alpha widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "")
-	insertLearning(t, db, "trending today", `["Today"]`, `["trend-today"]`, "items", "")
+	insertLearning(t, db, "alpha widget", `["Alpha"]`, "PREFIX-AL", "widgets", "")
+	insertLearning(t, db, "trending today", `["Today"]`, "trend-today", "items", "")
 	if _, err := Extract(db, nil); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
@@ -173,15 +177,14 @@ func TestExtract_UnrelatedTeachesProduceNoPattern(t *testing.T) {
 	}
 }
 
-// TestExtract_Idempotent: re-running Extract on the same data doesn't
-// duplicate the pattern row.
+// TestExtract_Idempotent.
 func TestExtract_Idempotent(t *testing.T) {
 	t.Parallel()
 	db := openExtractTestDB(t)
 	insertLookup(t, db, "team_code", "Alpha", "AL")
 	insertLookup(t, db, "team_code", "Bravo", "BR")
-	insertLearning(t, db, "alpha widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "")
-	insertLearning(t, db, "bravo widget", `["Bravo"]`, `["PREFIX-BR"]`, "widgets", "")
+	insertLearning(t, db, "alpha widget", `["Alpha"]`, "PREFIX-AL", "widgets", "")
+	insertLearning(t, db, "bravo widget", `["Bravo"]`, "PREFIX-BR", "widgets", "")
 
 	if _, err := Extract(db, []string{"team_code"}); err != nil {
 		t.Fatalf("first extract: %v", err)

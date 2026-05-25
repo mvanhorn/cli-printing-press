@@ -11,9 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// openTestDB stands up the v3 search_patterns schema only — no other
-// tables. The pattern store doesn't depend on resources / learnings;
-// keeping the fixture minimal lets these tests stay fast.
+// openTestDB stands up the canonical search_patterns schema only.
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "patterns.db")
@@ -22,17 +20,27 @@ func openTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	if _, err := db.Exec(`
-		CREATE TABLE search_patterns (
-			template TEXT NOT NULL,
+	for _, q := range []string{
+		`CREATE TABLE search_patterns (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_template TEXT NOT NULL,
+			resource_template TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			venue TEXT,
+			strategy TEXT NOT NULL,
 			entity_kind TEXT NOT NULL,
-			confidence INTEGER NOT NULL DEFAULT 0,
-			source TEXT,
+			confidence INTEGER NOT NULL DEFAULT 2,
+			source TEXT NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (template, entity_kind)
-		)
-	`); err != nil {
-		t.Fatalf("create search_patterns: %v", err)
+			last_observed_at DATETIME,
+			example_query TEXT,
+			example_resource TEXT
+		)`,
+		`CREATE UNIQUE INDEX idx_patterns_unique ON search_patterns(query_template, resource_template, strategy)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("schema: %v", err)
+		}
 	}
 	return db
 }
@@ -55,7 +63,7 @@ func samplePattern() Pattern {
 func TestUpsert_InsertsNewRow(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
-	inserted, err := Upsert(db, samplePattern())
+	_, inserted, err := Upsert(db, samplePattern())
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -67,11 +75,11 @@ func TestUpsert_InsertsNewRow(t *testing.T) {
 func TestUpsert_DuplicateBumpsConfidence(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
-	r := samplePattern()
-	if _, err := Upsert(db, r); err != nil {
+	p := samplePattern()
+	if _, _, err := Upsert(db, p); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	inserted, err := Upsert(db, r)
+	_, inserted, err := Upsert(db, p)
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -97,17 +105,17 @@ func TestUpsert_RejectsMissingRequiredFields(t *testing.T) {
 		name   string
 		mutate func(*Pattern)
 	}{
-		{"empty query_template", func(r *Pattern) { r.QueryTemplate = "" }},
-		{"empty resource_template", func(r *Pattern) { r.ResourceTemplate = "" }},
-		{"empty strategy", func(r *Pattern) { r.Strategy = "" }},
-		{"empty entity_kind", func(r *Pattern) { r.EntityKind = "" }},
-		{"empty resource_type", func(r *Pattern) { r.ResourceType = "" }},
+		{"empty query_template", func(p *Pattern) { p.QueryTemplate = "" }},
+		{"empty resource_template", func(p *Pattern) { p.ResourceTemplate = "" }},
+		{"empty strategy", func(p *Pattern) { p.Strategy = "" }},
+		{"empty entity_kind", func(p *Pattern) { p.EntityKind = "" }},
+		{"empty resource_type", func(p *Pattern) { p.ResourceType = "" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := samplePattern()
-			tc.mutate(&r)
-			if _, err := Upsert(db, r); err == nil {
+			p := samplePattern()
+			tc.mutate(&p)
+			if _, _, err := Upsert(db, p); err == nil {
 				t.Errorf("expected error")
 			}
 		})
@@ -128,10 +136,10 @@ func TestList_FiltersByEntityKindAndStrategy(t *testing.T) {
 	r2.Venue = "bravo"
 	r2.ExampleResource = "slug-alpha-foo-456"
 
-	if _, err := Upsert(db, r1); err != nil {
+	if _, _, err := Upsert(db, r1); err != nil {
 		t.Fatalf("upsert r1: %v", err)
 	}
-	if _, err := Upsert(db, r2); err != nil {
+	if _, _, err := Upsert(db, r2); err != nil {
 		t.Fatalf("upsert r2: %v", err)
 	}
 
@@ -176,10 +184,10 @@ func TestForget_ByEntityKindDeletesMatching(t *testing.T) {
 	r2.QueryTemplate = "other template"
 	r2.EntityKind = "lowercase"
 
-	if _, err := Upsert(db, r1); err != nil {
+	if _, _, err := Upsert(db, r1); err != nil {
 		t.Fatalf("upsert r1: %v", err)
 	}
-	if _, err := Upsert(db, r2); err != nil {
+	if _, _, err := Upsert(db, r2); err != nil {
 		t.Fatalf("upsert r2: %v", err)
 	}
 	n, err := Forget(db, ForgetFilter{EntityKind: "team_code"})
@@ -198,7 +206,7 @@ func TestForget_ByEntityKindDeletesMatching(t *testing.T) {
 func TestForget_AllWipesEverything(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
-	if _, err := Upsert(db, samplePattern()); err != nil {
+	if _, _, err := Upsert(db, samplePattern()); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	n, err := Forget(db, ForgetFilter{All: true})

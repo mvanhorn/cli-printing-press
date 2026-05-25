@@ -56,8 +56,8 @@ func initLearn(ctx context.Context, db *sql.DB) error {
 	_ = ctx
 	seeds := map[string][]lookups.SeedConfig{
 		"thing": {
-			{Canonical: "ALPHA", Aliases: []string{"Alpha", "alpha-canonical"}},
-			{Canonical: "BRAVO", Aliases: []string{"Bravo", "br"}},
+			{Canonical: "ALPHA", Values: []string{"Alpha", "alpha-canonical"}},
+			{Canonical: "BRAVO", Values: []string{"Bravo", "br"}},
 		},
 	}
 	if _, err := lookups.SeedFromConfig(db, seeds); err != nil {

@@ -30,33 +30,45 @@ func openRecallTestDB(t *testing.T) *sql.DB {
 			PRIMARY KEY (resource_type, id)
 		)`,
 		`CREATE TABLE search_learnings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			query_pattern TEXT NOT NULL,
-			query_entities TEXT NOT NULL DEFAULT '[]',
-			resource_ids TEXT NOT NULL DEFAULT '[]',
+			query_entities TEXT,
+			venue TEXT,
+			resource_type TEXT,
+			resource_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			alias_target TEXT,
+			source TEXT NOT NULL,
+			confidence INTEGER DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_observed_at DATETIME,
+			notes TEXT
+		)`,
+		`CREATE INDEX idx_learn_query ON search_learnings(query_pattern)`,
+		`CREATE UNIQUE INDEX idx_learn_unique ON search_learnings(query_pattern, resource_id, action)`,
+		`CREATE TABLE search_patterns (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_template TEXT NOT NULL,
+			resource_template TEXT NOT NULL,
 			resource_type TEXT NOT NULL,
 			venue TEXT,
-			action TEXT,
-			confidence INTEGER NOT NULL DEFAULT 0,
-			source TEXT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (query_pattern, resource_type)
-		)`,
-		`CREATE TABLE search_patterns (
-			template TEXT NOT NULL,
+			strategy TEXT NOT NULL,
 			entity_kind TEXT NOT NULL,
-			confidence INTEGER NOT NULL DEFAULT 0,
-			source TEXT,
+			confidence INTEGER NOT NULL DEFAULT 2,
+			source TEXT NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (template, entity_kind)
+			last_observed_at DATETIME,
+			example_query TEXT,
+			example_resource TEXT
 		)`,
+		`CREATE UNIQUE INDEX idx_patterns_unique ON search_patterns(query_template, resource_template, strategy)`,
 		`CREATE TABLE entity_lookups (
-			canonical TEXT NOT NULL,
-			alias TEXT NOT NULL,
 			kind TEXT NOT NULL,
-			source TEXT,
+			canonical TEXT NOT NULL,
+			value TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'seeded',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE (canonical, alias, kind)
+			PRIMARY KEY (kind, canonical, value)
 		)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -73,11 +85,11 @@ func seedRecallResource(t *testing.T, db *sql.DB, rt, id, data string) {
 	}
 }
 
-func seedLearning(t *testing.T, db *sql.DB, qp, entitiesJSON, idsJSON, rt, action string, confidence int) {
+func seedLearning(t *testing.T, db *sql.DB, qp, entitiesJSON, resourceID, rt, action string, confidence int) {
 	t.Helper()
-	if _, err := db.Exec(`INSERT INTO search_learnings (query_pattern, query_entities, resource_ids, resource_type, venue, action, confidence, source)
-		VALUES (?, ?, ?, ?, '', ?, ?, 'taught')`,
-		qp, entitiesJSON, idsJSON, rt, action, confidence); err != nil {
+	if _, err := db.Exec(`INSERT INTO search_learnings (query_pattern, query_entities, resource_id, resource_type, venue, action, confidence, source, last_observed_at)
+		VALUES (?, ?, ?, ?, '', ?, ?, 'taught', CURRENT_TIMESTAMP)`,
+		qp, entitiesJSON, resourceID, rt, action, confidence); err != nil {
 		t.Fatalf("seed learning: %v", err)
 	}
 }
@@ -86,12 +98,9 @@ func TestRecall_HappyPath(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
 	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
-	// Stored query_pattern is the non-entity normalized form, the
-	// shape Teach writes ("widget"); query_entities holds the
-	// case-preserving entity tokens. This mirrors what production Teach
-	// produces and what the recall path's Normalize-then-Jaccard
-	// matcher expects.
-	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
+	// Stored query_pattern is the non-entity normalized form; query_entities
+	// holds the case-preserving entity tokens.
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
 
 	got, err := Recall(context.Background(), db, "Alpha widget", Opts{
 		EntityConfig:       testConfig(),
@@ -121,7 +130,6 @@ func TestRecall_Miss(t *testing.T) {
 	if got.Found {
 		t.Errorf("want Found=false, got %+v", got)
 	}
-	// Top-level warning should fire when nothing matches at all.
 	found := false
 	for _, w := range got.Warnings {
 		if w == TopWarningNoLearningsForQueryFamily {
@@ -137,7 +145,7 @@ func TestRecall_Miss(t *testing.T) {
 func TestRecall_NoLearnReturnsEmpty(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
-	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
 	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig(), NoLearn: true})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
@@ -150,7 +158,7 @@ func TestRecall_NoLearnReturnsEmpty(t *testing.T) {
 func TestRecall_ConfidenceFloor(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
-	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 1)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 1)
 	// MinConfidence=3 should drop the row.
 	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig(), MinConfidence: 3})
 	if err != nil {
@@ -165,7 +173,7 @@ func TestRecall_EntityMismatchFiltersToMismatches(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
 	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
-	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
 	// Query a different entity entirely.
 	got, err := Recall(context.Background(), db, "Bravo widget", Opts{
 		EntityConfig:       testConfig(),
@@ -187,7 +195,7 @@ func TestRecall_DebugMismatchesGate(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
 	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
-	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
 	got, err := Recall(context.Background(), db, "Bravo widget", Opts{
 		EntityConfig:       testConfig(),
 		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
@@ -204,7 +212,7 @@ func TestRecall_LowConfidenceWarning(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
 	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
-	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 1)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 1)
 	got, err := Recall(context.Background(), db, "Alpha widget", Opts{
 		EntityConfig:       testConfig(),
 		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
@@ -231,7 +239,7 @@ func TestRecall_ResourceNotInStoreWarning(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
 	// No seeded resource; the recall still finds the learning row.
-	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
 	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig()})
 	if err != nil {
 		t.Fatalf("recall: %v", err)

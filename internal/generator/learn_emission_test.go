@@ -167,7 +167,7 @@ func TestGenerateLearnInitWiresSpec(t *testing.T) {
 		`"wins"`,
 		`map[string][]lookups.SeedConfig`,
 		`"country"`,
-		`{Canonical: "US", Aliases: []string{"USA", "America"}}`,
+		`{Canonical: "US", Values: []string{"USA", "America"}}`,
 		`lookups.SeedFromConfig(db, seeds)`,
 		`learnInitOnce`,
 	} {

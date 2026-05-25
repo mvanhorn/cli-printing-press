@@ -7,34 +7,30 @@ import (
 	"testing"
 )
 
-func TestSeedFromConfig_InsertsCanonicalAndAliases(t *testing.T) {
+func TestSeedFromConfig_InsertsCanonicalAndValues(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	seeds := map[string][]SeedConfig{
 		"team_code": {
-			{Canonical: "Alpha", Aliases: []string{"ALP", "Alpha United"}},
-			{Canonical: "Bravo", Aliases: []string{"BRV"}},
+			{Canonical: "Alpha", Values: []string{"ALP", "Alpha United"}},
+			{Canonical: "Bravo", Values: []string{"BRV"}},
 		},
 	}
 	inserted, err := SeedFromConfig(db, seeds)
 	if err != nil {
 		t.Fatalf("SeedFromConfig: %v", err)
 	}
-	// Expect 5 rows: 2 canonicals + 3 aliases.
+	// Expect 5 rows: 2 canonicals + 3 values.
 	if inserted != 5 {
 		t.Errorf("inserted = %d, want 5", inserted)
 	}
-	// Canonical lookups should return the canonical itself.
 	got, ok, err := Lookup(db, "team_code", "Alpha")
 	if err != nil || !ok {
 		t.Fatalf("Lookup Alpha: ok=%v err=%v", ok, err)
 	}
-	// Source-priority sort puts whichever row landed first ("Alpha" or "ALP" or "Alpha United") at the top.
-	// All three are valid aliases — just confirm we got something non-empty.
 	if got == "" {
 		t.Errorf("Lookup Alpha returned empty")
 	}
-	// LookupAll must surface canonical + both aliases.
 	all, err := LookupAll(db, "team_code", "Alpha")
 	if err != nil {
 		t.Fatalf("LookupAll: %v", err)
@@ -48,7 +44,7 @@ func TestSeedFromConfig_Idempotent(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 	seeds := map[string][]SeedConfig{
-		"team_code": { {Canonical: "Alpha", Aliases: []string{"ALP"}} },
+		"team_code": { {Canonical: "Alpha", Values: []string{"ALP"}} },
 	}
 	n1, err := SeedFromConfig(db, seeds)
 	if err != nil {
@@ -86,22 +82,22 @@ func TestSeedFromConfig_EmptyMapNoop(t *testing.T) {
 	}
 }
 
-func TestSeedFromConfig_CanonicalAsItsOwnAlias(t *testing.T) {
+func TestSeedFromConfig_CanonicalAsItsOwnValue(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
-	// Author lists the canonical explicitly in Aliases; UNIQUE constraint
+	// Author lists the canonical explicitly in Values; PK constraint
 	// should silence the duplicate.
 	seeds := map[string][]SeedConfig{
-		"team_code": { {Canonical: "Alpha", Aliases: []string{"Alpha", "ALP"}} },
+		"team_code": { {Canonical: "Alpha", Values: []string{"Alpha", "ALP"}} },
 	}
 	inserted, err := SeedFromConfig(db, seeds)
 	if err != nil {
 		t.Fatalf("SeedFromConfig: %v", err)
 	}
 	// (Alpha, Alpha) + (Alpha, ALP) + auto-added (Alpha, Alpha) -> first
-	// dedupes to 1 because the UNIQUE silences the second insert. Expect
+	// dedupes to 1 because the PK silences the second insert. Expect
 	// 2 rows total.
 	if inserted != 2 {
-		t.Errorf("inserted = %d, want 2 (UNIQUE silences canonical dup)", inserted)
+		t.Errorf("inserted = %d, want 2 (PK silences canonical dup)", inserted)
 	}
 }

@@ -102,7 +102,7 @@ func TestPreseedRun_TaughtRowPreserved(t *testing.T) {
 	t.Cleanup(ResetScannersForTest)
 	db := openRecallTestDB(t)
 	// User taught the row first at confidence=3.
-	seedLearning(t, db, "alpha widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
+	seedLearning(t, db, "alpha widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
 	Register("widgets", staticScanner([]PreseedRow{
 		{QueryPattern: "alpha widget", ResourceID: "PREFIX-AL", ResourceType: "widgets"},
 	}, nil))
