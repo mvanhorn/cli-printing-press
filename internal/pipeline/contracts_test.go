@@ -222,6 +222,25 @@ func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	assert.Contains(t, block, `https://go.dev/dl/`)
 }
 
+func TestPrintingPressSkillDistinguishesBearerFromRawAPIKey(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	block := substringBetween(t, skill, "### Pre-Generation Auth Enrichment", "**Why enrich before generation")
+
+	assert.Contains(t, block, "choose the security scheme by wire format")
+	assert.Contains(t, block, "Authorization: Bearer <token>")
+	assert.Contains(t, block, "model it as `http` bearer")
+	assert.Contains(t, block, "no scheme prefix")
+	assert.Contains(t, block, "model it")
+	assert.Contains(t, block, "as `apiKey`")
+	assert.Contains(t, block, "Do not")
+	assert.Contains(t, block, "switch to `apiKey` just to attach the richer metadata.")
+	assert.Contains(t, block, "type: http")
+	assert.Contains(t, block, "scheme: bearer")
+	assert.Contains(t, block, "bearerFormat: xoxp")
+	assert.Contains(t, block, "rawHeaderKey:")
+	assert.Contains(t, block, "name: X-API-Key")
+}
+
 func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	template := substringBetween(t, skill, "#### Verify-friendly RunE template", "If the command reads a file or directory")
