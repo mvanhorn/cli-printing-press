@@ -625,9 +625,9 @@ func newMCPClient() (*client.Client, error) {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 {{- if eq .SpecSource "sniffed"}}
-	c := client.New(cfg, 30*time.Second, 2)
+	c := client.New(cfg, 60*time.Second, 2)
 {{- else}}
-	c := client.New(cfg, 30*time.Second, 0)
+	c := client.New(cfg, 60*time.Second, 0)
 {{- end}}
 	// Agents calling through MCP need fresh data every call. The on-disk
 	// response cache survives across MCP server invocations, so a
