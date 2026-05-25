@@ -353,6 +353,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"publicFlagName":           publicFlagName,
 		"publicFlagAliases":        publicFlagAliases,
 		"flagChangedExpr":          flagChangedExpr,
+		"graphqlListParams":        graphqlListParams,
+		"graphqlVariableType":      graphqlVariableType,
 		"mcpInputName":             mcpInputName,
 		"mcpParamBindings":         mcpParamBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
@@ -5767,6 +5769,44 @@ func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []str
 		return []string{"id"}
 	}
 	return fields
+}
+
+// graphqlListParams returns the GraphQL list arguments this generator knows how
+// to render into the query document and command variables map.
+func graphqlListParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params))
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam {
+			continue
+		}
+		switch p.Name {
+		case "first", "after", "query":
+		default:
+			continue
+		}
+		params = append(params, p)
+	}
+	return params
+}
+
+func graphqlVariableType(p spec.Param) string {
+	var typ string
+	switch primitiveKind(p.Type) {
+	case "int":
+		typ = "Int"
+	case "float":
+		typ = "Float"
+	case "bool":
+		typ = "Boolean"
+	case "array":
+		typ = "[String!]"
+	default:
+		typ = "String"
+	}
+	if p.Required || strings.EqualFold(p.Name, "first") {
+		typ += "!"
+	}
+	return typ
 }
 
 type templateEndpoint struct {
