@@ -57,6 +57,13 @@ issue is an action surface. Optimize the issue path for speed and signal:
 - **Run issue creates and comments in parallel.** Each WU's filing is
   independent of every other WU. Background subshells writing to indexed
   temp files, then `wait`, then read in order — the pattern is in Step 3.
+  - **Anti-pattern:** Do not use `URL=$(gh issue create ... &)` or
+    `URL=$(gh issue comment ... &)`. The `&` runs inside the command
+    substitution subshell, the subshell exits before `gh` finishes, `URL`
+    is empty, and the still-running `gh` process can create or comment
+    successfully in the background. Retrying then produces duplicate work.
+    Use Step 3's `(gh ... > "$ISSUE_TMPDIR/issue-$wu_idx") &` capture-file
+    shape instead.
 
 ## Step 1: Ensure labels exist (idempotent, create-only)
 
@@ -369,6 +376,7 @@ declare -a OUTCOME_KIND OUTCOME_URL OUTCOME_TITLE OUTCOME_PRIORITY OUTCOME_COMP 
 declare -a FAILED_ISSUES
 
 ISSUE_TMPDIR=$(mktemp -d)
+ISSUE_RUN_START_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   (
@@ -446,6 +454,25 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
 done
 
 wait
+
+# Defensive duplicate detector. If an agent accidentally used the malformed
+# `URL=$(gh issue create ... &)` shortcut outside this reference, those
+# backgrounded issue creates may succeed even though the captured URL is empty.
+# More issues created by the current user since the run began than total WUs is
+# the signal that parallel filing leaked extra issues.
+RECENT_CREATED_LINES=$(gh issue list \
+  --repo "$REPO" \
+  --author @me \
+  --search "created:>=$ISSUE_RUN_START_ISO" \
+  --json number,title \
+  --jq '.[] | "#\(.number) \(.title)"' \
+  --limit 100 2>/dev/null || true)
+RECENT_CREATED_COUNT=$(printf '%s\n' "$RECENT_CREATED_LINES" | sed '/^$/d' | wc -l | tr -d ' ')
+if [ "$RECENT_CREATED_COUNT" -gt "${#SORTED_WORK_UNITS[@]}" ]; then
+  printf 'WARNING: %s issue(s) were created by the current user since %s, but this retro has %s WU(s). Check for duplicate issues before presenting results.\n' \
+    "$RECENT_CREATED_COUNT" "$ISSUE_RUN_START_ISO" "${#SORTED_WORK_UNITS[@]}" >&2
+  printf '%s\n' "$RECENT_CREATED_LINES" | sed 's/^/  /' >&2
+fi
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   {
