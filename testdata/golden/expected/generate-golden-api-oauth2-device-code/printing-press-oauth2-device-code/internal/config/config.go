@@ -23,17 +23,21 @@ type Config struct {
 	TokenExpiry   time.Time         `toml:"token_expiry"`
 	ClientID      string            `toml:"client_id"`
 	ClientSecret  string            `toml:"client_secret"`
+	// DeviceAuthorizationURL overrides the spec-baked OAuth2 device authorization endpoint.
+	// Falls back to the generator default at the call site when empty so a
+	// user pointing the CLI at a non-default deployment can override without
+	// regenerating.
+	DeviceAuthorizationURL string `toml:"device_authorization_url,omitempty"`
 	// TokenURL overrides the spec-baked OAuth2 token endpoint. Same fallback
 	// pattern as AuthorizationURL.
-	TokenURL                        string `toml:"token_url,omitempty"`
-	Path                            string `toml:"-"`
-	PrintingPressOauth2ClientId     string `toml:"press_oauth2_client_id"`
-	PrintingPressOauth2ClientSecret string `toml:"press_oauth2_client_secret"`
+	TokenURL           string `toml:"token_url,omitempty"`
+	Path               string `toml:"-"`
+	DeviceCodeClientId string `toml:"code_client_id"`
 }
 
 func Load(configPath string) (*Config, error) {
 	cfg := &Config{
-		BaseURL: "https://api.cc.example/v1",
+		BaseURL: "https://api.device.example/v1",
 	}
 
 	// Resolve config path
@@ -56,13 +60,9 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Env var overrides
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID"); v != "" {
-		cfg.PrintingPressOauth2ClientId = v
-		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
-	}
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET"); v != "" {
-		cfg.PrintingPressOauth2ClientSecret = v
-		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_SECRET"
+	if v := os.Getenv("DEVICE_CODE_CLIENT_ID"); v != "" {
+		cfg.DeviceCodeClientId = v
+		cfg.AuthSource = "env:DEVICE_CODE_CLIENT_ID"
 	}
 
 	// Label config-file-derived credentials so doctor can distinguish
@@ -76,16 +76,16 @@ func Load(configPath string) (*Config, error) {
 	if cfg.AuthSource == "" && (cfg.AuthHeaderVal != "" || cfg.AccessToken != "") {
 		cfg.AuthSource = "config"
 	}
-	if cfg.AuthSource == "" && cfg.PrintingPressOauth2ClientId != "" {
-		cfg.AuthSource = "config"
-	}
-	if cfg.AuthSource == "" && cfg.PrintingPressOauth2ClientSecret != "" {
+	if cfg.AuthSource == "" && cfg.DeviceCodeClientId != "" {
 		cfg.AuthSource = "config"
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
 	if v := os.Getenv("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
 		cfg.BaseURL = v
+	}
+	if v := os.Getenv("PRINTING_PRESS_OAUTH2_DEVICE_AUTHORIZATION_URL"); v != "" {
+		cfg.DeviceAuthorizationURL = v
 	}
 	if v := os.Getenv("PRINTING_PRESS_OAUTH2_TOKEN_URL"); v != "" {
 		cfg.TokenURL = v
@@ -146,8 +146,7 @@ func (c *Config) ClearTokens() error {
 	c.TokenExpiry = time.Time{}
 	c.ClientID = ""
 	c.ClientSecret = ""
-	c.PrintingPressOauth2ClientId = ""
-	c.PrintingPressOauth2ClientSecret = ""
+	c.DeviceCodeClientId = ""
 	return c.save()
 }
 

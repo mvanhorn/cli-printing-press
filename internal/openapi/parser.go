@@ -39,6 +39,7 @@ const (
 	extensionAuthDescription       = "x-auth-description"
 	extensionAuthCompanion         = "x-auth-companion"
 	extensionAuthSubtype           = "x-auth-subtype"
+	extensionOAuthDeviceFlow       = "x-oauth-device-flow"
 	extensionOAuthRefreshTokenMech = "x-oauth-refresh-token-mechanism"
 	extensionSpeakeasyExample      = "x-speakeasy-example"
 	extensionTierRouting           = "x-tier-routing"
@@ -1352,6 +1353,7 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	if auth == nil || len(extensions) == 0 {
 		return
 	}
+	applyOAuthDeviceFlowExtension(auth, extensions)
 	if envVars := stringListExtension(extensions, extensionAuthEnvVars); len(envVars) > 0 {
 		applyAuthEnvVars(auth, envVars)
 	} else if len(auth.EnvVars) == 1 {
@@ -1389,6 +1391,72 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 		auth.RefreshTokenMechanism = mech
 	}
 	applyAuthCompanionExtension(auth, extensions)
+}
+
+// applyOAuthDeviceFlowExtension reads x-oauth-device-flow from an OAuth2
+// security scheme. OpenAPI 3.0 has no native device-code flow field, so the
+// extension carries the device authorization endpoint plus token metadata.
+func applyOAuthDeviceFlowExtension(auth *spec.AuthConfig, extensions map[string]any) {
+	if auth == nil || len(extensions) == 0 {
+		return
+	}
+	raw, ok := extensions[extensionOAuthDeviceFlow]
+	if !ok {
+		return
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		warnf("%s is malformed: expected an object", extensionOAuthDeviceFlow)
+		return
+	}
+	auth.Type = "bearer_token"
+	auth.Header = "Authorization"
+	auth.OAuth2Grant = spec.OAuth2GrantDeviceCode
+	auth.EnvVars = nil
+	auth.EnvVarSpecs = nil
+	if v := stringObjectField(obj, "deviceAuthorizationUrl", "device_authorization_url"); v != "" {
+		auth.DeviceAuthorizationURL = v
+	}
+	if v := stringObjectField(obj, "tokenUrl", "token_url"); v != "" {
+		auth.TokenURL = v
+	}
+	if v := stringObjectField(obj, "defaultClientId", "default_client_id"); v != "" {
+		auth.DefaultClientID = v
+	}
+	if scopes := stringListObjectField(obj, "scopes"); len(scopes) > 0 {
+		auth.Scopes = scopes
+		sort.Strings(auth.Scopes)
+	}
+}
+
+func stringObjectField(obj map[string]any, names ...string) string {
+	for _, name := range names {
+		raw, ok := obj[name]
+		if !ok {
+			continue
+		}
+		s, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		if s = strings.TrimSpace(s); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func stringListObjectField(obj map[string]any, names ...string) []string {
+	for _, name := range names {
+		raw, ok := obj[name]
+		if !ok {
+			continue
+		}
+		if values := stringListValue(raw); len(values) > 0 {
+			return values
+		}
+	}
+	return nil
 }
 
 // applyAuthCompanionExtension reads x-auth-companion from a map of OpenAPI
@@ -1481,6 +1549,23 @@ func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
 			},
 		}
 		auth.EnvVars = []string{auth.EnvVarSpecs[0].Name, auth.EnvVarSpecs[1].Name}
+		return
+	}
+	if auth.OAuth2Grant == spec.OAuth2GrantDeviceCode {
+		envVarName := envPrefix + "_CLIENT_ID"
+		if len(auth.EnvVars) > 0 && strings.TrimSpace(auth.EnvVars[0]) != "" {
+			envVarName = strings.TrimSpace(auth.EnvVars[0])
+		}
+		auth.EnvVarSpecs = []spec.AuthEnvVar{
+			{
+				Name:      envVarName,
+				Kind:      spec.AuthEnvVarKindAuthFlowInput,
+				Required:  strings.TrimSpace(auth.DefaultClientID) == "",
+				Sensitive: false,
+				Inferred:  true,
+			},
+		}
+		auth.EnvVars = []string{auth.EnvVarSpecs[0].Name}
 		return
 	}
 	if len(auth.EnvVars) == 0 {
@@ -1736,6 +1821,10 @@ func stringListExtension(extensions map[string]any, name string) []string {
 	if !ok {
 		return nil
 	}
+	return stringListValue(value)
+}
+
+func stringListValue(value any) []string {
 	switch v := value.(type) {
 	case []string:
 		var out []string
@@ -2501,6 +2590,9 @@ func schemePriorityScore(scheme *openapi3.SecurityScheme) int {
 		}
 		return schemePriorityHTTPOther
 	case "oauth2":
+		if _, ok := scheme.Extensions[extensionOAuthDeviceFlow]; ok {
+			return schemePriorityOAuth2AuthCode
+		}
 		if scheme.Flows != nil {
 			if cc := scheme.Flows.ClientCredentials; cc != nil && strings.TrimSpace(cc.TokenURL) != "" {
 				return schemePriorityOAuth2CC

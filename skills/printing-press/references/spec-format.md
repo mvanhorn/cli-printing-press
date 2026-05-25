@@ -20,6 +20,11 @@ auth:                             # object (AuthConfig)
   type: api_key                   # string: api_key | oauth2 | bearer_token | none
   header: "Authorization"        # string header name to set
   format: "Bearer {token}"       # string format template for auth header value
+  oauth2_grant: device_code       # string optional: authorization_code | client_credentials | device_code
+  device_authorization_url: "https://login.example.com/device" # required for device_code
+  token_url: "https://login.example.com/token" # OAuth token/refresh endpoint
+  scopes: ["read"]                # []string optional OAuth scopes
+  default_client_id: "public-client-id" # string optional public OAuth client id
   env_vars:                       # []string env vars used for auth material
     - EXAMPLE_API_TOKEN
   scheme: bearerAuth              # string optional OpenAPI security scheme name
