@@ -322,6 +322,45 @@ func TestParseBodyObjectSchemaJSON(t *testing.T) {
 	assert.Equal(t, "object", body[1].Type)
 }
 
+func TestParseBodyNullIsEmpty(t *testing.T) {
+	yamlSpec := []byte(`
+name: null-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      yamlNull:
+        method: POST
+        path: /graphql
+        body: ~
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, s.Resources["queries"].Endpoints["yamlNull"].Body)
+
+	jsonSpec := []byte(`{
+  "name": "null-body-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "queries": {
+      "endpoints": {
+        "jsonNull": {
+          "method": "POST",
+          "path": "/graphql",
+          "body": null
+        }
+      }
+    }
+  }
+}`)
+	s, err = ParseBytes(jsonSpec)
+	require.NoError(t, err)
+	assert.Empty(t, s.Resources["queries"].Endpoints["jsonNull"].Body)
+}
+
 func TestParseBodyObjectSchemaMalformed(t *testing.T) {
 	tests := []struct {
 		name string

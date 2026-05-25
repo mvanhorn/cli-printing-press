@@ -1929,6 +1929,9 @@ func endpointBodyFromYAMLNode(value *yaml.Node) ([]Param, error) {
 	if value == nil {
 		return nil, nil
 	}
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		return nil, nil
+	}
 	switch value.Kind {
 	case yaml.SequenceNode:
 		var body []Param
