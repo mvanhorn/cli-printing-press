@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/discovery"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -83,8 +84,10 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 	auth, authWarnings := detectAuthWithWarnings(capture, apiEntries, name)
 
 	groups := deduplicateSpecEndpoints(regularEntries, options)
+	inferredTypes := newResponseTypeBuilder()
 	for _, group := range groups {
-		endpoint := buildEndpoint(group, auth)
+		endpoint, responseFields := buildEndpoint(group, auth)
+		inferredTypes.addEndpointTypes(group.NormalizedPath, &endpoint, responseFields)
 		if options.PreserveHosts {
 			groupBaseURL := mostCommonBaseURL(group.Entries)
 			if groupBaseURL != "" && groupBaseURL != baseURL {
@@ -126,7 +129,7 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
 		},
 		Resources: resources,
-		Types:     map[string]spec.TypeDef{},
+		Types:     inferredTypes.types,
 	}
 
 	if err := apiSpec.Validate(); err != nil {
@@ -595,7 +598,7 @@ func DefaultCachePath(name string) string {
 	return filepath.Join(home, ".cache", "printing-press", "sniff", name+"-spec.yaml")
 }
 
-func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) spec.Endpoint {
+func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) (spec.Endpoint, []spec.Param) {
 	responseBodies := make([]string, 0, len(group.Entries))
 	for _, entry := range group.Entries {
 		if strings.TrimSpace(entry.ResponseBody) != "" {
@@ -636,7 +639,175 @@ func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) spec.Endpoint {
 		endpoint.HTMLExtract = inferHTMLExtract(group)
 		endpoint.Description = htmlEndpointDescription(group)
 	}
-	return endpoint
+	return endpoint, responseFields
+}
+
+type responseTypeBuilder struct {
+	types map[string]spec.TypeDef
+	used  map[string]int
+}
+
+func newResponseTypeBuilder() *responseTypeBuilder {
+	return &responseTypeBuilder{
+		types: map[string]spec.TypeDef{},
+		used:  map[string]int{},
+	}
+}
+
+func (b *responseTypeBuilder) addEndpointTypes(path string, endpoint *spec.Endpoint, fields []spec.Param) {
+	if b == nil || endpoint == nil || endpoint.ResponseFormat == spec.ResponseFormatHTML {
+		return
+	}
+	if len(fields) == 0 {
+		return
+	}
+	baseName := typeNameFromPath(path, "response")
+	if collection := firstCollectionField(fields); collection != nil && len(collection.Fields) > 0 {
+		typeName := b.addType(typeNameFromPath(path, singularize(collection.Name)), collection.Fields)
+		endpoint.Response = spec.ResponseDef{Type: "array", Item: typeName}
+		endpoint.ResponsePath = collection.Name
+		return
+	}
+	typeName := b.addType(baseName, fields)
+	endpoint.Response = spec.ResponseDef{Type: endpoint.Response.Type, Item: typeName}
+}
+
+func firstCollectionField(fields []spec.Param) *spec.Param {
+	candidates := make([]*spec.Param, 0, len(fields))
+	for i := range fields {
+		if fields[i].Type == "array" && len(fields[i].Fields) > 0 {
+			candidates = append(candidates, &fields[i])
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	for _, preferred := range []string{"items", "data", "results", "records", "values"} {
+		for _, candidate := range candidates {
+			if strings.EqualFold(candidate.Name, preferred) {
+				return candidate
+			}
+		}
+	}
+	return candidates[0]
+}
+
+func (b *responseTypeBuilder) addType(preferredName string, params []spec.Param) string {
+	if len(params) == 0 {
+		return ""
+	}
+	typeName := b.reserveTypeName(preferredName)
+	fields := make([]spec.TypeField, 0, len(params))
+	for _, param := range params {
+		field := spec.TypeField{
+			Name:      param.Name,
+			Type:      responseFieldType(param.Type),
+			Enum:      param.Enum,
+			OmitEmpty: !param.Required,
+			Format:    param.Format,
+		}
+		switch {
+		case param.Type == "object" && len(param.Fields) > 0:
+			childName := b.addType(typeNameFromField(param.Name), param.Fields)
+			if childName != "" {
+				field.Type = "ref:" + childName
+			}
+		case param.Type == "array" && len(param.Fields) > 0:
+			childName := b.addType(typeNameFromField(singularize(param.Name)), param.Fields)
+			if childName != "" {
+				field.Type = "[]ref:" + childName
+			}
+		}
+		fields = append(fields, field)
+	}
+	b.types[typeName] = spec.TypeDef{Fields: fields}
+	return typeName
+}
+
+func (b *responseTypeBuilder) reserveTypeName(preferredName string) string {
+	base := safeSampleTypeName(preferredName)
+	if base == "" {
+		base = "Response"
+	}
+	count := b.used[base]
+	b.used[base] = count + 1
+	if count == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s%d", base, count+1)
+}
+
+func responseFieldType(t string) string {
+	switch t {
+	case "boolean":
+		return "bool"
+	case "integer":
+		return "integer"
+	case "number":
+		return "number"
+	case "array":
+		return "array"
+	case "object":
+		return "object"
+	default:
+		return "string"
+	}
+}
+
+func typeNameFromPath(path string, fallback string) string {
+	segments := discovery.SignificantSegments(path)
+	if len(segments) == 0 {
+		return typeNameFromField(fallback)
+	}
+	base := singularize(segments[len(segments)-1])
+	suffix := singularize(fallback)
+	if suffix != "" && suffix != "response" && !strings.EqualFold(base, suffix) {
+		return typeNameFromField(base + "_" + suffix)
+	}
+	return typeNameFromField(base)
+}
+
+func typeNameFromField(name string) string {
+	ascii := naming.ASCIIFold(name)
+	parts := strings.FieldsFunc(ascii, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, "")
+}
+
+func safeSampleTypeName(name string) string {
+	name = typeNameFromField(name)
+	if name == "" {
+		return ""
+	}
+	if !unicode.IsLetter(rune(name[0])) {
+		return "T" + name
+	}
+	return name
+}
+
+func singularize(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.HasSuffix(lower, "ies") && len(name) > 3:
+		return name[:len(name)-3] + "y"
+	case strings.HasSuffix(lower, "s") && !strings.HasSuffix(lower, "ss") && !strings.HasSuffix(lower, "us") && len(name) > 1:
+		return name[:len(name)-1]
+	default:
+		return name
+	}
 }
 
 func discoverHTMLSurfaceEntries(entries []EnrichedEntry, targetURL string) []EnrichedEntry {
