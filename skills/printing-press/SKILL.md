@@ -2673,7 +2673,7 @@ Priority 3 (polish):
 
 ### Agent Build Checklist (per command)
 
-After building each command in Priority 1 and Priority 2, verify these 10 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
+After building each command in Priority 1 and Priority 2, verify these 11 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
 
 1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
 2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON should use the generated receiver-style helper, `flags.printJSON(cmd, v)`, or call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` directly. Both route through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
@@ -2703,6 +2703,11 @@ After building each command in Priority 1 and Priority 2, verify these 10 princi
      ```
      Distinct from `IsVerifyEnv`: dogfood is a real-API matrix, so curtail work (paginate once, smaller `--limit`), never substitute mock data for real calls.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
+11. **Parallel-fetch partial failures**: any command that fans out N API calls and computes an aggregate (averages, rollups, comparisons, cross-source merges, digest summaries) MUST preserve each fetch error through the result channel and exclude error-tagged entries from totals and denominators. Failed fetches may still appear in the response so the caller can see the gap, but they must not become zero-valued phantom rows that dilute averages or counts. Surface the partial failure explicitly with:
+   - a stderr warning that names the failed count and the actual aggregation denominator, for example `warning: 2 of 10 fetches failed; averages computed over the remaining 8 items`
+   - a `fetch_failures` field in the JSON response envelope listing the failed entries and error messages
+
+Silently averaging phantom zeros is worse than reporting a partial result.
 
 #### Verify-friendly RunE template
 
@@ -2900,6 +2905,101 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return enc.Encode(view)
 	}
 	// Human/terminal output (table or pretty print).
+	return nil
+},
+```
+
+**RunE skeleton — parallel-fetch aggregation shape** (live fan-out with partial-failure accounting):
+
+Use this shape when a novel command fetches multiple items concurrently and computes a rollup, average, comparison, digest, or cross-source merge. The key invariant is that `err` travels with each result until aggregation, and error-tagged entries are excluded from all totals and denominators.
+
+```go
+RunE: func(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+		return cmd.Help()
+	}
+	if dryRunOK(flags) {
+		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource> details")
+		return nil
+	}
+	if <required input missing> {
+		_ = cmd.Usage()
+		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+	}
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+	type fetchResult struct {
+		idx   int
+		id    string
+		entry yourEntryType
+		err   error
+	}
+	ids := []string{} // derive from args, flags, or an initial list endpoint
+	results := make(chan fetchResult, len(ids))
+	var wg sync.WaitGroup
+	for idx, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data, err := c.Get("/api/v1/resource/"+url.PathEscape(id), nil)
+			if err != nil {
+				results <- fetchResult{idx: idx, id: id, err: err}
+				return
+			}
+			entry, err := parseEntry(data)
+			results <- fetchResult{idx: idx, id: id, entry: entry, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	ordered := make([]yourEntryType, len(ids))
+	fetchErrors := make([]error, len(ids))
+	for r := range results {
+		ordered[r.idx] = r.entry
+		if r.err != nil {
+			fetchErrors[r.idx] = r.err
+		}
+	}
+	var failures []fetchFailure
+	var successfulItems []yourEntryType
+	var total float64
+	var denominator int
+	for idx, entry := range ordered {
+		if fetchErrors[idx] != nil {
+			failures = append(failures, fetchFailure{
+				ID:    ids[idx],
+				Error: fetchErrors[idx].Error(),
+			})
+			continue
+		}
+		successfulItems = append(successfulItems, entry)
+		total += entry.Metric
+		denominator++
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d of %d fetches failed; averages computed over the remaining %d items\n", len(failures), len(ids), denominator)
+	}
+	view := yourAggregateView{
+		Items:         successfulItems,
+		AverageMetric: safeAverage(total, denominator),
+		FetchFailures: failures, // json tag: `json:"fetch_failures,omitempty"`
+	}
+	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(view)
+	}
+	// Human/terminal output, including a visible partial-failure note.
+	for _, entry := range view.Items {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%.2f\n", entry.Name, entry.Metric)
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "\npartial results: %d of %d fetches failed; average computed over %d items\n", len(failures), len(ids), denominator)
+	}
 	return nil
 },
 ```
