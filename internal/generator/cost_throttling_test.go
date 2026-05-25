@@ -163,6 +163,8 @@ func TestGenerateCostThrottlingPrimitives(t *testing.T) {
 	mutateWithThrottleBody := generatedFunctionBody(t, graphqlGo, "func (c *Client) mutateWithThrottle(")
 	assert.Contains(t, mutateWithThrottleBody, "c.Post(ctx, graphqlEndpointPath",
 		"throttle-aware GraphQL mutations must keep the verify-gated POST helper")
+	assert.NotContains(t, mutateWithThrottleBody, "c.PostQueryWithParams(ctx, graphqlEndpointPath",
+		"throttle-aware GraphQL mutations must not use the read-only POST helper")
 	assert.Contains(t, mutateWithThrottleBody, "c.graphqlWithThrottle",
 		"throttle-aware GraphQL mutations must preserve cost-budget handling")
 

@@ -11495,6 +11495,8 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 	mutateBody := generatedFunctionBody(t, graphqlGo, "func (c *Client) Mutate(")
 	assert.Contains(t, mutateBody, "c.Post(ctx, graphqlEndpointPath",
 		"GraphQL mutations must stay on the verify-gated POST helper")
+	assert.NotContains(t, mutateBody, "c.PostQueryWithParams(ctx, graphqlEndpointPath",
+		"GraphQL mutations must not use the read-only POST helper")
 
 	// The config struct must carry the templated BaseURL through unchanged so
 	// PR-2 can resolve {shop} against SHOPIFY_SHOP at Load() time without
