@@ -115,9 +115,8 @@ func normalizeAndTokens(s string) (string, map[string]struct{}) {
 // QueryEntities is the optional precomputed entity slice the caller
 // extracted from the raw (pre-normalization) Query. When non-nil it
 // is JSON-marshaled and written to the search_learnings.query_entities
-// column on insert. When nil, the column is left NULL — the v3->v4
-// migration backfill or a future re-Open pass will populate it on a
-// later run.
+// column on insert. When nil, the column is left NULL; a future
+// re-Open pass or manual backfill can populate it from the raw query.
 //
 // Why caller-provided rather than auto-extracted here: the store
 // package is domain-agnostic by design (see learnings.go's package
@@ -228,9 +227,6 @@ func (s *Store) UpsertLearning(in UpsertLearningInput) (int64, bool, error) {
 		// provide entities at all." json.Marshal turns nil into
 		// "null"; we handle the nil branch above to leave NULL.
 		ents := in.QueryEntities
-		if ents == nil {
-			ents = []string{}
-		}
 		b, err := json.Marshal(ents)
 		if err != nil {
 			return 0, false, fmt.Errorf("marshal query entities: %w", err)
@@ -650,8 +646,8 @@ func (s *Store) Apply(ctx context.Context, query string, ap Applier) (ApplyResul
 	}
 	if len(cycleSrcs) > 0 {
 		srcs := make([]string, 0, len(cycleSrcs))
-		for s := range cycleSrcs {
-			srcs = append(srcs, s)
+		for src := range cycleSrcs {
+			srcs = append(srcs, src)
 		}
 		result.Warnings = append(result.Warnings, fmt.Sprintf("alias cycle detected, dropping rules for: %s", strings.Join(srcs, ", ")))
 	}

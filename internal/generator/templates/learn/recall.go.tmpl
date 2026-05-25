@@ -144,9 +144,9 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		return result, nil
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT id, query_pattern, COALESCE(query_entities, ''),
+	rows, err := db.QueryContext(ctx, `SELECT query_pattern, COALESCE(query_entities, ''),
 		COALESCE(venue, ''), COALESCE(resource_type, ''), resource_id, action,
-		COALESCE(alias_target, ''), source, confidence, created_at, last_observed_at, COALESCE(notes, '')
+		COALESCE(alias_target, ''), source, confidence, created_at, last_observed_at
 		FROM search_learnings
 		WHERE confidence >= ?`, minConf)
 	if err != nil {
@@ -159,7 +159,6 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 
 	for rows.Next() {
 		var (
-			id             int64
 			queryPattern   string
 			storedEntities string
 			venue          string
@@ -171,14 +170,11 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			confidence     int
 			createdAt      time.Time
 			lastObserved   sql.NullTime
-			notes          string
 		)
-		if err := rows.Scan(&id, &queryPattern, &storedEntities, &venue, &resourceType,
-			&resourceID, &action, &aliasTarget, &source, &confidence, &createdAt, &lastObserved, &notes); err != nil {
+		if err := rows.Scan(&queryPattern, &storedEntities, &venue, &resourceType,
+			&resourceID, &action, &aliasTarget, &source, &confidence, &createdAt, &lastObserved); err != nil {
 			return result, fmt.Errorf("recall scan: %w", err)
 		}
-		_ = id
-		_ = notes
 
 		storedNorm := Normalize(queryPattern, cfg)
 		score := Jaccard(queryTokens, strings.Fields(storedNorm.NonEntityNormalized))
@@ -370,4 +366,3 @@ func entityMatchPriority(em string) int {
 		return 4
 	}
 }
-
