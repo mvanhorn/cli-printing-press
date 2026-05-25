@@ -222,6 +222,7 @@ type openAPISpec struct {
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 	HTTPTransport          string
 	OAuthScopeRequirements []oauthScopeRequirement
+	NestedDataEnvelopes    map[string]nestedDataEnvelopeFixture
 	// ParamDefaults maps a positional placeholder name (lowercase) to its
 	// spec-declared default value, when one is set. Verify mock-mode uses
 	// this as the first step in its lookup chain so spec authors can name
@@ -238,6 +239,10 @@ type openAPISpec struct {
 	// records the dimension as unscored). Surfaced by hackernews retro
 	// #350 finding F8.
 	IsInternalYAML bool
+}
+
+type nestedDataEnvelopeFixture struct {
+	ArrayKey string
 }
 
 func (s *openAPISpec) IsSynthetic() bool {
@@ -1111,6 +1116,7 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 	}
 
 	summary, summaryErr := loadOpenAPISpecData(data, specPath)
+	nestedDataEnvelopes := detectNestedDataEnvelopeFixtures(data)
 	parsed, parseErr := openapiparser.ParseWithPathLenient(data, specPath)
 	if parseErr == nil {
 		var scopeRequirements []oauthScopeRequirement
@@ -1121,6 +1127,7 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 			Paths:                  collectDogfoodSpecPaths(parsed.Resources),
 			Auth:                   parsed.Auth,
 			OAuthScopeRequirements: scopeRequirements,
+			NestedDataEnvelopes:    nestedDataEnvelopes,
 		}, nil
 	}
 
@@ -1132,6 +1139,7 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 		Paths:                  summary.Paths,
 		Auth:                   deriveDogfoodAuth(summary),
 		OAuthScopeRequirements: summary.OAuthScopeRequirements,
+		NestedDataEnvelopes:    nestedDataEnvelopes,
 	}, nil
 }
 

@@ -1,7 +1,9 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,6 +203,234 @@ func TestRunCommandTestsUsesHappyArgsAnnotation(t *testing.T) {
 	assert.Equal(t, 3, result.Score)
 }
 
+func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
+	t.Run("fails when sync creates tables but stores no rows", func(t *testing.T) {
+		binary := buildDataPipelineProbeBinary(t, 0)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "1 domain tables created but 0 rows after sync")
+	})
+
+	t.Run("fails when nested mock sync stores fewer rows than served", func(t *testing.T) {
+		binary := buildDataPipelineProbeBinary(t, 1)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "items has 1 rows after sync, expected at least 2")
+	})
+
+	t.Run("passes when sync stores rows", func(t *testing.T) {
+		binary := buildDataPipelineProbeBinary(t, 2)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0, 2)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("passes when an auxiliary table has fewer rows before populated data table", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 1, 2)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("fails when only an auxiliary table satisfies expected rows", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 3, 0)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "items has 0 rows")
+	})
+}
+
+func TestFinalizeVerifyReportFailsRequiredDataPipeline(t *testing.T) {
+	report := &VerifyReport{
+		DataPipeline:       false,
+		DataPipelineDetail: "FAIL: 1 domain tables created but 0 rows after sync (mock mode)",
+		Results: []CommandResult{{
+			Command: "items",
+			Score:   3,
+		}},
+	}
+
+	finalizeVerifyReport(report, 80, true)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+}
+
+func TestStartMockServerServesNestedDataEnvelopeFixtureFromSpec(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Nested Data API
+  version: "1.0"
+paths:
+  /users/{user_id}/items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          $ref: "#/components/responses/ListItems"
+components:
+  responses:
+    ListItems:
+      description: ok
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/ListEnvelope"
+  schemas:
+    ListEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+            pagination:
+              type: object
+`)
+	spec, err := loadDogfoodOpenAPISpec(specPath)
+	require.NoError(t, err)
+
+	server, baseURL := startMockServer(spec)
+	defer server.Close()
+
+	resp, err := http.Get(baseURL + "/users/mock-user/items")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var body struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Items      []map[string]any `json:"items"`
+			Pagination map[string]any   `json:"pagination"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.True(t, body.Success)
+	assert.Len(t, body.Data.Items, 2)
+	assert.Equal(t, float64(2), body.Data.Pagination["total"])
+}
+
+func TestStartMockServerIgnoresNestedDataEnvelopeForNonJSONResponses(t *testing.T) {
+	specPath := filepath.Join(t.TempDir(), "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: XML Data API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+          content:
+            application/xml:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+`)
+	spec, err := loadDogfoodOpenAPISpec(specPath)
+	require.NoError(t, err)
+	assert.Empty(t, spec.NestedDataEnvelopes)
+
+	server, baseURL := startMockServer(spec)
+	defer server.Close()
+
+	resp, err := http.Get(baseURL + "/items")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	var body []map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Len(t, body, 1)
+}
+
+func TestDetectNestedDataEnvelopeFixturesSortsHTTPMethods(t *testing.T) {
+	spec := []byte(`openapi: 3.0.0
+info:
+  title: Method Order API
+  version: "1.0"
+paths:
+  /items:
+    patch:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      results:
+                        type: array
+                        items:
+                          type: object
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+`)
+
+	fixtures := detectNestedDataEnvelopeFixtures(spec)
+
+	require.Contains(t, fixtures, "/items")
+	assert.Equal(t, "items", fixtures["/items"].ArrayKey)
+}
+
 func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
 	binary := buildHappyArgsProbeBinary(t)
 	cmd := discoveredCommand{
@@ -369,6 +599,104 @@ func main() {
 	}
 }
 `)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildDataPipelineProbeBinary(t *testing.T, rowCount int) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		return
+	case "sql":
+		if len(args) < 2 {
+			os.Exit(1)
+		}
+		query := args[1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			fmt.Println(%d)
+			return
+		}
+	}
+	os.Exit(1)
+}
+`, rowCount))
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T, settingsRows, itemRows int) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		return
+	case "sql":
+		if len(args) < 2 {
+			os.Exit(1)
+		}
+		query := args[1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("settings")
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			if strings.Contains(query, "\"settings\"") {
+				fmt.Println(%d)
+				return
+			}
+			if strings.Contains(query, "\"items\"") {
+				fmt.Println(%d)
+				return
+			}
+			os.Exit(1)
+		}
+	}
+	os.Exit(1)
+}
+`, settingsRows, itemRows))
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()

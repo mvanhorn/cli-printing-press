@@ -37,6 +37,8 @@ func finalizeVerifyReport(report *VerifyReport, threshold int, requireDataPipeli
 		passGate = passGate && report.DataPipeline
 	}
 	switch {
+	case requireDataPipeline && !report.DataPipeline:
+		report.Verdict = "FAIL"
 	case passGate:
 		report.Verdict = "PASS"
 	case report.PassRate >= 60 && report.Critical <= 3:
