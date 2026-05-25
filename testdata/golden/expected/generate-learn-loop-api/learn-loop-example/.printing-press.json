@@ -20,6 +20,6 @@
   "schema_version": 1,
   "spec_checksum": "sha256:517f6cb2bfb0da30a73fe697d08ba2eaef21aab2de8396ead501cf3ab643aae9",
   "spec_format": "internal",
-  "spec_path": "testdata/golden/fixtures/learn-loop-api.yaml",
+  "spec_path": "learn-loop-api.yaml",
   "spec_url": "file://testdata/golden/fixtures/learn-loop-api.yaml"
 }
