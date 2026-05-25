@@ -298,6 +298,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"isGraphQL":             isGraphQLSpec,
 		"localReadIsList":       localReadIsList,
+		"dataSourceStrategy":    spec.EffectiveDataSourceStrategy,
 		"networkFallbackReason": networkFallbackReason,
 		"exportableResources":   exportableResources,
 		"backtick":              func() string { return "`" },
@@ -761,6 +762,7 @@ type endpointTemplateData struct {
 	CommandPath   string
 	EndpointName  string
 	Endpoint      spec.Endpoint
+	Resource      spec.Resource
 	HasStore      bool
 	IsAsync       bool
 	Async         AsyncJobInfo
@@ -2474,6 +2476,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				CommandPath:   name,
 				EndpointName:  eName,
 				Endpoint:      endpoint,
+				Resource:      resource,
 				HasStore:      g.VisionSet.Store,
 				IsAsync:       isAsync,
 				Async:         asyncInfo,
@@ -2525,6 +2528,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					CommandPath:   name + " " + subName,
 					EndpointName:  eName,
 					Endpoint:      endpoint,
+					Resource:      effectiveResource,
 					HasStore:      g.VisionSet.Store,
 					IsAsync:       isAsync,
 					Async:         asyncInfo,

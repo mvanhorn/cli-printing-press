@@ -5,6 +5,7 @@
 {{- $isForm := endpointUsesForm .Endpoint}}
 {{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
 {{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk")}}
+{{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 
 package cli
 
@@ -173,6 +174,24 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if and $isGraphQLEndpoint (eq .EndpointName "list")}}
+{{- if .HasStore}}
+			var data json.RawMessage
+			var prov DataProvenance
+			if flags.dataSource == "local" || "{{$dataSourceStrategy}}" == "local" {
+				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", true, path, nil, "user_requested")
+			} else {
+				if err := validateDataSourceStrategy(flags, "{{$dataSourceStrategy}}"); err != nil {
+					return err
+				}
+{{- else}}
+{{- if eq $dataSourceStrategy "local"}}
+			return fmt.Errorf("data_source_strategy local requires the local store data layer")
+{{- else if eq $dataSourceStrategy "live"}}
+			if flags.dataSource == "local" {
+				return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
+			}
+{{- end}}
+{{- end}}
 			variables := map[string]any{
 				"first": flagFirst,
 			}
@@ -180,7 +199,9 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				variables["after"] = flagAfter
 			}
 {{- if $supportsAllPagination}}
+{{- if not .HasStore}}
 			var data json.RawMessage
+{{- end}}
 			if flagAll && !flags.dryRun {
 				var items []json.RawMessage
 				items, err = c.PaginatedQuery(cmd.Context(), client.{{pascal .ResourceName}}ListQuery, variables, "{{graphqlQueryField .Endpoint.ResponsePath}}", flagFirst)
@@ -194,15 +215,29 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				}
 			}
 {{- else}}
+{{- if .HasStore}}
+			data, err = c.Query(cmd.Context(), client.{{pascal .ResourceName}}ListQuery, variables)
+{{- else}}
 			data, err := c.Query(cmd.Context(), client.{{pascal .ResourceName}}ListQuery, variables)
+{{- end}}
 			if err == nil && !flags.dryRun {
 				data, err = extractGraphQLConnection(data, "{{graphqlQueryField .Endpoint.ResponsePath}}")
 			}
 {{- end}}
 {{- if .HasStore}}
-			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
+				if err != nil && flags.dataSource == "auto" && "{{$dataSourceStrategy}}" == "auto" && isNetworkError(err) {
+					data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", true, path, nil, networkFallbackReason)
+				} else if err == nil {
+					prov = attachFreshness(DataProvenance{Source: "live"}, flags)
+				}
+			}
 {{- end}}
 {{- else if and $isGraphQLEndpoint (eq .EndpointName "get")}}
+{{- if .HasStore}}
+			if err := validateDataSourceStrategy(flags, "{{$dataSourceStrategy}}"); err != nil {
+				return err
+			}
+{{- end}}
 			data, err := c.Query(cmd.Context(), client.{{pascal .ResourceName}}GetQuery, map[string]any{
 				"id": args[0],
 			})
@@ -214,7 +249,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- else if $supportsAllPagination}}
 {{- if .HasStore}}
-			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -225,6 +260,13 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", cmd.ErrOrStderr())
 {{- else}}
+{{- if eq $dataSourceStrategy "local"}}
+			return fmt.Errorf("data_source_strategy local requires the local store data layer")
+{{- else if eq $dataSourceStrategy "live"}}
+			if flags.dataSource == "local" {
+				return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
+			}
+{{- end}}
 			data, err := paginatedGet(cmd.Context(), c, path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
@@ -249,8 +291,15 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
 {{- else}}
+{{- if eq $dataSourceStrategy "local"}}
+			return fmt.Errorf("data_source_strategy local requires the local store data layer")
+{{- else if eq $dataSourceStrategy "live"}}
+			if flags.dataSource == "local" {
+				return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
+			}
+{{- end}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)
 {{- else}}
