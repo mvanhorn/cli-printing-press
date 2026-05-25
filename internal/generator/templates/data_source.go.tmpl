@@ -335,6 +335,9 @@ func extractWriteThroughSingleArraySibling(envelope map[string]json.RawMessage, 
 			continue
 		}
 		if candidate, ok := decode(raw); ok {
+			if !writeThroughArrayItemsAreObjects(candidate) {
+				continue
+			}
 			arrayItems = candidate
 			arrayCount++
 			continue
@@ -345,6 +348,14 @@ func extractWriteThroughSingleArraySibling(envelope map[string]json.RawMessage, 
 		return arrayItems, true
 	}
 	return nil, false
+}
+
+func writeThroughArrayItemsAreObjects(items []json.RawMessage) bool {
+	if len(items) == 0 {
+		return true
+	}
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(items[0], &obj) == nil
 }
 
 func decodeWriteThroughNonEmptyArray(raw json.RawMessage) ([]json.RawMessage, bool) {
