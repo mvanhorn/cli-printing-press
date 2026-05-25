@@ -285,7 +285,8 @@ const phase5SkipSchemaJSON = `{
         "type": {"type": "string"},
         "api_key_available": {"type": "boolean"},
         "browser_session_available": {"type": "boolean"},
-        "local_sqlite": {"type": "boolean"}
+        "local_sqlite": {"type": "boolean"},
+        "local_network_only": {"type": "boolean"}
       }
     }
   }

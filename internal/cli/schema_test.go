@@ -72,6 +72,7 @@ func TestSchemaPhase5SkipPrintsJSONSchema(t *testing.T) {
 	for _, field := range []string{"schema_version", "run_id", "api_name", "cli_name", "status", "skip_reason", "auth_context"} {
 		assert.Contains(t, output, `"`+field+`"`)
 	}
+	assert.Contains(t, output, `"local_network_only"`)
 }
 
 func TestSchemaUnknownNameFails(t *testing.T) {

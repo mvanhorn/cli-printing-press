@@ -3574,15 +3574,26 @@ Present via `AskUserQuestion`:
 
 **Recommendation rule:** Full dogfood is the default recommendation. Do not downgrade because of ordinary time cost; a few extra minutes is cheap compared with the generation run and the cost of shipping a broken CLI. Recommend Quick only when the user asks for speed or when full live testing would create unapproved real-world cost/side effects (paid credits, outbound messages, public posts, real orders, irreversible deletes, invites, bookings, charges). Potential mutation is not itself a reason to downgrade: if the user approves a test account/workspace/calendar/project or the CLI can create and clean up disposable fixtures, Full dogfood remains recommended.
 
-There is no skip option when an API key is available or the API requires no
-auth. Phase 5 auto-skips ONLY when the API requires auth AND no key is
-available: display "No API key available — skipping live dogfood testing.
-The CLI was verified against exit codes and dry-run only."
+There is no skip option when an API key is available. Phase 5 auto-skips ONLY
+when the API requires auth AND no key is available: display "No API key
+available — skipping live dogfood testing. The CLI was verified against exit
+codes and dry-run only."
 
 For APIs with `auth.type: none` (or no auth section in the spec), Phase 5
 is MANDATORY — the API is freely testable without any credentials. Do not
 skip testing just because no API key was detected. No-auth APIs are the
 easiest to test and the most embarrassing to ship untested.
+
+**LAN-only no-auth carve-out.** Some no-auth APIs are real hardware or
+private-network APIs that are testable only from the user's LAN (SSDP, mDNS,
+RFC1918/private hostnames, localhost-shaped appliance endpoints). If Phase 5
+cannot reach the hardware because the generation host is not on that LAN, do
+not fabricate an API-key skip and do not hand-author `phase5-acceptance.json`.
+Ask the user whether to hold the CLI or skip live dogfood and promote anyway.
+Only when the user explicitly chooses the skip/promote path, write
+`phase5-skip.json` with `skip_reason:
+"lan-unreachable-from-generation-host"`, `auth_context.type: "none"`, and
+`auth_context.local_network_only: true`.
 
 Do NOT proceed without asking. Do NOT substitute an ad-hoc smoke test. If some commands cannot be exercised because fixture values are missing, classify them as `BLOCKED_FIXTURE` and file/fix the machine gap; do not use that as a reason to recommend Quick.
 
@@ -3743,10 +3754,33 @@ auth and no credential was available, write:
 }
 ```
 
-Do **not** write a skip marker for `auth.type: none`. No-auth APIs are testable
-and require `phase5-acceptance.json`. Do **not** use missing API key as the skip
-reason for cookie, composed, or session-handshake auth; those require browser
-session proof or a hold decision.
+If Phase 5 is legitimately skipped because a no-auth API is LAN-only and the
+generation host cannot reach the user's LAN hardware, write:
+
+`$PROOFS_DIR/phase5-skip.json`
+
+```json
+{
+  "schema_version": 1,
+  "api_name": "<api>",
+  "run_id": "<run-id>",
+  "status": "skip",
+  "level": "none",
+  "skip_reason": "lan-unreachable-from-generation-host",
+  "auth_context": {
+    "type": "none",
+    "api_key_available": false,
+    "browser_session_available": false,
+    "local_network_only": true
+  }
+}
+```
+
+Do **not** write a skip marker for ordinary `auth.type: none` cloud/public APIs.
+No-auth APIs are testable and require `phase5-acceptance.json` unless they match
+the LAN-only carve-out above. Do **not** use missing API key as the skip reason
+for cookie, composed, or session-handshake auth; those require browser session
+proof or a hold decision.
 
 ## Phase 5.5: Polish
 
