@@ -119,7 +119,7 @@ func classifyStdlibSuccess(result *Result, partial bool) {
 		safe := false
 		result.ImpersonationSafe = &safe
 		result.Recommendation.Rationale = fmt.Sprintf(
-			"Plain stdlib HTTP returned %s, while Surf Chrome impersonation returned %s. Prefer non-impersonating HTTP so content negotiation stays on JSON.",
+			"Plain stdlib HTTP returned %s, while Surf Chrome impersonation returned %s. Prefer non-impersonating HTTP so content negotiation stays on the stdlib response type.",
 			displayContentType(stdlib.ContentType),
 			displayContentType(surf.ContentType),
 		)
