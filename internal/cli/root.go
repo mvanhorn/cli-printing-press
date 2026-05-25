@@ -765,20 +765,36 @@ func readMCPIntentsFile(path string) ([]spec.Intent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading --mcp-intents file: %w", err)
 	}
-	var intents []spec.Intent
-	if err := yaml.Unmarshal(data, &intents); err == nil && intents != nil {
-		return intents, nil
-	}
-	var wrapped struct {
-		Intents []spec.Intent `yaml:"intents" json:"intents"`
-	}
-	if err := yaml.Unmarshal(data, &wrapped); err != nil {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parsing --mcp-intents file: %w", err)
 	}
-	if wrapped.Intents == nil {
+	if len(doc.Content) == 0 {
 		return nil, fmt.Errorf("--mcp-intents file must contain either a list of intents or an intents: list")
 	}
-	return wrapped.Intents, nil
+
+	root := doc.Content[0]
+	switch root.Kind {
+	case yaml.SequenceNode:
+		var intents []spec.Intent
+		if err := root.Decode(&intents); err != nil {
+			return nil, fmt.Errorf("parsing --mcp-intents file: %w", err)
+		}
+		return intents, nil
+	case yaml.MappingNode:
+		var wrapped struct {
+			Intents []spec.Intent `yaml:"intents"`
+		}
+		if err := root.Decode(&wrapped); err != nil {
+			return nil, fmt.Errorf("parsing --mcp-intents file: %w", err)
+		}
+		if wrapped.Intents != nil {
+			return wrapped.Intents, nil
+		}
+		return nil, fmt.Errorf("--mcp-intents file must contain either a list of intents or an intents: list")
+	default:
+		return nil, fmt.Errorf("--mcp-intents file must contain either a list of intents or an intents: list")
+	}
 }
 
 func resolveGenerateOutputDir(outputDir, cliName string, force, claim bool) (resolvedAbsOut string, explicitOutput bool, snapshotDir string, err error) {

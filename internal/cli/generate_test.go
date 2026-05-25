@@ -2397,6 +2397,25 @@ intents:
 	assert.Equal(t, "lookup_item", apiSpec.MCP.Intents[0].Name)
 }
 
+func TestReadMCPIntentsFileReportsFlatListDecodeError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	intentsPath := filepath.Join(dir, "mcp-intents.yaml")
+	require.NoError(t, os.WriteFile(intentsPath, []byte(`
+- name: lookup_item
+  description: Lookup an item by id
+  steps: not-a-list
+`), 0o644))
+
+	_, err := readMCPIntentsFile(intentsPath)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "parsing --mcp-intents file")
+	assert.ErrorContains(t, err, "cannot unmarshal")
+	assert.ErrorContains(t, err, "IntentStep")
+}
+
 func TestApplyGenerateSpecFlagsRejectsInvalidMCPOverrides(t *testing.T) {
 	t.Parallel()
 
