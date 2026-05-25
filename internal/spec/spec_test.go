@@ -133,6 +133,65 @@ resources:
 	assert.Equal(t, []string{"c"}, param.Aliases)
 }
 
+func TestParseCSVArrayBodyParamMetadata(t *testing.T) {
+	yamlSpec := []byte(`
+name: csv-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          - name: attendees
+            type: string_csv_array
+            item_type: object
+            item_template:
+              emailAddress:
+                address: $value
+              type: required
+            description: Attendees
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	param := s.Resources["messages"].Endpoints["send"].Body[0]
+	assert.Equal(t, "string_csv_array", param.Type)
+	assert.Equal(t, "object", param.ItemType)
+	require.IsType(t, map[string]any{}, param.ItemTemplate)
+	template := param.ItemTemplate.(map[string]any)
+	assert.Equal(t, "required", template["type"])
+}
+
+func TestParseCSVArrayObjectTemplateMustBeObject(t *testing.T) {
+	yamlSpec := []byte(`
+name: csv-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          - name: attendees
+            type: string_csv_array
+            item_type: object
+            item_template:
+              - not
+              - an
+              - object
+`)
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "string_csv_array item_type object requires item_template to be an object")
+}
+
 func TestValidateNameRequiresKebabSlug(t *testing.T) {
 	baseSpec := func(name string) []byte {
 		return []byte(`

@@ -1755,21 +1755,23 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 }
 
 type Param struct {
-	Name        string   `yaml:"name" json:"name"`
-	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
-	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
-	BodyName    string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
-	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	Type        string   `yaml:"type" json:"type"`
-	Required    bool     `yaml:"required" json:"required"`
-	Positional  bool     `yaml:"positional" json:"positional"`
-	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
-	Default     any      `yaml:"default" json:"default"`
-	Description string   `yaml:"description" json:"description"`
-	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
-	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
-	Format      string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
-	Purpose     string   `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	Name         string   `yaml:"name" json:"name"`
+	FlagName     string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	URLName      string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
+	BodyName     string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
+	Aliases      []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	Type         string   `yaml:"type" json:"type"`
+	Required     bool     `yaml:"required" json:"required"`
+	Positional   bool     `yaml:"positional" json:"positional"`
+	PathParam    bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
+	Default      any      `yaml:"default" json:"default"`
+	Description  string   `yaml:"description" json:"description"`
+	Fields       []Param  `yaml:"fields" json:"fields"`                     // for nested objects
+	Enum         []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
+	Format       string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	ItemType     string   `yaml:"item_type,omitempty" json:"item_type,omitempty"`
+	ItemTemplate any      `yaml:"item_template,omitempty" json:"item_template,omitempty"`
+	Purpose      string   `yaml:"purpose,omitempty" json:"purpose,omitempty"`
 	// FieldSelectorDefault is a sync-time default for field-selector params
 	// such as opt_fields, fields, expand, include, or select. It stays separate
 	// from Default so generated endpoint commands do not silently change their
@@ -2570,6 +2572,9 @@ func (s *APISpec) Validate() error {
 			if err := validateEndpointPublicParamNames(e); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
 			}
+			if err := validateEndpointBodyParamTypes(e); err != nil {
+				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
+			}
 			if err := validateEndpointResponseFormat(e); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
 			}
@@ -2598,6 +2603,9 @@ func (s *APISpec) Validate() error {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q declares both base_url and an absolute endpoint path; choose one routing source", name, subName, eName)
 				}
 				if err := validateEndpointPublicParamNames(e); err != nil {
+					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
+				}
+				if err := validateEndpointBodyParamTypes(e); err != nil {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
 				}
 				if err := validateEndpointResponseFormat(e); err != nil {
@@ -2668,6 +2676,34 @@ func validateEndpointPublicParamNames(endpoint Endpoint) error {
 	}
 	if err := validatePublicParamNameList("body", endpoint.Body); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateEndpointBodyParamTypes(endpoint Endpoint) error {
+	return validateBodyParamTypes("body", endpoint.Body)
+}
+
+func validateBodyParamTypes(context string, params []Param) error {
+	for i, p := range params {
+		label := fmt.Sprintf("%s[%d] (%s)", context, i, p.Name)
+		if strings.EqualFold(strings.TrimSpace(p.Type), "string_csv_array") {
+			switch strings.ToLower(strings.TrimSpace(p.ItemType)) {
+			case "string":
+			case "object":
+				if p.ItemTemplate == nil {
+					return fmt.Errorf("%s: string_csv_array item_type object requires item_template", label)
+				}
+				if _, ok := p.ItemTemplate.(map[string]any); !ok {
+					return fmt.Errorf("%s: string_csv_array item_type object requires item_template to be an object", label)
+				}
+			default:
+				return fmt.Errorf("%s: string_csv_array item_type must be string or object", label)
+			}
+		}
+		if err := validateBodyParamTypes(label+".fields", p.Fields); err != nil {
+			return err
+		}
 	}
 	return nil
 }
