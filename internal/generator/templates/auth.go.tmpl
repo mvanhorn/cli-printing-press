@@ -20,9 +20,7 @@ import (
 	"strings"
 	"time"
 
-{{- if or .Auth.KeyURL .WebsiteURL}}
 	"{{modulePath}}/internal/cliutil"
-{{- end}}
 	"{{modulePath}}/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -139,6 +137,7 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 }
 
 func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int) error {
+	w := cmd.OutOrStdout()
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
 		return err
@@ -154,14 +153,6 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	}
 	state := hex.EncodeToString(stateBytes)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return fmt.Errorf("starting callback server: %w", err)
-	}
-	defer listener.Close()
-
-	redirectURI := fmt.Sprintf("http://localhost:%d/callback", listener.Addr().(*net.TCPAddr).Port)
-
 	authURL := ""
 {{- if .Auth.AuthorizationURL}}
 	authURL = cfg.AuthorizationURL
@@ -172,7 +163,6 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 {{- $refreshMech := .Auth.ParseRefreshTokenMechanism}}
 	params := url.Values{
 		"client_id":     {clientID},
-		"redirect_uri":  {redirectURI},
 		"response_type": {"code"},
 		"state":         {state},
 	}
@@ -187,7 +177,31 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		params.Set("scope", strings.Join(scopes, " "))
 	}
 
+	// Short-circuit BEFORE binding the callback port or opening a browser, so
+	// verify / validate-narrative neither binds 127.0.0.1:<port> (which would
+	// EADDRINUSE on a parallel run or occupied port) nor launches a browser
+	// (which would time out). The redirect_uri shown here is informational and
+	// derived from the configured --port; the live flow below uses the actual
+	// bound port, which the OS assigns when --port 0 is passed.
+	if cliutil.IsVerifyEnv() {
+		params.Set("redirect_uri", fmt.Sprintf("http://localhost:%d/callback", port))
+		fmt.Fprintf(w, "would launch: %s\n", authURL+"?"+params.Encode())
+		return nil
+	}
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return fmt.Errorf("starting callback server: %w", err)
+	}
+	defer listener.Close()
+
+	// Derive the redirect URI from the live listener address so an OS-assigned
+	// ephemeral port (--port 0) is reflected in both the auth request and the
+	// token exchange below.
+	redirectURI := fmt.Sprintf("http://localhost:%d/callback", listener.Addr().(*net.TCPAddr).Port)
+	params.Set("redirect_uri", redirectURI)
 	fullURL := authURL + "?" + params.Encode()
+
 	fmt.Fprintf(os.Stderr, "Opening browser for authentication...\n")
 	fmt.Fprintf(os.Stderr, "If the browser doesn't open, visit:\n%s\n\n", fullURL)
 	openBrowser(fullURL)
