@@ -2830,7 +2830,7 @@ Priority 3 (polish):
 
 ### Agent Build Checklist (per command)
 
-After building each command in Priority 1 and Priority 2, verify these 11 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
+After building each command in Priority 1 and Priority 2, verify these 12 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
 
 1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
 2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON should use the generated receiver-style helper, `flags.printJSON(cmd, v)`, or call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` directly. Both route through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
@@ -2865,6 +2865,122 @@ After building each command in Priority 1 and Priority 2, verify these 11 princi
    - a `fetch_failures` field in the JSON response envelope listing the failed entries and error messages
 
 Silently averaging phantom zeros is worse than reporting a partial result.
+12. **Scan-and-filter caps**: any hand-written transcendence command that scans
+    a paginated or otherwise unsorted endpoint, filters locally, and then keeps
+    matching rows MUST bound scan effort separately from output size. This is the
+    "list, filter locally, fan out to detail" shape: the API cannot filter on the
+    dimension the command needs, so the command pages through broad results and
+    applies the real predicate in Go. `--limit` is not enough because it bounds
+    matches kept, not records scanned.
+
+Required elements for every scan-and-filter command:
+
+1. **`--max-scan-pages int`**, or a unit-specific equivalent such as
+   `--max-scan-batches` / `--max-scan-records`, with a conservative default.
+   Five pages is a reasonable starting point for typical paginated APIs
+   (~250 records at 50/page). Lower it under `cliutil.IsDogfoodEnv()` when the
+   happy path would otherwise risk the live-dogfood 30s timeout.
+2. **`scanned_<unit>` in the JSON envelope**, for example `scanned_orders` or
+   `scanned_issues`, so downstream agents can tell whether an empty result
+   examined 20 records or 2,000.
+3. **`note` in zero-match JSON output**, explaining that the scan cap was hit
+   without finding a match and naming the flag that widens the search.
+4. **Clear separation between output and scan caps**: `--limit` controls how
+   many matches are returned; `--max-scan-pages` controls how many list pages
+   or records the command is allowed to examine.
+
+Use this pattern when the endpoint ordering is unrelated to the local predicate:
+search-by-property over relevance-ranked search results, issues by a weakly
+server-filtered custom field, pull requests by reviewer from an endpoint with
+no reviewer filter, rental orders by date from a broad order list, and similar
+cases.
+
+```go
+type scanFilterView struct {
+	Items         []yourEntryType `json:"items"`
+	ScannedItems  int             `json:"scanned_items"`
+	MaxScanPages  int             `json:"max_scan_pages"`
+	Note          string          `json:"note,omitempty"`
+}
+
+func newScanFilterCmd(flags *rootFlags) *cobra.Command {
+	var limit int
+	var maxScanPages int
+	var status string
+	cmd := &cobra.Command{
+		Use:   "find-by-status",
+		Short: "Find matching items by scanning the list endpoint",
+		Annotations: map[string]string{
+			"mcp:read-only": "true",
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+				return cmd.Help()
+			}
+			if dryRunOK(flags) {
+				fmt.Fprintf(cmd.OutOrStdout(), "would scan up to %d pages for matching items\n", maxScanPages)
+				return nil
+			}
+			if status == "" {
+				_ = cmd.Usage()
+				return usageErr(fmt.Errorf("--status is required"))
+			}
+			if cliutil.IsDogfoodEnv() && maxScanPages > 1 {
+				maxScanPages = 1
+			}
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
+			var matches []yourEntryType
+			scanned := 0
+			scanCapHit := true
+			for page := 1; page <= maxScanPages && len(matches) < limit; page++ {
+				data, err := c.Get("/api/v1/items", map[string]string{
+					"page":     strconv.Itoa(page),
+					"pageSize": "50",
+				})
+				if err != nil {
+					return fmt.Errorf("fetching items page %d: %w", page, err)
+				}
+				items, err := parseItems(data)
+				if err != nil {
+					return fmt.Errorf("parsing items page %d: %w", page, err)
+				}
+				for _, item := range items {
+					scanned++
+					if item.Status != status {
+						continue
+					}
+					matches = append(matches, item)
+					if len(matches) >= limit {
+						break
+					}
+				}
+				if len(items) == 0 {
+					scanCapHit = false
+					break
+				}
+			}
+			view := scanFilterView{
+				Items:         matches,
+				ScannedItems:  scanned,
+				MaxScanPages:  maxScanPages,
+			}
+			if len(matches) == 0 && scanCapHit {
+				view.Note = fmt.Sprintf("scanned %d items across up to %d pages without finding status %q; raise --max-scan-pages to widen the search", scanned, maxScanPages, status)
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(view)
+		},
+	}
+	cmd.Flags().IntVar(&limit, "limit", 10, "maximum matching items to return")
+	cmd.Flags().IntVar(&maxScanPages, "max-scan-pages", 5, "maximum list pages to scan before returning partial or empty results")
+	cmd.Flags().StringVar(&status, "status", "", "status to match")
+	return cmd
+}
+```
 
 #### Verify-friendly RunE template
 
