@@ -303,6 +303,24 @@ func TestValidatePhase5Gate_NoAuthRequiresPassMarker(t *testing.T) {
 	assert.Contains(t, result.Detail, "no-auth")
 }
 
+func TestValidatePhase5Gate_LocalDatastoreNoAuthAllowsSkipMarker(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none", SpecFormat: "sqlite"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    "local_source_requires_operator_database",
+		AuthContext:   Phase5AuthContext{Type: "none", LocalSQLite: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "skip", result.Status)
+}
+
 func TestValidatePhase5Gate_APIKeyMissingSkipAllowed(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "api_key"}

@@ -105,15 +105,15 @@ type liveDogfoodRun struct {
 }
 
 func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
-	releaseHome, err := scopeSubprocessHome()
+	if strings.TrimSpace(opts.CLIDir) == "" {
+		return nil, fmt.Errorf("CLIDir is required")
+	}
+	releaseHome, err := scopeLiveDogfoodSubprocessHome(opts.CLIDir)
 	if err != nil {
 		return nil, err
 	}
 	defer releaseHome()
 
-	if strings.TrimSpace(opts.CLIDir) == "" {
-		return nil, fmt.Errorf("CLIDir is required")
-	}
 	level, err := normalizeLiveDogfoodLevel(opts.Level)
 	if err != nil {
 		return nil, err
@@ -176,6 +176,14 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		}
 	}
 	return report, nil
+}
+
+func scopeLiveDogfoodSubprocessHome(cliDir string) (func(), error) {
+	manifest, err := ReadCLIManifest(cliDir)
+	if err == nil && manifest.IsLocalDatastore() && strings.EqualFold(strings.TrimSpace(manifest.AuthType), "none") {
+		return func() {}, nil
+	}
+	return scopeSubprocessHome()
 }
 
 func liveDogfoodBinaryPath(dir, name string) (string, error) {

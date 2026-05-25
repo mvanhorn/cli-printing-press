@@ -86,6 +86,7 @@ type CLIManifest struct {
 	SpecURL            string            `json:"spec_url,omitempty"`
 	SpecPath           string            `json:"spec_path,omitempty"`
 	SpecFormat         string            `json:"spec_format,omitempty"`
+	SpecSource         string            `json:"spec_source,omitempty"`
 	SpecChecksum       string            `json:"spec_checksum,omitempty"`
 	RunID              string            `json:"run_id,omitempty"`
 	CatalogEntry       string            `json:"catalog_entry,omitempty"`
@@ -128,6 +129,20 @@ type CLIManifest struct {
 	// keys don't surface as mandatory in install dialogs.
 	AuthOptional  bool                   `json:"auth_optional,omitempty"`
 	NovelFeatures []NovelFeatureManifest `json:"novel_features,omitempty"`
+}
+
+// IsLocalDatastore reports whether the manifest describes a local-datastore
+// CLI rather than an HTTP API wrapper. These CLIs read operator-local stores
+// such as SQLite databases and should not be scored or dogfooded through
+// HTTP-only assumptions.
+func (m CLIManifest) IsLocalDatastore() bool {
+	format := strings.ToLower(strings.TrimSpace(m.SpecFormat))
+	source := strings.ToLower(strings.TrimSpace(m.SpecSource))
+	switch format {
+	case "sqlite", "local-sqlite":
+		return true
+	}
+	return strings.Contains(source, "local") && strings.Contains(source, "sqlite")
 }
 
 // NovelFeatureManifest is a compact representation of a transcendence feature

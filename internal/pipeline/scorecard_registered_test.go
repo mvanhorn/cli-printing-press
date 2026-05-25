@@ -717,6 +717,37 @@ func handleSQL() {}
 	}
 }
 
+func TestScoreMCPQuality_LocalDatastoreSearchRequiresHandlerOrRegisteredCommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "mcp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       "fixture-pp-cli",
+		AuthType:      "none",
+		SpecFormat:    "sqlite",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "internal", "mcp", "tools.go"), `package mcp
+func RegisterTools() {
+	_ = "context"
+	handleContext()
+	_ = "search"
+	_ = "sync"
+	handleSync()
+}
+func handleContext() {}
+func handleSync() {}
+`)
+
+	if score := scoreMCPQuality(dir); score != 6 {
+		t.Fatalf("expected bare search string not to score as a high-level MCP tool, got %d", score)
+	}
+}
+
 func TestScoreWorkflows_RecognizesRawSQLiteDataLayer(t *testing.T) {
 	dir := t.TempDir()
 	cliDir := filepath.Join(dir, "internal", "cli")

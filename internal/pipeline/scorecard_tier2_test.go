@@ -2482,6 +2482,109 @@ func doctorCheck() {
 	})
 }
 
+func TestScoreDoctorLocalDatastoreRequiresRealSQLiteReachability(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "schema_version": 1,
+  "api_name": "local",
+  "cli_name": "local-pp-cli",
+  "auth_type": "none",
+  "spec_format": "sqlite"
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+import "os"
+
+func newDoctorCmd() {}
+
+func doctorCheckPath(path string) error {
+	_, err := os.Stat(path)
+	return err
+}
+`)
+
+	assert.Equal(t, 2, scoreDoctor(dir), "local-datastore doctors should not receive auth/config/reachability credit from os.Stat alone")
+}
+
+func TestScorecardLocalDatastoreManifestCreditsLocalShape(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "schema_version": 1,
+  "api_name": "chrome-history",
+  "cli_name": "chrome-history-pp-cli",
+  "auth_type": "none",
+  "spec_format": "sqlite",
+  "spec_source": "local-sqlite"
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func register() {
+	rootCmd.AddCommand(newListCmd())
+	rootCmd.AddCommand(newSyncCmd())
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+import (
+	"database/sql"
+	"os"
+)
+
+func newDoctorCmd() {}
+
+func checkLocalSource(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	return db.Ping()
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/list.go", `package cli
+
+func newListCmd() *cobra.Command {
+	return &cobra.Command{Use: "list"}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+
+func newSyncCmd() *cobra.Command {
+	return &cobra.Command{Use: "sync"}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/source/sqlite.go", `package source
+
+import "database/sql"
+
+func Query(db *sql.DB) {
+	rows, _ := db.Query("SELECT url FROM visits")
+	_ = rows
+}
+`)
+	writeScorecardFixture(t, dir, "internal/mcp/server.go", `package mcp
+
+func NewServer() {
+	RegisterTools("context", "search")
+	_ = "Returns browsing-history results from the local SQLite database"
+}
+func handleSearch() {}
+`)
+
+	assert.GreaterOrEqual(t, scoreDoctor(dir), 4, "local SQLite reachability should substitute for HTTP reachability without granting unrelated credit")
+	assert.Equal(t, 10, scoreLocalCache(dir), "manifest-gated local SQLite source should count as the local datastore")
+	assert.GreaterOrEqual(t, scoreMCPQuality(dir), 6, "hand-authored local MCP server should not require generated tools.go")
+	assert.GreaterOrEqual(t, scoreDataPipelineIntegrity(dir), 8, "SQL-backed local source should count as real data pipeline")
+
+	sc, err := RunScorecard(dir, t.TempDir(), filepath.Join(dir, "not-openapi.sqlite"), nil)
+	assert.NoError(t, err, "local-datastore manifests should bypass OpenAPI-only spec parsing")
+	assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+	assert.Contains(t, sc.UnscoredDimensions, DimAuthProtocol)
+	assert.Contains(t, sc.UnscoredDimensions, DimSyncCorrectness)
+}
+
 func TestScoreWorkflows(t *testing.T) {
 	t.Run("counts files matching expanded prefixes", func(t *testing.T) {
 		dir := t.TempDir()

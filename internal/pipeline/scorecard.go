@@ -107,6 +107,7 @@ const (
 	DimCacheFreshness        = "cache_freshness"
 	DimPathValidity          = "path_validity"
 	DimAuthProtocol          = "auth_protocol"
+	DimSyncCorrectness       = "sync_correctness"
 	DimLiveAPIVerification   = "live_api_verification"
 )
 
@@ -188,6 +189,10 @@ func recordOptionalScore(sc *Scorecard, target *int, dimension string, score int
 }
 
 func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) error {
+	if isLocalDatastoreCLIDir(outputDir) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
+		return nil
+	}
 	if specPath == "" {
 		// No spec: mark spec-dependent dimensions as unscored.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
@@ -222,7 +227,11 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) error {
 
 func scoreDomainDimensions(sc *Scorecard, outputDir string, verifyReport *VerifyReport) {
 	sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
-	sc.Steinberger.SyncCorrectness = scoreSyncCorrectness(outputDir)
+	if isLocalDatastoreCLIDir(outputDir) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimSyncCorrectness)
+	} else {
+		sc.Steinberger.SyncCorrectness = scoreSyncCorrectness(outputDir)
+	}
 	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir)
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
 
@@ -553,6 +562,7 @@ func scoreDoctor(dir string) int {
 	if content == "" {
 		return 0
 	}
+	localDatastore := isLocalDatastoreCLIDir(dir)
 	score := 0
 	// Presence: doctor command exists
 	score += 2
@@ -561,7 +571,7 @@ func scoreDoctor(dir string) int {
 		score += 2
 	}
 	// Quality: checks API connectivity (makes an HTTP request)
-	if hasDoctorHTTPReachability(content) {
+	if hasDoctorHTTPReachability(content) || (localDatastore && hasLocalDatastoreReachability(content)) {
 		score += 2
 	}
 	// Quality: checks config file
@@ -588,6 +598,19 @@ func hasDoctorHTTPReachability(content string) bool {
 	clientCallRe := regexp.MustCompile(`\b[A-Za-z_]\w*(?:Client|HTTPClient)?\.(?:Get|Head|Post|Put|Patch|Delete|Do)\s*\(`)
 	inlineClientCallRe := regexp.MustCompile(`\(&http\.Client\s*\{[^}]*\}\)\.(?:Get|Head|Post|Put|Patch|Delete|Do)\s*\(`)
 	return clientCallRe.MatchString(content) || inlineClientCallRe.MatchString(content)
+}
+
+func hasLocalDatastoreReachability(content string) bool {
+	lower := strings.ToLower(content)
+	hasSQLiteSignal := strings.Contains(lower, "sqlite") || strings.Contains(lower, "database/sql")
+	if !hasSQLiteSignal {
+		return false
+	}
+	return strings.Contains(lower, "sql.open") ||
+		strings.Contains(lower, ".ping(") ||
+		strings.Contains(lower, ".query(") ||
+		strings.Contains(lower, ".queryrow(") ||
+		strings.Contains(lower, ".exec(")
 }
 
 func scoreAgentNative(dir string) int {
@@ -674,18 +697,24 @@ func scoreAgentNative(dir string) int {
 func scoreMCPQuality(dir string) int {
 	mcpContent := readFileContent(filepath.Join(dir, "internal", "mcp", "tools.go"))
 	if mcpContent == "" {
-		return 0 // No MCP server generated
+		if !isLocalDatastoreCLIDir(dir) {
+			return 0 // No MCP server generated
+		}
+		mcpContent = readAllGoFiles(filepath.Join(dir, "internal", "mcp"))
+		if mcpContent == "" {
+			return 0
+		}
 	}
 
 	score := 0
 
 	// Presence: MCP tools.go exists and has RegisterTools
-	if strings.Contains(mcpContent, "RegisterTools") {
+	if strings.Contains(mcpContent, "RegisterTools") || strings.Contains(mcpContent, "NewServer") {
 		score += 2
 	}
 
 	// Context tool: has rich context/about tool with domain knowledge
-	if strings.Contains(mcpContent, `"context"`) || strings.Contains(mcpContent, "handleContext") {
+	if strings.Contains(mcpContent, `"context"`) || strings.Contains(mcpContent, "handleContext") || strings.Contains(mcpContent, "agent_context") {
 		score += 2
 	}
 
@@ -695,7 +724,8 @@ func scoreMCPQuality(dir string) int {
 	if strings.Contains(mcpContent, `"sql"`) && strings.Contains(mcpContent, "handleSQL") {
 		highlevelCount++
 	}
-	if strings.Contains(mcpContent, `"search"`) && strings.Contains(mcpContent, "handleSearch") {
+	hasRegisteredSearch := hasRuntimeMirror && hasRegisteredCommandFileWithPrefix(filepath.Join(dir, "internal", "cli"), "search")
+	if strings.Contains(mcpContent, `"search"`) && (strings.Contains(mcpContent, "handleSearch") || hasRegisteredSearch) {
 		highlevelCount++
 	}
 	if (strings.Contains(mcpContent, `"sync"`) && strings.Contains(mcpContent, "handleSync")) ||
@@ -814,6 +844,9 @@ func scoreMCPDescriptionQuality(dir string) (score int, scored bool) {
 }
 
 func scoreLocalCache(dir string) int {
+	if isLocalDatastoreCLIDir(dir) && hasLocalDatastoreCodeSignal(dir) {
+		return 10
+	}
 	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
 	score := 0
 	// Presence: GET response caching
@@ -1048,7 +1081,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.LiveAPIVerification,
 	)
 
-	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol)
+	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness)
 	tier2Normalized := 0
 	if tier2Max > 0 {
 		tier2Normalized = (tier2Raw * 50) / tier2Max
@@ -2643,6 +2676,13 @@ func scoreDataPipelineIntegrity(dir string) int {
 	score := 0
 	cliDir := filepath.Join(dir, "internal", "cli")
 	allCLIContent := readAllGoFiles(cliDir)
+	localDatastore := isLocalDatastoreCLIDir(dir)
+	allLocalContent := allCLIContent
+	if localDatastore {
+		allLocalContent += readAllGoFiles(filepath.Join(dir, "internal", "source"))
+		allLocalContent += readAllGoFiles(filepath.Join(dir, "internal", "store"))
+		allLocalContent += readAllGoFiles(filepath.Join(dir, "internal", "mcp"))
+	}
 	storeContent := readFileContent(filepath.Join(dir, "internal", "store", "store.go"))
 	registeredFiles := registeredCommandFiles(cliDir)
 	commandContent := registeredCommandContent(cliDir, registeredFiles)
@@ -2668,6 +2708,15 @@ func scoreDataPipelineIntegrity(dir string) int {
 		score += 3
 	} else if genericSearchRe.MatchString(allCLIContent) {
 		score += 0
+	}
+
+	if localDatastore && hasLocalDatastoreCodeSignalFromContent(allLocalContent) {
+		if score < 8 {
+			score = 8
+		}
+		if hasGenericResourcesSQLSearchSignal(allLocalContent) || strings.Contains(strings.ToLower(allLocalContent), "select ") {
+			score += 2
+		}
 	}
 
 	score += scoreDomainTables(storeContent)
@@ -3116,6 +3165,32 @@ func readFileContent(path string) string {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func isLocalDatastoreCLIDir(dir string) bool {
+	manifest, err := loadCLIManifestForScorecard(dir)
+	return err == nil && manifest.IsLocalDatastore()
+}
+
+func hasLocalDatastoreCodeSignal(dir string) bool {
+	var b strings.Builder
+	for _, rel := range []string{
+		filepath.Join("internal", "cli"),
+		filepath.Join("internal", "source"),
+		filepath.Join("internal", "store"),
+		filepath.Join("internal", "mcp"),
+	} {
+		b.WriteString(readAllGoFiles(filepath.Join(dir, rel)))
+		b.WriteByte('\n')
+	}
+	return hasLocalDatastoreCodeSignalFromContent(b.String())
+}
+
+func hasLocalDatastoreCodeSignalFromContent(content string) bool {
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, "sqlite") ||
+		strings.Contains(lower, "database/sql") ||
+		strings.Contains(lower, "sql.open")
 }
 
 func computeGrade(percentage int) string {
