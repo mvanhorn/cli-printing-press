@@ -4056,6 +4056,109 @@ func TestExtractPageItemsLowercaseTakesPriorityOverPascal(t *testing.T) {
 	}
 }
 
+func TestExtractPageItemsJSendNestedDataEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"success": true,
+		"warnings": [{"code": "slow-page"}],
+		"next_cursor": "next-page",
+		"has_more": true,
+		"data": {
+			"orders": [{"Id": "ord-1"}, {"Id": "ord-2"}]
+		}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("nested data envelope: want 2 items, got %d", len(items))
+	}
+	if cursor != "next-page" || !hasMore {
+		t.Fatalf("nested pagination = %q/%v, want next-page/true", cursor, hasMore)
+	}
+
+	body = []byte(` + "`" + `{
+		"success": true,
+		"data": {
+			"orders": [{"Id": "ord-3"}],
+			"has_more": true
+		},
+		"pagination": {"next_cursor": "outer-page"}
+	}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 1 || cursor != "outer-page" || !hasMore {
+		t.Fatalf("nested data with split pagination = %d/%q/%v, want 1/outer-page/true", len(items), cursor, hasMore)
+	}
+}
+
+func TestExtractPageItemsDetailObjectWrappedInData(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"data": {
+			"CertNo": "91000",
+			"line_items": [{"id": "li_1"}],
+			"Grade": "MS64"
+		}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("detail object with child array = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+
+	nullSibling := json.RawMessage(` + "`" + `{
+		"data": {
+			"user": null,
+			"recent_orders": [{"id": "o1"}]
+		}
+	}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(nullSibling, "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("detail object with null sibling and child array = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+}
+
+func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{"success": false, "data": null}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+	if !isEmptyPageResponse(json.RawMessage(body)) {
+		t.Fatalf("failed JSend null data envelope should be treated as an empty page")
+	}
+
+	withErrors := json.RawMessage(` + "`" + `{"success": false, "errors": [{"code": "bad"}], "data": null}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(withErrors, "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("failed JSend errors envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+
+	statusFail := json.RawMessage(` + "`" + `{"status": "fail", "data": null}` + "`" + `)
+	if !isEmptyPageResponse(statusFail) {
+		t.Fatalf("status=fail null data envelope should be treated as an empty page")
+	}
+
+	emptyResultSibling := json.RawMessage(` + "`" + `{"data": null, "result": {"orders": []}}` + "`" + `)
+	if !isEmptyPageResponse(emptyResultSibling) {
+		t.Fatalf("null data plus empty result sibling should be treated as an empty page")
+	}
+
+	pascalSuccessFalse := json.RawMessage(` + "`" + `{"Success": false, "Data": null}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(pascalSuccessFalse, "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("PascalCase failed JSend null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+	if !isEmptyPageResponse(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should be treated as an empty page")
+	}
+
+	pascalStatusFail := json.RawMessage(` + "`" + `{"Status": "Failed", "Data": null}` + "`" + `)
+	if !isEmptyPageResponse(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should be treated as an empty page")
+	}
+
+	statusSuccess := json.RawMessage(` + "`" + `{"status": "success", "data": null}` + "`" + `)
+	if isEmptyPageResponse(statusSuccess) {
+		t.Fatalf("status=success null data envelope should not be treated as an empty page")
+	}
+}
+
 func TestLookupFieldValuePascalCase(t *testing.T) {
 	obj := map[string]any{"Id": "abc", "OrderTotal": float64(42)}
 
@@ -4114,7 +4217,7 @@ func TestExtractObjectIDPascalCaseIdWinsOverUppercaseID(t *testing.T) {
 	require.NoError(t, os.WriteFile(storeTestPath, []byte(storeInlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItemsPascalCase|TestLookupFieldValue", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems(PascalCase|JSend)|TestLookupFieldValue", "./internal/cli")
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractObjectID", "./internal/store")
 }
 
@@ -5086,6 +5189,122 @@ func TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields(t *test
 	}
 }
 
+func TestWriteThroughCacheNestedDataEnvelope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"success": true,
+		"warnings": [{"code": "slow-page"}],
+		"data": {
+			"certs": [
+				{"CertNo":"90001","Grade":"MS65"},
+				{"CertNo":"90002","Grade":"MS66"}
+			],
+			"pagination": {"has_more": false}
+		}
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id IN ('90001', '90002')` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("certs count after nested data envelope = %d, want 2", count)
+	}
+}
+
+func TestWriteThroughCacheSkipsMetadataErrorArray(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"success": true,
+		"errors": [{"code": "deprecation"}],
+		"warnings": [{"code": "slow-page"}],
+		"data": null
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("certs count after metadata error array envelope = %d, want 0", count)
+	}
+}
+
+func TestWriteThroughSingleArraySiblingSkipsPrimitiveArrays(t *testing.T) {
+	envelope := map[string]json.RawMessage{
+		"ids":    json.RawMessage(` + "`" + `[1, 2, 3]` + "`" + `),
+		"cursor": json.RawMessage(` + "`" + `"next"` + "`" + `),
+	}
+	items, ok := extractWriteThroughSingleArraySibling(envelope, decodeWriteThroughNonEmptyArray)
+	if ok || len(items) != 0 {
+		t.Fatalf("primitive array sibling = %d/%v, want no extracted resource items", len(items), ok)
+	}
+}
+
+func TestWriteThroughCacheCachesObjectWithChildArray(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"CertNo":"91000",
+		"line_items":[{"id":"li_1"}],
+		"Grade":"MS64"
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '91000'` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("certs count after child-array detail object = %d, want 1", count)
+	}
+}
+
+func TestWriteThroughCacheSkipsNestedEmptyListEnvelope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"success": true,
+		"data": {
+			"certs": [],
+			"pagination": {"has_more": false}
+		}
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("certs count after nested empty-list envelope = %d, want 0", count)
+	}
+}
+
 // TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata guards the
 // flip side: a real list envelope with pagination metadata fields
 // (next_cursor, has_more, etc.) plus an empty array must still skip
@@ -5115,7 +5334,7 @@ func TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata(t *testing.T) 
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName|TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields|TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName|TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields|TestWriteThroughCacheNestedDataEnvelope|TestWriteThroughCacheSkipsMetadataErrorArray|TestWriteThroughSingleArraySiblingSkipsPrimitiveArrays|TestWriteThroughCacheCachesObjectWithChildArray|TestWriteThroughCacheSkipsNestedEmptyListEnvelope|TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata", "./internal/cli")
 }
 
 func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {

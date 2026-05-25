@@ -742,6 +742,7 @@ func syncResourceSinceParam(resource string) string {
 // It tries multiple strategies:
 // 1. Direct JSON array
 // 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
+// 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
 func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
@@ -756,51 +757,96 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 		return nil, "", false
 	}
 
-	// Try common item keys first (fast path)
-	for _, key := range pageItemKeys {
-		if raw, ok := envelope[key]; ok {
-			if err := json.Unmarshal(raw, &items); err == nil && len(items) > 0 {
-				// Verify items are objects. If the first item is not an object
-				// (e.g. a string flag), skip this key and fall through.
-				if len(items) > 0 {
-					var obj map[string]json.RawMessage
-					if err := json.Unmarshal(items[0], &obj); err != nil {
-						continue
-					}
-				}
-				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
-				return items, nextCursor, hasMore
+	if items, ok := extractItemsByKnownKeys(envelope); ok {
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+		return items, nextCursor, hasMore
+	}
+
+	for _, key := range dataEnvelopeKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) != nil {
+			continue
+		}
+		if items, ok := extractItemsFromEnvelope(inner); ok {
+			nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			if nextCursor == "" {
+				nextCursor = outerCursor
 			}
+			hasMore = hasMore || outerHasMore
+			return items, nextCursor, hasMore
 		}
 	}
 
-	// Fallback: try every key in the envelope. If exactly one maps to a JSON
-	// array with items, use it. This handles APIs that wrap responses with the
-	// resource name (e.g., {"markets": [...], "cursor": "..."}).
-	var arrayKey string
-	var arrayItems []json.RawMessage
-	arrayCount := 0
-	for key, raw := range envelope {
-		var candidate []json.RawMessage
-		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) > 0 {
-			// Verify items are objects. If the first item is not an object,
-			// this isn't a resource collection; skip it.
-			var obj map[string]json.RawMessage
-			if err := json.Unmarshal(candidate[0], &obj); err != nil {
-				continue
-			}
-			arrayKey = key
-			arrayItems = candidate
-			arrayCount++
-		}
-	}
-	if arrayCount == 1 {
+	if items, ok := extractSingleObjectArraySibling(envelope); ok {
 		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
-		_ = arrayKey // used for detection, items extracted above
-		return arrayItems, nextCursor, hasMore
+		return items, nextCursor, hasMore
 	}
 
 	return nil, "", false
+}
+
+func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	if items, ok := extractItemsByKnownKeys(envelope); ok {
+		return items, true
+	}
+	return extractSingleObjectArraySibling(envelope)
+}
+
+func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	for _, key := range pageItemKeys {
+		if raw, ok := envelope[key]; ok {
+			if items, ok := extractObjectArray(raw); ok {
+				return items, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	// Fallback: try every key in the envelope. If exactly one maps to a JSON
+	// array with items, use it. This handles APIs that wrap responses with the
+	// resource name (e.g., {"markets": [...], "cursor": "..."}).
+	var arrayItems []json.RawMessage
+	arrayCount := 0
+	for key, raw := range envelope {
+		if pageMetadataArrayKeys[key] {
+			continue
+		}
+		if candidate, ok := extractObjectArray(raw); ok {
+			arrayItems = candidate
+			arrayCount++
+			continue
+		}
+		var rawArray []json.RawMessage
+		if json.Unmarshal(raw, &rawArray) == nil && !isJSONNull(raw) {
+			continue
+		}
+		if !pageEnvelopeMetadataKeys[key] {
+			return nil, false
+		}
+	}
+	if arrayCount == 1 {
+		return arrayItems, true
+	}
+	return nil, false
+}
+
+func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(items[0], &obj); err != nil {
+		return nil, false
+	}
+	return items, true
 }
 
 // isDryRunResponse detects the `{"dry_run": true}` sentinel that
@@ -838,13 +884,59 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 		return false
 	}
 
+	if isEmptyPageEnvelope(envelope) {
+		return true
+	}
+
+	for _, key := range dataEnvelopeKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		if isJSONNull(raw) {
+			if envelopeReportsFailure(envelope) {
+				return true
+			}
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) == nil && isEmptyPageEnvelope(inner) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func envelopeReportsFailure(envelope map[string]json.RawMessage) bool {
+	for _, key := range []string{"success", "Success"} {
+		if raw, ok := envelope[key]; ok {
+			var success bool
+			if json.Unmarshal(raw, &success) == nil {
+				return !success
+			}
+		}
+	}
+	for _, key := range []string{"status", "Status"} {
+		if raw, ok := envelope[key]; ok {
+			var status string
+			if json.Unmarshal(raw, &status) == nil {
+				switch strings.ToLower(status) {
+				case "error", "fail", "failed":
+					return true
+				}
+				return false
+			}
+		}
+	}
+	return false
+}
+
+func isEmptyPageEnvelope(envelope map[string]json.RawMessage) bool {
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
 			var items []json.RawMessage
 			if err := json.Unmarshal(raw, &items); err == nil && !isJSONNull(raw) {
-				// If the array is empty, we still consider it a match for the
-				// key-based strategy. If it's NOT empty, we verify it's an
-				// array of objects to stay consistent with extractPageItems.
 				if len(items) > 0 {
 					var obj map[string]json.RawMessage
 					if err := json.Unmarshal(items[0], &obj); err != nil {
@@ -855,7 +947,10 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 			}
 		}
 	}
+	return hasExactlyOneEmptyArray(envelope)
+}
 
+func hasExactlyOneEmptyArray(envelope map[string]json.RawMessage) bool {
 	arrayCount := 0
 	for _, raw := range envelope {
 		var candidate []json.RawMessage
@@ -1524,6 +1619,44 @@ var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", 
 var pageItemKeys = []string{
 	"data", "results", "items", "records", "nodes", "entries", "features",
 	"Data", "Results", "Items", "Records", "Nodes", "Entries", "Features",
+}
+
+var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
+
+var pageMetadataArrayKeys = map[string]bool{
+	"errors": true, "Errors": true,
+	"warnings": true, "Warnings": true,
+}
+
+var pageEnvelopeMetadataKeys = map[string]bool{
+	// list wrappers themselves
+	"data": true, "results": true, "items": true,
+	"Data": true, "Results": true, "Items": true,
+	// pagination cursors / tokens
+	"next_cursor": true, "nextCursor": true, "NextCursor": true,
+	"next_page_token": true, "nextPageToken": true, "NextPageToken": true,
+	"page_token": true, "pageToken": true, "PageToken": true,
+	"end_cursor": true, "endCursor": true, "EndCursor": true,
+	"start_cursor": true, "startCursor": true, "StartCursor": true,
+	"cursor": true, "Cursor": true, "after": true, "After": true, "before": true, "Before": true,
+	// has-more flags and page numbers
+	"has_more": true, "hasMore": true, "HasMore": true,
+	"has_next": true, "hasNext": true, "HasNext": true,
+	"next_page": true, "nextPage": true, "NextPage": true,
+	"previous_page": true, "previousPage": true, "PreviousPage": true,
+	"page": true, "Page": true, "page_size": true, "pageSize": true, "PageSize": true,
+	"per_page": true, "perPage": true, "PerPage": true,
+	// counts / totals
+	"total": true, "Total": true, "count": true, "Count": true, "size": true, "Size": true,
+	"total_count": true, "totalCount": true, "TotalCount": true,
+	// JSend / common status envelopes
+	"success": true, "status": true, "message": true, "error": true, "errors": true,
+	"warnings": true, "Warnings": true, "ok": true, "Ok": true,
+	// wrapper objects
+	"links": true, "meta": true, "pagination": true,
+	"response_metadata": true, "paging": true,
+	// links shape
+	"next": true, "prev": true, "previous": true, "first": true, "last": true,
 }
 
 // criticalResources is the template-time projection of per-resource Critical
