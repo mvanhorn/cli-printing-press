@@ -6043,6 +6043,13 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 		if !found {
 			continue
 		}
+		// A body that recurses past maxBodyFlagDepth must NOT be promoted: the
+		// promoted template emits no --stdin fallback, so the truncated subtree
+		// would silently drop fields. Skipping promotion keeps the canonical
+		// command (which has --stdin) as the reachable surface.
+		if bodyExceedsFlagDepth(bestEndpoint) {
+			continue
+		}
 
 		promotedName := toKebab(name)
 		if builtinCommands[promotedName] {
