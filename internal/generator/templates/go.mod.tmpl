@@ -32,3 +32,8 @@ require modernc.org/sqlite v1.37.0
 {{- if .VisionSet.MCP}}
 require github.com/mark3labs/mcp-go v0.47.0
 {{- end}}
+
+{{- $agentcookieReplacePath := agentcookieReplacePath}}
+{{- if and (hasNonCookieAuth .Auth) $agentcookieReplacePath}}
+replace github.com/mvanhorn/agentcookie => {{$agentcookieReplacePath}}
+{{- end}}

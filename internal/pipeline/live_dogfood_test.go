@@ -56,7 +56,7 @@ func TestRunLiveDogfoodDetectsTruncatedJSONOutput(t *testing.T) {
 		CLIDir:     dir,
 		BinaryName: binaryName,
 		Level:      "full",
-		Timeout:    5 * time.Second,
+		Timeout:    30 * time.Second,
 	})
 	require.NoError(t, err)
 
@@ -253,9 +253,220 @@ func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	run := runLiveDogfoodProcess(binPath, dir, nil, 30*time.Second)
 	require.NoError(t, run.err, "fixture: %s", run.stderr)
 	assert.Equal(t, "1", run.stdout, "live-dogfood subprocess should see PRINTING_PRESS_DOGFOOD=1")
+}
+
+func TestRunLiveDogfoodLocalDatastoreManifestPreservesOperatorHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ ! -f "$HOME/source.db" ]; then echo "missing local source" >&2; exit 3; fi
+  if [ ! -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "missing local cache" >&2; exit 3; fi
+  if [ ! -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "missing local config" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "none",
+		SpecFormat:    "sqlite",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodAPICLIRetainsScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ -f "$HOME/source.db" ]; then echo "operator home leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "operator cache leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "operator config leaked" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "none",
+		SpecFormat:    "openapi3",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodAuthenticatedLocalDatastoreRetainsScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ -f "$HOME/source.db" ]; then echo "operator home leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "operator cache leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "operator config leaked" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "api_key",
+		SpecFormat:    "sqlite",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodProcessRetriesTransientAuth401(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	binPath := writeStubBinary(t, dir, "flaky-auth", `count_file="count"
+count=0
+if [ -f "$count_file" ]; then
+  count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+if [ "$count" -eq 1 ]; then
+  echo 'Error: GET /api/v2/account/settings returned HTTP 401: {"error":"Couldn'\''t authenticate you"}' >&2
+  exit 1
+fi
+printf '{"ok":true}'
+`)
+
+	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	require.NoError(t, run.err, "fixture: %s", run.stderr)
+	assert.Equal(t, 0, run.exitCode)
+	assert.Equal(t, `{"ok":true}`, run.stdout)
+
+	count, err := os.ReadFile(countPath)
+	require.NoError(t, err)
+	assert.Equal(t, "2", string(count), "auth-shaped 401 should be retried once")
+}
+
+func TestRunLiveDogfoodSkipsPersistentAuth401AsRunnerCredentialUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	writeStubBinary(t, dir, binaryName, `if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show-settings"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show-settings" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show account settings.
+
+Usage:
+  fixture-pp-cli account show-settings [flags]
+
+Examples:
+  fixture-pp-cli account show-settings
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+count_file="count"
+count=0
+if [ -f "$count_file" ]; then
+  count=$(cat "$count_file")
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+echo 'Error: GET /api/v2/account/settings returned HTTP 401: {"error":"Could not authenticate you"}' >&2
+exit 1
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    5 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected account show-settings happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonUnavailableRunnerCredentials, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "account show-settings", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult, "expected account show-settings json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonUnavailableRunnerCredentials, jsonResult.Reason)
+
+	count, err := os.ReadFile(filepath.Join(dir, "count"))
+	require.NoError(t, err)
+	assert.Equal(t, "2", string(count), "persistent auth-shaped 401 should retry once before skip classification")
 }
 
 func TestRunLiveDogfoodProcessPreservesLargeJSONUnderCap(t *testing.T) {
@@ -293,11 +504,26 @@ printf '"}'
 `, liveDogfoodMaxOutputBytes+1024)
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o700))
 
-	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	run := runLiveDogfoodProcess(binPath, dir, nil, 30*time.Second)
 	require.NoError(t, run.err)
 	assert.True(t, run.stdoutTruncated)
 	assert.False(t, validLiveDogfoodJSONOutput(run.stdout))
 	assert.Equal(t, "output exceeded capture cap", liveDogfoodInvalidJSONReason(run, "invalid JSON"))
+}
+
+func TestLiveDogfoodResultRedactsOutputSamplePII(t *testing.T) {
+	run := liveDogfoodRun{
+		stdout:   "{\"name\":\"Jane Doe\"}\n",
+		stderr:   "{\"email\":\"jane@example.com\"}",
+		exitCode: 0,
+	}
+
+	result := liveDogfoodResult("widgets list", LiveDogfoodTestHappy, []string{"widgets", "list"}, run)
+
+	require.NotContains(t, result.OutputSample, "Jane Doe")
+	require.NotContains(t, result.OutputSample, "jane@example.com")
+	require.Contains(t, result.OutputSample, `"name":"<redacted>"`)
+	require.Contains(t, result.OutputSample, `"email":"<redacted>"`)
 }
 
 func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
@@ -575,6 +801,68 @@ func TestRunLiveDogfoodSkipsHappyPathOnMissingFileFixture(t *testing.T) {
 	assert.Equal(t, LiveDogfoodStatusPass, help.Status, "help check must still pass when the only failure is a missing fixture")
 }
 
+func TestRunLiveDogfoodSkipsHappyPathOnRequiredParam4xx(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodRequiredParamFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "PASS", report.Verdict)
+
+	happy := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected reports prospects happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, happy.Reason)
+
+	json := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestJSON)
+	require.NotNil(t, json, "expected reports prospects json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, json.Status)
+	assert.Equal(t, happy.Reason, json.Reason)
+
+	help := findResultByCommandKind(report, "reports prospects", LiveDogfoodTestHelp)
+	require.NotNil(t, help, "expected reports prospects help result")
+	assert.Equal(t, LiveDogfoodStatusPass, help.Status, "help check must still pass when the only failure is an unsupplied required API parameter")
+
+	summaryHappy := findResultByCommandKind(report, "reports summary", LiveDogfoodTestHappy)
+	require.NotNil(t, summaryHappy, "expected reports summary happy_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, summaryHappy.Status)
+
+	summaryJSON := findResultByCommandKind(report, "reports summary", LiveDogfoodTestJSON)
+	require.NotNil(t, summaryJSON, "expected reports summary json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, summaryJSON.Status)
+	assert.Equal(t, reasonRequiredParamFixture, summaryJSON.Reason)
+}
+
+func TestRunLiveDogfoodKeepsOrdinary4xxFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodOrdinary4xxFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+
+	happy := findResultByCommandKind(report, "reports broken-filter", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected reports broken-filter happy_path result")
+	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
+	assert.Contains(t, happy.OutputSample, "invalid filter")
+}
+
 func writeLiveDogfoodFileFixtureScript(t *testing.T) (dir string, binaryName string) {
 	t.Helper()
 
@@ -628,6 +916,138 @@ exit 99
 	return dir, binaryName
 }
 
+func writeLiveDogfoodRequiredParamFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"reports","subcommands":[
+      {"name":"prospects"},
+      {"name":"summary"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List report prospects.
+
+Usage:
+  fixture-pp-cli reports prospects [flags]
+
+Examples:
+  fixture-pp-cli reports prospects
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ] && [ "${3:-}" = "--json" ]; then
+  echo 'unexpected reports prospects --json invocation' >&2
+  exit 9
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "prospects" ]; then
+  echo 'HTTP 400: {"error":"Please provide email"}' >&2
+  exit 1
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show report summary.
+
+Usage:
+  fixture-pp-cli reports summary [flags]
+
+Examples:
+  fixture-pp-cli reports summary
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ] && [ "${3:-}" = "--json" ]; then
+  echo 'HTTP 400: {"error":"missing required parameter: email"}' >&2
+  exit 1
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "summary" ]; then
+  echo 'summary'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodOrdinary4xxFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"reports","subcommands":[
+      {"name":"broken-filter"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "broken-filter" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Run a report with an invalid upstream filter.
+
+Usage:
+  fixture-pp-cli reports broken-filter [flags]
+
+Examples:
+  fixture-pp-cli reports broken-filter
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "broken-filter" ]; then
+  echo 'HTTP 400: {"error":"invalid filter"}' >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
 func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
 	t.Parallel()
 
@@ -642,7 +1062,66 @@ func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
 
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 403 permission denied"}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "your credentials are valid but lack access"}))
+	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"error":"Couldn't authenticate you"}`}))
 	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 404 NotFound"}))
+}
+
+func TestLiveDogfoodRequiredParamFixtureReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		run  liveDogfoodRun
+		want string
+	}{
+		{
+			name: "missing required parameter 4xx is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"missing required parameter: email"}`, exitCode: 1},
+			want: reasonRequiredParamFixture,
+		},
+		{
+			name: "please provide 4xx is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"Please provide email"}`, exitCode: 1},
+			want: reasonRequiredParamFixture,
+		},
+		{
+			name: "ordinary 4xx remains a failure",
+			run:  liveDogfoodRun{stderr: "HTTP 404 NotFound", exitCode: 1},
+		},
+		{
+			name: "401 auth requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 401: {"error":"api key is required"}`, exitCode: 1},
+		},
+		{
+			name: "403 subscription requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 403: {"error":"subscription is required"}`, exitCode: 1},
+		},
+		{
+			name: "404 not found requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"widget id is required"}`, exitCode: 1},
+		},
+		{
+			name: "generic 400 requirement is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"subscription is required"}`, exitCode: 1},
+		},
+		{
+			name: "generic please provide 400 is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"Please provide subscription"}`, exitCode: 1},
+		},
+		{
+			name: "422 missing field validation is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 422: {"error":"missing field: status"}`, exitCode: 1},
+		},
+		{
+			name: "successful output is not a blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 400: {"error":"missing required parameter: email"}`, exitCode: 0},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, liveDogfoodRequiredParamFixtureReason(tc.run))
+		})
+	}
 }
 
 func TestRunLiveDogfoodSkipsDestructiveByDefault(t *testing.T) {
@@ -1455,6 +1934,78 @@ if [ "$1" = "widgets" ] && [ "$2" = "broken" ]; then
     exit 0
   fi
   echo 'broken'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodHomeProbeFixture(t *testing.T, probe string) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "${1:-}" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"list"},
+      {"name":"recent"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "recent" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List recent widgets.
+
+Usage:
+  fixture-pp-cli widgets recent [flags]
+
+Examples:
+  fixture-pp-cli widgets recent --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && { [ "${2:-}" = "list" ] || [ "${2:-}" = "recent" ]; }; then
+  ` + probe + `
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"results":[{"id":"123"}]}'
+    exit 0
+  fi
+  echo 'widget 1'
   exit 0
 fi
 

@@ -137,7 +137,7 @@ func (c *Client) throttleModeOrDefault() string {
 // awaitBudget consults the throttle mode and either blocks on
 // WaitForBudget (strict), warns to stderr without blocking (lenient), or
 // returns immediately (off / no throttle state). The graphql Query path
-// calls this before every Post; novel commands can call it directly when
+// calls this before every request; novel commands can call it directly when
 // composing multi-query workflows.
 func (c *Client) awaitBudget(ctx context.Context, cost float64) error {
 	if c == nil || c.Throttle == nil {
@@ -167,54 +167,45 @@ func (c *Client) Query(ctx context.Context, query string, variables map[string]a
 	return c.queryWithThrottle(ctx, query, variables)
 {{- else}}
 	req := GraphQLRequest{Query: query, Variables: variables}
-	raw, _, err := c.Post(ctx, graphqlEndpointPath, req)
+	raw, _, err := c.PostQueryWithParams(ctx, graphqlEndpointPath, nil, req)
 	if err != nil {
 		return nil, err
 	}
-
-	var resp GraphQLResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("decoding graphql response: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		msgs := make([]string, len(resp.Errors))
-		codes := make([]string, 0, len(resp.Errors))
-		allDenial := true
-		for i, e := range resp.Errors {
-			msgs[i] = e.Message
-			if e.Extensions.Code != "" {
-				codes = append(codes, e.Extensions.Code)
-			}
-			if !isGraphQLAccessDenialCode(e.Extensions.Code) {
-				allDenial = false
-			}
-		}
-		if allDenial && len(codes) > 0 {
-			return nil, &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
-		}
-		return nil, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
-	}
-	return resp.Data, nil
+	return decodeGraphQLData(raw)
 {{- end}}
 }
 
 {{- if .HasCostThrottling}}
 
-// queryWithThrottle is the throttle-aware Query path. Wraps the bare Post
-// call with WaitForBudget (mode-gated), parses extensions.cost from every
-// response (including error responses, since Shopify reports the bucket
-// even when the query was rejected), and retries on THROTTLED extension
-// codes via HandleThrottleError. HTTP 429s are still handled by the
-// Client.do() layer's existing AdaptiveLimiter retry — this path stacks
-// on top of that without double-handling.
+// queryWithThrottle is the throttle-aware Query path. Wraps the read-only
+// POST helper with WaitForBudget (mode-gated), parses extensions.cost from
+// every response (including error responses, since Shopify reports the bucket
+// even when the query was rejected), and retries on THROTTLED extension codes
+// via HandleThrottleError.
 func (c *Client) queryWithThrottle(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
 	req := GraphQLRequest{Query: query, Variables: variables}
+	return c.graphqlWithThrottle(ctx, req, func(ctx context.Context, req GraphQLRequest) (json.RawMessage, int, error) {
+		return c.PostQueryWithParams(ctx, graphqlEndpointPath, nil, req)
+	})
+}
+
+// mutateWithThrottle is the throttle-aware Mutate path. It keeps the gated
+// mutation transport while preserving the same cost-budget behavior that Mutate
+// had when it delegated to Query.
+func (c *Client) mutateWithThrottle(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
+	req := GraphQLRequest{Query: query, Variables: variables}
+	return c.graphqlWithThrottle(ctx, req, func(ctx context.Context, req GraphQLRequest) (json.RawMessage, int, error) {
+		return c.Post(ctx, graphqlEndpointPath, req)
+	})
+}
+
+func (c *Client) graphqlWithThrottle(ctx context.Context, req GraphQLRequest, post func(context.Context, GraphQLRequest) (json.RawMessage, int, error)) (json.RawMessage, error) {
 	mode := c.throttleModeOrDefault()
 	for attempt := 0; ; attempt++ {
 		if err := c.awaitBudget(ctx, defaultThrottleQueryCost); err != nil {
 			return nil, err
 		}
-		raw, _, err := c.Post(ctx, graphqlEndpointPath, req)
+		raw, _, err := post(ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -247,31 +238,54 @@ func (c *Client) queryWithThrottle(ctx context.Context, query string, variables 
 			}
 		}
 
-		msgs := make([]string, len(resp.Errors))
-		codes := make([]string, 0, len(resp.Errors))
-		allDenial := true
-		for i, e := range resp.Errors {
-			msgs[i] = e.Message
-			if e.Extensions.Code != "" {
-				codes = append(codes, e.Extensions.Code)
-			}
-			if !isGraphQLAccessDenialCode(e.Extensions.Code) {
-				allDenial = false
-			}
-		}
-		if allDenial && len(codes) > 0 {
-			return nil, &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
-		}
-		return nil, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
+		return nil, graphqlResponseError(resp.Errors)
 	}
 }
 {{- end}}
 
 // Mutate executes a GraphQL mutation via POST against graphqlEndpointPath and
-// returns the raw data payload. Identical transport to Query; separate method
-// for clarity.
+// returns the raw data payload.
 func (c *Client) Mutate(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
-	return c.Query(ctx, query, variables)
+{{- if .HasCostThrottling}}
+	return c.mutateWithThrottle(ctx, query, variables)
+{{- else}}
+	req := GraphQLRequest{Query: query, Variables: variables}
+	raw, _, err := c.Post(ctx, graphqlEndpointPath, req)
+	if err != nil {
+		return nil, err
+	}
+	return decodeGraphQLData(raw)
+{{- end}}
+}
+
+func decodeGraphQLData(raw json.RawMessage) (json.RawMessage, error) {
+	var resp GraphQLResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("decoding graphql response: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		return nil, graphqlResponseError(resp.Errors)
+	}
+	return resp.Data, nil
+}
+
+func graphqlResponseError(errors []GraphQLError) error {
+	msgs := make([]string, len(errors))
+	codes := make([]string, 0, len(errors))
+	allDenial := true
+	for i, e := range errors {
+		msgs[i] = e.Message
+		if e.Extensions.Code != "" {
+			codes = append(codes, e.Extensions.Code)
+		}
+		if !isGraphQLAccessDenialCode(e.Extensions.Code) {
+			allDenial = false
+		}
+	}
+	if allDenial && len(codes) > 0 {
+		return &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
+	}
+	return fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
 }
 
 // PaginatedQuery fetches all pages of a Connection field using first/after pagination.

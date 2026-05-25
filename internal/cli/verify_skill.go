@@ -214,13 +214,14 @@ func newVerifySkillCmd() *cobra.Command {
 		Short:         "Verify SKILL.md matches the shipped CLI source",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Long: `Run five checks against a printed CLI's SKILL.md:
+		Long: `Run six checks against a printed CLI's SKILL.md:
 
   1. flag-names — every --flag used on a <cli> ... invocation in SKILL.md is declared in internal/cli/*.go
   2. flag-commands — every --flag used on a specific command is declared on that command (or persistent)
   3. positional-args — positional args in bash recipes match the command's Use: field
-  4. unknown-command — every referenced command path maps to a cobra Use: declaration
-  5. canonical-sections — the Prerequisites: Install the CLI section matches what the generator would emit (defends against post-publish edits to generator-owned text)
+  4. shell-var-quotes — every shell variable expanded in generated bash code blocks is double-quoted
+  5. unknown-command — every referenced command path maps to a cobra Use: declaration
+  6. canonical-sections — the Prerequisites: Install the CLI section matches what the generator would emit (defends against post-publish edits to generator-owned text)
 
 Fails when the SKILL advertises commands, flags, or arguments that the binary
 doesn't actually provide — which is how the recipe-goat "search --max-time"
@@ -229,9 +230,9 @@ has been hand-edited away from the canonical generator output, which is the
 failure mode that produced fabricated /ppl install slash commands and
 mangled fallback blocks during polish loops.
 
-Checks 1-4 run via the bundled scripts/verify-skill/verify_skill.py; check 5
+Checks 1-5 run via the bundled scripts/verify-skill/verify_skill.py; check 6
 runs in Go using the CLI manifest (.printing-press.json) and go.mod.
-Requires python3 on PATH for checks 1-4.`,
+Requires python3 on PATH for checks 1-5.`,
 		Example: `  # Run all checks against a generated CLI
   cli-printing-press verify-skill --dir ./my-api-pp-cli
 
@@ -240,6 +241,7 @@ Requires python3 on PATH for checks 1-4.`,
 
   # Only check a specific category
   cli-printing-press verify-skill --dir ./my-api-pp-cli --only flag-commands
+  cli-printing-press verify-skill --dir ./my-api-pp-cli --only shell-var-quotes
   cli-printing-press verify-skill --dir ./my-api-pp-cli --only canonical-sections`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
@@ -311,7 +313,7 @@ Requires python3 on PATH for checks 1-4.`,
 	}
 
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to the printed CLI directory (contains SKILL.md + internal/cli/)")
-	cmd.Flags().StringSliceVar(&only, "only", nil, "Run only the named check(s): flag-names, flag-commands, positional-args, unknown-command, canonical-sections (repeatable)")
+	cmd.Flags().StringSliceVar(&only, "only", nil, "Run only the named check(s): flag-names, flag-commands, positional-args, shell-var-quotes, unknown-command, canonical-sections (repeatable)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Treat likely-false-positive findings as failures")
 

@@ -18,6 +18,6 @@
   "schema_version": 1,
   "spec_checksum": "sha256:6f0db63789d04842247de3b969d2d78ca99cd7ad85637f799f9f95e917f5568a",
   "spec_format": "openapi3",
-  "spec_path": "testdata/golden/fixtures/fastapi-operationids.yaml",
+  "spec_path": "fastapi-operationids.yaml",
   "spec_url": "file://testdata/golden/fixtures/fastapi-operationids.yaml"
 }

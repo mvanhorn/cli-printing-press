@@ -151,3 +151,116 @@ func TestClientBasePathLiveRequest(t *testing.T) {
 	assert.Contains(t, gotPaths, "/api/v1/things",
 		"the things.list endpoint should hit /api/v1/things, not /things")
 }
+
+func TestEndpointPathWithBaseLeavesAbsolutePathAlone(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "https://clob.example.com/book",
+		endpointPathWithBase("https://gamma.example.com", "https://clob.example.com/book"))
+	assert.Equal(t, "http://clob.example.com/book",
+		endpointPathWithBase("https://gamma.example.com", "http://clob.example.com/book"))
+	assert.Equal(t, "https://gamma.example.com/v1/book",
+		endpointPathWithBase("https://gamma.example.com/v1/", "/book"))
+	// Protocol-relative URLs remain relative paths for this fix. Only
+	// explicit http:// and https:// endpoint paths select another host.
+	assert.Equal(t, "https://gamma.example.com//cdn.example.com/book",
+		endpointPathWithBase("https://gamma.example.com", "//cdn.example.com/book"))
+}
+
+// TestClientAbsoluteEndpointPathLiveRequest proves internal YAML specs can
+// declare a full URL directly in endpoints[].path. The generated client must
+// use that URL as-is instead of prepending the CLI's default BaseURL.
+func TestClientAbsoluteEndpointPathLiveRequest(t *testing.T) {
+	t.Parallel()
+
+	var (
+		targetMu    sync.Mutex
+		targetPaths []string
+	)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetMu.Lock()
+		targetPaths = append(targetPaths, r.URL.Path)
+		targetMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items": []}`))
+	}))
+	t.Cleanup(target.Close)
+
+	var (
+		fallbackMu    sync.Mutex
+		fallbackPaths []string
+	)
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackMu.Lock()
+		fallbackPaths = append(fallbackPaths, r.URL.Path)
+		fallbackMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items": []}`))
+	}))
+	t.Cleanup(fallback.Close)
+
+	apiSpec := minimalSpec("abspathlive")
+	apiSpec.BaseURL = fallback.URL
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"markets": {
+			Description: "Market data",
+			Endpoints: map[string]spec.Endpoint{
+				"book":   {Method: "GET", Path: target.URL + "/book", Description: "Fetch order book"},
+				"ticker": {Method: "GET", Path: "/ticker", Description: "Fetch ticker"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "abspathlive-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	client := string(clientSrc)
+	assert.Contains(t, client, "func isAbsoluteURL(path string) bool",
+		"absolute endpoint paths must emit the absolute-URL helper")
+	assert.Contains(t, client, "if isAbsoluteURL(path) {",
+		"client.do() must branch before concatenating BaseURL")
+
+	handlerSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "markets_book.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(handlerSrc), `path := "`+target.URL+`/book"`,
+		"generated command should preserve the absolute endpoint path")
+	relativeHandlerSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "markets_ticker.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(relativeHandlerSrc), `path := "/ticker"`,
+		"sibling relative endpoint should stay relative")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "abspathlive-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/abspathlive-pp-cli")
+
+	cmd := exec.Command(binaryPath, "markets", "book", "--json")
+	cmd.Env = append(os.Environ(), "ABSPATHLIVE_BASE_URL="+fallback.URL)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	var resp any
+	require.NoError(t, json.Unmarshal(out, &resp), string(out))
+
+	cmd = exec.Command(binaryPath, "markets", "ticker", "--json")
+	cmd.Env = append(os.Environ(), "ABSPATHLIVE_BASE_URL="+fallback.URL)
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, json.Unmarshal(out, &resp), string(out))
+
+	targetMu.Lock()
+	defer targetMu.Unlock()
+	assert.Contains(t, targetPaths, "/book",
+		"absolute endpoint request should reach the endpoint host")
+	assert.NotContains(t, targetPaths, "/ticker",
+		"relative sibling endpoint should not hit the absolute endpoint host")
+
+	fallbackMu.Lock()
+	defer fallbackMu.Unlock()
+	assert.Contains(t, fallbackPaths, "/ticker",
+		"relative sibling endpoint should still hit the default BaseURL host")
+	assert.NotContains(t, fallbackPaths, "/book",
+		"default BaseURL host must not receive requests for absolute endpoint paths")
+}

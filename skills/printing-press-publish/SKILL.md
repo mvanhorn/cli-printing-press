@@ -20,8 +20,34 @@ Publish a generated CLI from your local library to the [printing-press-library](
 ```bash
 /printing-press publish notion-pp-cli
 /printing-press publish notion
+/printing-press publish notion --from-polish
+/printing-press publish notion --skip-live-test=auth-unavailable
 /printing-press publish
 ```
+
+## Direct User Invocation Required
+
+Publishing can fork `mvanhorn/printing-press-library`, push a branch, and open or
+update a PR. Before setup or validation, check the invocation context. If this
+skill was invoked as a chained continuation from `printing-press-polish`'s
+Publish Offer, including an `AskUserQuestion` answer or auto-resolved polish
+recommendation, stop immediately and tell the user to send
+`/printing-press-publish <cli-name> --from-polish` in a fresh message. A fresh
+user-authored request that explicitly asks to publish is sufficient; do not add
+another confirmation prompt on top of a direct publish request.
+
+If the fresh user-authored request includes `--from-polish`, record
+`POLISH_HANDOFF=true` for the terminal-state step and ignore that marker when
+resolving the CLI name. The marker is not a second confirmation and is not
+passed to `cli-printing-press`; it only preserves standalone polish's old
+post-publish retro offer after the fresh-turn publish completes.
+
+If the fresh user-authored request includes `--skip-live-test=<reason>`, record
+the exact non-empty reason as `SKIP_LIVE_TEST_REASON` and remove the flag before
+resolving the CLI name. This is the only supported escape valve for the
+publish-time live test gate. Use it only for auth-unavailable, known upstream
+outage, or similarly concrete operator-approved cases; never infer a skip from
+ordinary latency or from the presence of an older Phase 5 marker.
 
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
@@ -80,7 +106,7 @@ if [ -z "$PRESS_BASE" ]; then
 fi
 
 PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
 PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
@@ -239,6 +265,133 @@ fails, tell the user to re-print or re-package with current Printing Press
 metadata before opening the library PR.
 
 Save the `help_output` field from the result — it's used in the PR description.
+
+## Step 4.5: Live End-to-End Gate
+
+Before touching the managed publish clone, rerun the live behavioral gate
+against the CLI that is about to be published. Step 4 proves the source builds
+and validates structurally; this step proves the current post-edit tree still
+works against the real upstream API. Do not rely on an older
+`phase5-acceptance.json` from generation or polish because the CLI may have
+been hand-edited since that marker was written.
+
+Resolve the Phase 5 proofs directory from the CLI manifest:
+
+```bash
+MANIFEST="$CLI_DIR/.printing-press.json"
+API_SLUG=$(jq -r '.api_name // empty' "$MANIFEST")
+CLI_NAME=$(jq -r '.cli_name // empty' "$MANIFEST")
+RUN_ID=$(jq -r '.run_id // empty' "$MANIFEST")
+AUTH_TYPE=$(jq -r '.auth_type // "none"' "$MANIFEST")
+AUTH_ENV=$(jq -r '.auth_env_vars[0] // empty' "$MANIFEST")
+
+if [ -z "$API_SLUG" ] || [ -z "$RUN_ID" ]; then
+  echo "ERROR: manifest is missing api_name or run_id; cannot run publish live gate."
+  exit 1
+fi
+
+PROOFS_DIR="$CLI_DIR/.manuscripts/$RUN_ID/proofs"
+if [ ! -d "$PROOFS_DIR" ] && [ -n "$API_SLUG" ] && [ -d "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs" ]; then
+  PROOFS_DIR="$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs"
+elif [ ! -d "$PROOFS_DIR" ] && [ -n "$CLI_NAME" ] && [ -d "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/proofs" ]; then
+  PROOFS_DIR="$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/proofs"
+fi
+mkdir -p "$PROOFS_DIR"
+```
+
+If `SKIP_LIVE_TEST_REASON` is unset, run full live dogfood and write a fresh
+acceptance marker into that proofs directory:
+
+```bash
+LIVE_GATE_JSON="$PROOFS_DIR/publish-live-gate.json"
+LIVE_GATE_ARGS=(
+  dogfood
+  --dir "$CLI_DIR"
+  --live
+  --level full
+  --timeout 120s
+  --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
+  --json
+)
+if [ -n "$AUTH_ENV" ]; then
+  LIVE_GATE_ARGS+=(--auth-env "$AUTH_ENV")
+fi
+
+rm -f "$PROOFS_DIR/phase5-skip.json"
+if ! "$PRINTING_PRESS_BIN" "${LIVE_GATE_ARGS[@]}" >"$LIVE_GATE_JSON"; then
+  echo "Publish live gate failed. See $LIVE_GATE_JSON and $PROOFS_DIR/phase5-acceptance.json."
+  jq -r '.tests[]? | select(.status == "fail") | "- \(.command) [\(.kind)]: \(.reason // "failed")"' "$LIVE_GATE_JSON" 2>/dev/null || true
+  exit 1
+fi
+```
+
+On failure, stop exactly like Step 4's `passed: false`: no managed clone, no
+branch, no package, no PR. Report the failed command, exit code when present,
+stderr or reason snippet, and the path to the fresh proof files so the operator
+can re-run dogfood and fix the CLI.
+
+If `SKIP_LIVE_TEST_REASON` is set from `--skip-live-test=<reason>`, write a
+fresh skip marker instead of running dogfood:
+
+```bash
+SKIP_REASON_LOWER=$(printf '%s' "$SKIP_LIVE_TEST_REASON" | tr '[:upper:]' '[:lower:]')
+case "$AUTH_TYPE" in
+  api_key|bearer_token|oauth2)
+    ;;
+  none)
+    case "$SKIP_REASON_LOWER" in
+      *upstream*outage*)
+        ;;
+      *)
+        echo "ERROR: --skip-live-test is only valid for auth_type=none during a known upstream outage."
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    echo "ERROR: --skip-live-test is not valid for auth_type=$AUTH_TYPE. Run the live gate instead."
+    exit 1
+    ;;
+esac
+
+API_KEY_AVAILABLE=false
+if [ -n "$AUTH_ENV" ] && [ -n "${!AUTH_ENV:-}" ]; then
+  API_KEY_AVAILABLE=true
+fi
+
+rm -f "$PROOFS_DIR/phase5-acceptance.json"
+jq -n \
+  --arg api "$API_SLUG" \
+  --arg run "$RUN_ID" \
+  --arg reason "$SKIP_LIVE_TEST_REASON" \
+  --arg auth "$AUTH_TYPE" \
+  --argjson api_key_available "$API_KEY_AVAILABLE" \
+  --argjson browser_session_available false \
+  '{
+    schema_version: 1,
+    api_name: $api,
+    run_id: $run,
+    status: "skip",
+    level: "none",
+    skip_reason: $reason,
+    auth_context: {
+      type: $auth,
+      api_key_available: $api_key_available,
+      browser_session_available: $browser_session_available
+    }
+  }' > "$PROOFS_DIR/phase5-skip.json"
+LIVE_GATE_JSON=""
+```
+
+Then rerun Step 4's validation:
+
+```bash
+"$PRINTING_PRESS_BIN" publish validate --dir "$CLI_DIR" --json
+```
+
+This second validation proves the fresh acceptance or skip marker satisfies the
+same Phase 5 contract that package and publish rely on. If it fails, stop
+before Step 5.
 
 ## Step 5: Managed Clone
 
@@ -488,6 +641,73 @@ rm -rf "$STAGING_PARENT"
 ```
 
 Note: `staged_dir` is keyed by the API slug (e.g., `espn`), matching the publish repo's directory layout. The copy step is a same-name copy, not a rename.
+
+## Step 6.5: Record Customizations
+
+Before collision detection or branch creation, inspect the packaged CLI's
+customizations index:
+
+```bash
+PATCHES_INDEX="$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press-patches.json"
+if [ ! -f "$PATCHES_INDEX" ]; then
+  echo "ERROR: packaged CLI is missing .printing-press-patches.json. Reprint with a current cli-printing-press binary before publishing."
+  exit 1
+fi
+if ! jq -e '
+  (.schema_version | type == "number") and
+  (.applied_at | type == "string" and length > 0) and
+  (.base_run_id | type == "string" and length > 0) and
+  (.base_printing_press_version | type == "string" and length > 0) and
+  (.patches | type == "array")
+' "$PATCHES_INDEX" >/dev/null; then
+  echo "ERROR: packaged CLI has malformed .printing-press-patches.json. Reprint with a current cli-printing-press binary before publishing."
+  exit 1
+fi
+```
+
+Fresh prints from current `cli-printing-press generate` include this file with
+`"patches": []`; leave that unchanged when no hand customization was made after
+generation. If the file is missing, the CLI was generated by an older binary;
+reprint with a current `cli-printing-press` build rather than synthesizing the
+deterministic provenance fields by hand.
+
+If you changed generated CLI files during the print or publish session, append
+one concise entry per customization to `patches[]` before opening the library
+PR. This index is the durable hand-edit contract that tells future agents and
+regen tooling what must be preserved beyond generator output.
+
+Use this shape:
+
+```json
+{
+  "id": "<api-slug>-<short-feature-name>",
+  "summary": "What changed (one sentence).",
+  "reason": "Why the generated output needed this customization.",
+  "files": ["internal/cli/example.go"],
+  "validated_outcome": "Optional: focused check that proved the customization.",
+  "upstream_issue": "Optional: https://github.com/mvanhorn/cli-printing-press/issues/<n>"
+}
+```
+
+Rules:
+
+- Use kebab-case ids prefixed with the API slug for grep-ability across the
+  public library.
+- Keep `summary` and `reason` short. The manifest is an index, not a duplicate
+  of the git diff.
+- Include non-Go support files in `files` when they are part of the same
+  code-level customization. README/SKILL.md-only polish does not need a patch
+  manifest entry.
+- Inline `// PATCH(...)` source comments are optional navigation aids. The public
+  library verifier currently requires the patches file to exist and
+  `patches` to be an array; it does not require a marker/comment pairing.
+- If an entry exists only to work around an old verifier or pipeline bug that no
+  longer applies, delete the stale workaround entry instead of carrying it
+  forward.
+
+For the authoritative public-library authoring contract, read the
+`mvanhorn/printing-press-library` `AGENTS.md` section
+"`.printing-press-patches.json` records library-side customizations".
 
 ## Step 7: Collision Detection & Resolution
 
@@ -784,6 +1004,8 @@ Build the PR description from:
 - The CLI's README (first 2-3 paragraphs, or note that README is missing)
 - Links to every file under `.manuscripts/<run-id>/research/` and `.manuscripts/<run-id>/proofs/`. Each link must be a full `https://github.com/mvanhorn/printing-press-library/blob/<HEAD_SHA>/library/<category>/<api-slug>/.manuscripts/<run-id>/<subdir>/<filename>` URL — never a relative path (GitHub resolves those against `…/pull/`, producing broken `…/pull/library/…` URLs) and never a directory (the blob view requires a file). Enumerate the actual files; do not invent or skip them.
 - The validation results from Step 4
+- The publish live gate result from Step 4.5, including any explicit
+  `--skip-live-test` reason
 - A Gaps section listing any missing manifest fields
 
 Read `novel_features` from
@@ -879,6 +1101,11 @@ $ <cli-name> --help
 | --version | PASS/FAIL |
 | Manuscripts | PRESENT/MISSING |
 
+### Publish Live Gate
+
+<If Step 4.5 ran dogfood: "Full live dogfood reran at publish time and passed. Proof: `<proof path or manuscript link>`">
+<If Step 4.5 was skipped: "Skipped with explicit reason: `<SKIP_LIVE_TEST_REASON>`">
+
 ### Gaps
 
 <List any missing manifest fields, or omit this section if everything is present>
@@ -963,7 +1190,18 @@ Read `access` from `$PUBLISH_CONFIG` (`jq -r .access "$PUBLISH_CONFIG"`) to dete
   ```
 - **If `access` is `fork`** (community contributor): you cannot merge or label the upstream PR. There is nothing more to do once it's green.
 
-Then **report the terminal state and return control to the caller.** Do not offer a retro or any follow-up menu from this skill — that decision belongs to whoever invoked publish. The `printing-press` pipeline offers retro as its own post-publish tail; a direct human invocation just ends here.
+Then **report the terminal state and return control to the caller.** Do not offer a retro or any follow-up menu from this skill by default — that decision belongs to whoever invoked publish. The `printing-press` pipeline offers retro as its own post-publish tail; a direct human invocation without `--from-polish` just ends here.
+
+If `POLISH_HANDOFF=true`, offer retro as a soft tail after the PR is green. This preserves the standalone polish -> publish workflow without allowing polish's same-turn `AskUserQuestion` answer to create or update a public-library PR.
+
+Present via `AskUserQuestion`:
+
+> "PR opened: <PR_URL>. Run a retro? It surfaces systemic gaps from this session (generator misses, scorer bugs, skill-doc drift) as a GitHub issue for the Printing Press maintainers. Every retro filed raises the floor for the next CLI, and your session context is freshest right now."
+>
+> 1. **No, I'm done** (default)
+> 2. **Yes, run retro now**
+
+If the user picks yes, invoke `/printing-press-retro`.
 
 ## Secret & PII Protection
 

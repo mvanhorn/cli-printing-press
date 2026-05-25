@@ -51,6 +51,23 @@ Purpose-built fixture for golden generation coverage.
 
 
 
+## Freshness Contract
+
+This printed CLI owns bounded freshness only for registered store-backed read command paths. In `--data-source auto` mode, those paths check `sync_state` and may run a bounded refresh before reading local data. `--data-source local` never refreshes. `--data-source live` reads the API and does not mutate the local store. Set `PRINTING_PRESS_GOLDEN_NO_AUTO_REFRESH=1` to skip the freshness hook without changing source selection.
+
+Covered paths:
+
+- `printing-press-golden-pp-cli currencies`
+- `printing-press-golden-pp-cli currencies get`
+- `printing-press-golden-pp-cli currencies list`
+- `printing-press-golden-pp-cli currencies search`
+- `printing-press-golden-pp-cli projects`
+- `printing-press-golden-pp-cli projects get`
+- `printing-press-golden-pp-cli projects list`
+- `printing-press-golden-pp-cli projects search`
+
+When JSON output uses the generated provenance envelope, freshness metadata appears at `meta.freshness`. Treat it as current-cache freshness for the covered command path, not a guarantee of complete historical backfill or API-specific enrichment.
+
 ### Finding the right command
 
 When you know what you want to do but not which command does it, ask the CLI directly:
@@ -110,7 +127,7 @@ printing-press-golden-pp-cli feedback --stdin < notes.txt
 printing-press-golden-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.printing-press-golden-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_GOLDEN_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_GOLDEN_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally at `~/.local/share/printing-press-golden-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_GOLDEN_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_GOLDEN_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 

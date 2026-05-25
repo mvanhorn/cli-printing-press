@@ -123,6 +123,13 @@ type tokenResponse struct {
 	ExpiresIn   int    `json:"expires_in"`
 }
 
+func resolveClientCredentialsScope() string {
+	if scope := os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH_SCOPE"); scope != "" {
+		return scope
+	}
+	return "read write"
+}
+
 // mintClientCredentialsToken POSTs grant_type=client_credentials to the
 // token endpoint and returns the parsed token response.
 func mintClientCredentialsToken(httpClient *http.Client, tokenURL, clientID, clientSecret string) (*tokenResponse, error) {
@@ -130,6 +137,9 @@ func mintClientCredentialsToken(httpClient *http.Client, tokenURL, clientID, cli
 		"grant_type":    {"client_credentials"},
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
+	}
+	if scope := resolveClientCredentialsScope(); scope != "" {
+		form.Set("scope", scope)
 	}
 	req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {

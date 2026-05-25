@@ -20,6 +20,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
 | `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
+| `x-cache` | root or `info` | `APISpec.Cache` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -34,10 +35,13 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
 | `x-auth-companion` | `components.securitySchemes.<name>` or `info` | `APISpec.Auth.LoginURL`, `LoginCompleteSelector`, `JWTCarrierCookie` | No |
+| `x-oauth-device-flow` | `components.securitySchemes.<name>` | `APISpec.Auth.OAuth2Grant`, `DeviceAuthorizationURL`, `TokenURL`, `Scopes`, `DefaultClientID` | No |
 | `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
+| `x-data-source-strategy` | path item or operation | `Endpoint.DataSourceStrategy` | No |
+| `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 
 ## `info` Extensions
@@ -254,6 +258,40 @@ x-mcp:
   transport: [stdio, http]
   orchestration: code
   endpoint_tools: hidden
+```
+
+### `x-cache`
+
+Declares cache-freshness and auto-refresh behavior for generated CLIs. Mirrors
+the internal YAML spec's top-level `cache:` block so OpenAPI specs with a
+store-backed sync surface can opt into the same freshness machinery.
+
+Parsed field: `APISpec.Cache` (`spec.CacheConfig`)
+
+Rules:
+- Optional. Specs without `x-cache` keep today's behavior: no freshness helper
+  or auto-refresh hook is emitted unless cache is configured elsewhere.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- Shape mirrors the internal YAML `cache:` block field-for-field: `enabled`,
+  `stale_after`, `refresh_timeout`, `env_opt_out`, `resources`, `commands`.
+- Validated by the same cache/share validation as internal YAML specs. Duration
+  fields must be Go duration strings, `commands` require `enabled: true`, and
+  command resource names must refer to parsed resources.
+
+Example:
+
+```yaml
+x-cache:
+  enabled: true
+  stale_after: 6h
+  refresh_timeout: 30s
+  env_opt_out: EXAMPLE_NO_AUTO_REFRESH
+  resources:
+    quotes: 5m
+  commands:
+    - name: dashboard
+      resources: [quotes]
 ```
 
 ### `x-tenant-env-var`
@@ -775,6 +813,47 @@ info:
     jwt_carrier_cookie: guestsession
 ```
 
+### `x-oauth-device-flow`
+
+Declares OAuth 2.0 device authorization grant metadata for CLI-first OAuth
+flows. OpenAPI 3.0 does not have a native `deviceCode` flow, so the Printing
+Press reads this extension from an OAuth2 security scheme and emits a generated
+`auth login --device-code` command plus refresh-token handling.
+
+Parsed fields: `APISpec.Auth.OAuth2Grant=device_code`,
+`APISpec.Auth.DeviceAuthorizationURL`, `APISpec.Auth.TokenURL`,
+`APISpec.Auth.Scopes`, `APISpec.Auth.DefaultClientID`.
+
+Rules:
+
+- Optional. When present, the parser treats the security scheme as a bearer
+  OAuth flow backed by stored access tokens.
+- Must be an object.
+- `deviceAuthorizationUrl` (or `device_authorization_url`) and `tokenUrl` (or
+  `token_url`) are required by `APISpec.Validate()` when
+  `oauth2_grant: device_code`.
+- `scopes` may be a string or list of strings. Lists are sorted for stable
+  generation.
+- `defaultClientId` (or `default_client_id`) is optional. When absent, the
+  generated CLI prompts for `--client-id` or the inferred `<API>_CLIENT_ID`
+  environment variable.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.example.com/common/oauth2/v2.0/devicecode
+        tokenUrl: https://login.example.com/common/oauth2/v2.0/token
+        defaultClientId: public-client-id
+        scopes:
+          - Calendars.Read
+          - Mail.Read
+```
+
 ### `x-oauth-refresh-token-mechanism`
 
 Declares how the authorization endpoint should be asked to issue a refresh
@@ -827,11 +906,63 @@ components:
             read: Read access
 ```
 
+### `x-url-name` and `x-param-url-names`
+
+Overrides the URL query key for a parameter without changing the public
+CLI/MCP input name. Use this for APIs whose documented flag name or shared
+OpenAPI component name differs from the exact wire query key a specific
+endpoint accepts.
+
+Parsed field: `Param.URLName`
+
+Rules:
+
+- `x-url-name` is allowed on an OpenAPI Parameter Object and applies wherever
+  that parameter object is used.
+- `x-param-url-names` is allowed on a Path Item Object or Operation Object. It
+  is an object mapping parameter names to URL query keys. Operation entries
+  override path-item entries.
+- The parameter's `name` remains the public input identity used for generated
+  Go identifiers, CLI flags, MCP public names, and manifest public names.
+- The override only changes generated URL query emission, MCP `WireName`, and
+  manifest `wire_name`.
+- Empty names, empty URL keys, and non-string override values are ignored with
+  warnings.
+
+Example:
+
+```yaml
+paths:
+  /opportunities/search:
+    get:
+      x-param-url-names:
+        locationId: location_id
+      parameters:
+        - $ref: "#/components/parameters/LocationId"
+
+  /opportunities/pipelines:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/LocationId"
+
+components:
+  parameters:
+    LocationId:
+      name: locationId
+      in: query
+      schema:
+        type: string
+```
+
+In this example both endpoints keep the same public `locationId` input, but
+only `/opportunities/search` sends `?location_id=` on the wire.
+
 ## Path Item Extensions
 
 Path item extensions are read from a path object, beside its HTTP operations.
 They apply to every operation under that path because sync identity and critical
-resource status are resource-scoped.
+resource status are resource-scoped, and operation-level data-source strategy
+can override the path default.
 
 ### `x-resource-id`
 
@@ -920,6 +1051,65 @@ paths:
   /premium/search:
     get:
       x-tier: paid
+      responses:
+        "200": {description: ok}
+```
+
+### `x-data-source-strategy`
+
+Declares how a generated read command should honor the global
+`--data-source auto|local|live` flag.
+
+Parsed field: `Endpoint.DataSourceStrategy`
+
+Rules:
+- Optional.
+- May be declared on a path item or operation.
+- Operation-level values override path-item-level values.
+- Must be one of `auto`, `local`, or `live`.
+- `auto` keeps the normal live-with-local-fallback behavior for store-backed
+  reads.
+- `local` makes the command use local synced data for `auto` and `local`, and
+  reject `--data-source live` with a clear no-live-equivalent error.
+- `live` makes the command use the remote API for `auto` and `live`, and reject
+  `--data-source local` with a clear no-local-data-source error.
+
+Example:
+
+```yaml
+paths:
+  /reports/snapshot:
+    get:
+      x-data-source-strategy: local
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-safe-probe`
+
+Marks a mutation endpoint as explicitly safe for the Phase 1.9 reachability gate
+to call once as an optional second probe after the low-risk GET/body capture.
+This extension is consumed by Printing Press skill guidance rather than the Go
+OpenAPI parser; it documents author intent for agents reviewing a resolved spec.
+
+Parsed field: none; consumed by skill guidance only
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Accepts native boolean `true` only.
+- Use only for idempotent or otherwise harmless operations for the real account
+  being used.
+- Absence or any value other than native boolean `true` means mutation probing
+  is not allowed; agents must stop after the GET/body reachability capture.
+
+Example:
+
+```yaml
+paths:
+  /webhooks/test:
+    post:
+      x-pp-safe-probe: true
       responses:
         "200": {description: ok}
 ```

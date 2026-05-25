@@ -20,10 +20,16 @@ auth:                             # object (AuthConfig)
   type: api_key                   # string: api_key | oauth2 | bearer_token | none
   header: "Authorization"        # string header name to set
   format: "Bearer {token}"       # string format template for auth header value
+  oauth2_grant: device_code       # string optional: authorization_code | client_credentials | device_code
+  device_authorization_url: "https://login.example.com/device" # required for device_code
+  token_url: "https://login.example.com/token" # OAuth token/refresh endpoint
+  scopes: ["read"]                # []string optional OAuth scopes
+  default_client_id: "public-client-id" # string optional public OAuth client id
   env_vars:                       # []string env vars used for auth material
     - EXAMPLE_API_TOKEN
   scheme: bearerAuth              # string optional OpenAPI security scheme name
   in: header                      # string optional: header | query | cookie
+auth_warnings:                    # []string optional sniffed-auth rejection notes
 
 config:                           # object (ConfigSpec)
   format: toml                    # string config format: toml | yaml (other values fall back to json tags)
@@ -51,7 +57,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
             fields: []            # []Param nested fields for object-like params
             enum: []              # []string optional enum hints/constraints
             format: ""           # string optional format hint (date-time, email, uri, etc.)
-        body:                     # []Param request body fields (primarily for POST/PUT)
+        body:                     # []Param request body fields, or object schema with properties
           - name: email
             # flag_name and aliases are optional here too; omit unless evidence supports them
             type: string
@@ -62,6 +68,26 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
             fields: []
             enum: []
             format: email
+        # Alternative object-schema form for richer JSON bodies:
+        # body:
+        #   properties:
+        #     query:
+        #       type: string
+        #       required: true
+        #     variables:
+        #       type: object
+        #     serializerSettings:
+        #       type: object
+        #       properties:
+        #         includeNulls:
+        #           type: bool
+        #     queries:
+        #       type: array
+        #       items:
+        #         type: object
+        #         properties:
+        #           query:
+        #             type: string
         response:                 # object (ResponseDef)
           type: array             # string response shape: object | array
           item: User              # string type name referenced from `types`
@@ -69,6 +95,11 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
           type: cursor            # string pagination style: cursor | offset | page_token
           cursor_field: cursor    # string response field containing next cursor
           has_more_field: data.has_more # string response field indicating more results
+        response_format: json     # string optional: json | html | binary; defaults to json
+        html_extract:             # object optional, only with response_format: html
+          mode: page              # string optional: page | links | embedded-json
+          script_selector: ""     # string optional for embedded-json; defaults to script#__NEXT_DATA__
+          json_path: ""           # string optional for embedded-json; empty returns the full JSON
         response_path: data       # string optional path to extract list payload from wrapper response
 
 types:                            # map[string]TypeDef named response/body models
@@ -77,6 +108,18 @@ types:                            # map[string]TypeDef named response/body model
       - name: user_id             # string field name
         type: string              # string field type (typically string/int/bool/float)
 ```
+
+**`response_format` must be one of `json`, `html`, or `binary`.** Use `json`
+when the response body is JSON and can be parsed directly. Use `html` only for
+GET/HEAD HTML documents, including HTML pages with embedded JSON such as
+Next.js `__NEXT_DATA__` or schema.org JSON-LD; prefer `html_extract` modes
+`page`, `links`, or `embedded-json` before writing custom extraction code. Use
+`binary` for opaque byte payloads.
+
+**`types.X.fields` is a list, not a map.** Each field is an item with
+`- name: <field-name>` followed by `type:`, `description:`, and other field
+metadata. Map shape such as `field-name: {type: string}` fails to parse with
+`cannot unmarshal !!map into []spec.TypeField`.
 
 ## 2. Annotated Example (`testdata/stytch.yaml`)
 
@@ -216,9 +259,17 @@ types:
 
 ## 3. Public Parameter Names
 
-`name` is the upstream wire key. The generator uses it for query strings, path
-substitution, and JSON body keys. Do not change `name` just to make a prettier
-CLI.
+`name` is the upstream wire key by default and the parameter's public identity
+when no override is set. The generator uses it for path substitution and, unless
+`url_name` or `body_name` says otherwise, query strings and request-body keys.
+Do not change `name` just to make a prettier CLI.
+
+`url_name` is an optional query-string wire override. Use it when the CLI/MCP
+input should keep the `name` spelling but the URL key must differ.
+
+`body_name` is an optional request-body wire override. Use it when the CLI/MCP
+input should keep the `name` spelling but the JSON, form, or multipart body key
+must differ.
 
 `flag_name` is the preferred public name shown in generated CLI flags, examples,
 typed MCP schemas, and `tools-manifest.json`. Add it only when source evidence
@@ -249,6 +300,50 @@ params:
 
 Here `--address` and `--city` are the generated public names, `--s` and `--c`
 remain compatibility aliases, and requests still send upstream keys `s` and `c`.
+
+For body fields where the public cursor name and accepted body key diverge,
+keep the public identity in `name` and set `body_name` to the observed wire key:
+
+```yaml
+body:
+  - name: startAfter
+    body_name: searchAfter
+    type: array
+    description: Pagination cursor
+```
+
+For richer JSON bodies, `body` may instead be an object schema with
+`properties`. The parser accepts either `body.properties` directly or a
+`body.schema.properties` wrapper when copying from OpenAPI-like notes:
+
+```yaml
+body:
+  properties:
+    query:
+      type: string
+      required: true
+      description: GraphQL document
+    variables:
+      type: object
+      description: GraphQL variables JSON
+    serializerSettings:
+      type: object
+      properties:
+        includeNulls:
+          type: bool
+    queries:
+      type: array
+      items:
+        type: object
+        properties:
+          query:
+            type: string
+```
+
+Top-level scalars become typed flags. Object properties with their own
+`properties` become nested, parent-prefixed flags. Object and array properties
+without expandable scalar children remain JSON-string flags so the command can
+pass nested payloads without hand-written Go.
 
 ## 4. Validation Rules
 

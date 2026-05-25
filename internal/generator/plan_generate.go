@@ -94,7 +94,8 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		// agentcookie secrets-bus dependency is unconditionally skipped on this
 		// path. The full generator's hasNonCookieAuth (which inspects the real
 		// spec.AuthConfig) is registered separately on its own FuncMap.
-		"hasNonCookieAuth": func(any) bool { return false },
+		"hasNonCookieAuth":       func(any) bool { return false },
+		"agentcookieReplacePath": func() string { return "" },
 	}
 
 	render := func(tmplName, outPath string, data any) error {

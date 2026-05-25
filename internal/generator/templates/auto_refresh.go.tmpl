@@ -40,12 +40,7 @@ var readCommandResources = map[string][]string{
 // configuration. Defaults: 6h global stale-after, env opt-out named after
 // the CLI. Per-resource overrides from spec.Cache.Resources take priority.
 func cachePolicy() cliutil.Policy {
-	staleAfter := 6 * time.Hour
-{{- if .Cache.StaleAfter}}
-	if d, err := time.ParseDuration("{{.Cache.StaleAfter}}"); err == nil {
-		staleAfter = d
-	}
-{{- end}}
+	staleAfter := {{staleAfterExpr .Cache.StaleAfter}}
 	perResource := map[string]time.Duration{}
 {{- range $resource, $dur := .Cache.Resources}}
 	if d, err := time.ParseDuration("{{$dur}}"); err == nil {
@@ -215,7 +210,7 @@ func runAutoRefresh(ctx context.Context, flags *rootFlags, db *store.Store, reso
 			return ctx.Err()
 		default:
 		}
-		result := syncResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, "", false, 1{{if not (isGraphQL .APISpec)}}, true{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil{{end}})
+		result := syncResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, "", false, 1{{if not (isGraphQL .APISpec)}}, true{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil, os.Stderr{{end}})
 		if result.Err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", resource, result.Err))
 		}

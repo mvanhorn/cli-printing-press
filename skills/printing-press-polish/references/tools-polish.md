@@ -371,4 +371,4 @@ After applying fixes, before declaring the polish complete:
 
 The ledger file persists until it ages out (24h). Once the polish PR merges and the CLI is rebuilt, the file is no longer load-bearing — the next `tools-audit` run can start fresh.
 
-If you're polishing a CLI inside a clone of the public library repo (not the internal `~/printing-press/library/`), add `.printing-press-tools-polish.json` to that repo's root `.gitignore` before committing — the ledger is local working state, not part of the published CLI.
+If you're polishing a CLI inside a clone of the public library repo (not the internal `$PRESS_LIBRARY/`), add `.printing-press-tools-polish.json` to that repo's root `.gitignore` before committing — the ledger is local working state, not part of the published CLI.

@@ -1253,6 +1253,151 @@ func (c *Config) AuthHeader() string {
 	assert.Equal(t, "Bearer ", result.GeneratedFmt)
 }
 
+func TestCheckAuthComposedLiteralFormat(t *testing.T) {
+	// Composed/cookie auth stores the literal Authorization header value in
+	// Config.AuthHeaderVal — no "<Scheme> " + token concat exists in generated
+	// source, so the concat detector returns "unknown". The literal-format
+	// branch classifies by the spec-declared auth.format prefix and confirms
+	// the wiring by checking that generated source still references
+	// Config.AuthHeaderVal.
+	composedAuthHeaderValConfig := `package config
+type Config struct {
+	AuthHeaderVal string
+}
+func (c *Config) AuthHeader() string {
+	if c.AuthHeaderVal != "" {
+		return c.AuthHeaderVal
+	}
+	return ""
+}
+`
+	composedClient := `package client
+func authHeader() string { return configAuthHeader() }
+`
+
+	tests := []struct {
+		name           string
+		auth           apispec.AuthConfig
+		clientGo       string
+		configGo       string
+		wantMatch      bool
+		wantGenerated  string
+		wantDetailLike string
+	}{
+		{
+			name:          "basic literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Basic MkFKYjlPeUlBMFZaNUpWNmlkb05vT1VGVWEyOg=="},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "basic auth",
+		},
+		{
+			name:          "bearer literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Bearer XYZ"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "bearer auth",
+		},
+		{
+			name:          "bot literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Bot DISCORD_TOKEN"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "bot auth",
+		},
+		{
+			name:           "unknown scheme classifies as custom-composed",
+			auth:           apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "FooScheme XYZ"},
+			clientGo:       composedClient,
+			configGo:       composedAuthHeaderValConfig,
+			wantMatch:      false,
+			wantGenerated:  "custom-composed",
+			wantDetailLike: "does not start with a recognized scheme prefix",
+		},
+		{
+			name:          "cookie type with cookie-prefixed format matches",
+			auth:          apispec.AuthConfig{Type: "cookie", Header: "Authorization", Format: "Cookie sessionid=abc"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "cookie auth",
+		},
+		{
+			name:           "stripped client falls through to concat detector and surfaces unknown",
+			auth:           apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Basic MkFKYjlPeUlBMFZaNUpWNmlkb05vT1VGVWEyOg=="},
+			clientGo:       `package client` + "\nfunc authHeader() string { return \"\" }\n",
+			configGo:       `package config` + "\ntype Config struct{}\nfunc (c *Config) AuthHeader() string { return \"\" }\n",
+			wantMatch:      false,
+			wantGenerated:  "unknown",
+			wantDetailLike: `spec expects "Basic"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+			writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), tc.clientGo)
+			writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), tc.configGo)
+
+			result := checkAuth(dir, tc.auth)
+			assert.Equal(t, tc.wantMatch, result.Match, "match")
+			assert.Equal(t, tc.wantGenerated, result.GeneratedFmt, "generated_format")
+			if tc.wantDetailLike != "" {
+				assert.Contains(t, result.Detail, tc.wantDetailLike, "detail")
+			}
+		})
+	}
+}
+
+func TestCheckAuthComposedEmptyFormatFallsThrough(t *testing.T) {
+	// auth.type: composed with an empty auth.format must NOT engage the
+	// literal-format branch — fall through to the concat detector so the
+	// existing behavior is preserved.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+type Config struct{ AuthHeaderVal string }
+func (c *Config) AuthHeader() string { return c.AuthHeaderVal }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "composed", Format: ""})
+	// No expectedPrefix derived; detail should be the existing
+	// "no bot/bearer/basic scheme detected" path.
+	assert.True(t, result.Match)
+	assert.Equal(t, "unknown", result.GeneratedFmt)
+}
+
+func TestCheckAuthAPIKeyTypeUnaffected(t *testing.T) {
+	// Negative-criterion guard: api_key with a "Basic ..." format must keep
+	// the existing concat-detection behavior — the literal-format branch only
+	// fires for composed/cookie types.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+type Config struct{ AuthHeaderVal string }
+func (c *Config) AuthHeader() string {
+	return "Basic " + encode(c.Username+":"+c.Password)
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", Format: "Basic {username}:{password}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Basic ", result.GeneratedFmt)
+}
+
 func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 	// Test that unregistered commands cause FAIL
 	report := &DogfoodReport{
@@ -1443,6 +1588,84 @@ func newHealthCmd() *cobra.Command {
 		assert.Equal(t, "health", (*updated.NovelFeaturesBuilt)[0].Command)
 	})
 
+	t.Run("warns when advertised command depth differs from registered path", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), `package cli
+func Execute() {
+	rootCmd.AddCommand(newAssetsCmd())
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets.go"), `package cli
+func newAssetsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "assets"}
+	cmd.AddCommand(newAssetsGrabCmd())
+	return cmd
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets_grab.go"), `package cli
+func newAssetsGrabCmd() *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Grab asset", Command: "grab", Example: `test-pp-cli grab "sunset"`},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Planned)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+		require.Len(t, result.DepthMismatches, 1)
+		assert.Equal(t, NovelFeatureDepthMismatch{
+			Command:    "grab",
+			Advertised: "grab",
+			Actual:     "assets grab",
+		}, result.DepthMismatches[0])
+	})
+
+	t.Run("does not warn when variable wiring resolves the advertised root command", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), `package cli
+func Execute() {
+	grabCmd := rootGrabSubcmd(nil)
+	rootCmd.AddCommand(grabCmd)
+	rootCmd.AddCommand(newAssetsCmd())
+}
+func rootGrabSubcmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets.go"), `package cli
+func newAssetsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "assets"}
+	cmd.AddCommand(assetsGrabSubcmd(nil))
+	return cmd
+}
+func assetsGrabSubcmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Grab asset", Command: "grab", Example: `test-pp-cli grab "sunset"`},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+		assert.Empty(t, result.DepthMismatches)
+	})
+
 	t.Run("syncs README and SKILL to verified subset", func(t *testing.T) {
 		cliDir := t.TempDir()
 		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
@@ -1563,6 +1786,148 @@ func newHealthCmd() *cobra.Command {
 		assert.NotContains(t, root, "planned health")
 		assert.NotContains(t, root, "triage")
 		assert.Contains(t, stderr, "dogfood: synced internal/cli/root.go (Highlights) from novel_features_built")
+	})
+
+	t.Run("syncs narrative README and SKILL blocks from research", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+			"# Test CLI",
+			"",
+			"## Authentication",
+			"",
+			"Use the old auth command.",
+			"",
+			"## Quick Start",
+			"",
+			"```bash",
+			"test-pp-cli old quickstart",
+			"```",
+			"",
+			"## Unique Features",
+			"",
+			"These capabilities aren't available in any other tool for this API.",
+			"- **`health`** \u2014 planned health",
+			"",
+			"## Usage",
+			"",
+			"Run help.",
+			"",
+			"## Troubleshooting",
+			"",
+			"**Not found errors (exit code 3)**",
+			"- Check the resource ID is correct",
+			"",
+			"### API-specific",
+			"- **Old symptom** \u2014 Old fix",
+			"",
+			"## HTTP Transport",
+			"",
+			"Standard transport.",
+			"",
+		}, "\n"))
+		writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+			"# Test Skill",
+			"",
+			"## Unique Capabilities",
+			"",
+			"These capabilities aren't available in any other tool for this API.",
+			"- **`health`** \u2014 planned health",
+			"",
+			"## Recipes",
+			"",
+			"### Old recipe",
+			"",
+			"```bash",
+			"test-pp-cli old recipe",
+			"```",
+			"",
+			"## Auth Setup",
+			"",
+			"Use the old auth command.",
+			"",
+			"Run `test-pp-cli doctor` to verify setup.",
+			"",
+			"## Agent Mode",
+			"",
+			"Use --agent.",
+			"",
+		}, "\n"))
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health", Description: "See scheduling health metrics at a glance"},
+			},
+			Narrative: &ReadmeNarrative{
+				AuthNarrative: "Use `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.",
+				QuickStart: []QuickStartStep{
+					{Comment: "Check credentials", Command: "test-pp-cli doctor"},
+					{Comment: "Inspect health", Command: "test-pp-cli health --agent"},
+				},
+				Troubleshoots: []TroubleshootTip{
+					{Symptom: "OAuth scope rejected", Fix: "Run `test-pp-cli oauth-token --grant-type client_credentials --scope view_collection`.\n```text\n### not a section\n```"},
+				},
+				Recipes: []Recipe{
+					{Title: "Inspect health", Command: "test-pp-cli health --agent", Explanation: "Returns the verified health summary."},
+				},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		var stderr string
+		result := captureStderr(t, &stderr, func() NovelFeaturesCheckResult {
+			return checkNovelFeatures(cliDir, researchDir)
+		})
+		assert.Equal(t, 1, result.Found)
+
+		readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		readme := string(readmeData)
+		assert.Contains(t, readme, "## Authentication\n\nUse `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.")
+		assert.Contains(t, readme, "# Check credentials\ntest-pp-cli doctor")
+		assert.Contains(t, readme, "# Inspect health\ntest-pp-cli health --agent")
+		assert.Contains(t, readme, "- **OAuth scope rejected** \u2014 Run `test-pp-cli oauth-token --grant-type client_credentials --scope view_collection`.\n```text\n### not a section\n```")
+		assert.NotContains(t, readme, "old quickstart")
+		assert.NotContains(t, readme, "Old symptom")
+		requireBefore(t, readme, "## Quick Start", "## Unique Features")
+		requireBefore(t, readme, "### API-specific", "## HTTP Transport")
+
+		skillData, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+		require.NoError(t, err)
+		skill := string(skillData)
+		assert.Contains(t, skill, "## Recipes")
+		assert.Contains(t, skill, "### Inspect health")
+		assert.Contains(t, skill, "test-pp-cli health --agent")
+		assert.Contains(t, skill, "Returns the verified health summary.")
+		assert.Contains(t, skill, "## Auth Setup\n\nUse `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.")
+		assert.Contains(t, skill, "Run `test-pp-cli doctor` to verify setup.")
+		assert.NotContains(t, skill, "Old recipe")
+		requireBefore(t, skill, "## Recipes", "## Auth Setup")
+
+		assert.Contains(t, stderr, "dogfood: synced README.md (Quick Start) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced README.md (Authentication) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced README.md (Troubleshooting) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced SKILL.md (Recipes) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced SKILL.md (Auth Setup) from research.json narrative")
+
+		beforeReadme := readme
+		beforeSkill := skill
+		result = checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		afterReadme, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		afterSkill, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+		require.NoError(t, err)
+		assert.Equal(t, beforeReadme, string(afterReadme), "unchanged narrative should not rewrite README content")
+		assert.Equal(t, beforeSkill, string(afterSkill), "unchanged narrative should not rewrite SKILL content")
 	})
 
 	t.Run("inserts README and SKILL sections when absent", func(t *testing.T) {
@@ -1981,6 +2346,16 @@ func captureStderr[T any](t *testing.T, captured *string, fn func() T) T {
 	return result
 }
 
+func requireBefore(t *testing.T, content, before, after string) {
+	t.Helper()
+
+	beforeIdx := strings.Index(content, before)
+	require.NotEqual(t, -1, beforeIdx, "missing expected content %q", before)
+	afterIdx := strings.Index(content, after)
+	require.NotEqual(t, -1, afterIdx, "missing expected content %q", after)
+	require.Less(t, beforeIdx, afterIdx, "%q should appear before %q", before, after)
+}
+
 func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
 	base := &DogfoodReport{
 		PathCheck:     PathCheckResult{Tested: 10, Valid: 10, Pct: 100},
@@ -1997,6 +2372,18 @@ func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
 
 	// Missing novel features → WARN
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 3, Found: 1, Missing: []string{"triage", "utilization"}}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+
+	// Depth mismatches → WARN
+	base.NovelFeaturesCheck = NovelFeaturesCheckResult{
+		Planned: 1,
+		Found:   1,
+		DepthMismatches: []NovelFeatureDepthMismatch{{
+			Command:    "grab",
+			Advertised: "grab",
+			Actual:     "assets grab",
+		}},
+	}
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
 
 	// All found → PASS
@@ -2675,6 +3062,23 @@ func TestCollectDogfoodIssues_IncludesMissingTests(t *testing.T) {
 	}
 	issues := collectDogfoodIssues(report, false)
 	assert.Contains(t, issues, "pure-logic packages with no tests: recipes, goat")
+}
+
+func TestCollectDogfoodIssues_IncludesNovelFeatureDepthMismatch(t *testing.T) {
+	report := &DogfoodReport{
+		NovelFeaturesCheck: NovelFeaturesCheckResult{
+			Planned: 1,
+			Found:   1,
+			DepthMismatches: []NovelFeatureDepthMismatch{{
+				Command:    "grab",
+				Advertised: "grab",
+				Actual:     "assets grab",
+			}},
+		},
+	}
+
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "1 novel feature command-depth mismatches: grab advertised as grab but registered as assets grab")
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {

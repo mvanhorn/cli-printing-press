@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,6 +79,90 @@ const placeholderQuery = ""
 	require.NoError(t, err)
 	assert.Contains(t, string(got), "GetTransactions", "added function survives")
 	assert.Contains(t, string(got), "GetCategories", "added function survives")
+}
+
+func TestMergeIntoFreshTreePreservesStoreExtrasEdits(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh, rel := writeStoreExtrasFixture(t)
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true}))
+
+	assertStoreExtrasMigrationPreserved(t, fresh, rel)
+}
+
+func TestMergeIntoFreshTreeNovelOnlyPreservesStoreExtrasEdits(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh, rel := writeStoreExtrasFixture(t)
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true, NovelOnly: true}))
+
+	assertStoreExtrasMigrationPreserved(t, fresh, rel)
+}
+
+func writeStoreExtrasFixture(t *testing.T) (string, string, string) {
+	t.Helper()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := "internal/store/extras.go"
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, "internal", "store"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, "internal", "store"), 0o755))
+
+	freshBody := []byte(`package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+func (s *Store) migrateExtras(ctx context.Context, conn *sql.Conn) error {
+	migrations := []string{
+		// Add CREATE TABLE IF NOT EXISTS statements here.
+	}
+	for _, m := range migrations {
+		if _, err := conn.ExecContext(ctx, m); err != nil {
+			return fmt.Errorf("extra migration failed: %w", err)
+		}
+	}
+	return nil
+}
+`)
+	snapBody := []byte(`package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+func (s *Store) migrateExtras(ctx context.Context, conn *sql.Conn) error {
+	migrations := []string{
+		` + "`" + `CREATE TABLE IF NOT EXISTS novel_events (id TEXT PRIMARY KEY)` + "`" + `,
+	}
+	for _, m := range migrations {
+		if _, err := conn.ExecContext(ctx, m); err != nil {
+			return fmt.Errorf("extra migration failed: %w", err)
+		}
+	}
+	return nil
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), snapBody, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), freshBody, 0o644))
+
+	return snap, fresh, rel
+}
+
+func assertStoreExtrasMigrationPreserved(t *testing.T, fresh, rel string) {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Join(fresh, rel))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "novel_events",
+		"agent-authored store extras migrations must survive regen merge")
 }
 
 // TestMergeIntoFreshTreeReinjectsLostAddCommand covers a hand-added
@@ -196,6 +281,32 @@ func TestMergeIntoFreshTreeSweepsNonClassifiedFiles(t *testing.T) {
 	got, err = os.ReadFile(filepath.Join(fresh, "Makefile"))
 	require.NoError(t, err)
 	assert.Equal(t, "# custom\n", string(got))
+}
+
+func TestMergeIntoFreshTreePreservesManuscripts(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := filepath.Join(".manuscripts", "20260523-171100", "research.json")
+	path := filepath.Join(snap, rel)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`{"status":"accepted"}`), 0o640))
+	wantModTime := time.Date(2026, 5, 23, 17, 11, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(path, wantModTime, wantModTime))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true}))
+
+	gotPath := filepath.Join(fresh, rel)
+	got, err := os.ReadFile(gotPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"status":"accepted"}`, string(got))
+
+	info, err := os.Stat(gotPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+	assert.True(t, info.ModTime().Equal(wantModTime), "mtime should survive force-regen sweep")
 }
 
 // TestMergeIntoFreshTreeNovelOnlySkipsValueDrift verifies that the

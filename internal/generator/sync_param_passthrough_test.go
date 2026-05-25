@@ -58,9 +58,9 @@ func TestGenerateSyncParamPassthrough(t *testing.T) {
 
 	// userParams flows through to the syncResource worker. The exact call
 	// site differs by template branch (HasTierRouting vs not), so assert the
-	// last arg is userParams.
-	assert.Contains(t, syncSrc, ", userParams)",
-		"syncResource and syncDependentResources must receive userParams")
+	// event-writer arg follows userParams.
+	assert.Contains(t, syncSrc, ", userParams, syncEventWriter)",
+		"syncResource must receive userParams before the event writer")
 
 	// applyTo is called in the page loop AFTER cursor/since/limit are set,
 	// so user flags win on conflict.
@@ -110,6 +110,67 @@ func TestGenerateSyncConcurrencyDefaultHonorsRateClass(t *testing.T) {
 			assertSyncDefaultConcurrency(t, syncSrc, wantDefault, tc.name)
 		})
 	}
+}
+
+func TestGenerateSyncDefaultsSkipAuthTaggedResources(t *testing.T) {
+	t.Parallel()
+
+	paginated := func(path string, tags ...string) spec.Endpoint {
+		return spec.Endpoint{
+			Method:     "GET",
+			Path:       path,
+			Tags:       tags,
+			Response:   spec.ResponseDef{Type: "array"},
+			Pagination: &spec.Pagination{Type: "cursor", LimitParam: "limit", CursorParam: "after"},
+		}
+	}
+	apiSpec := minimalSpec("sync-auth")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Items",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/items")},
+		},
+		"oauth-token": {
+			Description: "OAuth token endpoint",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/oauth_token", "OAuth")},
+		},
+		"oauth2-token": {
+			Description: "OAuth2 token endpoint",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/oauth2_token", "OAuth2")},
+		},
+		"authorization-grant": {
+			Description: "Authorization grant endpoint",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/authorization_grant", "Billing", "Authorization")},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	defaultsStart := strings.Index(syncSrc, "func defaultSyncResources() []string")
+	knownStart := strings.Index(syncSrc, "func knownSyncResourceNames() []string")
+	require.NotEqual(t, -1, defaultsStart)
+	require.NotEqual(t, -1, knownStart)
+	defaultsBlock := syncSrc[defaultsStart:knownStart]
+	assert.Contains(t, defaultsBlock, `"items"`)
+	assert.NotContains(t, defaultsBlock, `"oauth-token"`)
+	assert.NotContains(t, defaultsBlock, `"oauth2-token"`)
+	assert.NotContains(t, defaultsBlock, `"authorization-grant"`)
+
+	knownBlock := syncSrc[knownStart:]
+	assert.Contains(t, knownBlock, `"items"`)
+	assert.Contains(t, knownBlock, `"oauth-token"`, "explicit --resources should still accept auth-tagged sync endpoints")
+	assert.Contains(t, knownBlock, `"oauth2-token"`, "explicit --resources should still accept auth-tagged sync endpoints")
+	assert.Contains(t, knownBlock, `"authorization-grant"`, "explicit --resources should still accept auth-tagged sync endpoints")
+
+	workflowSrc := readGeneratedFile(t, outputDir, "internal", "cli", "channel_workflow.go")
+	archiveIdx := strings.Index(workflowSrc, "resources := []string")
+	require.NotEqual(t, -1, archiveIdx)
+	archiveBlock := workflowSrc[archiveIdx:]
+	assert.Contains(t, archiveBlock, `"items"`)
+	assert.NotContains(t, archiveBlock, `"oauth-token"`)
+	assert.NotContains(t, archiveBlock, `"oauth2-token"`)
+	assert.NotContains(t, archiveBlock, `"authorization-grant"`)
 }
 
 // dependentResourceSpec builds a minimal spec with a parent + child
@@ -163,6 +224,12 @@ func TestGenerateSyncDependentSkipsFlatGlobalParam(t *testing.T) {
 		"dependent-resource call site must pass isDependent=true so --param is skipped on path-scoped calls")
 	assert.Contains(t, syncSrc, "userParams.applyTo(resource, params, false)",
 		"flat-list call site must pass isDependent=false so --param applies as before")
+	assert.Contains(t, syncSrc, "syncDependentResources(cmd.Context(), c, db",
+		"direct sync should route dependent-resource runs through the shared helper")
+	assert.Contains(t, syncSrc, "userParams, syncEventWriter)",
+		"direct sync should pass the selected event writer into dependent-resource sync")
+	assert.Contains(t, syncSrc, "userParams, syncEvents)",
+		"syncDependentResources should pass its event writer into each dependent-resource run")
 }
 
 // TestGenerateSyncUserParamsHelperRespectsFlatVsTrueGlobal pins the
@@ -265,6 +332,8 @@ func TestGenerateSyncDependentErrorNotSilent(t *testing.T) {
 	// failure to a specific parent.
 	assert.Contains(t, syncSrc, "syncErrorJSON(dep.Name, parentID, err)",
 		"dependent-resource non-warning error must emit a sync_error JSON event with the parent ID")
+	assert.Contains(t, syncSrc, "fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))",
+		"dependent-resource sync_error events should use the injected event writer")
 }
 
 // noBulkListSpec mirrors the Allrecipes shape (issue #1156): a resource whose

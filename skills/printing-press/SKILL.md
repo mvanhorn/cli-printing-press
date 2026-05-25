@@ -154,7 +154,7 @@ elif ! _resolve_press_bin >/dev/null; then
     export PATH="$HOME/go/bin:$PATH"
   else
     # Refuse: the cli-printing-press binary is required and we will not auto-install
-    # it. The README's two-step install (binary + plugin) is the source of truth;
+    # it. The README's install flow is the source of truth;
     # silent auto-install hides failure modes (network, wrong GOPATH) inside an
     # opaque skill invocation.
     echo ""
@@ -204,6 +204,7 @@ else
   PRINTING_PRESS_BIN="$(_resolve_press_bin 2>/dev/null || true)"
 fi
 echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
+echo "PRESS_REPO_MODE=$_press_repo"
 
 # Shadow detector (advisory). When a local build is in use, surface any
 # differing global so the user can see at a glance that the two binaries
@@ -237,7 +238,7 @@ if [ -z "$PRESS_BASE" ]; then
 fi
 
 PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
 PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
@@ -387,11 +388,11 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles six signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
 
 **Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `cli-printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `cli-printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/cli-printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `cli-printing-press generate ...` for readability — replace `cli-printing-press` with the captured absolute path each time you actually run one.
 
-Only after preflight completes successfully (no `[setup-error]`; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the Orientation & Briefing section below.
+Only after preflight completes successfully (no `[setup-error]`; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the Orientation & Briefing section below.
 
 ## Orientation & Briefing
 
@@ -403,7 +404,7 @@ If the user typed `/printing-press` with no arguments (no API name, no `--spec`,
 
 > The Printing Press generates a fully functional CLI for any API. You give it an API name, a spec file, or a URL. It researches the landscape, catalogs every feature that exists in any competing tool, invents novel features of its own, then generates a Go CLI that matches and beats everything out there — with offline search, agent-native output, and a local SQLite data layer.
 >
-> By the end, you'll have a working CLI in `~/printing-press/library/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
+> By the end, you'll have a working CLI in `$PRESS_LIBRARY/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
 >
 > The process takes 30-60 minutes depending on API complexity. Simple APIs with official specs (Stripe, GitHub) are faster. Undocumented APIs that need discovery (ESPN, Domino's) take longer.
 
@@ -456,7 +457,7 @@ Print as prose, matching the style of the example below:
 > 3. I shall present what I found and what I invented — you will have a chance to add your own ideas or adjust the plan before I build
 > 4. I shall generate a Go CLI, build every feature from the plan, then verify quality through dogfood, runtime verification, and scoring
 >
-> **What you will have at the end:** A fully functional CLI at `~/printing-press/library/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
+> **What you will have at the end:** A fully functional CLI at `$PRESS_LIBRARY/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
 >
 > **Time:** 30-60 minutes depending on API complexity.
 >
@@ -595,7 +596,7 @@ Short-lived command captures may use `/tmp/printing-press/` with unique `mktemp`
 paths and must be deleted after use.
 
 Examples of the current naming/layout:
-- `~/printing-press/library/notion/` — published CLI directory (keyed by API slug)
+- `$PRESS_LIBRARY/notion/` — published CLI directory (keyed by API slug)
 - `notion-pp-cli` — the binary name inside the directory
 - `/printing-press emboss notion` — emboss accepts both slug and CLI name
 - `discord-pp-cli/internal/store/store.go` — internal source paths still use CLI name
@@ -652,6 +653,48 @@ Before new research:
    - If the user passed `--har <path>`, this is a HAR-first run. Run `cli-printing-press browser-sniff --har <path> --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"` to generate a spec and traffic analysis from captured traffic. If `$API_RUN_DIR/source-priority.json` exists with two or more sources, add `--preserve-hosts` so combo-CLI captures retain peer API hosts with per-endpoint `base_url` overrides instead of collapsing them into secondary evidence. Use the generated spec as the primary spec source for the rest of the pipeline. Skip the browser-sniff gate in Phase 1.7 (browser-sniff already ran).
    - If the user passed `--spec`, use it directly (existing behavior).
    - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
+
+   #### Directory spec-source guard
+
+   If any resolved spec source is a local directory, do not pass the directory
+   itself to `cli-printing-press generate` and do not silently pick the first
+   file. Enumerate candidate specs first:
+
+   ```bash
+   find "$SPEC_SOURCE_DIR" -type f \( -iname '*.json' -o -iname '*.yaml' -o -iname '*.yml' \) | sort
+   ```
+
+   Keep only files whose head looks like an OpenAPI or Swagger root document
+   (`openapi:`, `swagger:`, or JSON with a top-level `"openapi"` or `"swagger"`
+   key). Ignore unrelated JSON/YAML config files.
+
+   When the filtered candidate list is empty, abort with:
+   `No OpenAPI/Swagger spec found under <directory>. Pass --spec <file> directly.`
+   Do not continue with the raw directory as the spec source.
+
+   When the directory contains exactly one candidate, use that file as the
+   spec source and write it to `state.json` as `spec_path`.
+
+   When the directory contains more than one candidate:
+   - Print a prominent warning before generation:
+     `N OpenAPI/Swagger specs found under <directory>; no single file represents the whole API surface.`
+   - List every candidate when `N <= 20`; otherwise list the first 20 sorted
+     paths and print `...and N-20 more`.
+   - Record the directory and candidates in `$STATE_FILE` before continuing:
+     `spec_path` is the directory and `spec_candidates` is the sorted list.
+   - Ask the user to choose one spec, several specs, or all specs. If this
+     runtime cannot ask a blocking question, stop after printing the warning
+     and tell the user to re-run with explicit `--spec <file>` arguments. This
+     is the minimum safe floor: never let a directory run finish while hiding
+     that additional specs were ignored.
+   - After the user confirms the selection, update `$STATE_FILE` with
+     `selected_spec_paths` set to the list that will be generated.
+   - For multiple selected specs, default to one independent printed CLI per
+     spec using a derived `<api>-<spec-slug>` name and a distinct working
+     directory under `$API_RUN_DIR/working/`. Do not merge all selected specs
+     into one CLI unless the user explicitly asks for a combined surface and
+     provides the umbrella name for `--name`.
+
 2. Check for prior research in:
    - `$PRESS_MANUSCRIPTS/<api-slug>/*/research/*`
 3. Reuse good prior work instead of redoing it.
@@ -968,6 +1011,8 @@ Suggested shape:
 
 ## Reachability Risk
 - [None / Low / High] [evidence: e.g., "6 open issues on reteps/redfin about 403 errors since 2025"]
+- Tier/permission hints from 4xx body: [omit when absent; otherwise quote the matched bounded line(s) from Phase 1.9]
+- Probe-safe endpoint used: [omit when absent; otherwise "<METHOD> <path>" from `x-pp-safe-probe`]
 
 ## Top Workflows
 1. ...
@@ -1592,12 +1637,15 @@ For each tool, fill in what you know from the research. Stars and command_count 
 3. `value_prop` expands the headline to 2–3 sentences. Name specific novel features by command where helpful.
 4. `auth_narrative` tells the real auth story for this API (crumb handshake, cookie session, OAuth device flow). Omit for standard API-key auth where the generic branch is fine.
 5. `quickstart` is a 3–6 step flow using REAL arguments (symbols, IDs, resource names an agent can actually pass). Each step's `comment` explains *why* it runs. This replaces the generic "resource list" first-command fallback.
+   - Step 1 of `quickstart` should usually be verify-safe: it should exit 0 when `validate-narrative --full-examples` appends `--dry-run` in a no-credentials environment.
+   - Use `<cli> doctor --dry-run` as step 1 (health check, works without auth). Do not use `<cli> auth set-token <token>` as step 1 because it requires a positional token and is not a verify-safe runnable first step. Auth setup instructions belong in `auth_narrative` prose only, not as an executable quickstart command.
 6. `troubleshoots` captures API-specific failure modes (rate-limit mitigation, cookie expiry, paginated quirks). Each `fix` must be actionable — a command or a concrete setting change.
 7. `when_to_use` is SKILL-only narrative. 2–4 sentences describing the kinds of agent tasks this CLI is the right choice for. Not rendered in README.
 8. `recipes` are 3–5 worked examples rendered in SKILL.md. Each has a title, a real command, and a one-line explanation. Prefer recipes that exercise novel features. **At least one recipe must pair `--agent` with `--select`** — using dotted paths (e.g. `--select events.shortName,events.competitions.competitors.team.displayName`) when the response is deeply nested. APIs like ESPN, HubSpot, and Linear return tens of KB per call; without a `--select` recipe, agents burn context parsing verbose payloads. Pick a command known to return a large or deeply nested response and show the narrowing pattern. **Regex literals must double-escape backslashes** — write `\\b` not `\b` (and `\\t`, `\\f`, etc.) inside any `command`, `fix`, or other JSON string field. JSON parses `\b` as backspace (0x08), `\f` as form feed (0x0C), and so on, which then leak into the rendered SKILL.md as control bytes that render as nothing in most viewers. The generator's render-time scanner rejects these with a clear offset; double-escape from the start to avoid the error.
 9. `trigger_phrases` are natural-language phrases a user might say that should invoke this CLI's skill. Include 3–5 domain-specific phrases (e.g. for a finance CLI: "quote AAPL", "check my portfolio", "options for TSLA") and 2 generic phrases ("use <api-name>", "run <api-name>"). Domain verbs vary — don't just template "use X" variants.
 10. All `narrative` fields are optional. Omit fields you can't populate honestly rather than emit filler. The generator falls back to generic content gracefully.
 11. **Avoid hardcoded counts in narrative copy when the count tracks a runtime list.** A number embedded in `headline` or `value_prop` ("across N trusted sources", "from N retailers", "queries N vendors") propagates into root.go's Short/Long, the README, the SKILL, the MCP tools description, and `which.go` — every output surface that reads the narrative. When the underlying registry grows or shrinks, the count goes stale across all of those surfaces simultaneously, and a single-line edit to add a source requires hunting down ~10 hardcoded copies. Prefer plural-without-count phrasing ("across the major sources", "from a curated set of retailers") or describe the breadth qualitatively ("dozens of vendors") rather than committing to a specific integer. If a count is load-bearing for the value prop, keep the brief's narrative count-free and have the printed-CLI's README/SKILL author write the count once into a single hand-edited paragraph after generation — accepting that it will need a manual update whenever the registry changes.
+12. **Use side-effectful examples only when they are the truthful workflow.** `validate-narrative --strict --full-examples` classifies `auth login`, `auth set-token`, `auth logout`, `auth setup`, `--launch`, and mutating `--apply` examples as side-effectful (see `isSideEffectfulNarrativeExample` in `internal/narrativecheck/narrativecheck.go`) and reports each as an `UNSUPPORTED` warning instead of executing it. These warnings do not fail strict aggregation, so it is valid to show an auth or apply command when that is the honest onboarding or bulk-operation shape. Prefer `doctor` or another read-only invocation as `quickstart[0]` when it teaches the same workflow, but do not strip a real auth or apply step just to appease shipcheck. Non-side-effect unsupported examples still fail strict mode when they cannot dry-run, and missing commands, empty command paths, and failed full examples remain failures.
 
 **Pre-render framework-command check.** Before running `generate --research-dir`,
 validate the framework command examples already present in `research.json`.
@@ -1705,13 +1753,117 @@ If the browser capture contained only challenge/login/error pages, this exceptio
 
 ### The Check
 
-Pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request:
+Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request and preserve the response body when the server returns a 4xx:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null
+body_file="$(mktemp "${TMPDIR:-/tmp}/pp-reachability-body.XXXXXX")"
+trap 'rm -f "$body_file"' EXIT
+status="$(curl -s --max-filesize 65536 -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || true)"
+case "$status" in
+  [0-9][0-9][0-9]) ;;
+  *) status="000" ;;
+esac
+printf '%s\n' "$status"
 ```
 
-Or use `WebFetch` if curl is unavailable. The goal is one real response code.
+Or use `WebFetch` if curl is unavailable. Record the response status and, for any 4xx response body, run the same tier/permission keyword scan against the captured WebFetch body text before deciding. The goal is one real response code plus any 4xx body evidence the API chose to return.
+
+If `status` is any 4xx, inspect the body before deciding. Search it case-insensitively for tier or permission terms:
+
+```bash
+grep -Ei 'tier|allowed|permitted|subscription|quota|plan|scope|limit|permission|forbidden|unauthorized|upgrade|trial' "$body_file" | head -20
+```
+
+When matched lines are present, add them to the Phase 1 research brief under:
+
+```markdown
+## Reachability Risk
+- Tier/permission hints from 4xx body: "<matched line, truncated if needed>"
+```
+
+Keep the evidence bounded: include only the lines that explain the access model, trim each line to a readable length, and do not paste bearer tokens, API keys, cookies, or unrelated full response dumps. If the GET returns 2xx/3xx, omit this tier-hint subsection.
+
+Do not probe arbitrary mutation endpoints to discover tier limits. A generic "try a PUT/POST/PATCH/DELETE" rule can create accounts, send messages, capture payments, or mutate user data. Mutation probing is allowed only when the resolved spec or OpenAPI operation explicitly marks that endpoint as probe-safe with `x-pp-safe-probe: true`; the endpoint must be idempotent or otherwise harmless for the real account being used. If no endpoint has that explicit marker, stop after the GET body capture above.
+
+If one or more probe-safe endpoints are declared and the user provided credentials, run exactly one declared probe-safe endpoint as a second reachability probe and apply the same 4xx body capture and tier-keyword extraction. When more than one exists, choose the lowest-risk declared endpoint by preferring methods in this order: HEAD/OPTIONS/GET, then PUT/PATCH, then POST, then DELETE only if it is the only declared safe option. Break ties by choosing the endpoint with the fewest required parameters and avoiding paths with account, billing, payment, deletion, or notification terms when any safer declared option exists. Record which endpoint was probe-safe in the brief so later phases know the evidence came from an opt-in safe probe.
+
+### OAuth2 Grant Probe
+
+If the resolved spec declares `auth.type: oauth2` and has an interactive
+authorization URL (`authorizationCode` or `implicit` flow in OpenAPI, or an
+equivalent internal YAML auth field), the generic reachability check is not
+enough. After the base URL check would otherwise pass, verify the OAuth grant
+entry point with the user's real public OAuth input before Phase 2. This probe
+is read-only: it stops at the provider's consent, login, or error page and does
+not exchange a code, request a token, or ask the user to approve consent.
+
+Do not run this grant probe for OAuth2 `client_credentials` flows that only have
+a token URL. Those are server-to-server credentials, not browser grant flows, and
+probing the token endpoint would require secret material or a write-like auth
+attempt. The base reachability check plus later mock/live auth verification cover
+that shape.
+
+**Required inputs:** Use the `client_id` env var or public auth-flow input
+already resolved during Phase 0.5 and Pre-Generation Auth Enrichment. If the
+spec exposes `x-auth-vars`, prefer the entry with `kind: auth_flow_input`,
+`sensitive: false`, and a name or description identifying it as the OAuth
+`client_id`. If the real client id is missing, HOLD before generation and tell
+the user exactly which env var to set. Do not substitute a fake client id; fake
+ids can produce provider-specific errors that look like transport quirks.
+
+Build the authorize URL from the resolved spec, not from a guessed provider
+default:
+
+- `client_id`: the real public client id from the env var above.
+- `redirect_uri`: the redirect URI declared in the spec or auth metadata.
+- `response_type=code` for authorization-code grants, or the spec's documented
+  response type for implicit grants.
+- For authorization-code grants, include a safe probe PKCE pair using `S256`.
+  Use `probe_reachability_check_pkce_probe_literal` as the code verifier and
+  compute the URL-safe SHA-256 challenge from it. The verifier is 43 unreserved
+  characters, satisfying the RFC 7636 minimum; providers that do not require
+  PKCE ignore these params, and providers that enforce PKCE should advance to
+  the login or consent page instead of returning a false `invalid_request`.
+- `scope`, `audience`, `tenant`, `state`, `prompt`, or other provider-required
+  params when the spec or vendor docs require them. Use a benign probe value for
+  `state` if required.
+
+Use a redirect-limited GET and inspect the final URL, response body, and
+response class:
+
+```bash
+PKCE_VERIFIER="probe_reachability_check_pkce_probe_literal"
+PKCE_CHALLENGE=$(printf "%s" "$PKCE_VERIFIER" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+AUTH_URL="<authorization_url_with_required_query_params>"
+# Add code_challenge_method=S256 and code_challenge=$PKCE_CHALLENGE to AUTH_URL.
+PROBE_BODY_AND_META=$(curl -sS -L --max-redirs 10 -m 15 -w "\n%{http_code} %{url_effective}" -o - "$AUTH_URL" 2>/dev/null)
+PROBE_META=$(printf "%s\n" "$PROBE_BODY_AND_META" | tail -n 1)
+PROBE_BODY=$(printf "%s\n" "$PROBE_BODY_AND_META" | sed '$d')
+printf "%s\n" "$PROBE_META"
+printf "%s\n" "$PROBE_BODY" | head -c 8000
+printf "\n"
+```
+
+Interpret the result before Phase 2:
+
+| OAuth probe result | Action |
+|--------------------|--------|
+| HTTP status is `2xx` or `3xx`, final URL stays on the provider's authorization/login/consent host, does not include `error=`, and the response body does not contain an OAuth error code (`invalid_request`, `invalid_client`, `unauthorized_client`, etc.) | **PASS** - the grant entry point is reachable; proceed to Phase 2 |
+| Final URL or response body reports `invalid_request`, `invalid_client`, `redirect_uri_mismatch`, `unauthorized_client`, `unsupported_response_type`, or equivalent | **HARD STOP** - OAuth config is misconfigured; surface the provider error and point the user to the mismatched client id, redirect URI, app type, tenant, or required scope |
+| HTTP status is `4xx` or `5xx` without a recognizable OAuth error code | **WARN** - flag provider-specific routing or login-shell behavior for manual review before generation |
+| Final URL lands on a generic non-OAuth error page, marketing page, or unrelated login landing page | **WARN** - flag endpoint ambiguity or provider-specific routing for manual review before generation |
+| Timeout/DNS/connection refused or HTTP status `000` | **WARN** - same handling as the generic reachability WARN |
+
+On HARD STOP, do not generate. Present a specific, provider-neutral message:
+
+> "WARNING: `<API>`'s OAuth authorize probe failed before generation. The
+> provider returned `<error_or_final_url>`. Check that the spec's
+> `authorization_url`, `redirect_uri`, `response_type`, client id env var, app
+> type, tenant, and required scopes match the registered OAuth application."
+
+This OAuth probe is additive to the base reachability gate. Non-OAuth APIs
+(`api_key`, `bearer_token`, `cookie`, `composed`, `session_handshake`, `none`)
+skip it entirely.
 
 **If the check returns 403/429 with bot-protection evidence and `probe-reachability` has not already run for this URL during Phase 1.7's Direct HTTP challenge rule, run it now before consulting the decision matrix:**
 
@@ -2492,9 +2644,11 @@ cli-printing-press validate-narrative --strict --full-examples \
 
 `--strict` exits non-zero on any missing command, empty subcommand-words entry, or
 empty narrative (both sections omitted). With `--full-examples`, it also fails on full
-examples that cannot dry-run or whose full invocation fails. Drop `--strict` to get a
-warn-only report, omit `--full-examples` only when you intentionally want the old
-offline path check, or add `--json` for machine-readable output.
+examples that cannot dry-run or whose full invocation fails. Side-effectful auth,
+launch, and mutating apply examples are reported as `UNSUPPORTED` warnings and do not
+fail strict aggregation. Drop `--strict` to get a warn-only report, omit
+`--full-examples` only when you intentionally want the old offline path check, or add
+`--json` for machine-readable output.
 
 If any commands are reported missing, fix them in `research.json` before continuing.
 Common causes:
@@ -2589,7 +2743,7 @@ Priority 3 (polish):
 
 ### Agent Build Checklist (per command)
 
-After building each command in Priority 1 and Priority 2, verify these 10 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
+After building each command in Priority 1 and Priority 2, verify these 11 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
 
 1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
 2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON should use the generated receiver-style helper, `flags.printJSON(cmd, v)`, or call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` directly. Both route through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
@@ -2598,7 +2752,7 @@ After building each command in Priority 1 and Priority 2, verify these 10 princi
 5. **Safe retries**: Mutation commands support `--dry-run`, idempotent where possible
 6. **Composability**: Exit codes are typed (0/2/3/4/5/7/10 as applicable), output pipes to `jq` cleanly
 7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
-8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE, fall through to `cmd.Help()` for help-only invocations, and short-circuit on `dryRunOK(flags)` before any IO.
+8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE, fall through to `cmd.Help()` only for unambiguous help-only invocations (no args and no flags), short-circuit on `dryRunOK(flags)` before any IO, and return `usageErr(...)` with exit 2 when required input is missing in real mode.
    - **Use string for "positional OR flag" commands**: when a command accepts a positional `<x>` OR a flag `--y` as alternatives (e.g., `snapshot <co>` or `snapshot --domain example.com`), declare `Use: "<cmd> [x]"` with **square brackets** (optional), not `<x>` (required). Validate "exactly one of x or --y" inside RunE. Required positionals declared with angle brackets break verify-skill recipes that use the flag-only form.
    - **Declare verifier fixture inputs when generic values are not enough**: if the command needs realistic positional values or required flags to pass the verifier's happy path, add `Annotations: map[string]string{"pp:happy-args": "<item>=example-id;--query=example"}` or assign a whole initialized `cmd.Annotations` map after construction. The verifier consumes semicolon-separated tokens in order: `<label>=value` tokens overlay synthesized positional args, and `--flag=value` tokens overlay or add flag/value pairs. Commands without the annotation keep the generic synthesized inputs.
 9. **Side-effect commands stay quiet under verify**: Any hand-written command that performs a visible side effect (opens a browser tab, sends a notification, plays audio, dials out to an OS handler) MUST follow both halves of the convention:
@@ -2619,6 +2773,11 @@ After building each command in Priority 1 and Priority 2, verify these 10 princi
      ```
      Distinct from `IsVerifyEnv`: dogfood is a real-API matrix, so curtail work (paginate once, smaller `--limit`), never substitute mock data for real calls.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
+11. **Parallel-fetch partial failures**: any command that fans out N API calls and computes an aggregate (averages, rollups, comparisons, cross-source merges, digest summaries) MUST preserve each fetch error through the result channel and exclude error-tagged entries from totals and denominators. Failed fetches may still appear in the response so the caller can see the gap, but they must not become zero-valued phantom rows that dilute averages or counts. Surface the partial failure explicitly with:
+   - a stderr warning that names the failed count and the actual aggregation denominator, for example `warning: 2 of 10 fetches failed; averages computed over the remaining 8 items`
+   - a `fetch_failures` field in the JSON response envelope listing the failed entries and error messages
+
+Silently averaging phantom zeros is worse than reporting a partial result.
 
 #### Verify-friendly RunE template
 
@@ -2626,17 +2785,27 @@ Use this shape for every hand-written transcendence command. The generator emits
 
 ```go
 RunE: func(cmd *cobra.Command, args []string) error {
-    if len(args) == 0 {
+    if len(args) == 0 && cmd.Flags().NFlag() == 0 {
         return cmd.Help()
     }
     if dryRunOK(flags) {
         return nil
     }
+    if <required input missing> {
+        _ = cmd.Usage()
+        return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+    }
     // ... real work ...
 }
 ```
 
-Why both checks: the `len(args) == 0` branch handles `<cli> mycommand --help` invocations gracefully; the `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes. Spec-derived commands generated by the Printing Press already follow this pattern -- this rule keeps hand-written novel-feature commands consistent with them.
+Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
+
+Do not collapse the first and third branches into `if len(args) == 0 || <flag empty> { return cmd.Help() }`. `cmd.Help()` returns `nil`, so agents and scripts cannot distinguish "help was requested" from "the command skipped required work."
+
+For commands with no required inputs, omit the `usageErr(...)` branch entirely and keep the help-only plus dry-run branches.
+
+If the command reads a file or directory (`os.ReadFile`, `os.ReadDir`, `os.Stat`, `os.Open`, `os.OpenFile`, `os.Lstat`, `filepath.Walk`, `filepath.WalkDir`, or any other filesystem access), the read MUST come after `dryRunOK()`, not before. Filesystem reads before `dryRunOK()` cause `validate-narrative --full-examples` to fail with a missing-file error rather than a clean dry-run exit 0.
 
 ### Phase 3 delegation: require feature-level acceptance
 
@@ -2774,6 +2943,17 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 
 ```go
 RunE: func(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+		return cmd.Help()
+	}
+	if dryRunOK(flags) {
+		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource>")
+		return nil
+	}
+	if <required input missing> {
+		_ = cmd.Usage()
+		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+	}
 	c, err := flags.newClient()
 	if err != nil {
 		return err
@@ -2799,6 +2979,101 @@ RunE: func(cmd *cobra.Command, args []string) error {
 },
 ```
 
+**RunE skeleton — parallel-fetch aggregation shape** (live fan-out with partial-failure accounting):
+
+Use this shape when a novel command fetches multiple items concurrently and computes a rollup, average, comparison, digest, or cross-source merge. The key invariant is that `err` travels with each result until aggregation, and error-tagged entries are excluded from all totals and denominators.
+
+```go
+RunE: func(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+		return cmd.Help()
+	}
+	if dryRunOK(flags) {
+		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource> details")
+		return nil
+	}
+	if <required input missing> {
+		_ = cmd.Usage()
+		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+	}
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+	type fetchResult struct {
+		idx   int
+		id    string
+		entry yourEntryType
+		err   error
+	}
+	ids := []string{} // derive from args, flags, or an initial list endpoint
+	results := make(chan fetchResult, len(ids))
+	var wg sync.WaitGroup
+	for idx, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data, err := c.Get("/api/v1/resource/"+url.PathEscape(id), nil)
+			if err != nil {
+				results <- fetchResult{idx: idx, id: id, err: err}
+				return
+			}
+			entry, err := parseEntry(data)
+			results <- fetchResult{idx: idx, id: id, entry: entry, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	ordered := make([]yourEntryType, len(ids))
+	fetchErrors := make([]error, len(ids))
+	for r := range results {
+		ordered[r.idx] = r.entry
+		if r.err != nil {
+			fetchErrors[r.idx] = r.err
+		}
+	}
+	var failures []fetchFailure
+	var successfulItems []yourEntryType
+	var total float64
+	var denominator int
+	for idx, entry := range ordered {
+		if fetchErrors[idx] != nil {
+			failures = append(failures, fetchFailure{
+				ID:    ids[idx],
+				Error: fetchErrors[idx].Error(),
+			})
+			continue
+		}
+		successfulItems = append(successfulItems, entry)
+		total += entry.Metric
+		denominator++
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d of %d fetches failed; averages computed over the remaining %d items\n", len(failures), len(ids), denominator)
+	}
+	view := yourAggregateView{
+		Items:         successfulItems,
+		AverageMetric: safeAverage(total, denominator),
+		FetchFailures: failures, // json tag: `json:"fetch_failures,omitempty"`
+	}
+	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(view)
+	}
+	// Human/terminal output, including a visible partial-failure note.
+	for _, entry := range view.Items {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%.2f\n", entry.Name, entry.Metric)
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "\npartial results: %d of %d fetches failed; average computed over %d items\n", len(failures), len(ids), denominator)
+	}
+	return nil
+},
+```
+
 **RunE skeleton — store-query shape** (offline data via the local SQLite):
 
 The generic `resources` table is keyed by `resource_type`. Flat resources synced from `/<resource>` land as `resource_type='<resource>'`. **Hierarchical resources** synced from `/<parents>/{id}/<resource>` land as `resource_type='<parent>_<resource>'` — e.g., `projects_tasks` (Asana), `repos_issues` / `repos_pulls` (GitHub) — *not* the bare `<resource>` name. A novel feature that filters by the bare name returns zero rows against a real DB. Use `IN (...)` to catch both shapes so the same code works whether the API exposes the resource flat or only parent-scoped.
@@ -2809,6 +3084,17 @@ The generic `resources` table is keyed by `resource_type`. Flat resources synced
 //   cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
 
 RunE: func(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+		return cmd.Help()
+	}
+	if dryRunOK(flags) {
+		fmt.Fprintln(cmd.OutOrStdout(), "would query local store")
+		return nil
+	}
+	if <required input missing> {
+		_ = cmd.Usage()
+		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+	}
 	if dbPath == "" {
 		dbPath = defaultDBPath("<cli>-pp-cli") // replace <cli> with the API slug
 	}
@@ -2853,6 +3139,10 @@ For features that combine both (cache an API response in the store, or fall thro
 
 **Shared helpers available to novel code:** The generator emits `internal/cliutil/` in every CLI. When authoring novel commands, prefer `cliutil.FanoutRun` for any aggregation command (any `--site`/`--source`/`--region` CSV fan-out) and `cliutil.CleanText` for any text extracted from HTML or schema.org JSON-LD. Re-implementing these inline is how recipe-goat's trending silent-drop and `&#39;` entity bugs shipped.
 
+**Hand-coded duration flags MUST use `cliutil.ParseDurationLoose` with a `StringVar` flag (not `DurationVar`).** Go's `time.ParseDuration` rejects the `7d`/`30d`/`1w`/`4w` day/week shorthand that the framework's `sync --since` already accepts, so a `DurationVar` flag fails at runtime on input agents and users reasonably expect. Declare the flag as a `StringVar`, then post-parse with `cliutil.ParseDurationLoose`, which adds `d`/`w` suffix support and otherwise defers to `time.ParseDuration`.
+
+**OData v3 datetime fields MUST be decoded with `cliutil.ParseODataDate`.** OData v3 APIs (Exact Online, Microsoft Dynamics 365 Business Central, Dynamics NAV) return dates as `/Date(1715731200000)/` string literals that no standard parser accepts, so the raw value passes straight through to JSON output and agents cannot parse `created_at`/`due_date`. `cliutil.ParseODataDate(s) (time.Time, bool)` decodes the literal to a UTC `time.Time` and falls back to RFC3339, so callers need not dispatch on format. Re-implementing this inline per command is how the same regex ships inconsistently across OData CLIs.
+
 **Streaming frame normalizers MUST use `cliutil.ExtractNumber` / `cliutil.ExtractInt` rather than raw `float64`/`int64` struct fields.** Real-world WebSocket and streaming JSON feeds (Binance, Coinbase, Kraken, Stripe `*_decimal`, vendor-specific market-data feeds) commonly encode numeric values as JSON-encoded strings (`"price":"1.91"`). `json.Unmarshal` of a JSON string into a `float64` field returns no error and silently leaves the field at 0; combined with NULL-on-zero patterns this discards the entire numeric feed with no error signal anywhere in the pipeline. The helpers accept both shapes (JSON number or JSON-encoded string), report `ok=false` on missing/null/unparseable, and are the canonical extraction path for `map[string]json.RawMessage` decoders. Re-implementing this inline as a `float64` struct field is the silent-aggregation-failure bug class.
 
 **NULL-safe SQL scans MUST use `sql.Null*` scan targets (or `COALESCE(<col>, <zero>)` in the query) for any column that can be NULL.** SQLite returns NULL for any absent JSON field selected via `json_extract(data, '$.optional_field')`, for any nullable column in a typed FTS/upsert table the generator emits, and for any field the API omits from a particular response. `database/sql`'s `rows.Scan` into a bare `string`/`int64`/`float64` returns a non-nil error on NULL (`Scan error on column index N: converting NULL to string is unsupported`) — and the surrounding `for rows.Next()` loop typically `continue`s on scan error, silently dropping every row. The result: queries return zero records, no error reaches the caller, the feature looks healthy because the API call succeeded. Use `var v sql.NullString` (or `NullInt64` / `NullFloat64` / `NullTime`) as the scan target and copy `.String` / `.Int64` / `.Float64` / `.Time` into your row struct, accepting the zero value as the missing-field representation. Re-implementing this inline as bare-string scans is the silent-row-drop bug class.
@@ -2879,7 +3169,7 @@ SELECT id, COALESCE(json_extract(data, '$.name'), '') FROM resources WHERE ...
 **Dogfood error-path opt-out:** If a real API returns HTTP 200 plus an empty success envelope for unknown IDs, and the command cannot distinguish bad input from a valid empty result without inventing API-specific semantics, annotate the Cobra command with `cmd.Annotations["pp:no-error-path-probe"] = "true"`. Dogfood will still run help, happy-path, and JSON-fidelity checks, but it will skip `error_path` with reason `no-error-path-probe annotation`. Do not add local "empty means not found" heuristics only to satisfy dogfood unless the upstream API contract actually defines that as an error.
 
 <a id="hand-edit-durability"></a>
-**Hand-edits to generator-emitted files are not durable.** Every file carrying `// Generated by CLI Printing Press ... DO NOT EDIT.` — `config.go`, `client.go`, `auth.go`, `store.go`, `root.go`, every `cliutil_*.go`, the typed MCP wrappers, and `sync.go` / `analytics.go` / `jobs.go` — is overwritten on `cli-printing-press generate --force` and reconciled by `cli-printing-press regen-merge`. Inline additions (a field on `Config`, a header in `client.go`'s `do()`, a row in `store.go`'s migrations slice) are not preserved; only whole hand-authored files survive across regen. (`AddCommand` calls in `root.go` are the exception: `regen-merge` re-injects them automatically — see the novel-command bullet below.)
+**Hand-edits must be regen-mergeable.** `cli-printing-press generate --force` snapshots the existing tree, emits a fresh tree, then runs the same AST-aware reconciliation used by `cli-printing-press regen-merge`. Whole hand-authored files and lost `AddCommand` wiring are preserved automatically; straightforward hand-edits to generated Go files (added declarations, literal drift, body drift) are classified and carried forward when the merge can do so safely. For risky edits, use the standalone `regen-merge` command first when you want a previewable report before applying.
 
 For an extension to be durable, put it in its own file beside the emitted one:
 
@@ -2887,9 +3177,9 @@ For an extension to be durable, put it in its own file beside the emitted one:
 - **Custom request headers** (vendor fingerprint, `X-CSRF`, app-version, signed timestamps): create `internal/client/<api>_headers.go` exporting a func that builds the header map; novel code passes that map to `client.GetWithHeaders` / `PostWithHeaders` when it calls the API. The generated `client.go` has no global request mutator, so this pattern only covers requests made directly from novel code — it does not intercept calls from generated endpoint commands. Do not edit the templated header block in `client.go`.
 - **Custom auth flow** (browser-sniffed sessions, vendor SSO, refresh hooks beyond OAuth2): create `internal/cli/<api>_auth.go` (package `cli`, same as the generated `auth.go`) with the API-specific token capture or refresh, and wire it from a novel command rather than editing the templated `auth.go` constructor functions (`newAuthLoginCmd`, `newAuthSetupCmd`, etc.).
 - **Extended store schema** (typed tables beyond `resources`, vendor JSON columns, full-text indexes): create `internal/store/<api>_migrations.go` running its own `CREATE TABLE ... IF NOT EXISTS` from a lazy init invoked by the novel commands that need it. Do not edit the migration slice in `store.go`.
-- **New novel command:** put the command body in its own `internal/cli/<feature>.go` file — it survives regen as a whole hand-authored unit. The `AddCommand` call wiring it into the Cobra tree still goes in `root.go` per the Phase 3 novel-command skeleton above; `cli-printing-press generate --force` wipes that call, but `cli-printing-press regen-merge` re-injects it via its lost-registration mechanism (see `internal/pipeline/regenmerge/apply.go`). Prefer `regen-merge` over `--force` for routine refreshes so the AddCommand call doesn't need a manual re-apply. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
+- **New novel command:** put the command body in its own `internal/cli/<feature>.go` file — it survives regen as a whole hand-authored unit. The `AddCommand` call wiring it into the Cobra tree still goes in `root.go` per the Phase 3 novel-command skeleton above; `cli-printing-press generate --force` re-injects it via the lost-registration merge path. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
 
-If an extension genuinely cannot live in a separate file (a `case` branch in a templated method switch, an inline modification to a generated handler with no registry hook), file a generator issue requesting the hook rather than carrying the edit across regens. The `AddCommand` case above is covered by `regen-merge`; most other inline diffs are not.
+If an extension genuinely cannot live in a separate file (a `case` branch in a templated method switch, an inline modification to a generated handler with no registry hook), file a generator issue requesting the hook rather than depending on repeated conflict-prone merges. The `AddCommand` case above is covered by the merge path.
 
 **MCP exposure:** The generator emits `internal/mcp/cobratree/`, and the MCP binary mirrors the Cobra tree at startup. When you add, rename, or remove a user-facing Cobra command, the MCP surface follows automatically. Two annotations control how each command appears as an MCP tool:
 
@@ -3419,7 +3709,7 @@ Before promoting, verify the Phase 5 JSON gate marker:
 
 If the shipcheck verdict is `ship` **or** `ship-with-gaps`, promote the verified CLI from the working directory to the library. This must happen BEFORE archiving — the CLI in the library is the primary deliverable, and Phase 6's publish path expects `$PRESS_LIBRARY/<api>/` to hold the current run.
 
-**Pick the promote path by whether the library already holds hand-authored content.** `lock promote --dir` performs an **atomic swap** of `$CLI_WORK_DIR` over `$PRESS_LIBRARY/<api>` — every file in the library that is not in the fresh tree is gone after the swap. Whole hand-authored files (a separate `internal/syncer/` package, novel-feature command files under `internal/cli/` without the `// Generated by ...` header, hand-built migration files under `internal/store/`) survive a `cli-printing-press regen-merge` pass but are wiped by a bare swap. This is the same dynamic called out under [**Hand-edits to generator-emitted files are not durable.**](#hand-edit-durability) ("Prefer `regen-merge` over `--force` for routine refreshes"); the orchestration here must honor it.
+**Pick the promote path by whether the library already holds hand-authored content.** `lock promote --dir` performs an **atomic swap** of `$CLI_WORK_DIR` over `$PRESS_LIBRARY/<api>` — every file in the library that is not in the fresh tree is gone after the swap. Whole hand-authored files (a separate `internal/syncer/` package, novel-feature command files under `internal/cli/` without the `// Generated by ...` header, hand-built migration files under `internal/store/`) survive a `cli-printing-press regen-merge` pass but are wiped by a bare swap. This is the same preservation dynamic called out under [**Hand-edits must be regen-mergeable.**](#hand-edit-durability); the orchestration here must honor it.
 
 Detect hand-authored content in the existing library:
 
@@ -3525,7 +3815,7 @@ cli-printing-press lock promote --cli <api>-pp-cli --dir "$LIB_TARGET" || {
 }
 ```
 
-`TEMPLATED-WITH-ADDITIONS` and the other review verdicts represent inline hand-edits to generator-emitted files that need human review (see [**Hand-edits to generator-emitted files are not durable.**](#hand-edit-durability) for the separate-file pattern that avoids this in future). The dry-run report (omit `--apply`) is the right tool for inspection once the halt path fires.
+`TEMPLATED-WITH-ADDITIONS` and the other review verdicts represent inline hand-edits to generator-emitted files that need human review (see [**Hand-edits must be regen-mergeable.**](#hand-edit-durability) for the separate-file pattern that avoids this in future). The dry-run report (omit `--apply`) is the right tool for inspection once the halt path fires.
 
 `ship-with-gaps` is promoted (on either path) because the verdict means "the CLI is shippable with documented, non-blocking gaps" — the gaps are recorded in the README's `## Known Gaps` block and the user opts in via Phase 6's publish prompt. Treating ship-with-gaps as un-promotable would strand the verified working copy and leave the library on a stale prior run.
 

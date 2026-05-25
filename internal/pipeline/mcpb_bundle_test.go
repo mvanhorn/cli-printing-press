@@ -3,6 +3,7 @@ package pipeline
 import (
 	"archive/zip"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -83,6 +84,77 @@ func TestBuildMCPBBundle(t *testing.T) {
 
 		entries := readZipEntries(t, out)
 		assert.Contains(t, entries, "bin/demo-pp-cli.exe")
+	})
+
+	t.Run("uses provided MCP archive name in ZIP and bundled manifest", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mData := []byte(`{
+  "manifest_version": "0.3",
+  "name": "demo-pp-mcp",
+  "server": {
+    "type": "binary",
+    "entry_point": "bin/demo-pp-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/bin/demo-pp-mcp",
+      "custom_launch_field": "preserve-me"
+    },
+    "custom_server_field": {"nested": true}
+  },
+  "custom_top_level_field": ["preserve-me"]
+}`)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, MCPBManifestFilename), mData, 0o644))
+
+		mcpPath := filepath.Join(dir, "fake-mcp.exe")
+		require.NoError(t, os.WriteFile(mcpPath, []byte("mcp"), 0o755))
+
+		out := filepath.Join(dir, "demo.mcpb")
+		err := BuildMCPBBundle(BundleParams{
+			CLIDir:     dir,
+			BinaryPath: mcpPath,
+			BinaryName: "demo-pp-mcp.exe",
+			OutputPath: out,
+		})
+		require.NoError(t, err)
+
+		entries := readZipEntries(t, out)
+		assert.Contains(t, entries, "bin/demo-pp-mcp.exe")
+		assert.NotContains(t, entries, "bin/demo-pp-mcp")
+
+		bundledManifest := readZipManifest(t, out)
+		assert.Equal(t, "bin/demo-pp-mcp.exe", bundledManifest.Server.EntryPoint)
+		assert.Equal(t, "${__dirname}/bin/demo-pp-mcp.exe", bundledManifest.Server.MCPConfig.Command)
+		bundledDoc := readZipJSONMap(t, out, MCPBManifestFilename)
+		server := bundledDoc["server"].(map[string]any)
+		mcpConfig := server["mcp_config"].(map[string]any)
+		assert.Equal(t, []any{"preserve-me"}, bundledDoc["custom_top_level_field"])
+		assert.Equal(t, map[string]any{"nested": true}, server["custom_server_field"])
+		assert.Equal(t, "preserve-me", mcpConfig["custom_launch_field"])
+
+		diskManifest := readManifestFile(t, filepath.Join(dir, MCPBManifestFilename))
+		assert.Equal(t, "bin/demo-pp-mcp", diskManifest.Server.EntryPoint)
+		assert.Equal(t, "${__dirname}/bin/demo-pp-mcp", diskManifest.Server.MCPConfig.Command)
+	})
+
+	t.Run("keeps original manifest bytes when MCP archive name is unchanged", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mData := []byte(`{"manifest_version":"0.3","name":"demo-pp-mcp","server":{"type":"binary","entry_point":"bin/demo-pp-mcp","mcp_config":{"command":"${__dirname}/bin/demo-pp-mcp","custom_launch_field":"preserve-me"}},"custom_top_level_field":["preserve-me"]}`)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, MCPBManifestFilename), mData, 0o644))
+
+		mcpPath := filepath.Join(dir, "fake-mcp")
+		require.NoError(t, os.WriteFile(mcpPath, []byte("mcp"), 0o755))
+
+		out := filepath.Join(dir, "demo.mcpb")
+		err := BuildMCPBBundle(BundleParams{
+			CLIDir:     dir,
+			BinaryPath: mcpPath,
+			BinaryName: "demo-pp-mcp",
+			OutputPath: out,
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t, mData, readZipEntryBytes(t, out, MCPBManifestFilename))
 	})
 
 	t.Run("missing manifest skips silently", func(t *testing.T) {
@@ -179,4 +251,73 @@ func readZipEntryMode(t *testing.T, path, entry string) os.FileMode {
 	}
 	t.Fatalf("entry %q not found in %s", entry, path)
 	return 0
+}
+
+func readZipManifest(t *testing.T, path string) MCPBManifest {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = zr.Close() })
+	for _, f := range zr.File {
+		if f.Name != MCPBManifestFilename {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		defer func() { _ = rc.Close() }()
+		var manifest MCPBManifest
+		require.NoError(t, json.NewDecoder(rc).Decode(&manifest))
+		return manifest
+	}
+	t.Fatalf("%s not found in %s", MCPBManifestFilename, path)
+	return MCPBManifest{}
+}
+
+func readManifestFile(t *testing.T, path string) MCPBManifest {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var manifest MCPBManifest
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	return manifest
+}
+
+func readZipJSONMap(t *testing.T, path, entry string) map[string]any {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = zr.Close() })
+	for _, f := range zr.File {
+		if f.Name != entry {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		defer func() { _ = rc.Close() }()
+		var doc map[string]any
+		require.NoError(t, json.NewDecoder(rc).Decode(&doc))
+		return doc
+	}
+	t.Fatalf("entry %q not found in %s", entry, path)
+	return nil
+}
+
+func readZipEntryBytes(t *testing.T, path, entry string) []byte {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = zr.Close() })
+	for _, f := range zr.File {
+		if f.Name != entry {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		defer func() { _ = rc.Close() }()
+		data, err := io.ReadAll(rc)
+		require.NoError(t, err)
+		return data
+	}
+	t.Fatalf("entry %q not found in %s", entry, path)
+	return nil
 }

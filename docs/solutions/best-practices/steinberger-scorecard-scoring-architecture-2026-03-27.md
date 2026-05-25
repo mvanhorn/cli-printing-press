@@ -1,7 +1,7 @@
 ---
 title: "Steinberger scorecard scoring system: architecture, conventions, and modification rules"
 date: 2026-03-27
-last_updated: 2026-05-05
+last_updated: 2026-05-23
 category: best-practices
 module: internal/pipeline
 problem_type: best_practice
@@ -191,7 +191,7 @@ The floor ensures no CLI with 91% verify pass rate scores below 72. Static analy
 Both dimensions use **prefix lists** and **structural detection**:
 
 - **Prefix lists**: Filenames matching known prefixes (e.g., `stale`, `agenda`, `stats`, `health`) count automatically.
-- **Structural detection (workflows)**: Any command file containing `/store`, `store.Open`, or `store.New` is a workflow command -- it uses the data layer.
+- **Structural detection (workflows)**: Any registered command file that uses the store directly, or calls a package-local helper that reaches or returns `*store.Store`, is a workflow command -- it uses the data layer.
 - **Structural detection (insights)**: A command that uses the store AND has aggregation patterns (`COUNT(`, `SUM(`, `GROUP BY`, `\brate\b`) is an insight command.
 
 ### Intentional prefix overlap

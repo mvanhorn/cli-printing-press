@@ -196,6 +196,24 @@ This CLI is designed for AI agent consumption:
 
 Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
 
+## Freshness
+
+This CLI owns bounded freshness for registered store-backed read command paths. In `--data-source auto` mode, covered commands check the local SQLite store before serving results; stale or missing resources trigger a bounded refresh, and refresh failures fall back to the existing local data with a warning. `--data-source local` never refreshes, and `--data-source live` reads the API without mutating the local store.
+
+Set `PRINTING_PRESS_GOLDEN_NO_AUTO_REFRESH=1` to disable the pre-read freshness hook while preserving the selected data source.
+
+Covered command paths:
+- `printing-press-golden-pp-cli currencies`
+- `printing-press-golden-pp-cli currencies get`
+- `printing-press-golden-pp-cli currencies list`
+- `printing-press-golden-pp-cli currencies search`
+- `printing-press-golden-pp-cli projects`
+- `printing-press-golden-pp-cli projects get`
+- `printing-press-golden-pp-cli projects list`
+- `printing-press-golden-pp-cli projects search`
+
+JSON outputs that use the generated provenance envelope include freshness metadata at `meta.freshness`. This metadata describes the freshness decision for the covered command path; it does not claim full historical backfill or API-specific enrichment.
+
 ## Health Check
 
 ```bash

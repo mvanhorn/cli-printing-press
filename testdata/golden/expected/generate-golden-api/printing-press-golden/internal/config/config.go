@@ -71,11 +71,15 @@ func Load(configPath string) (*Config, error) {
 			log.Printf("agentcookiesecret: %v; continuing with config + env", busErr)
 		}
 	} else if busRes != nil {
+		var busAuthSources []string
 		if v, ok := busRes.Env["PRINTING_PRESS_GOLDEN_API_KEY"]; ok && v != "" {
 			if src := busRes.Sources["PRINTING_PRESS_GOLDEN_API_KEY"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
 				cfg.PrintingPressGoldenApiKey = v
-				cfg.AuthSource = "bus:PRINTING_PRESS_GOLDEN_API_KEY"
+				busAuthSources = append(busAuthSources, "PRINTING_PRESS_GOLDEN_API_KEY")
 			}
+		}
+		if len(busAuthSources) > 0 {
+			cfg.AuthSource = "bus:" + strings.Join(busAuthSources, ",")
 		}
 	}
 

@@ -206,6 +206,46 @@ func TestGenerateRenamesBodyFieldCollidingWithStdin(t *testing.T) {
 		"the body field named 'stdin' must not collide with the template's --stdin flag")
 }
 
+func TestGenerateRenamesObjectBodyFieldCollidingWithPathParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-object-body")
+	apiSpec.Resources["widgets"] = spec.Resource{
+		Description: "Widgets",
+		Endpoints: map[string]spec.Endpoint{
+			"attach": {
+				Method:      "POST",
+				Path:        "/widgets/{id}/links",
+				Description: "Attach a linked object",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Positional: true, Description: "Widget ID"},
+				},
+				Body: []spec.Param{
+					{Name: "id", Type: "object", Required: true, Description: "Linked object", Fields: []spec.Param{
+						{Name: "name", Type: "string", Description: "Linked object name"},
+					}},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/widgets/{id}",
+				Description: "Get one widget",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-object-body-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpSource := string(mcpTools)
+	assert.Contains(t, mcpSource, `mcplib.WithString("id", mcplib.Required(), mcplib.Description("Widget ID"))`)
+	assert.Contains(t, mcpSource, `mcplib.WithString("id-2-name", mcplib.Description("Linked object name"))`)
+	assert.Contains(t, mcpSource, `PublicName: "id", WireName: "id", Location: "path"`)
+	assert.Contains(t, mcpSource, `PublicName: "id-2-name", WireName: "name", Location: "body", BodyPath: []string{"id", "name"}`)
+}
+
 // TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent guards the
 // case where two distinct nested-object paths whose joined camelized
 // segments collapse to the same Go identifier. Project.Customer.name

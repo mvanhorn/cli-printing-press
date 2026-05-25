@@ -107,6 +107,12 @@ proofs for organization names, email addresses, and full names. The exact-value 
 for API keys (above) catches secrets; this step catches PII that the user's live
 workspace naturally produces.
 
+**When persisting live-check samples:** `scorecard --live-check` and live-dogfood
+sample captures scrub `output_sample` text before it is stored in JSON/proof
+artifacts. Treat archive-time and publish-time scans as defense in depth, not as
+permission to write raw customer names, emails, addresses, invoice numbers, or
+card tails into the run directory.
+
 **Before creating publish PRs:** The publish skill constructs PR descriptions from
 manuscripts and test results. Any live test data quoted in the PR body must be
 scrubbed of workspace PII. The library repo is public.

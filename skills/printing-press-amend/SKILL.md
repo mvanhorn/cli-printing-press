@@ -36,12 +36,12 @@ Turn a dogfood session into a PR for a printed CLI in the public library.
 /printing-press-amend                 # auto-detect target CLI from session
 /printing-press-amend superhuman      # explicit short name
 /printing-press-amend superhuman-pp-cli
-/printing-press-amend ~/printing-press/library/superhuman
+/printing-press-amend "$PRESS_LIBRARY/superhuman"
 ```
 
 This skill lives in this repo (the machine) and acts on a printed CLI in the public library. It is sibling to `/printing-press-publish` (adds a new CLI), `/printing-press-polish` (improves a CLI pre-publish), and `/printing-press-retro` (reflects on the machine itself). None of those cover post-publish CLI amendments driven by real-session friction.
 
-The artifact this skill produces is semantically a "patch" (in the git/PR sense), tracked by the public library's `// PATCH(...)` source-comment convention and `.printing-press-patches.json` manifest. The slash-skill name is `amend` to disambiguate from the existing `cli-printing-press patch` binary subcommand (which AST-injects pre-defined features — different mechanism, different intent).
+The artifact this skill produces is semantically a "patch" (in the git/PR sense), tracked by the public library's `.printing-press-patches.json` manifest. Inline `// PATCH(...)` source comments are optional navigation aids when they make a customized site easier to grep. The slash-skill name is `amend` to disambiguate from the existing `cli-printing-press patch` binary subcommand (which AST-injects pre-defined features — different mechanism, different intent).
 
 ## Setup
 
@@ -91,7 +91,7 @@ if [ -z "$PRESS_BASE" ]; then
 fi
 
 PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
 PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
@@ -493,7 +493,7 @@ For each finding in dependency order:
 
 1. Edit the target files under `$CLI_DIR/`. Honor AGENTS.md anti-reimplementation rules (no hand-rolled response builders; novel commands must call the real endpoint or read from the local store via `// pp:client-call` / `// pp:novel-static-reference` opt-outs only when truly justified).
 
-2. Add a `// PATCH(<short reason>)` source comment at every changed site. Format examples:
+2. Optional: add a `// PATCH(<short reason>)` source comment at changed sites when it helps future agents find the customization quickly. Format examples:
 
    ```go
    // PATCH(amend-2026-05-15: surface refresh-token expiry to user) — was silently retrying
@@ -506,18 +506,22 @@ For each finding in dependency order:
 
    ```json
    {
-     "date": "2026-05-15",
-     "amend_run_id": "amend-2026-05-15T1432",
+     "id": "<api-slug>-refresh-token-expiry",
      "summary": "fix(superhuman): surface refresh-token expiry; add drafts new + --type sent",
+     "reason": "The generated CLI hid an expired refresh token and omitted a workflow flag needed by the live API.",
      "files": [
        "internal/auth/refresh.go",
        "internal/cli/drafts.go",
        "internal/cli/threads.go"
      ],
-     "findings_addressed": ["F1", "F2", "F5", "F7"],
-     "patch_count": <total // PATCH comments added in this run>
+     "validated_outcome": "publish validate passed; focused drafts and refresh-token checks pass",
+     "findings_addressed": ["F1", "F2", "F5", "F7"]
    }
    ```
+
+   If you add `// PATCH(...)` comments, you may also include a `patch_count`
+   field for reviewer convenience. Do not add `patch_count` when no source
+   comments were added.
 
    For a temporary patch with a future supersession path, include the upstream handoff fields in that same patch entry:
 
@@ -533,7 +537,7 @@ For each finding in dependency order:
    }
    ```
 
-   Both halves of the contract — `// PATCH(...)` source comments AND `.printing-press-patches.json` entries — are MANDATORY. The library's `verify-library-conventions` workflow rejects PRs where one is present without the other. See `~/printing-press-library/AGENTS.md` "How to record a hand-edit" for the authoritative spec.
+   The `.printing-press-patches.json` entry is mandatory for code-level customizations. Inline `// PATCH(...)` source comments are optional navigation aids; the public library verifier no longer enforces a marker/comment pairing. See `~/printing-press-library/AGENTS.md` for the authoritative spec.
 
    Use `deferred_to_upstream` only when the patch intentionally leaves a future supersession path: a public API endpoint is missing today, the command relies on an unofficial host or alternate auth source, a live response shape drifted from generator assumptions, or the fix would become unnecessary once the Printing Press learns the pattern. In those cases, search `mvanhorn/cli-printing-press` issues first; reuse a matching issue or open one before the library PR, then set `upstream_issue` to that URL. Do not leave a machine-level or API-publication dependency only in the PR body.
 
@@ -567,35 +571,17 @@ cp "$PLAN_PATH" "$HELD_PATH"
 
 Surface the final error log to the user, do NOT auto-open the PR, exit. The user can resume by re-invoking the skill (Phase 1 detects the held plan and offers to resume).
 
-### Step 6 — Caveat: validate doesn't enforce the patch contract
-
-`publish validate` does NOT check `.printing-press-patches.json` ↔ `// PATCH(...)` parity. That contract is enforced by the public library's `verify-library-conventions` workflow only after the PR opens. To catch it locally, run a quick parity check before proceeding to Phase 5:
+### Step 6 — Check the patch manifest
 
 ```bash
-# Count only NEW // PATCH(...) markers added in this run by diffing against
-# upstream. A naive `grep -rc` over $CLI_DIR also counts markers added by
-# prior amend runs, which lets a zero-new-markers run pass when prior history
-# makes the cumulative count meet or exceed the per-run declared count.
-#
-# This check runs in Phase 4 Step 6 — BEFORE the Phase 7 commit. The edits
-# are still in the working tree, not in any commit, so `git diff` against
-# upstream/main (working-tree diff) is the right tool. `format-patch
-# upstream/main..HEAD` would scan committed history only, find no commits,
-# and emit nothing — silently returning 0 markers for every valid run.
-#
-# --no-pager + --no-color + --no-ext-diff defeats colorized output and any
-# configured `diff.external` tool that would reformat the diff away from
-# unified-diff shape and break the grep parse.
-new_patch_markers=$(git -C "$PUBLISH_REPO_DIR" --no-pager diff --no-color --no-ext-diff upstream/main -- "$CLI_DIR" \
-  | grep -cE '^\+.*// PATCH\(')
-patches_entry=$(jq '.patches[-1].patch_count // 0' "$CLI_DIR/.printing-press-patches.json")
-if [ "$new_patch_markers" -lt "$patches_entry" ]; then
-  echo "ERROR: .printing-press-patches.json claims $patches_entry patch markers added this run, found $new_patch_markers new // PATCH(...) comments in the diff."
+jq -e '(.patches | type == "array") and (.patches | length > 0)' "$CLI_DIR/.printing-press-patches.json" >/dev/null
+if [ $? -ne 0 ]; then
+  echo "ERROR: .printing-press-patches.json must contain at least one patch entry for this amend run."
   exit 1
 fi
 ```
 
-Mismatched contract → fix locally before continuing. (A follow-up retro item: lift this check into `cli-printing-press publish validate` so future amend runs catch it natively.)
+Missing or empty patch manifest → fix locally before continuing.
 
 ### Output
 
@@ -610,7 +596,7 @@ build_status: PASS|FAIL
 test_status: PASS|FAIL
 dogfood_status: PASS|FAIL|N/A    # PASS|FAIL when MODE=dogfood (or "both"); always N/A when MODE=direct
 validate_iterations: <n>
-patch_marker_count: <n>
+patch_entry_count: <n>
 ```
 
 **`dogfood_status` per mode.** When `MODE=dogfood`, the value reflects the result of the dogfood validation step that consumed the transcript-derived findings (PASS if the run produced a clean fix, FAIL if it surfaced a regression). When `MODE=direct`, there is no transcript to dogfood against — set `dogfood_status=N/A`. When `MODE=both`, dogfood validation still runs against the transcript half of the findings; set PASS/FAIL accordingly. This default must be set at the latest by the end of Phase 4 so Phase 7's PR body and Phase 8's RESULT block never emit an empty value.

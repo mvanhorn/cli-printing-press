@@ -5,7 +5,7 @@ description: >
   diagnostics (dogfood, verify, scorecard, go vet), automatically fixes all
   issues (verify failures, dead code, descriptions, README, MCP tool quality),
   reports the before/after delta, and offers to publish. Use after any
-  /printing-press run, or on any CLI in ~/printing-press/library/. Trigger
+  /printing-press run, or on any CLI in $PRESS_LIBRARY/. Trigger
   phrases: "polish", "improve the CLI", "fix verify", "make it publish-ready",
   "clean up the CLI", "get this ready to ship".
 context: fork
@@ -29,7 +29,7 @@ The retro improves the Printing Press. Polish improves the generated CLI. This s
 ```bash
 /printing-press-polish redfin
 /printing-press-polish redfin-pp-cli
-/printing-press-polish ~/printing-press/library/redfin
+/printing-press-polish "$PRESS_LIBRARY/redfin"
 ```
 
 ## When to run
@@ -40,14 +40,14 @@ After any `/printing-press` generation, especially when:
 - The scorecard is below 85
 - You want the CLI publish-ready in one pass
 
-Can also be run standalone on any CLI in `~/printing-press/library/`.
+Can also be run standalone on any CLI in `$PRESS_LIBRARY/`.
 
 ## Setup
 
 ```bash
 # min-binary-version: 4.0.0
 
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_LIBRARY="$PRESS_HOME/library"
 
 if ! command -v cli-printing-press >/dev/null 2>&1; then
@@ -82,7 +82,7 @@ The argument string can contain a `--standalone` flag plus one positional value 
 The positional value can be:
 - A short name: `redfin` (looks up `$PRESS_LIBRARY/redfin`)
 - A full name: `redfin-pp-cli` (strips suffix, looks up `$PRESS_LIBRARY/redfin`)
-- A path: `~/printing-press/library/redfin` (used directly)
+- A path: `$PRESS_LIBRARY/redfin` (used directly)
 
 Resolution order for the positional value:
 1. If it is an absolute or `~`-prefixed path and exists, use it
@@ -94,7 +94,7 @@ Resolution order for the positional value:
 
 - **Standalone (user-invoked, `/printing-press-polish redfin`).** Invoked via the slash command. Treat as `STANDALONE_MODE=true` unconditionally — the slash-command form is the publish-intent surface, even when the user omits the flag. The arg is a slug or binary name; resolution lands on `$PRESS_LIBRARY/<slug>/`. This is the published copy and the right target.
 - **Mid-pipeline (main printing-press skill Phase 5.5, hold-path "Polish to retry").** Invoked via the Skill tool with `args: "$CLI_WORK_DIR"`. The arg is an absolute path to `~/printing-press/.runstate/.../runs/.../working/<api>-pp-cli/`; resolution must hit rule 1. `STANDALONE_MODE=false` by default — main SKILL owns the publish flow on this path, so polish defers. **Do not paraphrase the arg to the slug** — Phase 5.5 fires before the working CLI is promoted, so `$PRESS_LIBRARY/<slug>/` either doesn't exist or holds the *prior* run's stale CLI.
-- **Skill-tool standalone override.** A non-slash caller that genuinely wants polish to publish must opt in explicitly by including `--standalone` in `args` (e.g., `args: "--standalone ~/printing-press/library/redfin"`). Without that token, polish never publishes from a Skill-tool invocation — even if the resolved path happens to live under `$PRESS_LIBRARY/`. The flag is the contract; the path is not.
+- **Skill-tool standalone override.** A non-slash caller that genuinely wants polish to publish must opt in explicitly by including `--standalone` in `args` (e.g., `args: "--standalone $PRESS_LIBRARY/redfin"`). Without that token, polish never publishes from a Skill-tool invocation — even if the resolved path happens to live under `$PRESS_LIBRARY/`. The flag is the contract; the path is not.
 
 This caller-mode-driven gate replaces the older path-substring heuristic (`*.runstate/*`). The heuristic broke when the main SKILL's Phase 5.5/5.6 ordering inverted, or when polish was invoked from a non-`.runstate` scratch layout: polish would see a `$PRESS_LIBRARY/<slug>/` path, conclude "standalone," and fire its Publish Offer (fork, global git config, public PR) inside a mid-pipeline run. The flag is unambiguous and the safer default is no-publish.
 
@@ -170,6 +170,15 @@ fi
 #  2. Post-promote (standalone polish): research.json lives at
 #     manuscripts/<api>/<run-id>/research.json.
 RESEARCH_DIR=""
+MANIFEST_RUN_ID=""
+if [ -f "$CLI_DIR/.printing-press.json" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    MANIFEST_RUN_ID="$(jq -r '.run_id // empty' "$CLI_DIR/.printing-press.json" 2>/dev/null || true)"
+  fi
+  if [ -z "$MANIFEST_RUN_ID" ]; then
+    MANIFEST_RUN_ID="$(sed -nE 's/.*"run_id"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$CLI_DIR/.printing-press.json" | head -1)"
+  fi
+fi
 case "$CLI_DIR" in
   *.runstate/*)
     _grandparent="$(dirname "$(dirname "$CLI_DIR")")"
@@ -178,12 +187,27 @@ case "$CLI_DIR" in
     fi
     ;;
   *)
-    for d in "$PRESS_HOME/manuscripts/$API_SLUG"/*/research.json "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json; do
-      if [ -f "$d" ]; then
-        RESEARCH_DIR="$(dirname "$d")"
-        break
-      fi
-    done
+    if [ -n "$MANIFEST_RUN_ID" ]; then
+      for base in "$PRESS_HOME/manuscripts/$API_SLUG" "$PRESS_HOME/manuscripts/$CLI_NAME"; do
+        if [ -f "$base/$MANIFEST_RUN_ID/research.json" ]; then
+          RESEARCH_DIR="$base/$MANIFEST_RUN_ID"
+          break
+        fi
+      done
+    fi
+    # Match publish package's fallback: API slug first, then CLI name, each
+    # using the lexicographically latest run id when the manifest has none.
+    if [ -z "$RESEARCH_DIR" ]; then
+      for base in "$PRESS_HOME/manuscripts/$API_SLUG" "$PRESS_HOME/manuscripts/$CLI_NAME"; do
+        if [ -d "$base" ]; then
+          _latest="$(find "$base" -mindepth 2 -maxdepth 2 -name research.json -type f 2>/dev/null | sort | tail -1)"
+          if [ -n "$_latest" ]; then
+            RESEARCH_DIR="$(dirname "$_latest")"
+            break
+          fi
+        fi
+      done
+    fi
     ;;
 esac
 
@@ -192,6 +216,15 @@ esac
 RESEARCH_ARGS=()
 if [ -n "$RESEARCH_DIR" ]; then
   RESEARCH_ARGS=(--research-dir "$RESEARCH_DIR")
+fi
+
+# pii-audit runs against the CLI dir, but publish package later copies the
+# same run archive under .manuscripts/<run-id> before enforcing the PII gate.
+# Pass the run dir here so polish sees the narrative manuscript files with
+# the same relative paths publish will scan.
+PII_ARGS=()
+if [ -n "$RESEARCH_DIR" ]; then
+  PII_ARGS=(--manuscripts-dir "$RESEARCH_DIR")
 fi
 ```
 
@@ -268,7 +301,7 @@ fi
 cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
 cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 cli-printing-press tools-audit "$CLI_DIR" --json > /tmp/polish-tools-audit-before.json 2>&1 || true
-cli-printing-press pii-audit "$CLI_DIR" --json > /tmp/polish-pii-audit-before.json 2>&1 || true
+cli-printing-press pii-audit "$CLI_DIR" "${PII_ARGS[@]}" --json > /tmp/polish-pii-audit-before.json 2>&1 || true
 go vet ./... 2>&1
 ```
 
@@ -336,6 +369,19 @@ If a polish fix adds or changes a runtime mode, data-source option, auth tier, t
 - **Verification command:** the exact command that proves the default and the non-default escape hatch both work.
 
 Keep the checklist in the polish notes or result block. Skip it for ordinary bug fixes that do not change runtime variants or defaults.
+
+### Cross-cutting API-call instrumentation
+
+When polish builds a feature class that must observe every outbound API call,
+such as a quota ledger, request log, or audit trail, instrument the generated
+client middleware in `internal/client/client.go` instead of individual command
+handlers. Prefer a shared pre-dispatch hook when one exists; otherwise cover
+both `do()` and `doRead()`. The `do()` path handles standard endpoint mirrors,
+sync iterations, and novel features that use the generated client, while
+`doRead()` handles read-only operations that ride POST-like transports, such as
+GraphQL queries, JSON-RPC reads, and POST-based searches marked
+`mcp:read-only`.
+Per-command hooks under-count because they only see the commands polish touched.
 
 ### Priority 0: MCP surface migration (legacy CLIs)
 
@@ -419,7 +465,7 @@ sections, expect the next dogfood resync or regeneration to clobber the change.
 To find the manuscript source:
 
 ```bash
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 API_SLUG="${CLI_NAME%-pp-cli}"
 RESEARCH_JSON=""
 for f in "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json \
@@ -515,7 +561,7 @@ Proceed to "After all fixes" only when the audit's summary line reads `no pendin
 
 Stop and:
 
-1. Run `cli-printing-press pii-audit "$CLI_DIR"` to surface pending findings (or read `/tmp/polish-pii-audit-before.json` from Phase 1's baseline).
+1. Run `cli-printing-press pii-audit "$CLI_DIR" "${PII_ARGS[@]}"` to surface pending findings (or read `/tmp/polish-pii-audit-before.json` from Phase 1's baseline). When `RESEARCH_DIR` exists, this includes that run's `research.json` and `research/*.md` with `.manuscripts/<run-id>/...` paths so accepts carry forward into `publish package`.
 2. You must read `references/pii-polish.md` and follow its per-finding decision tree — fix real values in source with non-matching placeholders, or accept with the `category` + `evidence_context` pre-decision fields.
 3. **Accepting PII findings carries a strict contract.** Missing fields, 6+ accepts sharing a rationale, or wholesale-accepting ≥10 findings without source fixes all fail the gate. See `references/pii-polish.md` "The accept contract" and "Forbidden accept patterns" for the full rules.
 
@@ -546,7 +592,7 @@ if [ "$STANDALONE_MODE" = "true" ]; then
 fi
 cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 cli-printing-press tools-audit "$CLI_DIR" 2>&1
-cli-printing-press pii-audit "$CLI_DIR" 2>&1
+cli-printing-press pii-audit "$CLI_DIR" "${PII_ARGS[@]}" 2>&1
 go vet ./... 2>&1
 ```
 
@@ -676,6 +722,8 @@ Set `no` when another invocation would re-tread the same ground:
 
 **Skip this entire section unless `STANDALONE_MODE` is true.** `STANDALONE_MODE` is set in the "Resolve CLI" block above based on the caller mode: true for slash-command invocations (`/printing-press-polish ...`) or Skill-tool invocations that pass `--standalone` in `args`; false otherwise. When false, polish is being called from main SKILL Phase 5.5 or hold-path "Polish to retry," and the working CLI has not been promoted to library yet. `/printing-press-publish <slug>` would resolve to `$PRESS_LIBRARY/<slug>/`, which is either empty or holds a stale prior run — invoking publish here would either fail to resolve or ship the wrong copy. The parent skill owns the publish flow on that path; just emit the result block and return.
 
+Apply the publish turn-boundary rule: the `AskUserQuestion` answer may authorize only a handoff message, not a same-turn publish. Publishing opens or updates a public-library PR, so it requires a fresh user-authored message after polish completes. See `references/publish-turn-boundary.md` for rationale.
+
 A simple check:
 
 ```bash
@@ -717,8 +765,8 @@ Present via `AskUserQuestion`. Two example shapes:
 >
 > Recommendation: Publish.
 >
-> 1. **Publish now** (recommended) — validate, package, and open a PR
-> 2. **Done for now** — CLI is at ~/printing-press/library/<cli-name>"
+> 1. **Publish separately** (recommended) — show the publish command for the next user message
+> 2. **Done for now** — CLI is at $PRESS_LIBRARY/<cli-name>"
 
 **Polish thinks another pass would help** (`remaining_issues` non-empty, `further_polish_recommended: yes`):
 
@@ -729,30 +777,22 @@ Present via `AskUserQuestion`. Two example shapes:
 > Recommendation: Polish again before publishing.
 >
 > 1. **Polish again** (recommended) — close the remaining <N> issues
-> 2. **Publish now** — ship as-is
-> 3. **Done for now** — CLI is at ~/printing-press/library/<cli-name>"
+> 2. **Publish separately** — show the publish command to ship as-is in the next user message
+> 3. **Done for now** — CLI is at $PRESS_LIBRARY/<cli-name>"
 
 The recommended option leads, carries the `(recommended)` label, and the leading `Recommendation:` line states the agent's call explicitly. Three reinforcing channels so the user does not have to infer from ordering.
 
-### If "Publish now"
+### If "Publish separately"
 
-Check for existing PR:
-```bash
-gh pr list --repo mvanhorn/printing-press-library --head "feat/$CLI_NAME" --state open --author @me --json number,url --jq '.[0]' 2>/dev/null
-```
+Do not invoke `/printing-press-publish <cli-name>` from this same turn, and do not check or create public-library PRs here. Print a handoff that requires an explicit fresh user-authored message. Include the `--from-polish` marker so publish can offer the same post-publish retro tail that polish used to offer after a successful inline publish:
 
-Then invoke `/printing-press-publish <cli-name>`.
-
-**After publish returns success**, offer retro as a soft tail. This mirrors the main `/printing-press` skill's Phase 6 behavior so users who reach publish through polish (mid-pipeline → polish-again → publish, or standalone polish → publish) get the same retro opportunity as users who reach publish directly through Phase 6.
-
-Present via `AskUserQuestion`:
-
-> "PR opened: <PR_URL>. Run a retro? It surfaces systemic gaps from this session (generator misses, scorer bugs, skill-doc drift) as a GitHub issue for the Printing Press maintainers. Every retro filed raises the floor for the next CLI — and your session context is freshest right now."
+> "Publishing requires a separate user confirmation because it can fork `mvanhorn/printing-press-library`, push a branch, and open or update a PR.
 >
-> 1. **No — I'm done** (default)
-> 2. **Yes — run retro now**
+> To publish, send this as your next message:
+>
+> `/printing-press-publish <cli-name> --from-polish`"
 
-If the user picks yes, invoke `/printing-press-retro`.
+After printing the handoff, stop. If the user sends the command in a later message, the publish skill owns validation, packaging, public-library PR creation or update, and the `--from-polish` post-publish retro offer.
 
 (When `STANDALONE_MODE` is false this whole section is unreachable — the Publish Offer guard at the top of this section returns early — so no extra check is needed here.)
 

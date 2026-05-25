@@ -89,6 +89,9 @@ var vendorPrefixSecretPatterns = []vendorPrefixSecretPattern{
 	{kind: "slack-token", pattern: regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{32,}`)},
 	{kind: "slack-app-token", pattern: regexp.MustCompile(`xapp-[A-Za-z0-9-]{32,}`)},
 	{kind: "google-api-key", pattern: regexp.MustCompile(`AIza[A-Za-z0-9_-]{20,}`)},
+	{kind: "mailchimp-api-key", pattern: regexp.MustCompile(`\b[a-f0-9]{32}-us\d{1,2}\b`)},
+	{kind: "linear-api-key", pattern: regexp.MustCompile(`\blin_api_[A-Za-z0-9]{40,}`)},
+	{kind: "anthropic-api-key", pattern: regexp.MustCompile(`\bsk-ant-api03-[A-Za-z0-9_-]{40,}`)},
 	{
 		kind:    "aws-access-key",
 		pattern: regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),

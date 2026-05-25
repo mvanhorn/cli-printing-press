@@ -100,10 +100,17 @@ type TestPresenceResult struct {
 // NovelFeaturesCheckResult tracks whether transcendence features planned
 // during absorb actually survived the build as registered CLI commands.
 type NovelFeaturesCheckResult struct {
-	Planned int      `json:"planned"`
-	Found   int      `json:"found"`
-	Missing []string `json:"missing,omitempty"`
-	Skipped bool     `json:"skipped,omitempty"`
+	Planned         int                         `json:"planned"`
+	Found           int                         `json:"found"`
+	Missing         []string                    `json:"missing,omitempty"`
+	DepthMismatches []NovelFeatureDepthMismatch `json:"depth_mismatches,omitempty"`
+	Skipped         bool                        `json:"skipped,omitempty"`
+}
+
+type NovelFeatureDepthMismatch struct {
+	Command    string `json:"command"`
+	Advertised string `json:"advertised"`
+	Actual     string `json:"actual"`
 }
 
 type PathCheckResult struct {
@@ -215,6 +222,7 @@ type openAPISpec struct {
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 	HTTPTransport          string
 	OAuthScopeRequirements []oauthScopeRequirement
+	NestedDataEnvelopes    map[string]nestedDataEnvelopeFixture
 	// ParamDefaults maps a positional placeholder name (lowercase) to its
 	// spec-declared default value, when one is set. Verify mock-mode uses
 	// this as the first step in its lookup chain so spec authors can name
@@ -231,6 +239,10 @@ type openAPISpec struct {
 	// records the dimension as unscored). Surfaced by hackernews retro
 	// #350 finding F8.
 	IsInternalYAML bool
+}
+
+type nestedDataEnvelopeFixture struct {
+	ArrayKey string
 }
 
 func (s *openAPISpec) IsSynthetic() bool {
@@ -439,6 +451,9 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 		if matched {
 			result.Found++
 			built = append(built, nf)
+			if mismatch := novelFeatureDepthMismatch(nf, paths); mismatch != nil {
+				result.DepthMismatches = append(result.DepthMismatches, *mismatch)
+			}
 		} else {
 			result.Missing = append(result.Missing, nf.Command)
 		}
@@ -459,6 +474,13 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 		} else {
 			for _, artifact := range artifacts {
 				fmt.Fprintf(os.Stderr, "dogfood: synced %s (%s) from novel_features_built\n", artifact.Path, artifact.Detail)
+			}
+		}
+		if artifacts, err := SyncCLINarrativeDocs(cliDir, research.APIName, research.Narrative); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not sync narrative docs: %v\n", err)
+		} else {
+			for _, artifact := range artifacts {
+				fmt.Fprintf(os.Stderr, "dogfood: synced %s (%s) from research.json narrative\n", artifact.Path, artifact.Detail)
 			}
 		}
 		if changed, err := SyncCLIRootHighlights(cliDir, built); err != nil {
@@ -508,6 +530,93 @@ func matchNovelFeature(nf NovelFeature, paths, leaves map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+func novelFeatureDepthMismatch(nf NovelFeature, paths map[string]bool) *NovelFeatureDepthMismatch {
+	advertised := advertisedNovelFeaturePath(nf, paths)
+	if advertised == "" || matchPath(advertised, paths) {
+		return nil
+	}
+	actualPaths := leafMatchedPaths(advertised, paths)
+	if len(actualPaths) == 0 {
+		return nil
+	}
+	return &NovelFeatureDepthMismatch{
+		Command:    nf.Command,
+		Advertised: advertised,
+		Actual:     strings.Join(actualPaths, ", "),
+	}
+}
+
+func advertisedNovelFeaturePath(nf NovelFeature, paths map[string]bool) string {
+	if advertised := exampleAdvertisedPath(nf.Example, paths); advertised != "" {
+		return advertised
+	}
+	return commandPath(nf.Command)
+}
+
+func exampleAdvertisedPath(example string, paths map[string]bool) string {
+	tokens := strings.Fields(strings.ToLower(example))
+	if len(tokens) < 2 || !looksLikePrintedCLIBinary(tokens[0]) {
+		return ""
+	}
+	var candidates []string
+	for _, token := range tokens[1:] {
+		token = strings.Trim(token, `"'`)
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			break
+		}
+		if len(candidates) == 0 {
+			candidates = append(candidates, token)
+			continue
+		}
+		candidates = append(candidates, candidates[len(candidates)-1]+" "+token)
+	}
+	for _, candidate := range slices.Backward(candidates) {
+		if matchPath(candidate, paths) {
+			return candidate
+		}
+	}
+	for _, candidate := range slices.Backward(candidates) {
+		if len(leafMatchedPaths(candidate, paths)) > 0 {
+			return candidate
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
+}
+
+func looksLikePrintedCLIBinary(token string) bool {
+	base := filepath.Base(strings.Trim(token, `"'`))
+	return strings.HasSuffix(base, "-pp-cli")
+}
+
+func leafMatchedPaths(plan string, paths map[string]bool) []string {
+	_, leaf := splitCommandPath(plan)
+	if leaf == "" {
+		return nil
+	}
+	var out []string
+	for path := range paths {
+		_, pathLeaf := splitCommandPath(path)
+		if pathLeaf == "" {
+			continue
+		}
+		if commandLeavesMatch(leaf, pathLeaf) {
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func commandLeavesMatch(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"-") || strings.HasPrefix(b, a+"-")
 }
 
 // matchCrossCuttingFeature handles novel features whose command string
@@ -657,7 +766,7 @@ func matchPath(plan string, paths map[string]bool) bool {
 		if pp != parent || pl == "" {
 			continue
 		}
-		if strings.HasPrefix(pl, leaf+"-") || strings.HasPrefix(leaf, pl+"-") {
+		if commandLeavesMatch(leaf, pl) {
 			return true
 		}
 	}
@@ -675,7 +784,7 @@ func matchLeaf(plan string, leaves map[string]bool) bool {
 		return true
 	}
 	for use := range leaves {
-		if strings.HasPrefix(use, leaf+"-") || strings.HasPrefix(leaf, use+"-") {
+		if commandLeavesMatch(leaf, use) {
 			return true
 		}
 	}
@@ -736,10 +845,12 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 
 	// Root detection scans the full file because the wiring function
 	// (Execute / helpers) isn't a new*Cmd constructor.
-	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(new\w+Cmd)\b`)
-	funcHeaderRe := regexp.MustCompile(`func\s+(new\w+Cmd)\s*\(`)
+	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\s*\(`)
+	rootVarAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(\w+)\b`)
+	funcHeaderRe := regexp.MustCompile(`func\s+(\w+)\s*\(`)
 	useRe := cobraUseLeafRe
-	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(new\w+Cmd)\b`)
+	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\s*\(`)
+	addChildVarRe := regexp.MustCompile(`\.AddCommand\(\s*(\w+)\b`)
 
 	for _, file := range files {
 		data, err := os.ReadFile(file)
@@ -747,9 +858,7 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			continue
 		}
 		src := string(data)
-		for _, rm := range rootAddRe.FindAllStringSubmatch(src, -1) {
-			rootFuncs = append(rootFuncs, rm[1])
-		}
+		packageVars := packageCommandFactoryVars(src)
 		for _, u := range useRe.FindAllStringSubmatch(src, -1) {
 			if name := strings.Fields(u[1])[0]; name != "" {
 				leaves[name] = true
@@ -761,12 +870,35 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 			if body == "" {
 				continue
 			}
+			bodyVars := commandFactoryVars(body)
+			for _, rm := range rootAddRe.FindAllStringSubmatch(body, -1) {
+				rootFuncs = append(rootFuncs, rm[1])
+			}
+			for _, rm := range rootVarAddRe.FindAllStringSubmatch(body, -1) {
+				fn := bodyVars[rm[1]]
+				if fn == "" {
+					fn = packageVars[rm[1]]
+				}
+				if fn != "" {
+					rootFuncs = append(rootFuncs, fn)
+				}
+			}
+
 			entry := &cmdFunc{}
 			if u := useRe.FindStringSubmatch(body); u != nil {
 				entry.use = strings.Fields(u[1])[0]
 			}
 			for _, cm := range addChildRe.FindAllStringSubmatch(body, -1) {
 				entry.children = append(entry.children, cm[1])
+			}
+			for _, cm := range addChildVarRe.FindAllStringSubmatch(body, -1) {
+				fn := bodyVars[cm[1]]
+				if fn == "" {
+					fn = packageVars[cm[1]]
+				}
+				if fn != "" {
+					entry.children = append(entry.children, fn)
+				}
 			}
 			funcs[name] = entry
 		}
@@ -804,6 +936,59 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 		}
 	}
 	return paths, leaves
+}
+
+func commandFactoryVars(src string) map[string]string {
+	shortRe := regexp.MustCompile(`\b(\w+)\s*:=\s*(\w+)\s*\(`)
+	varRe := regexp.MustCompile(`\bvar\s+(\w+)\s*=\s*(\w+)\s*\(`)
+	vars := map[string]string{}
+	for _, m := range shortRe.FindAllStringSubmatch(src, -1) {
+		vars[m[1]] = m[2]
+	}
+	for _, m := range varRe.FindAllStringSubmatch(src, -1) {
+		vars[m[1]] = m[2]
+	}
+	return vars
+}
+
+func packageCommandFactoryVars(src string) map[string]string {
+	vars := map[string]string{}
+	file, err := parser.ParseFile(token.NewFileSet(), "", src, 0)
+	if err != nil {
+		return vars
+	}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range valueSpec.Names {
+				if i >= len(valueSpec.Values) {
+					continue
+				}
+				if fn := commandFactoryCallName(valueSpec.Values[i]); fn != "" {
+					vars[name.Name] = fn
+				}
+			}
+		}
+	}
+	return vars
+}
+
+func commandFactoryCallName(expr ast.Expr) string {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return ""
+	}
+	if ident, ok := call.Fun.(*ast.Ident); ok {
+		return ident.Name
+	}
+	return ""
 }
 
 // extractFuncBody returns the balanced-brace body of a Go function given
@@ -931,6 +1116,7 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 	}
 
 	summary, summaryErr := loadOpenAPISpecData(data, specPath)
+	nestedDataEnvelopes := detectNestedDataEnvelopeFixtures(data)
 	parsed, parseErr := openapiparser.ParseWithPathLenient(data, specPath)
 	if parseErr == nil {
 		var scopeRequirements []oauthScopeRequirement
@@ -941,6 +1127,7 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 			Paths:                  collectDogfoodSpecPaths(parsed.Resources),
 			Auth:                   parsed.Auth,
 			OAuthScopeRequirements: scopeRequirements,
+			NestedDataEnvelopes:    nestedDataEnvelopes,
 		}, nil
 	}
 
@@ -952,6 +1139,7 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 		Paths:                  summary.Paths,
 		Auth:                   deriveDogfoodAuth(summary),
 		OAuthScopeRequirements: summary.OAuthScopeRequirements,
+		NestedDataEnvelopes:    nestedDataEnvelopes,
 	}, nil
 }
 
@@ -1145,6 +1333,38 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	configData, _ := os.ReadFile(filepath.Join(dir, "internal", "config", "config.go"))
 
 	combinedSource := string(clientData) + string(configData)
+
+	// Composed/cookie auth stores the full header value (scheme prefix and
+	// token together) in Config.AuthHeaderVal and writes it to the wire
+	// verbatim. There is no source-level "<Scheme> " + token concat for the
+	// concat detector below to find. Classify by the spec-declared format
+	// instead, but only when the generated source still references
+	// AuthHeaderVal — a hand-stripped client must still surface as a miss.
+	if literalFmt, ok := classifyComposedAuthLiteral(auth, combinedSource); ok {
+		result.GeneratedFmt = literalFmt
+		switch {
+		case expectedPrefix != "" && literalFmt == composedAuthLabelFor(expectedPrefix):
+			result.Match = true
+			result.Detail = fmt.Sprintf(`spec format declares %q and generated client emits Config.AuthHeaderVal verbatim`, strings.TrimSpace(expectedPrefix))
+		case expectedPrefix == "" && literalFmt != composedAuthCustomFmt:
+			// Format-recognized prefix without a corresponding SpecScheme entry
+			// (e.g. composed + "Bearer ...", which the outer switch leaves
+			// expectedPrefix empty because the spec is not bearer_token typed).
+			// Populate SpecScheme from the literal so downstream readers see a
+			// matched pair, and treat the literal classification as the match.
+			result.SpecScheme = fmt.Sprintf(`%s format (composed/cookie literal in spec)`, literalFmt)
+			result.Match = true
+			result.Detail = `composed/cookie auth format declares a recognized scheme prefix and generated client emits Config.AuthHeaderVal verbatim`
+		case literalFmt == composedAuthCustomFmt:
+			result.Match = false
+			result.Detail = fmt.Sprintf(`composed auth format %q does not start with a recognized scheme prefix`, auth.Format)
+		default:
+			result.Match = false
+			result.Detail = fmt.Sprintf(`spec expects %q but composed auth format classifies as %q`, strings.TrimSpace(expectedPrefix), literalFmt)
+		}
+		return result
+	}
+
 	var tokenPreserving bool
 	var invalidDetail string
 	result.GeneratedFmt, tokenPreserving, invalidDetail = detectGeneratedAuthFormat(combinedSource, expectedPrefix)
@@ -1361,6 +1581,62 @@ var authPrefixCandidates = []authPrefixCandidate{
 	{prefix: "Bot ", concatRe: regexp.MustCompile(`"Bot "\s*\+`)},
 	{prefix: "Bearer ", concatRe: regexp.MustCompile(`"Bearer "\s*\+`)},
 	{prefix: "Basic ", concatRe: regexp.MustCompile(`"Basic "\s*\+`)},
+}
+
+// composedAuthLiteralScheme classifies the auth scheme that a composed-auth or
+// cookie-auth spec writes verbatim into Config.AuthHeaderVal. The literal
+// header value never gets a source-level "<Scheme> " + token concat, so the
+// concat-based detector in detectGeneratedAuthFormat returns "unknown" on this
+// path. Spec-side classification covers the gap.
+type composedAuthLiteralScheme struct {
+	prefix string
+	label  string
+}
+
+var composedAuthLiteralSchemes = []composedAuthLiteralScheme{
+	{prefix: "Bot ", label: "bot auth"},
+	{prefix: "Basic ", label: "basic auth"},
+	{prefix: "Bearer ", label: "bearer auth"},
+	{prefix: "Cookie ", label: "cookie auth"},
+	{prefix: "Token ", label: "token auth"},
+}
+
+const composedAuthCustomFmt = "custom-composed"
+
+// classifyComposedAuthLiteral returns the literal-format classification of a
+// composed/cookie auth spec when the generated source still wires
+// Config.AuthHeaderVal through to the wire. A stripped client (no
+// AuthHeaderVal reference in client.go or config.go) returns ok=false so the
+// caller falls through to the concat detector, which will surface "unknown".
+func classifyComposedAuthLiteral(auth apispec.AuthConfig, source string) (string, bool) {
+	authType := strings.ToLower(strings.TrimSpace(auth.Type))
+	if authType != "composed" && authType != "cookie" {
+		return "", false
+	}
+	if strings.TrimSpace(auth.Format) == "" {
+		return "", false
+	}
+	if !strings.Contains(source, "AuthHeaderVal") {
+		return "", false
+	}
+	for _, scheme := range composedAuthLiteralSchemes {
+		if strings.HasPrefix(auth.Format, scheme.prefix) {
+			return scheme.label, true
+		}
+	}
+	return composedAuthCustomFmt, true
+}
+
+// composedAuthLabelFor maps a concat-detector prefix ("Basic ", "Bearer ", ...)
+// to the composed-auth literal label so the new branch can reuse the existing
+// expectedPrefix value for the match decision.
+func composedAuthLabelFor(prefix string) string {
+	for _, scheme := range composedAuthLiteralSchemes {
+		if scheme.prefix == prefix {
+			return scheme.label
+		}
+	}
+	return ""
 }
 
 var applyAuthFormatInlineMapCallRe = regexp.MustCompile(`(?s)applyAuthFormat\("([^"]*)",\s*map\[string\]string\{(.*?)\}\)`)
@@ -2030,7 +2306,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && !r.MCPSurfaceParityCheck.HandEdited && !r.MCPSurfaceParityCheck.Pass
 	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.NovelFeaturesCheck.Missing) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool {
+		return len(r.NovelFeaturesCheck.Missing) > 0 || len(r.NovelFeaturesCheck.DepthMismatches) > 0
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && r.MCPSurfaceParityCheck.HandEdited
 	}},
@@ -2107,6 +2385,16 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 			len(report.NovelFeaturesCheck.Missing),
 			report.NovelFeaturesCheck.Planned,
 			strings.Join(report.NovelFeaturesCheck.Missing, ", ")))
+	}
+	if len(report.NovelFeaturesCheck.DepthMismatches) > 0 {
+		parts := make([]string, 0, len(report.NovelFeaturesCheck.DepthMismatches))
+		for _, mismatch := range report.NovelFeaturesCheck.DepthMismatches {
+			parts = append(parts, fmt.Sprintf("%s advertised as %s but registered as %s",
+				mismatch.Command, mismatch.Advertised, mismatch.Actual))
+		}
+		issues = append(issues, fmt.Sprintf("%d novel feature command-depth mismatches: %s",
+			len(report.NovelFeaturesCheck.DepthMismatches),
+			strings.Join(parts, "; ")))
 	}
 	if mcpSurfaceCheckActive(report.MCPSurfaceParityCheck) && !report.MCPSurfaceParityCheck.Pass {
 		issues = append(issues, "MCP surface parity: "+report.MCPSurfaceParityCheck.Detail)

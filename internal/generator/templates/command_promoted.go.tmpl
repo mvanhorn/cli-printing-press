@@ -9,7 +9,8 @@
 {{- $isReadVerb := or (eq $method "GET") (eq $method "HEAD") (eq $method "OPTIONS")}}
 {{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH")}}
 {{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse)}}
-{{- $supportsAllPagination := and .Endpoint.Pagination (ne .Endpoint.Pagination.Type "id_walk")}}
+{{- $supportsAllPagination := and (ne .Endpoint.Pagination nil) (ne .Endpoint.Pagination.Type "id_walk")}}
+{{- $dataSourceStrategy := dataSourceStrategy .Resource .Endpoint}}
 
 package cli
 
@@ -24,10 +25,13 @@ import (
 {{- end}}
 	"os"
 
+{{ if endpointUsesCSVArray .Endpoint}}
+	"{{modulePath}}/internal/cliutil"
+{{- end}}
 	"github.com/spf13/cobra"
 )
 
-func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
+func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
 	var flag{{camel (paramIdent .)}} {{goTypeForParam .Name .Type}}
@@ -41,7 +45,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "{{.PromotedName}}{{positionalArgs .Endpoint}}",
 		Short: "{{oneline .Endpoint.Description}}",
-		Long:  "Shortcut for '{{.ResourceName}} {{.EndpointName}}'. {{oneline .Endpoint.Description}}",
+		Long:  "{{oneline .Endpoint.Description}}",
 		Example: {{printf "%q" (promotedExampleLine .PromotedName .Endpoint)}},
 		Annotations: map[string]string{"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, "pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,7 +100,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			c = c.WithTier({{printf "%q" .EffectiveTier}})
 {{- end}}
 
-			path := "{{.ResourceBaseURL}}{{.Endpoint.Path}}"{{/* ResourceBaseURL is empty unless the resource or endpoint declares an override; when set it makes path absolute and the client skips the c.BaseURL concat. */}}
+			path := "{{.EffectivePath}}"
 {{- range .Endpoint.Params}}
 {{- if .Positional}}
 {{- $pi := positionalIndex $.Endpoint .Name}}
@@ -151,7 +155,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 
 {{- if $supportsAllPagination}}
 {{- if .HasStore}}
-			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -160,8 +164,15 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{paramWireName .}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", cmd.ErrOrStderr())
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", cmd.ErrOrStderr())
 {{- else}}
+{{- if eq $dataSourceStrategy "local"}}
+			return fmt.Errorf("data_source_strategy local requires the local store data layer")
+{{- else if eq $dataSourceStrategy "live"}}
+			if flags.dataSource == "local" {
+				return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
+			}
+{{- end}}
 			data, err := paginatedGet(cmd.Context(), c, path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
@@ -171,7 +182,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{paramWireName .}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
 {{- if not $deleteBodyWithoutParams}}
@@ -188,8 +199,15 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if $supportsAllPagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
 {{- else if eq $method "GET"}}
+{{- if eq $dataSourceStrategy "local"}}
+			return fmt.Errorf("data_source_strategy local requires the local store data layer")
+{{- else if eq $dataSourceStrategy "live"}}
+			if flags.dataSource == "local" {
+				return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
+			}
+{{- end}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)
 {{- else}}
@@ -382,12 +400,12 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 	// Wire sibling endpoints and sub-resources as subcommands
 {{- range $eName, $endpoint := .Resource.Endpoints}}
 {{- if ne $eName $.EndpointName}}
-	cmd.AddCommand(new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags))
+	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $eName}}Cmd(flags))
 {{- end}}
 {{- end}}
 {{- range $subName, $sub := .Resource.SubResources}}
 	{
-		sub := new{{camel $.FuncPrefix}}{{camel $subName}}Cmd(flags)
+		sub := new{{cmdIdent $.FuncPrefix $subName}}Cmd(flags)
 		sub.Hidden = false // unhide: the raw parent is hidden but these are useful under the promoted command
 		cmd.AddCommand(sub)
 	}

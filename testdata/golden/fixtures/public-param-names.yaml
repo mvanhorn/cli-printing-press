@@ -25,6 +25,11 @@ resources:
             type: string
             required: true
             description: City, state, zip
+          - name: locationId
+            url_name: location_id
+            type: string
+            required: true
+            description: Location identifier sent with this endpoint's snake-case query key
         response:
           type: array
           item: Store
@@ -32,6 +37,11 @@ resources:
         method: POST
         path: /stores
         description: Create a store record
+        params:
+          - name: dry_run
+            url_name: $dry_run
+            type: boolean
+            description: Preview without writing
         body:
           - name: store_code
             flag_name: store-code

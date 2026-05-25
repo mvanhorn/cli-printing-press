@@ -2,6 +2,7 @@ package profiler
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -61,9 +62,17 @@ type SearchBodyField struct {
 // SyncBodyField describes a request-body field on a syncable POST list endpoint.
 type SyncBodyField struct {
 	Name       string
+	WireName   string
 	Type       string
 	Default    any
 	HasDefault bool
+}
+
+func (f SyncBodyField) BodyWireName() string {
+	if f.WireName != "" {
+		return f.WireName
+	}
+	return f.Name
 }
 
 // FieldSelector describes a query param that asks sparse-response APIs to
@@ -93,6 +102,9 @@ type SyncableResource struct {
 	Path   string
 	Method string
 	Tier   string
+	// SkipDefaultSync keeps resources callable via --resources while excluding
+	// auth-flow endpoints from generated "sync all" defaults.
+	SkipDefaultSync bool
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
 	// turn populated by the OpenAPI parser's `x-resource-id` extension or the
@@ -152,6 +164,7 @@ type DependentResource struct {
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
 	Method         string
 	Tier           string
+	PathParams     []DependentPathParam
 
 	// IDField is the primary-key field name resolved from the spec
 	// (x-resource-id extension or the four-tier fallback chain). Empty when
@@ -205,6 +218,11 @@ type DependentResource struct {
 	KeyField string
 }
 
+type DependentPathParam struct {
+	Param string
+	Field string
+}
+
 // APIProfile describes the shape of an API and what power-user features it warrants.
 type APIProfile struct {
 	HighVolume       bool
@@ -256,6 +274,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	resourceNames, resourceNameIndex := collectResourceNameMetadata(s.Resources)
 	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
 	syncCandidates := make(map[string][]syncableCandidate)
+	pathDerivedIDFields := make(map[string]string)
 	addSyncCandidate := func(resourceName string, meta syncableMeta) {
 		for _, candidate := range syncCandidates[resourceName] {
 			if candidate.meta.Path == meta.Path {
@@ -319,6 +338,14 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 			endpointNameLower := strings.ToLower(endpointName)
 			pathLower := strings.ToLower(endpoint.Path)
+			if endpoint.IDFieldFromPathParam && endpoint.IDField != "" {
+				key := normalizeName(resourceName)
+				// Prefer the lexicographically first path-derived field so the
+				// result stays stable regardless of map iteration order.
+				if existing := pathDerivedIDFields[key]; existing == "" || endpoint.IDField < existing {
+					pathDerivedIDFields[key] = endpoint.IDField
+				}
+			}
 
 			if containsAny(endpointNameLower, []string{"search"}) || containsAny(pathLower, []string{"search"}) {
 				hasSearchEndpoint = true
@@ -441,7 +468,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// annotations on a child path-item flow into the override
 						// and critical-resource maps. Store raw names so
 						// detectDependentResources can snake-case downstream.
-						key := parentName + "/" + name
+						key := strings.ToUpper(endpoint.Method) + " " + endpoint.Path
 						if _, ok := parameterized[key]; !ok {
 							parameterized[key] = parameterizedEntry{
 								name:       name,
@@ -547,6 +574,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 		walk(name, resource, "", "")
 	}
 	applySyncCandidates(syncable, syncCandidates)
+	applyPathDerivedIDFields(syncable, pathDerivedIDFields, s.Types)
+	applyPathDerivedIDFieldsToParameterized(parameterized, pathDerivedIDFields, s.Types)
 
 	if p.TotalEndpoints > 0 {
 		p.ReadRatio = float64(getEndpoints) / float64(p.TotalEndpoints)
@@ -834,7 +863,7 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 	if method == "POST" {
 		return endpoint.Pagination != nil &&
 			looksLikeCollectionEndpoint(strings.ToLower(name)) &&
-			hasListShapedResponse(endpoint, types)
+			hasListShapedResponse(name, endpoint, types)
 	}
 
 	if method != "GET" {
@@ -843,62 +872,131 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 	if endpoint.Pagination != nil {
 		return true
 	}
-	if hasListShapedResponse(endpoint, types) {
+	if hasListShapedResponse(name, endpoint, types) {
 		return true
 	}
 
 	return looksLikeBasicGetListEndpoint(strings.ToLower(name))
 }
 
-func hasListShapedResponse(endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
+func hasListShapedResponse(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
 	if endpoint.Response.Type == "array" {
 		return true
 	}
 
 	// Check for wrapper-object responses: the endpoint returns type "object"
-	// and the referenced type has a field matching a known wrapper key. These
-	// are list endpoints that wrap their arrays (e.g., {events: [...]}).
-	// The key list matches extractPageItems in sync.go.tmpl plus "events".
+	// and the referenced type has a field that clearly carries the list items.
 	return endpoint.Response.Type == "object" &&
 		endpoint.Response.Item != "" &&
-		hasWrapperArrayField(endpoint.Response.Item, types)
+		hasWrapperArrayField(endpoint.Response.Item, types, name, endpoint.Path)
 }
 
-// wrapperArrayKeys are response object field names that indicate the object
-// wraps a list of items. Kept in sync with extractPageItems in sync.go.tmpl.
-// hasWrapperArrayField lowercases each field name before lookup, so
-// PascalCase variants ("Items", "Data") match the lowercase entries here.
+// Multi-array envelopes need a curated tie-breaker; single-array envelopes are
+// already unambiguous and can use any resource-shaped key.
 var wrapperArrayKeys = map[string]bool{
-	"data":    true,
-	"results": true,
-	"items":   true,
-	"events":  true,
-	"entries": true,
-	"records": true,
-	"nodes":   true,
+	"data":     true,
+	"results":  true,
+	"items":    true,
+	"events":   true,
+	"entries":  true,
+	"features": true,
+	"records":  true,
+	"nodes":    true,
 }
 
-// hasWrapperArrayField checks whether a named type in the spec's types map
-// has any field whose name matches a known wrapper key, or whether the type
-// name itself suggests a list wrapper (contains "Response", "List", "Result",
-// or "Collection"). The type-name heuristic is a fallback for specs where the
-// types map is empty or incomplete.
-func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef) bool {
+var ancillaryArrayKeys = map[string]bool{
+	"errors":            true,
+	"warnings":          true,
+	"validations":       true,
+	"validation_errors": true,
+}
+
+// Field metadata is stronger than type-name guesses: once a type is present,
+// its fields decide whether the response is extractable.
+func hasWrapperArrayField(typeName string, types map[string]spec.TypeDef, endpointName string, path string) bool {
 	if typeDef, ok := types[typeName]; ok {
+		arrayFields := 0
+		var arrayField string
 		for _, field := range typeDef.Fields {
-			if wrapperArrayKeys[strings.ToLower(field.Name)] {
+			if !strings.EqualFold(field.Type, "array") {
+				continue
+			}
+			fieldKey := normalizedFieldKey(field.Name)
+			if wrapperArrayKeys[fieldKey] {
 				return true
 			}
+			if ancillaryArrayKeys[fieldKey] {
+				continue
+			}
+			arrayFields++
+			arrayField = field.Name
 		}
+		if arrayFields == 1 && singleArrayFieldMatchesCollection(arrayField, endpointName, path) {
+			return true
+		}
+		return false
 	}
 
 	// Fallback: if the type name itself suggests a list wrapper, treat it
-	// as a wrapper even when the types map lacks field definitions.
+	// as a wrapper only when the types map lacks that type definition.
 	nameUpper := strings.ToUpper(typeName)
 	return strings.Contains(nameUpper, "RESPONSE") ||
 		strings.Contains(nameUpper, "LIST") ||
 		strings.Contains(nameUpper, "RESULT") ||
 		strings.Contains(nameUpper, "COLLECTION")
+}
+
+func singleArrayFieldMatchesCollection(fieldName string, endpointName string, path string) bool {
+	if namesOverlap(fieldName, endpointName) {
+		return true
+	}
+	for _, segment := range staticPathSegments(path) {
+		if namesOverlap(fieldName, segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func namesOverlap(a, b string) bool {
+	aVariants := nameVariants(a)
+	bVariants := nameVariants(b)
+	for _, av := range aVariants {
+		if slices.Contains(bVariants, av) {
+			return true
+		}
+	}
+	bTokens := nameTokens(b)
+	for _, av := range aVariants {
+		if slices.Contains(bTokens, av) {
+			return true
+		}
+	}
+	aTokens := nameTokens(a)
+	for _, bv := range bVariants {
+		if slices.Contains(aTokens, bv) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedFieldKey(name string) string {
+	return normalizeName(spec.ToSnakeCase(name))
+}
+
+func nameTokens(name string) []string {
+	normalized := normalizeName(spec.ToSnakeCase(name))
+	if normalized == "" {
+		return nil
+	}
+	var tokens []string
+	for token := range strings.SplitSeq(normalized, "_") {
+		if token != "" {
+			tokens = append(tokens, nameVariants(token)...)
+		}
+	}
+	return tokens
 }
 
 // findEntityTypeEnum returns the first required enum query param on a list endpoint
@@ -1114,60 +1212,213 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // detectDependentResources examines parameterized paths and identifies
 // parent-child relationships. For example, /channels/{channel_id}/messages
-// becomes a dependent resource of "channels" (only one level of nesting).
-// When the same leaf appears under multiple parents (or collides with a
-// top-level resource), each parent emits a sharded Name so its shard syncs
-// to its own table.
+// becomes a dependent resource of "channels", and deeper children can depend
+// on already-detected dependent resources. When the same leaf appears under
+// multiple parents (or collides with a top-level resource), each parent emits
+// a sharded Name so its shard syncs to its own table.
 func detectDependentResources(parameterized map[string]parameterizedEntry, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) []DependentResource {
 	var deps []DependentResource
-	for _, entry := range parameterized {
-		paramName, ok := firstPathParam(entry.meta.Path)
-		if !ok {
-			continue
-		}
-		parentResource := resolveParentResource(entry.parentName, paramName, syncable)
-		if parentResource == "" {
-			continue
-		}
-
-		emittedName := spec.ToSnakeCase(entry.name)
-		if shardedSubResources.IsSharded(entry.name) {
-			// Prefer the spec-walk parent so multi-param paths
-			// (e.g. /repos/{owner}/{repo}/commits) pick the right shard
-			// prefix; the path-param fallback would derive "owner".
-			shardParent := parentResource
-			if entry.parentName != "" {
-				shardParent = entry.parentName
-			}
-			emittedName = spec.ShardedSubResourceTableName(shardParent, entry.name)
-		}
-
-		deps = append(deps, DependentResource{
-			Name:               emittedName,
-			ParentResource:     parentResource,
-			ParentIDParam:      paramName,
-			Path:               entry.meta.Path,
-			Method:             entry.meta.Method,
-			Tier:               entry.meta.Tier,
-			IDField:            entry.meta.IDField,
-			Critical:           entry.meta.Critical,
-			SinceParam:         entry.meta.SinceParam,
-			SupportsPagination: entry.meta.SupportsPagination,
-			UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
-			HTMLExtract:        entry.meta.HTMLExtract,
-			BodyFields:         entry.meta.BodyFields,
-			IDWalkFilterParam:  entry.meta.IDWalkFilterParam,
-			IDWalkLimitParam:   entry.meta.IDWalkLimitParam,
-			IDWalkPageSize:     entry.meta.IDWalkPageSize,
-			FieldSelector:      entry.meta.FieldSelector,
-			Discriminator:      entry.meta.Discriminator,
-		})
+	knownParents := make(map[string]bool, len(syncable)+len(parameterized))
+	for resource := range syncable {
+		knownParents[resource] = true
 	}
-	// Sort for deterministic output
+	depthByResource := map[string]int{}
+
+	keys := sortedKeys(parameterized)
+	for len(keys) > 0 {
+		var next []string
+		progressed := false
+		for _, key := range keys {
+			entry := parameterized[key]
+			dep, ok := dependentResourceFromEntry(entry, knownParents, shardedSubResources)
+			if !ok {
+				next = append(next, key)
+				continue
+			}
+			deps = append(deps, dep)
+			knownParents[dep.Name] = true
+			depthByResource[dep.Name] = depthByResource[dep.ParentResource] + 1
+			if dep.Name == spec.ToSnakeCase(entry.name) {
+				knownParents[spec.ToSnakeCase(entry.name)] = true
+			}
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
+		keys = next
+	}
+	sortDependentResources(deps, depthByResource)
+	return deps
+}
+
+func sortDependentResources(deps []DependentResource, knownDepths map[string]int) {
+	depthByResource := make(map[string]int, len(knownDepths)+len(deps))
+	maps.Copy(depthByResource, knownDepths)
+	byName := make(map[string]DependentResource, len(deps))
+	for _, dep := range deps {
+		byName[dep.Name] = dep
+	}
+	var depthOf func(string, map[string]bool) int
+	depthOf = func(name string, visiting map[string]bool) int {
+		if depth, ok := depthByResource[name]; ok {
+			return depth
+		}
+		if visiting[name] {
+			return 1
+		}
+		dep, ok := byName[name]
+		if !ok {
+			return 0
+		}
+		visiting[name] = true
+		depth := depthOf(dep.ParentResource, visiting) + 1
+		delete(visiting, name)
+		depthByResource[name] = depth
+		return depth
+	}
+	for _, dep := range deps {
+		depthOf(dep.Name, map[string]bool{})
+	}
 	sort.Slice(deps, func(i, j int) bool {
+		if depthByResource[deps[i].Name] != depthByResource[deps[j].Name] {
+			return depthByResource[deps[i].Name] < depthByResource[deps[j].Name]
+		}
 		return deps[i].Name < deps[j].Name
 	})
-	return deps
+}
+
+func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (DependentResource, bool) {
+	ctx, ok := dependentPathContext(entry, knownParents, shardedSubResources)
+	if !ok {
+		return DependentResource{}, false
+	}
+
+	return DependentResource{
+		Name:               ctx.name,
+		ParentResource:     ctx.parentResource,
+		ParentIDParam:      dependentParentIDParam(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam),
+		Path:               entry.meta.Path,
+		Method:             entry.meta.Method,
+		Tier:               entry.meta.Tier,
+		PathParams:         dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, ""),
+		IDField:            entry.meta.IDField,
+		Critical:           entry.meta.Critical,
+		SinceParam:         entry.meta.SinceParam,
+		SupportsPagination: entry.meta.SupportsPagination,
+		UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
+		HTMLExtract:        entry.meta.HTMLExtract,
+		BodyFields:         entry.meta.BodyFields,
+		IDWalkFilterParam:  entry.meta.IDWalkFilterParam,
+		IDWalkLimitParam:   entry.meta.IDWalkLimitParam,
+		IDWalkPageSize:     entry.meta.IDWalkPageSize,
+		FieldSelector:      entry.meta.FieldSelector,
+		Discriminator:      entry.meta.Discriminator,
+	}, true
+}
+
+type dependentContext struct {
+	name              string
+	parentResource    string
+	parentPathSegment string
+	firstParam        string
+}
+
+func dependentPathContext(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (dependentContext, bool) {
+	firstParam, ok := firstPathParam(entry.meta.Path)
+	if !ok {
+		return dependentContext{}, false
+	}
+
+	segments := pathSegments(entry.meta.Path)
+	placeholderCount := len(orderedPathPlaceholders(entry.meta.Path))
+	parentSegment := spec.ToSnakeCase(entry.parentName)
+	childName := spec.ToSnakeCase(entry.name)
+	forceShard := false
+	if placeholderCount >= 2 {
+		if childSegment, parent, ok := pathCollectionContext(segments); ok {
+			childName = childSegment
+			parentSegment = parent
+			forceShard = true
+		}
+	}
+	if parentSegment == "" {
+		parentSegment = spec.ToSnakeCase(entry.parentName)
+	}
+
+	parentResource := resolvePathParentResource(parentSegment, segments, knownParents, shardedSubResources)
+	if parentResource == "" {
+		parentResource = resolveParentResourceName(entry.parentName, firstParam, knownParents)
+	}
+	if parentResource == "" {
+		return dependentContext{}, false
+	}
+
+	name := childName
+	if forceShard {
+		name = spec.ShardedSubResourceTableName(parentResource, childName)
+	} else if shardedSubResources.IsSharded(childName) {
+		shardParent := parentResource
+		if entry.parentName != "" {
+			shardParent = entry.parentName
+		}
+		name = spec.ShardedSubResourceTableName(shardParent, childName)
+	}
+	if parentSegment == "" {
+		parentSegment = parentResource
+	}
+
+	return dependentContext{
+		name:              name,
+		parentResource:    parentResource,
+		parentPathSegment: parentSegment,
+		firstParam:        firstParam,
+	}, true
+}
+
+func pathCollectionContext(segments []string) (child, parent string, ok bool) {
+	lastPlaceholder := -1
+	for i, segment := range segments {
+		if isPathPlaceholder(segment) {
+			lastPlaceholder = i
+		}
+	}
+	if lastPlaceholder < 0 {
+		return "", "", false
+	}
+	childIndex := nextStaticSegmentIndex(segments, lastPlaceholder+1)
+	parentIndex := previousStaticSegmentIndex(segments, lastPlaceholder-1)
+	if childIndex < 0 || parentIndex < 0 {
+		return "", "", false
+	}
+	return spec.ToSnakeCase(segments[childIndex]), spec.ToSnakeCase(segments[parentIndex]), true
+}
+
+func resolvePathParentResource(parentSegment string, segments []string, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) string {
+	if parentSegment == "" {
+		return ""
+	}
+	if knownParents[parentSegment] {
+		return parentSegment
+	}
+	parentIndex := lastStaticSegmentIndex(segments, parentSegment)
+	if parentIndex < 0 {
+		return ""
+	}
+	ancestorIndex := previousStaticSegmentIndex(segments, parentIndex-1)
+	if ancestorIndex >= 0 {
+		candidate := spec.ShardedSubResourceTableName(segments[ancestorIndex], parentSegment)
+		if knownParents[candidate] {
+			return candidate
+		}
+	}
+	if shardedSubResources.IsSharded(parentSegment) && ancestorIndex >= 0 {
+		candidate := spec.ShardedSubResourceTableName(segments[ancestorIndex], parentSegment)
+		if knownParents[candidate] {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // applySpecWalkers merges spec-declared walker configs (Endpoint.Walker,
@@ -1253,6 +1504,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 					deps[idx].ParentIDParam = keyParam
 				}
 				deps[idx].KeyField = keyField
+				deps[idx].PathParams = dependentPathParams(e.Path, parent, deps[idx].ParentIDParam, keyField)
 				continue
 			}
 			meta := metaFromEndpoint(s, r, e, types, resourceNameIndex)
@@ -1263,6 +1515,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				Path:               e.Path,
 				Method:             meta.Method,
 				Tier:               meta.Tier,
+				PathParams:         dependentPathParams(e.Path, parent, keyParam, keyField),
 				IDField:            meta.IDField,
 				Critical:           meta.Critical,
 				SinceParam:         meta.SinceParam,
@@ -1286,8 +1539,169 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 	for name, r := range s.Resources {
 		walk(name, r)
 	}
-	sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
+	sortDependentResources(deps, nil)
 	return deps
+}
+
+func dependentPathParams(path, parentResource, keyParam, keyField string) []DependentPathParam {
+	placeholders := orderedPathPlaceholders(path)
+	if len(placeholders) == 0 {
+		return nil
+	}
+
+	fields := dependentPathParamFields(path, parentResource)
+	params := make([]DependentPathParam, 0, len(placeholders))
+	for _, placeholder := range placeholders {
+		field := fields[placeholder]
+		if placeholder == keyParam && keyField != "" {
+			field = spec.ToSnakeCase(keyField)
+		}
+		if field == "" {
+			field = spec.ToSnakeCase(placeholder)
+		}
+		params = append(params, DependentPathParam{
+			Param: placeholder,
+			Field: field,
+		})
+	}
+	return params
+}
+
+func dependentParentIDParam(path, parentResource, fallback string) string {
+	for _, pathParam := range dependentPathParams(path, parentResource, fallback, "") {
+		if pathParam.Field == "id" {
+			return pathParam.Param
+		}
+	}
+	return fallback
+}
+
+func dependentPathParamFields(path, parentResource string) map[string]string {
+	fields := map[string]string{}
+	segments := pathSegments(path)
+	parentSegmentIndex := -1
+	childSegmentIndex := -1
+	normalizedParent := spec.ToSnakeCase(parentResource)
+	for i, segment := range segments {
+		if isPathPlaceholder(segment) {
+			continue
+		}
+		if spec.ToSnakeCase(segment) == normalizedParent {
+			parentSegmentIndex = i
+			childSegmentIndex = nextStaticSegmentIndex(segments, i+1)
+		}
+	}
+
+	parentIdentityParams := map[string]bool{}
+	if parentSegmentIndex >= 0 {
+		for i := parentSegmentIndex + 1; i < len(segments); i++ {
+			if i == childSegmentIndex {
+				break
+			}
+			if isPathPlaceholder(segments[i]) {
+				parentIdentityParams[strings.TrimSuffix(strings.TrimPrefix(segments[i], "{"), "}")] = true
+			}
+		}
+	}
+	parentUsesCompositeIdentity := len(parentIdentityParams) > 1
+
+	lastStatic := ""
+	for _, segment := range segments {
+		if isPathPlaceholder(segment) {
+			param := strings.TrimSuffix(strings.TrimPrefix(segment, "{"), "}")
+			switch {
+			case parentIdentityParams[param] && !parentUsesCompositeIdentity:
+				fields[param] = dependentIdentityField(param)
+			case parentIdentityParams[param] && parentUsesCompositeIdentity:
+				fields[param] = spec.ToSnakeCase(param)
+			case lastStatic != "":
+				fields[param] = spec.ToSnakeCase(lastStatic) + "_id"
+			default:
+				fields[param] = spec.ToSnakeCase(param)
+			}
+			continue
+		}
+		lastStatic = segment
+	}
+	return fields
+}
+
+func dependentIdentityField(param string) string {
+	field := spec.ToSnakeCase(param)
+	switch {
+	case field == "id" || strings.HasSuffix(field, "_id") || strings.HasSuffix(param, "Id") || strings.HasSuffix(param, "ID"):
+		return "id"
+	case strings.HasSuffix(field, "_slug"):
+		return "slug"
+	case strings.HasSuffix(field, "_name"):
+		return "name"
+	case strings.HasSuffix(field, "_key"):
+		return "key"
+	default:
+		return field
+	}
+}
+
+func orderedPathPlaceholders(path string) []string {
+	var params []string
+	seen := map[string]bool{}
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		param := path[i+1 : i+j]
+		if param != "" && !seen[param] {
+			params = append(params, param)
+			seen[param] = true
+		}
+		i += j
+	}
+	return params
+}
+
+func isPathPlaceholder(segment string) bool {
+	return strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") && len(segment) > 2
+}
+
+func pathSegments(path string) []string {
+	if strings.Trim(path, "/") == "" {
+		return nil
+	}
+	return strings.Split(strings.Trim(path, "/"), "/")
+}
+
+func nextStaticSegmentIndex(segments []string, start int) int {
+	for i := start; i < len(segments); i++ {
+		if !isPathPlaceholder(segments[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func previousStaticSegmentIndex(segments []string, start int) int {
+	for i := min(start, len(segments)-1); i >= 0; i-- {
+		if !isPathPlaceholder(segments[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastStaticSegmentIndex(segments []string, normalized string) int {
+	for i, segment := range slices.Backward(segments) {
+		if isPathPlaceholder(segment) {
+			continue
+		}
+		if spec.ToSnakeCase(segment) == normalized {
+			return i
+		}
+	}
+	return -1
 }
 
 // countPathPlaceholders counts the number of `{name}` substitution slots in
@@ -1320,14 +1734,15 @@ func firstPathParam(path string) (string, bool) {
 	return path[start+1 : end], true
 }
 
-// resolveParentResource picks a parent name that matches a syncable resource.
+// resolveParentResourceName picks a parent name that matches a known flat or
+// already-detected dependent resource.
 // Prefers the spec-walk parent (correct for multi-param paths like
 // /repos/{owner}/{repo}/commits) and falls back to stripping Id/_id from the
 // path param. Returns "" when no candidate matches.
-func resolveParentResource(walkParent, paramName string, syncable map[string]syncableMeta) string {
+func resolveParentResourceName(walkParent, paramName string, knownParents map[string]bool) string {
 	if walkParent != "" {
 		candidate := strings.ToLower(walkParent)
-		if _, ok := syncable[candidate]; ok {
+		if knownParents[candidate] {
 			return candidate
 		}
 	}
@@ -1337,7 +1752,7 @@ func resolveParentResource(walkParent, paramName string, syncable map[string]syn
 	stem = strings.TrimSuffix(stem, "ID")
 	stem = strings.ToLower(stem)
 	for _, candidate := range []string{stem, stem + "s", stem + "es"} {
-		if _, ok := syncable[candidate]; ok {
+		if knownParents[candidate] {
 			return candidate
 		}
 	}
@@ -1351,6 +1766,7 @@ type syncableMeta struct {
 	Path               string
 	Method             string
 	Tier               string
+	SkipDefaultSync    bool
 	IDField            string
 	Critical           bool
 	SinceParam         string
@@ -1363,6 +1779,7 @@ type syncableMeta struct {
 	IDWalkPageSize     int
 	FieldSelector      FieldSelector
 	Discriminator      DiscriminatorDispatch
+	ResponseItem       string
 }
 
 type syncableCandidate struct {
@@ -1389,6 +1806,7 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		Path:               e.Path,
 		Method:             strings.ToUpper(e.Method),
 		Tier:               s.EffectiveTier(resource, e),
+		SkipDefaultSync:    isAuthTaggedEndpoint(e),
 		IDField:            e.IDField,
 		Critical:           e.Critical,
 		SinceParam:         detectEndpointSinceParam(e.Params),
@@ -1401,7 +1819,18 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		IDWalkPageSize:     idWalkPageSize,
 		FieldSelector:      detectEndpointFieldSelector(e),
 		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+		ResponseItem:       e.Response.Item,
 	}
+}
+
+func isAuthTaggedEndpoint(endpoint spec.Endpoint) bool {
+	for _, tag := range endpoint.Tags {
+		switch strings.ToLower(strings.TrimSpace(tag)) {
+		case "auth", "authentication", "authorization", "oauth", "oauth2":
+			return true
+		}
+	}
+	return false
 }
 
 func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {
@@ -1410,7 +1839,7 @@ func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {
 	}
 	fields := make([]SyncBodyField, 0, len(endpoint.Body))
 	for _, param := range endpoint.Body {
-		field := SyncBodyField{Name: param.Name, Type: param.Type}
+		field := SyncBodyField{Name: param.Name, WireName: param.BodyWireName(), Type: param.Type}
 		if defaultValue, ok := syncBodyDefault(param); ok {
 			field.Default = defaultValue
 			field.HasDefault = true
@@ -1570,6 +1999,61 @@ func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string
 			addSyncableIfUnique(syncable, name, entry.meta)
 		}
 	}
+}
+
+func applyPathDerivedIDFields(syncable map[string]syncableMeta, pathDerivedIDFields map[string]string, types map[string]spec.TypeDef) {
+	for _, resourceName := range sortedKeys(syncable) {
+		idField := pathDerivedIDFieldForResource(resourceName, pathDerivedIDFields)
+		if idField == "" {
+			continue
+		}
+		meta := syncable[resourceName]
+		if !shouldUsePathDerivedIDField(meta.IDField) || !responseTypeHasField(meta.ResponseItem, types, idField) {
+			continue
+		}
+		meta.IDField = idField
+		syncable[resourceName] = meta
+	}
+}
+
+func applyPathDerivedIDFieldsToParameterized(parameterized map[string]parameterizedEntry, pathDerivedIDFields map[string]string, types map[string]spec.TypeDef) {
+	for _, key := range sortedKeys(parameterized) {
+		entry := parameterized[key]
+		idField := pathDerivedIDFieldForResource(entry.name, pathDerivedIDFields)
+		if idField == "" || !shouldUsePathDerivedIDField(entry.meta.IDField) || !responseTypeHasField(entry.meta.ResponseItem, types, idField) {
+			continue
+		}
+		entry.meta.IDField = idField
+		parameterized[key] = entry
+	}
+}
+
+func shouldUsePathDerivedIDField(existing string) bool {
+	existing = strings.TrimSpace(existing)
+	return existing == "" || strings.EqualFold(existing, "name")
+}
+
+func pathDerivedIDFieldForResource(resourceName string, pathDerivedIDFields map[string]string) string {
+	for _, variant := range nameVariants(resourceName) {
+		if idField := pathDerivedIDFields[variant]; idField != "" {
+			return idField
+		}
+	}
+	return ""
+}
+
+func responseTypeHasField(typeName string, types map[string]spec.TypeDef, fieldName string) bool {
+	typeDef, ok := lookupTypeDef(typeName, types)
+	if !ok {
+		return false
+	}
+	fieldSnake := spec.ToSnakeCase(fieldName)
+	for _, field := range typeDef.Fields {
+		if field.Name == fieldName || spec.ToSnakeCase(field.Name) == fieldSnake {
+			return true
+		}
+	}
+	return false
 }
 
 func siblingSyncResourceName(resourceName string, candidate syncableCandidate) string {
@@ -1734,6 +2218,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			Path:               meta.Path,
 			Method:             meta.Method,
 			Tier:               meta.Tier,
+			SkipDefaultSync:    meta.SkipDefaultSync,
 			IDField:            meta.IDField,
 			Critical:           meta.Critical,
 			SinceParam:         meta.SinceParam,

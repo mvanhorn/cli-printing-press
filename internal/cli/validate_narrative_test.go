@@ -69,6 +69,66 @@ func TestValidateNarrativeCmd_StrictExitCode(t *testing.T) {
 	}
 }
 
+func TestValidateNarrativeCmd_StrictFullExamplesAllowsSideEffectUnsupported(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{
+		"quickstart":[{"command":"stub auth login --client-id abc --client-secret def"}],
+		"recipes":[{"command":"stub tickets age-out --status stale --apply"}]
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binary := buildShipcheckStub(t)
+
+	cmd := newValidateNarrativeCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetArgs([]string{"--strict", "--full-examples", "--research", research, "--binary", binary})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("side-effectful unsupported examples should not fail strict mode, got %v", err)
+	}
+	got := stdout.String() + stderr.String()
+	if count := strings.Count(got, "UNSUPPORTED"); count != 2 {
+		t.Fatalf("expected 2 unsupported warnings, got %d in %q", count, got)
+	}
+	if !strings.Contains(got, "2 unsupported") {
+		t.Fatalf("output = %q, want summary with 2 unsupported warnings", got)
+	}
+}
+
+func TestValidateNarrativeCmd_JSONReportsStrictFailureForUnsupported(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{
+		"quickstart":[{"command":"stub auth login --client-id abc --client-secret def"}],
+		"recipes":[{"command":"stub widgets list"}]
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binary := buildShipcheckStub(t)
+
+	cmd := newValidateNarrativeCmd()
+	var stdout bytes.Buffer
+	cmd.SetArgs([]string{"--json", "--full-examples", "--research", research, "--binary", binary})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(new(bytes.Buffer))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected JSON report to succeed without --strict, got %v", err)
+	}
+	got := stdout.String()
+	if count := strings.Count(got, `"status":"unsupported"`); count != 2 {
+		t.Fatalf("expected 2 unsupported JSON results, got %d in %s", count, got)
+	}
+	if count := strings.Count(got, `"strict_failure":true`); count != 1 {
+		t.Fatalf("expected only the dry-run-unavailable unsupported result to be strict_failure, got %d in %s", count, got)
+	}
+}
+
 func TestValidateNarrativeCmd_MissingResearchIsNotApplicable(t *testing.T) {
 	t.Parallel()
 

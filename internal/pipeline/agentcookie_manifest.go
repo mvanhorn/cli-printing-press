@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
-	"github.com/mvanhorn/agentcookie/pkg/agentcookieadoption"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
@@ -36,7 +36,7 @@ func WriteAgentcookieManifest(p GenerateManifestParams) error {
 	if p.Spec == nil {
 		return nil
 	}
-	if !hasNonCookieAuthSpec(&p.Spec.Auth) {
+	if !p.Spec.Auth.HasNonCookieAuth() {
 		fmt.Fprintf(os.Stderr, "agentcookie: skipping %s (cookie-only or no env-var auth)\n", p.APIName)
 		return nil
 	}
@@ -51,43 +51,50 @@ func WriteAgentcookieManifest(p GenerateManifestParams) error {
 		displayName = cliName
 	}
 	description := strings.TrimSpace(p.Description)
-	m := &agentcookieadoption.Manifest{
-		SchemaVersion: 2,
-		Name:          cliName,
-		DisplayName:   displayName,
-		Description:   description,
-		ProjectKind:   "cli",
-		Secrets: agentcookieadoption.Secrets{
-			File: &agentcookieadoption.SecretsFile{
-				Path: fmt.Sprintf("~/.config/%s/config.toml", cliName),
-			},
-		},
-		Sync: agentcookieadoption.Sync{
-			Default: false,
-			Keys:    syncKeysFromAuth(&p.Spec.Auth),
-		},
-	}
-	if err := agentcookieadoption.WriteTo(m, outPath); err != nil {
+	body := renderAgentcookieManifest(cliName, displayName, description, syncKeysFromAuth(&p.Spec.Auth))
+	if err := os.WriteFile(outPath, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("writing agentcookie.toml: %w", err)
 	}
 	return nil
 }
 
-// hasNonCookieAuthSpec returns true when the CLI has at least one
-// env-var-based credential (bearer token, API key, OAuth client
-// credentials, etc.). Returns false for CLIs whose auth is cookie-only
-// or has no env-var surface at all.
-func hasNonCookieAuthSpec(a *spec.AuthConfig) bool {
-	if a == nil {
-		return false
+func renderAgentcookieManifest(cliName, displayName, description string, syncKeys map[string]bool) string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "# agentcookie.toml: secrets-bus adoption manifest v2")
+	fmt.Fprintln(&b, "# See docs/spec-agentcookie-secrets-bus-v2-adoption.md")
+	fmt.Fprintln(&b, "schema_version = 2")
+	fmt.Fprintf(&b, "name = %s\n", tomlString(cliName))
+	fmt.Fprintf(&b, "display_name = %s\n", tomlString(displayName))
+	fmt.Fprintf(&b, "description = %s\n", tomlString(description))
+	fmt.Fprintln(&b, `project_kind = "cli"`)
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "[secrets.file]")
+	fmt.Fprintf(&b, "path = %s\n", tomlString(fmt.Sprintf("~/.config/%s/config.toml", cliName)))
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "[sync]")
+	fmt.Fprintln(&b, "default = false")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "[sync.keys]")
+	keys := make([]string, 0, len(syncKeys))
+	for key := range syncKeys {
+		keys = append(keys, key)
 	}
-	if len(a.EnvVarSpecs) > 0 {
-		return true
+	sort.Strings(keys)
+	for _, key := range keys {
+		fmt.Fprintf(&b, "%s = %t\n", key, syncKeys[key])
 	}
-	if len(a.EnvVars) > 0 {
-		return true
-	}
-	return false
+	return b.String()
+}
+
+func tomlString(s string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"\n", `\n`,
+		"\r", `\r`,
+		"\t", `\t`,
+	)
+	return `"` + replacer.Replace(s) + `"`
 }
 
 // syncKeysFromAuth builds the [sync.keys] map from the auth config.

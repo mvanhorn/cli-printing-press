@@ -101,47 +101,51 @@ func Load(configPath string) (*Config, error) {
 			log.Printf("agentcookiesecret: %v; continuing with config + env", busErr)
 		}
 	} else if busRes != nil {
+		var busAuthSources []string
 		if v, ok := busRes.Env["RICH_AUTH_API_KEY"]; ok && v != "" {
 			if src := busRes.Sources["RICH_AUTH_API_KEY"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
 				cfg.RichAuthApiKey = v
-				cfg.AuthSource = "bus:RICH_AUTH_API_KEY"
+				busAuthSources = append(busAuthSources, "RICH_AUTH_API_KEY")
 			}
 		}
 		if v, ok := busRes.Env["RICH_AUTH_CLIENT_ID"]; ok && v != "" {
 			if src := busRes.Sources["RICH_AUTH_CLIENT_ID"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
 				cfg.RichAuthClientId = v
-				cfg.AuthSource = "bus:RICH_AUTH_CLIENT_ID"
+				busAuthSources = append(busAuthSources, "RICH_AUTH_CLIENT_ID")
 			}
 		}
 		if v, ok := busRes.Env["RICH_AUTH_CLIENT_SECRET"]; ok && v != "" {
 			if src := busRes.Sources["RICH_AUTH_CLIENT_SECRET"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
 				cfg.RichAuthClientSecret = v
-				cfg.AuthSource = "bus:RICH_AUTH_CLIENT_SECRET"
+				busAuthSources = append(busAuthSources, "RICH_AUTH_CLIENT_SECRET")
 			}
 		}
 		if v, ok := busRes.Env["RICH_AUTH_SESSION_COOKIE"]; ok && v != "" {
 			if src := busRes.Sources["RICH_AUTH_SESSION_COOKIE"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
 				cfg.RichAuthSessionCookie = v
-				cfg.AuthSource = "bus:RICH_AUTH_SESSION_COOKIE"
+				busAuthSources = append(busAuthSources, "RICH_AUTH_SESSION_COOKIE")
 			}
 		}
 		if v, ok := busRes.Env["RICH_AUTH_OPTIONAL_TOKEN"]; ok && v != "" {
 			if src := busRes.Sources["RICH_AUTH_OPTIONAL_TOKEN"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
 				cfg.RichAuthOptionalToken = v
-				cfg.AuthSource = "bus:RICH_AUTH_OPTIONAL_TOKEN"
+				busAuthSources = append(busAuthSources, "RICH_AUTH_OPTIONAL_TOKEN")
 			}
 		}
 		if v, ok := busRes.Env["RICH_AUTH_BOT_TOKEN"]; ok && v != "" {
 			if src := busRes.Sources["RICH_AUTH_BOT_TOKEN"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
 				cfg.RichAuthBotToken = v
-				cfg.AuthSource = "bus:RICH_AUTH_BOT_TOKEN"
+				busAuthSources = append(busAuthSources, "RICH_AUTH_BOT_TOKEN")
 			}
 		}
 		if v, ok := busRes.Env["RICH_AUTH_USER_TOKEN"]; ok && v != "" {
 			if src := busRes.Sources["RICH_AUTH_USER_TOKEN"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
 				cfg.RichAuthUserToken = v
-				cfg.AuthSource = "bus:RICH_AUTH_USER_TOKEN"
+				busAuthSources = append(busAuthSources, "RICH_AUTH_USER_TOKEN")
 			}
+		}
+		if len(busAuthSources) > 0 {
+			cfg.AuthSource = "bus:" + strings.Join(busAuthSources, ",")
 		}
 	}
 

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -564,10 +565,10 @@ func init() {
 }
 `)
 
-		assert.Equal(t, 0, scoreTypeFidelity(dir))
+		assert.Equal(t, 0, scoreTypeFidelity(dir, nil))
 	})
 
-	t.Run("scores string id flags and clear descriptions high", func(t *testing.T) {
+	t.Run("scores string id flags but does not treat them as full type fidelity", func(t *testing.T) {
 		dir := t.TempDir()
 
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
@@ -581,9 +582,243 @@ func init() {
 }
 `)
 
-		// +2 ID flags are all StringVar, +1 descriptions average well over 5 words,
-		// +1 no dummy `var _ = strings.ReplaceAll` / `var _ = fmt.Sprintf` guards.
-		assert.Equal(t, 4, scoreTypeFidelity(dir))
+		// String-backed ID flags are valid, but by themselves they do not prove
+		// positional arg handling or typed parser coverage.
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores mixed id flag typing with partial credit", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAfterID, "after-id", "", "Snowflake ID")
+	cmd.Flags().IntVar(&flagChannelID, "channel-id", 0, "Channel ID")
+}
+`)
+
+		assert.Equal(t, 1, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("caps multiple cobra arg validator types at two points", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+var getCmd = &cobra.Command{
+	Use:  "get <event_id>",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		_ = args[0]
+		return nil
+	},
+}
+
+var exportCmd = &cobra.Command{
+	Use:  "export <resource> [id]",
+	Args: cobra.MinimumNArgs(1),
+}
+
+var searchCmd = &cobra.Command{
+	Use:  "search [query]",
+	Args: cobra.MaximumNArgs(1),
+}
+`)
+
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores typed parser coverage plus positional command shape high", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:  "get <calendar_id> <event_id>",
+		Args: cobra.ExactArgs(2),
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/graph/events.go", `
+package graph
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID      string `+"`json:\"id\"`"+`
+	Subject string `+"`json:\"subject\"`"+`
+}
+
+func ParseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/graph/events_test.go", `
+package graph
+
+import "testing"
+
+func TestParseGraphEvent(t *testing.T) {
+	_, _ = ParseGraphEvent([]byte("{}"))
+}
+`)
+
+		assert.Equal(t, 4, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores typed parser coverage plus generated positional use without Args validators", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "get <event_id>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			_ = args[0]
+			return nil
+		},
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events.go", `
+package cli
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID      string `+"`json:\"id\"`"+`
+	Subject string `+"`json:\"subject\"`"+`
+}
+
+func parseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events_test.go", `
+package cli
+
+import "testing"
+
+func TestParseGraphEvent(t *testing.T) {
+	_, _ = parseGraphEvent([]byte("{}"))
+}
+`)
+
+		assert.Equal(t, 4, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score spec positionals without CLI positional handling", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+func init() {
+	cmd := eventsCmd
+	cmd.Flags().StringVar(&flagQuery, "query", "", "Text query")
+}
+`)
+
+		assert.Equal(t, 0, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score advertised positionals without consuming or validating args", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "get <event_id>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
+	}
+}
+`)
+
+		assert.Equal(t, 0, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
+	t.Run("does not score parser-looking code without tests that mention the parser", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:  "get <event_id>",
+		Args: cobra.ExactArgs(1),
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events.go", `
+package cli
+
+import "encoding/json"
+
+type graphEvent struct {
+	ID string `+"`json:\"id\"`"+`
+}
+
+func parseGraphEvent(data []byte) (graphEvent, error) {
+	var event graphEvent
+	err := json.Unmarshal(data, &event)
+	return event, err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/novel_events_test.go", `
+package cli
+
+import "testing"
+
+func TestSomethingElse(t *testing.T) {}
+`)
+
+		assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
+	})
+
+	t.Run("scores generic string flags without typed parsing low", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagQuery, "query", "", "Text query used to filter the list of messages")
+	cmd.Flags().StringVar(&flagStatus, "status", "", "Status value used to filter the list of messages")
+}
+`)
+
+		assert.LessOrEqual(t, scoreTypeFidelity(dir, nil), 2)
 	})
 }
 
@@ -615,10 +850,8 @@ func TestIsIDFlagName(t *testing.T) {
 }
 
 // TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine pins that consecutive
-// Flags() calls capture their own description, not the next call's flag name.
-// Before the [^,\n]+ fix the greedy [^,]+ spanned newlines, so the first
-// flag's description capture pulled in the next flag's name (a short kebab
-// token) and dragged the description word-count average below the >5 threshold.
+// Flags() calls stay isolated when detecting ID flag names. Before the
+// [^,\n]+ fix the greedy [^,]+ spanned newlines into the next Flags() call.
 func TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine(t *testing.T) {
 	dir := t.TempDir()
 	writeScorecardFixture(t, dir, "internal/cli/messages.go", `
@@ -626,19 +859,13 @@ package cli
 
 func init() {
 	cmd := messagesCmd
-	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
-	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
-	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+	cmd.Flags().StringVar(&flagAlphaID, "alpha-id", "", "Alpha identifier")
+	cmd.Flags().StringVar(&flagBravoID, "bravo-id", "", "Bravo identifier")
+	cmd.Flags().StringVar(&flagCharlieID, "charlie-id", "", "Charlie identifier")
 }
 `)
 
-	// With the pre-fix greedy [^,]+ regex, the description capture for "alpha"
-	// absorbed the next line's `&flagBravo` token, dragging descWordCount and
-	// descCount so the average dropped to ≤5, costing the +1 description point
-	// (score 3). The bounded [^,\n]+ regex keeps each capture inside its own
-	// statement: +2 ID-flag check (no ID flags), +1 descriptions averaging >5
-	// words, +1 no dummy guards = 4.
-	assert.Equal(t, 4, scoreTypeFidelity(dir))
+	assert.Equal(t, 2, scoreTypeFidelity(dir, nil))
 }
 
 // TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired pins that
@@ -674,7 +901,7 @@ func init() {
 }
 `)
 
-	assert.Equal(t, scoreTypeFidelity(withoutRequired), scoreTypeFidelity(withRequired),
+	assert.Equal(t, scoreTypeFidelity(withoutRequired, nil), scoreTypeFidelity(withRequired, nil),
 		"MarkFlagRequired must not earn a scorecard point — it is forbidden by the SKILL's verify-friendly RunE rule")
 }
 
@@ -1693,6 +1920,147 @@ func setAutotaskAuth(req *http.Request, userName string, integrationCode string)
 		assert.Less(t, sc.Steinberger.AuthProtocol, 5)
 	})
 
+	t.Run("all apiKey query auth scores every required query parameter", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setTrelloAuth(req *http.Request, key string, token string) {
+	q := req.URL.Query()
+	q.Set("key", key)
+	q.Set("token", token)
+	req.URL.RawQuery = q.Encode()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/config/config.go", `
+package config
+
+import "os"
+
+func Load() {
+	if v := os.Getenv("TRELLO_API_KEY"); v != "" {
+		cfg.TrelloApiKey = v
+	}
+	if v := os.Getenv("TRELLO_TOKEN"); v != "" {
+		cfg.TrelloToken = v
+	}
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-trello-query-composed.json")
+		writeScorecardFixture(t, dir, "spec-trello-query-composed.json", `{
+  "security": [
+    {
+      "APIKey": [],
+      "APIToken": []
+    }
+  ],
+  "paths": {
+    "/members/me": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "APIKey": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "key",
+        "x-auth-env-vars": ["TRELLO_API_KEY"]
+      },
+      "APIToken": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "token",
+        "x-auth-env-vars": ["TRELLO_TOKEN"]
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
+	})
+
+	t.Run("all apiKey query auth penalizes missing required query parameter", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setTrelloAuth(req *http.Request, key string) {
+	q := req.URL.Query()
+	q.Set("key", key)
+	req.URL.RawQuery = q.Encode()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/config/config.go", `
+package config
+
+import "os"
+
+func Load() {
+	if v := os.Getenv("TRELLO_API_KEY"); v != "" {
+		cfg.TrelloApiKey = v
+	}
+	if v := os.Getenv("TRELLO_TOKEN"); v != "" {
+		cfg.TrelloToken = v
+	}
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-trello-query-composed-missing.json")
+		writeScorecardFixture(t, dir, "spec-trello-query-composed-missing.json", `{
+  "security": [
+    {
+      "APIKey": [],
+      "APIToken": []
+    }
+  ],
+  "paths": {
+    "/members/me": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "APIKey": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "key",
+        "x-auth-env-vars": ["TRELLO_API_KEY"]
+      },
+      "APIToken": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "token",
+        "x-auth-env-vars": ["TRELLO_TOKEN"]
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 6)
+	})
+
 	t.Run("same-prefix standalone header scheme is not pulled into composed auth", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/client/client.go", `
@@ -2340,6 +2708,109 @@ func doctorCheck() {
 	})
 }
 
+func TestScoreDoctorLocalDatastoreRequiresRealSQLiteReachability(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "schema_version": 1,
+  "api_name": "local",
+  "cli_name": "local-pp-cli",
+  "auth_type": "none",
+  "spec_format": "sqlite"
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+import "os"
+
+func newDoctorCmd() {}
+
+func doctorCheckPath(path string) error {
+	_, err := os.Stat(path)
+	return err
+}
+`)
+
+	assert.Equal(t, 2, scoreDoctor(dir), "local-datastore doctors should not receive auth/config/reachability credit from os.Stat alone")
+}
+
+func TestScorecardLocalDatastoreManifestCreditsLocalShape(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "schema_version": 1,
+  "api_name": "chrome-history",
+  "cli_name": "chrome-history-pp-cli",
+  "auth_type": "none",
+  "spec_format": "sqlite",
+  "spec_source": "local-sqlite"
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func register() {
+	rootCmd.AddCommand(newListCmd())
+	rootCmd.AddCommand(newSyncCmd())
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+import (
+	"database/sql"
+	"os"
+)
+
+func newDoctorCmd() {}
+
+func checkLocalSource(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	return db.Ping()
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/list.go", `package cli
+
+func newListCmd() *cobra.Command {
+	return &cobra.Command{Use: "list"}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+
+func newSyncCmd() *cobra.Command {
+	return &cobra.Command{Use: "sync"}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/source/sqlite.go", `package source
+
+import "database/sql"
+
+func Query(db *sql.DB) {
+	rows, _ := db.Query("SELECT url FROM visits")
+	_ = rows
+}
+`)
+	writeScorecardFixture(t, dir, "internal/mcp/server.go", `package mcp
+
+func NewServer() {
+	RegisterTools("context", "search")
+	_ = "Returns browsing-history results from the local SQLite database"
+}
+func handleSearch() {}
+`)
+
+	assert.GreaterOrEqual(t, scoreDoctor(dir), 4, "local SQLite reachability should substitute for HTTP reachability without granting unrelated credit")
+	assert.Equal(t, 10, scoreLocalCache(dir), "manifest-gated local SQLite source should count as the local datastore")
+	assert.GreaterOrEqual(t, scoreMCPQuality(dir), 6, "hand-authored local MCP server should not require generated tools.go")
+	assert.GreaterOrEqual(t, scoreDataPipelineIntegrity(dir), 8, "SQL-backed local source should count as real data pipeline")
+
+	sc, err := RunScorecard(dir, t.TempDir(), filepath.Join(dir, "not-openapi.sqlite"), nil)
+	assert.NoError(t, err, "local-datastore manifests should bypass OpenAPI-only spec parsing")
+	assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+	assert.Contains(t, sc.UnscoredDimensions, DimAuthProtocol)
+	assert.Contains(t, sc.UnscoredDimensions, DimSyncCorrectness)
+}
+
 func TestScoreWorkflows(t *testing.T) {
 	t.Run("counts files matching expanded prefixes", func(t *testing.T) {
 		dir := t.TempDir()
@@ -2383,6 +2854,317 @@ func runAvailability() {
 `)
 
 		assert.GreaterOrEqual(t, scoreWorkflows(dir), 4) // 2 compound → 4
+	})
+
+	t.Run("counts commands that call package-local store helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func openLocalStore() (*store.Store, error) {
+	return store.Open("data.db")
+}
+
+func ensureLocalStore() error {
+	db, err := openLocalStore()
+	if err != nil {
+		return err
+	}
+	_ = db
+	return nil
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+		newReport4Cmd(nil),
+		newReport5Cmd(nil),
+		newReport6Cmd(nil),
+		newReport7Cmd(nil),
+		newLookupCmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 7; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d() error {
+	return ensureLocalStore()
+}
+`, i, i))
+		}
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+
+		assert.Equal(t, 10, scoreWorkflows(dir))
+	})
+
+	t.Run("counts direct store-helper calls and excludes non-store commands", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+import "example.com/project/internal/store"
+
+func openLocalStore() (*store.Store, error) {
+	return store.Open("data.db")
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+		newReport4Cmd(nil),
+		newLookupCmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 4; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d() error {
+	db, err := openLocalStore()
+	if err != nil {
+		return err
+	}
+	_ = db
+	return nil
+}
+`, i, i))
+		}
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+
+		assert.Equal(t, 6, scoreWorkflows(dir))
+	})
+
+	t.Run("counts commands that call package-local client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func fetchMeta(c apiClient) error {
+	_, err := c.Get("/meta")
+	return err
+}
+
+func runQuery(c apiClient) error {
+	_, err := c.Post("/query", nil)
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newReport1Cmd(nil),
+		newReport2Cmd(nil),
+		newReport3Cmd(nil),
+	)
+}
+`)
+		for i := 1; i <= 3; i++ {
+			writeScorecardFixture(t, dir, filepath.Join("internal/cli", fmt.Sprintf("report_%d.go", i)), fmt.Sprintf(`
+package cli
+
+func newReport%dCmd(flags any) {}
+
+func runReport%d(c apiClient) error {
+	if err := fetchMeta(c); err != nil {
+		return err
+	}
+	return runQuery(c)
+}
+`, i, i))
+		}
+
+		assert.Equal(t, 6, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local client helper weights greater than one", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+	package cli
+
+	func fetchBundle(c apiClient) error {
+		if _, err := c.Get("/bundle/meta"); err != nil {
+			return err
+		}
+		_, err := c.Get("/bundle/items")
+		return err
+	}
+	`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+	package cli
+
+	func runReport(c apiClient) error {
+		return fetchBundle(c)
+	}
+	`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("ignores unregistered commands that call package-local client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/pxcommon.go", `
+package cli
+
+func runQuery(c apiClient) error {
+	_, err := c.Post("/query", nil)
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newLookupCmd(nil))
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/lookup.go", `package cli
+func newLookupCmd(flags any) {}
+func runLookup() error { return nil }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {}
+
+func runReport(c apiClient) error {
+	return runQuery(c)
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local helpers using other generated client verbs", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func updateThing(c apiClient) error {
+	_, err := c.Put("/thing", nil)
+	return err
+}
+
+func deleteThing(c apiClient) error {
+	_, err := c.Delete("/thing")
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func runReport(c apiClient) error {
+	if err := updateThing(c); err != nil {
+		return err
+	}
+	return deleteThing(c)
+}
+`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("counts package-local helpers that call sibling internal clients", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/pxcommon.go", `
+package cli
+
+import "example.com/project/internal/phgraphql"
+
+func fetchMeta() error {
+	_, err := phgraphql.FetchMeta()
+	return err
+}
+
+func runQuery() error {
+	_, err := phgraphql.Post()
+	return err
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newReportCmd(nil))
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {}
+
+func runReport() error {
+	if err := fetchMeta(); err != nil {
+		return err
+	}
+	return runQuery()
+}
+`)
+
+		assert.Equal(t, 2, scoreWorkflows(dir))
+	})
+
+	t.Run("does not count commands that only call non-client helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func staticRows() []string {
+	return []string{"cached"}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func runReport() []string {
+	return staticRows()
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
+	})
+
+	t.Run("does not double-count same-file command runners as helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/report.go", `
+package cli
+
+func newReportCmd(flags any) {
+	runReport(flags)
+}
+
+func runReport(c apiClient) error {
+	_, err := c.Get("/report")
+	return err
+}
+`)
+
+		assert.Equal(t, 0, scoreWorkflows(dir))
 	})
 
 	t.Run("counts multi-API-call files", func(t *testing.T) {
@@ -2782,6 +3564,33 @@ func Load() {
 	assert.Equal(t, 0, unrelatedScore)
 }
 
+func TestConfigReadsSchemeEnvVarRequiresExactEnvLookup(t *testing.T) {
+	scheme := openAPISecurityScheme{
+		Key:     "APIToken",
+		Type:    "apikey",
+		In:      "query",
+		EnvVars: []string{"KEY"},
+	}
+
+	assert.True(t, configReadsSchemeEnvVar(`package config
+func Load() {
+	if v := os.Getenv("KEY"); v != "" {
+		cfg.Key = v
+	}
+}`, scheme))
+	assert.True(t, configReadsSchemeEnvVar(`package config
+func Load() {
+	if v, ok := os.LookupEnv("KEY"); ok {
+		cfg.Key = v
+	}
+}`, scheme))
+	assert.False(t, configReadsSchemeEnvVar(`package config
+// KEY is mentioned here, but not read.
+func Load() {
+	cfg.SomeOtherKey = "not-secret"
+}`, scheme))
+}
+
 func TestRunScorecard_APIKeyHeaderUsesCaseInsensitiveHeaderAndGenericAPIKeyEnv(t *testing.T) {
 	dir := t.TempDir()
 	writeScorecardFixture(t, dir, "internal/client/client.go", `package client
@@ -3118,6 +3927,48 @@ resources:
 		assert.NotNil(t, info, "internal-YAML branch should produce a non-nil info")
 	})
 
+	t.Run("OpenAPI path templates count positional parameters", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "path-params.json")
+		writeScorecardFixture(t, dir, "path-params.json", `{
+  "openapi": "3.0.3",
+  "paths": {
+    "/calendars/{calendar_id}/events/{event_id}": {},
+    "/submissions/CIK{cik}.json": {}
+  }
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Equal(t, 3, info.PositionalParamCount)
+	})
+
+	t.Run("internal YAML positional params count from Param metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "internal-positionals.yaml")
+		writeScorecardFixture(t, dir, "internal-positionals.yaml", `name: example
+display_name: Example API
+description: Test fixture for internal positional metadata
+base_url: https://api.example.com
+resources:
+  events:
+    description: Events
+    endpoints:
+      get:
+        method: GET
+        path: /events/{event_id}
+        params:
+          - name: event_id
+            type: string
+            required: true
+            positional: true
+`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Equal(t, 1, info.PositionalParamCount)
+	})
+
 	t.Run("leading whitespace before { still detects JSON", func(t *testing.T) {
 		dir := t.TempDir()
 		specPath := filepath.Join(dir, "indented.json")
@@ -3352,4 +4203,157 @@ func isTerminal() bool { return false }`,
 			}
 		})
 	}
+}
+
+// TestScoreVision_LearnLoopPresenceAddsHalfPoint pins the presence-only credit
+// for the self-learning recall/teach loop. A CLI that ships internal/learn/doc.go
+// gains 0.5 in Vision tier 1 over an otherwise-identical CLI without it. The
+// credit is for the loop's presence, not its richness — teach traffic
+// accumulates value at runtime, not at print time.
+//
+// The fixture is sized so the +0.5 credit crosses an integer boundary: baseline
+// scores 3 (3.5 total → int trunc) and the learn-enabled fixture scores 4
+// (4.0 total → int).
+func TestScoreVision_LearnLoopPresenceAddsHalfPoint(t *testing.T) {
+	build := func(includeLearn bool) string {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() { rootCmd.AddCommand(newSearchCmd(nil), newExportCmd(nil)) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+func newSearchCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+func newExportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+`)
+		if includeLearn {
+			writeScorecardFixture(t, dir, "internal/learn/doc.go", `// Package learn owns the generated recall/teach loop.
+package learn
+`)
+		}
+		return dir
+	}
+
+	baseline := scoreVision(build(false))
+	withCredit := scoreVision(build(true))
+
+	assert.Equal(t, 3, baseline,
+		"export+store+search wiring should sum to 3.5 tier points → int 3")
+	assert.Equal(t, 4, withCredit,
+		"adding internal/learn/doc.go should push tier 1 to 4.0 → int 4")
+}
+
+func TestScoreVision_LearnLoopGoldenFixtureAddsHalfPoint(t *testing.T) {
+	fixture := filepath.Join("..", "..", "testdata", "golden", "expected", "generate-learn-loop-api", "learn-loop-example")
+	score := scoreVision(fixture)
+
+	assert.GreaterOrEqual(t, score, 4, "learn-enabled golden fixture should receive the doc.go presence credit")
+}
+
+func TestScoreVision_ImportPresenceAddsHalfPoint(t *testing.T) {
+	build := func(includeImport bool) string {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() { rootCmd.AddCommand(newSearchCmd(nil), newExportCmd(nil)) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+func newSearchCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+func newExportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+`)
+		if includeImport {
+			writeScorecardFixture(t, dir, "internal/cli/import.go", `package cli
+func newImportCmd(flags any) {}
+`)
+		}
+		return dir
+	}
+
+	assert.Equal(t, 3, scoreVision(build(false)))
+	assert.Equal(t, 4, scoreVision(build(true)))
+}
+
+func TestScoreVision_MaxReachableAndPartialStaysSub10(t *testing.T) {
+	build := func(includeLearn, includeFTS5 bool) string {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newSyncCmd(nil),
+		newSearchCmd(nil),
+		newExportCmd(nil),
+		newTailCmd(nil),
+		newImportCmd(nil),
+		newAnalyticsCmd(nil),
+	)
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+func newSyncCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+import "example.com/project/internal/store"
+func newSearchCmd(flags any) {
+	_ = store.Open()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+import (
+	"encoding/json"
+	"example.com/project/internal/store"
+)
+func newExportCmd(flags any) {
+	_ = json.NewEncoder(nil)
+	_ = store.Open()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/tail.go", `package cli
+func newTailCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/import.go", `package cli
+func newImportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/analytics.go", `package cli
+func newAnalyticsCmd(flags any) {
+	first := c.Get("/one")
+	second := c.Get("/two")
+	_, _ = first, second
+}
+`)
+
+		storeBody := `package store
+func Open() DB { return DB{} }
+type DB struct{}
+const schema = `
+		if includeFTS5 {
+			storeBody += "`CREATE TABLE projects(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE datasets(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE models(id INTEGER PRIMARY KEY);\n" +
+				"CREATE VIRTUAL TABLE docs_fts USING fts5(content);`"
+		} else {
+			storeBody += "`CREATE TABLE projects(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE datasets(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE models(id INTEGER PRIMARY KEY);`"
+		}
+		writeScorecardFixture(t, dir, "internal/store/store.go", storeBody)
+
+		if includeLearn {
+			writeScorecardFixture(t, dir, "internal/learn/doc.go", `// Package learn owns the generated recall/teach loop.
+package learn
+`)
+		}
+		return dir
+	}
+
+	// Before the tier2 schema+wiring cap fix, build(true,true) scored 9 and
+	// build(false,false) scored 8. Both sat in the affected (3.0,3.5] band;
+	// the full fixture now reaches 10, the partial reaches 9.
+	assert.Equal(t, 10, scoreVision(build(true, true)))
+	assert.Equal(t, 9, scoreVision(build(false, false)))
 }

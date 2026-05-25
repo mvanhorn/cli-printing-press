@@ -276,8 +276,14 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 			defer s.Close()
 
-			resources := []string{ {{- range .SyncableResources}}"{{.Name}}", {{end}} }
+			resources := []string{ {{- range .SyncableResources}}{{if not .SkipDefaultSync}}"{{.Name}}", {{end}}{{end}} }
 			totalSynced := 0
+{{- if not (isGraphQL .APISpec)}}
+			syncEventWriter := cmd.OutOrStdout()
+			if flags.asJSON {
+				syncEventWriter = cmd.ErrOrStderr()
+			}
+{{- end}}
 
 			// --full clears the cursor here because syncResource reads
 			// existingCursor unconditionally; its full param only gates the
@@ -289,7 +295,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 
 			for _, resource := range resources {
-				res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, 100{{if not (isGraphQL .APISpec)}}, false{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil{{end}})
+				res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, 100{{if not (isGraphQL .APISpec)}}, false{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil, syncEventWriter{{end}})
 				if res.Err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, res.Err)
 					continue

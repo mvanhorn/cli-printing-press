@@ -1,0 +1,22 @@
+package cli
+
+import (
+	"os"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestPrintingPressSkillSideEffectNarrativeGuidance(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+
+	content := string(data)
+	require.Contains(t, content, "Step 1 of `quickstart` should usually be verify-safe")
+	require.Contains(t, content, "Use `<cli> doctor --dry-run` as step 1")
+	require.Contains(t, content, "reports each as an `UNSUPPORTED` warning instead of executing it")
+	require.Contains(t, content, "These warnings do not fail strict aggregation")
+	require.Contains(t, content, "Non-side-effect unsupported examples still fail strict mode")
+}

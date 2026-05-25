@@ -9,6 +9,10 @@ info:
   x-display-name: "Printing Press Studio"
   version: "2026.04"
   description: Purpose-built fixture for golden generation coverage.
+x-cache:
+  enabled: true
+  stale_after: 6h
+  refresh_timeout: 30s
 servers:
   - url: https://api.golden.example/v1
 security:

@@ -43,18 +43,24 @@ func TestCodeOrchRoutesQueryParamsOnWriteMethods(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	src := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
 
-	// Struct carries the new field.
-	require.Regexp(t, `QueryParams\s+\[\]string`, src,
+	// Struct carries the public-to-wire query binding field.
+	require.Regexp(t, `QueryParams\s+\[\]codeOrchParamBinding`, src,
 		"codeOrchEndpoint must declare a QueryParams field")
 	// The PUT endpoint emits its in:query param into QueryParams.
-	require.Regexp(t, `QueryParams:\s*\[\]string\{\s*"sendToLedger"\s*,?\s*\}`, src,
+	require.Regexp(t, `QueryParams:\s*\[\]codeOrchParamBinding\{\s*\{PublicName: "sendToLedger", WireName: "sendToLedger"\}\s*,?\s*\}`, src,
 		"PUT endpoint must list sendToLedger in QueryParams")
 	// A body param must never be classified as a query param.
-	require.NotRegexp(t, `QueryParams:\s*\[\]string\{[^}]*voucherDescription[^}]*\}`, src,
+	require.NotRegexp(t, `QueryParams:\s*\[\]codeOrchParamBinding\{[^}]*voucherDescription[^}]*\}`, src,
 		"body param must not appear inside any QueryParams literal")
+	// GET/DELETE params and write-method split both translate public names
+	// to wire names before calling the client.
+	require.Contains(t, src, "codeOrchWireQueryName(ep.QueryParams, k)",
+		"GET/DELETE query routing must translate public query names")
 	// The split helper exists and is wired into the write path.
 	require.Contains(t, src, "func codeOrchSplitQuery(",
 		"codeOrchSplitQuery helper must be emitted")
 	require.Contains(t, src, "codeOrchSplitQuery(ep.QueryParams, params)",
 		"the write branch must route query params via codeOrchSplitQuery")
+	require.NotContains(t, src, "delete(params, q.WireName)",
+		"query routing must not delete a same-named body field when the public query name was consumed")
 }

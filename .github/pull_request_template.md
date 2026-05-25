@@ -23,6 +23,26 @@ Why this belongs in this repo:
 
 <!-- Printed-CLI-only fixes belong in the generated CLI or public library repo. If the symptom came from a printed CLI, explain the general Printing Press behavior this changes. -->
 
+## Catalog Justification
+
+<!-- Required when this PR adds or edits catalog/*.yaml or catalog/specs/**. Otherwise write "N/A". -->
+
+Embedded catalog fit:
+
+Distinct blueprint pattern:
+
+Closest existing entries checked:
+
+Source provenance:
+
+Auth and tenant assumptions:
+
+Safe default surface:
+
+Generation path:
+
+Stale-body check:
+
 ## Risk
 
 <!-- What could this break? Include generated output, MCP surface, auth, catalog, publish flow, verifier, scorer, or release behavior if relevant. -->

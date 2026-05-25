@@ -212,8 +212,71 @@ func TestValidateWithOptions_FullExamplesCatchesInvalidFlag(t *testing.T) {
 	if got.Status != StatusExampleFailed {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusExampleFailed)
 	}
+	if !got.StrictFailure {
+		t.Fatal("failed full example should be marked as a strict failure")
+	}
 	if !strings.Contains(got.Error, "--bad-flag") {
 		t.Errorf("Error %q should mention the invalid flag", got.Error)
+	}
+}
+
+func TestValidateWithOptions_FullExamplesMarksParseErrorAsStrictFailure(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub widgets list --message \"open"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.HasFailures() {
+		t.Fatal("parse errors should fail strict aggregation")
+	}
+	if report.ExampleFailed != 1 {
+		t.Fatalf("ExampleFailed = %d, want 1", report.ExampleFailed)
+	}
+	got := report.Results[0]
+	if got.Status != StatusExampleFailed {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusExampleFailed)
+	}
+	if !got.StrictFailure {
+		t.Fatal("parse error should be marked as a strict failure")
+	}
+}
+
+func TestValidateWithOptions_FullExamplesTreatsSideEffectSkipsAsWarnings(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub widgets list --launch"}
+		],
+		"recipes":[
+			{"command":"stub widgets show 42 --apply"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.Unsupported != 2 {
+		t.Fatalf("Unsupported = %d, want 2; results=%+v", report.Unsupported, report.Results)
+	}
+	if report.HasFailures() {
+		t.Fatalf("side-effectful full examples should warn without failing strict aggregation, got %+v", report)
+	}
+	for _, result := range report.Results {
+		if result.StrictFailure {
+			t.Fatalf("side-effectful unsupported result should serialize as non-strict-failure warning, got %+v", result)
+		}
 	}
 }
 
@@ -420,6 +483,13 @@ func TestClassifyFullExample_ReportsUnsupportedWhenDryRunUnavailable(t *testing.
 	if !strings.Contains(got.Error, "does not advertise --dry-run") {
 		t.Errorf("Error %q should explain why the full example was not run", got.Error)
 	}
+	if !got.StrictFailure {
+		t.Fatal("dry-run-unavailable unsupported result should be marked as a strict failure")
+	}
+	report := &Report{Unsupported: 1, Results: []Result{got}}
+	if !report.HasFailures() {
+		t.Fatal("dry-run-unavailable unsupported examples should still fail strict aggregation")
+	}
 }
 
 func TestRunFullExample_SkipsAuthSetToken(t *testing.T) {
@@ -468,6 +538,11 @@ func TestIsSideEffectfulNarrativeExample_UsesExactFlagMatches(t *testing.T) {
 		args []string
 		want bool
 	}{
+		{
+			name: "auth login is side effectful",
+			args: []string{"auth", "login", "--client-id", "abc"},
+			want: true,
+		},
 		{
 			name: "launch flag is side effectful",
 			args: []string{"widgets", "create", "--launch"},
@@ -647,6 +722,32 @@ func TestValidateWithOptions_ChainedRecipeRunsBothFullExamples(t *testing.T) {
 	}
 }
 
+func TestValidateWithOptions_ChainedSideEffectWarningDoesNotHideLaterFailure(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list --launch && stub typo-here"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Missing != 1 {
+		t.Fatalf("later hard failure should win over earlier side-effect warning, got %+v", report)
+	}
+	if !report.HasFailures() {
+		t.Fatal("later hard failure should still fail strict aggregation")
+	}
+	got := report.Results[0]
+	if !strings.Contains(got.Error, "segment 2") {
+		t.Errorf("error should attribute failure to segment 2: %s", got.Error)
+	}
+}
+
 // TestValidate_TrailingOperatorDoesNotLeakIntoArgs covers the
 // single-segment fast path: when splitShellChain trims a trailing `&&`,
 // classify must hand the trimmed segment (not the original) to
@@ -705,6 +806,35 @@ func TestValidate_PipeRecipeValidatesLeadingSegment(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Notes, wantNotes) {
 		t.Errorf("Notes = %q, want %q", got.Notes, wantNotes)
+	}
+}
+
+func TestValidate_PipeOnlyRecipeMarksEmptyWordsAsStrictFailure(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"| jq '.'"}
+		]
+	}}`)
+
+	report, err := Validate(context.Background(), research, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.HasFailures() {
+		t.Fatal("pipe-only recipes should fail strict aggregation")
+	}
+	if report.Empty != 1 {
+		t.Fatalf("Empty = %d, want 1", report.Empty)
+	}
+	got := report.Results[0]
+	if got.Status != StatusEmptyWords {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusEmptyWords)
+	}
+	if !got.StrictFailure {
+		t.Fatal("pipe-only empty-words result should be marked as a strict failure")
 	}
 }
 

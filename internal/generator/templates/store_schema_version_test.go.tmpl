@@ -436,6 +436,65 @@ func TestMigrate_ResourcesCompositeKeyUpgrade(t *testing.T) {
 	}
 }
 
+{{- if .Learn.Enabled}}
+// TestMigrate_V2ToV3IsAdditive verifies that opening a v2-stamped database
+// preserves existing resources rows after the v3 migration runs. The v3
+// migration only adds new tables (learn tables, when the spec enables them)
+// — never drops or rewrites resources. Without this regression coverage, a
+// future refactor that turns the additive step into a destructive one would
+// silently nuke every existing library CLI's local data on first reopen.
+func TestMigrate_V2ToV3IsAdditive(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE resources (
+		id TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		data JSON NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (resource_type, id)
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create v2 resources: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('user-1', 'user', '{"id":"user-1","name":"alice"}')`); err != nil {
+		raw.Close()
+		t.Fatalf("seed v2 row: %v", err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 2`); err != nil {
+		raw.Close()
+		t.Fatalf("stamp v2: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open upgraded db: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("upgraded version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	data, err := s.Get("user", "user-1")
+	if err != nil {
+		t.Fatalf("get preserved row: %v", err)
+	}
+	if string(data) != `{"id":"user-1","name":"alice"}` {
+		t.Fatalf("preserved row payload = %s, want original", data)
+	}
+}
+{{- end}}
+
 // TestOpenReadOnly_RejectsWrites pins the contract: direct and CTE-wrapped
 // writes against the main DB fail under mode=ro. Deliberately does not
 // assert VACUUM INTO and ATTACH DATABASE — modernc.org/sqlite allows both

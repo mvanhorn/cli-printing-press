@@ -18,6 +18,7 @@ import (
 	"printing-press-rich-pp-cli/internal/cliutil"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -25,6 +26,8 @@ import (
 )
 
 var As = errors.As
+
+const paginatedGetMaxPages = 100
 
 // noColor is set by the --no-color flag
 var noColor bool
@@ -101,81 +104,6 @@ func authErr(err error) error      { return &cliError{code: 4, err: err} }
 func apiErr(err error) error       { return &cliError{code: 5, err: err} }
 func configErr(err error) error    { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
-
-// partialFailureErr signals that the upstream API returned a 2xx with a
-// body shape indicating some operations in a batch failed (e.g. Google
-// Ads `partialFailureError`, similar shapes from Drive batch, Sheets
-// batchUpdate, Cloud Resource Manager). Distinct from apiErr (HTTP-level
-// failure) so callers can distinguish "request rejected" from "request
-// accepted but some ops failed".
-func partialFailureErr(err error) error { return &cliError{code: 6, err: err} }
-
-// partialFailureReport describes the structured detection result for a
-// mutate-style response body. Emitted in the envelope under
-// "partial_failure" so machine-readable callers can route per-operation
-// remediation.
-type partialFailureReport struct {
-	Field         string   `json:"field"`
-	Message       string   `json:"message,omitempty"`
-	Code          int      `json:"code,omitempty"`
-	Details       any      `json:"details,omitempty"`
-	ResourceNames []string `json:"resource_names,omitempty"`
-}
-
-// detectPartialFailure inspects a mutate-style JSON response for a
-// partial-failure-shaped field. Returns nil when no partial failure is
-// detected. The detector is intentionally generic across APIs that emit
-// 2xx-with-batch-errors. New partial-failure-shaped fields are added to
-// partialFailureFields, not at call sites. When `results[]` is present
-// (Google Ads convention) it extracts per-op `resourceName` so callers
-// can see which operations did succeed.
-func detectPartialFailure(data []byte) *partialFailureReport {
-	if len(data) == 0 {
-		return nil
-	}
-	var top map[string]any
-	if err := json.Unmarshal(data, &top); err != nil {
-		return nil
-	}
-	partialFailureFields := []string{"partialFailureError"}
-	for _, field := range partialFailureFields {
-		raw, ok := top[field]
-		if !ok || raw == nil {
-			continue
-		}
-		obj, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		message, _ := obj["message"].(string)
-		var code int
-		if n, ok := obj["code"].(float64); ok {
-			code = int(n)
-		}
-		// Empty object means partial-failure mode was off or no ops
-		// failed; do not flag.
-		if code == 0 && strings.TrimSpace(message) == "" {
-			continue
-		}
-		report := &partialFailureReport{
-			Field:   field,
-			Message: message,
-			Code:    code,
-			Details: obj["details"],
-		}
-		if results, ok := top["results"].([]any); ok {
-			for _, r := range results {
-				if rm, ok := r.(map[string]any); ok {
-					if name, ok := rm["resourceName"].(string); ok && name != "" {
-						report.ResourceNames = append(report.ResourceNames, name)
-					}
-				}
-			}
-		}
-		return report
-	}
-	return nil
-}
 
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
@@ -532,7 +460,7 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 // endpoint has no per-endpoint header overrides.
 func paginatedGet(ctx context.Context, c interface {
 	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
-}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
+}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
 	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
 	// APIs send offset=0 on the first page.
 	clean := map[string]string{}
@@ -550,7 +478,7 @@ func paginatedGet(ctx context.Context, c interface {
 		if err != nil {
 			return nil, err
 		}
-		emitTruncationWarning(data, nextCursorPath, hasMoreField)
+		emitTruncationWarning(data, nextCursorPath, hasMoreField, paginationType)
 		return data, nil
 	}
 
@@ -586,18 +514,30 @@ func paginatedGet(ctx context.Context, c interface {
 				if nextCursorPath != "" {
 					if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
 						if token := paginationCursorToken(tokenRaw); token != "" {
+							if page >= paginatedGetMaxPages {
+								emitPaginatedGetMaxPagesWarning()
+								break
+							}
 							clean[cursorParam] = token
 							continue
 						}
 					}
 				}
 
-				// Check has_more. A has-more flag without an extracted cursor
-				// proves truncation but cannot advance the request safely.
+				// Check has_more. Page and offset paginators can advance
+				// client-side; cursor-based APIs still need a body cursor.
 				if hasMoreField != "" {
 					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
 						var more bool
 						if json.Unmarshal(moreRaw, &more) == nil && more {
+							if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, limitParam); ok {
+								if page >= paginatedGetMaxPages {
+									emitPaginatedGetMaxPagesWarning()
+									break
+								}
+								clean[cursorParam] = next
+								continue
+							}
 							emitMissingPaginationCursorWarning(nextCursorPath)
 							break
 						}
@@ -624,10 +564,44 @@ func paginatedGet(ctx context.Context, c interface {
 	return json.RawMessage(result), nil
 }
 
+func nextClientSidePaginationCursor(params map[string]string, cursorParam, paginationType, limitParam string) (string, bool) {
+	if cursorParam == "" {
+		return "", false
+	}
+	switch paginationType {
+	case "page":
+		current := params[cursorParam]
+		if current == "" {
+			current = "1"
+		}
+		n, err := strconv.Atoi(current)
+		if err != nil {
+			return "", false
+		}
+		return strconv.Itoa(n + 1), true
+	case "offset":
+		current := params[cursorParam]
+		if current == "" {
+			current = "0"
+		}
+		n, err := strconv.Atoi(current)
+		if err != nil {
+			return "", false
+		}
+		limit, err := strconv.Atoi(params[limitParam])
+		if err != nil || limit <= 0 {
+			return "", false
+		}
+		return strconv.Itoa(n + limit), true
+	default:
+		return "", false
+	}
+}
+
 // Silent page-1 truncation is the worst-possible mode for agents,
 // who otherwise compute totals against an incomplete set without
 // passing --all.
-func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField string) {
+func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField, paginationType string) {
 	if nextCursorPath == "" && hasMoreField == "" {
 		return
 	}
@@ -650,11 +624,10 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 	if nextCursor == "" && !hasMore {
 		return
 	}
-	// --all only advances when a next-cursor is configured. has_more-only
-	// endpoints have no cursor to set on the next page, so the --all loop
-	// re-fetches the same response forever. Don't advertise an escape
-	// hatch that doesn't work for this topology.
-	if nextCursor != "" {
+	// --all advances when a next-cursor is configured, or when the endpoint
+	// uses client-side numeric page/offset advancement. Opaque cursor APIs
+	// still need a returned cursor to advance safely.
+	if nextCursor != "" || ((paginationType == "page" || paginationType == "offset") && hasMore) {
 		if humanFriendly {
 			fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available. Re-run with --all to fetch every page.\n")
 		} else {
@@ -674,6 +647,14 @@ func emitMissingPaginationSignalWarning() {
 		fmt.Fprintf(os.Stderr, "warning: --all requested, but this endpoint does not declare a next cursor or has-more field; returning page 1 only.\n")
 	} else {
 		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_signal_missing","message":"--all requested but this endpoint does not declare a next cursor or has-more field; returning page 1 only"}`+"\n")
+	}
+}
+
+func emitPaginatedGetMaxPagesWarning() {
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: --all reached the %d-page safety limit; returning fetched pages only.\n", paginatedGetMaxPages)
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"max_pages_cap_hit","message":"--all reached the %d-page safety limit; returning fetched pages only"}`+"\n", paginatedGetMaxPages)
 	}
 }
 
@@ -1122,7 +1103,12 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 			if v == nil {
 				vals = append(vals, "")
 			} else {
-				s := fmt.Sprintf("%v", v)
+				var s string
+				if f, ok := v.(float64); ok {
+					s = strconv.FormatFloat(f, 'f', -1, 64)
+				} else {
+					s = fmt.Sprintf("%v", v)
+				}
 				if strings.ContainsAny(s, ",\"\n") {
 					s = `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 				}

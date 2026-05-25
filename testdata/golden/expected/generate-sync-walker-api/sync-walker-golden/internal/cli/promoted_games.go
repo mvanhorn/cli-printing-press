@@ -16,7 +16,7 @@ func newGamesPromotedCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "games",
 		Short:       "List games",
-		Long:        "Shortcut for 'games list'. List games",
+		Long:        "List games",
 		Example:     "  sync-walker-golden-pp-cli games",
 		Annotations: map[string]string{"pp:endpoint": "games.list", "pp:method": "GET", "pp:path": "/games", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -27,7 +27,7 @@ func newGamesPromotedCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/games"
 			params := map[string]string{}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "games", false, path, params, nil, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "games", true, path, params, nil, cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

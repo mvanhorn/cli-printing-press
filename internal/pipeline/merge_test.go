@@ -74,7 +74,7 @@ func TestMergeOverlayPublicParamNames(t *testing.T) {
 							{Name: "c", Type: "string"},
 						},
 						Body: []spec.Param{
-							{Name: "delivery_window", Type: "string", FlagName: "window"},
+							{Name: "delivery_window", Type: "string", FlagName: "window", BodyName: "deliveryWindow"},
 						},
 					},
 				},
@@ -84,6 +84,7 @@ func TestMergeOverlayPublicParamNames(t *testing.T) {
 	address := "address"
 	cityAliases := []string{"c"}
 	bodyAliases := []string{}
+	bodyName := "window"
 	overlay := &SpecOverlay{
 		Resources: map[string]ResourceOverlay{
 			"stores": {
@@ -94,7 +95,7 @@ func TestMergeOverlayPublicParamNames(t *testing.T) {
 							{Name: "c", Aliases: &cityAliases},
 						},
 						Body: []ParamPatch{
-							{Name: "delivery_window", ClearFlagName: true, Aliases: &bodyAliases},
+							{Name: "delivery_window", ClearFlagName: true, BodyName: &bodyName, Aliases: &bodyAliases},
 						},
 					},
 				},
@@ -110,6 +111,7 @@ func TestMergeOverlayPublicParamNames(t *testing.T) {
 	assert.Equal(t, "c", endpoint.Params[1].Name)
 	assert.Equal(t, []string{"c"}, endpoint.Params[1].Aliases)
 	assert.Empty(t, endpoint.Body[0].FlagName)
+	assert.Equal(t, "window", endpoint.Body[0].BodyName)
 	assert.Empty(t, endpoint.Body[0].Aliases)
 }
 

@@ -48,7 +48,9 @@ Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PU
 Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess and applies a flat 30s per-command timeout; without a short-circuit, the happy-path test trips the timeout and the matrix verdict flips to FAIL even when the command itself is healthy. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix. Use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
 
 ### Generator-reserved namespaces
-`internal/cliutil/` and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil`.
+`internal/cliutil/`, `internal/learn/`, and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil` or `learn`.
+
+The `internal/learn` templates under `internal/generator/templates/learn**` must stay domain-neutral — the loop generalized from prediction-goat's recall/teach flow, and every printed CLI inherits the loop without inheriting prediction-market vocabulary. The `verify-learn-purity.yml` CI workflow runs `scripts/verify-learn-purity.sh` on PRs that touch those templates and fails the build if any domain-specific identifier from the original lineage (Polymarket / Kalshi / market / event slugs, etc.) sneaks back in. Per-CLI domain examples belong in the spec's `learn:` block or in narrative recipes, never in the templates themselves.
 
 ### Typed exit-code verification
 `cli-printing-press verify` treats exit `0` as success by default. For commands where a non-zero code is intentional control flow, declare it in Cobra with `Annotations: map[string]string{"pp:typed-exit-codes": "0,2"}`. The verifier reads that annotation first, then falls back to a command-level `Exit codes:` help block. Do not put the whole global failure palette in a command-level help block unless those codes should count as verify-pass for that specific command.
@@ -82,6 +84,8 @@ If you can't make the matching sweep change in the same session, file a tracking
 3. Any test additions needed in `tools/sweep-canonical/main_test.go`.
 
 Without the sweep update or a tracking issue, the divergence between fresh prints and existing entries is invisible until someone notices a specific published README looks "old" relative to the rest. The downstream side of this contract (the published library's stance on when to run the sweep, how to scope it, and the `-readme-only` + author-preservation safeties on the sweep tool) is documented in `printing-press-library/AGENTS.md` under "Bulk SKILL.md/README.md retrofits".
+
+The same lockstep contract applies to the learn-loop templates under `internal/generator/templates/learn**` (the `internal/learn` package emitted into every printed CLI). When a change to those templates shifts the package shape — exported function rename, signature change, file rename, added or removed sub-package, schema field added to the v3 store tables — the library-side sweep tool needs a parallel update so the already-published CLIs can be regenerated to match. Fresh prints inherit the new shape; existing entries silently drift until a sweep run lands. Track this work in the same tracking-issue flow described above; the issue should name the renamed export or schema field and the regex/AST anchors the sweep can hang off.
 
 ## Project Structure
 - `cmd/cli-printing-press/` - CLI entry point
@@ -130,6 +134,7 @@ Format: `type(scope): description`. Both type and scope are required.
 
 **Allowed scopes:**
 - `cli` covers the Go binary, commands, flags, embedded catalog, and docs.
+- `catalog` covers embedded catalog entries, catalog specs, catalog fixtures, and catalog-only validation.
 - `skills` covers skill definitions (`SKILL.md`), references, and setup contract.
 - `ci` covers workflows, release config, and goreleaser.
 - `main` is reserved for release-please generated release PRs targeting `main`.
@@ -141,11 +146,17 @@ Format: `type(scope): description`. Both type and scope are required.
 - `refactor` — internal restructuring with no observable behavior change.
 - `chore` — build, tooling, dependency, or housekeeping work outside production code.
 - `test` — test-only additions or corrections.
+- `ci` — workflow and CI configuration changes.
+- `perf` — performance improvements.
+- `build` — build-system changes.
+- `style` — formatting-only changes.
+- `revert` — reverts a prior commit.
 
 **Breaking changes** use `!` after the scope: `feat(cli)!: rename catalog command to registry`. The `!` triggers a major version bump through release-please, so reserve it for changes that *break a downstream contract* — a renamed/removed command, a renamed/removed flag, a removed manifest field, an incompatible config-file shape. **What isn't breaking:** template wording changes, README updates, and generator-output diffs that don't remove or rename a documented surface are `docs(...)` or `fix(...)` — not `feat(...)!`. Even if every printed CLI's output changes on next regen, that alone doesn't qualify as breaking unless something downstream breaks too. The release-versioning consequence of `!` is intentional; if you're unsure, ask before adding it.
 
 **Examples:**
 - `feat(cli): add --select flag to all read commands`
+- `feat(catalog): add maps blueprint entry`
 - `feat(cli)!: rename catalog command to registry`
 - `fix(cli): correct trailing newline in skill.md.tmpl`
 - `docs(cli): clarify install instructions in generated README`
@@ -175,7 +186,10 @@ See [`docs/RELEASE.md`](docs/RELEASE.md) for the merge-the-release-PR flow.
 
 ## Adding Catalog Entries
 When adding or editing `catalog/*.yaml`, first decide whether the entry belongs in the curated blueprint catalog. The embedded catalog is not a public-library index or a shortcut for reprinting existing CLIs; reprint from the current local/public library artifact when that is the source of truth. Add catalog entries only when they represent a distinct, reusable Printing Press pattern and have a real user-facing workflow, a reachable maintained source, and a reproducible generation route: vendor spec, docs-derived in-repo spec, verified sniffed spec, or wrapper-only backing that truthfully describes what the generator can do today. Do not add aspirational entries, dead wrappers, unproven private endpoints, personalized app flows without an auth model, duplicate examples of an already-covered pattern, or scrape ideas without live crawl evidence.
-- Document provenance in the PR: source URL(s), source type (`official`, `docs`, `sniffed`, `community`, or wrapper-only), live smoke evidence, auth requirements, and what is intentionally out of scope.
+- Use the PR template's `Catalog Justification` section when the PR touches `catalog/*.yaml` or `catalog/specs/**`; `validate-catalog.yml` rejects catalog PRs without it.
+- Document why the entry belongs in the embedded catalog, not just why the files belong in this repo. Name the reusable blueprint pattern it adds, the closest existing catalog entries checked, and why this is not a duplicate or a public-library-only reprint.
+- Document provenance in the PR: source URL(s), source type (`official`, `docs`, `sniffed`, `community`, or wrapper-only), live smoke evidence, auth requirements, tenant/region/base-URL assumptions, and what is intentionally out of scope.
+- Refresh the PR body after the final code changes. Do not leave stale raw diff excerpts, tenant-specific instructions, internal secret names, old endpoint counts, or outdated verification claims in the description.
 - If the entry should make `cli-printing-press generate <name>` work, provide a real `spec_url` or in-repo spec; wrapper-only entries are discovery/backing notes unless the generator has a concrete spec path.
 - If catalog output intentionally changes, update `testdata/golden/expected/catalog-list/stdout.txt`.
 - The entry must pass `internal/catalog` validation.

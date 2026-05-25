@@ -1,8 +1,8 @@
 # verify-skill
 
 Static verifier for `SKILL.md` files that ship alongside printed CLIs. Checks
-that every command, flag, and positional-arg signature referenced in a
-SKILL.md actually exists in the shipped CLI's `internal/cli/*.go` source.
+that every command, flag, positional-arg signature, and shell-variable bash
+example referenced in a SKILL.md matches the shipped CLI contract.
 
 ## Why
 
@@ -14,7 +14,7 @@ in production.
 
 This verifier was built after hand-authoring SKILLs for the 11 launch
 CLIs and discovering **23 invented / wrong-command / wrong-arg-count
-errors** across 7 of them. Three tiers of checks catch different error
+errors** across 7 of them. Five tiers of checks catch different error
 classes; the earlier tier is strictest and the later tiers cover what
 the earlier ones miss.
 
@@ -35,14 +35,24 @@ compatible with the command's `Use:` field (`<required>` + `[optional]` +
 `variadic`) and its `Args:` validator (`cobra.ExactArgs(N)`,
 `MinimumNArgs(N)`, etc.). Catches wrong-arity invocations.
 
+**4. shell-var-quotes** — each shell variable expanded inside a bash code
+block is wrapped in double quotes. Catches examples like `--output $FILE`
+that break on whitespace or glob characters in agent-provided paths.
+
+**5. unknown-command** — every command path referenced in a bash recipe or
+the SKILL command reference resolves to a Cobra command.
+
 ## Usage
 
 ```bash
-# Run all three checks against a CLI directory
+# Run all checks against a CLI directory
 python3 verify_skill.py --dir /path/to/my-pp-cli
 
 # Run only the flag-command check
 python3 verify_skill.py --dir /path/to/my-pp-cli --only flag-commands
+
+# Run only the shell-variable quoting check
+python3 verify_skill.py --dir /path/to/my-pp-cli --only shell-var-quotes
 
 # JSON output for CI
 python3 verify_skill.py --dir /path/to/my-pp-cli --json

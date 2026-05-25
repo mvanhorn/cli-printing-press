@@ -38,6 +38,10 @@ import (
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
 )
+{{- $ccEnvVars := clientCredentialsEnvVars .Auth}}
+{{- $ccTenantEnvVar := clientCredentialsTenantEnvVar .Auth}}
+{{- $ccScope := clientCredentialsScope .Auth}}
+{{- $ccScopeUsesClientID := clientCredentialsScopeUsesClientID $ccScope}}
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
 
@@ -396,7 +400,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 	}
 {{- else}}
+{{- if .Auth.HasCookies}}
+	httpClient := newHTTPClient(timeout, LoadCookieJar())
+{{- else}}
 	httpClient := newHTTPClient(timeout, nil)
+{{- end}}
 	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 {{- if .BasePath}}
@@ -439,8 +447,13 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		}
 {{- if .HasTierRouting}}
 		// Tier routing picks header vs query at runtime via authForRequest;
-		// re-deriving here would duplicate that selection logic. Cap depth
-		// only and let Go's default header replay handle static credentials.
+		// re-deriving here would duplicate that selection logic, so we cap
+		// depth only. Known limitation: Go strips standard auth headers
+		// (Authorization, Cookie) on cross-host redirects but not custom
+		// header names, so a tier credential carried on a custom header
+		// could still be forwarded on a cross-host hop. Stripping it here
+		// requires the runtime tier selection and is tracked separately
+		// from the static-auth cross-host fix below.
 {{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
 		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
@@ -451,11 +464,20 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{.Auth.TokenParamName}}", h)
 			}
+		} else {
+			// Cross-host hop: delete the custom auth header so the credential
+			// is not forwarded to the redirect target.
+			req.Header.Del("{{.Auth.TokenParamName}}")
 		}
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 		// Auth lives on URL query; Go preserves the query on relative
 		// redirects, so nothing to re-derive.
+{{- else if eq .Auth.Type "cookie"}}
+		// Cookie-auth redirects: Go's http.Client + http.CookieJar handle
+		// cookie carriage on 3xx hops natively. Setting the Cookie header
+		// manually here would double the jar's cookies on the redirected
+		// request.
 {{- else}}
 		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
 		// cross-domain 3xx (open redirect or partner handoff) must not
@@ -465,6 +487,11 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
 				req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
 			}
+		} else {
+			// Cross-host hop: Go strips standard auth headers (Authorization,
+			// Cookie) but not custom ones, so a custom API-key header would be
+			// forwarded verbatim to the redirect target. Delete it explicitly.
+			req.Header.Del("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}")
 		}
 {{- end}}
 		return nil
@@ -1083,10 +1110,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- end}}
 {{- else}}
 {{- if .EndpointTemplateVars}}
-{{- if .HasResourceBaseURLOverride}}
-	// Resource and endpoint BaseURL overrides flow through as absolute paths
-	// (https:// or http://); buildURL still substitutes any
-	// {placeholder} markers, but the relative-path concat with
+{{- if .HasAbsoluteRequestPath}}
+	// Resource and endpoint BaseURL overrides, plus absolute endpoint paths,
+	// flow through as absolute paths (https:// or http://). buildURL still
+	// substitutes any {placeholder} markers, but the relative-path concat with
 	// c.BaseURL must be skipped for absolute paths.
 	var targetURL string
 	var urlErr error
@@ -1105,10 +1132,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 {{- end}}
 {{- else}}
-{{- if .HasResourceBaseURLOverride}}
-	// Resource and endpoint BaseURL overrides flow through as absolute paths
-	// (https:// or http://); the resource template emits the full URL
-	// in `path` and we skip the c.BaseURL concat for those.
+{{- if .HasAbsoluteRequestPath}}
+	// Resource and endpoint BaseURL overrides, plus absolute endpoint paths,
+	// flow through as absolute paths (https:// or http://). Skip the
+	// c.BaseURL concat for those calls.
 	var targetURL string
 	if isAbsoluteURL(path) {
 		targetURL = path
@@ -1195,6 +1222,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 
 	const maxRetries = 3
 	var lastErr error
+{{- if and .HasAuthCommand (ne .Auth.TokenURL "")}}
+	refreshedAfterUnauthorized := false
+{{- end}}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// Proactive rate limiting — wait before sending
@@ -1286,21 +1316,37 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			q := req.URL.Query()
 			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
 			req.URL.RawQuery = q.Encode()
+{{- else if eq .Auth.Type "cookie"}}
+			// Cookie-auth: LoadCookieJar is the sole source of outbound
+			// cookies. net/http's Client.send calls jar.Cookies + AddCookie
+			// for each cookie, which concatenates without dedup; a manual
+			// req.Header.Set here would ship every session cookie twice and
+			// trip upstream WAFs. auth login persists the same cookie set
+			// to both the jar and config, so the jar carries every value
+			// SaveTokens stores. authHeader is read only by the dry-run /
+			// signing paths above; intentionally not consumed on the live
+			// wire here.
 {{- else}}
 			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- end}}
 		}
 {{- if .Auth.AdditionalHeaders}}
-		// Composed-scheme per-call headers carried by sibling apiKey schemes.
+		// Composed-scheme per-call credentials carried by sibling apiKey schemes.
 		// Sent independently of authHeader: the API requires both the primary
-		// auth header and each sibling header on every request.
+		// auth credential and each sibling credential on every request.
 		if c.Config != nil {
 {{- range .Auth.AdditionalHeaders}}
 			if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
 				if authHeaderLooksLikePlaceholderCredential(v) {
 					return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
 				}
+{{- if eq .In "query"}}
+				q := req.URL.Query()
+				q.Set("{{.Header}}", v)
+				req.URL.RawQuery = q.Encode()
+{{- else}}
 				req.Header.Set("{{.Header}}", v)
+{{- end}}
 			}
 {{- end}}
 		}
@@ -1405,6 +1451,34 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			StatusCode: resp.StatusCode,
 			Body:       c.maskCredentialText(truncateBody(respBody), authHeader),
 		}
+
+{{- if and .HasAuthCommand (ne .Auth.TokenURL "")}}
+		// OAuth providers can expire tokens early, omit expires_in, or disagree
+		// with the local clock. Retry one unauthorized response after refreshing.
+		if resp.StatusCode == http.StatusUnauthorized && !refreshedAfterUnauthorized && attempt < maxRetries && c.Config != nil && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
+			if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
+				return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+			}
+			if err := c.refreshAccessToken(ctx); err != nil {
+				return nil, resp.StatusCode, fmt.Errorf("refreshing access token after 401: %w", err)
+			}
+{{- if .HasTierRouting}}
+			authInfo, err = c.authForRequest(ctx)
+			if err != nil {
+				return nil, resp.StatusCode, err
+			}
+			authHeader = authInfo.Value
+{{- else}}
+			authHeader = c.Config.AuthHeader()
+			if authHeaderLooksLikePlaceholderCredential(authHeader) {
+				return nil, resp.StatusCode, authPlaceholderCredentialError(c.Config)
+			}
+{{- end}}
+			refreshedAfterUnauthorized = true
+			lastErr = apiErr
+			continue
+		}
+{{- end}}
 
 		// Rate limited - adjust adaptive limiter and retry
 		if resp.StatusCode == 429 && attempt < maxRetries {
@@ -1736,7 +1810,7 @@ func (c *Client) authHeader(ctx context.Context) (string, error) {
 		c.ccMu.Unlock()
 	}
 {{- else if and .HasAuthCommand (ne .Auth.TokenURL "")}}
-	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
+	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" && !(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv()) {
 		if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
 			return "", authPlaceholderCredentialError(c.Config)
 		}
@@ -1804,6 +1878,8 @@ func looksLikeCredentialPlaceholder(value string) bool {
 func authPlaceholderCredentialError(cfg *config.Config) error {
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login or {{.Name}}-pp-cli auth set-token <token>")
+{{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
+	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login --device-code or {{.Name}}-pp-cli auth set-token <token>")
 {{- else if eq .Auth.Type "oauth2"}}
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login")
 {{- else}}
@@ -1839,18 +1915,48 @@ func needsClientCredentialsMint(cfg *config.Config) bool {
 func resolveClientCredentials(cfg *config.Config) (string, string) {
 	id := cfg.ClientID
 	secret := cfg.ClientSecret
-{{- if .Auth.EnvVars}}
+{{- if $ccEnvVars}}
 	if id == "" {
-		id = os.Getenv("{{index .Auth.EnvVars 0}}")
+		id = os.Getenv("{{(index $ccEnvVars 0).Name}}")
 	}
-{{- if gt (len .Auth.EnvVars) 1}}
+{{- if gt (len $ccEnvVars) 1}}
 	if secret == "" {
-		secret = os.Getenv("{{index .Auth.EnvVars 1}}")
+		secret = os.Getenv("{{(index $ccEnvVars 1).Name}}")
 	}
 {{- end}}
 {{- end}}
 	return id, secret
 }
+
+func resolveClientCredentialsScope({{if $ccScopeUsesClientID}}clientID string{{end}}) string {
+	if scope := os.Getenv("{{envName .Name}}_OAUTH_SCOPE"); scope != "" {
+		return scope
+	}
+{{- if $ccScope}}
+{{- if $ccScopeUsesClientID}}
+	return strings.ReplaceAll({{printf "%q" $ccScope}}, "{client_id}", clientID)
+{{- else}}
+	return {{printf "%q" $ccScope}}
+{{- end}}
+{{- else}}
+	return ""
+{{- end}}
+}
+
+{{- if clientCredentialsTokenURLHasTenant .Auth}}
+func resolveClientCredentialsTokenURL(tokenURL, tenant string) (string, error) {
+	idx := strings.Index(strings.ToLower(tokenURL), "/common/")
+	if idx < 0 {
+		return tokenURL, nil
+	}
+	tenant = strings.TrimSpace(tenant)
+	if tenant == "" {
+		return "", fmt.Errorf("tenant required for token URL; set {{$ccTenantEnvVar}}")
+	}
+	return tokenURL[:idx] + "/" + url.PathEscape(tenant) + "/" + tokenURL[idx+len("/common/"):], nil
+}
+
+{{- end}}
 
 func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecret string) error {
 	tokenURL := ""
@@ -1865,10 +1971,23 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 	if tokenURL == "" {
 		return nil
 	}
+{{- if clientCredentialsTokenURLHasTenant .Auth}}
+	tenant := ""
+	if c.Config != nil {
+		tenant = c.Config.{{resolveEnvVarField $ccTenantEnvVar}}
+	}
+	tokenURL, err := resolveClientCredentialsTokenURL(tokenURL, tenant)
+	if err != nil {
+		return err
+	}
+{{- end}}
 	form := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
+	}
+	if scope := resolveClientCredentialsScope({{if $ccScopeUsesClientID}}clientID{{end}}); scope != "" {
+		form.Set("scope", scope)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -1946,7 +2065,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, truncateBody(body))
+		return fmt.Errorf("refreshing access token: HTTP %d: %s", resp.StatusCode, cliutil.SanitizeErrorBody(truncateBody(body)))
 	}
 
 	var tokenResp struct {
@@ -1971,6 +2090,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	}
 
+	c.Config.AuthHeaderVal = "" // force AuthHeader() to use the refreshed AccessToken path
 	if err := c.Config.SaveTokens(c.Config.ClientID, c.Config.ClientSecret, tokenResp.AccessToken, refreshToken, expiry); err != nil {
 		return fmt.Errorf("saving refreshed token: %w", err)
 	}
@@ -1979,10 +2099,10 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 }
 {{- end}}
 
-{{if .HasResourceBaseURLOverride -}}
-// isAbsoluteURL reports whether path is already a full URL (resource or
-// endpoint BaseURL override emits the full URL into path; the relative-path
-// concat with c.BaseURL must be skipped for those calls).
+{{if .HasAbsoluteRequestPath -}}
+// isAbsoluteURL reports whether path is already a full URL. Resource or
+// endpoint BaseURL overrides and absolute endpoint paths emit full URLs into
+// path; the relative-path concat with c.BaseURL must be skipped for those calls.
 func isAbsoluteURL(path string) bool {
 	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
 }

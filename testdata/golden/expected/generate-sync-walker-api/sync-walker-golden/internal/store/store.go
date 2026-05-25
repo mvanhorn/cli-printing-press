@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -37,10 +38,7 @@ func IsUUID(s string) bool {
 
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
-// checked on every open. Bump this whenever a migration changes table
-// shape — adding columns, dropping indexes, changing FTS5 tokenizers —
-// so an older binary refuses to open a newer database rather than silently
-// producing wrong results against a schema it cannot read.
+// checked on every open. Non-learn CLIs stay at v2.
 const StoreSchemaVersion = 2
 
 const resourcesFTSCreateSQL = `CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
@@ -315,6 +313,9 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 		}
+		if err := s.migrateExtras(ctx, conn); err != nil {
+			return fmt.Errorf("running extra migrations: %w", err)
+		}
 		// Stamp the schema version. On a fresh DB this writes the current
 		// StoreSchemaVersion; on an already-stamped DB this is a no-op
 		// write of the same value.
@@ -562,7 +563,7 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 		`INSERT INTO resources (id, resource_type, data, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
-		id, resourceType, string(data), time.Now(), time.Now(),
+		id, resourceType, string(data), time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return err
@@ -682,15 +683,11 @@ func extractObjectID(obj map[string]any) string {
 // modernc.org/sqlite's FTS5 implementation may not support DELETE WHERE column=?
 // on virtual tables, so we use explicit rowids and DELETE WHERE rowid=? instead.
 func ftsRowID(scope, id string) int64 {
-	var h uint64
-	for _, c := range scope {
-		h = h*31 + uint64(c)
-	}
-	h *= 31
-	for _, c := range id {
-		h = h*31 + uint64(c)
-	}
-	return int64(h & 0x7FFFFFFFFFFFFFFF) // ensure positive
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(scope))
+	_, _ = h.Write([]byte{0}) // separator so ("ab","c") != ("a","bc")
+	_, _ = h.Write([]byte(id))
+	return int64(h.Sum64() & 0x7FFFFFFFFFFFFFFF) // ensure positive
 }
 
 // LookupFieldValue resolves a field value from a JSON object map, trying the
@@ -743,11 +740,11 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 	return LookupFieldValue(obj, snakeKey)
 }
 
-// upsertLeaguesTx writes the typed-table portion of a leagues upsert
-// inside an existing transaction. The caller is responsible for the generic
-// resources insert (via upsertGenericResourceTx) and for committing the tx.
-// Splitting this out lets UpsertBatch dispatch typed inserts per item without
-// opening a per-item transaction.
+// upsertLeaguesTx writes the per-resource domain-table portion of a
+// leagues upsert inside an existing transaction. The caller is
+// responsible for the generic resources insert (via upsertGenericResourceTx)
+// and for committing the tx. Splitting this out lets UpsertBatch dispatch
+// domain inserts per item without opening a per-item transaction.
 func (s *Store) upsertLeaguesTx(tx *sql.Tx, id string, obj map[string]any, data json.RawMessage) error {
 	if _, err := tx.Exec(
 		`INSERT INTO "leagues" ("id", "data", "synced_at", "parent_id")
@@ -755,7 +752,7 @@ func (s *Store) upsertLeaguesTx(tx *sql.Tx, id string, obj map[string]any, data 
 		 ON CONFLICT("id") DO UPDATE SET "data" = excluded."data", "synced_at" = excluded."synced_at", "parent_id" = excluded."parent_id"`,
 		id,
 		string(data),
-		time.Now(),
+		time.Now().UTC().Format(time.RFC3339),
 		lookupFieldValue(obj, "parent_id"),
 	); err != nil {
 		return fmt.Errorf("insert into leagues: %w", err)
@@ -945,7 +942,7 @@ func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = excluded.last_cursor,
 		 last_synced_at = excluded.last_synced_at, total_count = excluded.total_count`,
-		resourceType, cursor, time.Now(), count,
+		resourceType, cursor, time.Now().UTC().Format(time.RFC3339), count,
 	)
 	return err
 }
@@ -1091,6 +1088,71 @@ func (s *Store) ListField(resourceType, field string) ([]string, error) {
 		}
 	}
 	return values, rows.Err()
+}
+
+// ListFieldSets returns row-correlated values from the generic resources
+// table. Dependent sync uses this for multi-placeholder paths where values
+// such as owner/repo or server/webapp must stay paired per parent row.
+func (s *Store) ListFieldSets(resourceType string, fields []string) ([]map[string]string, error) {
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	for _, field := range fields {
+		if !validIdentifierRE.MatchString(field) {
+			return nil, fmt.Errorf("ListFieldSets: invalid field name %q (must match %s)", field, validIdentifierRE.String())
+		}
+	}
+
+	rows, err := s.db.Query(`SELECT id, data FROM resources WHERE resource_type = ?`, resourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []map[string]string
+	seenRows := map[string]bool{}
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		var obj map[string]any
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &obj); err != nil {
+				return nil, fmt.Errorf("decode %s parent row %s: %w", resourceType, id, err)
+			}
+		}
+		values := make(map[string]string, len(fields))
+		complete := true
+		for _, field := range fields {
+			var value any
+			if field == "id" {
+				value = id
+			} else {
+				value = LookupFieldValue(obj, field)
+			}
+			valueString := fmt.Sprint(value)
+			if value == nil || valueString == "" {
+				complete = false
+				break
+			}
+			values[field] = valueString
+		}
+		if complete {
+			keyParts := make([]string, 0, len(fields))
+			for _, field := range fields {
+				keyParts = append(keyParts, values[field])
+			}
+			key := strings.Join(keyParts, "\x00")
+			if seenRows[key] {
+				continue
+			}
+			seenRows[key] = true
+			out = append(out, values)
+		}
+	}
+	return out, rows.Err()
 }
 
 // GetLastSyncedAt returns the last sync timestamp for a resource type.

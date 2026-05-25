@@ -16,7 +16,9 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 )
@@ -114,6 +116,10 @@ type LiveCheckBinaryRefresh struct {
 // readable and agentic reviewers don't blow through their context window on
 // one feature's output.
 const outputSampleMaxBytes = 4096
+
+// sampleRedactionLookaheadBytes lets the redactor see short PII spans that
+// start just before the persisted sample cap and end just after it.
+const sampleRedactionLookaheadBytes = 512
 
 // LiveCheckOptions bundles the optional knobs for RunLiveCheck. CLIDir is
 // required; every other field has a sensible zero-value default.
@@ -715,26 +721,71 @@ func sampleOutput(s string) string {
 }
 
 func sampleOutputParts(parts ...string) string {
-	var sample strings.Builder
-	remaining := outputSampleMaxBytes
+	var rawSample strings.Builder
+	captureRemaining := outputSampleMaxBytes + sampleRedactionLookaheadBytes
+	capRemaining := outputSampleMaxBytes
 	truncated := false
 	for _, part := range parts {
-		if remaining <= 0 {
-			truncated = truncated || len(part) > 0
+		if redacted, ok := artifacts.RedactPIIJSONKeys(part); ok {
+			part = redacted
+		}
+		if len(part) > capRemaining {
+			truncated = true
+		}
+		if capRemaining > 0 {
+			if len(part) >= capRemaining {
+				capRemaining = 0
+			} else {
+				capRemaining -= len(part)
+			}
+		}
+		if captureRemaining <= 0 {
 			continue
 		}
-		if len(part) > remaining {
-			sample.WriteString(part[:remaining])
-			truncated = true
-			break
+		if len(part) > captureRemaining {
+			rawSample.WriteString(truncateUTF8(part, captureRemaining))
+			captureRemaining = 0
+			continue
 		}
-		sample.WriteString(part)
-		remaining -= len(part)
+		rawSample.WriteString(part)
+		captureRemaining -= len(part)
+	}
+	sample := artifacts.RedactPIIText(rawSample.String())
+	if len(sample) > outputSampleMaxBytes {
+		sample = truncateUTF8(sample, outputSampleMaxBytes)
+		sample = completePartialRedactionSentinel(sample)
+		truncated = true
 	}
 	if truncated {
-		return sample.String() + "…[truncated]"
+		return sample + "…[truncated]"
 	}
-	return sample.String()
+	return sample
+}
+
+func completePartialRedactionSentinel(sample string) string {
+	const partialSentinelPrefix = "<redact"
+	idx := strings.LastIndex(sample, partialSentinelPrefix)
+	if idx == -1 || strings.Contains(sample[idx:], artifacts.PIIRedactedSentinel) {
+		return sample
+	}
+	return sample[:idx] + artifacts.PIIRedactedSentinel
+}
+
+func truncateUTF8(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 {
+		r, size := utf8.DecodeLastRuneInString(s[:maxBytes])
+		if r != utf8.RuneError || size != 1 {
+			break
+		}
+		maxBytes--
+	}
+	return s[:maxBytes]
 }
 
 // rawHTMLEntityRe matches numeric HTML character references, both decimal
@@ -971,9 +1022,9 @@ func normalizedOutputWords(s string) []string {
 }
 
 func trimOutput(s string) string {
-	s = strings.TrimSpace(s)
+	s = artifacts.RedactPIIText(strings.TrimSpace(s))
 	if len(s) > 300 {
-		s = s[:300] + "..."
+		s = truncateUTF8(s, 300) + "..."
 	}
 	return s
 }

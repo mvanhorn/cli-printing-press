@@ -42,6 +42,7 @@ const reasonMutatingErrorPath = "mutating command; error_path would call live AP
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
+const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
@@ -50,6 +51,7 @@ const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 // honor a smaller --limit) so the matrix's per-command timeout
 // doesn't kill an otherwise healthy run.
 const dogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
+const liveDogfoodAuthRetryDelay = time.Second
 
 type LiveDogfoodOptions struct {
 	CLIDir              string
@@ -103,15 +105,15 @@ type liveDogfoodRun struct {
 }
 
 func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
-	releaseHome, err := scopeSubprocessHome()
+	if strings.TrimSpace(opts.CLIDir) == "" {
+		return nil, fmt.Errorf("CLIDir is required")
+	}
+	releaseHome, err := scopeLiveDogfoodSubprocessHome(opts.CLIDir)
 	if err != nil {
 		return nil, err
 	}
 	defer releaseHome()
 
-	if strings.TrimSpace(opts.CLIDir) == "" {
-		return nil, fmt.Errorf("CLIDir is required")
-	}
 	level, err := normalizeLiveDogfoodLevel(opts.Level)
 	if err != nil {
 		return nil, err
@@ -174,6 +176,14 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		}
 	}
 	return report, nil
+}
+
+func scopeLiveDogfoodSubprocessHome(cliDir string) (func(), error) {
+	manifest, err := ReadCLIManifest(cliDir)
+	if err == nil && manifest.IsLocalDatastore() && strings.EqualFold(strings.TrimSpace(manifest.AuthType), "none") {
+		return func() {}, nil
+	}
+	return scopeSubprocessHome()
 }
 
 func liveDogfoodBinaryPath(dir, name string) (string, error) {
@@ -725,10 +735,16 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if liveDogfoodUnavailableForRunner(happyRun) {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = reasonUnavailableRunnerCredentials
+		} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(happyRun); requiredParamReason != "" {
+			happyResult.Status = LiveDogfoodStatusSkip
+			happyResult.Reason = requiredParamReason
 		}
 		results = append(results, happyResult)
 
-		if commandSupportsJSON(command.Help) {
+		if happyResult.Status == LiveDogfoodStatusSkip &&
+			(happyResult.Reason == reasonUnavailableRunnerCredentials || happyResult.Reason == reasonRequiredParamFixture) {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason))
+		} else if commandSupportsJSON(command.Help) {
 			jsonArgs := appendJSONArg(runArgs)
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
@@ -743,6 +759,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			} else if liveDogfoodUnavailableForRunner(jsonRun) {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = reasonUnavailableRunnerCredentials
+			} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(jsonRun); requiredParamReason != "" {
+				jsonResult.Status = LiveDogfoodStatusSkip
+				jsonResult.Reason = requiredParamReason
 			}
 			results = append(results, jsonResult)
 		} else {
@@ -874,6 +893,20 @@ func extractFlagsSection(help string) string {
 }
 
 func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
+	deadline := time.Now().Add(timeout)
+	run := runLiveDogfoodProcessOnce(binaryPath, cliDir, args, timeout)
+	if !liveDogfoodRetryableAuth401(run) || time.Until(deadline) <= liveDogfoodAuthRetryDelay {
+		return run
+	}
+	time.Sleep(liveDogfoodAuthRetryDelay)
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return run
+	}
+	return runLiveDogfoodProcessOnce(binaryPath, cliDir, args, remaining)
+}
+
+func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -915,6 +948,13 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 		}
 	}
 	return result
+}
+
+func liveDogfoodRetryableAuth401(run liveDogfoodRun) bool {
+	if run.exitCode == 0 {
+		return false
+	}
+	return liveDogfoodAuth401(run)
 }
 
 func liveDogfoodInvalidJSONReason(run liveDogfoodRun, fallback string) string {
@@ -970,6 +1010,16 @@ const (
 	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
 	liveDogfoodMaxOutputBytes  = 10 << 20
 )
+
+var liveDogfoodRequiredParamFixturePhrases = []string{
+	"missing parameter",
+	"missing param",
+	"required parameter",
+	"required param",
+	"must provide parameter",
+	"must provide param",
+	"please provide email",
+}
 
 // destructiveAuthTerms are case-insensitive command or endpoint tokens
 // classifying a command as destructive-at-auth.
@@ -1141,8 +1191,36 @@ func validLiveDogfoodJSONOutput(stdout string) bool {
 func liveDogfoodUnavailableForRunner(run liveDogfoodRun) bool {
 	output := strings.ToLower(run.stdout + run.stderr)
 	return strings.Contains(output, "http 403") ||
+		liveDogfoodAuth401Output(output) ||
 		strings.Contains(output, "permission denied") ||
 		strings.Contains(output, "your credentials are valid but lack access")
+}
+
+func liveDogfoodRequiredParamFixtureReason(run liveDogfoodRun) string {
+	if run.exitCode == 0 {
+		return ""
+	}
+	output := strings.ToLower(run.stdout + " " + run.stderr)
+	if !strings.Contains(output, "http 400") && !strings.Contains(output, "http 422") {
+		return ""
+	}
+	if containsAnyOf(output, liveDogfoodRequiredParamFixturePhrases) {
+		return reasonRequiredParamFixture
+	}
+	return ""
+}
+
+func liveDogfoodAuth401(run liveDogfoodRun) bool {
+	return liveDogfoodAuth401Output(strings.ToLower(run.stdout + run.stderr))
+}
+
+func liveDogfoodAuth401Output(output string) bool {
+	if !strings.Contains(output, "http 401") {
+		return false
+	}
+	return strings.Contains(output, "couldn't authenticate") ||
+		strings.Contains(output, "could not authenticate") ||
+		strings.Contains(output, "not authenticated")
 }
 
 func commandSupportsDryRun(help string) bool {

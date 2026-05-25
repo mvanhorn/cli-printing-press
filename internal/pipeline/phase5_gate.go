@@ -25,6 +25,7 @@ type Phase5AuthContext struct {
 	Type                    string `json:"type,omitempty"`
 	APIKeyAvailable         bool   `json:"api_key_available,omitempty"`
 	BrowserSessionAvailable bool   `json:"browser_session_available,omitempty"`
+	LocalSQLite             bool   `json:"local_sqlite,omitempty"`
 }
 
 type Phase5GateMarker struct {
@@ -254,6 +255,9 @@ func phase5SkipAllowed(marker Phase5GateMarker, manifest CLIManifest) (bool, str
 		return false, fmt.Sprintf("phase5 skip marker auth type %q does not match manifest auth type %q", marker.AuthContext.Type, manifest.AuthType)
 	}
 	if authType == "" || authType == "none" {
+		if manifest.IsLocalDatastore() {
+			return true, ""
+		}
 		return false, "no-auth APIs require a phase5 pass marker, not a skip marker"
 	}
 	if marker.AuthContext.APIKeyAvailable {

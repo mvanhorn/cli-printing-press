@@ -269,12 +269,15 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 		fmt.Println("Novel Features:    SKIP (none planned)")
 	} else {
 		nfStatus := "PASS"
-		if len(nfc.Missing) > 0 {
+		if len(nfc.Missing) > 0 || len(nfc.DepthMismatches) > 0 {
 			nfStatus = "WARN"
 		}
 		fmt.Printf("Novel Features:    %d/%d survived (%s)\n", nfc.Found, nfc.Planned, nfStatus)
 		for _, cmd := range nfc.Missing {
 			fmt.Printf("  - %s: planned but not found\n", cmd)
+		}
+		for _, mismatch := range nfc.DepthMismatches {
+			fmt.Printf("  - %s: advertised as %q but registered as %q\n", mismatch.Command, mismatch.Advertised, mismatch.Actual)
 		}
 	}
 	fmt.Println()

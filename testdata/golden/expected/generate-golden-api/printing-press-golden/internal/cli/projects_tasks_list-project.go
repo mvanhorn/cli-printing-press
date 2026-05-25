@@ -47,11 +47,11 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/projects/{projectId}/tasks"
 			path = replacePathParam(path, "projectId", args[0])
-			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "tasks", path, map[string]string{
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "tasks", path, map[string]string{
 				"priority": fmt.Sprintf("%v", flagPriority),
 				"limit":    fmt.Sprintf("%v", flagLimit),
 				"cursor":   fmt.Sprintf("%v", flagCursor),
-			}, nil, flagAll, "cursor", "", "", cmd.ErrOrStderr())
+			}, nil, flagAll, "cursor", "cursor", "limit", "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

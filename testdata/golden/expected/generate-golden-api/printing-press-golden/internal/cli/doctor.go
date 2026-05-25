@@ -271,7 +271,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Surfaces rows + last_synced_at per resource, schema version,
 			// and a fresh/stale/unknown verdict so agents can introspect
 			// whether to trust the cached data before issuing queries.
-			report["cache"] = collectCacheReport(cmd.Context(), "")
+			report["cache"] = collectCacheReport(cmd.Context(), "6h")
 
 			// Verify mode state. Surfaced so an operator who unintentionally
 			// inherits PRINTING_PRESS_VERIFY=1 (parent shell, CI runner, container

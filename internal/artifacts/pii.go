@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,6 +90,11 @@ type PIIFinding struct {
 	EvidenceContext string `json:"evidence_context,omitempty"`
 }
 
+// PIIAuditOptions controls optional scan inputs outside the printed CLI tree.
+type PIIAuditOptions struct {
+	ManuscriptsDir string
+}
+
 type piiDetector struct {
 	kind    string
 	pattern *regexp.Regexp
@@ -153,6 +159,226 @@ var piiDetectors = []piiDetector{
 		// captures surface them, expand with explicit handling.
 		pattern: regexp.MustCompile(`\b\d+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3}\s+(?i:ST|STREET|AVE|AVENUE|RD|ROAD|BLVD|BOULEVARD|DR|DRIVE|LN|LANE|CT|COURT|PL|PLACE|WAY)\b`),
 	},
+}
+
+// PIIRedactedSentinel is the stable marker used when artifact text is
+// scrubbed before it can be persisted.
+const PIIRedactedSentinel = "<redacted>"
+
+var piiJSONScalarKeys = map[string]bool{
+	"address":         true,
+	"address1":        true,
+	"address2":        true,
+	"billingaddress":  true,
+	"cardlast4":       true,
+	"customeremail":   true,
+	"customername":    true,
+	"email":           true,
+	"firstname":       true,
+	"fullname":        true,
+	"invoice":         true,
+	"invoicenumber":   true,
+	"lastname":        true,
+	"last4":           true,
+	"mobile":          true,
+	"name":            true,
+	"phone":           true,
+	"phonenumber":     true,
+	"postalcode":      true,
+	"shippingaddress": true,
+	"street":          true,
+	"streetaddress":   true,
+	"zip":             true,
+}
+
+var piiJSONKeyNeedleRE = regexp.MustCompile(`(?i)"(?:address1?|address2|billing[_ -]?address|card[_ -]?last[_ -]?4|customer[_ -]?(?:email|name)|email|first[_ -]?name|full[_ -]?name|invoice(?:[_ -]?number)?|last[_ -]?name|last[_ -]?4|mobile|name|phone(?:[_ -]?number)?|postal[_ -]?code|shipping[_ -]?address|street(?:[_ -]?address)?|zip)"\s*:`)
+
+// RedactPIIText returns text with customer-PII shapes replaced before the
+// text is written to durable artifacts. JSON input preserves non-PII fields
+// when redactions are needed and returns the original text unchanged when no
+// PII is found.
+func RedactPIIText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	if redacted, changed := redactPIIJSONText(text); changed {
+		return redacted
+	}
+	if redacted, changed := RedactPIIJSONKeys(text); changed {
+		return redactPIIPatterns(redacted)
+	}
+	return redactPIIPatterns(text)
+}
+
+// RedactPIIJSONKeys redacts values whose JSON keys commonly carry customer
+// PII. It intentionally skips regex value sweeps so callers can apply it to
+// larger captures before truncating, then run RedactPIIText on the bounded
+// persisted sample.
+func RedactPIIJSONKeys(text string) (string, bool) {
+	if strings.TrimSpace(text) == "" {
+		return text, false
+	}
+	if !piiJSONKeyNeedleRE.MatchString(text) {
+		return text, false
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &parsed); err == nil {
+		redacted, changed := redactPIIJSONValue(parsed, "", false)
+		if !changed {
+			return text, false
+		}
+		out, ok := marshalPIIJSON(redacted)
+		if !ok {
+			return text, false
+		}
+		return out, true
+	}
+
+	if redacted, changed := redactPIIJSONLines(text); changed {
+		return redacted, true
+	}
+	return redactPIIJSONKeyFragments(text)
+}
+
+func redactPIIJSONText(text string) (string, bool) {
+	var parsed any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &parsed); err != nil {
+		return "", false
+	}
+	redacted, changed := redactPIIJSONValue(parsed, "", true)
+	if !changed {
+		return text, false
+	}
+	out, ok := marshalPIIJSON(redacted)
+	if !ok {
+		return redactPIIPatterns(text), true
+	}
+	return out, true
+}
+
+func marshalPIIJSON(value any) (string, bool) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		return "", false
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), true
+}
+
+func redactPIIJSONLines(text string) (string, bool) {
+	var out strings.Builder
+	changed := false
+	for _, line := range strings.SplitAfter(text, "\n") {
+		lineBody := strings.TrimSuffix(line, "\n")
+		lineEnding := line[len(lineBody):]
+		trimmed := strings.TrimSpace(lineBody)
+		if trimmed == "" {
+			out.WriteString(line)
+			continue
+		}
+		var parsed any
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+			out.WriteString(line)
+			continue
+		}
+		redacted, lineChanged := redactPIIJSONValue(parsed, "", false)
+		if !lineChanged {
+			out.WriteString(line)
+			continue
+		}
+		marshaled, ok := marshalPIIJSON(redacted)
+		if !ok {
+			out.WriteString(line)
+			continue
+		}
+		out.WriteString(marshaled)
+		out.WriteString(lineEnding)
+		changed = true
+	}
+	return out.String(), changed
+}
+
+func redactPIIJSONValue(value any, key string, redactStringPatterns bool) (any, bool) {
+	if key != "" && piiJSONScalarKeys[normalizePIIJSONKey(key)] {
+		return PIIRedactedSentinel, true
+	}
+
+	switch v := value.(type) {
+	case map[string]any:
+		changed := false
+		for childKey, child := range v {
+			redacted, childChanged := redactPIIJSONValue(child, childKey, redactStringPatterns)
+			if childChanged {
+				v[childKey] = redacted
+				changed = true
+			}
+		}
+		return v, changed
+	case []any:
+		changed := false
+		for i, child := range v {
+			redacted, childChanged := redactPIIJSONValue(child, "", redactStringPatterns)
+			if childChanged {
+				v[i] = redacted
+				changed = true
+			}
+		}
+		return v, changed
+	case string:
+		if !redactStringPatterns {
+			return v, false
+		}
+		redacted := redactPIIPatterns(v)
+		return redacted, redacted != v
+	default:
+		return value, false
+	}
+}
+
+var jsonStringPairRE = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"`)
+
+func redactPIIJSONKeyFragments(text string) (string, bool) {
+	changed := false
+	redacted := jsonStringPairRE.ReplaceAllStringFunc(text, func(match string) string {
+		pair := jsonStringPairRE.FindStringSubmatch(match)
+		if len(pair) != 3 {
+			return match
+		}
+		key, err := strconv.Unquote(`"` + pair[1] + `"`)
+		if err != nil || !piiJSONScalarKeys[normalizePIIJSONKey(key)] {
+			return match
+		}
+		changed = true
+		target := `"` + pair[2] + `"`
+		valueIdx := strings.LastIndex(match, target)
+		if valueIdx == -1 {
+			return match
+		}
+		return match[:valueIdx] + strconv.Quote(PIIRedactedSentinel) + match[valueIdx+len(target):]
+	})
+	return redacted, changed
+}
+
+func normalizePIIJSONKey(key string) string {
+	key = strings.ToLower(key)
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	key = strings.ReplaceAll(key, " ", "")
+	return key
+}
+
+func redactPIIPatterns(text string) string {
+	redacted := text
+	for _, det := range piiDetectors {
+		redacted = det.pattern.ReplaceAllStringFunc(redacted, func(match string) string {
+			if isSyntheticPIIPlaceholder(det.kind, match) {
+				return match
+			}
+			return PIIRedactedSentinel
+		})
+	}
+	return redacted
 }
 
 // Scoped to the capture-to-publish leak path: manuscripts, test
@@ -269,12 +495,53 @@ var skippedDirs = map[string]bool{
 
 func isSyntheticPIIPlaceholder(kind, matched string) bool {
 	switch kind {
+	case PIIKindEmail:
+		return isRFCReservedEmail(matched)
+	case PIIKindPhoneUS:
+		return isNANPFictionalPhone(matched)
 	case PIIKindOrderID:
 		return piiplaceholders.IsSyntheticOrderID(matched)
 	case PIIKindASIN:
 		return piiplaceholders.IsSyntheticASIN(matched)
 	case PIIKindPostalAddress:
 		return piiplaceholders.IsSyntheticPostalAddress(matched)
+	default:
+		return false
+	}
+}
+
+func isRFCReservedEmail(matched string) bool {
+	at := strings.LastIndexByte(matched, '@')
+	if at == -1 || at == len(matched)-1 {
+		return false
+	}
+	domain := strings.ToLower(strings.Trim(matched[at+1:], "."))
+	if domain == "example.com" || domain == "example.org" || domain == "example.net" {
+		return true
+	}
+	return strings.HasSuffix(domain, ".example.com") ||
+		strings.HasSuffix(domain, ".example.org") ||
+		strings.HasSuffix(domain, ".example.net") ||
+		strings.HasSuffix(domain, ".example") ||
+		strings.HasSuffix(domain, ".test") ||
+		strings.HasSuffix(domain, ".invalid") ||
+		strings.HasSuffix(domain, ".localhost")
+}
+
+func isNANPFictionalPhone(matched string) bool {
+	var digits strings.Builder
+	for _, r := range matched {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	normalized := digits.String()
+	if len(normalized) == 11 && normalized[0] == '1' {
+		normalized = normalized[1:]
+	}
+	switch len(normalized) {
+	case 10:
+		return normalized[3:6] == "555" && strings.HasPrefix(normalized[6:], "01")
 	default:
 		return false
 	}
@@ -322,6 +589,33 @@ func FindPII(root string) ([]PIIFinding, error) {
 	if err != nil {
 		return nil, err
 	}
+	sortPIIFindings(findings)
+	return findings, nil
+}
+
+// FindPIIWithOptions walks root plus any explicitly supplied external
+// manuscript run inputs. External manuscript findings are reported using the
+// same .manuscripts/<run-id>/... paths that publish package later stages.
+func FindPIIWithOptions(root string, opts PIIAuditOptions) ([]PIIFinding, error) {
+	findings, err := FindPII(root)
+	if err != nil {
+		return nil, err
+	}
+	if opts.ManuscriptsDir == "" {
+		return findings, nil
+	}
+
+	manuscriptFindings, err := findPIIInManuscriptsRun(opts.ManuscriptsDir)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, manuscriptFindings...)
+	findings = dedupePIIFindings(findings)
+	sortPIIFindings(findings)
+	return findings, nil
+}
+
+func sortPIIFindings(findings []PIIFinding) {
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
 			return findings[i].File < findings[j].File
@@ -334,6 +628,59 @@ func FindPII(root string) ([]PIIFinding, error) {
 		}
 		return findings[i].Kind < findings[j].Kind
 	})
+}
+
+func dedupePIIFindings(findings []PIIFinding) []PIIFinding {
+	seen := make(map[string]bool, len(findings))
+	out := findings[:0]
+	for _, finding := range findings {
+		key := piiFindingKey(finding)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, finding)
+	}
+	return out
+}
+
+func findPIIInManuscriptsRun(runDir string) ([]PIIFinding, error) {
+	info, err := os.Stat(runDir)
+	if err != nil {
+		return nil, fmt.Errorf("manuscripts-dir %q: %w", runDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("manuscripts-dir %q is not a directory", runDir)
+	}
+
+	runID := filepath.Base(filepath.Clean(runDir))
+	candidates := []string{filepath.Join(runDir, "research.json")}
+	researchMarkdown, err := filepath.Glob(filepath.Join(runDir, "research", "*.md"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(researchMarkdown)
+	candidates = append(candidates, researchMarkdown...)
+
+	var findings []PIIFinding
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		rel, err := filepath.Rel(runDir, path)
+		if err != nil {
+			return nil, err
+		}
+		stagedRel := filepath.ToSlash(filepath.Join(manuscriptsDir, runID, rel))
+		fileFindings, err := scanPIIFileWithRel(path, stagedRel)
+		if err != nil {
+			return nil, err
+		}
+		findings = append(findings, fileFindings...)
+	}
 	return findings, nil
 }
 
@@ -373,6 +720,14 @@ func isHighRiskFile(relSlash string) bool {
 // Binary files (null-byte probe) are skipped. Returns findings keyed
 // to the file's path relative to root with forward-slash separators.
 func scanPIIFile(root, path string) ([]PIIFinding, error) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, err
+	}
+	return scanPIIFileWithRel(path, filepath.ToSlash(rel))
+}
+
+func scanPIIFileWithRel(path, relSlash string) ([]PIIFinding, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -387,12 +742,6 @@ func scanPIIFile(root, path string) ([]PIIFinding, error) {
 	if bytes.Contains(probe, []byte{0}) {
 		return nil, nil
 	}
-
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return nil, err
-	}
-	relSlash := filepath.ToSlash(rel)
 
 	// Vendor-published OpenAPI/Swagger source archived under .manuscripts/
 	// carries documentation `example:` values, not customer PII. Mirrors
@@ -811,18 +1160,29 @@ type PIIAuditResult struct {
 // disk full), the audit result is still returned and a warning is
 // logged to stderr. The gate decision uses the in-memory result.
 func RunPIIAudit(dir string) (PIIAuditResult, error) {
-	return runPIIAudit(dir, true)
+	return RunPIIAuditWithOptions(dir, PIIAuditOptions{})
+}
+
+// RunPIIAuditWithOptions performs a full audit cycle with optional external
+// scan inputs and persists the reconciled ledger.
+func RunPIIAuditWithOptions(dir string, opts PIIAuditOptions) (PIIAuditResult, error) {
+	return runPIIAudit(dir, true, opts)
 }
 
 // ScanPII performs the audit without writing the ledger. The pii-audit
 // CLI's --json path uses this so a read-only probe doesn't have the
 // side effect of touching the filesystem.
 func ScanPII(dir string) (PIIAuditResult, error) {
-	return runPIIAudit(dir, false)
+	return ScanPIIWithOptions(dir, PIIAuditOptions{})
 }
 
-func runPIIAudit(dir string, persist bool) (PIIAuditResult, error) {
-	findings, err := FindPII(dir)
+// ScanPIIWithOptions performs the audit without writing the ledger.
+func ScanPIIWithOptions(dir string, opts PIIAuditOptions) (PIIAuditResult, error) {
+	return runPIIAudit(dir, false, opts)
+}
+
+func runPIIAudit(dir string, persist bool, opts PIIAuditOptions) (PIIAuditResult, error) {
+	findings, err := FindPIIWithOptions(dir, opts)
 	if err != nil {
 		return PIIAuditResult{}, fmt.Errorf("scanning %s for PII: %w", dir, err)
 	}

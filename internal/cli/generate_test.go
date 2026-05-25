@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -54,10 +56,6 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
-			// Bypass the #1879 pre-emit guard so the test exercises the
-			// snapshot+merge path it was written for; the guard is exercised
-			// directly in TestGenerateCmdForceRefusesNovelWipe* below.
-			"--allow-novel-wipe",
 		})
 		require.NoError(t, cmd.Execute())
 	}
@@ -103,6 +101,116 @@ func staleGeneratedCommand() {}
 
 	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/regenapp-pp-cli")
+}
+
+func TestGenerateCmdForcePreservesManuscriptsAndManifestExtras(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "regenextras")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: regenextras
+description: Regen extras API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/regenextras-pp-cli/config.toml
+resources:
+  markets:
+    description: Manage markets
+    endpoints:
+      list:
+        method: GET
+        path: /markets
+        description: List markets
+`), 0o644))
+
+	runGenerate := func() {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		require.NoError(t, cmd.Execute())
+	}
+
+	runGenerate()
+
+	manuscriptPath := filepath.Join(outputDir, ".manuscripts", "20260523-171100", "research.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(manuscriptPath), 0o755))
+	require.NoError(t, os.WriteFile(manuscriptPath, []byte(`{"accepted":true}`), 0o640))
+	wantModTime := time.Date(2026, 5, 23, 17, 11, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(manuscriptPath, wantModTime, wantModTime))
+
+	manifestPath := filepath.Join(outputDir, pipeline.CLIManifestFilename)
+	require.NoError(t, os.WriteFile(manifestPath, []byte(`{
+  "schema_version": 1,
+  "api_name": "regenextras",
+  "cli_name": "regenextras-pp-cli",
+  "category": "other",
+  "novel_features": [
+    {
+      "name": "Market scanner",
+      "command": "markets scan",
+      "description": "Finds active markets"
+    }
+  ],
+  "operator_note": "published-library override"
+}`), 0o644))
+
+	runGenerate()
+
+	gotManuscript, err := os.ReadFile(manuscriptPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"accepted":true}`, string(gotManuscript))
+	info, err := os.Stat(manuscriptPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+	assert.True(t, info.ModTime().Equal(wantModTime), "manuscript mtime should survive force regen")
+
+	data, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	var manifest pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	assert.Equal(t, "other", manifest.Category)
+	require.Len(t, manifest.NovelFeatures, 1)
+	assert.Equal(t, "Market scanner", manifest.NovelFeatures[0].Name)
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.JSONEq(t, `"published-library override"`, string(raw["operator_note"]))
+}
+
+func TestLoadResearchSourcesReturnsExplicitEmptyManifestNovelFeatures(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{
+  "api_name": "regenextras",
+  "novel_features": [
+    {
+      "name": "Planned scanner",
+      "command": "planned scan",
+      "description": "Planned feature"
+    }
+  ],
+  "novel_features_built": []
+}`), 0o644))
+
+	gen := generator.New(&spec.APISpec{
+		Name: "regenextras",
+		Auth: spec.AuthConfig{Type: "none"},
+	}, t.TempDir())
+
+	got := loadResearchSources(gen, researchDir)
+	require.NotNil(t, got, "empty built list is an explicit fresh result, not unavailable metadata")
+	assert.Empty(t, got)
+	assert.Empty(t, gen.NovelFeatures)
 }
 
 func TestGenerateCmdHelpDescribesForceAsGeneratedOverwrite(t *testing.T) {
@@ -217,7 +325,6 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
-			"--allow-novel-wipe",
 		})
 		require.NoError(t, cmd.Execute())
 	}
@@ -339,7 +446,6 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
-			"--allow-novel-wipe",
 		})
 		require.NoError(t, cmd.Execute())
 	}
@@ -410,7 +516,6 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
-			"--allow-novel-wipe",
 		})
 		return cmd.Execute()
 	}
@@ -461,7 +566,6 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
-			"--allow-novel-wipe",
 		})
 		return cmd.Execute()
 	}
@@ -512,7 +616,6 @@ resources:
 			"--output", outputDir,
 			"--validate=false",
 			"--force",
-			"--allow-novel-wipe",
 		})
 		return cmd.Execute()
 	}
@@ -1064,6 +1167,22 @@ func TestMergeSpecsUnionsAuthScopesAndAdditionalHeaders(t *testing.T) {
 		},
 		Types: map[string]spec.TypeDef{},
 	}
+	secondaryQuerySibling := &spec.APISpec{
+		Name:    "secondaryquery",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "bearer_token",
+			Header: "Authorization",
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{Header: "secondary_token", In: "query", EnvVar: spec.AuthEnvVar{Name: "SECONDARY_QUERY_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"secondaryquery": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/secondaryquery"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
 	standaloneKey := &spec.APISpec{
 		Name:    "standalone",
 		Version: "0.1.0",
@@ -1165,15 +1284,92 @@ func TestMergeSpecsUnionsAuthScopesAndAdditionalHeaders(t *testing.T) {
 		Types: map[string]spec.TypeDef{},
 	}
 
-	merged := mergeSpecs([]*spec.APISpec{primary, secondary, standaloneKey, queryKey, ambiguousKey, crossHostKey, foreignOAuth, noFlowOAuth}, "combo")
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary, secondaryQuerySibling, standaloneKey, queryKey, ambiguousKey, crossHostKey, foreignOAuth, noFlowOAuth}, "combo")
 
 	assert.Equal(t, []string{"read.primary", "read.secondary"}, merged.Auth.Scopes)
 	require.Len(t, merged.Auth.AdditionalHeaders, 3)
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Primary-Key", "PRIMARY_KEY")
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Secondary-Key", "SECONDARY_KEY")
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Standalone-Key", "STANDALONE_KEY")
+	assertNoAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "secondary_token")
 	assert.Equal(t, " STANDALONE_KEY ", standaloneKey.Auth.EnvVarSpecs[0].Name)
 	assert.Empty(t, standaloneKey.Auth.EnvVarSpecs[0].Kind)
+}
+
+func TestMergeSpecsDropsSelectedQueryAdditionalHeaders(t *testing.T) {
+	t.Parallel()
+
+	trelloShaped := &spec.APISpec{
+		Name:    "trello",
+		Version: "0.1.0",
+		BaseURL: "https://api.trello.com/1",
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "key",
+			In:     "query",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "TRELLO_API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{Header: "token", In: "query", EnvVar: spec.AuthEnvVar{Name: "TRELLO_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+				{Header: "X-Mergeable-Key", In: "header", EnvVar: spec.AuthEnvVar{Name: "MERGEABLE_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"cards": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/cards"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	otherOrigin := &spec.APISpec{
+		Name:    "other",
+		Version: "0.1.0",
+		BaseURL: "https://other.example.net",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{trelloShaped, otherOrigin}, "combo")
+
+	assertNoAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "token")
+	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Mergeable-Key", "MERGEABLE_KEY")
+
+	noAuthFirst := &spec.APISpec{
+		Name:    "none",
+		Version: "0.1.0",
+		BaseURL: "https://none.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"none": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/none"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	laterSelected := &spec.APISpec{
+		Name:    "oauthquery",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://accounts.example.com/auth",
+			TokenURL:         "https://accounts.example.com/token",
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{Header: "oauth_token_query", In: "query", EnvVar: spec.AuthEnvVar{Name: "OAUTH_QUERY_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+				{Header: "X-OAuth-Key", In: "header", EnvVar: spec.AuthEnvVar{Name: "OAUTH_HEADER_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"oauthquery": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/oauthquery"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	mergedLater := mergeSpecs([]*spec.APISpec{noAuthFirst, laterSelected, otherOrigin}, "combo")
+
+	assertNoAdditionalAuthHeader(t, mergedLater.Auth.AdditionalHeaders, "oauth_token_query")
+	assertAdditionalAuthHeader(t, mergedLater.Auth.AdditionalHeaders, "X-OAuth-Key", "OAUTH_HEADER_KEY")
 }
 
 func TestMergeSpecsUsesLaterOAuthAuthWhenPrimaryHasNoLogin(t *testing.T) {
@@ -1247,6 +1443,16 @@ func assertAdditionalAuthHeader(t *testing.T, headers []spec.AdditionalAuthHeade
 		}
 	}
 	assert.Failf(t, "missing additional auth header", "header %q with env var %q not found in %#v", wantHeader, wantEnvVar, headers)
+}
+
+func assertNoAdditionalAuthHeader(t *testing.T, headers []spec.AdditionalAuthHeader, wantHeader string) {
+	t.Helper()
+	for _, header := range headers {
+		if header.Header == wantHeader {
+			assert.Failf(t, "unexpected additional auth header", "header %q found in %#v", wantHeader, headers)
+			return
+		}
+	}
 }
 
 func TestGenerateMultiSpecUnionsOAuthScopes(t *testing.T) {
