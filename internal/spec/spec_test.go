@@ -5438,6 +5438,24 @@ func TestAuthHasCookies(t *testing.T) {
 	}
 }
 
+func TestAuthHasNonCookieAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want bool
+	}{
+		{name: "env var specs", auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{{Name: "API_TOKEN"}}}, want: true},
+		{name: "legacy env vars", auth: AuthConfig{EnvVars: []string{"API_TOKEN"}}, want: true},
+		{name: "cookie-only", auth: AuthConfig{Type: "cookie", Cookies: []string{"session_id"}}, want: false},
+		{name: "empty", auth: AuthConfig{}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.auth.HasNonCookieAuth())
+		})
+	}
+}
+
 func TestPromoteParamsToBodyForWriteEndpoints(t *testing.T) {
 	t.Parallel()
 

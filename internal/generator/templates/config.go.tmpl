@@ -10,7 +10,13 @@ import (
 {{- if ne .Config.Format "toml"}}
 	"encoding/json"
 {{- end}}
+{{- if hasNonCookieAuth .Auth}}
+	"errors"
+{{- end}}
 	"fmt"
+{{- if hasNonCookieAuth .Auth}}
+	"log"
+{{- end}}
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +26,10 @@ import (
 {{- if eq .Config.Format "toml"}}
 
 	"github.com/pelletier/go-toml/v2"
+{{- end}}
+{{- if hasNonCookieAuth .Auth}}
+
+	"github.com/mvanhorn/agentcookie/pkg/agentcookiesecret"
 {{- end}}
 )
 
@@ -153,6 +163,32 @@ func Load(configPath string) (*Config, error) {
 	// remains the canonical surface for doctor/auth-status reporting.
 	if v := os.Getenv("{{.EnvVar.Name}}"); v != "" {
 		cfg.{{resolveEnvVarField .EnvVar.Name}} = v
+	}
+{{- end}}
+{{- if hasNonCookieAuth .Auth}}
+
+	// agentcookie secrets-bus overrides: per v0.13 wire-format section 11.2,
+	// bus values win over both process env and config-file values. The reader
+	// merges process env internally at lower priority, so this block only
+	// applies values that actually came from the bus (plain or sealed). When
+	// the bus is empty or unreachable, the existing env/config values stand.
+	if busRes, busErr := agentcookiesecret.LoadDetailed("{{.Name}}-pp-cli", ""); busErr != nil {
+		if !errors.Is(busErr, agentcookiesecret.ErrInvalidCLIName) {
+			log.Printf("agentcookiesecret: %v; continuing with config + env", busErr)
+		}
+	} else if busRes != nil {
+		var busAuthSources []string
+{{- range envVarsForBus .Auth}}
+		if v, ok := busRes.Env["{{.Name}}"]; ok && v != "" {
+			if src := busRes.Sources["{{.Name}}"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
+				cfg.{{resolveEnvVarField .Name}} = v
+				busAuthSources = append(busAuthSources, "{{.Name}}")
+			}
+		}
+{{- end}}
+		if len(busAuthSources) > 0 {
+			cfg.AuthSource = "bus:" + strings.Join(busAuthSources, ",")
+		}
 	}
 {{- end}}
 

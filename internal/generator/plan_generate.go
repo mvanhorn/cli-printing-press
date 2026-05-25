@@ -90,6 +90,12 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		"kebab":       toKebab,
 		"currentYear": func() string { return strconv.Itoa(time.Now().Year()) },
 		"modulePath":  func() string { return naming.CLI(cliName) },
+		// Stub: plan-generated scaffolds never declare auth env vars, so the
+		// agentcookie secrets-bus dependency is unconditionally skipped on this
+		// path. The full generator's hasNonCookieAuth (which inspects the real
+		// spec.AuthConfig) is registered separately on its own FuncMap.
+		"hasNonCookieAuth":       func(any) bool { return false },
+		"agentcookieReplacePath": func() string { return "" },
 	}
 
 	render := func(tmplName, outPath string, data any) error {

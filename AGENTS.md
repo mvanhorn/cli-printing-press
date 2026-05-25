@@ -75,6 +75,8 @@ When adding a new deterministic CLI behavior or generated artifact contract, exp
 
 When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence or removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so the already-published CLIs can be retrofitted to match. Fresh prints from this generator will produce the new shape automatically, but every existing entry in the public library silently drifts from canonical shape until the sweep retrofit runs.
 
+The same rule applies to `internal/pipeline/agentcookie_manifest.go` and the `hasNonCookieAuth` / `envVarsForBus` template helpers in `internal/generator/generator.go`: when manifest shape or sweep-eligibility logic changes here, update `tools/sweep-canonical/agentcookie.go` in lockstep so existing library entries' `agentcookie.toml` retrofits match generator-side fresh prints byte-for-byte. The inline TOML render exists because the sweep tool runs in GOPATH mode; it is a deliberate duplication, not a candidate for "just import the helper".
+
 If you can't make the matching sweep change in the same session, file a tracking issue at https://github.com/mvanhorn/printing-press-library/issues/new before merging the template PR. The issue should include:
 
 1. A link to the template PR here.

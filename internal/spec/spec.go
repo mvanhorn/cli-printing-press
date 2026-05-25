@@ -1194,6 +1194,14 @@ func (c AuthConfig) HasCookies() bool {
 	return len(c.Cookies) > 0
 }
 
+// HasNonCookieAuth reports whether the auth block exposes at least one
+// env-var-based credential. Cookie-only auth deliberately returns false so
+// callers do not add secrets-bus plumbing where browser cookies are the
+// credential source.
+func (c AuthConfig) HasNonCookieAuth() bool {
+	return len(c.EnvVarSpecs) > 0 || len(c.EnvVars) > 0
+}
+
 // validateAuthCompanion enforces the small set of guardrails on the
 // press-auth companion fields: LoginURL must parse as a URL using https
 // (or http on localhost), LoginCompleteSelector is opaque, and a
