@@ -442,6 +442,7 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			if err := cfg.ClearTokens(); err != nil {
 				return configErr(fmt.Errorf("clearing tokens: %w", err))
 			}
+			_ = clearPendingDeviceCode(cfg)
 			if flags.asJSON {
 				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{"cleared": true}, flags)
 			}

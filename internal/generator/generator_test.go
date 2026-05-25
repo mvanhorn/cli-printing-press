@@ -1384,6 +1384,7 @@ func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 	assert.Contains(t, authGo, `cmd.Flags().BoolVar(&poll, "poll", outputIsTerminal()`, "headless login should print and return instead of blocking")
 	assert.Contains(t, authGo, `savePendingDeviceCode(cfg, state)`, "headless login stores pending device_code locally")
 	assert.Contains(t, authGo, `os.WriteFile(path, data, 0o600)`, "pending device_code state must be user-only readable")
+	assert.Contains(t, authGo, `_ = clearPendingDeviceCode(cfg)`, "logout and completed poll must remove pending device_code state")
 	assert.Contains(t, authGo, `fmt.Fprintln(w, "  deviceauth-pp-cli auth poll")`, "headless login resumes without exposing the raw device_code")
 	assert.NotContains(t, authGo, `auth poll --device-code`, "raw device_code must not be printed into shell commands")
 	assert.Contains(t, authGo, `cfg.AuthHeaderVal = ""`, "OAuth token saves must clear stale manual auth headers")
