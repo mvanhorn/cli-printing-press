@@ -2862,7 +2862,6 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	results := make(chan fetchResult, len(ids))
 	var wg sync.WaitGroup
 	for idx, id := range ids {
-		idx, id := idx, id
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -2888,6 +2887,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		}
 	}
 	var failures []fetchFailure
+	var successfulItems []yourEntryType
 	var total float64
 	var denominator int
 	for idx, entry := range ordered {
@@ -2898,6 +2898,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 			})
 			continue
 		}
+		successfulItems = append(successfulItems, entry)
 		total += entry.Metric
 		denominator++
 	}
@@ -2905,7 +2906,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d of %d fetches failed; averages computed over the remaining %d items\n", len(failures), len(ids), denominator)
 	}
 	view := yourAggregateView{
-		Items:         ordered,
+		Items:         successfulItems,
 		AverageMetric: safeAverage(total, denominator),
 		FetchFailures: failures, // json tag: `json:"fetch_failures,omitempty"`
 	}
@@ -2915,6 +2916,12 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return enc.Encode(view)
 	}
 	// Human/terminal output, including a visible partial-failure note.
+	for _, entry := range view.Items {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%.2f\n", entry.Name, entry.Metric)
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "\npartial results: %d of %d fetches failed; average computed over %d items\n", len(failures), len(ids), denominator)
+	}
 	return nil
 },
 ```

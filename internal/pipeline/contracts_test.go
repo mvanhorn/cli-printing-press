@@ -222,8 +222,11 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Equal(t, 3, strings.Count(starters, "_ = cmd.Usage()"))
 	assert.Equal(t, 3, strings.Count(starters, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`))
 	assert.Contains(t, starters, "**RunE skeleton — parallel-fetch aggregation shape**")
+	assert.Contains(t, starters, "successfulItems = append(successfulItems, entry)")
+	assert.Contains(t, starters, "Items:         successfulItems")
 	assert.Contains(t, starters, `json tag: `+"`json:\"fetch_failures,omitempty\"`")
 	assert.Contains(t, starters, "averages computed over the remaining %d items")
+	assert.Contains(t, starters, "partial results: %d of %d fetches failed; average computed over %d items")
 }
 
 func TestAgentBrowserInstallRequiresPostInstallSetup(t *testing.T) {
