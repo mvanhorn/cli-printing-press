@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,6 +38,21 @@ func publishCheckByName(t *testing.T, result ValidateResult, name string) CheckR
 	}
 	t.Fatalf("missing %q check in %#v", name, result.Checks)
 	return CheckResult{}
+}
+
+func stubPublishIdentityCommands(t *testing.T, gitScript, ghScript string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell scripts are Unix-only")
+	}
+	dir := t.TempDir()
+	if gitScript != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "git"), []byte(gitScript), 0o755))
+	}
+	if ghScript != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(ghScript), 0o755))
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestPublishValidateMissingManifest(t *testing.T) {
@@ -125,7 +141,6 @@ func TestPublishValidateRejectsStaleAttributionManifest(t *testing.T) {
 	manifestCheck := publishCheckByName(t, result, "manifest")
 	assert.False(t, manifestCheck.Passed)
 	assert.Contains(t, manifestCheck.Error, "schema_version must be 1")
-	assert.Contains(t, manifestCheck.Error, "printer_name")
 }
 
 func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
@@ -143,7 +158,235 @@ func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
 	assert.Contains(t, issues[0], "literal sentinel")
 }
 
+func TestPublishManifestContractBackfillsAttributionFromGh(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 0\n",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  echo '{"login":"nlarkin1986","name":"Nick Larkin"}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "users/nlarkin1986" ]; then
+  echo '{"login":"nlarkin1986","name":"Nick Larkin"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+	})
+
+	assert.Empty(t, issues)
+}
+
+func TestPublishManifestContractDoesNotMixGitAndGhAttributionFallbacks(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		`#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "github.user" ]; then
+  echo stalebot
+  exit 0
+fi
+exit 1
+`,
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  echo '{"login":"nlarkin1986","name":"Nick Larkin"}'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "users/nlarkin1986" ]; then
+  echo '{"login":"nlarkin1986","name":"Nick Larkin"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+	})
+
+	assert.Empty(t, issues)
+}
+
+func TestPublishManifestContractBackfillsPrinterNameFromExistingPrinter(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/amitav13" ]; then
+  echo '{"login":"amitav13","name":"Amitav Khandelwal"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "amitav13",
+	})
+
+	assert.Empty(t, issues)
+}
+
+func TestBackfillPackagedManifestAttributionPreservesUnknownFields(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 0\n",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  echo '{"login":"amitav13","name":"Amitav Khandelwal"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000",
+  "custom_field": {"keep": true}
+}`+"\n"), 0o644))
+
+	require.NoError(t, backfillPackagedManifestAttribution(dir))
+
+	data, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.JSONEq(t, `"amitav13"`, string(got["printer"]))
+	assert.JSONEq(t, `"Amitav Khandelwal"`, string(got["printer_name"]))
+	assert.JSONEq(t, `{"keep": true}`, string(got["custom_field"]))
+}
+
+func TestBackfillPackagedManifestAttributionPreservesManifestMode(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 0\n",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  echo '{"login":"amitav13","name":"Amitav Khandelwal"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
+	require.NoError(t, os.WriteFile(manifestPath, []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000"
+}`+"\n"), 0o600))
+
+	require.NoError(t, backfillPackagedManifestAttribution(dir))
+
+	info, err := os.Stat(manifestPath)
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
+}
+
+func TestBackfillPackagedManifestAttributionFailsWithoutFallback(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 1\n",
+		"#!/bin/sh\nexit 1\n",
+	)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000"
+}`+"\n"), 0o644))
+
+	err := backfillPackagedManifestAttribution(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "attribution")
+	assert.Contains(t, err.Error(), "fallback")
+}
+
+func TestPublishManifestContractRejectsUnresolvablePrinterHandle(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/vinnypasceri" ]; then
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "vinnypasceri",
+		PrinterName:          "Vinny Pasceri",
+	})
+
+	require.Len(t, issues, 1)
+	assert.Contains(t, issues[0], `printer "vinnypasceri" does not resolve to a GitHub user`)
+}
+
+func TestPublishManifestContractRejectsUnverifiedPrinterHandle(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/vinnypasceri" ]; then
+  echo "gh: authentication required" >&2
+  exit 1
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "vinnypasceri",
+		PrinterName:          "Vinny Pasceri",
+	})
+
+	require.Len(t, issues, 1)
+	assert.Contains(t, issues[0], `could not verify printer "vinnypasceri" with gh`)
+	assert.Contains(t, issues[0], "authentication required")
+}
+
 func TestPublishManifestContractRequiresMCPMetadataFiles(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/tmchow" ]; then
+  echo '{"login":"tmchow","name":"Trevin Chow"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
 	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
 		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
 		PrintingPressVersion: "4.2.1",
@@ -1164,6 +1407,21 @@ func TestPublishRenameJSONError(t *testing.T) {
 
 func writePublishableTestCLI(t *testing.T, dir string) {
 	t.Helper()
+
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/tmchow" ]; then
+  if [ "$3" = "--jq" ]; then
+    echo "tmchow"
+  else
+    echo '{"login":"tmchow","name":"Trevin Chow"}'
+  fi
+  exit 0
+fi
+exit 1
+`,
+	)
 
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "test-pp-cli"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(`module example.com/test-pp-cli
