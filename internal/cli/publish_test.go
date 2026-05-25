@@ -355,6 +355,7 @@ exit 42
 `), 0o755))
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_GO_CALLS", callsPath)
+	t.Setenv("GOTOOLCHAIN", "auto")
 
 	result := runGoVulnCheck(dir)
 	assert.False(t, result.Passed)

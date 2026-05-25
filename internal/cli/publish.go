@@ -907,7 +907,7 @@ func runGoCommandCheckWithEnv(dir, name string, timeout time.Duration, env []str
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = envWithOverrides(os.Environ(), env)
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -920,6 +920,28 @@ func runGoCommandCheckWithEnv(dir, name string, timeout time.Duration, env []str
 		return CheckResult{Name: name, Passed: false, Error: errMsg}
 	}
 	return CheckResult{Name: name, Passed: true}
+}
+
+func envWithOverrides(base, overrides []string) []string {
+	overrideKeys := make(map[string]struct{}, len(overrides))
+	for _, entry := range overrides {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			overrideKeys[key] = struct{}{}
+		}
+	}
+
+	env := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, exists := overrideKeys[key]; exists {
+				continue
+			}
+		}
+		env = append(env, entry)
+	}
+	return append(env, overrides...)
 }
 
 func runGoVulnCheck(dir string) CheckResult {
