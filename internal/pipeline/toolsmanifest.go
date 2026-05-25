@@ -366,6 +366,7 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		NoAuth:      ep.NoAuth,
 		Params:      make([]ManifestParam, 0, len(ep.Params)+len(ep.Body)),
 	}
+	publicNames := reservedManifestParamNames(ep)
 
 	// Regular params. A param ends up at "path" when the runtime
 	// substitutes it into the URL — that's true for both positional
@@ -381,7 +382,7 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		if p.Positional || p.PathParam {
 			loc = "path"
 		}
-		name := p.PublicInputName()
+		name := uniqueManifestParamName(p.PublicInputName(), publicNames)
 		wireName := p.WireName()
 		if loc == "path" {
 			wireName = p.Name
@@ -399,7 +400,7 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 
 	// Body params → body.
 	for _, p := range ep.Body {
-		name := p.PublicInputName()
+		name := uniqueManifestParamName(p.PublicInputName(), publicNames)
 		tool.Params = append(tool.Params, ManifestParam{
 			Name:        name,
 			WireName:    manifestWireName(name, p.BodyWireName()),
@@ -423,6 +424,34 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 	}
 
 	return tool
+}
+
+func uniqueManifestParamName(name string, used map[string]struct{}) string {
+	if name == "" {
+		name = "param"
+	}
+	if _, ok := used[name]; !ok {
+		used[name] = struct{}{}
+		return name
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", name, n)
+		if _, ok := used[candidate]; !ok {
+			used[candidate] = struct{}{}
+			return candidate
+		}
+	}
+}
+
+// reservedManifestParamNames seeds generator-reserved public names only.
+// buildManifestTool adds endpoint params to the same map before body params.
+func reservedManifestParamNames(ep spec.Endpoint) map[string]struct{} {
+	names := map[string]struct{}{}
+	switch strings.ToUpper(ep.Method) {
+	case "POST", "PUT", "PATCH":
+		names["stdin"] = struct{}{}
+	}
+	return names
 }
 
 func manifestWireName(publicName, wireName string) string {

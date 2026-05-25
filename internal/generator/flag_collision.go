@@ -70,16 +70,17 @@ func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJob
 	// Pass 1: query/path params populate the flag<Camel> namespace.
 	ep.Params = uniquifyIdentifiers(ep.Params, "flag", flagIdents, flagNames)
 
-	// Pass 2: body fields populate the body<Camel> namespace, but their cobra
-	// flag names share the namespace with everything we just registered.
+	// Pass 2: body fields populate the body<Camel> namespace, but their public
+	// input names share the namespace with every endpoint param. Positional path
+	// params do not register cobra flags, but they do register MCP inputs, so a
+	// body field named the same as a path param still needs a distinct public
+	// name while keeping its wire-side body key unchanged.
 	bodyFlagNames := make(map[string]struct{}, len(flagNames)+len(ep.Params))
 	for k := range flagNames {
 		bodyFlagNames[k] = struct{}{}
 	}
 	for _, p := range ep.Params {
-		if !p.Positional {
-			bodyFlagNames[publicFlagName(p)] = struct{}{}
-		}
+		bodyFlagNames[publicFlagName(p)] = struct{}{}
 	}
 	// renderBodyVarDecls and renderBodyFlagRegs recurse into nested object
 	// Fields on the JSON-body path, so the dedup pass must walk the same
@@ -111,6 +112,24 @@ func uniquifyBodyTree(body []spec.Param, identPrefix, flagPrefix string, usedIde
 	out := make([]spec.Param, len(body))
 	for i, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if flagPrefix == "" {
+				flag := publicFlagName(p)
+				if _, flagTaken := usedFlags[flag]; flagTaken {
+					for n := 2; ; n++ {
+						// Name is the stable wire-root for suffix variants; IdentName
+						// is only the public override selected by this dedupe pass.
+						candidate := fmt.Sprintf("%s_%d", p.Name, n)
+						candFlag := flagName(candidate)
+						if _, flagTaken := usedFlags[candFlag]; !flagTaken {
+							p.IdentName = candidate
+							usedFlags[candFlag] = struct{}{}
+							break
+						}
+					}
+				} else {
+					usedFlags[flag] = struct{}{}
+				}
+			}
 			childIdent := identPrefix + toCamel(paramIdent(p))
 			childFlag := joinFlag(flagPrefix, publicFlagName(p))
 			p.Fields = uniquifyBodyTree(p.Fields, childIdent, childFlag, usedIdents, usedFlags)
