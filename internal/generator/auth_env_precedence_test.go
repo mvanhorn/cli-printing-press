@@ -56,6 +56,65 @@ func TestAuthHeader_ClientCredentialsDoesNotUseSetupEnvVars(t *testing.T) {
 	require.NotEqual(t, -1, verifyIdx, "mock verification should short-circuit before token minting")
 	require.NotEqual(t, -1, mintIdx, "client_credentials mint path should still be emitted")
 	assert.Less(t, verifyIdx, mintIdx, "mock verification must not dial the real token endpoint")
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestClientCredentialsAccessTokenPreservesConfigAuthSource(t *testing.T) {
+	t.Setenv("CC_AUTH_TEST_CLIENT_ID", "")
+	t.Setenv("CC_AUTH_TEST_CLIENT_SECRET", "")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("access_token = \"disk-access-token\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AuthSource != "config" {
+		t.Fatalf("AuthSource after Load() = %q, want config", cfg.AuthSource)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer disk-access-token" {
+		t.Fatalf("AuthHeader() = %q, want Bearer disk-access-token", got)
+	}
+	if cfg.AuthSource != "config" {
+		t.Fatalf("AuthSource after AuthHeader() = %q, want config", cfg.AuthSource)
+	}
+}
+
+func TestClientCredentialsAccessTokenCorrectsEnvFlowInputSource(t *testing.T) {
+	t.Setenv("CC_AUTH_TEST_CLIENT_ID", "client-id")
+	t.Setenv("CC_AUTH_TEST_CLIENT_SECRET", "client-secret")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("access_token = \"disk-access-token\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AuthSource != "env:CC_AUTH_TEST_CLIENT_SECRET" {
+		t.Fatalf("AuthSource after Load() = %q, want env:CC_AUTH_TEST_CLIENT_SECRET", cfg.AuthSource)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer disk-access-token" {
+		t.Fatalf("AuthHeader() = %q, want Bearer disk-access-token", got)
+	}
+	if cfg.AuthSource != "oauth2" {
+		t.Fatalf("AuthSource after AuthHeader() = %q, want oauth2", cfg.AuthSource)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "client_credentials_source_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestClientCredentialsAccessToken")
 }
 
 func TestClientCredentialsEnvVarsSkipTenantSetupInput(t *testing.T) {
@@ -583,6 +642,77 @@ func TestAuthHeader_EnvVarWinsOverFileToken(t *testing.T) {
 				"env-var check must appear BEFORE AccessToken check for type %q", tc.authType)
 		})
 	}
+}
+
+func TestAuthHeader_PreservesConfigAuthSourceForStoredBearerToken(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bearer-source")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "bearer_token",
+		Header:  "Authorization",
+		EnvVars: []string{"BEARER_SOURCE_TOKEN"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "bearer-source-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestAuthHeaderPreservesConfigAuthSourceForStoredBearerToken(t *testing.T) {
+	t.Setenv("BEARER_SOURCE_TOKEN", "")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("source_token = \"disk-token\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AuthSource != "config" {
+		t.Fatalf("AuthSource after Load() = %q, want config", cfg.AuthSource)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer disk-token" {
+		t.Fatalf("AuthHeader() = %q, want Bearer disk-token", got)
+	}
+	if cfg.AuthSource != "config" {
+		t.Fatalf("AuthSource after AuthHeader() = %q, want config", cfg.AuthSource)
+	}
+}
+
+func TestAuthHeaderKeepsEnvAuthSourceWhenEnvOverridesConfig(t *testing.T) {
+	t.Setenv("BEARER_SOURCE_TOKEN", "env-token")
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("source_token = \"disk-token\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AuthSource != "env:BEARER_SOURCE_TOKEN" {
+		t.Fatalf("AuthSource after Load() = %q, want env:BEARER_SOURCE_TOKEN", cfg.AuthSource)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer env-token" {
+		t.Fatalf("AuthHeader() = %q, want Bearer env-token", got)
+	}
+	if cfg.AuthSource != "env:BEARER_SOURCE_TOKEN" {
+		t.Fatalf("AuthSource after AuthHeader() = %q, want env:BEARER_SOURCE_TOKEN", cfg.AuthSource)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "auth_source_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestAuthHeader")
 }
 
 // TestAuthHeader_BearerTokenPrefixOverride pins that a bearer_token spec

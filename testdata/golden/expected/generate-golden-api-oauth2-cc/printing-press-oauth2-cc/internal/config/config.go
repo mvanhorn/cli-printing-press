@@ -103,7 +103,9 @@ func (c *Config) AuthHeader() string {
 	// win. Sending the client_id as Authorization: Bearer surfaces as
 	// token_rejected at the API.
 	if c.AccessToken != "" {
-		c.AuthSource = "oauth2"
+		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
+			c.AuthSource = "oauth2"
+		}
 		return "Bearer " + c.AccessToken
 	}
 	return ""
