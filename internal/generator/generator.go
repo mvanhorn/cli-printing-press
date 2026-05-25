@@ -271,6 +271,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"paramIdent":                         paramIdent,
 		"paramWireName":                      paramWireName,
 		"typeFieldIdent":                     typeFieldIdent,
+		"typeFieldJSONTagComment":            typeFieldJSONTagComment,
 		"safeTypeName":                       safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
 			for _, td := range types {
@@ -1710,6 +1711,9 @@ func (g *Generator) renderSingleFiles() error {
 	}
 
 	for tmplName, outPath := range singleFiles {
+		if tmplName == "types.go.tmpl" && g.shouldPreserveExistingTypesFile(outPath) {
+			continue
+		}
 		var data any
 		switch tmplName {
 		case "readme.md.tmpl", "agents.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
@@ -1752,6 +1756,26 @@ func (g *Generator) renderSingleFiles() error {
 	}
 
 	return nil
+}
+
+func (g *Generator) shouldPreserveExistingTypesFile(outPath string) bool {
+	if g == nil || g.Spec == nil || g.Spec.SpecSource != "sniffed" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(g.OutputDir, outPath))
+	if err != nil {
+		return false
+	}
+	return generatedTypesFileHasDeclarations(string(data))
+}
+
+func generatedTypesFileHasDeclarations(content string) bool {
+	for line := range strings.SplitSeq(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "type ") {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Generator) renderOptionalSupportFiles() error {
@@ -3927,12 +3951,27 @@ func goType(t string) string {
 // Unlike goType (used for CLI flags which are always primitives),
 // this maps object/array types to json.RawMessage for type fidelity.
 func goStructType(t string) string {
+	if ref, ok := strings.CutPrefix(t, "ref:"); ok {
+		return safeTypeName(ref)
+	}
+	if ref, ok := strings.CutPrefix(t, "[]ref:"); ok {
+		return "[]" + safeTypeName(ref)
+	}
 	switch primitiveKind(t) {
 	case "object", "array":
 		return "json.RawMessage"
 	default:
 		return goType(t)
 	}
+}
+
+func typeFieldJSONTagComment(f spec.TypeField) string {
+	for _, r := range f.Name {
+		if r > unicode.MaxASCII {
+			return f.Name
+		}
+	}
+	return ""
 }
 
 func goStoreType(sqlType string) string {

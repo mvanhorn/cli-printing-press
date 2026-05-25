@@ -67,6 +67,12 @@ func TestWriteSpec(t *testing.T) {
 		},
 		Types: map[string]spec.TypeDef{},
 	}
+	apiSpec.Types["Widget"] = spec.TypeDef{
+		Fields: []spec.TypeField{
+			{Name: "id", Type: "string"},
+			{Name: "label", Type: "string", OmitEmpty: true},
+		},
+	}
 	apiSpec.AuthWarnings = []string{`rejected auth candidate "keywords" from body: search input`}
 
 	outputPath := filepath.Join(t.TempDir(), "nested", "spec.yaml")
@@ -76,12 +82,64 @@ func TestWriteSpec(t *testing.T) {
 	data, err := os.ReadFile(outputPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "auth_warnings:")
+	assert.Contains(t, string(data), "omit_empty: true")
+	assert.NotContains(t, string(data), "omitempty: true")
 
 	parsed, err := spec.ParseBytes(data)
 	require.NoError(t, err)
 	assert.Equal(t, apiSpec.Name, parsed.Name)
 	assert.Equal(t, apiSpec.BaseURL, parsed.BaseURL)
 	assert.Equal(t, apiSpec.AuthWarnings, parsed.AuthWarnings)
+	require.True(t, parsed.Types["Widget"].Fields[1].OmitEmpty)
+}
+
+func TestAnalyzeCapture_PrefersCanonicalCollectionEnvelope(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := AnalyzeCapture(&EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/api/search",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"categories":[{"id":"cat"}],"items":[{"id":"item","title":"Item"}]}`,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	var endpoint spec.Endpoint
+	found := false
+	for _, resource := range apiSpec.Resources {
+		for _, candidate := range resource.Endpoints {
+			if candidate.Path == "/api/search" {
+				endpoint = candidate
+				found = true
+			}
+		}
+	}
+	require.True(t, found, "expected /api/search endpoint")
+	assert.Equal(t, "items", endpoint.ResponsePath)
+	assert.Equal(t, spec.ResponseDef{Type: "array", Item: "SearchItem"}, endpoint.Response)
+	require.Contains(t, apiSpec.Types, "SearchItem")
+	require.Len(t, apiSpec.Types["SearchItem"].Fields, 2)
+	assert.Equal(t, "id", apiSpec.Types["SearchItem"].Fields[0].Name)
+	assert.Equal(t, "title", apiSpec.Types["SearchItem"].Fields[1].Name)
+}
+
+func TestSingularizeSESWords(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"cases":     "case",
+		"responses": "response",
+		"licenses":  "license",
+	}
+	for input, want := range tests {
+		assert.Equal(t, want, singularize(input))
+	}
 }
 
 func TestDeriveNameFromURL(t *testing.T) {
