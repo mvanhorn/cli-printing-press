@@ -4676,13 +4676,13 @@ func TestGenerateStoreSubResourceUpsertBindingOrder(t *testing.T) {
 
 	// The argument bindings must follow that same order.
 	assert.Regexp(t,
-		`(?s)id,\s+lookupFieldValue\(obj, "domains_id"\),\s+string\(data\),\s+time\.Now\(\),`,
+		`(?s)id,\s+lookupFieldValue\(obj, "domains_id"\),\s+string\(data\),\s+time\.Now\(\)\.UTC\(\)\.Format\(time\.RFC3339\),`,
 		src,
 		"upsertVerifyTx binding order must match (id, domains_id, data, synced_at) column order")
 
 	// And the swapped order must be absent.
 	assert.NotRegexp(t,
-		`(?s)id,\s+string\(data\),\s+time\.Now\(\),\s+lookupFieldValue\(obj, "domains_id"\),`,
+		`(?s)id,\s+string\(data\),\s+time\.Now\(\)\.UTC\(\)\.Format\(time\.RFC3339\),\s+lookupFieldValue\(obj, "domains_id"\),`,
 		src,
 		"swapped (id, data, synced_at, fk) binding order must not be emitted")
 }
