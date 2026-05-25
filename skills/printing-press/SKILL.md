@@ -1717,6 +1717,68 @@ curl -s -o /dev/null -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>
 
 Or use `WebFetch` if curl is unavailable. The goal is one real response code.
 
+### OAuth2 Grant Probe
+
+If the resolved spec declares `auth.type: oauth2` and has an interactive
+authorization URL (`authorizationCode` or `implicit` flow in OpenAPI, or an
+equivalent internal YAML auth field), the generic reachability check is not
+enough. After the base URL check would otherwise pass, verify the OAuth grant
+entry point with the user's real public OAuth input before Phase 2. This probe
+is read-only: it stops at the provider's consent, login, or error page and does
+not exchange a code, request a token, or ask the user to approve consent.
+
+Do not run this grant probe for OAuth2 `client_credentials` flows that only have
+a token URL. Those are server-to-server credentials, not browser grant flows, and
+probing the token endpoint would require secret material or a write-like auth
+attempt. The base reachability check plus later mock/live auth verification cover
+that shape.
+
+**Required inputs:** Use the `client_id` env var or public auth-flow input
+already resolved during Phase 0.5 and Pre-Generation Auth Enrichment. If the
+spec exposes `x-auth-vars`, prefer the entry with `kind: auth_flow_input`,
+`sensitive: false`, and a name or description identifying it as the OAuth
+`client_id`. If the real client id is missing, HOLD before generation and tell
+the user exactly which env var to set. Do not substitute a fake client id; fake
+ids can produce provider-specific errors that look like transport quirks.
+
+Build the authorize URL from the resolved spec, not from a guessed provider
+default:
+
+- `client_id`: the real public client id from the env var above.
+- `redirect_uri`: the redirect URI declared in the spec or auth metadata.
+- `response_type=code` for authorization-code grants, or the spec's documented
+  response type for implicit grants.
+- `scope`, `audience`, `tenant`, `state`, `prompt`, or other provider-required
+  params when the spec or vendor docs require them. Use a benign probe value for
+  `state` if required.
+
+Use a redirect-limited GET and inspect the final URL and response class:
+
+```bash
+AUTH_URL="<authorization_url_with_required_query_params>"
+curl -sS -L --max-redirs 3 -o /dev/null -w "%{http_code} %{url_effective}\n" "$AUTH_URL"
+```
+
+Interpret the result before Phase 2:
+
+| OAuth probe result | Action |
+|--------------------|--------|
+| Final URL stays on the provider's authorization/login/consent host and does not include `error=` | **PASS** - the grant entry point is reachable; proceed to Phase 2 |
+| Final URL or response body reports `invalid_request`, `invalid_client`, `redirect_uri_mismatch`, `unauthorized_client`, `unsupported_response_type`, or equivalent | **HARD STOP** - OAuth config is misconfigured; surface the provider error and point the user to the mismatched client id, redirect URI, app type, tenant, or required scope |
+| Final URL lands on a generic non-OAuth error page, marketing page, or unrelated login landing page | **WARN** - flag endpoint ambiguity or provider-specific routing for manual review before generation |
+| Timeout/DNS/connection refused | **WARN** - same handling as the generic reachability WARN |
+
+On HARD STOP, do not generate. Present a specific, provider-neutral message:
+
+> "WARNING: `<API>`'s OAuth authorize probe failed before generation. The
+> provider returned `<error_or_final_url>`. Check that the spec's
+> `authorization_url`, `redirect_uri`, `response_type`, client id env var, app
+> type, tenant, and required scopes match the registered OAuth application."
+
+This OAuth probe is additive to the base reachability gate. Non-OAuth APIs
+(`api_key`, `bearer_token`, `cookie`, `composed`, `session_handshake`, `none`)
+skip it entirely.
+
 **If the check returns 403/429 with bot-protection evidence and `probe-reachability` has not already run for this URL during Phase 1.7's Direct HTTP challenge rule, run it now before consulting the decision matrix:**
 
 ```bash
