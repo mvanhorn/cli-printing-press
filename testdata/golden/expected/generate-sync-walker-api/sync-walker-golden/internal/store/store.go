@@ -314,6 +314,9 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 		}
+		if err := s.migrateExtras(ctx, conn); err != nil {
+			return fmt.Errorf("running extra migrations: %w", err)
+		}
 		// Stamp the schema version. On a fresh DB this writes the current
 		// StoreSchemaVersion; on an already-stamped DB this is a no-op
 		// write of the same value.
