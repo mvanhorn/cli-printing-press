@@ -1857,6 +1857,230 @@ func TestWriteManifestForGeneratePreservesExistingDurableDescription(t *testing.
 	assert.Equal(t, existing, got.Description)
 }
 
+func TestWriteManifestForGeneratePreservesExistingManifestExtras(t *testing.T) {
+	dir := t.TempDir()
+	existingRaw := `{
+  "schema_version": 1,
+  "api_name": "synthetic-polymarket",
+  "cli_name": "synthetic-polymarket-pp-cli",
+  "run_id": "20260523-171100",
+  "owner": "original-owner",
+  "printer": "original-printer",
+  "printer_name": "Original Printer",
+  "spec_url": "https://example.com/openapi.json",
+  "api_version": "2026-05-23",
+  "category": "other",
+  "novel_features": [
+    {
+      "name": "Market scanner",
+      "command": "markets scan",
+      "description": "Finds active markets"
+    }
+  ],
+  "operator_note": "published-library override"
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(existingRaw), 0o644))
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "synthetic-polymarket",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name: "synthetic-polymarket",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.JSONEq(t, `"published-library override"`, string(raw["operator_note"]))
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "20260523-171100", got.RunID)
+	assert.Equal(t, "original-owner", got.Owner)
+	assert.Equal(t, "original-printer", got.Printer)
+	assert.Equal(t, "Original Printer", got.PrinterName)
+	assert.Equal(t, "https://example.com/openapi.json", got.SpecURL)
+	assert.Equal(t, "2026-05-23", got.APIVersion)
+	assert.Equal(t, "other", got.Category)
+	require.Len(t, got.NovelFeatures, 1)
+	assert.Equal(t, "Market scanner", got.NovelFeatures[0].Name)
+}
+
+func TestWriteManifestForGenerateDoesNotPreserveCrossAPIManifestExtras(t *testing.T) {
+	dir := t.TempDir()
+	existingRaw := `{
+  "schema_version": 1,
+  "api_name": "old-api",
+  "cli_name": "old-api-pp-cli",
+  "run_id": "20260523-171100",
+  "owner": "old-owner",
+  "printer": "old-printer",
+  "category": "other",
+  "novel_features": [
+    {
+      "name": "Old scanner",
+      "command": "old scan",
+      "description": "Old feature"
+    }
+  ],
+  "operator_note": "published-library override"
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(existingRaw), 0o644))
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "new-api",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name: "new-api",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.NotContains(t, raw, "operator_note")
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "new-api", got.APIName)
+	assert.NotEqual(t, "20260523-171100", got.RunID)
+	assert.Empty(t, got.Owner)
+	assert.Empty(t, got.Printer)
+	assert.Empty(t, got.Category)
+	assert.Empty(t, got.NovelFeatures)
+}
+
+func TestWriteManifestForGenerateDoesNotPreserveStaleSpecURLWhenFreshSourceIsPath(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.json")
+	require.NoError(t, os.WriteFile(specPath, []byte(`{"openapi":"3.0.0","info":{"title":"Synthetic Polymarket","version":"1.0.0"},"paths":{}}`), 0o644))
+	existingRaw := `{
+  "schema_version": 1,
+  "api_name": "synthetic-polymarket",
+  "cli_name": "synthetic-polymarket-pp-cli",
+  "spec_url": "https://example.com/old-openapi.json",
+  "operator_note": "published-library override"
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(existingRaw), 0o644))
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "synthetic-polymarket",
+		SpecSrcs:  []string{specPath},
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name: "synthetic-polymarket",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.NotContains(t, raw, "operator_note")
+	assert.NotContains(t, raw, "spec_url")
+
+	got := readPublishedManifest(t, dir)
+	assert.Empty(t, got.SpecURL)
+	assert.Equal(t, specPath, got.SpecPath)
+}
+
+func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *testing.T) {
+	dir := t.TempDir()
+	existingRaw := `{
+  "schema_version": 1,
+  "api_name": "synthetic-polymarket",
+  "cli_name": "synthetic-polymarket-pp-cli",
+  "category": "other",
+  "display_name": "Stale Display",
+  "owner": "stale-owner",
+  "printer": "stale-printer",
+  "printer_name": "Stale Printer",
+  "novel_features": [
+    {
+      "name": "Stale scanner",
+      "command": "stale scan",
+      "description": "Old feature"
+    }
+  ],
+  "operator_note": "published-library override"
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(existingRaw), 0o644))
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:     "synthetic-polymarket",
+		OutputDir:   dir,
+		DisplayName: "Fresh Display",
+		Owner:       "fresh-owner",
+		Printer:     "fresh-printer",
+		PrinterName: "Fresh Printer",
+		NovelFeatures: []NovelFeatureManifest{
+			{
+				Name:        "Fresh scanner",
+				Command:     "fresh scan",
+				Description: "Fresh feature",
+			},
+		},
+		Spec: &spec.APISpec{
+			Name:     "synthetic-polymarket",
+			Category: "travel",
+			Auth:     spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.JSONEq(t, `"published-library override"`, string(raw["operator_note"]))
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "travel", got.Category)
+	assert.Equal(t, "Fresh Display", got.DisplayName)
+	assert.Equal(t, "fresh-owner", got.Owner)
+	assert.Equal(t, "fresh-printer", got.Printer)
+	assert.Equal(t, "Fresh Printer", got.PrinterName)
+	require.Len(t, got.NovelFeatures, 1)
+	assert.Equal(t, "Fresh scanner", got.NovelFeatures[0].Name)
+}
+
+func TestWriteManifestForGenerateEmptyFreshNovelFeaturesClearExisting(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, CLIManifest{
+		APIName:  "synthetic-polymarket",
+		CLIName:  "synthetic-polymarket-pp-cli",
+		Category: "other",
+		NovelFeatures: []NovelFeatureManifest{
+			{
+				Name:        "Stale scanner",
+				Command:     "stale scan",
+				Description: "Old feature",
+			},
+		},
+	})
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:       "synthetic-polymarket",
+		OutputDir:     dir,
+		NovelFeatures: []NovelFeatureManifest{},
+		Spec: &spec.APISpec{
+			Name: "synthetic-polymarket",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Empty(t, got.NovelFeatures)
+}
+
 func TestWriteManifestForGenerateReplacesLiteralEllipsisDescription(t *testing.T) {
 	dir := t.TempDir()
 	fresh := "Curated catalog description without a truncation marker."

@@ -665,10 +665,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if runID == "" {
 		runID = now.Format(runIDTimeFormat)
 	}
-	var existingDescription string
-	if existing, err := ReadCLIManifest(p.OutputDir); err == nil {
-		existingDescription = existing.Description
-	}
+	existing, existingRaw, hasExisting := readExistingManifestForGenerate(p.OutputDir)
 	m := CLIManifest{
 		SchemaVersion:        CurrentCLIManifestSchemaVersion,
 		GeneratedAt:          now,
@@ -758,17 +755,56 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if description := strings.TrimSpace(p.Description); description != "" {
 		m.Description = description
 	}
+	preserveExisting := hasExisting && sameGenerateManifestLineage(existing, m)
 	// A durable manifest description may be hand-edited after generation.
 	// Operators can delete or replace the field when they want changed spec
 	// prose to become canonical on a later generate run.
-	if preserveExistingDescription(existingDescription) {
-		m.Description = existingDescription
+	if preserveExisting && preserveExistingDescription(existing.Description) {
+		m.Description = existing.Description
 	}
 	if len(p.NovelFeatures) > 0 {
 		m.NovelFeatures = p.NovelFeatures
+	} else if p.NovelFeatures != nil {
+		m.NovelFeatures = []NovelFeatureManifest{}
+	} else if preserveExisting && len(existing.NovelFeatures) > 0 {
+		m.NovelFeatures = existing.NovelFeatures
 	}
 
-	if err := WriteCLIManifest(p.OutputDir, m); err != nil {
+	if preserveExisting && m.Category == "" && strings.TrimSpace(existing.Category) != "" {
+		m.Category = existing.Category
+	}
+	if preserveExisting && p.RunID == "" && strings.TrimSpace(existing.RunID) != "" {
+		m.RunID = existing.RunID
+		runID = existing.RunID
+	}
+	if preserveExisting {
+		if p.Owner == "" && strings.TrimSpace(existing.Owner) != "" {
+			m.Owner = existing.Owner
+		}
+		if p.Printer == "" && strings.TrimSpace(existing.Printer) != "" {
+			m.Printer = existing.Printer
+		}
+		if p.PrinterName == "" && strings.TrimSpace(existing.PrinterName) != "" {
+			m.PrinterName = existing.PrinterName
+		}
+	} else {
+		existingRaw = nil
+	}
+
+	clearFields := map[string]struct{}{}
+	if preserveExisting && p.NovelFeatures != nil && len(p.NovelFeatures) == 0 {
+		clearFields["novel_features"] = struct{}{}
+	}
+	if preserveExisting {
+		if m.SpecURL != "" && m.SpecPath == "" {
+			clearFields["spec_path"] = struct{}{}
+		}
+		if m.SpecPath != "" && m.SpecURL == "" {
+			clearFields["spec_url"] = struct{}{}
+		}
+	}
+
+	if err := writeCLIManifestForGenerate(p.OutputDir, m, existingRaw, clearFields); err != nil {
 		return err
 	}
 	// Emit the customizations index alongside .printing-press.json. The
@@ -781,6 +817,61 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// Emit MCPB manifest.json next to .printing-press.json. Pass the
 	// in-memory struct so we don't re-read the file we just wrote.
 	return WriteMCPBManifestFromStruct(p.OutputDir, m)
+}
+
+func readExistingManifestForGenerate(dir string) (CLIManifest, map[string]json.RawMessage, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	if err != nil {
+		return CLIManifest{}, nil, false
+	}
+	var m CLIManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return CLIManifest{}, nil, false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		raw = nil
+	}
+	return m, raw, true
+}
+
+func writeCLIManifestForGenerate(dir string, m CLIManifest, existingRaw map[string]json.RawMessage, clearFields map[string]struct{}) error {
+	if len(existingRaw) == 0 {
+		return WriteCLIManifest(dir, m)
+	}
+	generatedFields, err := marshalCLIManifestFields(m)
+	if err != nil {
+		return err
+	}
+	merged := maps.Clone(existingRaw)
+	for key := range clearFields {
+		delete(merged, key)
+	}
+	maps.Copy(merged, generatedFields)
+	data, err := marshalCLIManifestObject(merged)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
+		return fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return nil
+}
+
+func sameGenerateManifestLineage(existing, generated CLIManifest) bool {
+	if existing.APIName == "" || generated.APIName == "" || existing.APIName != generated.APIName {
+		return false
+	}
+	if existing.SpecChecksum != "" && generated.SpecChecksum != "" {
+		return existing.SpecChecksum == generated.SpecChecksum
+	}
+	if (existing.SpecURL != "" || existing.SpecPath != "") && (generated.SpecURL != "" || generated.SpecPath != "") {
+		if existing.SpecURL != "" || generated.SpecURL != "" {
+			return existing.SpecURL == generated.SpecURL
+		}
+		return existing.SpecPath == generated.SpecPath
+	}
+	return true
 }
 
 func preserveExistingDescription(description string) bool {
