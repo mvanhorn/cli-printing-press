@@ -98,6 +98,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
         response_format: json     # string optional: json | html | binary; defaults to json
         html_extract:             # object optional, only with response_format: html
           mode: page              # string optional: page | links | embedded-json
+          link_prefixes: []       # []string optional for links; path-segment-anchored prefixes
           script_selector: ""     # string optional for embedded-json; defaults to script#__NEXT_DATA__
           json_path: ""           # string optional for embedded-json; empty returns the full JSON
         response_path: data       # string optional path to extract list payload from wrapper response
@@ -115,6 +116,20 @@ GET/HEAD HTML documents, including HTML pages with embedded JSON such as
 Next.js `__NEXT_DATA__` or schema.org JSON-LD; prefer `html_extract` modes
 `page`, `links`, or `embedded-json` before writing custom extraction code. Use
 `binary` for opaque byte payloads.
+
+**`html_extract.link_prefixes` are path-segment anchored.** In `mode: links`, a
+prefix such as `/items` keeps links whose path is exactly `/items` or starts
+with `/items/`. It does not keep `/items123.html`, `/items-archive`, or other
+same-string-prefix leaf paths where the next character is not `/`.
+
+The one exception is `/@`, which uses simple string-prefix matching so
+social-media-style handle paths such as `/@alice` and `/@bob` are kept.
+
+To keep all links under a subtree regardless of the leaf segment shape, choose
+the parent directory as the prefix. For paths like `/items/123.html` and
+`/items/456.html`, use `link_prefixes: ["/items"]`. Do not use a partial leaf
+prefix such as `/items/1` unless the target path is exactly `/items/1` or has a
+slash boundary after it.
 
 **`types.X.fields` is a list, not a map.** Each field is an item with
 `- name: <field-name>` followed by `type:`, `description:`, and other field
