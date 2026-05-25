@@ -469,7 +469,10 @@ RECENT_CREATED_LINES=$(gh issue list \
   --limit 100 2>/dev/null || true)
 EXPECTED_CREATES=0
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
-  [[ "${WU_DEDUP[$wu_idx]}" == comment:* ]] || EXPECTED_CREATES=$((EXPECTED_CREATES + 1))
+  if [[ "${WU_DEDUP[$wu_idx]}" != comment:* ]]; then
+    KIND_TMP=$(head -1 "$ISSUE_TMPDIR/issue-$wu_idx" 2>/dev/null)
+    [[ "$KIND_TMP" == scrub-failed ]] || EXPECTED_CREATES=$((EXPECTED_CREATES + 1))
+  fi
 done
 RECENT_CREATED_COUNT=$(printf '%s\n' "$RECENT_CREATED_LINES" | sed '/^$/d' | wc -l | tr -d ' ')
 if [ "$RECENT_CREATED_COUNT" -gt "$EXPECTED_CREATES" ]; then
