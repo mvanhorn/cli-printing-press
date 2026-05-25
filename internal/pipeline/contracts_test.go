@@ -266,6 +266,21 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Contains(t, starters, "partial results: %d of %d fetches failed; average computed over %d items")
 }
 
+func TestPrintingPressSkillRequiresScanAndFilterCaps(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	block := substringBetween(t, skill, "12. **Scan-and-filter caps**", "#### Verify-friendly RunE template")
+
+	assert.Contains(t, block, `"list, filter locally, fan out to detail"`)
+	assert.Contains(t, block, "**`--max-scan-pages int`**")
+	assert.Contains(t, block, "**`scanned_<unit>` in the JSON envelope**")
+	assert.Contains(t, block, "**`note` in zero-match JSON output**")
+	assert.Contains(t, block, "**Clear separation between output and scan caps**")
+	assert.Contains(t, block, "`--limit` controls how")
+	assert.Contains(t, block, "`--max-scan-pages` controls how")
+	assert.Contains(t, block, "cliutil.IsDogfoodEnv()")
+	assert.Contains(t, block, "raise --max-scan-pages to widen the search")
+}
+
 func TestAgentBrowserInstallRequiresPostInstallSetup(t *testing.T) {
 	setup := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "setup-checks.md"))
 	capture := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"))
