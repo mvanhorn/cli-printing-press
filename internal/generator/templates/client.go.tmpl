@@ -1110,10 +1110,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- end}}
 {{- else}}
 {{- if .EndpointTemplateVars}}
-{{- if .HasResourceBaseURLOverride}}
-	// Resource and endpoint BaseURL overrides flow through as absolute paths
-	// (https:// or http://); buildURL still substitutes any
-	// {placeholder} markers, but the relative-path concat with
+{{- if .HasAbsoluteRequestPath}}
+	// Resource and endpoint BaseURL overrides, plus absolute endpoint paths,
+	// flow through as absolute paths (https:// or http://). buildURL still
+	// substitutes any {placeholder} markers, but the relative-path concat with
 	// c.BaseURL must be skipped for absolute paths.
 	var targetURL string
 	var urlErr error
@@ -1132,10 +1132,10 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 {{- end}}
 {{- else}}
-{{- if .HasResourceBaseURLOverride}}
-	// Resource and endpoint BaseURL overrides flow through as absolute paths
-	// (https:// or http://); the resource template emits the full URL
-	// in `path` and we skip the c.BaseURL concat for those.
+{{- if .HasAbsoluteRequestPath}}
+	// Resource and endpoint BaseURL overrides, plus absolute endpoint paths,
+	// flow through as absolute paths (https:// or http://). Skip the
+	// c.BaseURL concat for those calls.
 	var targetURL string
 	if isAbsoluteURL(path) {
 		targetURL = path
@@ -2065,10 +2065,10 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 }
 {{- end}}
 
-{{if .HasResourceBaseURLOverride -}}
-// isAbsoluteURL reports whether path is already a full URL (resource or
-// endpoint BaseURL override emits the full URL into path; the relative-path
-// concat with c.BaseURL must be skipped for those calls).
+{{if .HasAbsoluteRequestPath -}}
+// isAbsoluteURL reports whether path is already a full URL. Resource or
+// endpoint BaseURL overrides and absolute endpoint paths emit full URLs into
+// path; the relative-path concat with c.BaseURL must be skipped for those calls.
 func isAbsoluteURL(path string) bool {
 	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
 }

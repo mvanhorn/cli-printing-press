@@ -3717,6 +3717,137 @@ func TestValidateRejectsResourceBaseURLWithProxyEnvelope(t *testing.T) {
 	assert.Contains(t, err.Error(), "base_url")
 }
 
+func TestValidateRejectsAbsoluteEndpointPathWithProxyEnvelope(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(*APISpec)
+	}{
+		{
+			name: "top-level endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.Endpoints["list"] = Endpoint{
+					Method:      "GET",
+					Path:        "https://other.example.com/items",
+					Description: "List",
+				}
+				s.Resources["items"] = items
+			},
+		},
+		{
+			name: "subresource endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.SubResources = map[string]Resource{
+					"children": {
+						Endpoints: map[string]Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "https://children.example.com/items",
+								Description: "List children",
+							},
+						},
+					},
+				}
+				s.Resources["items"] = items
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{
+				Name:          "proxytest",
+				Version:       "0.1.0",
+				BaseURL:       "https://proxy.example.com",
+				ClientPattern: "proxy-envelope",
+				Resources: map[string]Resource{
+					"items": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items", Description: "List"},
+						},
+					},
+				},
+			}
+			tc.mutate(s)
+
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "proxy-envelope")
+			assert.Contains(t, err.Error(), "absolute endpoint paths")
+		})
+	}
+}
+
+func TestValidateRejectsEndpointBaseURLWithAbsoluteEndpointPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(*APISpec)
+	}{
+		{
+			name: "top-level endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.Endpoints["list"] = Endpoint{
+					Method:      "GET",
+					Path:        "https://absolute.example.com/items",
+					BaseURL:     "https://override.example.com/v1",
+					Description: "List",
+				}
+				s.Resources["items"] = items
+			},
+		},
+		{
+			name: "subresource endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.SubResources = map[string]Resource{
+					"children": {
+						Endpoints: map[string]Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "https://children.example.com/items",
+								BaseURL:     "https://override.example.com/v1",
+								Description: "List children",
+							},
+						},
+					},
+				}
+				s.Resources["items"] = items
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{
+				Name:    "absolute-conflict",
+				Version: "0.1.0",
+				BaseURL: "https://api.example.com",
+				Resources: map[string]Resource{
+					"items": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items", Description: "List"},
+						},
+					},
+				},
+			}
+			tc.mutate(s)
+
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "base_url")
+			assert.Contains(t, err.Error(), "absolute endpoint path")
+		})
+	}
+}
+
 // TestValidateRejectsBasePathWithProxyEnvelope — proxy-envelope routes via
 // the envelope's Service/Path fields, not a URL-level prefix; a BasePath
 // would be silently ignored by the proxy. Validate must fail-fast.
@@ -3945,6 +4076,15 @@ func TestInferEndpointTemplateVarsFromBaseURLsFastPathSources(t *testing.T) {
 			want: "endpoint",
 		},
 		{
+			name: "absolute endpoint path",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.Endpoints["list"] = Endpoint{Method: "GET", Path: "https://{endpoint_path}.api.example.com/items/{id}"}
+				s.Resources["items"] = resource
+			},
+			want: "endpoint_path",
+		},
+		{
 			name: "subresource base url",
 			mutate: func(s *APISpec) {
 				resource := s.Resources["items"]
@@ -3978,6 +4118,31 @@ func TestInferEndpointTemplateVarsFromBaseURLsFastPathSources(t *testing.T) {
 			assert.Equal(t, []string{tc.want}, s.EndpointTemplateVars)
 		})
 	}
+}
+
+func TestInferEndpointTemplateVarsIgnoresAbsoluteEndpointPathParams(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:    "templated",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]Resource{
+			"items": {
+				Endpoints: map[string]Endpoint{
+					"get": {
+						Method: "GET",
+						Path:   "https://api.example.com/items/{id}",
+						Params: []Param{{Name: "id", Type: "string", Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	s.InferEndpointTemplateVarsFromBaseURLs()
+
+	assert.Empty(t, s.EndpointTemplateVars,
+		"path-segment params in absolute endpoint paths should stay command inputs, not env-backed template vars")
 }
 
 func TestValidateTierRouting(t *testing.T) {
@@ -4088,6 +4253,32 @@ func TestValidateTierRouting(t *testing.T) {
 				s.Resources["items"] = resource
 			},
 			wantErr: "base_url",
+		},
+		{
+			name: "absolute endpoint path conflict",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				endpoint := resource.Endpoints["list"]
+				endpoint.Path = "https://other.example.com/items"
+				resource.Endpoints["list"] = endpoint
+				s.Resources["items"] = resource
+			},
+			wantErr: "absolute endpoint paths",
+		},
+		{
+			name: "subresource absolute endpoint path conflict",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.SubResources = map[string]Resource{
+					"children": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "https://children.example.com/items", Description: "List children"},
+						},
+					},
+				}
+				s.Resources["items"] = resource
+			},
+			wantErr: "absolute endpoint paths",
 		},
 		{
 			name: "auth-bearing tier through resource base url must pass host review",
