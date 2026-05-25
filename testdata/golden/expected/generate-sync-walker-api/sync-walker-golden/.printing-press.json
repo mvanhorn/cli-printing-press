@@ -20,6 +20,6 @@
   "schema_version": 1,
   "spec_checksum": "sha256:2aa39c064cd068cb090102e22a446f9542fa06f75453d52e4fa9db5c21f27809",
   "spec_format": "internal",
-  "spec_path": "testdata/golden/fixtures/sync-walker-api.yaml",
+  "spec_path": "sync-walker-api.yaml",
   "spec_url": "file://testdata/golden/fixtures/sync-walker-api.yaml"
 }
