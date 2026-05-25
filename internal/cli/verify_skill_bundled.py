@@ -89,8 +89,11 @@ ARGS_RE = re.compile(
 )
 FLAG_DECL_RE = re.compile(
     r'(Persistent)?Flags\(\)\.'
-    r'(StringVar|BoolVar|IntVar|Int64Var|Float64Var|DurationVar|'
-    r'StringSliceVar|StringArrayVar|UintVar|Uint64Var)P?\('
+    r'(StringVar|BoolVar|IntVar|Int32Var|Int64Var|Float32Var|Float64Var|DurationVar|'
+    r'StringSliceVar|StringArrayVar|IntSliceVar|Int32SliceVar|Int64SliceVar|'
+    r'Float64SliceVar|BoolSliceVar|DurationSliceVar|'
+    r'UintVar|Uint32Var|Uint64Var|UintSliceVar|IPVar|IPSliceVar|Float32SliceVar|'
+    r'StringToStringVar|StringToIntVar|StringToInt64Var)P?\('
     r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
 )
 @dataclass
