@@ -10208,8 +10208,9 @@ func TestIsSyncAccessWarningClassification(t *testing.T) {
 }
 
 // TestGeneratedSyncMaxPagesAndStickyCursor verifies that the generated
-// sync command (a) defaults --max-pages to 100 (covers <=10k items/resource
-// at default page size; bigger resources opt in explicitly), (b) emits a
+// sync command (a) defaults --max-pages to 0 so normal runs are unlimited,
+// with a bounded dogfood default only when the operator did not pass the flag,
+// (b) emits a
 // structured sync_warning with reason "max_pages_cap_hit" on BOTH the flat
 // and dependent-resource code paths when the cap is reached, and (c) breaks
 // the pagination loop with a "stuck_pagination" sync_warning when the API
@@ -10275,11 +10276,16 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	require.NoError(t, err)
 	syncContent := string(syncGo)
 
-	// (a) Default --max-pages is 100 (covers <=10k items per resource at
-	// the default page size of 100; the old 10-page default silently
-	// truncated reference resources at 1000 items).
-	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
-		"sync.go must declare --max-pages with default 100")
+	// (a) Default --max-pages is 0 (unlimited) for normal users. Dogfood
+	// keeps a bounded default unless the operator explicitly passed the flag.
+	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 0,`,
+		"sync.go must declare --max-pages with default 0")
+	assert.Contains(t, syncContent, `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
+		"sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
+	assert.Contains(t, syncContent, `maxPages = 10`,
+		"sync.go must keep a dogfood-only page cap")
+	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
+		"sync.go must not retain the old finite 100-page default")
 	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"sync.go must not retain the old 10-page default")
 
@@ -10319,8 +10325,9 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	// (b4) The cap-hit guard must consume an effective value derived from
 	// both --latest-only AND --since. When --since is set, --latest-only is
 	// already a no-op for the maxPages pin (block at sync.go.tmpl ~154),
-	// and any cap hit reflects the default 100-page limit — a real anomaly
-	// worth surfacing. Passing the raw --latest-only flag value would
+	// and any cap hit reflects an explicit operator limit or the dogfood
+	// safety limit, a real anomaly worth surfacing. Passing the raw
+	// --latest-only flag value would
 	// silently suppress legitimate warnings on the --latest-only --since
 	// combined path. Pin the derivation and the callsites that consume it.
 	assert.Contains(t, syncContent,
@@ -10471,6 +10478,14 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 	assertVerifyEnvConcurrencyPin(t, string(syncGo), naming.CLI(gqlSpec.Name)+"/internal/cliutil", "GraphQL sync.go")
 	assert.Contains(t, string(syncGo), "sinceTS = ts.UTC().Format(time.RFC3339)",
 		"GraphQL sync --since must normalize duration-derived timestamps to UTC before query filters consume them")
+	assert.Contains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 0,`,
+		"GraphQL sync.go must declare --max-pages with default 0")
+	assert.Contains(t, string(syncGo), `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
+		"GraphQL sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
+	assert.Contains(t, string(syncGo), `maxPages = 10`,
+		"GraphQL sync.go dogfood cap must still bound generated syncs to 10 pages")
+	assert.NotContains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
+		"GraphQL sync.go must not retain the old 10-page default")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
@@ -11760,6 +11775,129 @@ func TestGenerateGraphQLCompiles(t *testing.T) {
 	// The generated project should compile
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:                "shopify-query",
+		Description:         "Shopify Admin GraphQL query fixture",
+		Version:             "2026-04",
+		BaseURL:             "https://example.myshopify.com",
+		GraphQLEndpointPath: "/admin/api/2026-04/graphql.json",
+		Auth:                spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/shopify-query-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Description: "Orders",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "Get an order",
+						ResponsePath: "data.order",
+						Params:       []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						Response:     spec.ResponseDef{Type: "object", Item: "Order"},
+					},
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List orders",
+						ResponsePath: "data.orders.nodes",
+						Params: []spec.Param{
+							{Name: "first", Type: "integer", Default: 100},
+							{Name: "after", Type: "string"},
+							{Name: "query", Type: "string", Description: "Shopify search filter"},
+						},
+						Pagination: &spec.Pagination{
+							Type:           "cursor",
+							LimitParam:     "first",
+							CursorParam:    "after",
+							NextCursorPath: "data.orders.pageInfo.endCursor",
+							HasMoreField:   "data.orders.pageInfo.hasNextPage",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Order"},
+					},
+				},
+			},
+			"fulfillment-orders": {
+				Description: "Fulfillment orders",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "Get a fulfillment order",
+						ResponsePath: "data.fulfillmentOrder",
+						Params:       []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						Response:     spec.ResponseDef{Type: "object", Item: "FulfillmentOrder"},
+					},
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List fulfillment orders",
+						ResponsePath: "data.fulfillmentOrders.nodes",
+						Params: []spec.Param{
+							{Name: "first", Type: "integer", Default: 100},
+							{Name: "after", Type: "string"},
+							{Name: "before", Type: "string"},
+						},
+						Pagination: &spec.Pagination{
+							Type:           "cursor",
+							LimitParam:     "first",
+							CursorParam:    "after",
+							NextCursorPath: "data.fulfillmentOrders.pageInfo.endCursor",
+							HasMoreField:   "data.fulfillmentOrders.pageInfo.hasNextPage",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "FulfillmentOrder"},
+					},
+				},
+			},
+			"customers": {
+				Description: "Customers",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List customers",
+						ResponsePath: "data.customers.nodes",
+						Params: []spec.Param{
+							{Name: "status", Type: "string"},
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Customer"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Order":            {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "name", Type: "string"}}},
+			"FulfillmentOrder": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "status", Type: "string"}}},
+			"Customer":         {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "email", Type: "string"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	ordersContent := generatedCLISourceContaining(t, outputDir, `variables["query"] = flagQuery`)
+	assert.Contains(t, ordersContent, `cmd.Flags().StringVar(&flagQuery, "query", "", "Shopify search filter")`)
+	assert.Contains(t, ordersContent, `if cmd.Flags().Changed("query") {`)
+	assert.Contains(t, ordersContent, `variables["query"] = flagQuery`)
+
+	queriesGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "queries.go"))
+	require.NoError(t, err)
+	queriesContent := string(queriesGo)
+	assert.Contains(t, queriesContent, "query($first: Int!, $after: String, $query: String)")
+	assert.Contains(t, queriesContent, "orders(first: $first, after: $after, query: $query)")
+	assert.Contains(t, queriesContent, "query($first: Int!, $after: String) {\n  fulfillmentOrders(first: $first, after: $after)")
+	assert.NotContains(t, queriesContent, "before: $before")
+	assert.NotContains(t, queriesContent, "fulfillmentOrders(first: $first, after: $after, query: $query)")
+	assert.Contains(t, queriesContent, "query {\n  customers {\n")
+	assert.NotContains(t, queriesContent, "query()")
+	assert.NotContains(t, queriesContent, "customers()")
 }
 
 func TestGraphQLFieldSelectionSupportsNestedSelections(t *testing.T) {
