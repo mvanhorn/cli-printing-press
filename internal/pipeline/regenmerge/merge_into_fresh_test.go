@@ -84,6 +84,28 @@ const placeholderQuery = ""
 func TestMergeIntoFreshTreePreservesStoreExtrasEdits(t *testing.T) {
 	t.Parallel()
 
+	snap, fresh, rel := writeStoreExtrasFixture(t)
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true}))
+
+	assertStoreExtrasMigrationPreserved(t, fresh, rel)
+}
+
+func TestMergeIntoFreshTreeNovelOnlyPreservesStoreExtrasEdits(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh, rel := writeStoreExtrasFixture(t)
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true, NovelOnly: true}))
+
+	assertStoreExtrasMigrationPreserved(t, fresh, rel)
+}
+
+func writeStoreExtrasFixture(t *testing.T) (string, string, string) {
+	t.Helper()
+
 	snap, fresh := makeMergeFixture(t)
 	rel := "internal/store/extras.go"
 	require.NoError(t, os.MkdirAll(filepath.Join(snap, "internal", "store"), 0o755))
@@ -132,10 +154,11 @@ func (s *Store) migrateExtras(ctx context.Context, conn *sql.Conn) error {
 	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), snapBody, 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), freshBody, 0o644))
 
-	report, err := Classify(snap, fresh, Options{Force: true})
-	require.NoError(t, err)
-	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true}))
+	return snap, fresh, rel
+}
 
+func assertStoreExtrasMigrationPreserved(t *testing.T, fresh, rel string) {
+	t.Helper()
 	got, err := os.ReadFile(filepath.Join(fresh, rel))
 	require.NoError(t, err)
 	assert.Contains(t, string(got), "novel_events",
