@@ -2062,6 +2062,7 @@ var ReservedCobraUseNames = map[string]struct{}{
 	"import":         {},
 	"jobs":           {},
 	"learnings":      {},
+	"login":          {},
 	"load":           {},
 	"orphans":        {},
 	"profile":        {},
@@ -2091,6 +2092,9 @@ func (s *APISpec) ParseTimeReservedCobraUseName(name string) bool {
 	kebab := snakeToKebab(name)
 	if kebab == "auth" {
 		return s.emitsAuthCommand()
+	}
+	if kebab == "login" {
+		return s.emitsTopLevelOAuthLogin()
 	}
 	if kebab == "health" {
 		return false
@@ -2128,6 +2132,14 @@ func (s *APISpec) emitsAuthCommand() bool {
 	// Traffic-analysis-only auth is not known at parse time; the generator
 	// handles that conditional collision once traffic hints are attached.
 	return s.Auth.Type != "none" || s.Auth.AuthorizationURL != ""
+}
+
+func (s *APISpec) emitsTopLevelOAuthLogin() bool {
+	if s == nil {
+		return false
+	}
+	return s.Auth.AuthorizationURL != "" &&
+		(s.Auth.EffectiveOAuth2Grant() != OAuth2GrantClientCredentials || s.Auth.TokenURL == "")
 }
 
 // validateReservedNames rejects specs whose top-level resource names would

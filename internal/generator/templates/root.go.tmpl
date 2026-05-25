@@ -352,6 +352,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- end}}
 {{- if .HasAuthCommand}}
 	rootCmd.AddCommand(newAuthCmd(flags))
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
+	rootCmd.AddCommand(newAuthLoginCmd(flags))
+{{- end}}
 {{- end}}
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
 	rootCmd.AddCommand(newProfileCmd(flags))

@@ -2091,6 +2091,9 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 	}
 	if g.shouldEmitAuth() {
 		names["auth"] = struct{}{}
+		if g.emitsTopLevelOAuthLogin() {
+			names["login"] = struct{}{}
+		}
 	}
 	if g.Spec.BearerRefresh.Enabled() {
 		names["refresh-bearer"] = struct{}{}
@@ -2605,6 +2608,11 @@ func (g *Generator) shouldEmitAuth() bool {
 	return g.Spec.Auth.Type != "none" ||
 		g.Spec.Auth.AuthorizationURL != "" ||
 		g.hasTrafficAnalysisHint("graphql_persisted_query")
+}
+
+func (g *Generator) emitsTopLevelOAuthLogin() bool {
+	return g.Spec.Auth.AuthorizationURL != "" &&
+		(g.Spec.Auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials || g.Spec.Auth.TokenURL == "")
 }
 
 func (g *Generator) renderMCPEntrypoint() error {
