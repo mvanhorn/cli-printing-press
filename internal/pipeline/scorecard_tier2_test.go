@@ -4277,3 +4277,83 @@ func newImportCmd(flags any) {}
 	assert.Equal(t, 3, scoreVision(build(false)))
 	assert.Equal(t, 4, scoreVision(build(true)))
 }
+
+func TestScoreVision_MaxReachableAndPartialStaysSub10(t *testing.T) {
+	build := func(includeLearn, includeFTS5 bool) string {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(
+		newSyncCmd(nil),
+		newSearchCmd(nil),
+		newExportCmd(nil),
+		newTailCmd(nil),
+		newImportCmd(nil),
+		newAnalyticsCmd(nil),
+	)
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+func newSyncCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+import "example.com/project/internal/store"
+func newSearchCmd(flags any) {
+	_ = store.Open()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+import (
+	"encoding/json"
+	"example.com/project/internal/store"
+)
+func newExportCmd(flags any) {
+	_ = json.NewEncoder(nil)
+	_ = store.Open()
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/tail.go", `package cli
+func newTailCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/import.go", `package cli
+func newImportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/analytics.go", `package cli
+func newAnalyticsCmd(flags any) {
+	first := c.Get("/one")
+	second := c.Get("/two")
+	_, _ = first, second
+}
+`)
+
+		storeBody := `package store
+func Open() DB { return DB{} }
+type DB struct{}
+const schema = `
+		if includeFTS5 {
+			storeBody += "`CREATE TABLE projects(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE datasets(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE models(id INTEGER PRIMARY KEY);\n" +
+				"CREATE VIRTUAL TABLE docs_fts USING fts5(content);`"
+		} else {
+			storeBody += "`CREATE TABLE projects(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE datasets(id INTEGER PRIMARY KEY);\n" +
+				"CREATE TABLE models(id INTEGER PRIMARY KEY);`"
+		}
+		writeScorecardFixture(t, dir, "internal/store/store.go", storeBody)
+
+		if includeLearn {
+			writeScorecardFixture(t, dir, "internal/learn/doc.go", `// Package learn owns the generated recall/teach loop.
+package learn
+`)
+		}
+		return dir
+	}
+
+	// Before the tier2 schema+wiring cap fix, build(true,true) scored 9 and
+	// build(false,false) scored 8. Both sat in the affected (3.0,3.5] band;
+	// the full fixture now reaches 10, the partial reaches 9.
+	assert.Equal(t, 10, scoreVision(build(true, true)))
+	assert.Equal(t, 9, scoreVision(build(false, false)))
+}
