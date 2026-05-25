@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/paramnames"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -326,10 +327,7 @@ func validatePublicFlagEntry(resKey, epName string, entry publicFlagEntry, reser
 // callers writing URL params read paramWireName, request bodies read
 // BodyWireName, and path substitutions read Name directly.
 func paramIdent(p spec.Param) string {
-	if p.IdentName != "" {
-		return p.IdentName
-	}
-	return p.Name
+	return paramnames.Ident(p)
 }
 
 // paramWireName returns the URL query-key for this param. URLName overrides
@@ -341,10 +339,7 @@ func paramWireName(p spec.Param) string {
 }
 
 func publicFlagName(p spec.Param) string {
-	if p.FlagName != "" {
-		return p.FlagName
-	}
-	return flagName(paramIdent(p))
+	return paramnames.PublicFlagName(p)
 }
 
 func publicFlagAliases(p spec.Param) []string {

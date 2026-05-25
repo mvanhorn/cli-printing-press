@@ -3789,22 +3789,7 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 // toCamelCase, etc). Treat any new caller that feeds raw spec strings
 // directly into these helpers as a bug — fold first, then shape.
 func toCamel(s string) string {
-	// Strip characters that are invalid in Go identifiers
-	s = strings.TrimLeft(s, "$")
-	parts := strings.FieldsFunc(s, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	for i, p := range parts {
-		if len(p) > 0 {
-			parts[i] = strings.ToUpper(p[:1]) + p[1:]
-		}
-	}
-	result := strings.Join(parts, "")
-	// Ensure starts with letter
-	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
-		result = "V" + result
-	}
-	return result
+	return naming.CamelIdentifier(s)
 }
 
 func commandIdent(parts ...string) string {
@@ -4695,10 +4680,7 @@ func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagP
 }
 
 func joinFlag(prefix, name string) string {
-	if prefix == "" {
-		return name
-	}
-	return prefix + "-" + name
+	return naming.JoinFlag(prefix, name)
 }
 
 func multipartBodyMaps(body []spec.Param, indent string) string {
@@ -5532,37 +5514,7 @@ var narrativeGlobalFlags = map[string]bool{
 }
 
 func flagName(name string) string {
-	name = strings.TrimLeft(name, "$")
-	// Convert camelCase/PascalCase and separators to kebab-case.
-	// "pageSize" → "page-size", "storeID" → "store-id", "per_page" → "per-page"
-	var b strings.Builder
-	runes := []rune(name)
-	for i, r := range runes {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			// Non-alphanumeric → hyphen (dedup'd below)
-			if b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			continue
-		}
-		// Insert hyphen at camelCase boundaries: lowercase→uppercase
-		if i > 0 && unicode.IsUpper(r) {
-			prev := runes[i-1]
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
-				b.WriteByte('-')
-			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
-				// Handle acronyms: "storeID" → "store-id" (not "store-i-d")
-				b.WriteByte('-')
-			}
-		}
-		b.WriteRune(unicode.ToLower(r))
-	}
-	// Collapse multiple hyphens and trim
-	result := b.String()
-	for strings.Contains(result, "--") {
-		result = strings.ReplaceAll(result, "--", "-")
-	}
-	return strings.Trim(result, "-")
+	return naming.FlagName(name)
 }
 
 func safeTypeName(name string) string {
