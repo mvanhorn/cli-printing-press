@@ -1,14 +1,18 @@
-name: Review threads resolved check
+name: Conversation resolution check
 
 # Surfaces unresolved review threads as a commit status on the PR head
 # SHA so authors get a specific cue when threads are the holdup. This
 # status intentionally checks thread-resolution state only; Mergify also
 # gates on requested-changes review state via .mergify.yml. The
 # canonical signal lives in a commit status (latest-by-context), not the
-# workflow job's auto check_run; commit statuses with the same context
-# override on each push, so the rollup never holds a stale FAILURE next
-# to a later SUCCESS the way it did when the job conclusion was the
-# canonical signal (issue #1878).
+# workflow job's auto check_run. The status context intentionally keeps
+# the legacy name "All conversations resolved" to avoid breaking any
+# GitHub required-check settings that may reference it, but the emitted
+# description and summary clarify that this workflow checks review-thread
+# resolution only. Commit statuses with the same context override on each
+# push, so the rollup never holds a stale FAILURE next to a later SUCCESS
+# the way it did when the job conclusion was the canonical signal (issue
+# #1878).
 #
 # Not an enforcement gate — Mergify's `#review-threads-unresolved = 0`
 # condition in .mergify.yml is what actually blocks the merge queue. This
@@ -55,7 +59,7 @@ permissions:
   contents: read
   pull-requests: read
   # statuses: write lets the job POST a commit status with context
-  # "Review threads resolved" via the statuses API. Commit statuses
+  # "All conversations resolved" via the statuses API. Commit statuses
   # dedupe by (sha, context) — the latest post wins for that context —
   # so a successful re-run cleanly overrides any prior failure-state
   # status from an earlier run of this workflow. Auto check_runs from
@@ -67,13 +71,13 @@ permissions:
 jobs:
   evaluate:
     # The job's auto check_run is intentionally separated from the
-    # canonical "Review threads resolved" signal. The job exits 0 in
+    # canonical "All conversations resolved" signal. The job exits 0 in
     # both pass and fail cases; the actual pass/fail lives in the commit
     # status posted below. Without this split, the auto check_runs from
     # prior runs of the workflow on the same SHA accumulate as separate
     # rollup entries (failure → cancelled → success), and consumers that
     # don't dedupe by completed_at can pick the stale failure (#1878).
-    name: Evaluate review threads
+    name: Evaluate conversation threads
     # Skip drafts across every event source. The original guard only
     # covered pull_request_target, but pull_request_review and
     # pull_request_review_comment events also carry a pull_request
@@ -254,11 +258,12 @@ jobs:
         run: |
           set -euo pipefail
           # Use the canonical name as the status context so a single
-          # rollup entry "Review threads resolved" carries the
-          # current truth. Reposting with the same (sha, context)
-          # overrides — that's what fixes #1878.
+          # rollup entry "All conversations resolved" carries the current
+          # truth without requiring branch-protection/ruleset updates.
+          # Reposting with the same (sha, context) overrides — that's what
+          # fixes #1878.
           gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             -f state="${STATE}" \
-            -f context="Review threads resolved" \
+            -f context="All conversations resolved" \
             -f description="${DESCRIPTION}" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
