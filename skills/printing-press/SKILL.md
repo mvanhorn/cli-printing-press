@@ -668,6 +668,10 @@ Before new research:
    (`openapi:`, `swagger:`, or JSON with a top-level `"openapi"` or `"swagger"`
    key). Ignore unrelated JSON/YAML config files.
 
+   When the filtered candidate list is empty, abort with:
+   `No OpenAPI/Swagger spec found under <directory>. Pass --spec <file> directly.`
+   Do not continue with the raw directory as the spec source.
+
    When the directory contains exactly one candidate, use that file as the
    spec source and write it to `state.json` as `spec_path`.
 
