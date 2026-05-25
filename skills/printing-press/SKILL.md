@@ -1756,6 +1756,12 @@ Do not treat a persistent browser sidecar as a shippable CLI runtime. Browsers a
 
 Useful same-site HTML document pages count as a replayable surface when they return real content, not challenge/login pages. Browser-sniff can promote these into `response_format: html` endpoints so generated commands extract page metadata and filtered links through Surf/direct HTTP instead of keeping a browser sidecar alive.
 
+When hand-authoring a `response_format: html` spec with `html_extract.mode: links`,
+document and choose `link_prefixes` as path-segment prefixes. A prefix `/items`
+matches `/items` and `/items/...`, but not `/items123.html`; use the parent
+directory prefix when the leaf segment has embedded IDs or suffixes. See
+`skills/printing-press/references/spec-format.md` for the exact contract.
+
 If the browser capture contained only challenge/login/error pages, this exception does not apply.
 
 ### The Check
