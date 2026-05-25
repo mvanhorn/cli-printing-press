@@ -5813,6 +5813,15 @@ func TestGeneratedOutput_HasSelectFlag(t *testing.T) {
 	assert.True(t, strings.Contains(string(rootGo), "select"), "root.go should contain the --select flag")
 }
 
+func TestGeneratedRootTimeoutDefaultIs60s(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootGo), `rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 60*time.Second, "Request timeout")`)
+}
+
 func TestGeneratedOutput_HasErrorHints(t *testing.T) {
 	t.Parallel()
 
