@@ -374,7 +374,7 @@ func visitResourceURLTemplateSources(r Resource, deterministic bool, visit func(
 			return false
 		}
 		if isAbsoluteRequestPath(endpoint.Path) {
-			return visit(endpoint.Path)
+			return visit(absoluteRequestPathTemplateSource(endpoint.Path))
 		}
 		return true
 	}
@@ -1478,20 +1478,6 @@ func DefaultResourceDescription(name string) string {
 	return "Manage " + strings.ReplaceAll(strings.ReplaceAll(name, "_", "-"), "-", " ")
 }
 
-// HasResourceBaseURLOverride reports whether any resource or endpoint declares
-// a BaseURL override.
-func (s *APISpec) HasResourceBaseURLOverride() bool {
-	if s == nil {
-		return false
-	}
-	for _, resource := range s.Resources {
-		if resourceHasBaseURLOverride(resource) {
-			return true
-		}
-	}
-	return false
-}
-
 // HasAbsoluteRequestPath reports whether generated commands can pass a full
 // URL to the HTTP client instead of a path relative to BaseURL. Resource or
 // endpoint BaseURL overrides synthesize absolute paths at generation time, and
@@ -1502,23 +1488,6 @@ func (s *APISpec) HasAbsoluteRequestPath() bool {
 	}
 	for _, resource := range s.Resources {
 		if resourceHasAbsoluteRequestPath(resource) {
-			return true
-		}
-	}
-	return false
-}
-
-func resourceHasBaseURLOverride(resource Resource) bool {
-	if resource.BaseURL != "" {
-		return true
-	}
-	for _, endpoint := range resource.Endpoints {
-		if endpoint.BaseURL != "" {
-			return true
-		}
-	}
-	for _, sub := range resource.SubResources {
-		if resourceHasBaseURLOverride(sub) {
 			return true
 		}
 	}
@@ -1544,6 +1513,18 @@ func resourceHasAbsoluteRequestPath(resource Resource) bool {
 
 func isAbsoluteRequestPath(path string) bool {
 	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
+}
+
+func absoluteRequestPathTemplateSource(path string) string {
+	for _, scheme := range []string{"https://", "http://"} {
+		if rest, ok := strings.CutPrefix(path, scheme); ok {
+			if authority, _, ok := strings.Cut(rest, "/"); ok {
+				return scheme + authority
+			}
+			return path
+		}
+	}
+	return path
 }
 
 type Endpoint struct {

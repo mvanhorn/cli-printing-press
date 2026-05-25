@@ -4013,7 +4013,7 @@ func TestInferEndpointTemplateVarsFromBaseURLsFastPathSources(t *testing.T) {
 			name: "absolute endpoint path",
 			mutate: func(s *APISpec) {
 				resource := s.Resources["items"]
-				resource.Endpoints["list"] = Endpoint{Method: "GET", Path: "https://{endpoint_path}.api.example.com/items"}
+				resource.Endpoints["list"] = Endpoint{Method: "GET", Path: "https://{endpoint_path}.api.example.com/items/{id}"}
 				s.Resources["items"] = resource
 			},
 			want: "endpoint_path",
@@ -4052,6 +4052,31 @@ func TestInferEndpointTemplateVarsFromBaseURLsFastPathSources(t *testing.T) {
 			assert.Equal(t, []string{tc.want}, s.EndpointTemplateVars)
 		})
 	}
+}
+
+func TestInferEndpointTemplateVarsIgnoresAbsoluteEndpointPathParams(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:    "templated",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]Resource{
+			"items": {
+				Endpoints: map[string]Endpoint{
+					"get": {
+						Method: "GET",
+						Path:   "https://api.example.com/items/{id}",
+						Params: []Param{{Name: "id", Type: "string", Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	s.InferEndpointTemplateVarsFromBaseURLs()
+
+	assert.Empty(t, s.EndpointTemplateVars,
+		"path-segment params in absolute endpoint paths should stay command inputs, not env-backed template vars")
 }
 
 func TestValidateTierRouting(t *testing.T) {
