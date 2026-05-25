@@ -969,6 +969,8 @@ Suggested shape:
 
 ## Reachability Risk
 - [None / Low / High] [evidence: e.g., "6 open issues on reteps/redfin about 403 errors since 2025"]
+- Tier/permission hints from 4xx body: [omit when absent; otherwise quote the matched bounded line(s) from Phase 1.9]
+- Probe-safe endpoint used: [omit when absent; otherwise "<METHOD> <path>" from `x-pp-safe-probe`]
 
 ## Top Workflows
 1. ...
@@ -1709,13 +1711,117 @@ If the browser capture contained only challenge/login/error pages, this exceptio
 
 ### The Check
 
-Pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request:
+Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request and preserve the response body when the server returns a 4xx:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null
+body_file="$(mktemp "${TMPDIR:-/tmp}/pp-reachability-body.XXXXXX")"
+trap 'rm -f "$body_file"' EXIT
+status="$(curl -s --max-filesize 65536 -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || true)"
+case "$status" in
+  [0-9][0-9][0-9]) ;;
+  *) status="000" ;;
+esac
+printf '%s\n' "$status"
 ```
 
-Or use `WebFetch` if curl is unavailable. The goal is one real response code.
+Or use `WebFetch` if curl is unavailable. Record the response status and, for any 4xx response body, run the same tier/permission keyword scan against the captured WebFetch body text before deciding. The goal is one real response code plus any 4xx body evidence the API chose to return.
+
+If `status` is any 4xx, inspect the body before deciding. Search it case-insensitively for tier or permission terms:
+
+```bash
+grep -Ei 'tier|allowed|permitted|subscription|quota|plan|scope|limit|permission|forbidden|unauthorized|upgrade|trial' "$body_file" | head -20
+```
+
+When matched lines are present, add them to the Phase 1 research brief under:
+
+```markdown
+## Reachability Risk
+- Tier/permission hints from 4xx body: "<matched line, truncated if needed>"
+```
+
+Keep the evidence bounded: include only the lines that explain the access model, trim each line to a readable length, and do not paste bearer tokens, API keys, cookies, or unrelated full response dumps. If the GET returns 2xx/3xx, omit this tier-hint subsection.
+
+Do not probe arbitrary mutation endpoints to discover tier limits. A generic "try a PUT/POST/PATCH/DELETE" rule can create accounts, send messages, capture payments, or mutate user data. Mutation probing is allowed only when the resolved spec or OpenAPI operation explicitly marks that endpoint as probe-safe with `x-pp-safe-probe: true`; the endpoint must be idempotent or otherwise harmless for the real account being used. If no endpoint has that explicit marker, stop after the GET body capture above.
+
+If one or more probe-safe endpoints are declared and the user provided credentials, run exactly one declared probe-safe endpoint as a second reachability probe and apply the same 4xx body capture and tier-keyword extraction. When more than one exists, choose the lowest-risk declared endpoint by preferring methods in this order: HEAD/OPTIONS/GET, then PUT/PATCH, then POST, then DELETE only if it is the only declared safe option. Break ties by choosing the endpoint with the fewest required parameters and avoiding paths with account, billing, payment, deletion, or notification terms when any safer declared option exists. Record which endpoint was probe-safe in the brief so later phases know the evidence came from an opt-in safe probe.
+
+### OAuth2 Grant Probe
+
+If the resolved spec declares `auth.type: oauth2` and has an interactive
+authorization URL (`authorizationCode` or `implicit` flow in OpenAPI, or an
+equivalent internal YAML auth field), the generic reachability check is not
+enough. After the base URL check would otherwise pass, verify the OAuth grant
+entry point with the user's real public OAuth input before Phase 2. This probe
+is read-only: it stops at the provider's consent, login, or error page and does
+not exchange a code, request a token, or ask the user to approve consent.
+
+Do not run this grant probe for OAuth2 `client_credentials` flows that only have
+a token URL. Those are server-to-server credentials, not browser grant flows, and
+probing the token endpoint would require secret material or a write-like auth
+attempt. The base reachability check plus later mock/live auth verification cover
+that shape.
+
+**Required inputs:** Use the `client_id` env var or public auth-flow input
+already resolved during Phase 0.5 and Pre-Generation Auth Enrichment. If the
+spec exposes `x-auth-vars`, prefer the entry with `kind: auth_flow_input`,
+`sensitive: false`, and a name or description identifying it as the OAuth
+`client_id`. If the real client id is missing, HOLD before generation and tell
+the user exactly which env var to set. Do not substitute a fake client id; fake
+ids can produce provider-specific errors that look like transport quirks.
+
+Build the authorize URL from the resolved spec, not from a guessed provider
+default:
+
+- `client_id`: the real public client id from the env var above.
+- `redirect_uri`: the redirect URI declared in the spec or auth metadata.
+- `response_type=code` for authorization-code grants, or the spec's documented
+  response type for implicit grants.
+- For authorization-code grants, include a safe probe PKCE pair using `S256`.
+  Use `probe_reachability_check_pkce_probe_literal` as the code verifier and
+  compute the URL-safe SHA-256 challenge from it. The verifier is 43 unreserved
+  characters, satisfying the RFC 7636 minimum; providers that do not require
+  PKCE ignore these params, and providers that enforce PKCE should advance to
+  the login or consent page instead of returning a false `invalid_request`.
+- `scope`, `audience`, `tenant`, `state`, `prompt`, or other provider-required
+  params when the spec or vendor docs require them. Use a benign probe value for
+  `state` if required.
+
+Use a redirect-limited GET and inspect the final URL, response body, and
+response class:
+
+```bash
+PKCE_VERIFIER="probe_reachability_check_pkce_probe_literal"
+PKCE_CHALLENGE=$(printf "%s" "$PKCE_VERIFIER" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+AUTH_URL="<authorization_url_with_required_query_params>"
+# Add code_challenge_method=S256 and code_challenge=$PKCE_CHALLENGE to AUTH_URL.
+PROBE_BODY_AND_META=$(curl -sS -L --max-redirs 10 -m 15 -w "\n%{http_code} %{url_effective}" -o - "$AUTH_URL" 2>/dev/null)
+PROBE_META=$(printf "%s\n" "$PROBE_BODY_AND_META" | tail -n 1)
+PROBE_BODY=$(printf "%s\n" "$PROBE_BODY_AND_META" | sed '$d')
+printf "%s\n" "$PROBE_META"
+printf "%s\n" "$PROBE_BODY" | head -c 8000
+printf "\n"
+```
+
+Interpret the result before Phase 2:
+
+| OAuth probe result | Action |
+|--------------------|--------|
+| HTTP status is `2xx` or `3xx`, final URL stays on the provider's authorization/login/consent host, does not include `error=`, and the response body does not contain an OAuth error code (`invalid_request`, `invalid_client`, `unauthorized_client`, etc.) | **PASS** - the grant entry point is reachable; proceed to Phase 2 |
+| Final URL or response body reports `invalid_request`, `invalid_client`, `redirect_uri_mismatch`, `unauthorized_client`, `unsupported_response_type`, or equivalent | **HARD STOP** - OAuth config is misconfigured; surface the provider error and point the user to the mismatched client id, redirect URI, app type, tenant, or required scope |
+| HTTP status is `4xx` or `5xx` without a recognizable OAuth error code | **WARN** - flag provider-specific routing or login-shell behavior for manual review before generation |
+| Final URL lands on a generic non-OAuth error page, marketing page, or unrelated login landing page | **WARN** - flag endpoint ambiguity or provider-specific routing for manual review before generation |
+| Timeout/DNS/connection refused or HTTP status `000` | **WARN** - same handling as the generic reachability WARN |
+
+On HARD STOP, do not generate. Present a specific, provider-neutral message:
+
+> "WARNING: `<API>`'s OAuth authorize probe failed before generation. The
+> provider returned `<error_or_final_url>`. Check that the spec's
+> `authorization_url`, `redirect_uri`, `response_type`, client id env var, app
+> type, tenant, and required scopes match the registered OAuth application."
+
+This OAuth probe is additive to the base reachability gate. Non-OAuth APIs
+(`api_key`, `bearer_token`, `cookie`, `composed`, `session_handshake`, `none`)
+skip it entirely.
 
 **If the check returns 403/429 with bot-protection evidence and `probe-reachability` has not already run for this URL during Phase 1.7's Direct HTTP challenge rule, run it now before consulting the decision matrix:**
 
@@ -2595,7 +2701,7 @@ Priority 3 (polish):
 
 ### Agent Build Checklist (per command)
 
-After building each command in Priority 1 and Priority 2, verify these 10 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
+After building each command in Priority 1 and Priority 2, verify these 11 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
 
 1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
 2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON should use the generated receiver-style helper, `flags.printJSON(cmd, v)`, or call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` directly. Both route through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
@@ -2625,6 +2731,11 @@ After building each command in Priority 1 and Priority 2, verify these 10 princi
      ```
      Distinct from `IsVerifyEnv`: dogfood is a real-API matrix, so curtail work (paginate once, smaller `--limit`), never substitute mock data for real calls.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
+11. **Parallel-fetch partial failures**: any command that fans out N API calls and computes an aggregate (averages, rollups, comparisons, cross-source merges, digest summaries) MUST preserve each fetch error through the result channel and exclude error-tagged entries from totals and denominators. Failed fetches may still appear in the response so the caller can see the gap, but they must not become zero-valued phantom rows that dilute averages or counts. Surface the partial failure explicitly with:
+   - a stderr warning that names the failed count and the actual aggregation denominator, for example `warning: 2 of 10 fetches failed; averages computed over the remaining 8 items`
+   - a `fetch_failures` field in the JSON response envelope listing the failed entries and error messages
+
+Silently averaging phantom zeros is worse than reporting a partial result.
 
 #### Verify-friendly RunE template
 
@@ -2822,6 +2933,101 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return enc.Encode(view)
 	}
 	// Human/terminal output (table or pretty print).
+	return nil
+},
+```
+
+**RunE skeleton — parallel-fetch aggregation shape** (live fan-out with partial-failure accounting):
+
+Use this shape when a novel command fetches multiple items concurrently and computes a rollup, average, comparison, digest, or cross-source merge. The key invariant is that `err` travels with each result until aggregation, and error-tagged entries are excluded from all totals and denominators.
+
+```go
+RunE: func(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+		return cmd.Help()
+	}
+	if dryRunOK(flags) {
+		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource> details")
+		return nil
+	}
+	if <required input missing> {
+		_ = cmd.Usage()
+		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
+	}
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+	type fetchResult struct {
+		idx   int
+		id    string
+		entry yourEntryType
+		err   error
+	}
+	ids := []string{} // derive from args, flags, or an initial list endpoint
+	results := make(chan fetchResult, len(ids))
+	var wg sync.WaitGroup
+	for idx, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data, err := c.Get("/api/v1/resource/"+url.PathEscape(id), nil)
+			if err != nil {
+				results <- fetchResult{idx: idx, id: id, err: err}
+				return
+			}
+			entry, err := parseEntry(data)
+			results <- fetchResult{idx: idx, id: id, entry: entry, err: err}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	ordered := make([]yourEntryType, len(ids))
+	fetchErrors := make([]error, len(ids))
+	for r := range results {
+		ordered[r.idx] = r.entry
+		if r.err != nil {
+			fetchErrors[r.idx] = r.err
+		}
+	}
+	var failures []fetchFailure
+	var successfulItems []yourEntryType
+	var total float64
+	var denominator int
+	for idx, entry := range ordered {
+		if fetchErrors[idx] != nil {
+			failures = append(failures, fetchFailure{
+				ID:    ids[idx],
+				Error: fetchErrors[idx].Error(),
+			})
+			continue
+		}
+		successfulItems = append(successfulItems, entry)
+		total += entry.Metric
+		denominator++
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %d of %d fetches failed; averages computed over the remaining %d items\n", len(failures), len(ids), denominator)
+	}
+	view := yourAggregateView{
+		Items:         successfulItems,
+		AverageMetric: safeAverage(total, denominator),
+		FetchFailures: failures, // json tag: `json:"fetch_failures,omitempty"`
+	}
+	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(view)
+	}
+	// Human/terminal output, including a visible partial-failure note.
+	for _, entry := range view.Items {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%.2f\n", entry.Name, entry.Metric)
+	}
+	if len(failures) > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "\npartial results: %d of %d fetches failed; average computed over %d items\n", len(failures), len(ids), denominator)
+	}
 	return nil
 },
 ```
