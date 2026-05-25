@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -83,7 +84,7 @@ type SteinerScore struct {
 	AuthProtocol          int    `json:"auth_protocol"`           // 0-10
 	DataPipelineIntegrity int    `json:"data_pipeline_integrity"` // 0-10
 	SyncCorrectness       int    `json:"sync_correctness"`        // 0-10
-	TypeFidelity          int    `json:"type_fidelity"`           // 0-4 (declared cap 5; +1 MarkFlagRequired path dropped per SKILL conflict)
+	TypeFidelity          int    `json:"type_fidelity"`           // 0-5
 	DeadCode              int    `json:"dead_code"`               // 0-5
 	LiveAPIVerification   int    `json:"live_api_verification"`   // 0-10; unscored when verify ran in mock/structural mode or was skipped
 	Total                 int    `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
@@ -142,10 +143,11 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 
 func scoreScorecardDimensions(sc *Scorecard, outputDir, specPath string, verifyReport *VerifyReport) error {
 	scoreInfrastructureDimensions(sc, outputDir)
-	if err := scoreSpecDimensions(sc, outputDir, specPath); err != nil {
+	spec, err := scoreSpecDimensions(sc, outputDir, specPath)
+	if err != nil {
 		return err
 	}
-	scoreDomainDimensions(sc, outputDir, verifyReport)
+	scoreDomainDimensions(sc, outputDir, spec, verifyReport)
 	return nil
 }
 
@@ -188,20 +190,20 @@ func recordOptionalScore(sc *Scorecard, target *int, dimension string, score int
 	sc.UnscoredDimensions = append(sc.UnscoredDimensions, dimension)
 }
 
-func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) error {
+func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpecInfo, error) {
 	if isLocalDatastoreCLIDir(outputDir) {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
-		return nil
+		return nil, nil
 	}
 	if specPath == "" {
 		// No spec: mark spec-dependent dimensions as unscored.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
-		return nil
+		return nil, nil
 	}
 
 	spec, err := loadOpenAPISpec(specPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if spec.IsSynthetic() {
@@ -222,17 +224,17 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) error {
 	if !authProtocol.scored {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimAuthProtocol)
 	}
-	return nil
+	return spec, nil
 }
 
-func scoreDomainDimensions(sc *Scorecard, outputDir string, verifyReport *VerifyReport) {
+func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInfo, verifyReport *VerifyReport) {
 	sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
 	if isLocalDatastoreCLIDir(outputDir) {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimSyncCorrectness)
 	} else {
 		sc.Steinberger.SyncCorrectness = scoreSyncCorrectness(outputDir)
 	}
-	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir)
+	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir, spec)
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
 
 	// LiveAPIVerification is scored only when verify ran in live mode (real
@@ -1845,6 +1847,7 @@ type openAPISpecInfo struct {
 	SecuritySchemes        map[string]openAPISecurityScheme
 	SecurityRequirements   []securityRequirementSet
 	OAuthScopeRequirements []oauthScopeRequirement
+	PositionalParamCount   int
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 }
 
@@ -1904,6 +1907,7 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 	if paths, ok := raw["paths"].(map[string]any); ok {
 		for path := range paths {
 			info.Paths = append(info.Paths, path)
+			info.PositionalParamCount += countPathTemplateParams(path)
 		}
 		slices.Sort(info.Paths)
 	}
@@ -2824,23 +2828,33 @@ func scoreSyncCorrectness(dir string) int {
 	return score * 10 / max
 }
 
-func scoreTypeFidelity(dir string) int {
+func scoreTypeFidelity(dir string, spec *openAPISpecInfo) int {
 	score := 0
-	cmdFiles := sampleCommandFiles(dir, 10)
+	cmdFiles := sampleCommandFiles(dir, 0)
 	if len(cmdFiles) == 0 {
 		return 0
 	}
 
+	score += scoreTypedIDFlags(cmdFiles)
+	score += scorePositionalArgHandling(cmdFiles, spec)
+	if hasTypedParserCoverage(dir) {
+		score += 2
+	}
+
+	if score > 5 {
+		score = 5
+	}
+	return score
+}
+
+func scoreTypedIDFlags(cmdFiles []string) int {
 	// [^,\n]+ keeps each capture inside a single Flags() call. The previous
 	// [^,]+ would greedily consume across newlines into the next Flags()
 	// invocation, dragging the next flag's name into the current flag's
 	// description capture.
 	flagDeclRe := regexp.MustCompile(`Flags\(\)\.(StringVar|IntVar|StringVarP|IntVarP)\(&[^,\n]+,\s*"([^"]+)"(?:,\s*[^,\n]+){1,2},\s*"([^"]*)"`)
-
 	totalIDFlags := 0
 	stringIDFlags := 0
-	descWordCount := 0
-	descCount := 0
 
 	for _, content := range cmdFiles {
 		for _, match := range flagDeclRe.FindAllStringSubmatch(content, -1) {
@@ -2851,40 +2865,132 @@ func scoreTypeFidelity(dir string) int {
 					stringIDFlags++
 				}
 			}
-			descWordCount += len(strings.Fields(match[3]))
-			descCount++
 		}
 	}
 
-	if totalIDFlags == 0 || stringIDFlags == totalIDFlags {
-		score += 2
+	switch {
+	case totalIDFlags == 0:
+		return 0
+	case stringIDFlags == totalIDFlags:
+		return 2
+	case stringIDFlags > 0:
+		return 1
+	default:
+		return 0
 	}
-	// MarkFlagRequired is intentionally not credited: the SKILL's verify-friendly
-	// RunE rule forbids it (Cobra evaluates it before RunE, so --dry-run probes
-	// fail with "required flag not set"). Required validation belongs inside RunE.
-	if descCount > 0 && descWordCount/descCount > 5 {
-		score++
+}
+
+func scoreCobraArgValidators(cmdFiles []string) int {
+	validatorRe := regexp.MustCompile(`cobra\.(ExactArgs|MinimumNArgs|MaximumNArgs)\s*\(`)
+	seen := make(map[string]struct{})
+	for _, content := range cmdFiles {
+		for _, match := range validatorRe.FindAllStringSubmatch(content, -1) {
+			seen[match[1]] = struct{}{}
+		}
+	}
+	if len(seen) > 2 {
+		return 2
+	}
+	return len(seen)
+}
+
+func scorePositionalArgHandling(cmdFiles []string, spec *openAPISpecInfo) int {
+	if !commandFilesAdvertisePositionals(cmdFiles) {
+		return 0
 	}
 
-	var allCLIBuilder strings.Builder
-	for _, content := range sampleCommandFiles(dir, 0) {
-		allCLIBuilder.WriteString(content)
-	}
-	allCLIBuilder.WriteString(readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go")))
-	allCLIBuilder.WriteString(readFileContent(filepath.Join(dir, "internal", "cli", "root.go")))
-	allCLI := allCLIBuilder.String()
-	if !strings.Contains(allCLI, "var _ = strings.ReplaceAll") && !strings.Contains(allCLI, "var _ = fmt.Sprintf") {
+	score := 0
+	validatorScore := scoreCobraArgValidators(cmdFiles)
+	if commandFilesConsumePositionals(cmdFiles) || validatorScore > 0 {
 		score++
 	}
-
-	// Achievable max is 4 (+2 ID-flag check, +1 description avg, +1 no dummy
-	// guards). The +1 MarkFlagRequired path was removed because the SKILL
-	// explicitly forbids it. The tier rollup still allocates 5 raw points to
-	// this dimension, so the highest a SKILL-compliant CLI can score is 4/5.
-	if score > 4 {
-		score = 4
+	if score > 0 && (validatorScore > 0 || (spec != nil && spec.PositionalParamCount > 0)) {
+		score++
 	}
-	return score
+	return min(score, 2)
+}
+
+func commandFilesAdvertisePositionals(cmdFiles []string) bool {
+	useRe := regexp.MustCompile(`Use:\s*"[^"]*(?:<[^>]+>|\[[^\]]+\])`)
+	return slices.ContainsFunc(cmdFiles, useRe.MatchString)
+}
+
+func commandFilesConsumePositionals(cmdFiles []string) bool {
+	for _, content := range cmdFiles {
+		if strings.Contains(content, "args[") || strings.Contains(content, "len(args)") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTypedParserCoverage(dir string) bool {
+	internalDir := filepath.Join(dir, "internal")
+	parserSymbolsByDir := make(map[string][]string)
+	testContentByDir := make(map[string]string)
+
+	_ = filepath.WalkDir(internalDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), "_test.go") {
+			testContentByDir[filepath.Dir(path)] += "\n" + readFileContent(path)
+			return nil
+		}
+		if symbols := typedParserSymbols(readFileContent(path)); len(symbols) > 0 {
+			fileDir := filepath.Dir(path)
+			parserSymbolsByDir[fileDir] = append(parserSymbolsByDir[fileDir], symbols...)
+		}
+		return nil
+	})
+
+	for fileDir, symbols := range parserSymbolsByDir {
+		testContent := testContentByDir[fileDir]
+		for _, symbol := range symbols {
+			if strings.Contains(testContent, symbol+"(") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func typedParserSymbols(content string) []string {
+	if content == "" {
+		return nil
+	}
+	hasJSONStruct := regexp.MustCompile("(?s)type\\s+\\w+\\s+struct\\s*\\{[^}]+`json:\"").MatchString(content)
+	if !hasJSONStruct {
+		return nil
+	}
+	hasDecodeCall := strings.Contains(content, "json.Unmarshal") || strings.Contains(content, "json.NewDecoder")
+	parseFuncRe := regexp.MustCompile(`func\s+(?:\([^)]+\)\s+)?(?:[Pp]arse|[Dd]ecode|[Nn]ormalize|[Uu]nmarshal)[A-Za-z0-9_]*\s*\(`)
+	if !hasDecodeCall && !parseFuncRe.MatchString(content) {
+		return nil
+	}
+	var symbols []string
+	for _, match := range parseFuncRe.FindAllString(content, -1) {
+		name := strings.TrimPrefix(match, "func")
+		name = strings.TrimSpace(name)
+		if strings.HasPrefix(name, "(") {
+			if end := strings.Index(name, ")"); end >= 0 {
+				name = strings.TrimSpace(name[end+1:])
+			}
+		}
+		if open := strings.Index(name, "("); open >= 0 {
+			name = strings.TrimSpace(name[:open])
+		}
+		if name != "" {
+			symbols = append(symbols, name)
+		}
+	}
+	return symbols
+}
+
+var pathTemplateParamRe = regexp.MustCompile(`\{[^}/]+\}`)
+
+func countPathTemplateParams(path string) int {
+	return len(pathTemplateParamRe.FindAllString(path, -1))
 }
 
 // isIDFlagName returns true when a kebab-case flag name denotes an identifier
