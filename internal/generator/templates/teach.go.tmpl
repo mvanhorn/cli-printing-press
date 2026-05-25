@@ -344,7 +344,8 @@ when learnings exist.`,
 			}
 			defer s.Close()
 
-			result, err := learn.Recall(cmd.Context(), s.DB(), learnCfg, query, learn.Opts{
+			result, err := learn.Recall(cmd.Context(), s.DB(), query, learn.Opts{
+				EntityConfig:    learnCfg,
 				MinConfidence:   minConf,
 				Limit:           limit,
 				DebugMismatches: debugMismatches,

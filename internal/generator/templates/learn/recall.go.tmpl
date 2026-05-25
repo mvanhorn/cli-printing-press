@@ -67,9 +67,15 @@ type Result struct {
 //	MinConfidence -> 1 (any row)
 //	Limit         -> 10
 //	JaccardMin    -> 0.6
+//	EntityConfig  -> entities.NewConfig() (default English stopwords, no ticker patterns)
 //
 // DebugMismatches surfaces the mismatches array in the envelope.
 // NoLearn short-circuits to an empty envelope.
+//
+// EntityConfig is the per-CLI entity extractor config built once at
+// startup. Carried on Opts rather than positionally so callers that
+// don't need per-CLI configuration (legacy prediction-goat lineage,
+// future opt-out CLIs) can pass Opts{} and inherit defaults.
 //
 // ResourceTypeFields maps each resource_type to the ordered list of
 // JSON fields ResourceEntitiesFromJSON should read to pull entity
@@ -85,18 +91,24 @@ type Opts struct {
 	JaccardMin         float64
 	DebugMismatches    bool
 	NoLearn            bool
+	EntityConfig       *entities.Config
 	ResourceTypeFields map[string][]string
 	PatternKinds       []string
 }
 
-// Recall is the entity-aware read path. cfg is the per-CLI entity
-// extractor config built once at startup; db is the open *sql.DB
-// pointing at the local SQLite store with the v3 learn schema.
+// Recall is the entity-aware read path. db is the open *sql.DB
+// pointing at the local SQLite store with the v3 learn schema; the
+// per-CLI entity extractor config is carried on opts.EntityConfig
+// (nil falls back to entities.NewConfig() defaults).
 //
 // Returns a non-nil Result on every call: cold queries get the
 // envelope shape populated with the normalized form and the query
 // entities. Errors are reserved for DB-level failures.
-func Recall(ctx context.Context, db *sql.DB, cfg *entities.Config, query string, opts Opts) (Result, error) {
+func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, error) {
+	cfg := opts.EntityConfig
+	if cfg == nil {
+		cfg = entities.NewConfig()
+	}
 	normalized := Normalize(query, cfg)
 	result := Result{
 		Query:         query,

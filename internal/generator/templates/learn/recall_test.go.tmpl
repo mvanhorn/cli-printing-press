@@ -93,7 +93,8 @@ func TestRecall_HappyPath(t *testing.T) {
 	// matcher expects.
 	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
 
-	got, err := Recall(context.Background(), db, testConfig(), "Alpha widget", Opts{
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{
+		EntityConfig:       testConfig(),
 		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
 	})
 	if err != nil {
@@ -113,7 +114,7 @@ func TestRecall_HappyPath(t *testing.T) {
 func TestRecall_Miss(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
-	got, err := Recall(context.Background(), db, testConfig(), "totally unrelated query", Opts{})
+	got, err := Recall(context.Background(), db, "totally unrelated query", Opts{EntityConfig: testConfig()})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestRecall_NoLearnReturnsEmpty(t *testing.T) {
 	t.Parallel()
 	db := openRecallTestDB(t)
 	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
-	got, err := Recall(context.Background(), db, testConfig(), "Alpha widget", Opts{NoLearn: true})
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig(), NoLearn: true})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestRecall_ConfidenceFloor(t *testing.T) {
 	db := openRecallTestDB(t)
 	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 1)
 	// MinConfidence=3 should drop the row.
-	got, err := Recall(context.Background(), db, testConfig(), "Alpha widget", Opts{MinConfidence: 3})
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig(), MinConfidence: 3})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
@@ -166,7 +167,8 @@ func TestRecall_EntityMismatchFiltersToMismatches(t *testing.T) {
 	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
 	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
 	// Query a different entity entirely.
-	got, err := Recall(context.Background(), db, testConfig(), "Bravo widget", Opts{
+	got, err := Recall(context.Background(), db, "Bravo widget", Opts{
+		EntityConfig:       testConfig(),
 		DebugMismatches:    true,
 		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
 	})
@@ -186,7 +188,8 @@ func TestRecall_DebugMismatchesGate(t *testing.T) {
 	db := openRecallTestDB(t)
 	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
 	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
-	got, err := Recall(context.Background(), db, testConfig(), "Bravo widget", Opts{
+	got, err := Recall(context.Background(), db, "Bravo widget", Opts{
+		EntityConfig:       testConfig(),
 		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
 	})
 	if err != nil {
@@ -202,7 +205,8 @@ func TestRecall_LowConfidenceWarning(t *testing.T) {
 	db := openRecallTestDB(t)
 	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
 	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 1)
-	got, err := Recall(context.Background(), db, testConfig(), "Alpha widget", Opts{
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{
+		EntityConfig:       testConfig(),
 		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
 	})
 	if err != nil {
@@ -228,7 +232,7 @@ func TestRecall_ResourceNotInStoreWarning(t *testing.T) {
 	db := openRecallTestDB(t)
 	// No seeded resource; the recall still finds the learning row.
 	seedLearning(t, db, "widget", `["Alpha"]`, `["PREFIX-AL"]`, "widgets", "boost", 3)
-	got, err := Recall(context.Background(), db, testConfig(), "Alpha widget", Opts{})
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig()})
 	if err != nil {
 		t.Fatalf("recall: %v", err)
 	}
