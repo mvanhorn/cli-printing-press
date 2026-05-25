@@ -1372,6 +1372,21 @@ func TestPublishRenameJSONError(t *testing.T) {
 func writePublishableTestCLI(t *testing.T, dir string) {
 	t.Helper()
 
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/tmchow" ]; then
+  if [ "$3" = "--jq" ]; then
+    echo "tmchow"
+  else
+    echo '{"login":"tmchow","name":"Trevin Chow"}'
+  fi
+  exit 0
+fi
+exit 1
+`,
+	)
+
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "test-pp-cli"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(`module example.com/test-pp-cli
 
