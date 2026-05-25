@@ -376,14 +376,9 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 		if envVar.Name == "" {
 			continue
 		}
-		switch envVar.Kind {
-		case "", spec.AuthEnvVarKindPerCall:
-			envVar.Kind = spec.AuthEnvVarKindPerCall
-			seen[envVar.Name] = struct{}{}
-			filtered = append(filtered, envVar)
-		case spec.AuthEnvVarKindAuthFlowInput, spec.AuthEnvVarKindHarvested:
-			continue
-		}
+		envVar.Kind = envVar.EffectiveKind()
+		seen[envVar.Name] = struct{}{}
+		filtered = append(filtered, envVar)
 	}
 	// Sibling-scheme credentials (e.g. an apiKey header alongside an OAuth
 	// bearer) ride the same user_config + env-forwarding path so MCP hosts
@@ -439,7 +434,7 @@ func authUserConfigText(m CLIManifest, envVar spec.AuthEnvVar, required bool, si
 		}
 		return title, description
 	}
-	return title, envVarDescription(m, envVar.Name, required)
+	return title, envVarDescription(m, envVar, required)
 }
 
 func endpointTemplateDefault(m CLIManifest, templateVar string) string {
@@ -455,21 +450,32 @@ func endpointTemplateDefault(m CLIManifest, templateVar string) string {
 // envVarDescription is the help text under each user_config field. The
 // registration URL (when we have one) is what makes the difference between
 // "fill this in" and "I don't know where to get this value."
-func envVarDescription(m CLIManifest, envVar string, required bool) string {
+func envVarDescription(m CLIManifest, envVar spec.AuthEnvVar, required bool) string {
 	var b strings.Builder
 	if !required {
 		b.WriteString("Optional. ")
 	}
-	b.WriteString("Sets ")
-	b.WriteString(envVar)
-	b.WriteString(" for the ")
+	switch envVar.EffectiveKind() {
+	case spec.AuthEnvVarKindAuthFlowInput:
+		b.WriteString("Collects ")
+		b.WriteString(envVar.Name)
+		b.WriteString(" for the auth setup flow used by the ")
+	case spec.AuthEnvVarKindHarvested:
+		b.WriteString("Stores ")
+		b.WriteString(envVar.Name)
+		b.WriteString(" after it is harvested by the auth setup flow for the ")
+	default:
+		b.WriteString("Sets ")
+		b.WriteString(envVar.Name)
+		b.WriteString(" for the ")
+	}
 	if m.DisplayName != "" {
 		b.WriteString(displayNameForConcat(m.DisplayName))
 	} else {
 		b.WriteString(m.APIName)
 	}
 	b.WriteString(" MCP server.")
-	if m.AuthKeyURL != "" {
+	if m.AuthKeyURL != "" && envVar.EffectiveKind() != spec.AuthEnvVarKindHarvested {
 		b.WriteString(" Get a credential from ")
 		b.WriteString(m.AuthKeyURL)
 		b.WriteString(".")
