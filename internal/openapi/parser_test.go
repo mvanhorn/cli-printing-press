@@ -4217,6 +4217,29 @@ paths:
 `,
 			expected: "",
 		},
+		{
+			name: "placeholder URL in scheme description is rejected",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+      description: "Get your key at https://<your-dashboard>/api-keys"
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "",
+		},
 	}
 
 	for _, tc := range tests {
@@ -4224,6 +4247,39 @@ paths:
 			parsed, err := Parse([]byte(tc.yaml))
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, parsed.Auth.KeyURL)
+		})
+	}
+}
+
+func TestFirstHTTPSURLRejectsPlaceholders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "angle bracket placeholder",
+			in:   "Get your key at https://<your-dashboard>/api-keys",
+			want: "",
+		},
+		{
+			name: "real URL",
+			in:   "Register at https://dash.example.com/keys to get a token",
+			want: "https://dash.example.com/keys",
+		},
+		{
+			name: "brace placeholder",
+			in:   "https://api.example.com/v1/{tenant}/keys",
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, firstHTTPSURL(tc.in))
 		})
 	}
 }
