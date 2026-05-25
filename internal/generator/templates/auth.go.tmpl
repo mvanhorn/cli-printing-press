@@ -65,7 +65,11 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 {{- end}}
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then run:")
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
 			fmt.Fprintln(w, "  {{.Name}}-pp-cli login")
+{{- else}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth login")
+{{- end}}
 			if !launch {
 				return nil
 			}
@@ -303,7 +307,11 @@ func resolveOAuthCredentials(cmd *cobra.Command, flags *rootFlags, cfg *config.C
 		return clientID, clientSecret, nil
 	}
 	if flags.noInput {
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
 		return "", "", fmt.Errorf("OAuth2 client ID is required; pass --client-id, set {{envName .Name}}_CLIENT_ID, or run '{{.Name}}-pp-cli login' without --no-input")
+{{- else}}
+		return "", "", fmt.Errorf("OAuth2 client ID is required; pass --client-id, set {{envName .Name}}_CLIENT_ID, or run '{{.Name}}-pp-cli auth login' without --no-input")
+{{- end}}
 	}
 	reader := bufio.NewReader(cmd.InOrStdin())
 	printOAuthCredentialHint(cmd.ErrOrStderr())
@@ -336,7 +344,7 @@ func printOAuthCredentialHint(w io.Writer) {
 func promptOAuthCredential(cmd *cobra.Command, reader *bufio.Reader, label string) (string, error) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s: ", label)
 	line, err := reader.ReadString('\n')
-	if err != nil && line == "" && err != io.EOF {
+	if err != nil && err != io.EOF {
 		return "", fmt.Errorf("reading %s: %w", strings.ToLower(label), err)
 	}
 	return strings.TrimSpace(line), nil
@@ -366,7 +374,11 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			if !authed {
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
 				fmt.Fprintf(w, "  %s Not authenticated. Run '{{.Name}}-pp-cli login' to authenticate.\n", red("FAIL"))
+{{- else}}
+				fmt.Fprintf(w, "  %s Not authenticated. Run '{{.Name}}-pp-cli auth login' to authenticate.\n", red("FAIL"))
+{{- end}}
 				return nil
 			}
 
@@ -378,7 +390,11 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				if cfg.RefreshToken != "" {
 					fmt.Fprintf(w, "  %s Token expired (will auto-refresh on next request)\n", yellow("WARN"))
 				} else {
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
 					fmt.Fprintf(w, "  %s Token expired. Run '{{.Name}}-pp-cli login' to re-authenticate.\n", red("FAIL"))
+{{- else}}
+					fmt.Fprintf(w, "  %s Token expired. Run '{{.Name}}-pp-cli auth login' to re-authenticate.\n", red("FAIL"))
+{{- end}}
 				}
 			}
 

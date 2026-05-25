@@ -46,6 +46,9 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	require.Contains(t, auth, "promptOAuthCredential(cmd, reader, \"OAuth2 Client Secret (press Enter if not required)\")")
 	require.Contains(t, auth, `"mcp:hidden": "true"`)
 	require.Contains(t, auth, "flags.noInput")
+	require.Contains(t, auth, `fmt.Fprintln(w, "  oauth-login-prompts-pp-cli login")`)
+	require.Contains(t, auth, `Run 'oauth-login-prompts-pp-cli login' to authenticate.`)
+	require.Contains(t, auth, `Run 'oauth-login-prompts-pp-cli login' to re-authenticate.`)
 	require.NotContains(t, auth, "return fmt.Errorf(\"--client-id is required\")")
 
 	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
@@ -66,7 +69,9 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	const runtimeTest = `package cli
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -134,9 +139,31 @@ func TestResolveOAuthCredentialsNoInputRequiresClientID(t *testing.T) {
 		t.Fatalf("error = %q, want env-var hint", err)
 	}
 }
-`
+
+type partialReadErrorReader struct{}
+
+func (partialReadErrorReader) Read(p []byte) (int, error) {
+	copy(p, "partial")
+	return len("partial"), errors.New("short read")
+}
+
+func TestPromptOAuthCredentialRejectsPartialReadError(t *testing.T) {
+	var stderr bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetErr(&stderr)
+	reader := bufio.NewReader(partialReadErrorReader{})
+
+	_, err := promptOAuthCredential(cmd, reader, "OAuth2 Client ID")
+	if err == nil {
+		t.Fatalf("promptOAuthCredential() error = nil, want partial-read error")
+	}
+	if !strings.Contains(err.Error(), "reading oauth2 client id: short read") {
+		t.Fatalf("error = %q, want partial-read context", err)
+	}
+}
+	`
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "oauth_credentials_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestResolveOAuthCredentials")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "Test(ResolveOAuthCredentials|PromptOAuthCredential)")
 
 	const mcpRuntimeTest = `package cobratree
 
@@ -174,6 +201,36 @@ func TestTopLevelOAuthLoginIsHiddenFromMCP(t *testing.T) {
 	if strings.Contains(auth, "auth login --client-id <id> --client-secret <secret>") {
 		t.Fatalf("setup hint still points users at the flag-heavy nested login form")
 	}
+}
+
+func TestOAuthClientCredentialsUsesNestedAuthLoginHints(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth-client-credentials-login")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://accounts.example.com/oauth/token",
+		KeyURL:      "https://console.example.com/oauth",
+		EnvVars:     []string{"OAUTH_CC_CLIENT_ID", "OAUTH_CC_CLIENT_SECRET"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth-client-credentials-login-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(rootSrc), "rootCmd.AddCommand(newAuthLoginCmd(flags))")
+	require.NotContains(t, sortedKeys(New(apiSpec, outputDir).activeFrameworkCobraUseNames()), "login")
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	auth := string(authSrc)
+	require.Contains(t, auth, "Mint an OAuth2 bearer token via the client_credentials grant")
+	require.Contains(t, auth, `oauth-client-credentials-login-pp-cli auth login`)
+	require.NotContains(t, auth, `oauth-client-credentials-login-pp-cli login`)
 }
 
 func TestOAuthLoginTopLevelCommandForBearerTokenAuthCodeSpec(t *testing.T) {
