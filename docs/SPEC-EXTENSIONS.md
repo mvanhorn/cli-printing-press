@@ -488,6 +488,9 @@ Rules:
   generated per-call env var for that sibling header. Use `x-auth-vars` for
   richer metadata or when more than one credential variable belongs to the
   same scheme.
+- If a sibling apiKey/header scheme omits `x-auth-env-vars` and `x-auth-vars`,
+  the parser derives a required per-call env var from the API slug and header
+  name, for example `DISPATCH_ST_APP_KEY` for `ST-App-Key`.
 
 Catalog-driven equivalent: when a catalog entry declares `auth_env_vars`, the
 generator layers the canonical names on top of the parser-derived default at

@@ -29,6 +29,14 @@ var (
 	endpointLimitExplicit   = false // true when user set --max-endpoints-per-resource
 )
 
+type additionalHeaderFallbackMode int
+
+const (
+	additionalHeaderFallbackNone additionalHeaderFallbackMode = iota
+	additionalHeaderFallbackScheme
+	additionalHeaderFallbackHeader
+)
+
 const (
 	extensionAuthEnvVars           = "x-auth-env-vars"
 	extensionAuthVars              = "x-auth-vars"
@@ -1012,12 +1020,13 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 // header on every Bearer-authenticated request. Only schemes co-located with
 // the winner in a requirement object are promoted.
 //
-// Only apiKey-typed siblings with `in: header` or `in: query` are considered. Rich
-// x-auth-vars per_call declarations win; legacy x-auth-env-vars supplies the
-// same credential name for specs that do not use the rich shape. For all-apiKey
-// AND groups, missing extension metadata falls back to a deterministic
-// scheme-derived env var so every required credential reaches generated config
-// and client code.
+// Only apiKey-typed siblings with `in: header` or `in: query` are considered.
+// Rich x-auth-vars per_call declarations win; legacy x-auth-env-vars supplies
+// the same credential name for specs that do not use the rich shape. Missing
+// extension metadata falls back to a deterministic header-derived env var for
+// header siblings, and to a scheme-derived env var for all-apiKey AND groups,
+// so every required supported credential reaches generated config and client
+// code.
 func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []spec.AdditionalAuthHeader {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) <= 1 {
 		return nil
@@ -1073,7 +1082,13 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []s
 		if placement != "header" && placement != "query" {
 			continue
 		}
-		envVars := additionalHeaderEnvVars(scheme, name, envPrefix, fallbackEligible[name])
+		fallbackMode := additionalHeaderFallbackNone
+		if fallbackEligible[name] {
+			fallbackMode = additionalHeaderFallbackScheme
+		} else if placement == "header" {
+			fallbackMode = additionalHeaderFallbackHeader
+		}
+		envVars := additionalHeaderEnvVars(scheme, name, header, envPrefix, fallbackMode)
 		for _, ev := range envVars {
 			if ev.EffectiveKind() != spec.AuthEnvVarKindPerCall {
 				continue
@@ -1186,7 +1201,7 @@ func additionalHeaderSiblingSignature(req openapi3.SecurityRequirement, winner s
 	return strings.Join(siblings, "|")
 }
 
-func additionalHeaderEnvVars(scheme *openapi3.SecurityScheme, schemeName, envPrefix string, allowFallback bool) []spec.AuthEnvVar {
+func additionalHeaderEnvVars(scheme *openapi3.SecurityScheme, schemeName, headerName, envPrefix string, fallbackMode additionalHeaderFallbackMode) []spec.AuthEnvVar {
 	if scheme == nil {
 		return nil
 	}
@@ -1212,10 +1227,10 @@ func additionalHeaderEnvVars(scheme *openapi3.SecurityScheme, schemeName, envPre
 			Inferred:  true,
 		}}
 	}
-	if !allowFallback {
+	if fallbackMode == additionalHeaderFallbackNone {
 		return nil
 	}
-	name := derivedAdditionalHeaderEnvVar(schemeName, envPrefix)
+	name := derivedAdditionalHeaderEnvVar(schemeName, headerName, envPrefix, fallbackMode)
 	if name == "" {
 		return nil
 	}
@@ -1228,7 +1243,14 @@ func additionalHeaderEnvVars(scheme *openapi3.SecurityScheme, schemeName, envPre
 	}}
 }
 
-func derivedAdditionalHeaderEnvVar(schemeName, envPrefix string) string {
+func derivedAdditionalHeaderEnvVar(schemeName, headerName, envPrefix string, fallbackMode additionalHeaderFallbackMode) string {
+	if fallbackMode == additionalHeaderFallbackHeader {
+		headerSuffix := toSnakeCase(headerName)
+		if headerSuffix == "" {
+			return ""
+		}
+		return envPrefix + "_" + strings.ToUpper(headerSuffix)
+	}
 	envVars := defaultAuthEnvVars("api_key", "", schemeName, envPrefix)
 	if len(envVars) == 0 {
 		return ""

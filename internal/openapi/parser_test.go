@@ -4704,16 +4704,15 @@ paths:
 		"OR alternative schemes must not surface as required siblings")
 }
 
-// A sibling apiKey scheme that omits the x-auth-vars extension is silently
-// skipped: collectAdditionalAuthHeaders never invents env-var names. The
-// scheme's per-call credential simply isn't covered, and the primary auth
-// remains untouched.
-func TestSiblingApiKeyWithoutAuthVarsIsSkipped(t *testing.T) {
+// A sibling header apiKey scheme that omits the x-auth-vars extension still
+// needs a deterministic env var: in an AND security requirement, the API
+// requires both the primary auth and the sibling header credential.
+func TestSiblingHeaderApiKeyWithoutAuthVarsDerivesEnvVar(t *testing.T) {
 	t.Parallel()
 
 	yamlSpec := []byte(`openapi: "3.0.3"
 info:
-  title: no-auth-vars-sibling
+  title: Dispatch
   version: "1.0.0"
 servers:
   - url: https://api.example.com
@@ -4728,7 +4727,7 @@ components:
     apiKey:
       type: apiKey
       in: header
-      name: X-Sibling-Key
+      name: ST-App-Key
 paths:
   /items:
     get:
@@ -4738,7 +4737,15 @@ paths:
 `)
 	parsed, err := Parse(yamlSpec)
 	require.NoError(t, err)
-	assert.Empty(t, parsed.Auth.AdditionalHeaders)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 1)
+	additional := parsed.Auth.AdditionalHeaders[0]
+	assert.Equal(t, "ST-App-Key", additional.Header)
+	assert.Equal(t, "header", additional.In)
+	assert.Equal(t, "apiKey", additional.Scheme)
+	assert.Equal(t, "DISPATCH_ST_APP_KEY", additional.EnvVar.Name)
+	assert.Equal(t, spec.AuthEnvVarKindPerCall, additional.EnvVar.Kind)
+	assert.True(t, additional.EnvVar.Required)
+	assert.True(t, additional.EnvVar.Sensitive)
 }
 
 // Sibling apiKey-in-query schemes are required credentials just like
@@ -4790,6 +4797,48 @@ paths:
 	assert.Equal(t, "query", additional.In)
 	assert.Equal(t, "APIToken", additional.Scheme)
 	assert.Equal(t, "TRELLO_TOKEN", additional.EnvVar.Name)
+	assert.Equal(t, spec.AuthEnvVarKindPerCall, additional.EnvVar.Kind)
+	assert.True(t, additional.EnvVar.Required)
+	assert.True(t, additional.EnvVar.Sensitive)
+}
+
+func TestAllApiKeyQuerySiblingWithoutAuthVarsKeepsSchemeDerivedFallback(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: trello-shaped
+  version: "1.0.0"
+servers:
+  - url: https://api.trello.com/1
+security:
+  - APIKey: []
+    APIToken: []
+components:
+  securitySchemes:
+    APIKey:
+      type: apiKey
+      in: query
+      name: key
+    APIToken:
+      type: apiKey
+      in: query
+      name: token
+paths:
+  /members/me:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 1)
+	additional := parsed.Auth.AdditionalHeaders[0]
+	assert.Equal(t, "token", additional.Header)
+	assert.Equal(t, "query", additional.In)
+	assert.Equal(t, "APIToken", additional.Scheme)
+	assert.Equal(t, "TRELLO_SHAPED_APITOKEN", additional.EnvVar.Name)
 	assert.Equal(t, spec.AuthEnvVarKindPerCall, additional.EnvVar.Kind)
 	assert.True(t, additional.EnvVar.Required)
 	assert.True(t, additional.EnvVar.Sensitive)
