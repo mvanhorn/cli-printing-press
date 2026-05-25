@@ -171,8 +171,11 @@ func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlag
 // the envelope is treated as a detail object even when one of its
 // wrapper-named fields happens to be an empty array.
 var listEnvelopeMetadataKeys = map[string]bool{
-	// list wrappers themselves
+	// list wrappers themselves — must stay in sync with pageItemKeys
 	"results": true, "data": true, "items": true,
+	"records": true, "nodes": true, "entries": true, "features": true,
+	"Results": true, "Data": true, "Items": true,
+	"Records": true, "Nodes": true, "Entries": true, "Features": true,
 	// pagination cursors / tokens
 	"next_cursor": true, "nextCursor": true,
 	"next_page_token": true, "nextPageToken": true,
@@ -203,6 +206,11 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 	}
 	defer db.Close()
 
+	pageItemKeys := []string{
+		"data", "results", "items", "records", "nodes", "entries", "features",
+		"Data", "Results", "Items", "Records", "Nodes", "Entries", "Features",
+	}
+
 	// Collect items to upsert from various response shapes
 	var items []json.RawMessage
 
@@ -212,12 +220,53 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 		// Try object — check for common envelope patterns (results, data, items)
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal(data, &envelope) == nil {
-			for _, key := range []string{"results", "data", "items"} {
+			for _, key := range pageItemKeys {
 				if raw, ok := envelope[key]; ok {
 					var arr []json.RawMessage
 					if json.Unmarshal(raw, &arr) == nil && len(arr) > 0 {
 						items = arr
 						break
+					}
+				}
+			}
+			// Fallback: if exactly one top-level key is a non-empty array of
+			// objects AND every other top-level key is a known
+			// pagination/metadata key, treat that array as the list payload.
+			// This covers resource-named wrappers like {"events":[...]} or
+			// {"events":[...],"cursor":"x"} without misclassifying a detail
+			// object that merely carries one object-array field alongside its
+			// own scalar data (e.g. {"id":"order-1","line_items":[...]}), which
+			// must still cache as a single row.
+			if items == nil {
+				var arrayKey string
+				var arrayItems []json.RawMessage
+				arrayCount := 0
+				for key, raw := range envelope {
+					var candidate []json.RawMessage
+					if json.Unmarshal(raw, &candidate) != nil || len(candidate) == 0 {
+						continue
+					}
+					var obj map[string]json.RawMessage
+					if json.Unmarshal(candidate[0], &obj) != nil {
+						continue
+					}
+					arrayKey = key
+					arrayItems = candidate
+					arrayCount++
+				}
+				if arrayCount == 1 {
+					onlyMetadataSiblings := true
+					for key := range envelope {
+						if key == arrayKey {
+							continue
+						}
+						if !listEnvelopeMetadataKeys[key] {
+							onlyMetadataSiblings = false
+							break
+						}
+					}
+					if onlyMetadataSiblings {
+						items = arrayItems
 					}
 				}
 			}
@@ -235,7 +284,7 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 			if items == nil && len(envelope) > 0 {
 				looksLikeListEnvelope := false
 				hasListWrapperArray := false
-				for _, key := range []string{"results", "data", "items"} {
+				for _, key := range pageItemKeys {
 					raw, ok := envelope[key]
 					if !ok {
 						continue
