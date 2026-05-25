@@ -169,8 +169,11 @@ func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlag
 // the envelope is treated as a detail object even when one of its
 // wrapper-named fields happens to be an empty array.
 var listEnvelopeMetadataKeys = map[string]bool{
-	// list wrappers themselves
+	// list wrappers themselves — must stay in sync with pageItemKeys
 	"results": true, "data": true, "items": true,
+	"records": true, "nodes": true, "entries": true, "features": true,
+	"Results": true, "Data": true, "Items": true,
+	"Records": true, "Nodes": true, "Entries": true, "Features": true,
 	// pagination cursors / tokens
 	"next_cursor": true, "nextCursor": true,
 	"next_page_token": true, "nextPageToken": true,

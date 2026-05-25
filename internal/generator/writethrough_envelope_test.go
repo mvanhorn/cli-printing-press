@@ -48,6 +48,9 @@ func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 	// Detail object carrying ONE multi-element object-array alongside a scalar
 	// id must cache as a single row, not have its sub-array misread as the list.
 	writeThroughCache(ctx, "lineitemorders", json.RawMessage(`+"`"+`{"id":"o-2","line_items":[{"id":"li-1","sku":"a"},{"id":"li-2","sku":"b"}]}`+"`"+`))
+	// Empty page of a newly-promoted wrapper key alongside a pagination cursor
+	// is an empty list envelope, not a detail object: nothing should be cached.
+	writeThroughCache(ctx, "emptyrecords", json.RawMessage(`+"`"+`{"records":[],"cursor":"abc"}`+"`"+`))
 
 	db, err := openStoreForRead(ctx, "writethrough-envelope-pp-cli")
 	if err != nil {
@@ -96,6 +99,14 @@ func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 	}
 	if len(lineOrders) != 1 {
 		t.Fatalf("detail object with a multi-element sub-array must cache as one row (not its line_items), got %d", len(lineOrders))
+	}
+
+	emptyRecords, err := db.List("emptyrecords", 10)
+	if err != nil {
+		t.Fatalf("list emptyrecords: %v", err)
+	}
+	if len(emptyRecords) != 0 {
+		t.Fatalf("empty list envelope with a records wrapper must cache nothing, got %d", len(emptyRecords))
 	}
 }
 `), 0o644))
