@@ -11609,6 +11609,7 @@ func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
 						Params: []spec.Param{
 							{Name: "first", Type: "integer", Default: 100},
 							{Name: "after", Type: "string"},
+							{Name: "before", Type: "string"},
 						},
 						Pagination: &spec.Pagination{
 							Type:           "cursor",
@@ -11621,10 +11622,26 @@ func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
 					},
 				},
 			},
+			"customers": {
+				Description: "Customers",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List customers",
+						ResponsePath: "data.customers.nodes",
+						Params: []spec.Param{
+							{Name: "status", Type: "string"},
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Customer"},
+					},
+				},
+			},
 		},
 		Types: map[string]spec.TypeDef{
 			"Order":            {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "name", Type: "string"}}},
 			"FulfillmentOrder": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "status", Type: "string"}}},
+			"Customer":         {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "email", Type: "string"}}},
 		},
 	}
 
@@ -11642,7 +11659,11 @@ func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
 	assert.Contains(t, queriesContent, "query($first: Int!, $after: String, $query: String)")
 	assert.Contains(t, queriesContent, "orders(first: $first, after: $after, query: $query)")
 	assert.Contains(t, queriesContent, "query($first: Int!, $after: String) {\n  fulfillmentOrders(first: $first, after: $after)")
+	assert.NotContains(t, queriesContent, "before: $before")
 	assert.NotContains(t, queriesContent, "fulfillmentOrders(first: $first, after: $after, query: $query)")
+	assert.Contains(t, queriesContent, "query {\n  customers {\n")
+	assert.NotContains(t, queriesContent, "query()")
+	assert.NotContains(t, queriesContent, "customers()")
 }
 
 func TestGraphQLFieldSelectionSupportsNestedSelections(t *testing.T) {

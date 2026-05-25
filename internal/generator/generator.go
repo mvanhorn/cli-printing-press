@@ -5780,7 +5780,7 @@ func graphqlListParams(endpoint spec.Endpoint) []spec.Param {
 			continue
 		}
 		switch p.Name {
-		case "first", "after", "before", "query":
+		case "first", "after", "query":
 		default:
 			continue
 		}

@@ -10,8 +10,8 @@ package client
 {{- $queryField := graphqlQueryField $endpoint.ResponsePath}}
 {{- $params := graphqlListParams $endpoint}}
 
-const {{pascal $rName}}ListQuery = {{backtick}}query({{- range $i, $p := $params}}{{if $i}}, {{end}}${{$p.Name}}: {{graphqlVariableType $p}}{{- end}}) {
-  {{$queryField}}({{- range $i, $p := $params}}{{if $i}}, {{end}}{{$p.Name}}: ${{$p.Name}}{{- end}}) {
+const {{pascal $rName}}ListQuery = {{backtick}}query{{if $params}}({{- range $i, $p := $params}}{{if $i}}, {{end}}${{$p.Name}}: {{graphqlVariableType $p}}{{- end}}){{end}} {
+  {{$queryField}}{{if $params}}({{- range $i, $p := $params}}{{if $i}}, {{end}}{{$p.Name}}: ${{$p.Name}}{{- end}}){{end}} {
     nodes {
 {{- range graphqlFieldSelection $endpoint.Response.Item $.Types}}
       {{.}}
