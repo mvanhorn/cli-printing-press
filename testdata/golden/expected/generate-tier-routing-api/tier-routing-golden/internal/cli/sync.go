@@ -790,6 +790,14 @@ func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]jso
 		if candidate, ok := extractObjectArray(raw); ok {
 			arrayItems = candidate
 			arrayCount++
+			continue
+		}
+		var rawArray []json.RawMessage
+		if json.Unmarshal(raw, &rawArray) == nil {
+			continue
+		}
+		if !pageEnvelopeMetadataKeys[key] {
+			return nil, false
 		}
 	}
 	if arrayCount == 1 {
@@ -1223,6 +1231,34 @@ var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 var pageMetadataArrayKeys = map[string]bool{
 	"errors": true, "Errors": true,
 	"warnings": true, "Warnings": true,
+}
+
+var pageEnvelopeMetadataKeys = map[string]bool{
+	// list wrappers themselves
+	"data": true, "results": true, "items": true,
+	"Data": true, "Results": true, "Items": true,
+	// pagination cursors / tokens
+	"next_cursor": true, "nextCursor": true,
+	"next_page_token": true, "nextPageToken": true,
+	"page_token": true, "pageToken": true,
+	"end_cursor": true, "endCursor": true,
+	"start_cursor": true, "startCursor": true,
+	"cursor": true, "after": true, "before": true,
+	// has-more flags and page numbers
+	"has_more": true, "hasMore": true,
+	"has_next": true, "hasNext": true,
+	"next_page": true, "previous_page": true,
+	"page": true, "page_size": true, "per_page": true,
+	// counts / totals
+	"total": true, "count": true, "size": true, "total_count": true, "totalCount": true,
+	// JSend / common status envelopes
+	"success": true, "status": true, "message": true, "error": true, "errors": true,
+	"warnings": true, "Warnings": true, "ok": true, "Ok": true,
+	// wrapper objects
+	"links": true, "meta": true, "pagination": true,
+	"response_metadata": true, "paging": true,
+	// links shape
+	"next": true, "prev": true, "previous": true, "first": true, "last": true,
 }
 
 // criticalResources is the template-time projection of per-resource Critical

@@ -4088,6 +4088,20 @@ func TestExtractPageItemsJSendNestedDataEnvelope(t *testing.T) {
 	}
 }
 
+func TestExtractPageItemsDetailObjectWrappedInData(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"data": {
+			"CertNo": "91000",
+			"line_items": [{"id": "li_1"}],
+			"Grade": "MS64"
+		}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("detail object with child array = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+}
+
 func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	body := []byte(` + "`" + `{"success": false, "data": null}` + "`" + `)
 	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
