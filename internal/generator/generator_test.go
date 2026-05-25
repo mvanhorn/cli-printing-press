@@ -10208,8 +10208,9 @@ func TestIsSyncAccessWarningClassification(t *testing.T) {
 }
 
 // TestGeneratedSyncMaxPagesAndStickyCursor verifies that the generated
-// sync command (a) defaults --max-pages to 100 (covers <=10k items/resource
-// at default page size; bigger resources opt in explicitly), (b) emits a
+// sync command (a) defaults --max-pages to 0 so normal runs are unlimited,
+// with a bounded dogfood default only when the operator did not pass the flag,
+// (b) emits a
 // structured sync_warning with reason "max_pages_cap_hit" on BOTH the flat
 // and dependent-resource code paths when the cap is reached, and (c) breaks
 // the pagination loop with a "stuck_pagination" sync_warning when the API
@@ -10275,11 +10276,16 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	require.NoError(t, err)
 	syncContent := string(syncGo)
 
-	// (a) Default --max-pages is 100 (covers <=10k items per resource at
-	// the default page size of 100; the old 10-page default silently
-	// truncated reference resources at 1000 items).
-	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
-		"sync.go must declare --max-pages with default 100")
+	// (a) Default --max-pages is 0 (unlimited) for normal users. Dogfood
+	// keeps a bounded default unless the operator explicitly passed the flag.
+	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 0,`,
+		"sync.go must declare --max-pages with default 0")
+	assert.Contains(t, syncContent, `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
+		"sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
+	assert.Contains(t, syncContent, `maxPages = 10`,
+		"sync.go must keep a dogfood-only page cap")
+	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
+		"sync.go must not retain the old finite 100-page default")
 	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"sync.go must not retain the old 10-page default")
 
@@ -10319,8 +10325,9 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	// (b4) The cap-hit guard must consume an effective value derived from
 	// both --latest-only AND --since. When --since is set, --latest-only is
 	// already a no-op for the maxPages pin (block at sync.go.tmpl ~154),
-	// and any cap hit reflects the default 100-page limit — a real anomaly
-	// worth surfacing. Passing the raw --latest-only flag value would
+	// and any cap hit reflects an explicit operator limit or the dogfood
+	// safety limit, a real anomaly worth surfacing. Passing the raw
+	// --latest-only flag value would
 	// silently suppress legitimate warnings on the --latest-only --since
 	// combined path. Pin the derivation and the callsites that consume it.
 	assert.Contains(t, syncContent,
@@ -10471,6 +10478,14 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 	assertVerifyEnvConcurrencyPin(t, string(syncGo), naming.CLI(gqlSpec.Name)+"/internal/cliutil", "GraphQL sync.go")
 	assert.Contains(t, string(syncGo), "sinceTS = ts.UTC().Format(time.RFC3339)",
 		"GraphQL sync --since must normalize duration-derived timestamps to UTC before query filters consume them")
+	assert.Contains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 0,`,
+		"GraphQL sync.go must declare --max-pages with default 0")
+	assert.Contains(t, string(syncGo), `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
+		"GraphQL sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
+	assert.Contains(t, string(syncGo), `maxPages = 10`,
+		"GraphQL sync.go dogfood cap must still bound generated syncs to 10 pages")
+	assert.NotContains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
+		"GraphQL sync.go must not retain the old 10-page default")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
