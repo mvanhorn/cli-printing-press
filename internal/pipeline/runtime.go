@@ -647,6 +647,9 @@ func runDataPipelineTest(binary, mode string, envFn func() []string, expectedRow
 
 	var bestShortTable string
 	var bestShortCount int
+	var bestPassTable string
+	var bestPassCount int
+	var zeroDataTable string
 	for _, table := range tables {
 		countQuery := fmt.Sprintf("SELECT count(*) FROM \"%s\"", table)
 		countOut, countErr := runCLIWithOutput(binary, []string{"sql", countQuery}, env, 10*time.Second)
@@ -657,7 +660,11 @@ func runDataPipelineTest(binary, mode string, envFn func() []string, expectedRow
 		if count > 0 {
 			if expectedRows > 0 {
 				if count >= expectedRows {
-					return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
+					if !isAuxiliaryPipelineTable(table, len(tables)) && count > bestPassCount {
+						bestPassTable = table
+						bestPassCount = count
+					}
+					continue
 				}
 				if count > bestShortCount {
 					bestShortTable = table
@@ -667,11 +674,32 @@ func runDataPipelineTest(binary, mode string, envFn func() []string, expectedRow
 			}
 			return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
 		}
+		if expectedRows > 0 && zeroDataTable == "" && !isAuxiliaryPipelineTable(table, len(tables)) {
+			zeroDataTable = table
+		}
+	}
+	if bestPassTable != "" {
+		return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), bestPassTable, bestPassCount)
 	}
 	if bestShortTable != "" {
 		return false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", bestShortTable, bestShortCount, expectedRows, mode)
 	}
+	if zeroDataTable != "" && len(tables) > 1 {
+		return false, fmt.Sprintf("FAIL: %s has 0 rows after sync, expected at least %d (%s mode)", zeroDataTable, expectedRows, mode)
+	}
 	return false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode)
+}
+
+func isAuxiliaryPipelineTable(table string, totalTables int) bool {
+	if totalTables <= 1 {
+		return false
+	}
+	switch strings.ToLower(table) {
+	case "config", "configs", "metadata", "settings":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseSQLOutput extracts non-empty, non-header lines from sql command output.

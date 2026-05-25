@@ -232,7 +232,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	})
 
 	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
-		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0)
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0, 2)
 
 		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
 
@@ -241,12 +241,21 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	})
 
 	t.Run("passes when an auxiliary table has fewer rows before populated data table", func(t *testing.T) {
-		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 1)
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 1, 2)
 
 		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
 
 		assert.True(t, pass)
 		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("fails when only an auxiliary table satisfies expected rows", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 3, 0)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "items has 0 rows")
 	})
 }
 
@@ -373,6 +382,53 @@ paths:
 	var body []map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Len(t, body, 1)
+}
+
+func TestDetectNestedDataEnvelopeFixturesSortsHTTPMethods(t *testing.T) {
+	spec := []byte(`openapi: 3.0.0
+info:
+  title: Method Order API
+  version: "1.0"
+paths:
+  /items:
+    patch:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      results:
+                        type: array
+                        items:
+                          type: object
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+`)
+
+	fixtures := detectNestedDataEnvelopeFixtures(spec)
+
+	require.Contains(t, fixtures, "/items")
+	assert.Equal(t, "items", fixtures["/items"].ArrayKey)
 }
 
 func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
@@ -595,7 +651,7 @@ func main() {
 	return binaryPath
 }
 
-func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T, settingsRows int) string {
+func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T, settingsRows, itemRows int) string {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -632,7 +688,7 @@ func main() {
 				return
 			}
 			if strings.Contains(query, "\"items\"") {
-				fmt.Println(2)
+				fmt.Println(%d)
 				return
 			}
 			os.Exit(1)
@@ -640,7 +696,7 @@ func main() {
 	}
 	os.Exit(1)
 }
-`, settingsRows))
+`, settingsRows, itemRows))
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()

@@ -54,8 +54,17 @@ func detectNestedDataEnvelopeFixturesFromRaw(raw map[string]any) map[string]nest
 		if !ok {
 			continue
 		}
-		for method, operationValue := range pathItem {
+		methods := make([]string, 0, len(pathItem))
+		for method := range pathItem {
 			if !isDogfoodHTTPMethod(method) {
+				continue
+			}
+			methods = append(methods, method)
+		}
+		slices.Sort(methods)
+		for _, method := range methods {
+			operationValue, ok := pathItem[method]
+			if !ok {
 				continue
 			}
 			operation, ok := operationValue.(map[string]any)
