@@ -396,6 +396,31 @@ func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	assert.Contains(t, skill, "ship cannot fire while publish validate fails")
 }
 
+func TestPublishSkillRerunsLiveGateBeforeManagedClone(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+	validateStart := strings.Index(skill, "## Step 4: Validate")
+	liveGateStart := strings.Index(skill, "## Step 4.5: Live End-to-End Gate")
+	cloneStart := strings.Index(skill, "## Step 5: Managed Clone")
+	require.NotEqual(t, -1, validateStart)
+	require.NotEqual(t, -1, liveGateStart)
+	require.NotEqual(t, -1, cloneStart)
+	require.Less(t, validateStart, liveGateStart)
+	require.Less(t, liveGateStart, cloneStart)
+
+	liveGateBlock := skill[liveGateStart:cloneStart]
+	assert.Contains(t, liveGateBlock, `dogfood`)
+	assert.Contains(t, liveGateBlock, `--live`)
+	assert.Contains(t, liveGateBlock, `--level full`)
+	assert.Contains(t, liveGateBlock, `--timeout 120s`)
+	assert.Contains(t, liveGateBlock, `--write-acceptance "$PROOFS_DIR/phase5-acceptance.json"`)
+	assert.Contains(t, liveGateBlock, `"$PRINTING_PRESS_BIN" publish validate --dir "$CLI_DIR" --json`)
+	assert.Contains(t, liveGateBlock, `--skip-live-test=<reason>`)
+	assert.Contains(t, liveGateBlock, `auth_type=none during a known upstream outage`)
+	assert.Contains(t, liveGateBlock, `API_KEY_AVAILABLE=true`)
+	assert.Contains(t, liveGateBlock, `api_key_available: $api_key_available`)
+	assert.Contains(t, skill, "### Publish Live Gate")
+}
+
 func TestPolishPublishOfferRequiresFreshUserTurn(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
 	reference := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "references", "publish-turn-boundary.md"))
