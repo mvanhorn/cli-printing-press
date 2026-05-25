@@ -745,7 +745,7 @@ func (c *Client) ConfiguredTimeout() time.Duration {
 	if c.HTTPClient != nil && c.HTTPClient.Timeout > 0 {
 		return c.HTTPClient.Timeout
 	}
-	return 30 * time.Second
+	return 60 * time.Second
 }
 
 func (c *Client) authHeader(ctx context.Context) (string, error) {
