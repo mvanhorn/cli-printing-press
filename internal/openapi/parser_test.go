@@ -8017,6 +8017,45 @@ paths:
 	})
 }
 
+func TestParseDerivesBaseURLFromRemoteSourceForRelativeServer(t *testing.T) {
+	t.Parallel()
+
+	specYAML := []byte(`openapi: "3.0.3"
+info:
+  title: Relative Server Test
+  version: "1.0"
+servers:
+  - url: /api/v3
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200': {description: OK}
+`)
+
+	t.Run("remote http source seeds base URL", func(t *testing.T) {
+		// ParseWithOptions{SourceURL} is the real entry point the cli layer
+		// uses for a remote spec (parseOpenAPISpec sets SourceURL when the
+		// source is an http(s) URL).
+		parsed, err := ParseWithOptions(specYAML, ParseOptions{SourceURL: "https://petstore3.swagger.io/api/v3/openapi.yaml"})
+		require.NoError(t, err)
+		assert.Equal(t, "https://petstore3.swagger.io", parsed.BaseURL)
+		assert.Equal(t, "/api/v3", parsed.BasePath)
+		assert.False(t, parsed.BaseURLIsPlaceholder)
+	})
+
+	t.Run("local file source keeps existing empty base URL behavior", func(t *testing.T) {
+		// No SourceURL (local-file path source) — host is not derivable, so
+		// BaseURL stays empty and the user must set base_url.
+		parsed, err := Parse(specYAML)
+		require.NoError(t, err)
+		assert.Equal(t, "", parsed.BaseURL)
+		assert.Equal(t, "/api/v3", parsed.BasePath)
+		assert.False(t, parsed.BaseURLIsPlaceholder)
+	})
+}
+
 // TestAuthCompanionFromOpenAPI exercises the x-auth-companion extension at
 // both scheme level and info level, including the scheme-wins precedence
 // when both are set.
