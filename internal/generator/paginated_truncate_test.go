@@ -370,6 +370,36 @@ func TestPaginatedGetStopsAtMaxPageSafetyLimit(t *testing.T) {
 	}
 }
 
+func TestPaginatedGetStopsAtMaxPageSafetyLimitForBodyCursor(t *testing.T) {
+	responses := make([]json.RawMessage, paginatedGetMaxPages+1)
+	for i := range responses {
+		responses[i] = json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"next":"next-token"}}` + "`" + `)
+	}
+	client := &paginatedTestClient{responses: responses}
+	stderr := capturePaginatedStderr(t, func() {
+		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", "meta.next", "")
+		if err != nil {
+			t.Fatalf("paginatedGet returned error: %v", err)
+		}
+		var got []map[string]string
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal data: %v", err)
+		}
+		if len(got) != paginatedGetMaxPages {
+			t.Fatalf("got %d items, want %d", len(got), paginatedGetMaxPages)
+		}
+	})
+	if len(client.params) != paginatedGetMaxPages {
+		t.Fatalf("got %d requests, want %d", len(client.params), paginatedGetMaxPages)
+	}
+	if client.params[1]["cursor"] != "next-token" {
+		t.Fatalf("second request cursor = %q, want next-token", client.params[1]["cursor"])
+	}
+	if !containsAll(stderr, ` + "`" + `"event":"truncated"` + "`" + `, ` + "`" + `"reason":"max_pages_cap_hit"` + "`" + `) {
+		t.Fatalf("stderr missing max-pages body-cursor truncation warning: %s", stderr)
+	}
+}
+
 func containsAll(s string, needles ...string) bool {
 	for _, needle := range needles {
 		if !strings.Contains(s, needle) {
