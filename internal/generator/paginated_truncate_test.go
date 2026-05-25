@@ -46,7 +46,7 @@ func TestPaginatedGetEmitsTruncationWarning(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(helpersSrc), "func emitTruncationWarning(",
 		"generated helpers.go should define emitTruncationWarning")
-	require.Contains(t, string(helpersSrc), "emitTruncationWarning(data, nextCursorPath, hasMoreField)",
+	require.Contains(t, string(helpersSrc), "emitTruncationWarning(data, nextCursorPath, hasMoreField, paginationType)",
 		"paginatedGet should call emitTruncationWarning on the single-page path")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
@@ -188,6 +188,21 @@ func TestPaginatedGetWarnsForSinglePageNumericNextCursor(t *testing.T) {
 	})
 	if !containsAll(stderr, ` + "`" + `"event":"truncated"` + "`" + `, ` + "`" + `"hint":"pass --all to fetch every page"` + "`" + `) {
 		t.Fatalf("stderr missing numeric-cursor truncation warning: %s", stderr)
+	}
+}
+
+func TestPaginatedGetWarnsForSinglePageHasMoreNumericPagination(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"has_more":true}}` + "`" + `),
+	}}
+	stderr := capturePaginatedStderr(t, func() {
+		_, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, false, "page", "page", "limit", "", "meta.has_more")
+		if err != nil {
+			t.Fatalf("paginatedGet returned error: %v", err)
+		}
+	})
+	if !containsAll(stderr, ` + "`" + `"event":"truncated"` + "`" + `, ` + "`" + `"hint":"pass --all to fetch every page"` + "`" + `) {
+		t.Fatalf("stderr missing has-more numeric pagination truncation hint: %s", stderr)
 	}
 }
 

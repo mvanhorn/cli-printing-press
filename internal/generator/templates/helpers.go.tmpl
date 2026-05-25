@@ -760,7 +760,7 @@ func paginatedGet(ctx context.Context, c interface {
 		if err != nil {
 			return nil, err
 		}
-		emitTruncationWarning(data, nextCursorPath, hasMoreField)
+		emitTruncationWarning(data, nextCursorPath, hasMoreField, paginationType)
 		return data, nil
 	}
 
@@ -883,7 +883,7 @@ func nextClientSidePaginationCursor(params map[string]string, cursorParam, pagin
 // Silent page-1 truncation is the worst-possible mode for agents,
 // who otherwise compute totals against an incomplete set without
 // passing --all.
-func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField string) {
+func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField, paginationType string) {
 	if nextCursorPath == "" && hasMoreField == "" {
 		return
 	}
@@ -906,11 +906,10 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 	if nextCursor == "" && !hasMore {
 		return
 	}
-	// --all only advances when a next-cursor is configured. has_more-only
-	// endpoints have no cursor to set on the next page, so the --all loop
-	// re-fetches the same response forever. Don't advertise an escape
-	// hatch that doesn't work for this topology.
-	if nextCursor != "" {
+	// --all advances when a next-cursor is configured, or when the endpoint
+	// uses client-side numeric page/offset advancement. Opaque cursor APIs
+	// still need a returned cursor to advance safely.
+	if nextCursor != "" || ((paginationType == "page" || paginationType == "offset") && hasMore) {
 		if humanFriendly {
 			fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available. Re-run with --all to fetch every page.\n")
 		} else {
