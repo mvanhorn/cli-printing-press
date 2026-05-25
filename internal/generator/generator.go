@@ -4690,7 +4690,7 @@ func endpointUsesCSVArray(endpoint spec.Endpoint) bool {
 	}
 	var walk func([]spec.Param, int) bool
 	walk = func(params []spec.Param, depth int) bool {
-		if depth > maxBodyFlagDepth {
+		if depth >= maxBodyFlagDepth {
 			return false
 		}
 		for _, p := range params {

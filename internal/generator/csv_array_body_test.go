@@ -75,6 +75,11 @@ func TestEndpointUsesCSVArrayRespectsBodyFlagDepth(t *testing.T) {
 	}
 
 	require.False(t, endpointUsesCSVArray(spec.Endpoint{Method: "POST", Body: []spec.Param{deepCSV}}))
+	boundaryCSV := spec.Param{Name: "csv", Type: "string_csv_array", ItemType: "string"}
+	for i := 2; i >= 0; i-- {
+		boundaryCSV = spec.Param{Name: "level", Type: "object", Fields: []spec.Param{boundaryCSV}}
+	}
+	require.False(t, endpointUsesCSVArray(spec.Endpoint{Method: "POST", Body: []spec.Param{boundaryCSV}}))
 	require.True(t, endpointUsesCSVArray(spec.Endpoint{Method: "POST", Body: []spec.Param{{
 		Name:   "level",
 		Type:   "object",
