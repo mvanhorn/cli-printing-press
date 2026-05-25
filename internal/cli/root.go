@@ -796,7 +796,11 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 }
 
 func parseOpenAPISpec(specFile string, data []byte, opts openapi.ParseOptions) (*spec.APISpec, error) {
-	if !openapi.IsRemoteSpecSource(specFile) {
+	if openapi.IsRemoteSpecSource(specFile) {
+		// Remote source: record the URL so the parser can derive an absolute
+		// BaseURL when the spec's servers: block is relative-only.
+		opts.SourceURL = specFile
+	} else {
 		opts.Path = specFile
 	}
 	return openapi.ParseWithOptions(data, opts)
