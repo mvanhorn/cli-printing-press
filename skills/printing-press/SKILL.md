@@ -1750,9 +1750,11 @@ default:
   response type for implicit grants.
 - For authorization-code grants, include a safe probe PKCE pair:
   `code_challenge_method=plain` and
-  `code_challenge=probe_reachability_check`. Providers that do not require PKCE
-  ignore these params; providers that enforce PKCE should advance to the login
-  or consent page instead of returning a false `invalid_request`.
+  `code_challenge=probe_reachability_check_pkce_probe_literal`. The literal
+  challenge is 43 unreserved characters, satisfying the RFC 7636 minimum for a
+  `plain` PKCE verifier/challenge. Providers that do not require PKCE ignore
+  these params; providers that enforce PKCE should advance to the login or
+  consent page instead of returning a false `invalid_request`.
 - `scope`, `audience`, `tenant`, `state`, `prompt`, or other provider-required
   params when the spec or vendor docs require them. Use a benign probe value for
   `state` if required.
