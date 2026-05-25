@@ -57,6 +57,13 @@ issue is an action surface. Optimize the issue path for speed and signal:
 - **Run issue creates and comments in parallel.** Each WU's filing is
   independent of every other WU. Background subshells writing to indexed
   temp files, then `wait`, then read in order — the pattern is in Step 3.
+  - **Anti-pattern:** Do not use `URL=$(gh issue create ... &)` or
+    `URL=$(gh issue comment ... &)`. The `&` runs inside the command
+    substitution subshell, the subshell exits before `gh` finishes, `URL`
+    is empty, and the still-running `gh` process can create or comment
+    successfully in the background. Retrying then produces duplicate work.
+    Use Step 3's `(gh ... > "$ISSUE_TMPDIR/issue-$wu_idx") &` capture-file
+    shape instead.
 
 ## Step 1: Ensure labels exist (idempotent, create-only)
 
@@ -369,6 +376,7 @@ declare -a OUTCOME_KIND OUTCOME_URL OUTCOME_TITLE OUTCOME_PRIORITY OUTCOME_COMP 
 declare -a FAILED_ISSUES
 
 ISSUE_TMPDIR=$(mktemp -d)
+ISSUE_RUN_START_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   (
@@ -446,6 +454,60 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
 done
 
 wait
+
+# Defensive duplicate detector. If an agent accidentally used the malformed
+# `URL=$(gh issue create ... &)` shortcut outside this reference, those
+# backgrounded issue creates may succeed even though the captured URL is empty.
+# Extra issues created by the current user since the run began, beyond the issue
+# numbers captured in per-WU temp files, signal that parallel filing leaked
+# creates. Use the live REST list endpoint instead of search, whose index can lag
+# immediately after creation.
+EXPECTED_ISSUE_NUMBERS=$(
+  for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
+    if [ -f "$ISSUE_TMPDIR/issue-$wu_idx" ]; then
+      {
+        IFS= read -r KIND_TMP
+        IFS= read -r URL_TMP
+      } < "$ISSUE_TMPDIR/issue-$wu_idx"
+      if [[ "$KIND_TMP" == created && "$URL_TMP" =~ /issues/([0-9]+)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+      fi
+    fi
+  done | sort -u
+)
+CURRENT_GH_USER=$(gh api user --jq .login 2>/dev/null || true)
+RECENT_CREATED_LINES=""
+if [ -n "$CURRENT_GH_USER" ]; then
+  RECENT_CREATED_LINES=$(gh api --method GET "repos/$REPO/issues" \
+    -f state=open \
+    -f since="$ISSUE_RUN_START_ISO" \
+    -f sort=created \
+    -f direction=desc \
+    -f per_page=100 \
+    --jq ".[] | select((.pull_request | not) and .user.login == \"$CURRENT_GH_USER\" and .created_at >= \"$ISSUE_RUN_START_ISO\") | \"#\(.number) \(.title)\"" 2>/dev/null || true)
+fi
+UNEXPECTED_CREATED_LINES=$(printf '%s\n' "$RECENT_CREATED_LINES" | sed '/^$/d')
+if [ -n "$EXPECTED_ISSUE_NUMBERS" ]; then
+  while IFS= read -r issue_num; do
+    [ -z "$issue_num" ] && continue
+    UNEXPECTED_CREATED_LINES=$(printf '%s\n' "$UNEXPECTED_CREATED_LINES" | grep -v "^#$issue_num " || true)
+  done <<EOF
+$EXPECTED_ISSUE_NUMBERS
+EOF
+fi
+EXPECTED_CREATES=0
+for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
+  if [[ "${WU_DEDUP[$wu_idx]}" != comment:* ]]; then
+    KIND_TMP=$(head -1 "$ISSUE_TMPDIR/issue-$wu_idx" 2>/dev/null)
+    [[ "$KIND_TMP" == scrub-failed ]] || EXPECTED_CREATES=$((EXPECTED_CREATES + 1))
+  fi
+done
+UNEXPECTED_CREATED_COUNT=$(printf '%s\n' "$UNEXPECTED_CREATED_LINES" | sed '/^$/d' | wc -l | tr -d ' ')
+if [ "$UNEXPECTED_CREATED_COUNT" -gt 0 ]; then
+  printf 'WARNING: %s unexpected issue(s) were created by the current user since %s, outside this retro'\''s %s expected new issue(s). Check for duplicate issues before presenting results.\n' \
+    "$UNEXPECTED_CREATED_COUNT" "$ISSUE_RUN_START_ISO" "$EXPECTED_CREATES" >&2
+  printf '%s\n' "$UNEXPECTED_CREATED_LINES" | sed 's/^/  /' >&2
+fi
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   {
