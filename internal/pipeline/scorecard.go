@@ -1213,6 +1213,9 @@ func scoreVision(dir string) int {
 	}
 
 	// Tier 2: Feature Intelligence (0-5 points)
+	// - schema+wiring combined cap: 3.5
+	// - FTS5: 1.0
+	// - search uses store: 0.5
 	tier2 := 0.0
 
 	// Schema depth (0-1.5): check if store.go has domain-specific tables
@@ -1247,8 +1250,8 @@ func scoreVision(dir string) int {
 		}
 		tier2 += float64(wired) * 0.25
 		tier2 += float64(registeredVisionCapabilityFiles(commandContent)) * 0.75
-		if tier2 > 3.0 { // cap wiring contribution
-			tier2 = 3.0
+		if tier2 > 3.5 { // cap schema+wiring contribution so tier2 can reach its documented 5.0 max
+			tier2 = 3.5
 		}
 	}
 
