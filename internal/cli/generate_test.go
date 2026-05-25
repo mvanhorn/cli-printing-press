@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -2318,7 +2319,7 @@ func TestApplyGenerateSpecFlagsSetsPublicCategory(t *testing.T) {
 
 	apiSpec := &spec.APISpec{Name: "docs-api"}
 
-	require.NoError(t, applyGenerateSpecFlags(apiSpec, "", "docs", "travel", "", "", ""))
+	require.NoError(t, applyGenerateSpecFlags(apiSpec, "", "docs", "travel", "", "", "", generateMCPFlagOverrides{}))
 
 	assert.Equal(t, "docs", apiSpec.SpecSource)
 	assert.Equal(t, "travel", apiSpec.Category)
@@ -2329,11 +2330,163 @@ func TestApplyGenerateSpecFlagsRejectsUnknownCategory(t *testing.T) {
 
 	apiSpec := &spec.APISpec{Name: "docs-api"}
 
-	err := applyGenerateSpecFlags(apiSpec, "", "docs", "banana", "", "", "")
+	err := applyGenerateSpecFlags(apiSpec, "", "docs", "banana", "", "", "", generateMCPFlagOverrides{})
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "--category must be one of:")
 	assert.Empty(t, apiSpec.Category)
+}
+
+func TestApplyGenerateSpecFlagsOverridesMCPConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	intentsPath := filepath.Join(dir, "mcp-intents.yaml")
+	require.NoError(t, os.WriteFile(intentsPath, []byte(`
+intents:
+  - name: lookup_item
+    description: Lookup an item by id
+    params:
+      - name: id
+        type: string
+        required: true
+        description: item id
+    steps:
+      - endpoint: items.get
+        bind:
+          id: ${input.id}
+        capture: item
+    returns: item
+`), 0o644))
+
+	apiSpec := &spec.APISpec{
+		Name:    "demo",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method: "GET",
+						Path:   "/items/{id}",
+						Params: []spec.Param{
+							{Name: "id", Type: "string", Required: true, PathParam: true},
+						},
+					},
+				},
+			},
+		},
+		MCP: spec.MCPConfig{
+			Orchestration: "endpoint-mirror",
+			EndpointTools: "visible",
+			Transport:     []string{"stdio"},
+		},
+	}
+
+	err := applyGenerateSpecFlags(apiSpec, "", "", "", "", "", "", generateMCPFlagOverrides{
+		Orchestration: "code",
+		Transport:     []string{"stdio", "HTTP"},
+		EndpointTools: "hidden",
+		IntentsPath:   intentsPath,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "code", apiSpec.MCP.Orchestration)
+	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
+	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
+	require.Len(t, apiSpec.MCP.Intents, 1)
+	assert.Equal(t, "lookup_item", apiSpec.MCP.Intents[0].Name)
+}
+
+func TestReadMCPIntentsFileReportsFlatListDecodeError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	intentsPath := filepath.Join(dir, "mcp-intents.yaml")
+	require.NoError(t, os.WriteFile(intentsPath, []byte(`
+- name: lookup_item
+  description: Lookup an item by id
+  steps: not-a-list
+`), 0o644))
+
+	_, err := readMCPIntentsFile(intentsPath)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "parsing --mcp-intents file")
+	assert.ErrorContains(t, err, "cannot unmarshal")
+	assert.ErrorContains(t, err, "IntentStep")
+}
+
+func TestApplyGenerateSpecFlagsRejectsInvalidMCPOverrides(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "demo",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	err := applyGenerateSpecFlags(apiSpec, "", "", "", "", "", "", generateMCPFlagOverrides{
+		Transport: []string{"stdio", "stdio"},
+	})
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "--mcp-transport contains duplicate value")
+}
+
+func TestGenerateCmdMCPFlagsOverrideOpenAPISurface(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	outputDir := filepath.Join(dir, "generated")
+	require.NoError(t, os.WriteFile(specPath, []byte(openAPISpecWithEndpointCount(60)), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--max-endpoints-per-resource", "60",
+		"--mcp-orchestration", "code",
+		"--mcp-endpoint-tools", "hidden",
+		"--mcp-transport", "stdio,http",
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	toolsSource, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(toolsSource), "RegisterCodeOrchestrationTools(s)")
+	assert.NotContains(t, string(toolsSource), `mcplib.NewTool("items_get_item_0"`)
+
+	codeOrchSource, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "code_orch.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(codeOrchSource), `mcplib.NewTool("mcp-flag_search"`)
+	assert.Contains(t, string(codeOrchSource), `mcplib.NewTool("mcp-flag_execute"`)
+}
+
+func openAPISpecWithEndpointCount(count int) string {
+	var b strings.Builder
+	b.WriteString(`openapi: 3.0.0
+info:
+  title: MCP Flag API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+`)
+	for i := range count {
+		fmt.Fprintf(&b, `  /items/%d:
+    get:
+      operationId: getItem%d
+      responses:
+        "200":
+          description: ok
+`, i, i)
+	}
+	return b.String()
 }
 
 // TestApplyHTTPTransportDefaultPreservesH2ForProtectionPath pins the
