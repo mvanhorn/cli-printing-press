@@ -374,9 +374,13 @@ Keep the checklist in the polish notes or result block. Skip it for ordinary bug
 
 When polish builds a feature class that must observe every outbound API call,
 such as a quota ledger, request log, or audit trail, instrument the generated
-client middleware in `internal/client/client.go`'s `do()` method instead of
-individual command handlers. That method is the shared path for typed endpoint
-mirrors, sync iterations, and novel features that use the generated client.
+client middleware in `internal/client/client.go` instead of individual command
+handlers. Prefer a shared pre-dispatch hook when one exists; otherwise cover
+both `do()` and `doRead()`. The `do()` path handles standard endpoint mirrors,
+sync iterations, and novel features that use the generated client, while
+`doRead()` handles read-only operations that ride POST-like transports, such as
+GraphQL queries, JSON-RPC reads, and POST-based searches marked
+`mcp:read-only`.
 Per-command hooks under-count because they only see the commands polish touched.
 
 ### Priority 0: MCP surface migration (legacy CLIs)
