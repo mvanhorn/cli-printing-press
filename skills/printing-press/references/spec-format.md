@@ -122,6 +122,9 @@ prefix such as `/items` keeps links whose path is exactly `/items` or starts
 with `/items/`. It does not keep `/items123.html`, `/items-archive`, or other
 same-string-prefix leaf paths where the next character is not `/`.
 
+The one exception is `/@`, which uses simple string-prefix matching so
+social-media-style handle paths such as `/@alice` and `/@bob` are kept.
+
 To keep all links under a subtree regardless of the leaf segment shape, choose
 the parent directory as the prefix. For paths like `/items/123.html` and
 `/items/456.html`, use `link_prefixes: ["/items"]`. Do not use a partial leaf
