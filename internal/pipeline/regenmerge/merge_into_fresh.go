@@ -130,7 +130,15 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 }
 
 func preserveTemplatedDriftInNovelOnly(rel string) bool {
-	return filepath.ToSlash(rel) == "internal/store/extras.go"
+	_, ok := novelOnlyEditableHookPaths[filepath.ToSlash(rel)]
+	return ok
+}
+
+// novelOnlyEditableHookPaths lists generator-emitted files whose intended
+// purpose is to carry agent-authored edits. Add future editable hooks here
+// when they need NovelOnly regen to preserve templated drift.
+var novelOnlyEditableHookPaths = map[string]struct{}{
+	"internal/store/extras.go": {},
 }
 
 // copyPreserveFile copies snapshot/rel → fresh/rel, refusing symlinks and
