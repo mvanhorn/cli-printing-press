@@ -969,6 +969,7 @@ Suggested shape:
 
 ## Reachability Risk
 - [None / Low / High] [evidence: e.g., "6 open issues on reteps/redfin about 403 errors since 2025"]
+- Tier/permission hints from 4xx body: [omit when absent; otherwise quote the matched bounded line(s) from Phase 1.9]
 
 ## Top Workflows
 1. ...
@@ -1709,13 +1710,34 @@ If the browser capture contained only challenge/login/error pages, this exceptio
 
 ### The Check
 
-Pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request:
+Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request and preserve the response body when the server returns a 4xx:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null
+body_file="$(mktemp "${TMPDIR:-/tmp}/pp-reachability-body.XXXXXX")"
+status="$(curl -sS -L -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || printf '000')"
+printf '%s\n' "$status"
 ```
 
-Or use `WebFetch` if curl is unavailable. The goal is one real response code.
+Or use `WebFetch` if curl is unavailable, but keep the 4xx body in your notes. The goal is one real response code plus any 4xx body evidence the API chose to return.
+
+If `status` is any 4xx, inspect the body before deciding. Search it case-insensitively for tier or permission terms:
+
+```bash
+grep -Ei 'tier|allowed|permitted|subscription|quota|plan|scope|limit|permission|forbidden|unauthorized|upgrade|trial' "$body_file" | head -20
+```
+
+When matched lines are present, add them to the Phase 1 research brief under:
+
+```markdown
+## Reachability Risk
+- Tier/permission hints from 4xx body: "<matched line, truncated if needed>"
+```
+
+Keep the evidence bounded: include only the lines that explain the access model, trim each line to a readable length, and do not paste bearer tokens, API keys, cookies, or unrelated full response dumps. If the GET returns 2xx/3xx, omit this tier-hint subsection.
+
+Do not probe arbitrary mutation endpoints to discover tier limits. A generic "try a PUT/POST/PATCH/DELETE" rule can create accounts, send messages, capture payments, or mutate user data. Mutation probing is allowed only when the resolved spec or OpenAPI operation explicitly marks that endpoint as probe-safe with `x-pp-safe-probe: true`; the endpoint must be idempotent or otherwise harmless for the real account being used. If no endpoint has that explicit marker, stop after the GET body capture above.
+
+If one or more probe-safe endpoints are declared and the user provided credentials, run exactly one declared probe-safe endpoint as a second reachability probe and apply the same 4xx body capture and tier-keyword extraction. Prefer the lowest-risk declared endpoint when more than one exists. Record which endpoint was probe-safe in the brief so later phases know the evidence came from an opt-in safe probe.
 
 **If the check returns 403/429 with bot-protection evidence and `probe-reachability` has not already run for this URL during Phase 1.7's Direct HTTP challenge rule, run it now before consulting the decision matrix:**
 
