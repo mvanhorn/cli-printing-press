@@ -13470,6 +13470,7 @@ func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13479,12 +13480,20 @@ import (
 )
 
 func runPMHintCommand(t *testing.T, dbPath string, args ...string) (string, string) {
+	return runPMCommand(t, dbPath, true, args...)
+}
+
+func runPMCommand(t *testing.T, dbPath string, asJSON bool, args ...string) (string, string) {
 	t.Helper()
 	root := RootCmd()
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs(append(args, "--db", dbPath, "--json"))
+	fullArgs := append(args, "--db", dbPath)
+	if asJSON {
+		fullArgs = append(fullArgs, "--json")
+	}
+	root.SetArgs(fullArgs)
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr.String())
 	}
@@ -13528,6 +13537,62 @@ func TestPMWorkflowCommandEmitsSyncHints(t *testing.T) {
 	_, stderr = runPMHintCommand(t, dbPath, "load", "--max-age", "0")
 	if strings.Contains(stderr, "older than --max-age") {
 		t.Fatalf("stderr = %q, want max-age 0 to disable stale hint", stderr)
+	}
+}
+
+func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for _, raw := range []string{
+		` + "`" + `{"id":"issue-1","status":"open"}` + "`" + `,
+		` + "`" + `{"id":"issue-2","status":"open"}` + "`" + `,
+	} {
+		var payload json.RawMessage = []byte(raw)
+		var obj map[string]any
+		if err := json.Unmarshal(payload, &obj); err != nil {
+			t.Fatalf("unmarshal seed: %v", err)
+		}
+		id, _ := obj["id"].(string)
+		if err := db.Upsert("issues", id, payload); err != nil {
+			t.Fatalf("upsert seed: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, _ := runPMCommand(t, dbPath, false, "analytics")
+	for _, want := range []string{"Resource Type\tCount", "issues\t2"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics text summary stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, _ = runPMCommand(t, dbPath, false, "analytics", "--type", "issues")
+	if !strings.Contains(stdout, "issues: 2 records") {
+		t.Fatalf("analytics text count stdout = %q, want issues count in configured output", stdout)
+	}
+
+	stdout, _ = runPMCommand(t, dbPath, false, "analytics", "--type", "issues", "--group-by", "status")
+	for _, want := range []string{"status\tCount", "open\t2"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics text group-by stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, _ = runPMHintCommand(t, dbPath, "analytics")
+	if !strings.Contains(stdout, ` + "`" + `"issues": 2` + "`" + `) {
+		t.Fatalf("analytics summary stdout = %q, want issues count in configured output", stdout)
+	}
+
+	stdout, _ = runPMHintCommand(t, dbPath, "analytics", "--type", "issues", "--group-by", "status")
+	for _, want := range []string{` + "`" + `"value": "open"` + "`" + `, ` + "`" + `"count": 2` + "`" + `} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics group-by stdout = %q, want %q in configured output", stdout, want)
+		}
 	}
 }
 `
