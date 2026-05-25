@@ -1319,7 +1319,12 @@ func firstHTTPSURL(s string) string {
 		return ""
 	}
 	m := httpsURLPattern.FindString(s)
-	return strings.TrimRight(m, ".,;:!?)")
+	m = strings.TrimRight(m, ".,;:!?)")
+	if m == "" || strings.ContainsAny(m, "<>{}[]") {
+		// Reject templated placeholders (e.g. https://<your-dashboard>/...).
+		return ""
+	}
+	return m
 }
 
 // firstAuthRelatedURL returns the first HTTPS URL in s, but only when s also
