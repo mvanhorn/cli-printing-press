@@ -354,12 +354,14 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointUsesForm":         endpointUsesForm,
 		"hasFormRequest":           hasFormRequest,
 		"hasBodyJSONFallback":      hasBodyJSONFallback,
+		"hasMCPNestedBodyPath":     hasMCPNestedBodyPath,
 		"publicFlagName":           publicFlagName,
 		"publicFlagAliases":        publicFlagAliases,
 		"flagChangedExpr":          flagChangedExpr,
 		"graphqlListParams":        graphqlListParams,
 		"graphqlVariableType":      graphqlVariableType,
 		"mcpInputName":             mcpInputName,
+		"mcpToolInputParams":       mcpToolInputParams,
 		"mcpParamBindings":         mcpParamBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
@@ -3897,22 +3899,7 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 // toCamelCase, etc). Treat any new caller that feeds raw spec strings
 // directly into these helpers as a bug — fold first, then shape.
 func toCamel(s string) string {
-	// Strip characters that are invalid in Go identifiers
-	s = strings.TrimLeft(s, "$")
-	parts := strings.FieldsFunc(s, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	for i, p := range parts {
-		if len(p) > 0 {
-			parts[i] = strings.ToUpper(p[:1]) + p[1:]
-		}
-	}
-	result := strings.Join(parts, "")
-	// Ensure starts with letter
-	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
-		result = "V" + result
-	}
-	return result
+	return naming.CamelIdentifier(s)
 }
 
 func commandIdent(parts ...string) string {
@@ -4270,6 +4257,7 @@ type mcpParamBinding struct {
 	PublicName         string
 	WireName           string
 	Location           string
+	BodyPath           []string
 	Format             string
 	RequestContentType string
 }
@@ -4319,16 +4307,120 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		})
 		return bindings
 	}
-	for _, p := range endpoint.Body {
-		bindings = append(bindings, mcpParamBinding{
-			PublicName:         p.PublicInputName(),
+	appendMCPBodyBindings(&bindings, endpoint, requestContentType)
+	return bindings
+}
+
+func mcpToolInputParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params)+len(endpoint.Body))
+	params = append(params, endpoint.Params...)
+	if endpoint.BodyJSONFallback {
+		return params
+	}
+	params = append(params, mcpBodyInputParams(endpoint)...)
+	return params
+}
+
+func mcpBodyInputParams(endpoint spec.Endpoint) []spec.Param {
+	if bodyUsesFlatEmission(endpoint) {
+		return append([]spec.Param(nil), endpoint.Body...)
+	}
+	body := flattenCollidingBodyFields(endpoint.Body)
+	params := make([]spec.Param, 0, len(body))
+	collectMCPBodyInputParams(&params, body, 0, "")
+	return params
+}
+
+func collectMCPBodyInputParams(params *[]spec.Param, body []spec.Param, depth int, flagPrefix string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			collectMCPBodyInputParams(params, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)))
+			continue
+		}
+		if flagPrefix != "" {
+			p.FlagName = joinFlag(flagPrefix, publicFlagName(p))
+			p.Aliases = nil
+		}
+		*params = append(*params, p)
+	}
+}
+
+func appendMCPBodyBindings(bindings *[]mcpParamBinding, endpoint spec.Endpoint, requestContentType string) {
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			*bindings = append(*bindings, mcpParamBinding{
+				PublicName:         p.PublicInputName(),
+				WireName:           p.BodyWireName(),
+				Location:           "body",
+				Format:             multipartBindingFormat(endpoint, p),
+				RequestContentType: requestContentType,
+			})
+		}
+		return
+	}
+	collectMCPBodyBindings(bindings, flattenCollidingBodyFields(endpoint.Body), 0, "", nil, requestContentType)
+}
+
+func collectMCPBodyBindings(bindings *[]mcpParamBinding, body []spec.Param, depth int, flagPrefix string, bodyPath []string, requestContentType string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			nextPath := append(slices.Clone(bodyPath), p.BodyWireName())
+			collectMCPBodyBindings(bindings, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), nextPath, requestContentType)
+			continue
+		}
+		publicName := p.PublicInputName()
+		if flagPrefix != "" {
+			publicName = joinFlag(flagPrefix, publicFlagName(p))
+		}
+		binding := mcpParamBinding{
+			PublicName:         publicName,
 			WireName:           p.BodyWireName(),
 			Location:           "body",
-			Format:             multipartBindingFormat(endpoint, p),
 			RequestContentType: requestContentType,
-		})
+		}
+		if len(bodyPath) > 0 {
+			binding.BodyPath = append(append([]string(nil), bodyPath...), p.BodyWireName())
+		}
+		*bindings = append(*bindings, binding)
 	}
-	return bindings
+}
+
+func endpointHasMCPNestedBodyPath(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
+		return false
+	}
+	return bodyHasReachableNestedLeaf(flattenCollidingBodyFields(endpoint.Body), 0)
+}
+
+func bodyHasReachableNestedLeaf(body []spec.Param, depth int) bool {
+	for _, p := range body {
+		if p.Type != "object" || len(p.Fields) == 0 {
+			continue
+		}
+		if depth+1 >= maxBodyFlagDepth {
+			continue
+		}
+		for _, field := range p.Fields {
+			if field.Type == "object" && len(field.Fields) > 0 {
+				if bodyHasReachableNestedLeaf([]spec.Param{field}, depth+1) {
+					return true
+				}
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func hasMCPNestedBodyPath(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointHasMCPNestedBodyPath)
 }
 
 func multipartBindingFormat(endpoint spec.Endpoint, p spec.Param) string {
@@ -4719,10 +4811,7 @@ func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagP
 }
 
 func joinFlag(prefix, name string) string {
-	if prefix == "" {
-		return name
-	}
-	return prefix + "-" + name
+	return naming.JoinFlag(prefix, name)
 }
 
 func multipartBodyMaps(body []spec.Param, indent string) string {
@@ -5643,37 +5732,7 @@ var narrativeGlobalFlags = map[string]bool{
 }
 
 func flagName(name string) string {
-	name = strings.TrimLeft(name, "$")
-	// Convert camelCase/PascalCase and separators to kebab-case.
-	// "pageSize" → "page-size", "storeID" → "store-id", "per_page" → "per-page"
-	var b strings.Builder
-	runes := []rune(name)
-	for i, r := range runes {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			// Non-alphanumeric → hyphen (dedup'd below)
-			if b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			continue
-		}
-		// Insert hyphen at camelCase boundaries: lowercase→uppercase
-		if i > 0 && unicode.IsUpper(r) {
-			prev := runes[i-1]
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
-				b.WriteByte('-')
-			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
-				// Handle acronyms: "storeID" → "store-id" (not "store-i-d")
-				b.WriteByte('-')
-			}
-		}
-		b.WriteRune(unicode.ToLower(r))
-	}
-	// Collapse multiple hyphens and trim
-	result := b.String()
-	for strings.Contains(result, "--") {
-		result = strings.ReplaceAll(result, "--", "-")
-	}
-	return strings.Trim(result, "-")
+	return naming.FlagName(name)
 }
 
 func safeTypeName(name string) string {
