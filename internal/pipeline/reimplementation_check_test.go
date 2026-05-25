@@ -1259,7 +1259,7 @@ func newRecallCmd(flags *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db, err := store.Open("x.db")
 			if err != nil { return err }
-			hit, err := learn.Recall(cmd.Context(), db, nil, args[0])
+			hit, err := learn.Recall(cmd.Context(), db, args[0], learn.Opts{})
 			if err != nil { return err }
 			_ = hit
 			return nil
