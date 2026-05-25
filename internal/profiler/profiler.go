@@ -340,6 +340,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 			pathLower := strings.ToLower(endpoint.Path)
 			if endpoint.IDFieldFromPathParam && endpoint.IDField != "" {
 				key := normalizeName(resourceName)
+				// Prefer the lexicographically first path-derived field so the
+				// result stays stable regardless of map iteration order.
 				if existing := pathDerivedIDFields[key]; existing == "" || endpoint.IDField < existing {
 					pathDerivedIDFields[key] = endpoint.IDField
 				}
@@ -2005,8 +2007,8 @@ func applyPathDerivedIDFields(syncable map[string]syncableMeta, pathDerivedIDFie
 		if idField == "" {
 			continue
 		}
-		meta, ok := syncable[resourceName]
-		if !ok || !shouldUsePathDerivedIDField(meta.IDField) || !responseTypeHasField(meta.ResponseItem, types, idField) {
+		meta := syncable[resourceName]
+		if !shouldUsePathDerivedIDField(meta.IDField) || !responseTypeHasField(meta.ResponseItem, types, idField) {
 			continue
 		}
 		meta.IDField = idField
