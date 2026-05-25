@@ -188,11 +188,14 @@ func TestGenerateStreamingWebSocketSurface(t *testing.T) {
 	assert.Contains(t, liveSrc, `Framing:          "newline_delimited_json"`)
 	assert.Contains(t, liveSrc, `params["status"] = status`)
 	assert.Contains(t, liveSrc, `extractPageItems(data, "")`)
+	assert.Contains(t, liveSrc, `return fmt.Errorf("--metadata-cadence must be positive")`)
+	assert.Contains(t, liveSrc, `warning: rebase event record failed`)
 
 	wsSrc := readGeneratedFile(t, outputDir, "internal", "wsclient", "client.go")
 	assert.Contains(t, wsSrc, "func SplitFrame")
 	assert.Contains(t, wsSrc, "bytes.Split(data, []byte{'\\n'})")
 	assert.Contains(t, wsSrc, "websocket.DefaultDialer.DialContext")
+	assert.Contains(t, wsSrc, `return fmt.Errorf("handling websocket frame: %w", err)`)
 
 	storeSrc := readGeneratedFile(t, outputDir, "internal", "store", "store.go")
 	assert.Contains(t, storeSrc, "streaming-api_rebase_log")

@@ -112,6 +112,9 @@ func (c Client) Run(ctx context.Context, handle func(json.RawMessage) error, rec
 				}
 				if err := handle(json.RawMessage(append([]byte(nil), frame...))); err != nil {
 					emit(record, Event{Type: "parse_error", Reason: "handler_error", Attempt: attempt, Detail: err.Error(), At: time.Now().UTC()})
+					close(done)
+					_ = conn.Close()
+					return fmt.Errorf("handling websocket frame: %w", err)
 				}
 			}
 		}

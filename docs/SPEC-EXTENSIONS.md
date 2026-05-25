@@ -1181,7 +1181,7 @@ paths:
           in: path
           required: true
           schema: {type: string}
-responses:
+      responses:
         "200": {description: ok}
 ```
 

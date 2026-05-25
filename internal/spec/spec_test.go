@@ -4178,6 +4178,49 @@ resources:
 		require.NoError(t, err)
 	})
 
+	t.Run("live resource passes without streaming", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  live:
+    description: Live events
+    endpoints:
+      list:
+        method: GET
+        path: /live
+        description: List live events
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("live resource is rejected when streaming emits live command", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+streaming:
+  transport: websocket
+  url: wss://api.example.com/v1/ws
+resources:
+  live:
+    description: Live events
+    endpoints:
+      list:
+        method: GET
+        path: /live
+        description: List live events
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"live"`)
+		assert.Contains(t, err.Error(), "shadow framework cobra command")
+	})
+
 	t.Run("login resource is rejected for oauth2 auth-code CLIs", func(t *testing.T) {
 		t.Parallel()
 		input := `name: testapi

@@ -102,6 +102,9 @@ human-readable dimensions.`,
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: metadata refresh failed: %v\n", err)
 				}
 				if !metadataOnce {
+					if metadataCadence <= 0 {
+						return fmt.Errorf("--metadata-cadence must be positive")
+					}
 					go func() {
 						ticker := time.NewTicker(metadataCadence)
 						defer ticker.Stop()
@@ -140,7 +143,11 @@ human-readable dimensions.`,
 				}
 				return nil
 			}, func(event wsclient.Event) {
-				_ = st.RecordRebaseEvent(event.Type, event.Reason, event.Detail)
+				storeMu.Lock()
+				defer storeMu.Unlock()
+				if err := st.RecordRebaseEvent(event.Type, event.Reason, event.Detail); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: rebase event record failed: %v\n", err)
+				}
 			})
 			if wsclient.IsContextDone(err) {
 				return nil

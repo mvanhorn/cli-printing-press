@@ -2497,6 +2497,9 @@ func (s *APISpec) ParseTimeReservedCobraUseName(name string) bool {
 	if kebab == "login" {
 		return s.emitsTopLevelOAuthLogin()
 	}
+	if kebab == "live" {
+		return s.Streaming.Enabled()
+	}
 	if kebab == "health" {
 		return false
 	}
