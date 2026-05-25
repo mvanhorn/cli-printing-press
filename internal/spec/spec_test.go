@@ -3851,6 +3851,72 @@ resources:
 		require.NoError(t, err)
 	})
 
+	t.Run("login resource is rejected for oauth2 auth-code CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: oauth2
+  authorization_url: https://auth.example.com/oauth/authorize
+  token_url: https://auth.example.com/oauth/token
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"login"`)
+		assert.Contains(t, err.Error(), "shadow framework cobra command")
+	})
+
+	t.Run("login resource is rejected for bearer auth-code CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  authorization_url: https://auth.example.com/oauth/authorize
+  token_url: https://auth.example.com/oauth/token
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"login"`)
+		assert.Contains(t, err.Error(), "shadow framework cobra command")
+	})
+
+	t.Run("login resource passes for non-oauth CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
 	t.Run("substring matches are NOT rejected", func(t *testing.T) {
 		t.Parallel()
 		// `versioning_history` contains `version` as a substring but is

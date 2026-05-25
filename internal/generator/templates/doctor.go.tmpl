@@ -279,8 +279,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- else}}
 					report["auth"] = "not configured"
 {{- end}}
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
+					report["auth_hint"] = "{{.Name}}-pp-cli login"
+{{- else}}
 {{- with $canonicalEnvVar}}
 					report["auth_hint"] = "export {{.Name}}=<your-key>"
+{{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
 					report["auth_key_url"] = "{{.Auth.KeyURL}}"
