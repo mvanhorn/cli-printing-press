@@ -778,13 +778,13 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		runID = existing.RunID
 	}
 	if preserveExisting {
-		if strings.TrimSpace(existing.Owner) != "" {
+		if p.Owner == "" && strings.TrimSpace(existing.Owner) != "" {
 			m.Owner = existing.Owner
 		}
-		if strings.TrimSpace(existing.Printer) != "" {
+		if p.Printer == "" && strings.TrimSpace(existing.Printer) != "" {
 			m.Printer = existing.Printer
 		}
-		if strings.TrimSpace(existing.PrinterName) != "" {
+		if p.PrinterName == "" && strings.TrimSpace(existing.PrinterName) != "" {
 			m.PrinterName = existing.PrinterName
 		}
 	} else {
@@ -794,6 +794,14 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	clearFields := map[string]struct{}{}
 	if preserveExisting && p.NovelFeatures != nil && len(p.NovelFeatures) == 0 {
 		clearFields["novel_features"] = struct{}{}
+	}
+	if preserveExisting {
+		if m.SpecURL != "" && m.SpecPath == "" {
+			clearFields["spec_path"] = struct{}{}
+		}
+		if m.SpecPath != "" && m.SpecURL == "" {
+			clearFields["spec_url"] = struct{}{}
+		}
 	}
 
 	if err := writeCLIManifestForGenerate(p.OutputDir, m, existingRaw, clearFields); err != nil {
@@ -857,10 +865,10 @@ func sameGenerateManifestLineage(existing, generated CLIManifest) bool {
 	if existing.SpecChecksum != "" && generated.SpecChecksum != "" {
 		return existing.SpecChecksum == generated.SpecChecksum
 	}
-	if existing.SpecURL != "" && generated.SpecURL != "" {
-		return existing.SpecURL == generated.SpecURL
-	}
-	if existing.SpecPath != "" && generated.SpecPath != "" {
+	if (existing.SpecURL != "" || existing.SpecPath != "") && (generated.SpecURL != "" || generated.SpecPath != "") {
+		if existing.SpecURL != "" || generated.SpecURL != "" {
+			return existing.SpecURL == generated.SpecURL
+		}
 		return existing.SpecPath == generated.SpecPath
 	}
 	return true

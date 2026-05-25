@@ -1955,6 +1955,42 @@ func TestWriteManifestForGenerateDoesNotPreserveCrossAPIManifestExtras(t *testin
 	assert.Empty(t, got.NovelFeatures)
 }
 
+func TestWriteManifestForGenerateDoesNotPreserveStaleSpecURLWhenFreshSourceIsPath(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.json")
+	require.NoError(t, os.WriteFile(specPath, []byte(`{"openapi":"3.0.0","info":{"title":"Synthetic Polymarket","version":"1.0.0"},"paths":{}}`), 0o644))
+	existingRaw := `{
+  "schema_version": 1,
+  "api_name": "synthetic-polymarket",
+  "cli_name": "synthetic-polymarket-pp-cli",
+  "spec_url": "https://example.com/old-openapi.json",
+  "operator_note": "published-library override"
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(existingRaw), 0o644))
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "synthetic-polymarket",
+		SpecSrcs:  []string{specPath},
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name: "synthetic-polymarket",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.NotContains(t, raw, "operator_note")
+	assert.NotContains(t, raw, "spec_url")
+
+	got := readPublishedManifest(t, dir)
+	assert.Empty(t, got.SpecURL)
+	assert.Equal(t, specPath, got.SpecPath)
+}
+
 func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *testing.T) {
 	dir := t.TempDir()
 	existingRaw := `{
@@ -1963,6 +1999,9 @@ func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *tes
   "cli_name": "synthetic-polymarket-pp-cli",
   "category": "other",
   "display_name": "Stale Display",
+  "owner": "stale-owner",
+  "printer": "stale-printer",
+  "printer_name": "Stale Printer",
   "novel_features": [
     {
       "name": "Stale scanner",
@@ -1978,6 +2017,9 @@ func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *tes
 		APIName:     "synthetic-polymarket",
 		OutputDir:   dir,
 		DisplayName: "Fresh Display",
+		Owner:       "fresh-owner",
+		Printer:     "fresh-printer",
+		PrinterName: "Fresh Printer",
 		NovelFeatures: []NovelFeatureManifest{
 			{
 				Name:        "Fresh scanner",
@@ -2002,6 +2044,9 @@ func TestWriteManifestForGenerateFreshValuesReplaceExistingManifestExtras(t *tes
 	got := readPublishedManifest(t, dir)
 	assert.Equal(t, "travel", got.Category)
 	assert.Equal(t, "Fresh Display", got.DisplayName)
+	assert.Equal(t, "fresh-owner", got.Owner)
+	assert.Equal(t, "fresh-printer", got.Printer)
+	assert.Equal(t, "Fresh Printer", got.PrinterName)
 	require.Len(t, got.NovelFeatures, 1)
 	assert.Equal(t, "Fresh scanner", got.NovelFeatures[0].Name)
 }
