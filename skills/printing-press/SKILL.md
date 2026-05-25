@@ -1768,6 +1768,8 @@ PROBE_BODY_AND_META=$(curl -sS -L --max-redirs 10 -w "\n%{http_code} %{url_effec
 PROBE_META=$(printf "%s\n" "$PROBE_BODY_AND_META" | tail -n 1)
 PROBE_BODY=$(printf "%s\n" "$PROBE_BODY_AND_META" | sed '$d')
 printf "%s\n" "$PROBE_META"
+printf "%s\n" "$PROBE_BODY" | head -c 4000
+printf "\n"
 ```
 
 Interpret the result before Phase 2:
