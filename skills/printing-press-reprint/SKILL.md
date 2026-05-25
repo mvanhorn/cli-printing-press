@@ -207,23 +207,24 @@ library copy:
 
 ```bash
 SCORECARD_SOURCE=$(ls -1t "$PRESS_MANUSCRIPTS/$API_SLUG"/*/proofs/scorecard.json 2>/dev/null | head -1)
-if [[ -z "$SCORECARD_SOURCE" && -d "$LIB_TARGET" ]]; then
+SCORECARD_JSON=""
+if [[ -n "$SCORECARD_SOURCE" ]]; then
+  SCORECARD_JSON=$(cat "$SCORECARD_SOURCE" 2>/dev/null || true)
+elif [[ -d "$LIB_TARGET" ]]; then
   SCORECARD_SOURCE=$(mktemp)
-  SCORECARD_TEMP="$SCORECARD_SOURCE"
-  cli-printing-press scorecard --dir "$LIB_TARGET" --json > "$SCORECARD_SOURCE" 2>/dev/null || {
-    rm -f "$SCORECARD_SOURCE"
-    SCORECARD_SOURCE=""
-    SCORECARD_TEMP=""
-  }
-  [[ -n "$SCORECARD_TEMP" ]] && trap 'rm -f "$SCORECARD_TEMP"' EXIT
+  if cli-printing-press scorecard --dir "$LIB_TARGET" --json > "$SCORECARD_SOURCE" 2>/dev/null; then
+    SCORECARD_JSON=$(cat "$SCORECARD_SOURCE" 2>/dev/null || true)
+  fi
+  rm -f "$SCORECARD_SOURCE"
+  SCORECARD_SOURCE=""
 fi
 ```
 
-If no scorecard can be read, continue without enrichment prompting and say the
+If `SCORECARD_JSON` is empty, continue without enrichment prompting and say the
 reprint is proceeding without prior score evidence. Do not invent a prompt from
 the reprint reason alone.
 
-When a scorecard is available, inspect only dimensions that map to a
+When `SCORECARD_JSON` is available, inspect only dimensions that map to a
 pre-generation spec edit and skip dimensions that already score 10/10:
 
 - `mcp_remote_transport`, `mcp_token_efficiency`, `mcp_tool_design`, and
