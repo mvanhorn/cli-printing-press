@@ -258,6 +258,117 @@ func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
 	assert.Equal(t, "1", run.stdout, "live-dogfood subprocess should see PRINTING_PRESS_DOGFOOD=1")
 }
 
+func TestRunLiveDogfoodLocalDatastoreManifestPreservesOperatorHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ ! -f "$HOME/source.db" ]; then echo "missing local source" >&2; exit 3; fi
+  if [ ! -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "missing local cache" >&2; exit 3; fi
+  if [ ! -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "missing local config" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "none",
+		SpecFormat:    "sqlite",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodAPICLIRetainsScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ -f "$HOME/source.db" ]; then echo "operator home leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "operator cache leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "operator config leaked" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "none",
+		SpecFormat:    "openapi3",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodAuthenticatedLocalDatastoreRetainsScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ -f "$HOME/source.db" ]; then echo "operator home leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "operator cache leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "operator config leaked" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "api_key",
+		SpecFormat:    "sqlite",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
 func TestRunLiveDogfoodProcessRetriesTransientAuth401(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -1823,6 +1934,78 @@ if [ "$1" = "widgets" ] && [ "$2" = "broken" ]; then
     exit 0
   fi
   echo 'broken'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodHomeProbeFixture(t *testing.T, probe string) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "${1:-}" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"list"},
+      {"name":"recent"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "recent" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List recent widgets.
+
+Usage:
+  fixture-pp-cli widgets recent [flags]
+
+Examples:
+  fixture-pp-cli widgets recent --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "${1:-}" = "widgets" ] && { [ "${2:-}" = "list" ] || [ "${2:-}" = "recent" ]; }; then
+  ` + probe + `
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"results":[{"id":"123"}]}'
+    exit 0
+  fi
+  echo 'widget 1'
   exit 0
 fi
 

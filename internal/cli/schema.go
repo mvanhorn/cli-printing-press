@@ -241,7 +241,8 @@ const phase5MarkerSchemaJSON = `{
       "properties": {
         "type": {"type": "string"},
         "api_key_available": {"type": "boolean"},
-        "browser_session_available": {"type": "boolean"}
+        "browser_session_available": {"type": "boolean"},
+        "local_sqlite": {"type": "boolean"}
       }
     },
     "failure_summary": {
@@ -283,7 +284,8 @@ const phase5SkipSchemaJSON = `{
       "properties": {
         "type": {"type": "string"},
         "api_key_available": {"type": "boolean"},
-        "browser_session_available": {"type": "boolean"}
+        "browser_session_available": {"type": "boolean"},
+        "local_sqlite": {"type": "boolean"}
       }
     }
   }

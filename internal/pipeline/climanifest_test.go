@@ -74,6 +74,26 @@ func TestWriteCLIManifestSchemaVersionAlwaysOne(t *testing.T) {
 	assert.Equal(t, 1, got.SchemaVersion)
 }
 
+func TestCLIManifestIsLocalDatastore(t *testing.T) {
+	tests := []struct {
+		name string
+		m    CLIManifest
+		want bool
+	}{
+		{name: "sqlite spec format", m: CLIManifest{SpecFormat: "sqlite"}, want: true},
+		{name: "local spec format without sqlite is not enough", m: CLIManifest{SpecFormat: "local"}, want: false},
+		{name: "local sqlite spec source", m: CLIManifest{SpecSource: "local-sqlite"}, want: true},
+		{name: "openapi spec format", m: CLIManifest{SpecFormat: "openapi3"}, want: false},
+		{name: "remote sqlite wording is not local", m: CLIManifest{SpecSource: "remote-sqlite"}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.m.IsLocalDatastore())
+		})
+	}
+}
+
 func TestWriteCLIManifestOmitsEmptyOptionalFields(t *testing.T) {
 	dir := t.TempDir()
 
