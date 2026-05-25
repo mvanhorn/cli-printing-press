@@ -34,6 +34,11 @@ type rootFlags struct {
 {{- end}}
 	yes          bool
 	agent        bool
+{{- if .Learn.Enabled}}
+	// noLearn disables both teach (write) and recall (read) for this
+	// invocation. Mirrors the {{envPrefix .Name}}_NO_LEARN env var.
+	noLearn      bool
+{{- end}}
 {{- if .HasMutationEndpoints}}
 	// allowPartialFailure downgrades a detected response-body partial-failure
 	// (e.g. Google Ads `partialFailureError`) from a non-zero exit to a
@@ -226,6 +231,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
 	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
+{{- if .Learn.Enabled}}
+	rootCmd.PersistentFlags().BoolVar(&flags.noLearn, "no-learn", false, "Disable the teach/recall learning loop for this invocation")
+{{- end}}
 {{- if .HasMutationEndpoints}}
 	rootCmd.PersistentFlags().BoolVar(&flags.allowPartialFailure, "allow-partial-failure", false, "Downgrade response-body partial-failure (e.g. partialFailureError) to a warning instead of a non-zero exit")
 {{- end}}
@@ -320,6 +328,16 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 			flags.freshnessMeta = autoRefreshIfStale(cmd.Context(), flags, resources)
 		}
 {{- end}}
+{{- if .Learn.Enabled}}
+		// Seed entity_lookups from spec.Learn.EntityLookupSeeds once per
+		// process. Skipped for framework commands that should never
+		// touch the local store (auth, doctor, help, etc.) and for
+		// --no-learn invocations so deterministic agent flows don't
+		// race a background seed.
+		if !noLearnActive(flags) && !shouldSkipLearnHook(cmd.CommandPath()) {
+			runLearnInitOnce(cmd.Context())
+		}
+{{- end}}
 		return nil
 	}
 
@@ -379,9 +397,59 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.AddCommand(new{{camel .PromotedName}}PromotedCmd(flags))
 {{- end}}
 	rootCmd.AddCommand(newVersionCliCmd())
+{{- if .Learn.Enabled}}
+	// Self-learning loop commands. newLearnConfig (defined in
+	// learn_init.go) reads spec.Learn.TickerPatterns + Stopwords and
+	// returns a configured *entities.Config every call site shares;
+	// initLearn seeds entity_lookups from spec.Learn.EntityLookupSeeds
+	// once per process via the PersistentPreRunE hook above.
+	learnCfg := newLearnConfig()
+	rootCmd.AddCommand(newTeachCmd(flags, learnCfg))
+	rootCmd.AddCommand(newRecallCmd(flags, learnCfg))
+	rootCmd.AddCommand(newLearningsCmd(flags, learnCfg))
+	rootCmd.AddCommand(newTeachPatternCmd(flags))
+	rootCmd.AddCommand(newTeachLookupCmd(flags))
+{{- end}}
 
 	return rootCmd
 }
+
+{{- if .Learn.Enabled}}
+
+// learnHookSkipList enumerates framework command path segments that any
+// future PersistentPreRunE recall hook must NOT trigger on. Today the
+// teach/recall path is invoked explicitly by the agent, so there is
+// no consumer of this list at runtime; the skip-list ships in v1 as
+// forward-looking framework so a later auto-recall hook (modeled on
+// the granola autorefresh shape) can consult it without re-deriving
+// the set in every PR.
+//
+// Names match any segment of Cobra's CommandPath. Aliases (e.g. "sync-api")
+// are matched as-is.
+var learnHookSkipList = map[string]struct{}{
+	"auth":          {},
+	"doctor":        {},
+	"help":          {},
+	"sync":          {},
+	"profile":       {},
+	"feedback":      {},
+	"which":         {},
+	"agent-context": {},
+	"completion":    {},
+	"version":       {},
+}
+
+// shouldSkipLearnHook reports whether a recall pre-run hook should
+// short-circuit for commandPath.
+func shouldSkipLearnHook(commandPath string) bool {
+	for _, segment := range strings.Fields(commandPath) {
+		if _, skip := learnHookSkipList[segment]; skip {
+			return true
+		}
+	}
+	return false
+}
+{{- end}}
 
 func ExitCode(err error) int {
 	var codeErr *cliError

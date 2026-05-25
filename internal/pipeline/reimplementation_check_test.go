@@ -1135,6 +1135,58 @@ func newSearchCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+// TestCheckReimplementation_LearnHelperHop_Exempted confirms that a
+// novel-feature handler routing its query through the generator-owned
+// internal/learn package (which delegates to internal/store for the
+// actual SQL work) is not flagged as reimplementation. The handler
+// calls learn.Recall against the local store; the file imports both
+// internal/learn (reserved generator namespace) and internal/store, so
+// the existing store carve-out covers the read path - no new exemption
+// class needed. Pins the contract behind reserving "learn" in
+// reservedInternalPackages so callers do not regress to flagging
+// learn-routed handlers.
+func TestCheckReimplementation_LearnHelperHop_Exempted(t *testing.T) {
+	files := map[string]string{
+		"recall.go": `package cli
+
+import (
+	"github.com/spf13/cobra"
+
+	"example.com/mod/internal/learn"
+	"example.com/mod/internal/store"
+)
+
+func newRecallCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "recall",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := store.Open("x.db")
+			if err != nil { return err }
+			hit, err := learn.Recall(cmd.Context(), db, nil, args[0])
+			if err != nil { return err }
+			_ = hit
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Recall", Command: "recall"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if got.ExemptedViaStore != 1 {
+		t.Fatalf("ExemptedViaStore: want 1 (learn helper hop reads from internal/store), got %d", got.ExemptedViaStore)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
 // TestCheckReimplementation_WithoutMarker_StillFlagged confirms the
 // F3 fix doesn't silently exempt commands that lack the explicit
 // `// pp:novel-static-reference` marker. Same shape as the test above
@@ -1179,5 +1231,55 @@ func newSubCmd(flags *rootFlags) *cobra.Command {
 	}
 	if !strings.Contains(got.Suspicious[0].Reason, "no API client call") {
 		t.Errorf("expected hand-rolled-response reason, got %q", got.Suspicious[0].Reason)
+	}
+}
+
+// TestCheckReimplementation_LearnRecallWithClient_Passes confirms a handler
+// that mixes the generator-emitted learn package (recall/teach loop) with a
+// real client call passes the dogfood reimplementation check. The realistic
+// shape: a "lookup" command consults learn.Recall first, falls through to the
+// API client when the cache misses, and writes back via learn.Teach.
+//
+// This is the canonical agent-authored novel-feature shape once the
+// self-learning loop ships. The check must not flag learn.Recall+learn.Teach
+// as a hand-rolled response; the client call is the legitimate signal, and
+// learn is generator-owned (reserved namespace in U2).
+func TestCheckReimplementation_LearnRecallWithClient_Passes(t *testing.T) {
+	files := map[string]string{
+		"lookup.go": `package cli
+
+import (
+	"example.com/mod/internal/learn"
+	"github.com/spf13/cobra"
+)
+
+func newLookupCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "lookup",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hit := learn.Recall(args[0]); hit != "" {
+				cmd.Println(hit)
+				return nil
+			}
+			c, err := flags.newClient()
+			if err != nil { return err }
+			_ = c
+			_ = learn.Teach(args[0], "answer")
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Lookup", Command: "lookup"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0 (learn.Recall + client call should pass), got %d (%v)", len(got.Suspicious), got.Suspicious)
 	}
 }

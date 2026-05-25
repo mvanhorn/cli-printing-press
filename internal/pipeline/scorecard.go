@@ -1156,6 +1156,10 @@ func scoreVision(dir string) int {
 	if fileExists(filepath.Join(cliDir, "import.go")) {
 		tier1 += 0.5
 	}
+	// internal/learn/doc.go is the presence sentinel for the recall/teach loop (+0.5).
+	if fileExists(filepath.Join(dir, "internal", "learn", "doc.go")) {
+		tier1 += 0.5
+	}
 	// Workflow or compound command files
 	hasWorkflowShape := false
 	for name := range commandContent {

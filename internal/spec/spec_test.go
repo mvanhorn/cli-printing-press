@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -2388,6 +2389,181 @@ func TestCacheShareAcceptsValidShapes(t *testing.T) {
 			require.NoError(t, s.Validate())
 		})
 	}
+}
+
+func TestParseLearnConfig(t *testing.T) {
+	t.Run("happy path: full learn block parses and validates", func(t *testing.T) {
+		s, err := Parse("testdata/learn_example.yaml")
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.True(t, s.Learn.Enabled)
+		require.Len(t, s.Learn.TickerPatterns, 2)
+		// Every declared pattern must compile as a Go regexp.
+		for i, pattern := range s.Learn.TickerPatterns {
+			_, compileErr := regexp.Compile(pattern)
+			require.NoErrorf(t, compileErr, "ticker_patterns[%d] = %q", i, pattern)
+		}
+		assert.Equal(t, []string{"the", "of", "and"}, s.Learn.Stopwords)
+		require.Contains(t, s.Learn.EntityLookupSeeds, "country")
+		require.Contains(t, s.Learn.EntityLookupSeeds, "team")
+		country := s.Learn.EntityLookupSeeds["country"]
+		require.Len(t, country, 2)
+		assert.Equal(t, "USA", country[0].Canonical)
+		assert.Equal(t, []string{"united states", "america", "us"}, country[0].Aliases)
+		assert.Equal(t, "Portugal", country[1].Canonical)
+	})
+
+	t.Run("empty block: learn: {} parses with Enabled false and validates", func(t *testing.T) {
+		input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+learn: {}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.False(t, s.Learn.Enabled)
+		assert.Empty(t, s.Learn.TickerPatterns)
+		assert.Empty(t, s.Learn.Stopwords)
+		assert.Empty(t, s.Learn.EntityLookupSeeds)
+	})
+
+	t.Run("absent block: omitting learn yields zero-value LearnConfig", func(t *testing.T) {
+		input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.Equal(t, LearnConfig{}, s.Learn)
+	})
+
+	t.Run("invalid ticker regex returns validation error naming pattern and regex error", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled:        true,
+				TickerPatterns: []string{"[unclosed"},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ticker_patterns[0]")
+		assert.Contains(t, err.Error(), "not a valid Go regexp")
+	})
+
+	t.Run("bad seed kind with whitespace rejected", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled: true,
+				EntityLookupSeeds: map[string][]LookupSeed{
+					"bad name with spaces": {{Canonical: "X"}},
+				},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "entity_lookup_seeds")
+		assert.Contains(t, err.Error(), "bad name with spaces")
+	})
+
+	t.Run("bad seed kind with hyphen rejected (only underscore allowed)", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled: true,
+				EntityLookupSeeds: map[string][]LookupSeed{
+					"bad-kind": {{Canonical: "X"}},
+				},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bad-kind")
+	})
+
+	t.Run("empty canonical rejected", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled: true,
+				EntityLookupSeeds: map[string][]LookupSeed{
+					"country": {{Canonical: ""}},
+				},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "canonical must not be empty")
+	})
+
+	t.Run("duplicate canonical within same kind rejected", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled: true,
+				EntityLookupSeeds: map[string][]LookupSeed{
+					"country": {
+						{Canonical: "USA"},
+						{Canonical: "USA"},
+					},
+				},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "appears more than once")
+	})
+
+	t.Run("whitespace stopwords filtered, only meaningful entries retained", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled:   true,
+				Stopwords: []string{" ", "  ", "valid", "\t", "also-valid"},
+			},
+		}
+		require.NoError(t, s.Validate())
+		assert.Equal(t, []string{"valid", "also-valid"}, s.Learn.Stopwords)
+	})
 }
 
 func TestMCPConfigAbsentIsBackwardCompatible(t *testing.T) {
