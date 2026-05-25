@@ -383,6 +383,36 @@ GraphQL queries, JSON-RPC reads, and POST-based searches marked
 `mcp:read-only`.
 Per-command hooks under-count because they only see the commands polish touched.
 
+### Novel-feature data routing
+
+When polish adds or fixes a novel command that reads API response data into the
+local store, route data through the generated typed schemas instead of writing
+raw response JSON directly into tables:
+
+1. Read `internal/types/<resource>.go` and `internal/store/<resource>.go` for the
+   resource being cached. Use the typed insert/upsert helpers those files emit
+   whenever they exist. If helpers are missing for a generated resource, create
+   them before writing any persistence code.
+2. Check the response shape against the spec schema and a real sample response
+   before deciding the insert mapping is correct.
+3. Decode the API response into the typed struct before persistence. Do not
+   build `INSERT INTO ...` statements from untyped `map[string]any` or raw
+   `json.RawMessage` values unless the table is a custom polish-owned table
+   declared in hand-authored migrations; see the raw SQL exception below.
+4. Verify the target table from the resource type, not from whichever query the
+   novel command happened to start with. A command that fetched `<child>`
+   records must insert `<child>` rows, not parent rows or a convenient adjacent
+   table.
+5. Normalize nested response identifiers before insert. If the API wraps the
+   scalar id inside an object that also contains metadata, extract the scalar id
+   field and store that value; never store the whole id object as a primary key
+   or foreign-key reference.
+
+Raw `database/sql` writes are acceptable only for custom polish-owned tables
+declared in hand-authored migrations. In that case, keep the table schema
+explicit in `internal/store/`, document why the generated resource helper does
+not apply, and still decode nested identifiers to scalars before persistence.
+
 ### Priority 0: MCP surface migration (legacy CLIs)
 
 If Phase 1's `dogfood` reported `MCP Surface: FAIL` with a parity mismatch, the CLI was generated before the runtime cobratree walker existed and is still on the static `internal/mcp/tools.go` surface. The fix is mechanical:
