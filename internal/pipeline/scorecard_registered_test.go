@@ -70,6 +70,125 @@ func newStaleCmd() {}`)
 	}
 }
 
+func TestRegisteredCommandFiles_FollowsParentGroupAddCommandCalls(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newAvailabilityCmd(nil))
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilityCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "availability"}
+	cmd.AddCommand(newAvailabilitySweepCmd(flags))
+	return cmd
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability_sweep.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilitySweepCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "sweep"}
+}`)
+
+	registered := registeredCommandFiles(cliDir)
+	if !registered["availability.go"] {
+		t.Errorf("expected availability.go parent to be registered, got %v", registered)
+	}
+	if !registered["availability_sweep.go"] {
+		t.Errorf("expected child command registered through parent AddCommand to be registered, got %v", registered)
+	}
+}
+
+func TestRegisteredCommandFiles_IgnoresConstructorCallsOutsideAddCommand(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newAvailabilityCmd(nil))
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilityCmd(flags any) *cobra.Command {
+	_ = newAvailabilityGhostCmd(flags)
+	return &cobra.Command{Use: "availability"}
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability_ghost.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilityGhostCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "ghost"}
+}`)
+
+	registered := registeredCommandFiles(cliDir)
+	if registered["availability_ghost.go"] {
+		t.Errorf("expected non-AddCommand constructor call to stay unregistered, got %v", registered)
+	}
+}
+
+func TestScoreInsightCountsNovelCommandsRegisteredThroughParentGroupers(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newAvailabilityCmd(nil))
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilityCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "availability"}
+	cmd.AddCommand(newAvailabilitySweepCmd(flags))
+	cmd.AddCommand(newAvailabilityDriftCmd(flags))
+	return cmd
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability_sweep.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilitySweepCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "sweep"}
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability_drift.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilityDriftCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "drift"}
+}`)
+
+	writeFile(t, filepath.Join(cliDir, "availability_ghost.go"), `package cli
+import "github.com/spf13/cobra"
+func newAvailabilityGhostCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "ghost"}
+}`)
+
+	writeFile(t, filepath.Join(dir, CLIManifestFilename), `{
+  "cli_name": "demo-pp-cli",
+  "novel_features": [
+    {"name": "Sweep", "command": "availability sweep", "description": "x"},
+    {"name": "Drift", "command": "availability drift", "description": "x"},
+    {"name": "Ghost", "command": "availability ghost", "description": "x"}
+  ]
+}`)
+
+	if score := scoreInsight(dir); score != 4 {
+		t.Fatalf("expected two registered parent-grouper insight commands to score 4, got %d", score)
+	}
+}
+
 // TestScoreWorkflows_IgnoresOrphanFile is the integration-level guard — the
 // workflows dimension must not count a dead-code file just because its name
 // matches a workflow prefix.
@@ -714,6 +833,37 @@ func handleSQL() {}
 
 	if score := scoreMCPQuality(dir); score != 7 {
 		t.Fatalf("expected runtime mirror plus renamed sync command to score high-level sync credit, got %d", score)
+	}
+}
+
+func TestScoreMCPQuality_LocalDatastoreSearchRequiresHandlerOrRegisteredCommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "mcp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       "fixture-pp-cli",
+		AuthType:      "none",
+		SpecFormat:    "sqlite",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "internal", "mcp", "tools.go"), `package mcp
+func RegisterTools() {
+	_ = "context"
+	handleContext()
+	_ = "search"
+	_ = "sync"
+	handleSync()
+}
+func handleContext() {}
+func handleSync() {}
+`)
+
+	if score := scoreMCPQuality(dir); score != 6 {
+		t.Fatalf("expected bare search string not to score as a high-level MCP tool, got %d", score)
 	}
 }
 

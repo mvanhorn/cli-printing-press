@@ -190,6 +190,24 @@ func TestPrintingPressSkillUsesRunRootStateFile(t *testing.T) {
 	assert.Contains(t, skill, `"working_dir": "$CLI_WORK_DIR"`)
 }
 
+func TestPrintingPressSkillWarnsOnMultiSpecDirectories(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	block := substringBetween(t, skill, "#### Directory spec-source guard", "2. Check for prior research")
+
+	assert.Contains(t, block, "If any resolved spec source is a local directory")
+	assert.Contains(t, block, "do not silently pick the first")
+	assert.Contains(t, block, `find "$SPEC_SOURCE_DIR" -type f`)
+	assert.Contains(t, block, "When the filtered candidate list is empty")
+	assert.Contains(t, block, "No OpenAPI/Swagger spec found under <directory>")
+	assert.Contains(t, block, "Do not continue with the raw directory as the spec source")
+	assert.Contains(t, block, "N OpenAPI/Swagger specs found under <directory>")
+	assert.Contains(t, block, "`spec_candidates` is the sorted list")
+	assert.Contains(t, block, "After the user confirms the selection")
+	assert.Contains(t, block, "`selected_spec_paths` set to the list that will be generated")
+	assert.Contains(t, block, "stop after printing the warning")
+	assert.Contains(t, block, "one independent printed CLI per")
+}
+
 func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	skillPath := filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")
 	full := readContractFile(t, skillPath)
@@ -216,11 +234,17 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Contains(t, template, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`)
 	assert.Contains(t, template, "Do not collapse the first and third branches")
 
-	assert.Equal(t, 2, strings.Count(starters, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {"))
-	assert.Equal(t, 2, strings.Count(starters, "return cmd.Help()"))
-	assert.Equal(t, 2, strings.Count(starters, "if dryRunOK(flags) {"))
-	assert.Equal(t, 2, strings.Count(starters, "_ = cmd.Usage()"))
-	assert.Equal(t, 2, strings.Count(starters, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`))
+	assert.Equal(t, 3, strings.Count(starters, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {"))
+	assert.Equal(t, 3, strings.Count(starters, "return cmd.Help()"))
+	assert.Equal(t, 3, strings.Count(starters, "if dryRunOK(flags) {"))
+	assert.Equal(t, 3, strings.Count(starters, "_ = cmd.Usage()"))
+	assert.Equal(t, 3, strings.Count(starters, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`))
+	assert.Contains(t, starters, "**RunE skeleton — parallel-fetch aggregation shape**")
+	assert.Contains(t, starters, "successfulItems = append(successfulItems, entry)")
+	assert.Contains(t, starters, "Items:         successfulItems")
+	assert.Contains(t, starters, `json tag: `+"`json:\"fetch_failures,omitempty\"`")
+	assert.Contains(t, starters, "averages computed over the remaining %d items")
+	assert.Contains(t, starters, "partial results: %d of %d fetches failed; average computed over %d items")
 }
 
 func TestAgentBrowserInstallRequiresPostInstallSetup(t *testing.T) {
@@ -394,6 +418,83 @@ func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	assert.Contains(t, skill, "The publish-validate leg is a hard ship-gate")
 	assert.Contains(t, skill, "phase5 acceptance")
 	assert.Contains(t, skill, "ship cannot fire while publish validate fails")
+}
+
+func TestPublishSkillRerunsLiveGateBeforeManagedClone(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+	validateStart := strings.Index(skill, "## Step 4: Validate")
+	liveGateStart := strings.Index(skill, "## Step 4.5: Live End-to-End Gate")
+	cloneStart := strings.Index(skill, "## Step 5: Managed Clone")
+	require.NotEqual(t, -1, validateStart)
+	require.NotEqual(t, -1, liveGateStart)
+	require.NotEqual(t, -1, cloneStart)
+	require.Less(t, validateStart, liveGateStart)
+	require.Less(t, liveGateStart, cloneStart)
+
+	liveGateBlock := skill[liveGateStart:cloneStart]
+	assert.Contains(t, liveGateBlock, `dogfood`)
+	assert.Contains(t, liveGateBlock, `--live`)
+	assert.Contains(t, liveGateBlock, `--level full`)
+	assert.Contains(t, liveGateBlock, `--timeout 120s`)
+	assert.Contains(t, liveGateBlock, `--write-acceptance "$PROOFS_DIR/phase5-acceptance.json"`)
+	assert.Contains(t, liveGateBlock, `"$PRINTING_PRESS_BIN" publish validate --dir "$CLI_DIR" --json`)
+	assert.Contains(t, liveGateBlock, `--skip-live-test=<reason>`)
+	assert.Contains(t, liveGateBlock, `auth_type=none during a known upstream outage`)
+	assert.Contains(t, liveGateBlock, `API_KEY_AVAILABLE=true`)
+	assert.Contains(t, liveGateBlock, `api_key_available: $api_key_available`)
+	assert.Contains(t, skill, "### Publish Live Gate")
+}
+
+func TestPolishPublishOfferRequiresFreshUserTurn(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+	reference := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "references", "publish-turn-boundary.md"))
+
+	assert.Contains(t, skill, "references/publish-turn-boundary.md")
+	assert.Contains(t, skill, "fresh user-authored message")
+	assert.Contains(t, skill, "Do not invoke `/printing-press-publish <cli-name>` from this same turn")
+	assert.Contains(t, skill, "After printing the handoff, stop")
+	assert.Contains(t, skill, "**Publish separately** (recommended)")
+	assert.Contains(t, skill, "show the publish command for the next user message")
+	assert.Contains(t, skill, "/printing-press-publish <cli-name> --from-polish")
+	assert.Contains(t, skill, "post-publish retro offer")
+	assert.Contains(t, reference, "--from-polish")
+	assert.Contains(t, reference, "Treat the menu answer as intent to hand off, not permission to execute")
+	assert.NotContains(t, skill, "Then invoke `/printing-press-publish <cli-name>`")
+	assert.NotContains(t, skill, "**Publish now** (recommended)")
+	assert.NotContains(t, skill, "validate, package, and open a PR")
+	assert.NotContains(t, reference, "Publish now")
+}
+
+func TestPublishSkillRejectsChainedPublishInvocations(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+	guardStart := strings.Index(skill, "## Direct User Invocation Required")
+	setupStart := strings.Index(skill, "## Setup")
+	require.NotEqual(t, -1, guardStart)
+	require.NotEqual(t, -1, setupStart)
+	require.Less(t, guardStart, setupStart)
+	guardBlock := skill[guardStart:setupStart]
+
+	assert.Contains(t, guardBlock, "chained continuation from `printing-press-polish`'s")
+	assert.Contains(t, guardBlock, "auto-resolved")
+	assert.Contains(t, guardBlock, "recommendation")
+	assert.Contains(t, guardBlock, "stop immediately")
+	assert.Contains(t, guardBlock, "fresh user-authored")
+	assert.Contains(t, guardBlock, "--from-polish")
+	assert.Contains(t, guardBlock, "POLISH_HANDOFF=true")
+	assert.Contains(t, guardBlock, "ignore that marker when")
+}
+
+func TestPublishSkillOffersRetroForPolishHandoff(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+	terminalStart := strings.Index(skill, "### Terminal state")
+	require.NotEqual(t, -1, terminalStart)
+	terminalBlock := skill[terminalStart:]
+
+	assert.Contains(t, terminalBlock, "direct human invocation without `--from-polish` just ends here")
+	assert.Contains(t, terminalBlock, "If `POLISH_HANDOFF=true`, offer retro")
+	assert.Contains(t, terminalBlock, "standalone polish")
+	assert.Contains(t, terminalBlock, "AskUserQuestion")
+	assert.Contains(t, terminalBlock, "/printing-press-retro")
 }
 
 func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {

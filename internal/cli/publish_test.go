@@ -738,7 +738,7 @@ func TestPublishPackageRejectsPIIInStagedCLI(t *testing.T) {
 	// Plant real-shaped PII in a high-risk file
 	require.NoError(t, os.WriteFile(
 		filepath.Join(cliDir, "data.json"),
-		[]byte(`{"customer_email": "alice@example.com"}`+"\n"),
+		[]byte(`{"customer_email": "alice@gmail.com"}`+"\n"),
 		0o644,
 	))
 
@@ -755,6 +755,37 @@ func TestPublishPackageRejectsPIIInStagedCLI(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
 }
 
+func TestPublishPackageAllowsReservedSyntheticPII(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "data.json"),
+		[]byte(`{"customer_email": "alice@example.com", "docs_email": "team@app.test", "phone": "(415) 555-0123"}`+"\n"),
+		0o644,
+	))
+
+	runID := "20260329-100000"
+	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "captured.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
+	require.NoError(t, os.WriteFile(
+		researchFile,
+		[]byte(`{"recipient_email": "new@example.com", "phone": "5555550100"}`+"\n"),
+		0o644,
+	))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.DirExists(t, result.StagedDir)
+}
+
 func TestPublishPackageRejectsPIIInManuscripts(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
@@ -762,7 +793,7 @@ func TestPublishPackageRejectsPIIInManuscripts(t *testing.T) {
 	runID := "20260329-100000"
 	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "captured.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
-	require.NoError(t, os.WriteFile(researchFile, []byte(`{"recipient_email": "leak@example.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(researchFile, []byte(`{"recipient_email": "leak@gmail.com"}`+"\n"), 0o644))
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
@@ -789,7 +820,7 @@ func TestPublishPackageCombinesSecretAndPIIReports(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(cliDir, "data.json"),
-		[]byte(`{"customer_email": "alice@example.com"}`+"\n"),
+		[]byte(`{"customer_email": "alice@gmail.com"}`+"\n"),
 		0o644,
 	))
 

@@ -97,13 +97,15 @@ func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
 	}
-	// Under OAuth2 (and bearer_token specs running the client_credentials
-	// grant) the configured env vars hold client credentials (client_id /
-	// client_secret), not a usable bearer; the minted AccessToken must
-	// win. Sending the client_id as Authorization: Bearer surfaces as
-	// token_rejected at the API.
+	// Under OAuth2 (and bearer_token specs running OAuth grants such as
+	// client_credentials or device_code) the configured env vars hold flow
+	// inputs, not a usable bearer; the minted AccessToken must win. Sending
+	// the client_id as Authorization: Bearer surfaces as token_rejected at
+	// the API.
 	if c.AccessToken != "" {
-		c.AuthSource = "oauth2"
+		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
+			c.AuthSource = "oauth2"
+		}
 		return "Bearer " + c.AccessToken
 	}
 	return ""

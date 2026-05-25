@@ -1,12 +1,18 @@
 name: Conversation resolution check
 
 # Surfaces unresolved review threads as a commit status on the PR head
-# SHA so authors get a specific cue when threads are the holdup. The
+# SHA so authors get a specific cue when threads are the holdup. This
+# status intentionally checks thread-resolution state only; Mergify also
+# gates on requested-changes review state via .mergify.yml. The
 # canonical signal lives in a commit status (latest-by-context), not the
-# workflow job's auto check_run; commit statuses with the same context
-# override on each push, so the rollup never holds a stale FAILURE next
-# to a later SUCCESS the way it did when the job conclusion was the
-# canonical signal (issue #1878).
+# workflow job's auto check_run. The status context intentionally keeps
+# the legacy name "All conversations resolved" to avoid breaking any
+# GitHub required-check settings that may reference it, but the emitted
+# description and summary clarify that this workflow checks review-thread
+# resolution only. Commit statuses with the same context override on each
+# push, so the rollup never holds a stale FAILURE next to a later SUCCESS
+# the way it did when the job conclusion was the canonical signal (issue
+# #1878).
 #
 # Not an enforcement gate — Mergify's `#review-threads-unresolved = 0`
 # condition in .mergify.yml is what actually blocks the merge queue. This
@@ -21,6 +27,9 @@ name: Conversation resolution check
 # Review, and no specific cue that unresolved threads are the holdup.
 # This workflow puts that cue in the same place authors look — the
 # status checks list — and keeps it there regardless of label state.
+# GitHub Actions still does not fire on thread-resolution clicks, so a
+# resolved-thread-only change may require manual workflow_dispatch until a
+# webhook-backed app replaces this workflow.
 
 on:
   pull_request_target:
@@ -29,15 +38,17 @@ on:
       - reopened
       - synchronize
       - ready_for_review
+      - labeled
+      - unlabeled
   pull_request_review:
-    types: [submitted]
+    types: [submitted, edited, dismissed]
   pull_request_review_comment:
-    types: [created, deleted]
+    types: [created, edited, deleted]
   # Note: GitHub Actions does NOT support a `pull_request_review_thread`
   # event trigger (despite that event existing in the webhook payload set).
   # So clicking "Resolve conversation" in the UI does not auto-fire this
-  # workflow. The status will refresh on the next push, review, or
-  # comment event. workflow_dispatch is the manual escape hatch.
+  # workflow. The status will refresh on the next push, label, review,
+  # or comment event. workflow_dispatch is the manual escape hatch.
   workflow_dispatch:
     inputs:
       pr:
@@ -139,6 +150,7 @@ jobs:
           fi
 
           threads_json="$(mktemp)"
+          # shellcheck disable=SC2016 # GraphQL variables are expanded by GitHub, not the shell.
           gh api graphql --paginate \
             -F owner="${owner}" -F repo="${repo}" -F number="${PR_NUMBER}" \
             -f query='
@@ -170,19 +182,20 @@ jobs:
           echo "total=${total} unresolved=${unresolved} (active=${unresolved_active} outdated=${unresolved_outdated})"
 
           if [ "${unresolved}" -eq 0 ]; then
-            printf '## All %s conversation(s) resolved\n\nNo unresolved review threads on this PR.\n' \
+            printf '## All %s review thread(s) resolved\n\nNo unresolved review threads on this PR.\n\nIf this status was stale before, the latest commit status has now been refreshed.\n' \
               "${total}" >> "${GITHUB_STEP_SUMMARY}"
             echo "PASS: 0 unresolved threads on ${HEAD_SHA}"
             echo "state=success" >> "${GITHUB_OUTPUT}"
             # Status descriptions are capped at 140 chars by GitHub. The
             # pass-state copy is short by construction.
-            echo "description=All ${total} conversation(s) resolved" >> "${GITHUB_OUTPUT}"
+            echo "description=All ${total} review thread(s) resolved" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
           # Build the detailed thread listing once, reused for the step
           # summary (rendered on the workflow run page) and the
           # ::error:: annotation (rendered in the workflow-run UI).
+          # shellcheck disable=SC2016 # jq variables are expanded by jq, not the shell.
           listing="$(jq -r '
             [.[] | select(.isResolved == false)] as $u |
             ($u | length) as $count |
@@ -205,6 +218,7 @@ jobs:
           {
             printf '## %s\n\n%s\n\n---\n\n' "${heading}" "${listing}"
             printf '**To unblock the merge**, click "Resolve conversation" on each unresolved thread in the GitHub UI. Per repo convention every Greptile finding should be resolved (in code, or with a concrete reply explaining the deferral) before merge.\n'
+            printf '\nIf all threads already look resolved, manually refresh this status with: gh workflow run conversation-resolution-check.yml -f pr=%s\n' "${PR_NUMBER}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
           # ::error:: annotation surfaces in the workflow-run UI as a
@@ -244,9 +258,10 @@ jobs:
         run: |
           set -euo pipefail
           # Use the canonical name as the status context so a single
-          # rollup entry "All conversations resolved" carries the
-          # current truth. Reposting with the same (sha, context)
-          # overrides — that's what fixes #1878.
+          # rollup entry "All conversations resolved" carries the current
+          # truth without requiring branch-protection/ruleset updates.
+          # Reposting with the same (sha, context) overrides — that's what
+          # fixes #1878.
           gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
             -f state="${STATE}" \
             -f context="All conversations resolved" \

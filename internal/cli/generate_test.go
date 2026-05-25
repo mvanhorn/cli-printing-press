@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -99,6 +101,116 @@ func staleGeneratedCommand() {}
 
 	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/regenapp-pp-cli")
+}
+
+func TestGenerateCmdForcePreservesManuscriptsAndManifestExtras(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "regenextras")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: regenextras
+description: Regen extras API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/regenextras-pp-cli/config.toml
+resources:
+  markets:
+    description: Manage markets
+    endpoints:
+      list:
+        method: GET
+        path: /markets
+        description: List markets
+`), 0o644))
+
+	runGenerate := func() {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		require.NoError(t, cmd.Execute())
+	}
+
+	runGenerate()
+
+	manuscriptPath := filepath.Join(outputDir, ".manuscripts", "20260523-171100", "research.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(manuscriptPath), 0o755))
+	require.NoError(t, os.WriteFile(manuscriptPath, []byte(`{"accepted":true}`), 0o640))
+	wantModTime := time.Date(2026, 5, 23, 17, 11, 0, 0, time.UTC)
+	require.NoError(t, os.Chtimes(manuscriptPath, wantModTime, wantModTime))
+
+	manifestPath := filepath.Join(outputDir, pipeline.CLIManifestFilename)
+	require.NoError(t, os.WriteFile(manifestPath, []byte(`{
+  "schema_version": 1,
+  "api_name": "regenextras",
+  "cli_name": "regenextras-pp-cli",
+  "category": "other",
+  "novel_features": [
+    {
+      "name": "Market scanner",
+      "command": "markets scan",
+      "description": "Finds active markets"
+    }
+  ],
+  "operator_note": "published-library override"
+}`), 0o644))
+
+	runGenerate()
+
+	gotManuscript, err := os.ReadFile(manuscriptPath)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"accepted":true}`, string(gotManuscript))
+	info, err := os.Stat(manuscriptPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+	assert.True(t, info.ModTime().Equal(wantModTime), "manuscript mtime should survive force regen")
+
+	data, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	var manifest pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	assert.Equal(t, "other", manifest.Category)
+	require.Len(t, manifest.NovelFeatures, 1)
+	assert.Equal(t, "Market scanner", manifest.NovelFeatures[0].Name)
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.JSONEq(t, `"published-library override"`, string(raw["operator_note"]))
+}
+
+func TestLoadResearchSourcesReturnsExplicitEmptyManifestNovelFeatures(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), []byte(`{
+  "api_name": "regenextras",
+  "novel_features": [
+    {
+      "name": "Planned scanner",
+      "command": "planned scan",
+      "description": "Planned feature"
+    }
+  ],
+  "novel_features_built": []
+}`), 0o644))
+
+	gen := generator.New(&spec.APISpec{
+		Name: "regenextras",
+		Auth: spec.AuthConfig{Type: "none"},
+	}, t.TempDir())
+
+	got := loadResearchSources(gen, researchDir)
+	require.NotNil(t, got, "empty built list is an explicit fresh result, not unavailable metadata")
+	assert.Empty(t, got)
+	assert.Empty(t, gen.NovelFeatures)
 }
 
 func TestGenerateCmdHelpDescribesForceAsGeneratedOverwrite(t *testing.T) {

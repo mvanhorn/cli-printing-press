@@ -368,6 +368,9 @@ func TestEnsureAuthSchemeAppliesBearerPrefix(t *testing.T) {
 	if got := c.AuthHeader(); got != "Bearer eyJxxx" {
 		t.Fatalf("expected Bearer-prefixed header, got %q", got)
 	}
+	if c.AuthSource != "env:` + tt.envVar + `" {
+		t.Fatalf("AuthSource = %q, want env:` + tt.envVar + `", c.AuthSource)
+	}
 }
 
 func TestEnsureAuthSchemeDoesNotDoublePrefix(t *testing.T) {

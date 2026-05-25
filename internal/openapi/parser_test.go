@@ -1086,6 +1086,99 @@ components:
 	}, byName["mixed"].Fields)
 }
 
+func TestParseStringArrayRequestBodyFieldsAsCSVArrays(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Mail API
+  version: 1.0.0
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schedules:
+                  type: array
+                  items:
+                    type: string
+                  description: Schedules to query
+                metadata:
+                  type: object
+                  properties:
+                    categories:
+                      type: array
+                      items:
+                        type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/messages")
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "string_csv_array", byName["schedules"].Type)
+	assert.Equal(t, "string", byName["schedules"].ItemType)
+	require.Len(t, byName["metadata"].Fields, 1)
+	assert.Equal(t, "categories", byName["metadata"].Fields[0].Name)
+	assert.Equal(t, "string_csv_array", byName["metadata"].Fields[0].Type)
+	assert.Equal(t, "string", byName["metadata"].Fields[0].ItemType)
+}
+
+func TestParseFormStringArrayRequestBodyKeepsArrayType(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Mail API
+  version: 1.0.0
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/messages")
+	require.Len(t, endpoint.Body, 1)
+	assert.Equal(t, "tags", endpoint.Body[0].Name)
+	assert.Equal(t, "array", endpoint.Body[0].Type)
+	assert.Empty(t, endpoint.Body[0].ItemType)
+}
+
 const dataEnvelopeAllOfTaskSpec = `
 openapi: 3.0.3
 info:
@@ -1525,6 +1618,132 @@ paths:
 	assert.Equal(t, "https://example.auth0.com/oauth/token", parsed.Auth.TokenURL)
 	assert.Empty(t, parsed.Auth.AuthorizationURL, "client_credentials flow has no user redirect")
 	assert.Equal(t, []string{"read:users", "write:users"}, parsed.Auth.Scopes)
+}
+
+func TestParseOAuth2DeviceCodeExtension(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: DeviceAuth
+  version: "1.0"
+servers:
+  - url: https://graph.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.example.com/common/oauth2/v2.0/devicecode
+        tokenUrl: https://login.example.com/common/oauth2/v2.0/token
+        defaultClientId: public-client-id
+        scopes:
+          - Calendars.Read
+          - Mail.Read
+paths:
+  /me/messages:
+    get:
+      operationId: list messages
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, spec.OAuth2GrantDeviceCode, parsed.Auth.OAuth2Grant)
+	assert.Equal(t, "https://login.example.com/common/oauth2/v2.0/devicecode", parsed.Auth.DeviceAuthorizationURL)
+	assert.Equal(t, "https://login.example.com/common/oauth2/v2.0/token", parsed.Auth.TokenURL)
+	assert.Equal(t, "public-client-id", parsed.Auth.DefaultClientID)
+	assert.Equal(t, []string{"Calendars.Read", "Mail.Read"}, parsed.Auth.Scopes)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, "DEVICEAUTH_CLIENT_ID", parsed.Auth.EnvVarSpecs[0].Name)
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Required, "default client id makes env override optional")
+}
+
+func TestParseOAuth2DeviceCodeExtensionPreservesExplicitClientIDEnvVar(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: DeviceAuth
+  version: "1.0"
+servers:
+  - url: https://graph.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-auth-env-vars:
+        - CUSTOM_CLIENT_ID
+      x-oauth-device-flow:
+        device_authorization_url: https://login.example.com/device
+        token_url: https://login.example.com/token
+        scopes:
+          - Mail.Read
+          - Calendars.Read
+paths:
+  /me/messages:
+    get:
+      operationId: list messages
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, spec.OAuth2GrantDeviceCode, parsed.Auth.OAuth2Grant)
+	assert.Equal(t, "https://login.example.com/device", parsed.Auth.DeviceAuthorizationURL)
+	assert.Equal(t, "https://login.example.com/token", parsed.Auth.TokenURL)
+	assert.Equal(t, []string{"Calendars.Read", "Mail.Read"}, parsed.Auth.Scopes)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, "CUSTOM_CLIENT_ID", parsed.Auth.EnvVarSpecs[0].Name)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Required, "no spec default makes client ID required")
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+}
+
+func TestParseOAuth2DeviceCodeSecuritySchemeBeatsAPIKeyAlternative(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: DeviceAuth
+  version: "1.0"
+servers:
+  - url: https://graph.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2Device:
+      type: oauth2
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.example.com/device
+        tokenUrl: https://login.example.com/token
+paths:
+  /me/messages:
+    get:
+      operationId: list messages
+      security:
+        - ApiKeyAuth: []
+        - OAuth2Device: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "OAuth2Device", parsed.Auth.Scheme)
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, spec.OAuth2GrantDeviceCode, parsed.Auth.OAuth2Grant)
 }
 
 func TestParseOAuth2BothFlowsPrefersClientCredentials(t *testing.T) {
@@ -3998,6 +4217,29 @@ paths:
 `,
 			expected: "",
 		},
+		{
+			name: "placeholder URL in scheme description is rejected",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+      description: "Get your key at https://<your-dashboard>/api-keys"
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "",
+		},
 	}
 
 	for _, tc := range tests {
@@ -4005,6 +4247,39 @@ paths:
 			parsed, err := Parse([]byte(tc.yaml))
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, parsed.Auth.KeyURL)
+		})
+	}
+}
+
+func TestFirstHTTPSURLRejectsPlaceholders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "angle bracket placeholder",
+			in:   "Get your key at https://<your-dashboard>/api-keys",
+			want: "",
+		},
+		{
+			name: "real URL",
+			in:   "Register at https://dash.example.com/keys to get a token",
+			want: "https://dash.example.com/keys",
+		},
+		{
+			name: "brace placeholder",
+			in:   "https://api.example.com/v1/{tenant}/keys",
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, firstHTTPSURL(tc.in))
 		})
 	}
 }
@@ -5668,6 +5943,58 @@ paths:
 	}
 }
 
+func TestParseDataSourceStrategyExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /reports:
+    x-data-source-strategy: local
+    get:
+      operationId: listReports
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+  /reports/live:
+    x-data-source-strategy: local
+    get:
+      operationId: listLiveReports
+      x-data-source-strategy: live
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	local := findEndpoint(t, parsed, "/reports")
+	require.Equal(t, spec.DataSourceStrategyLocal, local.DataSourceStrategy)
+
+	live := findEndpoint(t, parsed, "/reports/live")
+	require.Equal(t, spec.DataSourceStrategyLive, live.DataSourceStrategy)
+}
+
 func TestParseIDFieldFallbackChain(t *testing.T) {
 	t.Parallel()
 
@@ -6193,6 +6520,136 @@ paths:
 			assert.Equal(t, tt.wantID, ep.IDField)
 		})
 	}
+}
+
+// Member-endpoint placeholders catch acronym or vendor-shaped keys, such as
+// idpId, that cannot be derived from the resource name alone.
+func TestParseIDFieldPathParamHeuristic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		schemaYAML string
+		wantID     string
+		wantPathID bool
+	}{
+		{
+			name: "camelCase member placeholder wins over display name",
+			path: "/idps/{idpId}",
+			schemaYAML: `                  type: object
+                  properties:
+                    idpId: {type: string}
+                    name: {type: string}
+`,
+			wantID:     "idpId",
+			wantPathID: true,
+		},
+		{
+			name: "snake_case placeholder matches camelCase response property",
+			path: "/resources/{resource_id}",
+			schemaYAML: `                  type: object
+                  properties:
+                    resourceId: {type: string}
+                    name: {type: string}
+`,
+			wantID:     "resourceId",
+			wantPathID: true,
+		},
+		{
+			name: "nested member uses child placeholder, not parent placeholder",
+			path: "/sites/{siteId}/targets/{targetId}",
+			schemaYAML: `                  type: object
+                  properties:
+                    siteId: {type: string}
+                    targetId: {type: string}
+                    name: {type: string}
+`,
+			wantID:     "targetId",
+			wantPathID: true,
+		},
+		{
+			name: "child collection does not use parent placeholder as child primary key",
+			path: "/sites/{siteId}/targets",
+			schemaYAML: `                  type: object
+                  properties:
+                    siteId: {type: string}
+                    name: {type: string}
+`,
+			wantID: "name",
+		},
+		{
+			name: "path param without matching response property falls through",
+			path: "/idps/{idpId}",
+			schemaYAML: `                  type: object
+                  properties:
+                    name: {type: string}
+`,
+			wantID: "name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  ` + tt.path + `:
+    get:
+      operationId: getThing
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+` + tt.schemaYAML)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, tt.path)
+			assert.Equal(t, tt.wantID, ep.IDField)
+			assert.Equal(t, tt.wantPathID, ep.IDFieldFromPathParam)
+		})
+	}
+}
+
+func TestParseIDFieldExplicitResourceIDWinsOverPathParamHeuristic(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets/{widgetId}:
+    x-resource-id: canonical_id
+    get:
+      operationId: getWidget
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  widgetId: {type: string}
+                  canonical_id: {type: string}
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	ep := findEndpoint(t, parsed, "/widgets/{widgetId}")
+	assert.Equal(t, "canonical_id", ep.IDField)
+	assert.False(t, ep.IDFieldFromPathParam)
 }
 
 // TestParseXResourceIDAppliesToEveryOperationOnPath exercises the "extensions
@@ -7616,6 +8073,45 @@ paths:
 	})
 }
 
+func TestParseDerivesBaseURLFromRemoteSourceForRelativeServer(t *testing.T) {
+	t.Parallel()
+
+	specYAML := []byte(`openapi: "3.0.3"
+info:
+  title: Relative Server Test
+  version: "1.0"
+servers:
+  - url: /api/v3
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        '200': {description: OK}
+`)
+
+	t.Run("remote http source seeds base URL", func(t *testing.T) {
+		// ParseWithOptions{SourceURL} is the real entry point the cli layer
+		// uses for a remote spec (parseOpenAPISpec sets SourceURL when the
+		// source is an http(s) URL).
+		parsed, err := ParseWithOptions(specYAML, ParseOptions{SourceURL: "https://petstore3.swagger.io/api/v3/openapi.yaml"})
+		require.NoError(t, err)
+		assert.Equal(t, "https://petstore3.swagger.io", parsed.BaseURL)
+		assert.Equal(t, "/api/v3", parsed.BasePath)
+		assert.False(t, parsed.BaseURLIsPlaceholder)
+	})
+
+	t.Run("local file source keeps existing empty base URL behavior", func(t *testing.T) {
+		// No SourceURL (local-file path source) — host is not derivable, so
+		// BaseURL stays empty and the user must set base_url.
+		parsed, err := Parse(specYAML)
+		require.NoError(t, err)
+		assert.Equal(t, "", parsed.BaseURL)
+		assert.Equal(t, "/api/v3", parsed.BasePath)
+		assert.False(t, parsed.BaseURLIsPlaceholder)
+	})
+}
+
 // TestAuthCompanionFromOpenAPI exercises the x-auth-companion extension at
 // both scheme level and info level, including the scheme-wins precedence
 // when both are set.
@@ -8305,6 +8801,110 @@ paths:
 			"placeholders must be ordered by left-to-right appearance in the URL")
 		assert.Equal(t, "demo", parsed.EndpointTemplateVarDefaults["tenant"])
 		assert.Equal(t, "v1", parsed.EndpointTemplateVarDefaults["version"])
+	})
+
+	t.Run("scheme and host placeholders preserve URL separator", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Scheme Host API
+  version: 1.0.0
+servers:
+  - url: "{protocol}://{host}/v1"
+    variables:
+      protocol:
+        default: "https"
+      host:
+        default: "api.example.com"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "{protocol}://{host}/v1", parsed.BaseURL,
+			"server URL normalization must preserve :// when the scheme is a runtime placeholder")
+		assert.Empty(t, parsed.BasePath)
+		assert.Equal(t, []string{"protocol", "host"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, "https", parsed.EndpointTemplateVarDefaults["protocol"])
+		assert.Equal(t, "api.example.com", parsed.EndpointTemplateVarDefaults["host"])
+	})
+
+	t.Run("partial scheme host variables document malformed triple slash", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Partial Scheme Host API
+  version: 1.0.0
+servers:
+  - url: "{protocol}://{host}/v1"
+    variables:
+      protocol:
+        default: https
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "{protocol}:///v1", parsed.BaseURL,
+			"malformed specs with an undeclared host placeholder keep the runtime scheme URL shape")
+		assert.Empty(t, parsed.BasePath)
+		assert.Equal(t, []string{"protocol"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, "https", parsed.EndpointTemplateVarDefaults["protocol"])
+	})
+
+	t.Run("adjacent path placeholders without scheme stay relative", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Relative Var API
+  version: 1.0.0
+servers:
+  - url: "{stage}/{version}"
+    variables:
+      stage:
+        default: "api"
+      version:
+        default: "v1"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.BaseURL)
+		assert.Equal(t, "{stage}/{version}", parsed.BasePath,
+			"only a preserved :// separator should make a templated server URL absolute")
+		assert.Equal(t, []string{"stage", "version"}, parsed.EndpointTemplateVars)
+	})
+
+	t.Run("dangling scheme placeholder strips without preserving empty scheme", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Dangling Scheme API
+  version: 1.0.0
+servers:
+  - url: "{protocol}://api.example.com/v1"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.BaseURL)
+		assert.Equal(t, ":/api.example.com/v1", parsed.BasePath,
+			"dangling scheme placeholders must follow legacy strip-and-normalize behavior, not preserve ://")
+		assert.Empty(t, parsed.EndpointTemplateVars)
 	})
 
 	t.Run("placeholder with empty default registers var but no default entry", func(t *testing.T) {

@@ -8,9 +8,10 @@ package client
 {{- range $eName, $endpoint := $resource.Endpoints}}
 {{- if eq $eName "list"}}
 {{- $queryField := graphqlQueryField $endpoint.ResponsePath}}
+{{- $params := graphqlListParams $endpoint}}
 
-const {{pascal $rName}}ListQuery = {{backtick}}query($first: Int!, $after: String) {
-  {{$queryField}}(first: $first, after: $after) {
+const {{pascal $rName}}ListQuery = {{backtick}}query{{if $params}}({{- range $i, $p := $params}}{{if $i}}, {{end}}${{$p.Name}}: {{graphqlVariableType $p}}{{- end}}){{end}} {
+  {{$queryField}}{{if $params}}({{- range $i, $p := $params}}{{if $i}}, {{end}}{{$p.Name}}: ${{$p.Name}}{{- end}}){{end}} {
     nodes {
 {{- range graphqlFieldSelection $endpoint.Response.Item $.Types}}
       {{.}}

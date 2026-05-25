@@ -308,7 +308,11 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		report.Results = append(report.Results, result)
 	}
 
-	report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, report.Mode, buildEnv)
+	expectedMockRows := 0
+	if report.Mode == "mock" && spec != nil && len(spec.NestedDataEnvelopes) > 0 {
+		expectedMockRows = 2
+	}
+	report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, report.Mode, buildEnv, expectedMockRows)
 	report.Freshness = runFreshnessContractTest(cfg.Dir)
 	report.PathParamProbes = runPathParamProbes(binaryPath, buildEnv(), paramDefaults)
 
@@ -598,7 +602,7 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 
 // runDataPipelineTest tests the sync -> sql -> search -> health chain.
 // Returns (pass bool, detail string) where detail gives PASS/WARN/SKIP/FAIL context.
-func runDataPipelineTest(binary, mode string, envFn func() []string) (bool, string) {
+func runDataPipelineTest(binary, mode string, envFn func() []string, expectedRows int) (bool, string) {
 	env := envFn()
 
 	// Create a temp dir for the test database
@@ -614,7 +618,10 @@ func runDataPipelineTest(binary, mode string, envFn func() []string) (bool, stri
 	// Test sync (if it exists)
 	syncErr := runCLI(binary, []string{"sync", "--db", dbPath, "--resources", "repos", "--full"}, env, 30*time.Second)
 	if syncErr != nil {
-		// Sync might not accept --db flag - try without
+		syncErr = runCLI(binary, []string{"sync", "--db", dbPath, "--full"}, env, 30*time.Second)
+	}
+	if syncErr != nil {
+		// Sync might not accept --db flag - try without.
 		syncErr = runCLI(binary, []string{"sync", "--full"}, env, 30*time.Second)
 	}
 	if syncErr != nil {
@@ -624,12 +631,10 @@ func runDataPipelineTest(binary, mode string, envFn func() []string) (bool, stri
 	// Test health (if available)
 	_ = runCLI(binary, []string{"health", "--db", dbPath}, env, 10*time.Second)
 
-	// Discover domain tables via sql command
 	tableQuery := `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite%' AND name NOT LIKE '%_fts%' AND name != 'sync_state'`
 	tablesOut, sqlErr := runCLIWithOutput(binary, []string{"sql", tableQuery}, env, 10*time.Second)
 	if sqlErr != nil {
-		// sql command may not exist or may not accept positional args — fall back to basic check
-		return true, "PASS: sync completed (table validation skipped — sql command unavailable)"
+		return true, "PASS: sync completed (sql unavailable, table validation skipped)"
 	}
 
 	// Parse table names from output (one per line, skip empty lines and header noise)
@@ -640,24 +645,61 @@ func runDataPipelineTest(binary, mode string, envFn func() []string) (bool, stri
 		return true, "WARN: sync completed but no domain tables found in sqlite_master"
 	}
 
-	// In live mode, check that at least one table has rows
-	if mode == "live" {
-		for _, table := range tables {
-			countQuery := fmt.Sprintf("SELECT count(*) FROM \"%s\"", table)
-			countOut, countErr := runCLIWithOutput(binary, []string{"sql", countQuery}, env, 10*time.Second)
-			if countErr != nil {
+	var bestShortTable string
+	var bestShortCount int
+	var bestPassTable string
+	var bestPassCount int
+	var zeroDataTable string
+	for _, table := range tables {
+		countQuery := fmt.Sprintf("SELECT count(*) FROM \"%s\"", table)
+		countOut, countErr := runCLIWithOutput(binary, []string{"sql", countQuery}, env, 10*time.Second)
+		if countErr != nil {
+			continue
+		}
+		count := parseCountOutput(countOut)
+		if count > 0 {
+			if expectedRows > 0 {
+				if count >= expectedRows {
+					if !isAuxiliaryPipelineTable(table, len(tables)) && count > bestPassCount {
+						bestPassTable = table
+						bestPassCount = count
+					}
+					continue
+				}
+				if count > bestShortCount {
+					bestShortTable = table
+					bestShortCount = count
+				}
 				continue
 			}
-			count := parseCountOutput(countOut)
-			if count > 0 {
-				return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
-			}
+			return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
 		}
-		return false, fmt.Sprintf("WARN: %d domain tables created but 0 rows after sync (live mode)", len(tables))
+		if expectedRows > 0 && zeroDataTable == "" && !isAuxiliaryPipelineTable(table, len(tables)) {
+			zeroDataTable = table
+		}
 	}
+	if bestPassTable != "" {
+		return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), bestPassTable, bestPassCount)
+	}
+	if bestShortTable != "" {
+		return false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", bestShortTable, bestShortCount, expectedRows, mode)
+	}
+	if zeroDataTable != "" && len(tables) > 1 {
+		return false, fmt.Sprintf("FAIL: %s has 0 rows after sync, expected at least %d (%s mode)", zeroDataTable, expectedRows, mode)
+	}
+	return false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode)
+}
 
-	// Mock mode: tables created is sufficient (mock data is minimal)
-	return true, fmt.Sprintf("PASS: %d domain tables created", len(tables))
+func isAuxiliaryPipelineTable(table string, totalTables int) bool {
+	if totalTables <= 1 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(table)) {
+	case "config", "configs", "metadata", "schema_migrations", "settings":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseSQLOutput extracts non-empty, non-header lines from sql command output.
@@ -778,7 +820,9 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 
 		// Check if the path looks like a list endpoint
 		path := r.URL.Path
-		if strings.HasSuffix(path, "s") || strings.Contains(path, "/search") {
+		if fixture, ok := nestedDataEnvelopeForPath(spec, path); ok {
+			fmt.Fprint(w, renderNestedDataEnvelopeFixture(fixture))
+		} else if strings.HasSuffix(path, "s") || strings.Contains(path, "/search") {
 			// Return array
 			fmt.Fprint(w, `[{"id": 1, "name": "mock-item-1", "state": "open", "title": "Mock Item", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"}]`)
 		} else if strings.Contains(path, "/rate_limit") {
@@ -795,6 +839,43 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 
 	server := httptest.NewServer(mux)
 	return server, server.URL
+}
+
+func nestedDataEnvelopeForPath(spec *openAPISpec, path string) (nestedDataEnvelopeFixture, bool) {
+	if spec == nil || len(spec.NestedDataEnvelopes) == 0 {
+		return nestedDataEnvelopeFixture{}, false
+	}
+	if fixture, ok := spec.NestedDataEnvelopes[path]; ok {
+		return fixture, true
+	}
+	for specPath, fixture := range spec.NestedDataEnvelopes {
+		if pathMatchesSpec(path, compileSpecPathPatterns([]string{specPath})) {
+			return fixture, true
+		}
+	}
+	return nestedDataEnvelopeFixture{}, false
+}
+
+func renderNestedDataEnvelopeFixture(fixture nestedDataEnvelopeFixture) string {
+	arrayKey := fixture.ArrayKey
+	if arrayKey == "" {
+		arrayKey = "items"
+	}
+	body := map[string]any{
+		"success": true,
+		"data": map[string]any{
+			arrayKey: []map[string]any{
+				{"id": 1, "name": "mock-item-1", "state": "open", "title": "Mock Item", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
+				{"id": 2, "name": "mock-item-2", "state": "open", "title": "Mock Item 2", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
+			},
+			"pagination": map[string]any{"total": 2},
+		},
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return `{"success":true,"data":{"items":[{"id":1,"name":"mock-item-1"},{"id":2,"name":"mock-item-2"}],"pagination":{"total":2}}}`
+	}
+	return string(data)
 }
 
 // templateVarReadRe matches the shape config.go.tmpl emits for each

@@ -65,11 +65,22 @@ func TestRedactPIIJSONKeys_FragmentRedactsValueWhenKeyEqualsValue(t *testing.T) 
 }
 
 func TestRedactPIIText_RedactsPlainTextPatterns(t *testing.T) {
-	got := RedactPIIText("billing email jane@example.com lives at 123 Main Street")
+	got := RedactPIIText("billing email jane@gmail.com lives at 123 Main Street")
 
-	require.NotContains(t, got, "jane@example.com")
+	require.NotContains(t, got, "jane@gmail.com")
 	require.NotContains(t, got, "123 Main Street")
 	require.Contains(t, got, PIIRedactedSentinel)
+}
+
+func TestRedactPIIText_KeepsGitHubContextIDAndReservedValues(t *testing.T) {
+	got := RedactPIIText("see #issuecomment-3249672648 and email user@example.com or call 212-555-0142")
+	require.Contains(t, got, "3249672648", "GitHub comment ID must not be redacted")
+	require.Contains(t, got, "user@example.com", "reserved example.com email must not be redacted")
+	require.Contains(t, got, "212-555-0142", "NANP fictional phone must not be redacted")
+
+	real := RedactPIIText("reach me at 415-234-5678")
+	require.NotContains(t, real, "415-234-5678", "a real phone must still be redacted")
+	require.Contains(t, real, PIIRedactedSentinel)
 }
 
 func TestFindPII_CardLast4(t *testing.T) {
@@ -144,8 +155,14 @@ func TestFindPII_Email(t *testing.T) {
 		line        string
 		expectKinds []string
 	}{
-		{name: "standard", line: `"email": "alice@example.com"`, expectKinds: []string{PIIKindEmail}},
-		{name: "plus-tag", line: `"email": "alice+tag@example.com"`, expectKinds: []string{PIIKindEmail}},
+		{name: "standard", line: `"email": "customer@gmail.com"`, expectKinds: []string{PIIKindEmail}},
+		{name: "plus-tag", line: `"email": "customer+tag@gmail.com"`, expectKinds: []string{PIIKindEmail}},
+		{name: "reserved-example-com", line: `"email": "alice@example.com"`, expectKinds: nil},
+		{name: "reserved-example-org", line: `"email": "anything@example.org"`, expectKinds: nil},
+		{name: "reserved-example-net-subdomain", line: `"email": "user@docs.example.net"`, expectKinds: nil},
+		{name: "reserved-test-tld", line: `"email": "printer@app.test"`, expectKinds: nil},
+		{name: "reserved-localhost-tld", line: `"email": "printer@app.localhost"`, expectKinds: nil},
+		{name: "reserved-invalid-tld", line: `"email": "printer@app.invalid"`, expectKinds: nil},
 		{name: "no-tld", line: `"handle": "alice@example"`, expectKinds: nil},
 		{name: "missing-at", line: `"site": "example.com"`, expectKinds: nil},
 	}
@@ -163,9 +180,13 @@ func TestFindPII_PhoneUS(t *testing.T) {
 		line        string
 		expectKinds []string
 	}{
-		{name: "parens-space-dash", line: `"phone": "(415) 555-0123"`, expectKinds: []string{PIIKindPhoneUS}},
-		{name: "all-dashes", line: `"phone": "415-555-0123"`, expectKinds: []string{PIIKindPhoneUS}},
-		{name: "country-code", line: `"phone": "+1 415 555 0123"`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "parens-space-dash", line: `"phone": "(415) 234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "all-dashes", line: `"phone": "415-234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "country-code", line: `"phone": "+1 415 234 5678"`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "fictional-exchange-dashes", line: `"phone": "415-555-0123"`, expectKinds: nil},
+		{name: "fictional-exchange-parens", line: `"phone": "(212) 555-0100"`, expectKinds: nil},
+		{name: "fictional-exchange-country-code", line: `"phone": "+1 415 555 0199"`, expectKinds: nil},
+		{name: "fictional-555-area-compact", line: `"phone": "5555550100"`, expectKinds: nil},
 		{name: "version-string", line: `"version": "1.2.3"`, expectKinds: nil},
 		{name: "ip-address", line: `"addr": "192.168.1.1"`, expectKinds: nil},
 		// NANP-shape filters — area code and exchange code must each
@@ -180,12 +201,32 @@ func TestFindPII_PhoneUS(t *testing.T) {
 		{name: "no-area-code-leading-one", line: `"phone": "115-555-0123"`, expectKinds: nil},
 		{name: "no-exchange-leading-zero", line: `"phone": "415-055-0123"`, expectKinds: nil},
 		{name: "no-exchange-leading-one", line: `"phone": "415-155-0123"`, expectKinds: nil},
-		{name: "area-code-212-valid", line: `"phone": "(212) 555-0123"`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "area-code-212-valid", line: `"phone": "(212) 234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
 		{name: "area-code-900-valid", line: `"phone": "(900) 234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := scanLine(t, tt.line, "test.json")
+			assertKinds(t, got, tt.expectKinds, PIIKindPhoneUS)
+		})
+	}
+}
+
+func TestFindPII_PhoneUS_GitHubContextIDSkips(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		expectKinds []string
+	}{
+		{name: "comment-id", line: `see comment id 3249672558`, expectKinds: nil},
+		{name: "issuecomment-anchor", line: `https://github.com/o/r/pull/12#issuecomment-3249672648`, expectKinds: nil},
+		{name: "comments-url-path", line: `https://github.com/o/r/issues/5/comments/3249672700`, expectKinds: nil},
+		{name: "bare-real-phone-no-github-token", line: `contact 4152345678`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "bare-commit-word-near-real-phone-still-flags", line: `we will commit then call 4152345678`, expectKinds: []string{PIIKindPhoneUS}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanLine(t, tt.line, "README.md")
 			assertKinds(t, got, tt.expectKinds, PIIKindPhoneUS)
 		})
 	}
@@ -247,7 +288,7 @@ func TestFindPII_PostalAddress(t *testing.T) {
 func TestFindPII_FileScoping(t *testing.T) {
 	root := t.TempDir()
 	// Same PII shape planted in different file types
-	pii := `"email": "leak@example.com"`
+	pii := `"email": "leak@gmail.com"`
 	write(t, filepath.Join(root, "in-scope.json"), pii)
 	write(t, filepath.Join(root, "in-scope.yaml"), pii)
 	write(t, filepath.Join(root, "in-scope.md"), pii)
@@ -267,7 +308,7 @@ func TestFindPII_FileScoping(t *testing.T) {
 
 func TestFindPII_DirScoping(t *testing.T) {
 	root := t.TempDir()
-	pii := `"phone": "(415) 555-0123"`
+	pii := `"phone": "(415) 234-5678"`
 	// .manuscripts and testdata are in scope regardless of extension
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "testdata", "fixtures"), 0755))
@@ -287,7 +328,7 @@ func TestFindPII_DirScoping(t *testing.T) {
 
 func TestFindPII_ExcludedFiles(t *testing.T) {
 	root := t.TempDir()
-	pii := `"email": "leak@example.com"`
+	pii := `"email": "leak@gmail.com"`
 	write(t, filepath.Join(root, "tools-manifest.json"), pii)
 	write(t, filepath.Join(root, "data.json"), pii)
 
@@ -305,7 +346,7 @@ func TestFindPII_ExcludedFiles(t *testing.T) {
 // .manuscripts/ is captured content and stays in scope.
 func TestFindPII_RootVendorSpecExempt(t *testing.T) {
 	root := t.TempDir()
-	pii := `"email": "jenny@example.com"`
+	pii := `"email": "jenny@gmail.com"`
 	write(t, filepath.Join(root, "spec.yaml"), pii)
 	write(t, filepath.Join(root, "spec.yml"), pii)
 	write(t, filepath.Join(root, "spec.json"), pii)
@@ -430,7 +471,7 @@ func TestFindPIIWithOptions_ManuscriptsVendorSpecExemptUsesStagedPath(t *testing
   "paths": {"/users": {"post": {"requestBody": {"content": {"application/json": {"example": {"email": "user1@testemail.com"}}}}}}}
 }`
 	write(t, filepath.Join(runDir, "research.json"), openapiJSON)
-	write(t, filepath.Join(runDir, "research", "brief.md"), "Contact support@example.com for access.\n")
+	write(t, filepath.Join(runDir, "research", "brief.md"), "Contact support@gmail.com for access.\n")
 
 	findings, err := FindPIIWithOptions(root, PIIAuditOptions{ManuscriptsDir: runDir})
 	require.NoError(t, err)
@@ -600,7 +641,7 @@ openapi: 3.0.0
 func TestFindPII_BinaryFileSkip(t *testing.T) {
 	root := t.TempDir()
 	// Planted PII in a "json" file with embedded nulls (mimics binary)
-	bin := []byte("\"email\": \"leak@example.com\"\x00\x00\x00binary content")
+	bin := []byte("\"email\": \"leak@gmail.com\"\x00\x00\x00binary content")
 	require.NoError(t, os.WriteFile(filepath.Join(root, "blob.json"), bin, 0644))
 
 	findings, err := FindPII(root)
@@ -611,9 +652,9 @@ func TestFindPII_BinaryFileSkip(t *testing.T) {
 func TestFindPII_StableOrder(t *testing.T) {
 	root := t.TempDir()
 	content := strings.Join([]string{
-		`"email": "alice@example.com"`,  // line 1, kind email
+		`"email": "alice@gmail.com"`,    // line 1, kind email
 		`"address": "1234 MAIN STREET"`, // line 2, kind postal-address
-		`"phone": "(415) 555-0123"`,     // line 3, kind phone-us
+		`"phone": "(415) 234-5678"`,     // line 3, kind phone-us
 	}, "\n")
 	write(t, filepath.Join(root, "data.json"), content)
 

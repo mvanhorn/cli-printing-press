@@ -35,10 +35,13 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
 | `x-auth-companion` | `components.securitySchemes.<name>` or `info` | `APISpec.Auth.LoginURL`, `LoginCompleteSelector`, `JWTCarrierCookie` | No |
+| `x-oauth-device-flow` | `components.securitySchemes.<name>` | `APISpec.Auth.OAuth2Grant`, `DeviceAuthorizationURL`, `TokenURL`, `Scopes`, `DefaultClientID` | No |
 | `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
+| `x-data-source-strategy` | path item or operation | `Endpoint.DataSourceStrategy` | No |
+| `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 
 ## `info` Extensions
@@ -810,6 +813,47 @@ info:
     jwt_carrier_cookie: guestsession
 ```
 
+### `x-oauth-device-flow`
+
+Declares OAuth 2.0 device authorization grant metadata for CLI-first OAuth
+flows. OpenAPI 3.0 does not have a native `deviceCode` flow, so the Printing
+Press reads this extension from an OAuth2 security scheme and emits a generated
+`auth login --device-code` command plus refresh-token handling.
+
+Parsed fields: `APISpec.Auth.OAuth2Grant=device_code`,
+`APISpec.Auth.DeviceAuthorizationURL`, `APISpec.Auth.TokenURL`,
+`APISpec.Auth.Scopes`, `APISpec.Auth.DefaultClientID`.
+
+Rules:
+
+- Optional. When present, the parser treats the security scheme as a bearer
+  OAuth flow backed by stored access tokens.
+- Must be an object.
+- `deviceAuthorizationUrl` (or `device_authorization_url`) and `tokenUrl` (or
+  `token_url`) are required by `APISpec.Validate()` when
+  `oauth2_grant: device_code`.
+- `scopes` may be a string or list of strings. Lists are sorted for stable
+  generation.
+- `defaultClientId` (or `default_client_id`) is optional. When absent, the
+  generated CLI prompts for `--client-id` or the inferred `<API>_CLIENT_ID`
+  environment variable.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.example.com/common/oauth2/v2.0/devicecode
+        tokenUrl: https://login.example.com/common/oauth2/v2.0/token
+        defaultClientId: public-client-id
+        scopes:
+          - Calendars.Read
+          - Mail.Read
+```
+
 ### `x-oauth-refresh-token-mechanism`
 
 Declares how the authorization endpoint should be asked to issue a refresh
@@ -917,7 +961,8 @@ only `/opportunities/search` sends `?location_id=` on the wire.
 
 Path item extensions are read from a path object, beside its HTTP operations.
 They apply to every operation under that path because sync identity and critical
-resource status are resource-scoped.
+resource status are resource-scoped, and operation-level data-source strategy
+can override the path default.
 
 ### `x-resource-id`
 
@@ -1006,6 +1051,65 @@ paths:
   /premium/search:
     get:
       x-tier: paid
+      responses:
+        "200": {description: ok}
+```
+
+### `x-data-source-strategy`
+
+Declares how a generated read command should honor the global
+`--data-source auto|local|live` flag.
+
+Parsed field: `Endpoint.DataSourceStrategy`
+
+Rules:
+- Optional.
+- May be declared on a path item or operation.
+- Operation-level values override path-item-level values.
+- Must be one of `auto`, `local`, or `live`.
+- `auto` keeps the normal live-with-local-fallback behavior for store-backed
+  reads.
+- `local` makes the command use local synced data for `auto` and `local`, and
+  reject `--data-source live` with a clear no-live-equivalent error.
+- `live` makes the command use the remote API for `auto` and `live`, and reject
+  `--data-source local` with a clear no-local-data-source error.
+
+Example:
+
+```yaml
+paths:
+  /reports/snapshot:
+    get:
+      x-data-source-strategy: local
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-safe-probe`
+
+Marks a mutation endpoint as explicitly safe for the Phase 1.9 reachability gate
+to call once as an optional second probe after the low-risk GET/body capture.
+This extension is consumed by Printing Press skill guidance rather than the Go
+OpenAPI parser; it documents author intent for agents reviewing a resolved spec.
+
+Parsed field: none; consumed by skill guidance only
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Accepts native boolean `true` only.
+- Use only for idempotent or otherwise harmless operations for the real account
+  being used.
+- Absence or any value other than native boolean `true` means mutation probing
+  is not allowed; agents must stop after the GET/body reachability capture.
+
+Example:
+
+```yaml
+paths:
+  /webhooks/test:
+    post:
+      x-pp-safe-probe: true
       responses:
         "200": {description: ok}
 ```

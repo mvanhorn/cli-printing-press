@@ -201,7 +201,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		APIName:              state.APIName,
 		CLIName:              naming.CLI(state.APIName),
 		SpecURL:              specURL,
-		SpecPath:             specPath,
+		SpecPath:             sanitizeManifestSpecPath(specPath),
 		RunID:                state.RunID,
 	}
 	var existingDescription string

@@ -20,6 +20,6 @@
   "schema_version": 1,
   "spec_checksum": "sha256:8cfba131c384836e8dde461511c9fd63cf2cbab7793553067765d515f2007aa1",
   "spec_format": "openapi3",
-  "spec_path": "testdata/golden/fixtures/golden-api-unicode.yaml",
+  "spec_path": "golden-api-unicode.yaml",
   "spec_url": "file://testdata/golden/fixtures/golden-api-unicode.yaml"
 }

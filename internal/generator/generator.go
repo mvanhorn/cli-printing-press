@@ -209,6 +209,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"upper":                              strings.ToUpper,
 		"join":                               strings.Join,
 		"camel":                              toCamel,
+		"cmdIdent":                           commandIdent,
 		"snake":                              naming.Snake,
 		"pascal":                             toPascal,
 		"goType":                             goType,
@@ -244,8 +245,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authParameterName":                  authParameterName,
 		"authCommandShort":                   authCommandShort,
 		"authHarvestedEnvHint":               authHarvestedEnvHint,
+		"oauth2AccessTokenAuth":              oauth2AccessTokenAuth,
 		"basicAuthEnvVars":                   basicAuthEnvVars,
 		"clientCredentialsEnvVars":           clientCredentialsEnvVars,
+		"deviceCodeEnvVars":                  deviceCodeEnvVars,
 		"clientCredentialsScope":             clientCredentialsScope,
 		"clientCredentialsScopeUsesClientID": clientCredentialsScopeUsesClientID,
 		"clientCredentialsTenantEnvVar":      clientCredentialsTenantEnvVar,
@@ -266,6 +269,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"paramIdent":                         paramIdent,
 		"paramWireName":                      paramWireName,
 		"typeFieldIdent":                     typeFieldIdent,
+		"typeFieldJSONTagComment":            typeFieldJSONTagComment,
 		"safeTypeName":                       safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
 			for _, td := range types {
@@ -293,6 +297,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"isGraphQL":             isGraphQLSpec,
 		"localReadIsList":       localReadIsList,
+		"dataSourceStrategy":    spec.EffectiveDataSourceStrategy,
 		"networkFallbackReason": networkFallbackReason,
 		"exportableResources":   exportableResources,
 		"backtick":              func() string { return "`" },
@@ -338,6 +343,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyHasStringBackedBool":  bodyHasStringBackedBool,
 		"multipartBodyMaps":        multipartBodyMaps,
 		"endpointUsesMultipart":    endpointUsesMultipart,
+		"endpointUsesCSVArray":     endpointUsesCSVArray,
 		"endpointHasQueryFlags":    endpointHasQueryFlags,
 		"endpointHasRequestParams": endpointHasRequestParams,
 		"endpointIsReadCommand":    endpointIsReadCommand,
@@ -346,10 +352,14 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointUsesForm":         endpointUsesForm,
 		"hasFormRequest":           hasFormRequest,
 		"hasBodyJSONFallback":      hasBodyJSONFallback,
+		"hasMCPNestedBodyPath":     hasMCPNestedBodyPath,
 		"publicFlagName":           publicFlagName,
 		"publicFlagAliases":        publicFlagAliases,
 		"flagChangedExpr":          flagChangedExpr,
+		"graphqlListParams":        graphqlListParams,
+		"graphqlVariableType":      graphqlVariableType,
 		"mcpInputName":             mcpInputName,
+		"mcpToolInputParams":       mcpToolInputParams,
 		"mcpParamBindings":         mcpParamBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
@@ -745,23 +755,22 @@ type configTemplateData struct {
 	HasAuthCommand bool
 }
 
-// endpointTemplateData is the data passed to command_endpoint.go.tmpl
-// for both top-level resource endpoints and sub-resource endpoints.
-// ResourceBaseURL carries the endpoint's effective BaseURL override. The
-// template prepends it to Endpoint.Path so per-request hosts produce absolute
-// URLs.
+// endpointTemplateData is the data passed to command_endpoint.go.tmpl for both
+// top-level resource endpoints and sub-resource endpoints. EffectivePath is
+// either the relative endpoint path or a full URL when the endpoint declares
+// one directly or inherits a per-resource/per-endpoint BaseURL override.
 type endpointTemplateData struct {
-	ResourceName    string
-	ResourceBaseURL string
-	EffectivePath   string
-	EffectiveTier   string
-	FuncPrefix      string
-	CommandPath     string
-	EndpointName    string
-	Endpoint        spec.Endpoint
-	HasStore        bool
-	IsAsync         bool
-	Async           AsyncJobInfo
+	ResourceName  string
+	EffectivePath string
+	EffectiveTier string
+	FuncPrefix    string
+	CommandPath   string
+	EndpointName  string
+	Endpoint      spec.Endpoint
+	Resource      spec.Resource
+	HasStore      bool
+	IsAsync       bool
+	Async         AsyncJobInfo
 	// IsReadOnly mirrors !endpointIsWriteCommand(endpoint, name). The
 	// emitted command sets Annotations["mcp:read-only"] = "true" when
 	// it's true so the cobratree MCP walker marks the tool with
@@ -998,10 +1007,27 @@ func authHarvestedEnvHint(auth spec.AuthConfig) string {
 		return "populated automatically by auth login --chrome"
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
 		return "populated automatically by auth login --client-id/--client-secret"
+	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
+		return "populated automatically by auth login --device-code"
 	case auth.AuthorizationURL != "":
 		return "populated automatically by auth login"
 	default:
 		return "set with auth set-token"
+	}
+}
+
+func oauth2AccessTokenAuth(auth spec.AuthConfig) bool {
+	if auth.Type == "oauth2" {
+		return true
+	}
+	if auth.Type != "bearer_token" {
+		return false
+	}
+	switch auth.EffectiveOAuth2Grant() {
+	case spec.OAuth2GrantClientCredentials, spec.OAuth2GrantDeviceCode:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1082,6 +1108,41 @@ func clientCredentialsEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 		return []spec.AuthEnvVar{clientID, clientSecret}
 	}
 	return envVars[:2]
+}
+
+func deviceCodeEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantDeviceCode {
+		return nil
+	}
+	if len(auth.EnvVarSpecs) > 0 {
+		var candidates []spec.AuthEnvVar
+		for _, envVar := range auth.EnvVarSpecs {
+			if strings.TrimSpace(envVar.Name) == "" || envVar.EffectiveKind() == spec.AuthEnvVarKindHarvested {
+				continue
+			}
+			candidates = append(candidates, envVar)
+		}
+		clientID, _ := clientCredentialsNamedPair(candidates)
+		if clientID.Name != "" {
+			return []spec.AuthEnvVar{clientID}
+		}
+		if len(candidates) > 0 {
+			return candidates[:1]
+		}
+		return nil
+	}
+	for _, name := range auth.EnvVars {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		return []spec.AuthEnvVar{{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindAuthFlowInput,
+			Required:  strings.TrimSpace(auth.DefaultClientID) == "",
+			Sensitive: false,
+		}}
+	}
+	return nil
 }
 
 func clientCredentialsNamedPair(envVars []spec.AuthEnvVar) (spec.AuthEnvVar, spec.AuthEnvVar) {
@@ -1594,6 +1655,18 @@ func (g *Generator) prepareOutput() error {
 		filepath.Join("internal", "mcp", "cobratree"),
 		filepath.Join("internal", "types"),
 	}
+	// Reserve the learn-package directory tree only when the spec opts
+	// in. Keeping these gated avoids creating empty dirs in CLIs that
+	// don't ship the self-learning loop, which would otherwise show up
+	// as untracked dirs in published-library trees.
+	if g.Spec.Learn.Enabled {
+		dirs = append(dirs,
+			filepath.Join("internal", "learn"),
+			filepath.Join("internal", "learn", "entities"),
+			filepath.Join("internal", "learn", "lookups"),
+			filepath.Join("internal", "learn", "patterns"),
+		)
+	}
 
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, d), 0755); err != nil {
@@ -1614,6 +1687,9 @@ func (g *Generator) prepareOutput() error {
 		g.resetHTMLSyncStubCache()
 	}
 	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet)
+	if g.Spec.Learn.Enabled && !g.VisionSet.Store {
+		return fmt.Errorf("learn.enabled requires VisionSet.Store=true; the learn package depends on internal/store")
+	}
 	if g.renameActiveFrameworkResourceCollisions() {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
@@ -1690,6 +1766,9 @@ func (g *Generator) renderSingleFiles() error {
 	}
 
 	for tmplName, outPath := range singleFiles {
+		if tmplName == "types.go.tmpl" && g.shouldPreserveExistingTypesFile(outPath) {
+			continue
+		}
 		var data any
 		switch tmplName {
 		case "readme.md.tmpl", "agents.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
@@ -1734,6 +1813,26 @@ func (g *Generator) renderSingleFiles() error {
 	return nil
 }
 
+func (g *Generator) shouldPreserveExistingTypesFile(outPath string) bool {
+	if g == nil || g.Spec == nil || g.Spec.SpecSource != "sniffed" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(g.OutputDir, outPath))
+	if err != nil {
+		return false
+	}
+	return generatedTypesFileHasDeclarations(string(data))
+}
+
+func generatedTypesFileHasDeclarations(content string) bool {
+	for line := range strings.SplitSeq(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "type ") {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *Generator) renderOptionalSupportFiles() error {
 	if g.Spec.HasHTMLExtraction() {
 		if err := g.renderTemplate("html_extract.go.tmpl", filepath.Join("internal", "cli", "html_extract.go"), g.Spec); err != nil {
@@ -1760,6 +1859,12 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 		if err := g.renderTemplate("cliutil_freshness_test.go.tmpl", filepath.Join("internal", "cliutil", "freshness_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering cliutil freshness test: %w", err)
+		}
+	}
+
+	if hasCSVArrayRequest(g.Spec) {
+		if err := g.renderTemplate("cliutil_csv.go.tmpl", filepath.Join("internal", "cliutil", "csv.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil csv: %w", err)
 		}
 	}
 
@@ -1817,6 +1922,60 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	// Emit the self-learning loop (entities + normalize + match +
+	// recall + teach + teach_log + preseed + lookups + patterns) only
+	// when the spec opts in via Learn.Enabled. The schema migrations
+	// for the supporting tables are emitted from store.go.tmpl under
+	// the same gate; see internal/generator/templates/learn/doc.go.tmpl
+	// for the package-level design and the schema-adaptation note.
+	if g.Spec.Learn.Enabled {
+		if err := g.renderLearnFiles(); err != nil {
+			return err
+		}
+		// learnings.go ports prediction-goat's canonical Apply engine
+		// (Apply/Recall/UpsertLearning/ListLearnings/ForgetLearnings +
+		// LearnedHit/Applier types + NormalizeQuery/MarshalLearnings
+		// helpers) into the generator's internal/store/ output. The
+		// engine is a method on *store.Store, so it lives next to
+		// store.go rather than under internal/learn/.
+		//
+		// The internal/store directory is created by renderStoreFiles()
+		// later in Generate(), but the learn-emission block runs first.
+		// Ensure the directory exists before writing into it. Idempotent
+		// with the subsequent MkdirAll in renderStoreFiles.
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0o755); err != nil {
+			return fmt.Errorf("creating store dir for learn engine: %w", err)
+		}
+		if err := g.renderTemplate("learnings.go.tmpl", filepath.Join("internal", "store", "learnings.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store learnings engine: %w", err)
+		}
+		if err := g.renderTemplate("learnings_test.go.tmpl", filepath.Join("internal", "store", "learnings_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store learnings engine test: %w", err)
+		}
+		// teach.go and teach_test.go are emitted into internal/cli/
+		// (not the learn package) because they wire cobra commands;
+		// the learn package itself stays cobra-free per the boundary
+		// established in U3-U5.
+		if err := g.renderTemplate("teach.go.tmpl", filepath.Join("internal", "cli", "teach.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach commands: %w", err)
+		}
+		if err := g.renderTemplate("teach_test.go.tmpl", filepath.Join("internal", "cli", "teach_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach commands test: %w", err)
+		}
+		// learn_init.go translates spec.Learn (ticker patterns, stopwords,
+		// entity-lookup seeds) into a runtime *entities.Config and seeds
+		// the entity_lookups table at first start. Owns newLearnConfig()
+		// (which teach.go's command constructors call) and initLearn(),
+		// which root.go invokes from PersistentPreRunE under the same
+		// Learn.Enabled gate.
+		if err := g.renderTemplate("learn_init.go.tmpl", filepath.Join("internal", "cli", "learn_init.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learn init: %w", err)
+		}
+		if err := g.renderTemplate("learn_init_test.go.tmpl", filepath.Join("internal", "cli", "learn_init_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learn init test: %w", err)
+		}
+	}
+
 	if g.FixtureSet != nil {
 		if err := g.renderTemplate("captured_test.go.tmpl", filepath.Join("internal", "client", "client_captured_test.go"), g.FixtureSet); err != nil {
 			return fmt.Errorf("rendering captured fixture tests: %w", err)
@@ -1870,6 +2029,58 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	return nil
+}
+
+// renderLearnFiles emits the internal/learn package and its three
+// sub-packages (entities, lookups, patterns) when the spec opts into
+// the self-learning loop. The matching v3 schema migrations are
+// emitted from internal/generator/templates/store.go.tmpl under the
+// same Learn.Enabled gate.
+//
+// The teach_log.go.tmpl file uses the CLI name as the state-directory
+// suffix; every other learn file is data-driven from the spec's
+// LearnConfig values, which the per-CLI startup wires via NewConfig
+// and SeedFromConfig at first run.
+func (g *Generator) renderLearnFiles() error {
+	learnFiles := map[string]string{
+		"learn_entities/config.go.tmpl":       filepath.Join("internal", "learn", "entities", "config.go"),
+		"learn_entities/config_test.go.tmpl":  filepath.Join("internal", "learn", "entities", "config_test.go"),
+		"learn_entities/extract.go.tmpl":      filepath.Join("internal", "learn", "entities", "extract.go"),
+		"learn_entities/extract_test.go.tmpl": filepath.Join("internal", "learn", "entities", "extract_test.go"),
+
+		"learn/doc.go.tmpl":            filepath.Join("internal", "learn", "doc.go"),
+		"learn/normalize.go.tmpl":      filepath.Join("internal", "learn", "normalize.go"),
+		"learn/normalize_test.go.tmpl": filepath.Join("internal", "learn", "normalize_test.go"),
+		"learn/match.go.tmpl":          filepath.Join("internal", "learn", "match.go"),
+		"learn/match_test.go.tmpl":     filepath.Join("internal", "learn", "match_test.go"),
+		"learn/recall.go.tmpl":         filepath.Join("internal", "learn", "recall.go"),
+		"learn/recall_test.go.tmpl":    filepath.Join("internal", "learn", "recall_test.go"),
+		"learn/teach.go.tmpl":          filepath.Join("internal", "learn", "teach.go"),
+		"learn/teach_test.go.tmpl":     filepath.Join("internal", "learn", "teach_test.go"),
+		"learn/teach_log.go.tmpl":      filepath.Join("internal", "learn", "teach_log.go"),
+		"learn/teach_log_test.go.tmpl": filepath.Join("internal", "learn", "teach_log_test.go"),
+		"learn/preseed.go.tmpl":        filepath.Join("internal", "learn", "preseed.go"),
+		"learn/preseed_test.go.tmpl":   filepath.Join("internal", "learn", "preseed_test.go"),
+
+		"learn_lookups/store.go.tmpl":      filepath.Join("internal", "learn", "lookups", "store.go"),
+		"learn_lookups/store_test.go.tmpl": filepath.Join("internal", "learn", "lookups", "store_test.go"),
+		"learn_lookups/seeds.go.tmpl":      filepath.Join("internal", "learn", "lookups", "seeds.go"),
+		"learn_lookups/seeds_test.go.tmpl": filepath.Join("internal", "learn", "lookups", "seeds_test.go"),
+
+		"learn_patterns/doc.go.tmpl":          filepath.Join("internal", "learn", "patterns", "doc.go"),
+		"learn_patterns/store.go.tmpl":        filepath.Join("internal", "learn", "patterns", "store.go"),
+		"learn_patterns/store_test.go.tmpl":   filepath.Join("internal", "learn", "patterns", "store_test.go"),
+		"learn_patterns/extract.go.tmpl":      filepath.Join("internal", "learn", "patterns", "extract.go"),
+		"learn_patterns/extract_test.go.tmpl": filepath.Join("internal", "learn", "patterns", "extract_test.go"),
+		"learn_patterns/apply.go.tmpl":        filepath.Join("internal", "learn", "patterns", "apply.go"),
+		"learn_patterns/apply_test.go.tmpl":   filepath.Join("internal", "learn", "patterns", "apply_test.go"),
+	}
+	for tmplName, outPath := range learnFiles {
+		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
+			return fmt.Errorf("rendering %s: %w", tmplName, err)
+		}
+	}
 	return nil
 }
 
@@ -1988,6 +2199,9 @@ func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
 	}
 	if g.shouldEmitAuth() {
 		names["auth"] = struct{}{}
+		if g.emitsTopLevelOAuthLogin() {
+			names["login"] = struct{}{}
+		}
 	}
 	if g.Spec.BearerRefresh.Enabled() {
 		names["refresh-bearer"] = struct{}{}
@@ -2364,19 +2578,19 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
-				ResourceName:    name,
-				ResourceBaseURL: effectiveEndpointBaseURL(resource, endpoint),
-				EffectivePath:   effectiveEndpointPath(resource, endpoint),
-				EffectiveTier:   g.Spec.EffectiveTier(resource, endpoint),
-				FuncPrefix:      name,
-				CommandPath:     name,
-				EndpointName:    eName,
-				Endpoint:        endpoint,
-				HasStore:        g.VisionSet.Store,
-				IsAsync:         isAsync,
-				Async:           asyncInfo,
-				IsReadOnly:      endpointIsReadCommand(endpoint, eName),
-				APISpec:         g.Spec,
+				ResourceName:  name,
+				EffectivePath: effectiveEndpointPath(resource, endpoint),
+				EffectiveTier: g.Spec.EffectiveTier(resource, endpoint),
+				FuncPrefix:    name,
+				CommandPath:   name,
+				EndpointName:  eName,
+				Endpoint:      endpoint,
+				Resource:      resource,
+				HasStore:      g.VisionSet.Store,
+				IsAsync:       isAsync,
+				Async:         asyncInfo,
+				IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+				APISpec:       g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
 			if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -2416,19 +2630,19 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					effectiveResource.Tier = resource.Tier
 				}
 				epData := endpointTemplateData{
-					ResourceName:    subName,
-					ResourceBaseURL: effectiveSubEndpointBaseURL(resource, subResource, endpoint),
-					EffectivePath:   effectiveSubEndpointPath(resource, subResource, endpoint),
-					EffectiveTier:   g.Spec.EffectiveTier(effectiveResource, endpoint),
-					FuncPrefix:      name + "-" + subName,
-					CommandPath:     name + " " + subName,
-					EndpointName:    eName,
-					Endpoint:        endpoint,
-					HasStore:        g.VisionSet.Store,
-					IsAsync:         isAsync,
-					Async:           asyncInfo,
-					IsReadOnly:      endpointIsReadCommand(endpoint, eName),
-					APISpec:         g.Spec,
+					ResourceName:  subName,
+					EffectivePath: effectiveSubEndpointPath(resource, subResource, endpoint),
+					EffectiveTier: g.Spec.EffectiveTier(effectiveResource, endpoint),
+					FuncPrefix:    name + "-" + subName,
+					CommandPath:   name + " " + subName,
+					EndpointName:  eName,
+					Endpoint:      endpoint,
+					Resource:      effectiveResource,
+					HasStore:      g.VisionSet.Store,
+					IsAsync:       isAsync,
+					Async:         asyncInfo,
+					IsReadOnly:    endpointIsReadCommand(endpoint, eName),
+					APISpec:       g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
 				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -2451,14 +2665,17 @@ func (g *Generator) renderAuthFiles() error {
 	}
 	// Render auth command. Template selection priority:
 	//   1. OAuth2 client_credentials (server-to-server, no user redirect)
-	//   2. OAuth2 authorization_code (3-legged, AuthorizationURL non-empty)
-	//   3. Browser-cookie / composed / persisted-query
-	//   4. Simple token-management (catch-all)
+	//   2. OAuth2 device_code (agent/CLI-friendly user auth, no localhost redirect)
+	//   3. OAuth2 authorization_code (3-legged, AuthorizationURL non-empty)
+	//   4. Browser-cookie / composed / persisted-query
+	//   5. Simple token-management (catch-all)
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
 	switch {
 	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && g.Spec.Auth.TokenURL != "":
 		authTmpl = "auth_client_credentials.go.tmpl"
+	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && g.Spec.Auth.DeviceAuthorizationURL != "" && g.Spec.Auth.TokenURL != "":
+		authTmpl = "auth_device_code.go.tmpl"
 	case g.Spec.Auth.AuthorizationURL != "":
 		authTmpl = "auth.go.tmpl"
 	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") || g.Spec.Auth.Subtype == spec.AuthSubtypeAuth0SPAInMemory:
@@ -2474,6 +2691,15 @@ func (g *Generator) renderAuthFiles() error {
 	}
 	if err := g.renderTemplate(authTmpl, authPath, authData); err != nil {
 		return fmt.Errorf("rendering auth: %w", err)
+	}
+	if g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode {
+		oauthPath := filepath.Join("internal", "oauth", "device.go")
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "oauth"), 0o755); err != nil {
+			return fmt.Errorf("creating OAuth helper directory: %w", err)
+		}
+		if err := g.renderTemplate("oauth_device.go.tmpl", oauthPath, g.Spec); err != nil {
+			return fmt.Errorf("rendering OAuth device-code helper: %w", err)
+		}
 	}
 
 	// For session_handshake auth, emit the session manager helper alongside
@@ -2504,6 +2730,11 @@ func (g *Generator) shouldEmitAuth() bool {
 	return g.Spec.Auth.Type != "none" ||
 		g.Spec.Auth.AuthorizationURL != "" ||
 		g.hasTrafficAnalysisHint("graphql_persisted_query")
+}
+
+func (g *Generator) emitsTopLevelOAuthLogin() bool {
+	return g.Spec.Auth.AuthorizationURL != "" &&
+		(g.Spec.Auth.EffectiveOAuth2Grant() != spec.OAuth2GrantClientCredentials || g.Spec.Auth.TokenURL == "")
 }
 
 func (g *Generator) renderMCPEntrypoint() error {
@@ -2637,6 +2868,9 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
+		}
+		if err := g.renderTemplate("store_extras.go.tmpl", filepath.Join("internal", "store", "extras.go"), storeData); err != nil {
+			return fmt.Errorf("rendering store extras: %w", err)
 		}
 		if err := g.renderTemplate("store_schema_version_test.go.tmpl", filepath.Join("internal", "store", "schema_version_test.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store schema version test: %w", err)
@@ -3324,37 +3558,31 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	// promotedCommands was computed earlier so promoted resources can replace their raw parents.
 	for _, pc := range promotedCommands {
 		// Look up the full resource to pass sibling endpoints/sub-resources.
-		// Trim trailing slash on BaseURL so the promoted handler's
-		// `path := <ResourceBaseURL><Endpoint.Path>` concat doesn't
-		// produce `https://x.com/v1//search`.
 		resource := g.Spec.Resources[pc.ResourceName]
-		resourceBaseURL := effectiveEndpointBaseURL(resource, pc.Endpoint)
 		promotedData := struct {
-			PromotedName    string
-			ResourceName    string
-			EndpointName    string
-			ResourceBaseURL string
-			EffectivePath   string
-			Endpoint        spec.Endpoint
-			EffectiveTier   string
-			HasStore        bool
-			Resource        spec.Resource
-			FuncPrefix      string
-			IsReadOnly      bool
+			PromotedName  string
+			ResourceName  string
+			EndpointName  string
+			EffectivePath string
+			Endpoint      spec.Endpoint
+			EffectiveTier string
+			HasStore      bool
+			Resource      spec.Resource
+			FuncPrefix    string
+			IsReadOnly    bool
 			*spec.APISpec
 		}{
-			PromotedName:    pc.PromotedName,
-			ResourceName:    pc.ResourceName,
-			EndpointName:    pc.EndpointName,
-			ResourceBaseURL: resourceBaseURL,
-			EffectivePath:   effectiveEndpointPath(resource, pc.Endpoint),
-			Endpoint:        pc.Endpoint,
-			EffectiveTier:   g.Spec.EffectiveTier(resource, pc.Endpoint),
-			HasStore:        g.VisionSet.Store,
-			Resource:        resource,
-			FuncPrefix:      pc.ResourceName,
-			IsReadOnly:      endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
-			APISpec:         g.Spec,
+			PromotedName:  pc.PromotedName,
+			ResourceName:  pc.ResourceName,
+			EndpointName:  pc.EndpointName,
+			EffectivePath: effectiveEndpointPath(resource, pc.Endpoint),
+			Endpoint:      pc.Endpoint,
+			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
+			HasStore:      g.VisionSet.Store,
+			Resource:      resource,
+			FuncPrefix:    pc.ResourceName,
+			IsReadOnly:    endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			APISpec:       g.Spec,
 		}
 		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
@@ -3692,22 +3920,18 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 // toCamelCase, etc). Treat any new caller that feeds raw spec strings
 // directly into these helpers as a bug — fold first, then shape.
 func toCamel(s string) string {
-	// Strip characters that are invalid in Go identifiers
-	s = strings.TrimLeft(s, "$")
-	parts := strings.FieldsFunc(s, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	for i, p := range parts {
-		if len(p) > 0 {
-			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	return naming.CamelIdentifier(s)
+}
+
+func commandIdent(parts ...string) string {
+	joined := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimLeft(part, "$")
+		if part != "" {
+			joined = append(joined, part)
 		}
 	}
-	result := strings.Join(parts, "")
-	// Ensure starts with letter
-	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
-		result = "V" + result
-	}
-	return result
+	return toCamel(strings.Join(joined, "-"))
 }
 
 func toPascal(s string) string {
@@ -3812,12 +4036,27 @@ func goType(t string) string {
 // Unlike goType (used for CLI flags which are always primitives),
 // this maps object/array types to json.RawMessage for type fidelity.
 func goStructType(t string) string {
+	if ref, ok := strings.CutPrefix(t, "ref:"); ok {
+		return safeTypeName(ref)
+	}
+	if ref, ok := strings.CutPrefix(t, "[]ref:"); ok {
+		return "[]" + safeTypeName(ref)
+	}
 	switch primitiveKind(t) {
 	case "object", "array":
 		return "json.RawMessage"
 	default:
 		return goType(t)
 	}
+}
+
+func typeFieldJSONTagComment(f spec.TypeField) string {
+	for _, r := range f.Name {
+		if r > unicode.MaxASCII {
+			return f.Name
+		}
+	}
+	return ""
 }
 
 func goStoreType(sqlType string) string {
@@ -4084,6 +4323,7 @@ type mcpParamBinding struct {
 	PublicName         string
 	WireName           string
 	Location           string
+	BodyPath           []string
 	Format             string
 	RequestContentType string
 }
@@ -4133,16 +4373,120 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		})
 		return bindings
 	}
-	for _, p := range endpoint.Body {
-		bindings = append(bindings, mcpParamBinding{
-			PublicName:         p.PublicInputName(),
+	appendMCPBodyBindings(&bindings, endpoint, requestContentType)
+	return bindings
+}
+
+func mcpToolInputParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params)+len(endpoint.Body))
+	params = append(params, endpoint.Params...)
+	if endpoint.BodyJSONFallback {
+		return params
+	}
+	params = append(params, mcpBodyInputParams(endpoint)...)
+	return params
+}
+
+func mcpBodyInputParams(endpoint spec.Endpoint) []spec.Param {
+	if bodyUsesFlatEmission(endpoint) {
+		return append([]spec.Param(nil), endpoint.Body...)
+	}
+	body := flattenCollidingBodyFields(endpoint.Body)
+	params := make([]spec.Param, 0, len(body))
+	collectMCPBodyInputParams(&params, body, 0, "")
+	return params
+}
+
+func collectMCPBodyInputParams(params *[]spec.Param, body []spec.Param, depth int, flagPrefix string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			collectMCPBodyInputParams(params, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)))
+			continue
+		}
+		if flagPrefix != "" {
+			p.FlagName = joinFlag(flagPrefix, publicFlagName(p))
+			p.Aliases = nil
+		}
+		*params = append(*params, p)
+	}
+}
+
+func appendMCPBodyBindings(bindings *[]mcpParamBinding, endpoint spec.Endpoint, requestContentType string) {
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			*bindings = append(*bindings, mcpParamBinding{
+				PublicName:         p.PublicInputName(),
+				WireName:           p.BodyWireName(),
+				Location:           "body",
+				Format:             multipartBindingFormat(endpoint, p),
+				RequestContentType: requestContentType,
+			})
+		}
+		return
+	}
+	collectMCPBodyBindings(bindings, flattenCollidingBodyFields(endpoint.Body), 0, "", nil, requestContentType)
+}
+
+func collectMCPBodyBindings(bindings *[]mcpParamBinding, body []spec.Param, depth int, flagPrefix string, bodyPath []string, requestContentType string) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			nextPath := append(slices.Clone(bodyPath), p.BodyWireName())
+			collectMCPBodyBindings(bindings, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), nextPath, requestContentType)
+			continue
+		}
+		publicName := p.PublicInputName()
+		if flagPrefix != "" {
+			publicName = joinFlag(flagPrefix, publicFlagName(p))
+		}
+		binding := mcpParamBinding{
+			PublicName:         publicName,
 			WireName:           p.BodyWireName(),
 			Location:           "body",
-			Format:             multipartBindingFormat(endpoint, p),
 			RequestContentType: requestContentType,
-		})
+		}
+		if len(bodyPath) > 0 {
+			binding.BodyPath = append(append([]string(nil), bodyPath...), p.BodyWireName())
+		}
+		*bindings = append(*bindings, binding)
 	}
-	return bindings
+}
+
+func endpointHasMCPNestedBodyPath(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
+		return false
+	}
+	return bodyHasReachableNestedLeaf(flattenCollidingBodyFields(endpoint.Body), 0)
+}
+
+func bodyHasReachableNestedLeaf(body []spec.Param, depth int) bool {
+	for _, p := range body {
+		if p.Type != "object" || len(p.Fields) == 0 {
+			continue
+		}
+		if depth+1 >= maxBodyFlagDepth {
+			continue
+		}
+		for _, field := range p.Fields {
+			if field.Type == "object" && len(field.Fields) > 0 {
+				if bodyHasReachableNestedLeaf([]spec.Param{field}, depth+1) {
+					return true
+				}
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func hasMCPNestedBodyPath(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointHasMCPNestedBodyPath)
 }
 
 func multipartBindingFormat(endpoint spec.Endpoint, p spec.Param) string {
@@ -4281,6 +4625,12 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
+		if isStringCSVArrayParam(p) {
+			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), csvArrayValueExpr(p, "body"+ident))
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
 		isComplex := p.Type == "object" || p.Type == "array"
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
@@ -4299,7 +4649,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
-		if (p.Type == "boolean" || p.Type == "bool") && !(p.Required && p.Default == nil) {
+		if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
 			// Booleans gate on cmd.Flags().Changed instead of a zero-guard.
 			// The zero-guard (body != false) drops user-set false values,
 			// letting the server's default (often true) silently invert
@@ -4329,22 +4679,28 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 }
 
 func bodyHasStringBackedBool(endpoint spec.Endpoint) bool {
-	if endpoint.BodyJSONFallback {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
 		return false
 	}
-	var walk func([]spec.Param) bool
-	walk = func(params []spec.Param) bool {
+	var walk func([]spec.Param, int) bool
+	walk = func(params []spec.Param, depth int) bool {
 		for _, p := range params {
-			if isStringBackedBoolParam(p) {
-				return true
+			if p.Type == "object" && len(p.Fields) > 0 {
+				if depth+1 >= maxBodyFlagDepth {
+					continue
+				}
+				if walk(p.Fields, depth+1) {
+					return true
+				}
+				continue
 			}
-			if p.Type == "object" && len(p.Fields) > 0 && walk(p.Fields) {
+			if isStringBackedBoolParam(p) {
 				return true
 			}
 		}
 		return false
 	}
-	return walk(endpoint.Body)
+	return walk(flattenCollidingBodyFields(endpoint.Body), 0)
 }
 
 func isStringBackedBoolParam(p spec.Param) bool {
@@ -4558,10 +4914,7 @@ func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagP
 }
 
 func joinFlag(prefix, name string) string {
-	if prefix == "" {
-		return name
-	}
-	return prefix + "-" + name
+	return naming.JoinFlag(prefix, name)
 }
 
 func multipartBodyMaps(body []spec.Param, indent string) string {
@@ -4639,6 +4992,32 @@ func endpointUsesForm(endpoint spec.Endpoint) bool {
 
 func hasFormRequest(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, endpointUsesForm)
+}
+
+func endpointUsesCSVArray(endpoint spec.Endpoint) bool {
+	if endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint) {
+		return false
+	}
+	var walk func([]spec.Param, int) bool
+	walk = func(params []spec.Param, depth int) bool {
+		if depth >= maxBodyFlagDepth {
+			return false
+		}
+		for _, p := range params {
+			if isStringCSVArrayParam(p) {
+				return true
+			}
+			if walk(p.Fields, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(endpoint.Body, 0)
+}
+
+func hasCSVArrayRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesCSVArray)
 }
 
 func endpointUsesBodyJSONFallback(endpoint spec.Endpoint) bool {
@@ -4875,6 +5254,67 @@ func zeroVal(t string) string {
 		return "0.0"
 	default:
 		return `""`
+	}
+}
+
+func isStringCSVArrayParam(p spec.Param) bool {
+	return strings.EqualFold(strings.TrimSpace(p.Type), "string_csv_array")
+}
+
+func csvArrayValueExpr(p spec.Param, inputExpr string) string {
+	switch strings.ToLower(strings.TrimSpace(p.ItemType)) {
+	case "object":
+		return fmt.Sprintf("cliutil.CSVTemplateObjects(%s, %s)", inputExpr, csvItemTemplateLiteral(p.ItemTemplate))
+	default:
+		return fmt.Sprintf("cliutil.SplitCSV(%s)", inputExpr)
+	}
+}
+
+func csvItemTemplateLiteral(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return "nil"
+	case string:
+		return fmt.Sprintf("%q", val)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case int:
+		return strconv.Itoa(val)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		if val == float64(int(val)) {
+			return strconv.Itoa(int(val))
+		}
+		return fmt.Sprintf("%g", val)
+	case []any:
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			parts = append(parts, csvItemTemplateLiteral(item))
+		}
+		return "[]any{" + strings.Join(parts, ", ") + "}"
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for key := range val {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			parts = append(parts, fmt.Sprintf("%q: %s", key, csvItemTemplateLiteral(val[key])))
+		}
+		return "map[string]any{" + strings.Join(parts, ", ") + "}"
+	case map[any]any:
+		converted := make(map[string]any, len(val))
+		for key, item := range val {
+			converted[fmt.Sprint(key)] = item
+		}
+		return csvItemTemplateLiteral(converted)
+	default:
+		return fmt.Sprintf("%q", fmt.Sprint(val))
 	}
 }
 
@@ -5395,37 +5835,7 @@ var narrativeGlobalFlags = map[string]bool{
 }
 
 func flagName(name string) string {
-	name = strings.TrimLeft(name, "$")
-	// Convert camelCase/PascalCase and separators to kebab-case.
-	// "pageSize" → "page-size", "storeID" → "store-id", "per_page" → "per-page"
-	var b strings.Builder
-	runes := []rune(name)
-	for i, r := range runes {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			// Non-alphanumeric → hyphen (dedup'd below)
-			if b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			continue
-		}
-		// Insert hyphen at camelCase boundaries: lowercase→uppercase
-		if i > 0 && unicode.IsUpper(r) {
-			prev := runes[i-1]
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
-				b.WriteByte('-')
-			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
-				// Handle acronyms: "storeID" → "store-id" (not "store-i-d")
-				b.WriteByte('-')
-			}
-		}
-		b.WriteRune(unicode.ToLower(r))
-	}
-	// Collapse multiple hyphens and trim
-	result := b.String()
-	for strings.Contains(result, "--") {
-		result = strings.ReplaceAll(result, "--", "-")
-	}
-	return strings.Trim(result, "-")
+	return naming.FlagName(name)
 }
 
 func safeTypeName(name string) string {
@@ -5739,6 +6149,44 @@ func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []str
 	return fields
 }
 
+// graphqlListParams returns the GraphQL list arguments this generator knows how
+// to render into the query document and command variables map.
+func graphqlListParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params))
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam {
+			continue
+		}
+		switch p.Name {
+		case "first", "after", "query":
+		default:
+			continue
+		}
+		params = append(params, p)
+	}
+	return params
+}
+
+func graphqlVariableType(p spec.Param) string {
+	var typ string
+	switch primitiveKind(p.Type) {
+	case "int":
+		typ = "Int"
+	case "float":
+		typ = "Float"
+	case "bool":
+		typ = "Boolean"
+	case "array":
+		typ = "[String!]"
+	default:
+		typ = "String"
+	}
+	if p.Required || strings.EqualFold(p.Name, "first") {
+		typ += "!"
+	}
+	return typ
+}
+
 type templateEndpoint struct {
 	spec.Endpoint
 	EffectivePath string
@@ -5825,7 +6273,7 @@ func effectiveSubEndpointBaseURL(parent spec.Resource, sub spec.Resource, endpoi
 
 func endpointPathWithBase(baseURL, path string) string {
 	baseURL = strings.TrimRight(baseURL, "/")
-	if baseURL == "" {
+	if baseURL == "" || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://") {
 		return path
 	}
 	return baseURL + path

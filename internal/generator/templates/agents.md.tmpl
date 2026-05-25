@@ -32,6 +32,21 @@ Before running an unfamiliar command that may mutate remote state, inspect its h
 ```
 
 Use `--yes --no-input` only after the target, arguments, and side effects are clear.
+{{- if .Learn.Enabled}}
+
+## Self-Learning Loop
+
+This CLI ships with a teach/recall learning loop backed by the local SQLite store. The agent flow is:
+
+1. On a new user question, call `{{.Name}}-pp-cli recall "<question>" --agent` FIRST. If `found=true` and the top result has `entity_match == "exact"` and `confidence >= 2`, skip discovery and go straight to the live fetch for the returned resource IDs.
+2. On a cold miss, run normal discovery; on the way out, fire `{{.Name}}-pp-cli teach --query "<question>" --resource <id> --resource-type <type> &` so the next equivalent question short-circuits.
+3. Use `{{.Name}}-pp-cli learnings list --agent` to inspect what's been taught, and `{{.Name}}-pp-cli learnings forget "<question>" --resource <id>` to undo a bad teach.
+4. `teach-pattern` and `teach-lookup` install manual generalization rules when one teach should cover a whole family (e.g. one country alias unlocks every per-country query). Both are write commands and have no MCP read-only annotation.
+
+`recall` and `learnings list` carry `mcp:read-only=true`; `teach`, `learnings forget`, `teach-pattern`, and `teach-lookup` write the local store and are unannotated (default to "may write").
+
+Disable the loop with `--no-learn` per-invocation or `{{envPrefix .Name}}_NO_LEARN=true` for the whole session — useful for deterministic agent flows that don't want a learning row to silently change subsequent query results.
+{{- end}}
 
 For install, auth, examples, and longer product guidance, read `README.md` and `SKILL.md`. This file intentionally stays small so repo-local agents get invariant local guidance without duplicating the generated docs.
 

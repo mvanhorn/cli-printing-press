@@ -664,6 +664,65 @@ def _cli_invocation_from_tokens(
     return cmd_path, positional, flags
 
 
+def _split_before_shell_operator(line: str) -> str:
+    quote: str | None = None
+    escaped = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if escaped:
+                escaped = False
+                i += 1
+                continue
+            if ch == "\\":
+                escaped = True
+                i += 1
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "<":
+            placeholder = re.match(r"<[A-Za-z][A-Za-z0-9_-]*>", line[i:])
+            if placeholder:
+                i += placeholder.end()
+                continue
+            return line[:_shell_operator_cut_index(line, i)].rstrip()
+        if ch in "|;&>":
+            return line[:_shell_operator_cut_index(line, i)].rstrip()
+        i += 1
+    return line
+
+
+def _shell_operator_cut_index(line: str, operator_index: int) -> int:
+    # Redirections may be prefixed by a file descriptor, e.g. `2>err`.
+    if line[operator_index] in "><":
+        j = operator_index - 1
+        while j >= 0 and line[j].isdigit():
+            j -= 1
+        if j < operator_index - 1 and (j < 0 or line[j].isspace()):
+            return j + 1
+    return operator_index
+
+
 def _extract_prose_invocations(
     text: str,
     cli_binary: str,
@@ -758,11 +817,7 @@ def extract_cli_invocations(skill: Path, cli_binary: str, cli_dir: Path | None =
             # splitting on pipes so we don't mistakenly cut inside a $(...).
             line = re.sub(r"\$\([^)]*\)", "__SUBST__", line)
             line = re.sub(r"`[^`]*`", "__SUBST__", line)
-            # Stop at outer shell operators so we don't parse pipes/redirects
-            for op in [" | ", " && ", " || ", " > ", " >> ", " < "]:
-                if op in line:
-                    line = line.split(op)[0]
-                    break
+            line = _split_before_shell_operator(line)
             after = line[len(cli_binary) + 1 :].strip()
             try:
                 tokens = shlex.split(after, posix=True)

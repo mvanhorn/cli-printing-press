@@ -15,7 +15,7 @@ import (
 
 func TestPIIAuditCmd_RunsAndPersistsLedger(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@example.com"`+"\n")
+	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@gmail.com"`+"\n")
 
 	cmd := newPIIAuditCmd()
 	stdout := &bytes.Buffer{}
@@ -36,7 +36,7 @@ func TestPIIAuditCmd_RunsAndPersistsLedger(t *testing.T) {
 
 func TestPIIAuditCmd_JSON(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@example.com"`+"\n")
+	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@gmail.com"`+"\n")
 
 	cmd := newPIIAuditCmd()
 	stdout := &bytes.Buffer{}
@@ -82,7 +82,7 @@ func TestPIIAuditCmd_ManuscriptsRunDirUsesStagedPackagePaths(t *testing.T) {
 
 func TestPIIAuditCmd_StrictExitsNonZeroOnPending(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@example.com"`+"\n")
+	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@gmail.com"`+"\n")
 
 	cmd := newPIIAuditCmd()
 	cmd.SetOut(&bytes.Buffer{})
@@ -98,7 +98,7 @@ func TestPIIAuditCmd_StrictExitsNonZeroOnPending(t *testing.T) {
 
 func TestPIIAuditCmd_StrictPassesWithValidAccepts(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@example.com"`+"\n")
+	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@gmail.com"`+"\n")
 
 	// Run once to populate ledger
 	cmd := newPIIAuditCmd()
@@ -126,7 +126,7 @@ func TestPIIAuditCmd_StrictPassesWithValidAccepts(t *testing.T) {
 
 func TestPIIAuditCmd_StrictFailsOnAcceptMissingCategory(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@example.com"`+"\n")
+	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@gmail.com"`+"\n")
 
 	cmd := newPIIAuditCmd()
 	cmd.SetOut(&bytes.Buffer{})
@@ -154,7 +154,7 @@ func TestPIIAuditCmd_StrictFailsOnAcceptMissingCategory(t *testing.T) {
 
 func TestPIIAuditCmd_AgentFieldsSurviveReRun(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@example.com"`+"\n")
+	writeFile(t, filepath.Join(dir, "data.json"), `"email": "leak@gmail.com"`+"\n")
 
 	// Run once
 	cmd := newPIIAuditCmd()

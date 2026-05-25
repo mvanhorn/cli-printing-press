@@ -154,6 +154,111 @@ func newSearchCmd() *cobra.Command {
 	require.Contains(t, string(out), "All checks passed")
 }
 
+func TestVerifySkill_ShellOperatorsDoNotBecomePositionals(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\n" +
+		"fixture-pp-cli export --format json > export.json\n" +
+		"fixture-pp-cli export --format json>export.json\n" +
+		"fixture-pp-cli export --format json|jq .\n" +
+		"fixture-pp-cli export --format json; echo done\n" +
+		"fixture-pp-cli export --format json < export.json\n" +
+		"fixture-pp-cli export --format json 2>export.err\n" +
+		"fixture-pp-cli export --filter \"score > 10\"\n" +
+		"fixture-pp-cli export --filter \"score>10\"\n" +
+		"fixture-pp-cli export --filter 'score > 10'\n" +
+		"fixture-pp-cli export --filter 'score \\' > export.json\n" +
+		"```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	var format string
+	var filter string
+	cmd := &cobra.Command{Use: "export"}
+	cmd.Flags().StringVar(&format, "format", "", "Output format")
+	cmd.Flags().StringVar(&filter, "filter", "", "Filter expression")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
+	require.NoError(t, err, "shell operators must not be counted as positionals: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+}
+
+func TestVerifySkill_PositionalArgsStillFailWithoutShellOperator(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli export one.json two.json\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	return &cobra.Command{Use: "export"}
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
+	require.Error(t, err, "real positional args must still fail verify-skill")
+	require.Contains(t, string(out), "[positional-args]")
+	require.Contains(t, string(out), "got 2 positional args")
+}
+
+func TestVerifySkill_PlaceholderPositionalsStillFail(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli export <id>\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	return &cobra.Command{Use: "export"}
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
+	require.Error(t, err, "placeholder positionals must still fail verify-skill")
+	require.Contains(t, string(out), "[positional-args]")
+	require.Contains(t, string(out), "got 1 positional args")
+}
+
 // TestVerifySkill_FlagDeclaredViaHelper asserts the verifier accepts a flag
 // declared one level deep through a shared helper invoked with cmd as first
 // arg, e.g. addTargetFlags(cmd, &t) whose body declares the flag.

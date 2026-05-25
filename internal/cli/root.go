@@ -796,7 +796,11 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 }
 
 func parseOpenAPISpec(specFile string, data []byte, opts openapi.ParseOptions) (*spec.APISpec, error) {
-	if !openapi.IsRemoteSpecSource(specFile) {
+	if openapi.IsRemoteSpecSource(specFile) {
+		// Remote source: record the URL so the parser can derive an absolute
+		// BaseURL when the spec's servers: block is relative-only.
+		opts.SourceURL = specFile
+	} else {
 		opts.Path = specFile
 	}
 	return openapi.ParseWithOptions(data, opts)
@@ -1908,6 +1912,7 @@ func loadResearchSources(gen *generator.Generator, researchDir string) []pipelin
 			})
 		}
 		if research.NovelFeaturesBuilt != nil {
+			manifestNovel = []pipeline.NovelFeatureManifest{}
 			for _, nf := range *research.NovelFeaturesBuilt {
 				manifestNovel = append(manifestNovel, pipeline.NovelFeatureManifest{
 					Name:        nf.Name,

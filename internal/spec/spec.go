@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"gopkg.in/yaml.v3"
@@ -46,6 +45,12 @@ const (
 	ResponseFormatJSON   = "json"
 	ResponseFormatHTML   = "html"
 	ResponseFormatBinary = "binary"
+)
+
+const (
+	DataSourceStrategyAuto  = "auto"
+	DataSourceStrategyLocal = "local"
+	DataSourceStrategyLive  = "live"
 )
 
 const (
@@ -184,6 +189,7 @@ type APISpec struct {
 	WebsiteURL                  string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
 	Category                    string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
 	Auth                        AuthConfig          `yaml:"auth" json:"auth"`
+	AuthWarnings                []string            `yaml:"auth_warnings,omitempty" json:"auth_warnings,omitempty"`
 	TierRouting                 TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
 	RequiredHeaders             []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
 	Config                      ConfigSpec          `yaml:"config" json:"config"`
@@ -192,6 +198,7 @@ type APISpec struct {
 	ExtraCommands               []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
 	Cache                       CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
 	Share                       ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
+	Learn                       LearnConfig         `yaml:"learn,omitempty" json:"learn,omitzero"`                    // self-learning loop config: ticker patterns, stopwords, and entity-lookup seeds the generated CLI uses to cache teaches and generalize through entity substitution. Absent or disabled is a benign no-op.
 	MCP                         MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, small APIs (typed-endpoint count <= DefaultRemoteTransportEndpointThreshold) get stdio+http compiled in by APISpec.EffectiveMCPTransports so the same binary can serve cloud-hosted agents. Larger APIs stay stdio-only by default. Opting into http explicitly adds a --transport/--addr flag surface regardless of size.
 	Throttling                  ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
 }
@@ -279,7 +286,8 @@ func (s *APISpec) IsEndpointTemplateVar(placeholder string) bool {
 // InferEndpointTemplateVarsFromBaseURLs preserves existing explicit
 // placeholders, then appends placeholders found in URL-bearing spec fields.
 // It intentionally ignores endpoint paths: ordinary path params are command
-// inputs, while BaseURL placeholders need runtime config/env substitution.
+// inputs, while BaseURL placeholders and absolute endpoint-path placeholders
+// need runtime config/env substitution.
 func (s *APISpec) InferEndpointTemplateVarsFromBaseURLs() {
 	if s == nil {
 		return
@@ -368,7 +376,13 @@ func visitResourceURLTemplateSources(r Resource, deterministic bool, visit func(
 	}
 
 	visitEndpoint := func(endpoint Endpoint) bool {
-		return visit(endpoint.BaseURL)
+		if !visit(endpoint.BaseURL) {
+			return false
+		}
+		if isAbsoluteRequestPath(endpoint.Path) {
+			return visit(absoluteRequestPathTemplateSource(endpoint.Path))
+		}
+		return true
 	}
 	if deterministic {
 		for _, name := range sortedStringKeys(r.Endpoints) {
@@ -743,26 +757,28 @@ func (c BearerRefreshConfig) Enabled() bool {
 }
 
 type AuthConfig struct {
-	Type             string       `yaml:"type" json:"type"`                           // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
-	Subtype          string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
-	Header           string       `yaml:"header" json:"header"`
-	Prefix           string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
-	Format           string       `yaml:"format" json:"format"`
-	EnvVars          []string     `yaml:"env_vars" json:"env_vars"`
-	EnvVarSpecs      []AuthEnvVar `yaml:"env_var_specs,omitempty" json:"env_var_specs,omitempty"`
-	Optional         bool         `yaml:"optional,omitempty" json:"optional,omitempty"`         // true when the key enhances a subset of features (e.g., USDA nutrition backfill) rather than gating core functionality; doctor treats unconfigured optional auth as INFO not FAIL and README frames the section as "Optional"
-	Scheme           string       `yaml:"scheme,omitempty" json:"scheme,omitempty"`             // OpenAPI security scheme name
-	In               string       `yaml:"in,omitempty" json:"in,omitempty"`                     // header, query, cookie
-	KeyURL           string       `yaml:"key_url,omitempty" json:"key_url,omitempty"`           // URL where users can register for an API key
-	Instructions     string       `yaml:"instructions,omitempty" json:"instructions,omitempty"` // one-line guidance shown alongside KeyURL, e.g. "Settings → Personal access tokens → Generate new"
-	Title            string       `yaml:"title,omitempty" json:"title,omitempty"`               // user-facing credential field title for install/config surfaces
-	Description      string       `yaml:"description,omitempty" json:"description,omitempty"`
-	AuthorizationURL string       `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
-	TokenURL         string       `yaml:"token_url,omitempty" json:"token_url,omitempty"`
-	Scopes           []string     `yaml:"scopes,omitempty" json:"scopes,omitempty"`
-	CookieDomain     string       `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
-	Cookies          []string     `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
-	Inferred         bool         `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
+	Type                   string       `yaml:"type" json:"type"`                           // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
+	Subtype                string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
+	Header                 string       `yaml:"header" json:"header"`
+	Prefix                 string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
+	Format                 string       `yaml:"format" json:"format"`
+	EnvVars                []string     `yaml:"env_vars" json:"env_vars"`
+	EnvVarSpecs            []AuthEnvVar `yaml:"env_var_specs,omitempty" json:"env_var_specs,omitempty"`
+	Optional               bool         `yaml:"optional,omitempty" json:"optional,omitempty"`         // true when the key enhances a subset of features (e.g., USDA nutrition backfill) rather than gating core functionality; doctor treats unconfigured optional auth as INFO not FAIL and README frames the section as "Optional"
+	Scheme                 string       `yaml:"scheme,omitempty" json:"scheme,omitempty"`             // OpenAPI security scheme name
+	In                     string       `yaml:"in,omitempty" json:"in,omitempty"`                     // header, query, cookie
+	KeyURL                 string       `yaml:"key_url,omitempty" json:"key_url,omitempty"`           // URL where users can register for an API key
+	Instructions           string       `yaml:"instructions,omitempty" json:"instructions,omitempty"` // one-line guidance shown alongside KeyURL, e.g. "Settings → Personal access tokens → Generate new"
+	Title                  string       `yaml:"title,omitempty" json:"title,omitempty"`               // user-facing credential field title for install/config surfaces
+	Description            string       `yaml:"description,omitempty" json:"description,omitempty"`
+	AuthorizationURL       string       `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
+	DeviceAuthorizationURL string       `yaml:"device_authorization_url,omitempty" json:"device_authorization_url,omitempty"`
+	TokenURL               string       `yaml:"token_url,omitempty" json:"token_url,omitempty"`
+	Scopes                 []string     `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	DefaultClientID        string       `yaml:"default_client_id,omitempty" json:"default_client_id,omitempty"`
+	CookieDomain           string       `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
+	Cookies                []string     `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
+	Inferred               bool         `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
 
 	// press-auth companion hints. When present, the generated CLI's
 	// `auth login --chrome --auto-login` can hand them off to
@@ -1144,6 +1160,12 @@ const OAuth2GrantAuthorizationCode = "authorization_code"
 // TokenURL with form-encoded client_id/client_secret, no user redirect.
 const OAuth2GrantClientCredentials = "client_credentials"
 
+// OAuth2GrantDeviceCode is the device authorization grant for CLIs that
+// cannot run a localhost redirect server and should not require a client
+// secret. The CLI requests a user_code at DeviceAuthorizationURL, polls
+// TokenURL, then stores the returned access/refresh tokens.
+const OAuth2GrantDeviceCode = "device_code"
+
 // EffectiveOAuth2Grant returns the configured OAuth2 grant type, defaulting
 // to OAuth2GrantAuthorizationCode when unset.
 func (c AuthConfig) EffectiveOAuth2Grant() string {
@@ -1206,9 +1228,16 @@ func validateAuthCompanion(c AuthConfig) error {
 // captured cookies to a network sniffer and the spec author is unlikely
 // to intend it.
 func validateCompanionLoginURL(raw string) error {
+	return validateHTTPSURL("auth.login_url", raw)
+}
+
+func validateHTTPSURL(label, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("auth.login_url is not a valid URL: %w", err)
+		return fmt.Errorf("%s is not a valid URL: %w", label, err)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("%s must include a host", label)
 	}
 	switch u.Scheme {
 	case "https":
@@ -1218,9 +1247,9 @@ func validateCompanionLoginURL(raw string) error {
 		if host == "localhost" || host == "127.0.0.1" {
 			return nil
 		}
-		return fmt.Errorf("auth.login_url uses http://; only https:// is allowed (except for localhost/127.0.0.1)")
+		return fmt.Errorf("%s uses http://; only https:// is allowed (except for localhost/127.0.0.1)", label)
 	default:
-		return fmt.Errorf("auth.login_url must use http or https, got scheme %q", u.Scheme)
+		return fmt.Errorf("%s must use http or https, got scheme %q", label, u.Scheme)
 	}
 }
 
@@ -1280,11 +1309,25 @@ func validateAuthSubtype(c AuthConfig) error {
 // non-oauth2 types, matching how SessionTTLHours and similar fields behave.
 func validateOAuth2Grant(c AuthConfig) error {
 	switch c.OAuth2Grant {
-	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials:
+	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode:
+		if c.OAuth2Grant == OAuth2GrantDeviceCode {
+			if strings.TrimSpace(c.DeviceAuthorizationURL) == "" {
+				return fmt.Errorf("auth.device_authorization_url is required when auth.oauth2_grant is %q", OAuth2GrantDeviceCode)
+			}
+			if strings.TrimSpace(c.TokenURL) == "" {
+				return fmt.Errorf("auth.token_url is required when auth.oauth2_grant is %q", OAuth2GrantDeviceCode)
+			}
+			if err := validateHTTPSURL("auth.device_authorization_url", c.DeviceAuthorizationURL); err != nil {
+				return err
+			}
+			if err := validateHTTPSURL("auth.token_url", c.TokenURL); err != nil {
+				return err
+			}
+		}
 		return nil
 	default:
-		return fmt.Errorf("auth.oauth2_grant %q is not recognized (valid: %q, %q)",
-			c.OAuth2Grant, OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials)
+		return fmt.Errorf("auth.oauth2_grant %q is not recognized (valid: %q, %q, %q)",
+			c.OAuth2Grant, OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode)
 	}
 }
 
@@ -1351,6 +1394,45 @@ type ShareConfig struct {
 	SnapshotTables []string `yaml:"snapshot_tables,omitempty" json:"snapshot_tables,omitempty"` // explicit allowlist of SQLite tables included in the snapshot. Required when Enabled. Names matching denylisted patterns (*_cache, *_secrets, auth_*) are rejected at parse time.
 	DefaultRepo    string   `yaml:"default_repo,omitempty" json:"default_repo,omitempty"`       // optional default git remote (e.g., "git@github.com:acme/linear-snapshots.git"); command-line --repo flag always wins
 	DefaultBranch  string   `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`   // optional default branch for push/pull; blank means "main"
+}
+
+// LearnConfig declares the self-learning loop the generator wires into a
+// printed CLI. When Enabled, the emitted CLI ships `teach`, `recall`, and
+// `learnings` commands plus an additive SQLite schema that caches taught
+// free-text -> resource-id mappings and generalizes them through entity
+// substitution against EntityLookupSeeds. Absent or disabled is a benign
+// no-op: the loop adds no behavior, and the runtime recall path short-
+// circuits before touching the store.
+//
+// TickerPatterns is the per-CLI shape registry the recall path uses to
+// recognize resource identifiers in free-text queries (e.g., Kalshi
+// `KXTICKER-...` codes). Each pattern is validated at spec load via
+// regexp.Compile so authoring typos surface at parse time rather than at
+// end-user runtime.
+//
+// Stopwords are domain-specific tokens stripped from queries before the
+// recall path matches against learned templates. The generated CLI merges
+// these with a built-in default set; empty / whitespace-only entries are
+// dropped at parse time to match the runtime entities.Config behavior.
+//
+// EntityLookupSeeds is the canonical-name + aliases table the loop uses to
+// substitute one entity for another at recall time. The seed kind is the
+// outer map key (e.g., "country", "team"); each value is an ordered list
+// of canonical entities and their aliases.
+type LearnConfig struct {
+	Enabled           bool                    `yaml:"enabled,omitempty" json:"enabled,omitempty"`                         // master switch; when false, the loop's commands and pre-seeding hook are not emitted
+	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty"`         // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile.
+	Stopwords         []string                `yaml:"stopwords,omitempty" json:"stopwords,omitempty"`                     // domain-specific stopwords stripped from queries before recall match; merged with a built-in default set. Whitespace-only entries are dropped at parse time.
+	EntityLookupSeeds map[string][]LookupSeed `yaml:"entity_lookup_seeds,omitempty" json:"entity_lookup_seeds,omitempty"` // canonical-name + aliases table keyed by seed kind (e.g., "country"). Used by the recall path to substitute one entity for another and generalize learned templates.
+}
+
+// LookupSeed is one canonical entity plus optional aliases inside a
+// LearnConfig.EntityLookupSeeds entry. Canonical is the name the loop
+// stores against; Aliases are the alternate strings the recall path
+// recognizes as referring to the same entity.
+type LookupSeed struct {
+	Canonical string   `yaml:"canonical" json:"canonical"`                 // canonical entity name (required, non-empty)
+	Aliases   []string `yaml:"aliases,omitempty" json:"aliases,omitempty"` // alternate strings that resolve to Canonical
 }
 
 // MCPConfig declares how the generated MCP server binary is shaped. When the
@@ -1454,6 +1536,10 @@ type Resource struct {
 	DescriptionDerived bool     `yaml:"-" json:"-"`
 	Path               string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
 	Operations         []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
+	// DataSourceStrategy declares how this resource's generated read commands
+	// should interpret --data-source. Empty means "auto" unless an endpoint
+	// overrides it.
+	DataSourceStrategy string `yaml:"data_source_strategy,omitempty" json:"data_source_strategy,omitempty"`
 	// BaseURL overrides the spec-level BaseURL for this resource's
 	// endpoints. Fixed at generation time. Incompatible with the
 	// proxy-envelope client pattern, which POSTs every request to a
@@ -1470,36 +1556,53 @@ func DefaultResourceDescription(name string) string {
 	return "Manage " + strings.ReplaceAll(strings.ReplaceAll(name, "_", "-"), "-", " ")
 }
 
-// HasResourceBaseURLOverride reports whether any resource or endpoint declares
-// a BaseURL override. Used by the client template to gate the absolute-URL
-// detection branch — specs that don't opt in regenerate byte-identically.
-func (s *APISpec) HasResourceBaseURLOverride() bool {
+// HasAbsoluteRequestPath reports whether generated commands can pass a full
+// URL to the HTTP client instead of a path relative to BaseURL. Resource or
+// endpoint BaseURL overrides synthesize absolute paths at generation time, and
+// internal YAML specs may also declare absolute endpoint paths directly.
+func (s *APISpec) HasAbsoluteRequestPath() bool {
 	if s == nil {
 		return false
 	}
 	for _, resource := range s.Resources {
-		if resourceHasBaseURLOverride(resource) {
+		if resourceHasAbsoluteRequestPath(resource) {
 			return true
 		}
 	}
 	return false
 }
 
-func resourceHasBaseURLOverride(resource Resource) bool {
+func resourceHasAbsoluteRequestPath(resource Resource) bool {
 	if resource.BaseURL != "" {
 		return true
 	}
 	for _, endpoint := range resource.Endpoints {
-		if endpoint.BaseURL != "" {
+		if endpoint.BaseURL != "" || isAbsoluteRequestPath(endpoint.Path) {
 			return true
 		}
 	}
 	for _, sub := range resource.SubResources {
-		if resourceHasBaseURLOverride(sub) {
+		if resourceHasAbsoluteRequestPath(sub) {
 			return true
 		}
 	}
 	return false
+}
+
+func isAbsoluteRequestPath(path string) bool {
+	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
+}
+
+func absoluteRequestPathTemplateSource(path string) string {
+	for _, scheme := range []string{"https://", "http://"} {
+		if rest, ok := strings.CutPrefix(path, scheme); ok {
+			if authority, _, ok := strings.Cut(rest, "/"); ok {
+				return scheme + authority
+			}
+			return path
+		}
+	}
+	return path
 }
 
 type Endpoint struct {
@@ -1530,12 +1633,16 @@ type Endpoint struct {
 	// as a top-level array (params["body"]) instead of the params object,
 	// which a strict-mapping API would otherwise reject (HTTP 422 "Invalid
 	// json"). Set only for JSON-shaped array-root request bodies.
-	BodyIsArray        bool         `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
-	RequestContentType string       `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
-	Response           ResponseDef  `yaml:"response" json:"response"`
-	ResponseFormat     string       `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
-	Tags               []string     `yaml:"tags,omitempty" json:"tags,omitempty"`                       // source operation tags; used for generated defaults, not command grouping
-	HTMLExtract        *HTMLExtract `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
+	BodyIsArray        bool        `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
+	RequestContentType string      `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
+	Response           ResponseDef `yaml:"response" json:"response"`
+	ResponseFormat     string      `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	// DataSourceStrategy declares how this endpoint's generated read command
+	// should interpret --data-source. Empty inherits the resource strategy,
+	// then defaults to "auto".
+	DataSourceStrategy string       `yaml:"data_source_strategy,omitempty" json:"data_source_strategy,omitempty"`
+	Tags               []string     `yaml:"tags,omitempty" json:"tags,omitempty"`                 // source operation tags; used for generated defaults, not command grouping
+	HTMLExtract        *HTMLExtract `yaml:"html_extract,omitempty" json:"html_extract,omitempty"` // extraction options when response_format is html
 	Pagination         *Pagination  `yaml:"pagination" json:"pagination"`
 	// EmbeddedPagedSubresources names paged-envelope properties nested
 	// inside this endpoint's success response (e.g. GET /<resource>/{id}
@@ -1558,11 +1665,17 @@ type Endpoint struct {
 	ObservedAuth []string `yaml:"observed_auth,omitempty" json:"observed_auth,omitempty"`
 	Tier         string   `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
-	// endpoint, populated either by a path-item-level `x-resource-id` extension
-	// or, for OpenAPI specs, by walking the response schema (id → name → first
-	// required scalar). Empty when no key could be resolved; templates fall back
-	// to runtime list scanning. Internal YAML specs may set this directly.
+	// endpoint, populated either by a path-item-level `x-resource-id` extension,
+	// a resource member path parameter that also appears in the response item,
+	// or, for OpenAPI specs, by walking the response schema. Empty when no key
+	// could be resolved; templates fall back to runtime list scanning. Internal
+	// YAML specs may set this directly.
 	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
+	// IDFieldFromPathParam is parser-only provenance used by the profiler to
+	// promote member-path primary-key hints onto same-resource list endpoints
+	// without re-inferring how IDField was resolved. It is intentionally not
+	// serialized as part of the internal spec contract.
+	IDFieldFromPathParam bool `yaml:"-" json:"-"`
 	// Critical flags this endpoint's resource as essential to a sync run. When
 	// true, a per-resource failure is treated as a hard failure even under the
 	// new (non-strict) exit-code policy. Populated from the path-item-level
@@ -1609,25 +1722,58 @@ type WalkerConfig struct {
 func (e *Endpoint) UnmarshalYAML(value *yaml.Node) error {
 	type endpointAlias Endpoint
 	var out endpointAlias
-	if err := value.Decode(&out); err != nil {
+	bodyNode := yamlMappingValue(value, "body")
+	if bodyNode != nil {
+		withoutBody := yamlMappingWithoutKey(value, "body")
+		if err := withoutBody.Decode(&out); err != nil {
+			return err
+		}
+		body, err := endpointBodyFromYAMLNode(bodyNode)
+		if err != nil {
+			return err
+		}
+		out.Body = body
+	} else if err := value.Decode(&out); err != nil {
 		return err
 	}
 	*e = Endpoint(out)
-	e.BodySet = yamlMappingHasKey(value, "body")
+	e.BodySet = bodyNode != nil
 	return nil
 }
 
 func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	type endpointAlias Endpoint
 	var out endpointAlias
-	if err := json.Unmarshal(data, &out); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*e = Endpoint(out)
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err == nil {
-		_, e.BodySet = raw["body"]
+	bodyRaw, bodySet := raw["body"]
+	delete(raw, "body")
+	withoutBody, err := json.Marshal(raw)
+	if err != nil {
+		return err
 	}
+	if err := json.Unmarshal(withoutBody, &out); err != nil {
+		return err
+	}
+	if bodySet {
+		var bodyDoc yaml.Node
+		if err := yaml.Unmarshal(bodyRaw, &bodyDoc); err != nil {
+			return fmt.Errorf("decoding body schema: %w", err)
+		}
+		bodyNode := &bodyDoc
+		if bodyDoc.Kind == yaml.DocumentNode && len(bodyDoc.Content) > 0 {
+			bodyNode = bodyDoc.Content[0]
+		}
+		body, err := endpointBodyFromYAMLNode(bodyNode)
+		if err != nil {
+			return err
+		}
+		out.Body = body
+	}
+	*e = Endpoint(out)
+	e.BodySet = bodySet
 	return nil
 }
 
@@ -1636,6 +1782,20 @@ func (e Endpoint) EffectiveResponseFormat() string {
 		return ResponseFormatJSON
 	}
 	return e.ResponseFormat
+}
+
+func EffectiveDataSourceStrategy(resource Resource, endpoint Endpoint) string {
+	if strategy := normalizeDataSourceStrategy(endpoint.DataSourceStrategy); strategy != "" {
+		return strategy
+	}
+	if strategy := normalizeDataSourceStrategy(resource.DataSourceStrategy); strategy != "" {
+		return strategy
+	}
+	return DataSourceStrategyAuto
+}
+
+func normalizeDataSourceStrategy(strategy string) string {
+	return strings.ToLower(strings.TrimSpace(strategy))
 }
 
 func (e Endpoint) UsesHTMLResponse() bool {
@@ -1684,21 +1844,23 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 }
 
 type Param struct {
-	Name        string   `yaml:"name" json:"name"`
-	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
-	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
-	BodyName    string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
-	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	Type        string   `yaml:"type" json:"type"`
-	Required    bool     `yaml:"required" json:"required"`
-	Positional  bool     `yaml:"positional" json:"positional"`
-	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
-	Default     any      `yaml:"default" json:"default"`
-	Description string   `yaml:"description" json:"description"`
-	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
-	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
-	Format      string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
-	Purpose     string   `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	Name         string   `yaml:"name" json:"name"`
+	FlagName     string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	URLName      string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
+	BodyName     string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
+	Aliases      []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	Type         string   `yaml:"type" json:"type"`
+	Required     bool     `yaml:"required" json:"required"`
+	Positional   bool     `yaml:"positional" json:"positional"`
+	PathParam    bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
+	Default      any      `yaml:"default" json:"default"`
+	Description  string   `yaml:"description" json:"description"`
+	Fields       []Param  `yaml:"fields" json:"fields"`                     // for nested objects
+	Enum         []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
+	Format       string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	ItemType     string   `yaml:"item_type,omitempty" json:"item_type,omitempty"`
+	ItemTemplate any      `yaml:"item_template,omitempty" json:"item_template,omitempty"`
+	Purpose      string   `yaml:"purpose,omitempty" json:"purpose,omitempty"`
 	// FieldSelectorDefault is a sync-time default for field-selector params
 	// such as opt_fields, fields, expand, include, or select. It stays separate
 	// from Default so generated endpoint commands do not silently change their
@@ -1753,31 +1915,7 @@ func (p Param) PublicInputName() string {
 }
 
 func publicInputNameFromIdent(name string) string {
-	name = strings.TrimLeft(name, "$")
-	var b strings.Builder
-	runes := []rune(name)
-	for i, r := range runes {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			if b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			continue
-		}
-		if i > 0 && unicode.IsUpper(r) {
-			prev := runes[i-1]
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
-				b.WriteByte('-')
-			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
-				b.WriteByte('-')
-			}
-		}
-		b.WriteRune(unicode.ToLower(r))
-	}
-	result := b.String()
-	for strings.Contains(result, "--") {
-		result = strings.ReplaceAll(result, "--", "-")
-	}
-	return strings.Trim(result, "-")
+	return naming.FlagName(name)
 }
 
 func (p *Param) UnmarshalYAML(value *yaml.Node) error {
@@ -1815,6 +1953,218 @@ func yamlMappingHasKey(value *yaml.Node, key string) bool {
 		}
 	}
 	return false
+}
+
+func yamlMappingValue(value *yaml.Node, key string) *yaml.Node {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == key {
+			return value.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func yamlMappingWithoutKey(value *yaml.Node, key string) *yaml.Node {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return value
+	}
+	out := *value
+	out.Content = make([]*yaml.Node, 0, len(value.Content))
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == key {
+			continue
+		}
+		out.Content = append(out.Content, value.Content[i], value.Content[i+1])
+	}
+	return &out
+}
+
+func endpointBodyFromYAMLNode(value *yaml.Node) ([]Param, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		return nil, nil
+	}
+	switch value.Kind {
+	case yaml.SequenceNode:
+		var body []Param
+		if err := value.Decode(&body); err != nil {
+			return nil, fmt.Errorf("decoding body params at line %d: %w", value.Line, err)
+		}
+		return body, nil
+	case yaml.MappingNode:
+		schemaNode := value
+		if nested := yamlMappingValue(value, "schema"); nested != nil {
+			schemaNode = nested
+		}
+		return bodyParamsFromSchemaNode(schemaNode)
+	default:
+		return nil, fmt.Errorf("body at line %d must be either a list of params or an object schema with properties", value.Line)
+	}
+}
+
+func bodyParamsFromSchemaNode(schema *yaml.Node) ([]Param, error) {
+	if schema == nil || schema.Kind != yaml.MappingNode {
+		line := 0
+		if schema != nil {
+			line = schema.Line
+		}
+		return nil, fmt.Errorf("body schema at line %d must be a mapping", line)
+	}
+	rootType := strings.TrimSpace(schemaScalarValue(yamlMappingValue(schema, "type")))
+	if rootType != "" && rootType != "object" {
+		return nil, fmt.Errorf("body schema at line %d must be type object with properties, got %q", schema.Line, rootType)
+	}
+	properties := yamlMappingValue(schema, "properties")
+	if properties == nil {
+		return nil, fmt.Errorf("body schema at line %d must declare properties", schema.Line)
+	}
+	return bodyParamsFromPropertiesNode(properties, schemaRequiredSet(schema))
+}
+
+func bodyParamsFromPropertiesNode(properties *yaml.Node, required map[string]struct{}) ([]Param, error) {
+	if properties == nil || properties.Kind != yaml.MappingNode {
+		line := 0
+		if properties != nil {
+			line = properties.Line
+		}
+		return nil, fmt.Errorf("body properties at line %d must be a mapping", line)
+	}
+	out := make([]Param, 0, len(properties.Content)/2)
+	for i := 0; i+1 < len(properties.Content); i += 2 {
+		name := properties.Content[i].Value
+		param, err := bodyParamFromSchemaNode(name, properties.Content[i+1])
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := required[name]; ok {
+			param.Required = true
+		}
+		out = append(out, param)
+	}
+	return out, nil
+}
+
+func bodyParamFromSchemaNode(name string, node *yaml.Node) (Param, error) {
+	if node == nil {
+		return Param{Name: name, Type: "string", Description: humanizeSpecFieldName(name)}, nil
+	}
+	if node.Kind == yaml.ScalarNode {
+		typeName := strings.TrimSpace(node.Value)
+		if typeName == "" {
+			typeName = "string"
+		}
+		return Param{Name: name, Type: typeName, Description: humanizeSpecFieldName(name)}, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return Param{}, fmt.Errorf("body property %q at line %d must be a mapping or scalar type", name, node.Line)
+	}
+
+	typeName := strings.TrimSpace(schemaScalarValue(yamlMappingValue(node, "type")))
+	if typeName == "" {
+		switch {
+		case yamlMappingValue(node, "properties") != nil:
+			typeName = "object"
+		case yamlMappingValue(node, "items") != nil:
+			typeName = "array"
+		default:
+			typeName = "string"
+		}
+	}
+	param := Param{
+		Name:        name,
+		Type:        typeName,
+		Description: schemaDescriptionFromNode(node, name),
+		Enum:        schemaStringSlice(yamlMappingValue(node, "enum")),
+		Format:      strings.TrimSpace(schemaScalarValue(yamlMappingValue(node, "format"))),
+	}
+	if required := yamlMappingValue(node, "required"); required != nil && required.Kind == yaml.ScalarNode {
+		var requiredBool bool
+		if err := required.Decode(&requiredBool); err == nil {
+			param.Required = requiredBool
+		}
+	}
+	if defaultNode := yamlMappingValue(node, "default"); defaultNode != nil {
+		var defaultValue any
+		if err := defaultNode.Decode(&defaultValue); err == nil {
+			param.Default = defaultValue
+		}
+	}
+	if typeName == "object" {
+		if properties := yamlMappingValue(node, "properties"); properties != nil {
+			fields, err := bodyParamsFromPropertiesNode(properties, schemaRequiredSet(node))
+			if err != nil {
+				return Param{}, err
+			}
+			param.Fields = fields
+		}
+	}
+	if typeName == "array" {
+		if items := yamlMappingValue(node, "items"); items != nil && items.Kind == yaml.MappingNode {
+			if properties := yamlMappingValue(items, "properties"); properties != nil {
+				fields, err := bodyParamsFromPropertiesNode(properties, schemaRequiredSet(items))
+				if err != nil {
+					return Param{}, err
+				}
+				param.Fields = fields
+			} else if enum := schemaStringSlice(yamlMappingValue(items, "enum")); len(enum) > 0 {
+				param.Fields = []Param{{Name: "items", Type: "string", Enum: enum}}
+			}
+		}
+	}
+	return param, nil
+}
+
+func schemaRequiredSet(schema *yaml.Node) map[string]struct{} {
+	required := map[string]struct{}{}
+	requiredNode := yamlMappingValue(schema, "required")
+	if requiredNode == nil || requiredNode.Kind != yaml.SequenceNode {
+		return required
+	}
+	for _, item := range requiredNode.Content {
+		if item.Kind == yaml.ScalarNode && strings.TrimSpace(item.Value) != "" {
+			required[item.Value] = struct{}{}
+		}
+	}
+	return required
+}
+
+func schemaDescriptionFromNode(node *yaml.Node, fallbackName string) string {
+	for _, key := range []string{"description", "title"} {
+		if value := strings.TrimSpace(schemaScalarValue(yamlMappingValue(node, key))); value != "" {
+			return value
+		}
+	}
+	return humanizeSpecFieldName(fallbackName)
+}
+
+func schemaScalarValue(node *yaml.Node) string {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return ""
+	}
+	return node.Value
+}
+
+func schemaStringSlice(node *yaml.Node) []string {
+	if node == nil || node.Kind != yaml.SequenceNode {
+		return nil
+	}
+	out := make([]string, 0, len(node.Content))
+	for _, item := range node.Content {
+		if item.Kind == yaml.ScalarNode {
+			out = append(out, item.Value)
+		}
+	}
+	return out
+}
+
+func humanizeSpecFieldName(name string) string {
+	cleaned := strings.NewReplacer("_", " ", "-", " ").Replace(name)
+	return strings.TrimSpace(cleaned)
 }
 
 type ResponseDef struct {
@@ -1864,6 +2214,9 @@ type TypeField struct {
 	Name string   `yaml:"name" json:"name"`
 	Type string   `yaml:"type" json:"type"`
 	Enum []string `yaml:"enum,omitempty" json:"enum,omitempty"`
+	// OmitEmpty marks fields inferred from optional or nullable JSON samples.
+	// It only affects Go struct-tag emission; wire names still come from Name.
+	OmitEmpty bool `yaml:"omit_empty,omitempty" json:"omit_empty,omitempty"`
 	// Format mirrors the OpenAPI `format` hint for the field (date-time,
 	// date, email, uri, …). Carried through so SQLite column derivation
 	// can map date/date-time response fields to DATETIME instead of TEXT.
@@ -1990,9 +2343,12 @@ var ReservedCobraUseNames = map[string]struct{}{
 	"help":           {},
 	"import":         {},
 	"jobs":           {},
+	"learnings":      {},
+	"login":          {},
 	"load":           {},
 	"orphans":        {},
 	"profile":        {},
+	"recall":         {},
 	"refresh-bearer": {},
 	"search":         {},
 	"share":          {},
@@ -2001,6 +2357,9 @@ var ReservedCobraUseNames = map[string]struct{}{
 	"stale":          {},
 	"sync":           {},
 	"tail":           {},
+	"teach":          {},
+	"teach-lookup":   {},
+	"teach-pattern":  {},
 	"version":        {},
 	"which":          {},
 	"workflow":       {},
@@ -2015,6 +2374,9 @@ func (s *APISpec) ParseTimeReservedCobraUseName(name string) bool {
 	kebab := snakeToKebab(name)
 	if kebab == "auth" {
 		return s.emitsAuthCommand()
+	}
+	if kebab == "login" {
+		return s.emitsTopLevelOAuthLogin()
 	}
 	if kebab == "health" {
 		return false
@@ -2052,6 +2414,14 @@ func (s *APISpec) emitsAuthCommand() bool {
 	// Traffic-analysis-only auth is not known at parse time; the generator
 	// handles that conditional collision once traffic hints are attached.
 	return s.Auth.Type != "none" || s.Auth.AuthorizationURL != ""
+}
+
+func (s *APISpec) emitsTopLevelOAuthLogin() bool {
+	if s == nil {
+		return false
+	}
+	return s.Auth.AuthorizationURL != "" &&
+		(s.Auth.EffectiveOAuth2Grant() != OAuth2GrantClientCredentials || s.Auth.TokenURL == "")
 }
 
 // validateReservedNames rejects specs whose top-level resource names would
@@ -2426,6 +2796,9 @@ func (s *APISpec) Validate() error {
 	if err := validateCacheShare(s.Cache, s.Share, s.Resources); err != nil {
 		return err
 	}
+	if err := validateLearn(&s.Learn); err != nil {
+		return err
+	}
 	if err := validateMCP(s.MCP, s.Resources); err != nil {
 		return err
 	}
@@ -2459,8 +2832,8 @@ func (s *APISpec) Validate() error {
 	if err := validateTierRouting(s); err != nil {
 		return err
 	}
-	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
-		return fmt.Errorf("resource or endpoint base_url overrides are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-request overrides would be silently ignored")
+	if s.ClientPattern == "proxy-envelope" && s.HasAbsoluteRequestPath() {
+		return fmt.Errorf("resource or endpoint base_url overrides and absolute endpoint paths are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-request hosts would be silently ignored")
 	}
 	if s.ClientPattern == "proxy-envelope" && s.BasePath != "" {
 		return fmt.Errorf("base_path is incompatible with client_pattern=proxy-envelope; the proxy routes via the envelope's Service/Path fields, not a URL-level prefix — fold the prefix into base_url instead")
@@ -2470,6 +2843,9 @@ func (s *APISpec) Validate() error {
 			return fmt.Errorf("resource %q has no endpoints", name)
 		}
 		if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q base_url", name), r.BaseURL); err != nil {
+			return err
+		}
+		if err := validateDataSourceStrategy(fmt.Sprintf("resource %q data_source_strategy", name), r.DataSourceStrategy); err != nil {
 			return err
 		}
 		for eName, e := range r.Endpoints {
@@ -2485,11 +2861,20 @@ func (s *APISpec) Validate() error {
 			if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q endpoint %q base_url", name, eName), e.BaseURL); err != nil {
 				return err
 			}
+			if e.BaseURL != "" && isAbsoluteRequestPath(e.Path) {
+				return fmt.Errorf("resource %q endpoint %q declares both base_url and an absolute endpoint path; choose one routing source", name, eName)
+			}
 			if err := validateEndpointPublicParamNames(e); err != nil {
+				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
+			}
+			if err := validateEndpointBodyParamTypes(e); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
 			}
 			if err := validateEndpointResponseFormat(e); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
+			}
+			if err := validateDataSourceStrategy(fmt.Sprintf("resource %q endpoint %q data_source_strategy", name, eName), e.DataSourceStrategy); err != nil {
+				return err
 			}
 		}
 		for subName, sub := range r.SubResources {
@@ -2497,6 +2882,9 @@ func (s *APISpec) Validate() error {
 				return fmt.Errorf("resource %q sub-resource %q has no endpoints", name, subName)
 			}
 			if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q sub-resource %q base_url", name, subName), sub.BaseURL); err != nil {
+				return err
+			}
+			if err := validateDataSourceStrategy(fmt.Sprintf("resource %q sub-resource %q data_source_strategy", name, subName), sub.DataSourceStrategy); err != nil {
 				return err
 			}
 			for eName, e := range sub.Endpoints {
@@ -2512,11 +2900,20 @@ func (s *APISpec) Validate() error {
 				if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q sub-resource %q endpoint %q base_url", name, subName, eName), e.BaseURL); err != nil {
 					return err
 				}
+				if e.BaseURL != "" && isAbsoluteRequestPath(e.Path) {
+					return fmt.Errorf("resource %q sub-resource %q endpoint %q declares both base_url and an absolute endpoint path; choose one routing source", name, subName, eName)
+				}
 				if err := validateEndpointPublicParamNames(e); err != nil {
+					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
+				}
+				if err := validateEndpointBodyParamTypes(e); err != nil {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
 				}
 				if err := validateEndpointResponseFormat(e); err != nil {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
+				}
+				if err := validateDataSourceStrategy(fmt.Sprintf("resource %q sub-resource %q endpoint %q data_source_strategy", name, subName, eName), e.DataSourceStrategy); err != nil {
+					return err
 				}
 			}
 		}
@@ -2583,6 +2980,34 @@ func validateEndpointPublicParamNames(endpoint Endpoint) error {
 	}
 	if err := validatePublicParamNameList("body", endpoint.Body); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateEndpointBodyParamTypes(endpoint Endpoint) error {
+	return validateBodyParamTypes("body", endpoint.Body)
+}
+
+func validateBodyParamTypes(context string, params []Param) error {
+	for i, p := range params {
+		label := fmt.Sprintf("%s[%d] (%s)", context, i, p.Name)
+		if strings.EqualFold(strings.TrimSpace(p.Type), "string_csv_array") {
+			switch strings.ToLower(strings.TrimSpace(p.ItemType)) {
+			case "string":
+			case "object":
+				if p.ItemTemplate == nil {
+					return fmt.Errorf("%s: string_csv_array item_type object requires item_template", label)
+				}
+				if _, ok := p.ItemTemplate.(map[string]any); !ok {
+					return fmt.Errorf("%s: string_csv_array item_type object requires item_template to be an object", label)
+				}
+			default:
+				return fmt.Errorf("%s: string_csv_array item_type must be string or object", label)
+			}
+		}
+		if err := validateBodyParamTypes(label+".fields", p.Fields); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -2840,8 +3265,8 @@ func validateTierRouting(s *APISpec) error {
 			return err
 		}
 	}
-	if anyTierBaseURL && s.HasResourceBaseURLOverride() {
-		return fmt.Errorf("resource or endpoint base_url overrides are incompatible with tier_routing tier base_url overrides; choose one routing source")
+	if anyTierBaseURL && s.HasAbsoluteRequestPath() {
+		return fmt.Errorf("resource or endpoint base_url overrides and absolute endpoint paths are incompatible with tier_routing tier base_url overrides; choose one routing source")
 	}
 	for name, resource := range s.Resources {
 		if err := validateTierRoutingResource(s, name, resource, "", ""); err != nil {
@@ -3082,6 +3507,15 @@ func validateEndpointResponseFormat(e Endpoint) error {
 	return nil
 }
 
+func validateDataSourceStrategy(context, strategy string) error {
+	switch normalizeDataSourceStrategy(strategy) {
+	case "", DataSourceStrategyAuto, DataSourceStrategyLocal, DataSourceStrategyLive:
+		return nil
+	default:
+		return fmt.Errorf("%s must be one of: auto, local, live", context)
+	}
+}
+
 // extraCommandNameRe permits a single command leaf or a parent+leaf path
 // like "tv airing-today". Each segment must be lowercase with hyphens,
 // matching cobra's convention. Anything else (uppercase, underscores,
@@ -3197,6 +3631,60 @@ func validateCacheShare(cache CacheConfig, share ShareConfig, resources map[stri
 			return fmt.Errorf("share.snapshot_tables[%d]: %q appears more than once", i, t)
 		}
 		seen[t] = struct{}{}
+	}
+	return nil
+}
+
+// learnSeedKindRe enforces the seed kind naming rules described on
+// LearnConfig.EntityLookupSeeds: lowercase letters, digits, and underscore
+// only. Whitespace, hyphens, dots, or other punctuation are rejected so
+// the kind can be used directly as a SQLite column / Go map key without
+// quoting concerns and so author typos like "team name" surface at parse
+// time rather than as a silent lookup miss at recall time.
+var learnSeedKindRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// validateLearn enforces the LearnConfig shape contract: ticker patterns
+// must compile as Go regexps, seed kinds must be SQLite-safe identifiers,
+// each seed must carry a non-empty Canonical, and canonical values must be
+// unique within a kind. Stopword sanitization (dropping whitespace-only
+// entries) happens here too so the spec's parsed view matches what the
+// generated CLI will actually load at runtime.
+func validateLearn(learn *LearnConfig) error {
+	if learn == nil {
+		return nil
+	}
+	for i, pattern := range learn.TickerPatterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("learn.ticker_patterns[%d] is not a valid Go regexp: %w", i, err)
+		}
+	}
+	// Drop whitespace-only stopword entries in place so downstream consumers
+	// see only meaningful tokens. Mirrors the runtime entities.Config behavior
+	// the generated CLI will apply when merging these with its default set.
+	if len(learn.Stopwords) > 0 {
+		filtered := learn.Stopwords[:0]
+		for _, sw := range learn.Stopwords {
+			if strings.TrimSpace(sw) == "" {
+				continue
+			}
+			filtered = append(filtered, sw)
+		}
+		learn.Stopwords = filtered
+	}
+	for kind, seeds := range learn.EntityLookupSeeds {
+		if !learnSeedKindRe.MatchString(kind) {
+			return fmt.Errorf("learn.entity_lookup_seeds: kind %q must be lowercase letters, digits, and underscore only (no whitespace or punctuation other than _)", kind)
+		}
+		seenCanonical := make(map[string]struct{}, len(seeds))
+		for i, seed := range seeds {
+			if strings.TrimSpace(seed.Canonical) == "" {
+				return fmt.Errorf("learn.entity_lookup_seeds[%s][%d]: canonical must not be empty", kind, i)
+			}
+			if _, dup := seenCanonical[seed.Canonical]; dup {
+				return fmt.Errorf("learn.entity_lookup_seeds[%s][%d]: canonical %q appears more than once in the same kind", kind, i, seed.Canonical)
+			}
+			seenCanonical[seed.Canonical] = struct{}{}
+		}
 	}
 	return nil
 }

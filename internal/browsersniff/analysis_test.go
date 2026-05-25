@@ -354,6 +354,52 @@ func TestAnalyzeTraffic_RedactsAuthSignals(t *testing.T) {
 	assert.Contains(t, authTypes(analysis.Auth.Candidates), "api_key")
 }
 
+func TestAnalyzeTraffic_DoesNotTreatSearchKeywordsAsAuthCandidate(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{
+			name: "plain keywords",
+			url:  "https://www.example.com/search?keywords=morgan",
+		},
+		{
+			name: "bracketed keywords",
+			url:  "https://www.example.com/search?keywords%5B%5D=morgan",
+		},
+		{
+			name: "compound search keywords",
+			url:  "https://www.example.com/search?search_keywords=morgan",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			capture := &EnrichedCapture{
+				TargetURL: "https://www.example.com",
+				Entries: []EnrichedEntry{
+					{
+						Method:              "GET",
+						URL:                 tc.url,
+						ResponseStatus:      200,
+						ResponseContentType: "application/json",
+						ResponseBody:        `{"results":[{"id":"1"}]}`,
+					},
+				},
+			}
+
+			analysis, err := AnalyzeTraffic(capture)
+			require.NoError(t, err)
+
+			assert.NotContains(t, authTypes(analysis.Auth.Candidates), "api_key")
+		})
+	}
+}
+
 func TestAnalyzeTraffic_DetectsProtocolProtectionAndWarningCategories(t *testing.T) {
 	t.Parallel()
 

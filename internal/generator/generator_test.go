@@ -77,6 +77,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/client/client_test.go",
 		"internal/client/client_verify_short_circuit_test.go",
 		"internal/config/config.go",
+		"internal/store/extras.go",
 		"internal/mcp/cobratree/walker.go",
 		"internal/mcp/cobratree/classify.go",
 		"internal/mcp/cobratree/typemap.go",
@@ -95,9 +96,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 69},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 74},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 71},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 70},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 75},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 72},
 	}
 
 	for _, tt := range tests {
@@ -127,6 +128,33 @@ func TestGenerateProjectsCompile(t *testing.T) {
 			runGoCommand(t, outputDir, "build", "./...")
 		})
 	}
+}
+
+func TestGenerateStoreExtrasHook(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("storeextras")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	extrasSrc := readGeneratedFile(t, outputDir, "internal", "store", "extras.go")
+	assert.NotContains(t, extrasSrc, "DO NOT EDIT")
+	assert.Contains(t, extrasSrc, "func (s *Store) migrateExtras(ctx context.Context, conn *sql.Conn) error")
+	assert.Contains(t, extrasSrc, "Add CREATE TABLE IF NOT EXISTS statements here")
+
+	storeSrc := readGeneratedFile(t, outputDir, "internal", "store", "store.go")
+	migrationIndex := strings.Index(storeSrc, "for _, m := range migrations")
+	extrasIndex := strings.Index(storeSrc, "s.migrateExtras(ctx, conn)")
+	stampIndex := strings.Index(storeSrc, "PRAGMA user_version = %d")
+	require.NotEqual(t, -1, migrationIndex, "store.go must still run generated migrations")
+	require.NotEqual(t, -1, extrasIndex, "store.go must call migrateExtras")
+	require.NotEqual(t, -1, stampIndex, "store.go must still stamp user_version")
+	assert.Less(t, migrationIndex, extrasIndex, "extras must run after generated migrations")
+	assert.Less(t, extrasIndex, stampIndex, "extras must run before the schema version stamp")
+
+	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
 // TestGenerateCliutilPackage verifies that every generated CLI ships with
@@ -962,6 +990,16 @@ func TestBearerRefreshSavedTokenWinsOverEnvBackedField(t *testing.T) {
 	}
 }
 
+func TestBearerRefreshSavedTokenCorrectsStaleEnvSource(t *testing.T) {
+	cfg := &Config{AccessToken: "fresh-token", RefreshbearerPublicBearer: "stale-token", AuthSource: "env:REFRESHBEARER_PUBLIC_BEARER"}
+	if got := cfg.AuthHeader(); got != "Bearer fresh-token" {
+		t.Fatalf("AuthHeader() = %q, want refreshed token", got)
+	}
+	if cfg.AuthSource != "bearer_refresh" {
+		t.Fatalf("AuthSource = %q, want bearer_refresh", cfg.AuthSource)
+	}
+}
+
 func TestSaveBearerTokenClearsEnvBackedField(t *testing.T) {
 	cfg := &Config{
 		Path:                filepath.Join(t.TempDir(), "config.toml"),
@@ -1325,6 +1363,188 @@ func TestGenerateOAuth2AuthorizationCodeRegression(t *testing.T) {
 		"authorization_code spec keeps the existing 3-legged template")
 	assert.NotContains(t, body, `"grant_type":    {"client_credentials"}`,
 		"authorization_code spec must NOT pick the client_credentials template")
+}
+
+func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "deviceauth",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:                   "bearer_token",
+			Header:                 "Authorization",
+			Format:                 "Bearer {token}",
+			OAuth2Grant:            spec.OAuth2GrantDeviceCode,
+			DeviceAuthorizationURL: "https://login.example.com/device",
+			TokenURL:               "https://login.example.com/token",
+			Scopes:                 []string{"mail.read", "calendars.read"},
+			DefaultClientID:        "public-client-id",
+			EnvVars:                []string{"DEVICEAUTH_CLIENT_ID"},
+			EnvVarSpecs: []spec.AuthEnvVar{{
+				Name:      "DEVICEAUTH_CLIENT_ID",
+				Kind:      spec.AuthEnvVarKindAuthFlowInput,
+				Required:  false,
+				Sensitive: false,
+			}},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/deviceauth-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	authGo := string(readGeneratedFile(t, outputDir, "internal", "cli", "auth.go"))
+	oauthGo := string(readGeneratedFile(t, outputDir, "internal", "oauth", "device.go"))
+	configGo := string(readGeneratedFile(t, outputDir, "internal", "config", "config.go"))
+	clientGo := string(readGeneratedFile(t, outputDir, "internal", "client", "client.go"))
+
+	assert.Contains(t, authGo, `newAuthRefreshCmd(flags)`, "device-code template exposes auth refresh")
+	assert.Contains(t, authGo, `newAuthPollCmd(flags)`, "device-code template exposes non-interactive follow-up polling")
+	assert.Contains(t, authGo, `cmd.Flags().BoolVar(&deviceCode, "device-code", true`, "auth login accepts --device-code")
+	assert.Contains(t, authGo, `cmd.Flags().BoolVar(&poll, "poll", outputIsTerminal()`, "headless login should print and return instead of blocking")
+	assert.Contains(t, authGo, `savePendingDeviceCode(cfg, state)`, "headless login stores pending device_code locally")
+	assert.Contains(t, authGo, `os.WriteFile(path, data, 0o600)`, "pending device_code state must be user-only readable")
+	assert.Contains(t, authGo, `_ = clearPendingDeviceCode(cfg)`, "logout and completed poll must remove pending device_code state")
+	assert.Contains(t, authGo, `fmt.Fprintln(w, "  deviceauth-pp-cli auth poll")`, "headless login resumes without exposing the raw device_code")
+	assert.NotContains(t, authGo, `auth poll --device-code`, "raw device_code must not be printed into shell commands")
+	assert.Contains(t, authGo, `cfg.AuthHeaderVal = ""`, "OAuth token saves must clear stale manual auth headers")
+	assert.Contains(t, authGo, `deviceAuthorizationURL := cfg.DeviceAuthorizationURL`, "login honors device endpoint overrides")
+	assert.Contains(t, authGo, `"https://login.example.com/device"`, "login falls back to the configured device endpoint")
+	assert.Contains(t, authGo, `"public-client-id"`, "login uses the spec default client id")
+	assert.Contains(t, authGo, `os.Getenv("DEVICEAUTH_CLIENT_ID")`, "client id can be overridden by env var")
+	assert.Contains(t, authGo, `cliutil.IsVerifyEnv()`, "login and refresh short-circuit in verify mode")
+	assert.Contains(t, authGo, `Annotations: map[string]string{"mcp:hidden": "true"}`, "interactive auth commands stay out of MCP")
+	assert.Contains(t, oauthGo, `const DeviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"`)
+	assert.Contains(t, oauthGo, `case "slow_down":`, "poller handles slow_down backoff")
+	assert.Contains(t, configGo, `if c.AccessToken != ""`, "config auth uses stored OAuth access token")
+	assert.Contains(t, configGo, `DeviceAuthorizationURL string`, "config supports device endpoint overrides")
+	assert.Contains(t, configGo, `DEVICEAUTH_DEVICE_AUTHORIZATION_URL`, "device endpoint can be overridden by env var")
+	assert.NotContains(t, configGo, `return "Bearer " + c.DeviceauthClientId`, "client id must not be sent as bearer token")
+	assert.Contains(t, clientGo, `"grant_type":    {"refresh_token"}`, "client auto-refresh uses refresh_token grant")
+	assert.Contains(t, clientGo, `resp.StatusCode == http.StatusUnauthorized`, "client retries once after refreshing on 401")
+	assert.Contains(t, clientGo, `!(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv())`, "verify mode must not refresh against a live token endpoint")
+
+	oauthTest := `package oauth
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestDeviceCodeHelpers(t *testing.T) {
+	var tokenPolls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		switch r.URL.Path {
+		case "/device":
+			if got := r.Form.Get("client_id"); got != "public-client" {
+				t.Fatalf("client_id = %q", got)
+			}
+			if got := r.Form.Get("scope"); got != "mail.read calendars.read" {
+				t.Fatalf("scope = %q", got)
+			}
+			fmt.Fprint(w, ` + "`" + `{"device_code":"device-123","user_code":"USER-123","verification_uri":"https://login.example.com/device","interval":1}` + "`" + `)
+		case "/token":
+			switch r.Form.Get("grant_type") {
+			case DeviceCodeGrant:
+				tokenPolls++
+				if got := r.Form.Get("device_code"); got != "device-123" {
+					t.Fatalf("device_code = %q", got)
+				}
+				if tokenPolls == 1 {
+					http.Error(w, ` + "`" + `{"error":"authorization_pending"}` + "`" + `, http.StatusBadRequest)
+					return
+				}
+				fmt.Fprint(w, ` + "`" + `{"access_token":"access-123","refresh_token":"refresh-123","expires_in":3600}` + "`" + `)
+			case "refresh_token":
+				if got := r.Form.Get("refresh_token"); got != "refresh-123" {
+					t.Fatalf("refresh_token = %q", got)
+				}
+				fmt.Fprint(w, ` + "`" + `{"access_token":"access-456","refresh_token":"refresh-456","expires_in":1800}` + "`" + `)
+			default:
+				t.Fatalf("unexpected grant_type %q", r.Form.Get("grant_type"))
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	device, err := RequestDeviceCode(context.Background(), srv.Client(), srv.URL+"/device", "public-client", []string{"mail.read", "calendars.read"})
+	if err != nil {
+		t.Fatalf("RequestDeviceCode: %v", err)
+	}
+	if device.DeviceCode != "device-123" || device.UserCode != "USER-123" {
+		t.Fatalf("device response = %+v", device)
+	}
+
+	if _, retry, err := pollDeviceTokenOnce(context.Background(), srv.Client(), srv.URL+"/token", "public-client", device.DeviceCode); err == nil || retry != "authorization_pending" {
+		t.Fatalf("first poll err = %v retry = %q", err, retry)
+	}
+	tok, retry, err := pollDeviceTokenOnce(context.Background(), srv.Client(), srv.URL+"/token", "public-client", device.DeviceCode)
+	if err != nil || retry != "" || tok.AccessToken != "access-123" || tok.RefreshToken != "refresh-123" {
+		t.Fatalf("second poll token = %+v retry = %q err = %v", tok, retry, err)
+	}
+	refreshed, err := RefreshToken(context.Background(), srv.Client(), srv.URL+"/token", "public-client", "", tok.RefreshToken)
+	if err != nil {
+		t.Fatalf("RefreshToken: %v", err)
+	}
+	if refreshed.AccessToken != "access-456" || refreshed.RefreshToken != "refresh-456" {
+		t.Fatalf("refreshed token = %+v", refreshed)
+	}
+}
+
+func TestDeviceCodeHTTPErrorBodiesAreSanitized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if r.Form.Get("grant_type") == DeviceCodeGrant {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, ` + "`" + `{"error":"invalid_grant","error_description":"device %s for client %s was rejected"}` + "`" + `, r.Form.Get("device_code"), r.Form.Get("client_id"))
+			return
+		}
+		http.Error(w, ` + "`" + `{"error":"invalid_client","detail":"Bearer SECRET1234"}` + "`" + `, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	_, err := RequestDeviceCode(context.Background(), srv.Client(), srv.URL, "public-client", nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "Bearer SECRET1234") {
+		t.Fatalf("error leaked credential: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("error was not sanitized: %v", err)
+	}
+
+	_, _, err = pollDeviceTokenOnce(context.Background(), srv.Client(), srv.URL, "public-client", "device-secret")
+	if err == nil {
+		t.Fatal("expected poll error")
+	}
+	if strings.Contains(err.Error(), "device-secret") || strings.Contains(err.Error(), "public-client") {
+		t.Fatalf("structured OAuth error leaked request values: %v", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "oauth", "device_test.go"), []byte(oauthTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./...")
 }
 
 func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
@@ -4046,6 +4266,109 @@ func TestExtractPageItemsLowercaseTakesPriorityOverPascal(t *testing.T) {
 	}
 }
 
+func TestExtractPageItemsJSendNestedDataEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"success": true,
+		"warnings": [{"code": "slow-page"}],
+		"next_cursor": "next-page",
+		"has_more": true,
+		"data": {
+			"orders": [{"Id": "ord-1"}, {"Id": "ord-2"}]
+		}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("nested data envelope: want 2 items, got %d", len(items))
+	}
+	if cursor != "next-page" || !hasMore {
+		t.Fatalf("nested pagination = %q/%v, want next-page/true", cursor, hasMore)
+	}
+
+	body = []byte(` + "`" + `{
+		"success": true,
+		"data": {
+			"orders": [{"Id": "ord-3"}],
+			"has_more": true
+		},
+		"pagination": {"next_cursor": "outer-page"}
+	}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 1 || cursor != "outer-page" || !hasMore {
+		t.Fatalf("nested data with split pagination = %d/%q/%v, want 1/outer-page/true", len(items), cursor, hasMore)
+	}
+}
+
+func TestExtractPageItemsDetailObjectWrappedInData(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"data": {
+			"CertNo": "91000",
+			"line_items": [{"id": "li_1"}],
+			"Grade": "MS64"
+		}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("detail object with child array = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+
+	nullSibling := json.RawMessage(` + "`" + `{
+		"data": {
+			"user": null,
+			"recent_orders": [{"id": "o1"}]
+		}
+	}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(nullSibling, "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("detail object with null sibling and child array = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+}
+
+func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{"success": false, "data": null}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+	if !isEmptyPageResponse(json.RawMessage(body)) {
+		t.Fatalf("failed JSend null data envelope should be treated as an empty page")
+	}
+
+	withErrors := json.RawMessage(` + "`" + `{"success": false, "errors": [{"code": "bad"}], "data": null}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(withErrors, "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("failed JSend errors envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+
+	statusFail := json.RawMessage(` + "`" + `{"status": "fail", "data": null}` + "`" + `)
+	if !isEmptyPageResponse(statusFail) {
+		t.Fatalf("status=fail null data envelope should be treated as an empty page")
+	}
+
+	emptyResultSibling := json.RawMessage(` + "`" + `{"data": null, "result": {"orders": []}}` + "`" + `)
+	if !isEmptyPageResponse(emptyResultSibling) {
+		t.Fatalf("null data plus empty result sibling should be treated as an empty page")
+	}
+
+	pascalSuccessFalse := json.RawMessage(` + "`" + `{"Success": false, "Data": null}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(pascalSuccessFalse, "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("PascalCase failed JSend null data envelope = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
+	if !isEmptyPageResponse(pascalSuccessFalse) {
+		t.Fatalf("PascalCase failed JSend null data envelope should be treated as an empty page")
+	}
+
+	pascalStatusFail := json.RawMessage(` + "`" + `{"Status": "Failed", "Data": null}` + "`" + `)
+	if !isEmptyPageResponse(pascalStatusFail) {
+		t.Fatalf("PascalCase status=Failed null data envelope should be treated as an empty page")
+	}
+
+	statusSuccess := json.RawMessage(` + "`" + `{"status": "success", "data": null}` + "`" + `)
+	if isEmptyPageResponse(statusSuccess) {
+		t.Fatalf("status=success null data envelope should not be treated as an empty page")
+	}
+}
+
 func TestLookupFieldValuePascalCase(t *testing.T) {
 	obj := map[string]any{"Id": "abc", "OrderTotal": float64(42)}
 
@@ -4104,7 +4427,7 @@ func TestExtractObjectIDPascalCaseIdWinsOverUppercaseID(t *testing.T) {
 	require.NoError(t, os.WriteFile(storeTestPath, []byte(storeInlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItemsPascalCase|TestLookupFieldValue", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems(PascalCase|JSend)|TestLookupFieldValue", "./internal/cli")
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractObjectID", "./internal/store")
 }
 
@@ -4353,13 +4676,13 @@ func TestGenerateStoreSubResourceUpsertBindingOrder(t *testing.T) {
 
 	// The argument bindings must follow that same order.
 	assert.Regexp(t,
-		`(?s)id,\s+lookupFieldValue\(obj, "domains_id"\),\s+string\(data\),\s+time\.Now\(\),`,
+		`(?s)id,\s+lookupFieldValue\(obj, "domains_id"\),\s+string\(data\),\s+time\.Now\(\)\.UTC\(\)\.Format\(time\.RFC3339\),`,
 		src,
 		"upsertVerifyTx binding order must match (id, domains_id, data, synced_at) column order")
 
 	// And the swapped order must be absent.
 	assert.NotRegexp(t,
-		`(?s)id,\s+string\(data\),\s+time\.Now\(\),\s+lookupFieldValue\(obj, "domains_id"\),`,
+		`(?s)id,\s+string\(data\),\s+time\.Now\(\)\.UTC\(\)\.Format\(time\.RFC3339\),\s+lookupFieldValue\(obj, "domains_id"\),`,
 		src,
 		"swapped (id, data, synced_at, fk) binding order must not be emitted")
 }
@@ -5076,6 +5399,122 @@ func TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields(t *test
 	}
 }
 
+func TestWriteThroughCacheNestedDataEnvelope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"success": true,
+		"warnings": [{"code": "slow-page"}],
+		"data": {
+			"certs": [
+				{"CertNo":"90001","Grade":"MS65"},
+				{"CertNo":"90002","Grade":"MS66"}
+			],
+			"pagination": {"has_more": false}
+		}
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id IN ('90001', '90002')` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("certs count after nested data envelope = %d, want 2", count)
+	}
+}
+
+func TestWriteThroughCacheSkipsMetadataErrorArray(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"success": true,
+		"errors": [{"code": "deprecation"}],
+		"warnings": [{"code": "slow-page"}],
+		"data": null
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("certs count after metadata error array envelope = %d, want 0", count)
+	}
+}
+
+func TestWriteThroughSingleArraySiblingSkipsPrimitiveArrays(t *testing.T) {
+	envelope := map[string]json.RawMessage{
+		"ids":    json.RawMessage(` + "`" + `[1, 2, 3]` + "`" + `),
+		"cursor": json.RawMessage(` + "`" + `"next"` + "`" + `),
+	}
+	items, ok := extractWriteThroughSingleArraySibling(envelope, decodeWriteThroughNonEmptyArray)
+	if ok || len(items) != 0 {
+		t.Fatalf("primitive array sibling = %d/%v, want no extracted resource items", len(items), ok)
+	}
+}
+
+func TestWriteThroughCacheCachesObjectWithChildArray(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"CertNo":"91000",
+		"line_items":[{"id":"li_1"}],
+		"Grade":"MS64"
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '91000'` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("certs count after child-array detail object = %d, want 1", count)
+	}
+}
+
+func TestWriteThroughCacheSkipsNestedEmptyListEnvelope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"success": true,
+		"data": {
+			"certs": [],
+			"pagination": {"has_more": false}
+		}
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("certs count after nested empty-list envelope = %d, want 0", count)
+	}
+}
+
 // TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata guards the
 // flip side: a real list envelope with pagination metadata fields
 // (next_cursor, has_more, etc.) plus an empty array must still skip
@@ -5105,7 +5544,7 @@ func TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata(t *testing.T) 
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName|TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields|TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName|TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields|TestWriteThroughCacheNestedDataEnvelope|TestWriteThroughCacheSkipsMetadataErrorArray|TestWriteThroughSingleArraySiblingSkipsPrimitiveArrays|TestWriteThroughCacheCachesObjectWithChildArray|TestWriteThroughCacheSkipsNestedEmptyListEnvelope|TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata", "./internal/cli")
 }
 
 func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
@@ -5372,6 +5811,15 @@ func TestGeneratedOutput_HasSelectFlag(t *testing.T) {
 	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
 	assert.True(t, strings.Contains(string(rootGo), "select"), "root.go should contain the --select flag")
+}
+
+func TestGeneratedRootTimeoutDefaultIs60s(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootGo), `rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 60*time.Second, "Request timeout")`)
 }
 
 func TestGeneratedOutput_HasErrorHints(t *testing.T) {
@@ -8002,7 +8450,7 @@ func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing
 
 	orders, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "orders.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(orders), "Hidden: true",
+	assert.Regexp(t, `Hidden:\s+true`, string(orders),
 		"raw resource parent must be Hidden so the api browser finds it")
 }
 
@@ -9979,8 +10427,9 @@ func TestIsSyncAccessWarningClassification(t *testing.T) {
 }
 
 // TestGeneratedSyncMaxPagesAndStickyCursor verifies that the generated
-// sync command (a) defaults --max-pages to 100 (covers <=10k items/resource
-// at default page size; bigger resources opt in explicitly), (b) emits a
+// sync command (a) defaults --max-pages to 0 so normal runs are unlimited,
+// with a bounded dogfood default only when the operator did not pass the flag,
+// (b) emits a
 // structured sync_warning with reason "max_pages_cap_hit" on BOTH the flat
 // and dependent-resource code paths when the cap is reached, and (c) breaks
 // the pagination loop with a "stuck_pagination" sync_warning when the API
@@ -10046,11 +10495,16 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	require.NoError(t, err)
 	syncContent := string(syncGo)
 
-	// (a) Default --max-pages is 100 (covers <=10k items per resource at
-	// the default page size of 100; the old 10-page default silently
-	// truncated reference resources at 1000 items).
-	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
-		"sync.go must declare --max-pages with default 100")
+	// (a) Default --max-pages is 0 (unlimited) for normal users. Dogfood
+	// keeps a bounded default unless the operator explicitly passed the flag.
+	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 0,`,
+		"sync.go must declare --max-pages with default 0")
+	assert.Contains(t, syncContent, `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
+		"sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
+	assert.Contains(t, syncContent, `maxPages = 10`,
+		"sync.go must keep a dogfood-only page cap")
+	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
+		"sync.go must not retain the old finite 100-page default")
 	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"sync.go must not retain the old 10-page default")
 
@@ -10090,8 +10544,9 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	// (b4) The cap-hit guard must consume an effective value derived from
 	// both --latest-only AND --since. When --since is set, --latest-only is
 	// already a no-op for the maxPages pin (block at sync.go.tmpl ~154),
-	// and any cap hit reflects the default 100-page limit — a real anomaly
-	// worth surfacing. Passing the raw --latest-only flag value would
+	// and any cap hit reflects an explicit operator limit or the dogfood
+	// safety limit, a real anomaly worth surfacing. Passing the raw
+	// --latest-only flag value would
 	// silently suppress legitimate warnings on the --latest-only --since
 	// combined path. Pin the derivation and the callsites that consume it.
 	assert.Contains(t, syncContent,
@@ -10240,6 +10695,16 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 	require.NoError(t, err)
 
 	assertVerifyEnvConcurrencyPin(t, string(syncGo), naming.CLI(gqlSpec.Name)+"/internal/cliutil", "GraphQL sync.go")
+	assert.Contains(t, string(syncGo), "sinceTS = ts.UTC().Format(time.RFC3339)",
+		"GraphQL sync --since must normalize duration-derived timestamps to UTC before query filters consume them")
+	assert.Contains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 0,`,
+		"GraphQL sync.go must declare --max-pages with default 0")
+	assert.Contains(t, string(syncGo), `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
+		"GraphQL sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
+	assert.Contains(t, string(syncGo), `maxPages = 10`,
+		"GraphQL sync.go dogfood cap must still bound generated syncs to 10 pages")
+	assert.NotContains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
+		"GraphQL sync.go must not retain the old 10-page default")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
@@ -11174,6 +11639,162 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_TemplatedIDFieldOverrideWins|TestUpsertBatch_GenericFallbackList|TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses")
 }
 
+func TestGeneratedSyncIDFieldOverridesFromMemberPathParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Path Param IDs
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /identity-providers:
+    get:
+      operationId: listIdentityProviders
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    idpId: {type: string}
+                    name: {type: string}
+  /identity-providers/{idpId}:
+    get:
+      operationId: getIdentityProvider
+      parameters:
+        - name: idpId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  idpId: {type: string}
+                  name: {type: string}
+`))
+	require.NoError(t, err)
+	profile := profiler.Profile(apiSpec)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "identity-providers", profile.SyncableResources[0].Name)
+	assert.Equal(t, "idpId", profile.SyncableResources[0].IDField)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(syncGo), `"identity-providers": "idpId",`)
+	assert.Contains(t, string(storeGo), `"identity-providers": "idpId",`)
+}
+
+func TestGeneratedDependentSyncIDFieldOverridesFromMemberPathParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Dependent Path Param IDs
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /sites:
+    get:
+      operationId: listSites
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+                    name: {type: string}
+  /sites/{siteId}/identity-providers:
+    get:
+      operationId: listSiteIdentityProviders
+      parameters:
+        - name: siteId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    idpId: {type: string}
+                    name: {type: string}
+  /sites/{siteId}/identity-providers/{idpId}:
+    get:
+      operationId: getSiteIdentityProvider
+      parameters:
+        - name: siteId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: idpId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  idpId: {type: string}
+                  name: {type: string}
+`))
+	require.NoError(t, err)
+	profile := profiler.Profile(apiSpec)
+	require.Len(t, profile.DependentSyncResources, 1)
+	assert.Equal(t, "identity_providers", profile.DependentSyncResources[0].Name)
+	assert.Equal(t, "idpId", profile.DependentSyncResources[0].IDField)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+	require.Len(t, gen.profile.DependentSyncResources, 1)
+	assert.Equal(t, "identity_providers", gen.profile.DependentSyncResources[0].Name)
+	assert.Equal(t, "idpId", gen.profile.DependentSyncResources[0].IDField)
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(syncGo), `"identity_providers": "idpId",`)
+	assert.Contains(t, string(storeGo), `"identity_providers": "idpId",`)
+}
+
 func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	t.Parallel()
 
@@ -11375,6 +11996,129 @@ func TestGenerateGraphQLCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:                "shopify-query",
+		Description:         "Shopify Admin GraphQL query fixture",
+		Version:             "2026-04",
+		BaseURL:             "https://example.myshopify.com",
+		GraphQLEndpointPath: "/admin/api/2026-04/graphql.json",
+		Auth:                spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/shopify-query-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Description: "Orders",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "Get an order",
+						ResponsePath: "data.order",
+						Params:       []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						Response:     spec.ResponseDef{Type: "object", Item: "Order"},
+					},
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List orders",
+						ResponsePath: "data.orders.nodes",
+						Params: []spec.Param{
+							{Name: "first", Type: "integer", Default: 100},
+							{Name: "after", Type: "string"},
+							{Name: "query", Type: "string", Description: "Shopify search filter"},
+						},
+						Pagination: &spec.Pagination{
+							Type:           "cursor",
+							LimitParam:     "first",
+							CursorParam:    "after",
+							NextCursorPath: "data.orders.pageInfo.endCursor",
+							HasMoreField:   "data.orders.pageInfo.hasNextPage",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Order"},
+					},
+				},
+			},
+			"fulfillment-orders": {
+				Description: "Fulfillment orders",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "Get a fulfillment order",
+						ResponsePath: "data.fulfillmentOrder",
+						Params:       []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						Response:     spec.ResponseDef{Type: "object", Item: "FulfillmentOrder"},
+					},
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List fulfillment orders",
+						ResponsePath: "data.fulfillmentOrders.nodes",
+						Params: []spec.Param{
+							{Name: "first", Type: "integer", Default: 100},
+							{Name: "after", Type: "string"},
+							{Name: "before", Type: "string"},
+						},
+						Pagination: &spec.Pagination{
+							Type:           "cursor",
+							LimitParam:     "first",
+							CursorParam:    "after",
+							NextCursorPath: "data.fulfillmentOrders.pageInfo.endCursor",
+							HasMoreField:   "data.fulfillmentOrders.pageInfo.hasNextPage",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "FulfillmentOrder"},
+					},
+				},
+			},
+			"customers": {
+				Description: "Customers",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List customers",
+						ResponsePath: "data.customers.nodes",
+						Params: []spec.Param{
+							{Name: "status", Type: "string"},
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Customer"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Order":            {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "name", Type: "string"}}},
+			"FulfillmentOrder": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "status", Type: "string"}}},
+			"Customer":         {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "email", Type: "string"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	ordersContent := generatedCLISourceContaining(t, outputDir, `variables["query"] = flagQuery`)
+	assert.Contains(t, ordersContent, `cmd.Flags().StringVar(&flagQuery, "query", "", "Shopify search filter")`)
+	assert.Contains(t, ordersContent, `if cmd.Flags().Changed("query") {`)
+	assert.Contains(t, ordersContent, `variables["query"] = flagQuery`)
+
+	queriesGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "queries.go"))
+	require.NoError(t, err)
+	queriesContent := string(queriesGo)
+	assert.Contains(t, queriesContent, "query($first: Int!, $after: String, $query: String)")
+	assert.Contains(t, queriesContent, "orders(first: $first, after: $after, query: $query)")
+	assert.Contains(t, queriesContent, "query($first: Int!, $after: String) {\n  fulfillmentOrders(first: $first, after: $after)")
+	assert.NotContains(t, queriesContent, "before: $before")
+	assert.NotContains(t, queriesContent, "fulfillmentOrders(first: $first, after: $after, query: $query)")
+	assert.Contains(t, queriesContent, "query {\n  customers {\n")
+	assert.NotContains(t, queriesContent, "query()")
+	assert.NotContains(t, queriesContent, "customers()")
+}
+
 func TestGraphQLFieldSelectionSupportsNestedSelections(t *testing.T) {
 	t.Parallel()
 
@@ -11486,8 +12230,17 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 		"graphql.go must render GraphQLEndpointPath into a const")
 	assert.NotContains(t, graphqlGo, `c.Post("/graphql"`,
 		"graphql.go must not retain the hardcoded /graphql path after PR-1")
-	assert.Contains(t, graphqlGo, "c.Post(ctx, graphqlEndpointPath",
-		"Query/Mutate must post against the rendered constant, not a literal")
+	queryBody := generatedFunctionBody(t, graphqlGo, "func (c *Client) Query(")
+	assert.Contains(t, queryBody, "c.PostQueryWithParams(ctx, graphqlEndpointPath",
+		"Query must use the read-only POST helper against the rendered constant")
+	assert.NotContains(t, queryBody, "c.Post(ctx, graphqlEndpointPath",
+		"GraphQL reads must not use the verify-gated POST helper")
+
+	mutateBody := generatedFunctionBody(t, graphqlGo, "func (c *Client) Mutate(")
+	assert.Contains(t, mutateBody, "c.Post(ctx, graphqlEndpointPath",
+		"GraphQL mutations must stay on the verify-gated POST helper")
+	assert.NotContains(t, mutateBody, "c.PostQueryWithParams(ctx, graphqlEndpointPath",
+		"GraphQL mutations must not use the read-only POST helper")
 
 	// The config struct must carry the templated BaseURL through unchanged so
 	// PR-2 can resolve {shop} against SHOPIFY_SHOP at Load() time without
@@ -11508,6 +12261,20 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 	).Replace(rawURL)
 	assert.Equal(t, expectedFinalURL, resolved,
 		"BaseURL + GraphQLEndpointPath must resolve to the Shopify Admin endpoint after env substitution")
+}
+
+func generatedFunctionBody(t *testing.T, src, signature string) string {
+	t.Helper()
+
+	start := strings.Index(src, signature)
+	require.NotEqual(t, -1, start, "generated source must contain %s", signature)
+
+	rest := src[start:]
+	next := strings.Index(rest[1:], "\nfunc ")
+	if next == -1 {
+		return rest
+	}
+	return rest[:next+1]
 }
 
 // shopifyTemplateVarsTestSpec returns a Shopify-shape APISpec used by
@@ -11675,6 +12442,55 @@ func TestBuildURLPassthroughWhenNoPlaceholders(t *testing.T) {
 	const want = "https://api.example.com/v1/items"
 	if got != want {
 		t.Errorf("got %q, want %q (no substitution should be attempted)", got, want)
+	}
+}
+
+func TestBuildURLSubstitutesTemplatedSchemeAndHost(t *testing.T) {
+	templateVarEnvNames["protocol"] = "SHOPIFY_PROTOCOL"
+	templateVarEnvNames["host"] = "SHOPIFY_HOST"
+	t.Cleanup(func() {
+		delete(templateVarEnvNames, "protocol")
+		delete(templateVarEnvNames, "host")
+	})
+
+	vars := map[string]string{
+		"protocol": "http",
+		"host":     "localhost:41184",
+	}
+	got, err := buildURL("{protocol}://{host}", "/notes", vars)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	const want = "http://localhost:41184/notes"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		vars    map[string]string
+		wantErr string
+	}{
+		{
+			name:    "missing protocol",
+			vars:    map[string]string{"host": "localhost:41184"},
+			wantErr: "SHOPIFY_PROTOCOL not set",
+		},
+		{
+			name:    "missing host",
+			vars:    map[string]string{"protocol": "http"},
+			wantErr: "SHOPIFY_HOST not set",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildURL("{protocol}://{host}", "/notes", tc.vars)
+			if err == nil {
+				t.Fatal("expected missing template variable error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected error to contain %q; got %q", tc.wantErr, err.Error())
+			}
+		})
 	}
 }
 
@@ -13309,8 +14125,7 @@ func TestToKebab_SnakeCaseInput(t *testing.T) {
 //
 // Templates intentionally NOT in this list because they mutate state
 // or write user-visible files outside the local cache:
-// export.go.tmpl (--output writes user files), share_commands.go.tmpl
-// (snapshot dirs, git pushes), import/sync/feedback/graphql_sync (writes).
+// export.go.tmpl (--output writes user files), import/sync/feedback/graphql_sync (writes).
 func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 	t.Parallel()
 	annotationRE := regexp.MustCompile(`Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`)
@@ -13328,8 +14143,9 @@ func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 		{"agent_context.go.tmpl", 1, "walks cobra tree, emits introspection JSON"},
 		{"api_discovery.go.tmpl", 1, "walks cobra tree, prints help"},
 		{"tail.go.tmpl", 1, "polls API GETs, NDJSON to stdout"},
-		{"jobs.go.tmpl", 2, "list and get; prune is omitted (mutates ledger)"},
-		{"channel_workflow.go.tmpl", 2, "status and generated payment-plan are read-only; workflow parent and archive omitted"},
+		{"jobs.go.tmpl", 3, "parent help, list, and get; prune is omitted (mutates ledger)"},
+		{"channel_workflow.go.tmpl", 3, "parent help, status, and generated payment-plan are read-only; archive omitted"},
+		{"share_commands.go.tmpl", 1, "parent help only; share subcommands write files, local cache, or git state"},
 		{"workflows/pm_stale.go.tmpl", 1, "queries the local store for stale items"},
 		{"workflows/pm_orphans.go.tmpl", 1, "queries the local store for missing fields"},
 		{"workflows/pm_load.go.tmpl", 1, "queries the local store for workload distribution"},
@@ -13447,6 +14263,7 @@ func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13456,12 +14273,20 @@ import (
 )
 
 func runPMHintCommand(t *testing.T, dbPath string, args ...string) (string, string) {
+	return runPMCommand(t, dbPath, true, args...)
+}
+
+func runPMCommand(t *testing.T, dbPath string, asJSON bool, args ...string) (string, string) {
 	t.Helper()
 	root := RootCmd()
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
-	root.SetArgs(append(args, "--db", dbPath, "--json"))
+	fullArgs := append(args, "--db", dbPath)
+	if asJSON {
+		fullArgs = append(fullArgs, "--json")
+	}
+	root.SetArgs(fullArgs)
 	if err := root.Execute(); err != nil {
 		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr.String())
 	}
@@ -13505,6 +14330,62 @@ func TestPMWorkflowCommandEmitsSyncHints(t *testing.T) {
 	_, stderr = runPMHintCommand(t, dbPath, "load", "--max-age", "0")
 	if strings.Contains(stderr, "older than --max-age") {
 		t.Fatalf("stderr = %q, want max-age 0 to disable stale hint", stderr)
+	}
+}
+
+func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for _, raw := range []string{
+		` + "`" + `{"id":"issue-1","status":"open"}` + "`" + `,
+		` + "`" + `{"id":"issue-2","status":"open"}` + "`" + `,
+	} {
+		var payload json.RawMessage = []byte(raw)
+		var obj map[string]any
+		if err := json.Unmarshal(payload, &obj); err != nil {
+			t.Fatalf("unmarshal seed: %v", err)
+		}
+		id, _ := obj["id"].(string)
+		if err := db.Upsert("issues", id, payload); err != nil {
+			t.Fatalf("upsert seed: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout, _ := runPMCommand(t, dbPath, false, "analytics")
+	for _, want := range []string{"Resource Type\tCount", "issues\t2"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics text summary stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, _ = runPMCommand(t, dbPath, false, "analytics", "--type", "issues")
+	if !strings.Contains(stdout, "issues: 2 records") {
+		t.Fatalf("analytics text count stdout = %q, want issues count in configured output", stdout)
+	}
+
+	stdout, _ = runPMCommand(t, dbPath, false, "analytics", "--type", "issues", "--group-by", "status")
+	for _, want := range []string{"status\tCount", "open\t2"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics text group-by stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, _ = runPMHintCommand(t, dbPath, "analytics")
+	if !strings.Contains(stdout, ` + "`" + `"issues": 2` + "`" + `) {
+		t.Fatalf("analytics summary stdout = %q, want issues count in configured output", stdout)
+	}
+
+	stdout, _ = runPMHintCommand(t, dbPath, "analytics", "--type", "issues", "--group-by", "status")
+	for _, want := range []string{` + "`" + `"value": "open"` + "`" + `, ` + "`" + `"count": 2` + "`" + `} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics group-by stdout = %q, want %q in configured output", stdout, want)
+		}
 	}
 }
 `
@@ -14307,6 +15188,33 @@ func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(shareSrc),
 		"the share parent shares the same bug class and must wire the helper too")
+}
+
+func TestGenerateParentGroupersEmitReadOnlyAnnotation(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("parent-grouper-readonly")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items", Description: "List items"},
+				"get":  {Method: "GET", Path: "/items/{id}", Description: "Get one item"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	parentSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`, string(parentSrc),
+		"parent groupers must always emit mcp:read-only=true so cobratree/tools-audit treat them as read-only")
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(parentSrc),
+		"test fixture must exercise a parent grouper command, not a promoted single-endpoint command")
 }
 
 func TestGenerateParentCommandShorts_AreAgentGradeForGroupers(t *testing.T) {

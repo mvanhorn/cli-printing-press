@@ -121,3 +121,96 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 	_, parseErr := parser.ParseFile(fset, "events_create.go", got, parser.AllErrors)
 	require.NoError(t, parseErr, "generated file with nested-object body must parse as Go")
 }
+
+func TestGenerateInternalYAMLBodyObjectSchema(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.ParseBytes([]byte(`
+name: rich-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  graphql:
+    endpoints:
+      execute:
+        method: POST
+        path: /graphql
+        body:
+          properties:
+            query:
+              type: string
+              required: true
+              description: GraphQL document
+            variables:
+              type: object
+              description: GraphQL variables
+            serializerSettings:
+              type: object
+              properties:
+                includeNulls:
+                  type: bool
+            queries:
+              type: array
+              items:
+                type: object
+                properties:
+                  query:
+                    type: string
+`))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "rich-body-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	var got string
+	err = filepath.Walk(filepath.Join(outputDir, "internal", "cli"), func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() || filepath.Ext(path) != ".go" {
+			return err
+		}
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(src), "bodySerializerSettingsIncludeNulls") {
+			got = string(src)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, got)
+
+	for _, want := range []string{
+		`cmd.Flags().StringVar(&bodyQuery, "query"`,
+		`cmd.Flags().StringVar(&bodyVariables, "variables"`,
+		`cmd.Flags().BoolVar(&bodySerializerSettingsIncludeNulls, "serializer-settings-include-nulls"`,
+		`cmd.Flags().StringVar(&bodyQueries, "queries"`,
+		`json.Unmarshal([]byte(bodyVariables), &parsedVariables)`,
+		`json.Unmarshal([]byte(bodyQueries), &parsedQueries)`,
+		`nestedSerializerSettings["includeNulls"] = bodySerializerSettingsIncludeNulls`,
+		`body["serializerSettings"] = nestedSerializerSettings`,
+	} {
+		require.Containsf(t, got, want, "expected generated fragment %q", want)
+	}
+	require.Contains(t, got, `cmd.Flags().Changed("serializer-settings-include-nulls")`)
+	require.Contains(t, got, `cmd.Flags().Changed("query")`)
+
+	fset := token.NewFileSet()
+	_, parseErr := parser.ParseFile(fset, "graphql_execute.go", got, parser.AllErrors)
+	require.NoError(t, parseErr, "generated file from internal YAML object body schema must parse as Go")
+
+	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpGot := string(mcpSrc)
+	for _, want := range []string{
+		`mcplib.WithString("query", mcplib.Required(), mcplib.Description("GraphQL document"))`,
+		`mcplib.WithString("variables", mcplib.Description("GraphQL variables"))`,
+		`mcplib.WithBoolean("serializer-settings-include-nulls"`,
+		`mcplib.WithString("queries"`,
+		`PublicName: "serializer-settings-include-nulls", WireName: "includeNulls", Location: "body", BodyPath: []string{"serializerSettings", "includeNulls"}`,
+		`setNestedBodyArg(bodyArgs, binding.BodyPath, v)`,
+	} {
+		require.Containsf(t, mcpGot, want, "expected generated MCP fragment %q", want)
+	}
+	require.NotContains(t, mcpGot, `mcplib.WithString("queries-query"`)
+}
