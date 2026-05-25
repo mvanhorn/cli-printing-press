@@ -360,20 +360,31 @@ type ParseOptions struct {
 	// caller knows which one fits the printed CLI's intended auth model.
 	// Unknown names are ignored (default selection runs).
 	AuthPreference string
+	// SourceURL is the http(s) URL the spec was fetched from, when the spec
+	// is remote. Used to derive an absolute BaseURL for specs whose servers:
+	// block is relative-only (e.g. {url: /api/v3}). It does NOT affect $ref
+	// resolution (that uses Path/location).
+	SourceURL string
 }
 
 // ParseWithOptions is the canonical parser entry point; the older Parse* and
 // ParseFile* helpers delegate to it with default ParseOptions plus their own
 // path/lenient settings.
 func ParseWithOptions(data []byte, opts ParseOptions) (*spec.APISpec, error) {
+	var sourceURL *url.URL
+	if opts.SourceURL != "" {
+		if u, err := url.Parse(opts.SourceURL); err == nil {
+			sourceURL = u
+		}
+	}
 	if opts.Path == "" {
-		return parseWithLocation(data, opts.Lenient, opts.StrictRefs, nil, opts.AuthPreference)
+		return parseWithLocation(data, opts.Lenient, opts.StrictRefs, nil, sourceURL, opts.AuthPreference)
 	}
 	location, err := fileLocation(opts.Path)
 	if err != nil {
 		return nil, err
 	}
-	return parseWithLocation(data, opts.Lenient, opts.StrictRefs, location, opts.AuthPreference)
+	return parseWithLocation(data, opts.Lenient, opts.StrictRefs, location, sourceURL, opts.AuthPreference)
 }
 
 func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error) {
@@ -385,7 +396,7 @@ func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error)
 	return ParseWithOptions(data, opts)
 }
 
-func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
+func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url.URL, sourceURL *url.URL, authPreference string) (*spec.APISpec, error) {
 	var metadata specDataMetadata
 	if normalized, meta, err := normalizeSpecDataWithMetadata(data); err == nil {
 		data = normalized
@@ -557,6 +568,15 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 			baseURL = perOpURL
 			basePath = perOpPath
 		}
+	}
+	// Relative-only servers URL (e.g. `servers: [{url: /api/v3}]`) yields an
+	// empty BaseURL but a non-empty BasePath. If the spec was fetched from an
+	// http(s) URL, derive the absolute origin from that source so the generated
+	// client doesn't construct scheme-less request URLs. Uses the spec's source
+	// URL, not the ref-resolution location (which is file:// for local specs).
+	if baseURL == "" && basePath != "" && sourceURL != nil &&
+		(sourceURL.Scheme == "http" || sourceURL.Scheme == "https") && sourceURL.Host != "" {
+		baseURL = sourceURL.Scheme + "://" + sourceURL.Host
 	}
 	baseURLIsPlaceholder := false
 	if baseURL == "" && basePath == "" {
