@@ -71,6 +71,8 @@ func TestCobraFlagFuncForParamCursorOverride(t *testing.T) {
 			assert.Equal(t, tt.want, cobraFlagFuncForParam(tt.paramName, tt.paramType))
 		})
 	}
+	assert.Equal(t, "StringVar", cobraFlagFuncForParamRequired("all_day", "bool", true, false))
+	assert.Equal(t, "BoolVar", cobraFlagFuncForParamRequired("all_day", "bool", true, true))
 }
 
 func TestGoTypeForParamCursorOverride(t *testing.T) {
@@ -99,6 +101,8 @@ func TestGoTypeForParamCursorOverride(t *testing.T) {
 			assert.Equal(t, tt.want, goTypeForParam(tt.paramName, tt.paramType))
 		})
 	}
+	assert.Equal(t, "string", goTypeForParamRequired("all_day", "bool", true, false))
+	assert.Equal(t, "bool", goTypeForParamRequired("all_day", "bool", true, true))
 }
 
 func TestCobraFlagFuncAcceptsSpecScalarAliases(t *testing.T) {
@@ -148,6 +152,8 @@ func TestDefaultAndZeroValuesAcceptSpecScalarAliases(t *testing.T) {
 	assert.Equal(t, "0", zeroVal("integer"))
 	assert.Equal(t, "false", zeroVal("boolean"))
 	assert.Equal(t, "0.0", zeroVal("number"))
+	assert.Equal(t, `""`, defaultValForParamRequired(spec.Param{Name: "all_day", Type: "boolean"}, true, false))
+	assert.Equal(t, `""`, zeroValForParamRequired("all_day", "boolean", true, false))
 }
 
 func TestDefaultValForParamCursorOverride(t *testing.T) {
