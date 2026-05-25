@@ -210,7 +210,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
 
 		assert.False(t, pass)
-		assert.Contains(t, detail, "items has 0 rows after sync, expected at least 2")
+		assert.Contains(t, detail, "1 domain tables created but 0 rows after sync")
 	})
 
 	t.Run("fails when nested mock sync stores fewer rows than served", func(t *testing.T) {
@@ -224,6 +224,15 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 
 	t.Run("passes when sync stores rows", func(t *testing.T) {
 		binary := buildDataPipelineProbeBinary(t, 2)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t)
 
 		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
 
@@ -570,6 +579,59 @@ func main() {
 	os.Exit(1)
 }
 `, rowCount))
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		return
+	case "sql":
+		if len(args) < 2 {
+			os.Exit(1)
+		}
+		query := args[1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("settings")
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			if strings.Contains(query, "\"settings\"") {
+				fmt.Println(0)
+				return
+			}
+			if strings.Contains(query, "\"items\"") {
+				fmt.Println(2)
+				return
+			}
+			os.Exit(1)
+		}
+	}
+	os.Exit(1)
+}
+`)
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()

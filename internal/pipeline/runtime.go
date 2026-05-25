@@ -652,10 +652,10 @@ func runDataPipelineTest(binary, mode string, envFn func() []string, expectedRow
 			continue
 		}
 		count := parseCountOutput(countOut)
-		if expectedRows > 0 && count < expectedRows {
-			return false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", table, count, expectedRows, mode)
-		}
 		if count > 0 {
+			if expectedRows > 0 && count < expectedRows {
+				return false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", table, count, expectedRows, mode)
+			}
 			return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
 		}
 	}
