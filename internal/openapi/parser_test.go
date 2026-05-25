@@ -8336,6 +8336,32 @@ paths:
 		assert.Equal(t, "api.example.com", parsed.EndpointTemplateVarDefaults["host"])
 	})
 
+	t.Run("partial scheme host variables document malformed triple slash", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Partial Scheme Host API
+  version: 1.0.0
+servers:
+  - url: "{protocol}://{host}/v1"
+    variables:
+      protocol:
+        default: https
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "{protocol}:///v1", parsed.BaseURL,
+			"malformed specs with an undeclared host placeholder keep the runtime scheme URL shape")
+		assert.Empty(t, parsed.BasePath)
+		assert.Equal(t, []string{"protocol"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, "https", parsed.EndpointTemplateVarDefaults["protocol"])
+	})
+
 	t.Run("adjacent path placeholders without scheme stay relative", func(t *testing.T) {
 		data := []byte(`
 openapi: 3.0.3

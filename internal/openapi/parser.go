@@ -2961,6 +2961,9 @@ func hasRuntimeTemplateScheme(s string, defaults map[string]string) bool {
 		return false
 	}
 	matches := templateVarPattern.FindStringSubmatch(scheme)
+	// Only a single bare placeholder is an absolute runtime-template scheme.
+	// Compound schemes fall through to the legacy relative-path handling so
+	// malformed or intentionally relative inputs are not broadened silently.
 	if len(matches) != 2 || matches[0] != scheme {
 		return false
 	}
