@@ -1421,10 +1421,10 @@ func manifestNovelFeatureLeaves(dir string) map[string]bool {
 }
 
 // registeredCommandFiles returns the set of cli/*.go filenames whose command
-// constructor is referenced by root.go. Files without a registered constructor
-// should not inflate workflow/insight scores even if they match prefix or
-// behavioral heuristics — they're orphans, dead code, or half-built commands
-// that the user cannot actually invoke.
+// constructor is wired into the Cobra tree through AddCommand calls. Files
+// without a registered constructor should not inflate workflow/insight scores
+// even if they match prefix or behavioral heuristics — they're orphans, dead
+// code, or half-built commands that the user cannot actually invoke.
 //
 // Returns an empty map if root.go is missing or parsing yields no matches so
 // callers can fall open to the prior heuristic behavior (older or partial CLI
@@ -1435,21 +1435,9 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 		return map[string]bool{}
 	}
 
-	// Match every `newXxxCmd(` invocation — but not definitions. root.go may
-	// contain helper function declarations (e.g. `func newRootCmd()`) that we
-	// must not count as registrations. Strip `func Name(` declaration heads
-	// before scanning so only call-sites contribute to the ctor set.
-	funcDeclRe := regexp.MustCompile(`(?m)^func\s+\w+\s*\(`)
-	scanContent := funcDeclRe.ReplaceAllString(rootContent, "")
-
-	ctorRe := regexp.MustCompile(`\bnew([A-Z][A-Za-z0-9_]*)Cmd\s*\(`)
-	rootMatches := ctorRe.FindAllStringSubmatch(scanContent, -1)
-	if len(rootMatches) == 0 {
+	reachableCtors := addCommandConstructorCalls(rootContent)
+	if len(reachableCtors) == 0 {
 		return map[string]bool{}
-	}
-	reachableCtors := make(map[string]bool, len(rootMatches))
-	for _, m := range rootMatches {
-		reachableCtors["new"+m[1]+"Cmd"] = true
 	}
 
 	// Walk cli/*.go and map each file to the reachable constructor it defines.
@@ -1493,9 +1481,8 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 
 			result[name] = true
 			changed = true
-			callScanContent := funcDeclRe.ReplaceAllString(fileContent[name], "")
-			for _, m := range ctorRe.FindAllStringSubmatch(callScanContent, -1) {
-				reachableCtors["new"+m[1]+"Cmd"] = true
+			for ctor := range addCommandConstructorCalls(fileContent[name]) {
+				reachableCtors[ctor] = true
 			}
 		}
 		if !changed {
@@ -1503,6 +1490,52 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 		}
 	}
 	return result
+}
+
+func addCommandConstructorCalls(content string) map[string]bool {
+	file, err := parser.ParseFile(token.NewFileSet(), "", content, 0)
+	if err != nil {
+		return map[string]bool{}
+	}
+
+	ctors := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" {
+			return true
+		}
+		for _, arg := range call.Args {
+			if ctor := commandConstructorName(arg); ctor != "" {
+				ctors[ctor] = true
+			}
+		}
+		return true
+	})
+	return ctors
+}
+
+func commandConstructorName(expr ast.Expr) string {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return ""
+	}
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || !isCommandConstructorName(ident.Name) {
+		return ""
+	}
+	return ident.Name
+}
+
+func isCommandConstructorName(name string) bool {
+	if !strings.HasPrefix(name, "new") || !strings.HasSuffix(name, "Cmd") {
+		return false
+	}
+	stem := strings.TrimSuffix(strings.TrimPrefix(name, "new"), "Cmd")
+	return stem != "" && stem[0] >= 'A' && stem[0] <= 'Z'
 }
 
 func scoreWorkflows(dir string) int {
