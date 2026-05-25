@@ -1106,6 +1106,7 @@ func TestWriteMCPBManifest(t *testing.T) {
 			MCPBinary:   "rich-auth-pp-mcp",
 			MCPReady:    "full",
 			AuthType:    "api_key",
+			AuthKeyURL:  "https://rich-auth.example.com/oauth",
 			AuthEnvVars: []string{"RICH_API_KEY", "RICH_CLIENT_SECRET", "RICH_SESSION"},
 			AuthEnvVarSpecs: []spec.AuthEnvVar{
 				{Name: "RICH_API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Description: "Per-call API key."},
@@ -1145,6 +1146,7 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.False(t, session.Required)
 		assert.True(t, session.Sensitive)
 		assert.Equal(t, "Optional. Stores RICH_SESSION after it is harvested by the auth setup flow for the Rich Auth MCP server.", session.Description)
+		assert.NotContains(t, session.Description, "Get a credential from")
 	})
 
 	t.Run("composed apiKey + bearer surfaces sibling creds in user_config and env", func(t *testing.T) {
@@ -1191,6 +1193,11 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.True(t, clientID.Required)
 		assert.False(t, clientID.Sensitive)
 		assert.Equal(t, "Collects ST_CLIENT_ID for the auth setup flow used by the ServiceTitan Compose MCP server.", clientID.Description)
+		clientSecret, ok := got.UserConfig["st_client_secret"]
+		require.True(t, ok, "auth flow secrets must surface in user_config")
+		assert.True(t, clientSecret.Required)
+		assert.True(t, clientSecret.Sensitive)
+		assert.Equal(t, "Collects ST_CLIENT_SECRET for the auth setup flow used by the ServiceTitan Compose MCP server.", clientSecret.Description)
 	})
 
 	t.Run("sibling header credential surfaces even when primary env vars are absent", func(t *testing.T) {

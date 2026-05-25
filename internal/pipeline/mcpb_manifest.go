@@ -475,7 +475,7 @@ func envVarDescription(m CLIManifest, envVar spec.AuthEnvVar, required bool) str
 		b.WriteString(m.APIName)
 	}
 	b.WriteString(" MCP server.")
-	if m.AuthKeyURL != "" {
+	if m.AuthKeyURL != "" && envVar.EffectiveKind() != spec.AuthEnvVarKindHarvested {
 		b.WriteString(" Get a credential from ")
 		b.WriteString(m.AuthKeyURL)
 		b.WriteString(".")
