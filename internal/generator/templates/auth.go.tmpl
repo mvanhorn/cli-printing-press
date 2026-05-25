@@ -4,11 +4,13 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -63,7 +65,11 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 {{- end}}
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then run:")
-			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth login --client-id <id> --client-secret <secret>")
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli login")
+{{- else}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth login")
+{{- end}}
 			if !launch {
 				return nil
 			}
@@ -117,161 +123,11 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate via OAuth2",
+		Annotations: map[string]string{
+			"mcp:hidden": "true",
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if clientID == "" {
-				return fmt.Errorf("--client-id is required")
-			}
-
-			cfg, err := config.Load(flags.configPath)
-			if err != nil {
-				return err
-			}
-
-			stateBytes := make([]byte, 16)
-			if _, err := rand.Read(stateBytes); err != nil {
-				return fmt.Errorf("generating state: %w", err)
-			}
-			state := hex.EncodeToString(stateBytes)
-
-			listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-			if err != nil {
-				return fmt.Errorf("starting callback server: %w", err)
-			}
-			defer listener.Close()
-
-			redirectURI := fmt.Sprintf("http://localhost:%d/callback", listener.Addr().(*net.TCPAddr).Port)
-
-			authURL := ""
-{{- if .Auth.AuthorizationURL}}
-			authURL = cfg.AuthorizationURL
-			if authURL == "" {
-				authURL = "{{.Auth.AuthorizationURL}}"
-			}
-{{- end}}
-{{- $refreshMech := .Auth.ParseRefreshTokenMechanism}}
-			params := url.Values{
-				"client_id":     {clientID},
-				"redirect_uri":  {redirectURI},
-				"response_type": {"code"},
-				"state":         {state},
-			}
-{{- if eq $refreshMech.Kind "query"}}
-			params.Set({{printf "%q" $refreshMech.Key}}, {{printf "%q" $refreshMech.Value}})
-{{- end}}
-			scopes := []string{ {{- range .Auth.Scopes}}"{{.}}", {{end}} }
-{{- if eq $refreshMech.Kind "scope"}}
-			scopes = append(scopes, {{printf "%q" $refreshMech.Scope}})
-{{- end}}
-			if len(scopes) > 0 {
-				params.Set("scope", strings.Join(scopes, " "))
-			}
-
-			fullURL := authURL + "?" + params.Encode()
-			fmt.Fprintf(os.Stderr, "Opening browser for authentication...\n")
-			fmt.Fprintf(os.Stderr, "If the browser doesn't open, visit:\n%s\n\n", fullURL)
-			openBrowser(fullURL)
-
-			codeCh := make(chan string, 1)
-			errCh := make(chan error, 1)
-
-			mux := http.NewServeMux()
-			mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Query().Get("state") != state {
-					errCh <- fmt.Errorf("state mismatch")
-					http.Error(w, "State mismatch", http.StatusBadRequest)
-					return
-				}
-				if errMsg := r.URL.Query().Get("error"); errMsg != "" {
-					errCh <- fmt.Errorf("auth error: %s", errMsg)
-					http.Error(w, errMsg, http.StatusBadRequest)
-					return
-				}
-				code := r.URL.Query().Get("code")
-				if code == "" {
-					errCh <- fmt.Errorf("no code in callback")
-					http.Error(w, "No code", http.StatusBadRequest)
-					return
-				}
-				w.Header().Set("Content-Type", "text/html")
-				fmt.Fprint(w, "<html><body><h2>Authentication successful!</h2><p>You can close this tab.</p></body></html>")
-				codeCh <- code
-			})
-
-			server := &http.Server{Handler: mux}
-			go server.Serve(listener)
-
-			var code string
-			select {
-			case code = <-codeCh:
-			case err := <-errCh:
-				return err
-			case <-time.After(2 * time.Minute):
-				return fmt.Errorf("authentication timed out after 2 minutes")
-			}
-
-			server.Shutdown(context.Background())
-
-			tokenURL := ""
-{{- if .Auth.TokenURL}}
-			tokenURL = cfg.TokenURL
-			if tokenURL == "" {
-				tokenURL = "{{.Auth.TokenURL}}"
-			}
-{{- end}}
-			tokenParams := url.Values{
-				"grant_type":   {"authorization_code"},
-				"code":         {code},
-				"redirect_uri": {redirectURI},
-				"client_id":    {clientID},
-			}
-			if clientSecret != "" {
-				tokenParams.Set("client_secret", clientSecret)
-			}
-
-			resp, err := http.PostForm(tokenURL, tokenParams)
-			if err != nil {
-				return fmt.Errorf("exchanging code for token: %w", err)
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode >= 400 {
-				var body map[string]any
-				if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
-					return fmt.Errorf("exchanging code for token: HTTP %d: %v", resp.StatusCode, body)
-				}
-				return fmt.Errorf("exchanging code for token: HTTP %d", resp.StatusCode)
-			}
-
-			var tokenResp struct {
-				AccessToken  string `json:"access_token"`
-				RefreshToken string `json:"refresh_token"`
-				ExpiresIn    int    `json:"expires_in"`
-				TokenType    string `json:"token_type"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-				return fmt.Errorf("parsing token response: %w", err)
-			}
-			if tokenResp.AccessToken == "" {
-				return fmt.Errorf("no access token in response")
-			}
-
-			// Guard against non-conformant servers that return expires_in: 0.
-			// A zero-duration expiry resolves to time.Now(), which authHeader()
-			// then treats as expired and triggers a refresh on every call.
-			expiry := time.Time{}
-			if tokenResp.ExpiresIn > 0 {
-				expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-			}
-			if err := cfg.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, tokenResp.RefreshToken, expiry); err != nil {
-				return fmt.Errorf("saving tokens: %w", err)
-			}
-
-			if expiry.IsZero() {
-				fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expiry not provided.\n", green("OK"))
-			} else {
-				fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expires at %s\n", green("OK"), expiry.Format(time.RFC3339))
-			}
-			return nil
+			return runOAuthLogin(cmd, flags, clientID, clientSecret, port)
 		},
 	}
 
@@ -280,6 +136,218 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().IntVar(&port, "port", 8085, "Local callback server port")
 
 	return cmd
+}
+
+func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int) error {
+	cfg, err := config.Load(flags.configPath)
+	if err != nil {
+		return err
+	}
+	clientID, clientSecret, err = resolveOAuthCredentials(cmd, flags, cfg, clientID, clientSecret)
+	if err != nil {
+		return err
+	}
+
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return fmt.Errorf("generating state: %w", err)
+	}
+	state := hex.EncodeToString(stateBytes)
+
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return fmt.Errorf("starting callback server: %w", err)
+	}
+	defer listener.Close()
+
+	redirectURI := fmt.Sprintf("http://localhost:%d/callback", listener.Addr().(*net.TCPAddr).Port)
+
+	authURL := ""
+{{- if .Auth.AuthorizationURL}}
+	authURL = cfg.AuthorizationURL
+	if authURL == "" {
+		authURL = "{{.Auth.AuthorizationURL}}"
+	}
+{{- end}}
+{{- $refreshMech := .Auth.ParseRefreshTokenMechanism}}
+	params := url.Values{
+		"client_id":     {clientID},
+		"redirect_uri":  {redirectURI},
+		"response_type": {"code"},
+		"state":         {state},
+	}
+{{- if eq $refreshMech.Kind "query"}}
+	params.Set({{printf "%q" $refreshMech.Key}}, {{printf "%q" $refreshMech.Value}})
+{{- end}}
+	scopes := []string{ {{- range .Auth.Scopes}}"{{.}}", {{end}} }
+{{- if eq $refreshMech.Kind "scope"}}
+	scopes = append(scopes, {{printf "%q" $refreshMech.Scope}})
+{{- end}}
+	if len(scopes) > 0 {
+		params.Set("scope", strings.Join(scopes, " "))
+	}
+
+	fullURL := authURL + "?" + params.Encode()
+	fmt.Fprintf(os.Stderr, "Opening browser for authentication...\n")
+	fmt.Fprintf(os.Stderr, "If the browser doesn't open, visit:\n%s\n\n", fullURL)
+	openBrowser(fullURL)
+
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != state {
+			errCh <- fmt.Errorf("state mismatch")
+			http.Error(w, "State mismatch", http.StatusBadRequest)
+			return
+		}
+		if errMsg := r.URL.Query().Get("error"); errMsg != "" {
+			errCh <- fmt.Errorf("auth error: %s", errMsg)
+			http.Error(w, errMsg, http.StatusBadRequest)
+			return
+		}
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			errCh <- fmt.Errorf("no code in callback")
+			http.Error(w, "No code", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html><body><h2>Authentication successful!</h2><p>You can close this tab.</p></body></html>")
+		codeCh <- code
+	})
+
+	server := &http.Server{Handler: mux}
+	go server.Serve(listener)
+
+	var code string
+	select {
+	case code = <-codeCh:
+	case err := <-errCh:
+		return err
+	case <-time.After(2 * time.Minute):
+		return fmt.Errorf("authentication timed out after 2 minutes")
+	}
+
+	server.Shutdown(context.Background())
+
+	tokenURL := ""
+{{- if .Auth.TokenURL}}
+	tokenURL = cfg.TokenURL
+	if tokenURL == "" {
+		tokenURL = "{{.Auth.TokenURL}}"
+	}
+{{- end}}
+	tokenParams := url.Values{
+		"grant_type":   {"authorization_code"},
+		"code":         {code},
+		"redirect_uri": {redirectURI},
+		"client_id":    {clientID},
+	}
+	if clientSecret != "" {
+		tokenParams.Set("client_secret", clientSecret)
+	}
+
+	resp, err := http.PostForm(tokenURL, tokenParams)
+	if err != nil {
+		return fmt.Errorf("exchanging code for token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+			return fmt.Errorf("exchanging code for token: HTTP %d: %v", resp.StatusCode, body)
+		}
+		return fmt.Errorf("exchanging code for token: HTTP %d", resp.StatusCode)
+	}
+
+	var tokenResp struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		TokenType    string `json:"token_type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return fmt.Errorf("parsing token response: %w", err)
+	}
+	if tokenResp.AccessToken == "" {
+		return fmt.Errorf("no access token in response")
+	}
+
+	// Guard against non-conformant servers that return expires_in: 0.
+	// A zero-duration expiry resolves to time.Now(), which authHeader()
+	// then treats as expired and triggers a refresh on every call.
+	expiry := time.Time{}
+	if tokenResp.ExpiresIn > 0 {
+		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	}
+	if err := cfg.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, tokenResp.RefreshToken, expiry); err != nil {
+		return fmt.Errorf("saving tokens: %w", err)
+	}
+
+	if expiry.IsZero() {
+		fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expiry not provided.\n", green("OK"))
+	} else {
+		fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expires at %s\n", green("OK"), expiry.Format(time.RFC3339))
+	}
+	return nil
+}
+
+func resolveOAuthCredentials(cmd *cobra.Command, flags *rootFlags, cfg *config.Config, clientID, clientSecret string) (string, string, error) {
+	explicitClientID := clientID
+	if clientID == "" && cfg != nil {
+		clientID = cfg.ClientID
+	}
+	if clientSecret == "" && cfg != nil && (explicitClientID == "" || explicitClientID == cfg.ClientID) {
+		clientSecret = cfg.ClientSecret
+	}
+	if clientID != "" {
+		return clientID, clientSecret, nil
+	}
+	if flags.noInput {
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
+		return "", "", fmt.Errorf("OAuth2 client ID is required; pass --client-id, set {{envName .Name}}_CLIENT_ID, or run '{{.Name}}-pp-cli login' without --no-input")
+{{- else}}
+		return "", "", fmt.Errorf("OAuth2 client ID is required; pass --client-id, set {{envName .Name}}_CLIENT_ID, or run '{{.Name}}-pp-cli auth login' without --no-input")
+{{- end}}
+	}
+	reader := bufio.NewReader(cmd.InOrStdin())
+	printOAuthCredentialHint(cmd.ErrOrStderr())
+	clientID, err := promptOAuthCredential(cmd, reader, "OAuth2 Client ID")
+	if err != nil {
+		return "", "", err
+	}
+	if clientID == "" {
+		return "", "", fmt.Errorf("OAuth2 client ID is required")
+	}
+	if clientSecret == "" {
+		clientSecret, err = promptOAuthCredential(cmd, reader, "OAuth2 Client Secret (press Enter if not required)")
+		if err != nil {
+			return "", "", err
+		}
+	}
+	return clientID, clientSecret, nil
+}
+
+func printOAuthCredentialHint(w io.Writer) {
+{{- if .Auth.KeyURL}}
+	fmt.Fprintln(w, "Create OAuth credentials at: {{.Auth.KeyURL}}")
+{{- else if .WebsiteURL}}
+	fmt.Fprintln(w, "See API docs for OAuth app registration: {{.WebsiteURL}}")
+{{- else}}
+	fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
+{{- end}}
+}
+
+func promptOAuthCredential(cmd *cobra.Command, reader *bufio.Reader, label string) (string, error) {
+	fmt.Fprintf(cmd.ErrOrStderr(), "%s: ", label)
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("reading %s: %w", strings.ToLower(label), err)
+	}
+	return strings.TrimSpace(line), nil
 }
 
 func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
@@ -306,7 +374,11 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			if !authed {
-				fmt.Fprintf(w, "  %s Not authenticated. Run 'auth login' to authenticate.\n", red("FAIL"))
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
+				fmt.Fprintf(w, "  %s Not authenticated. Run '{{.Name}}-pp-cli login' to authenticate.\n", red("FAIL"))
+{{- else}}
+				fmt.Fprintf(w, "  %s Not authenticated. Run '{{.Name}}-pp-cli auth login' to authenticate.\n", red("FAIL"))
+{{- end}}
 				return nil
 			}
 
@@ -318,7 +390,11 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				if cfg.RefreshToken != "" {
 					fmt.Fprintf(w, "  %s Token expired (will auto-refresh on next request)\n", yellow("WARN"))
 				} else {
-					fmt.Fprintf(w, "  %s Token expired. Run 'auth login' to re-authenticate.\n", red("FAIL"))
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
+					fmt.Fprintf(w, "  %s Token expired. Run '{{.Name}}-pp-cli login' to re-authenticate.\n", red("FAIL"))
+{{- else}}
+					fmt.Fprintf(w, "  %s Token expired. Run '{{.Name}}-pp-cli auth login' to re-authenticate.\n", red("FAIL"))
+{{- end}}
 				}
 			}
 
