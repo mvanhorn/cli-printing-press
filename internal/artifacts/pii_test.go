@@ -292,7 +292,7 @@ func TestFindPII_FileScoping(t *testing.T) {
 	write(t, filepath.Join(root, "in-scope.json"), pii)
 	write(t, filepath.Join(root, "in-scope.yaml"), pii)
 	write(t, filepath.Join(root, "in-scope.md"), pii)
-	write(t, filepath.Join(root, "in_scope_test.go"), pii)
+	write(t, filepath.Join(root, "out_of_scope_test.go"), pii)
 	write(t, filepath.Join(root, "out-of-scope.go"), pii)
 	write(t, filepath.Join(root, "out-of-scope.txt"), pii)
 	write(t, filepath.Join(root, "out-of-scope.lock"), pii)
@@ -302,14 +302,16 @@ func TestFindPII_FileScoping(t *testing.T) {
 
 	files := uniqueFiles(findings)
 	assert.ElementsMatch(t, []string{
-		"in-scope.json", "in-scope.yaml", "in-scope.md", "in_scope_test.go",
+		"in-scope.json", "in-scope.yaml", "in-scope.md",
 	}, files)
 }
 
 func TestFindPII_DirScoping(t *testing.T) {
 	root := t.TempDir()
 	pii := `"phone": "(415) 234-5678"`
-	// .manuscripts and testdata are in scope regardless of extension
+	// .manuscripts is in scope regardless of extension. testdata is
+	// intentionally excluded because generated fixtures commonly carry
+	// synthetic placeholder values.
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "testdata", "fixtures"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "internal"), 0755))
@@ -322,8 +324,30 @@ func TestFindPII_DirScoping(t *testing.T) {
 
 	files := uniqueFiles(findings)
 	assert.Contains(t, files, ".manuscripts/run1/raw.har")
-	assert.Contains(t, files, "testdata/fixtures/sample.txt")
+	assert.NotContains(t, files, "testdata/fixtures/sample.txt")
 	assert.NotContains(t, files, "internal/client.go")
+}
+
+func TestFindPII_SkipsFixtureAndToolingWorkspaces(t *testing.T) {
+	root := t.TempDir()
+	pii := `"email": "leak@gmail.com"`
+	write(t, filepath.Join(root, "helpers_test.go"), pii)
+	write(t, filepath.Join(root, "testdata", "fixtures", "sample.json"), pii)
+	write(t, filepath.Join(root, ".omc", "state.json"), pii)
+	write(t, filepath.Join(root, ".claude", "scratch.md"), pii)
+	write(t, filepath.Join(root, "config.yaml"), pii)
+	write(t, filepath.Join(root, "README.md"), pii)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+
+	files := uniqueFiles(findings)
+	assert.NotContains(t, files, "helpers_test.go")
+	assert.NotContains(t, files, "testdata/fixtures/sample.json")
+	assert.NotContains(t, files, ".omc/state.json")
+	assert.NotContains(t, files, ".claude/scratch.md")
+	assert.Contains(t, files, "config.yaml")
+	assert.Contains(t, files, "README.md")
 }
 
 func TestFindPII_ExcludedFiles(t *testing.T) {
@@ -364,10 +388,11 @@ func TestFindPII_RootVendorSpecExempt(t *testing.T) {
 	assert.Contains(t, files, "config.yaml")
 }
 
-// Negative: nested spec.yaml files are captured content, not vendor
-// source. They stay in scope so browser-sniff captures keep flagging.
+// Negative: nested spec.yaml files outside fixture directories are captured
+// content, not vendor source. They stay in scope so browser-sniff captures keep
+// flagging.
 // Two scope re-entry paths are exercised:
-//   - high-risk dirs (.manuscripts/, testdata/) match via highRiskDirGlobs
+//   - high-risk dirs (.manuscripts/) match via highRiskDirGlobs
 //   - arbitrary subdirs (output/) match via the *.yaml entry in
 //     highRiskFileGlobs; pinned here as a regression guard against a
 //     future tweak that broadens the exemption from depth-1 to all paths
@@ -390,7 +415,7 @@ func TestFindPII_NestedSpecYamlStillScans(t *testing.T) {
 
 	files := uniqueFiles(findings)
 	assert.Contains(t, files, ".manuscripts/run1/research/spec.yaml")
-	assert.Contains(t, files, "testdata/spec.yaml")
+	assert.NotContains(t, files, "testdata/spec.yaml")
 	assert.Contains(t, files, "output/spec.yaml")
 }
 
@@ -482,9 +507,8 @@ func TestFindPIIWithOptions_ManuscriptsVendorSpecExemptUsesStagedPath(t *testing
 }
 
 // Negative regression: vendor-spec content detection only applies inside
-// .manuscripts/. A file at docs/api.yaml or testdata/openapi.json with
-// OpenAPI markers still scans — those are committed, hand-curated
-// artifacts that could legitimately accumulate real PII.
+// .manuscripts/. A file at docs/api.yaml with OpenAPI markers still scans —
+// committed, hand-curated artifacts could legitimately accumulate real PII.
 func TestFindPII_VendorSpecOutsideManuscriptsStillScans(t *testing.T) {
 	root := t.TempDir()
 	openapiYAML := `openapi: 3.0.0
@@ -500,9 +524,7 @@ paths:
               email: leaked@victim.com
 `
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs"), 0755))
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "testdata"), 0755))
 	write(t, filepath.Join(root, "docs", "api.yaml"), openapiYAML)
-	write(t, filepath.Join(root, "testdata", "openapi.json"), `{"openapi":"3.0.0","info":{"title":"x"},"paths":{"/u":{"post":{"requestBody":{"content":{"application/json":{"example":{"email":"leaked@victim.com"}}}}}}}}`)
 
 	findings, err := FindPII(root)
 	require.NoError(t, err)
@@ -510,8 +532,6 @@ paths:
 	files := uniqueFiles(findings)
 	assert.Contains(t, files, "docs/api.yaml",
 		"vendor-spec exemption must not bypass docs/ committed artifacts")
-	assert.Contains(t, files, "testdata/openapi.json",
-		"vendor-spec exemption must not bypass testdata fixtures")
 }
 
 // Negative regression: HARs and session-state captures under

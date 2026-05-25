@@ -30,7 +30,7 @@ func newPIIAuditCmd() *cobra.Command {
 		Use:   "pii-audit <cli-dir>",
 		Short: "Mechanically audit a printed CLI's high-risk files for customer-PII shapes",
 		Long: `Walks <cli-dir>'s high-risk file scope (JSON, YAML, Markdown,
-*_test.go, .manuscripts/**, testdata/**) and reports per-line findings
+.manuscripts/**) and reports per-line findings
 that signal PII-shape leaks. Detection is purely mechanical: card
 last-4 with context tokens, email addresses, US-shaped phone numbers,
 ZIP+4, and street-address-line shapes. The agent layer
