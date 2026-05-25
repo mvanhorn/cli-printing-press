@@ -391,21 +391,22 @@ raw response JSON directly into tables:
 
 1. Read `internal/types/<resource>.go` and `internal/store/<resource>.go` for the
    resource being cached. Use the typed insert/upsert helpers those files emit
-   whenever they exist.
-2. Decode the API response into the typed struct before persistence. Do not
+   whenever they exist. If helpers are missing for a generated resource, create
+   them before writing any persistence code.
+2. Check the response shape against the spec schema and a real sample response
+   before deciding the insert mapping is correct.
+3. Decode the API response into the typed struct before persistence. Do not
    build `INSERT INTO ...` statements from untyped `map[string]any` or raw
    `json.RawMessage` values unless the table is a custom polish-owned table
    declared in hand-authored migrations; see the raw SQL exception below.
-3. Verify the target table from the resource type, not from whichever query the
+4. Verify the target table from the resource type, not from whichever query the
    novel command happened to start with. A command that fetched `<child>`
    records must insert `<child>` rows, not parent rows or a convenient adjacent
    table.
-4. Normalize nested response identifiers before insert. If the API wraps the
+5. Normalize nested response identifiers before insert. If the API wraps the
    scalar id inside an object that also contains metadata, extract the scalar id
    field and store that value; never store the whole id object as a primary key
    or foreign-key reference.
-5. Check the response shape against the spec schema and a real sample response
-   before deciding the insert mapping is correct.
 
 Raw `database/sql` writes are acceptable only for custom polish-owned tables
 declared in hand-authored migrations. In that case, keep the table schema
