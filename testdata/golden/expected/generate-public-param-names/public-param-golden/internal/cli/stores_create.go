@@ -23,6 +23,12 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  public-param-golden-pp-cli stores create --store-code example-value",
 		Annotations: map[string]string{"pp:endpoint": "stores.create", "pp:method": "POST", "pp:path": "/stores"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Bare invocation of a command with required input prints help
+			// instead of pflag's terse "required flag not set" error. Optional-
+			// only read commands fall through so a bare call still executes.
+			if cmd.Flags().NFlag() == 0 && len(args) == 0 && !flags.dryRun {
+				return cmd.Help()
+			}
 			if !stdinBody {
 				if !(cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) && !flags.dryRun {
 					return fmt.Errorf("required flag \"%s\" not set", "store-code")

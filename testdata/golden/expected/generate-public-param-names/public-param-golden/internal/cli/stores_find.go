@@ -22,6 +22,12 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  public-param-golden-pp-cli stores find --address example-value --city example-value --location-id 550e8400-e29b-41d4-a716-446655440000",
 		Annotations: map[string]string{"pp:endpoint": "stores.find", "pp:method": "GET", "pp:path": "/power/store-locator", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Bare invocation of a command with required input prints help
+			// instead of pflag's terse "required flag not set" error. Optional-
+			// only read commands fall through so a bare call still executes.
+			if cmd.Flags().NFlag() == 0 && len(args) == 0 && !flags.dryRun {
+				return cmd.Help()
+			}
 			if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "address")
 			}
