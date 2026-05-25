@@ -1623,11 +1623,17 @@ type Endpoint struct {
 	ObservedAuth []string `yaml:"observed_auth,omitempty" json:"observed_auth,omitempty"`
 	Tier         string   `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
-	// endpoint, populated either by a path-item-level `x-resource-id` extension
-	// or, for OpenAPI specs, by walking the response schema (id → name → first
-	// required scalar). Empty when no key could be resolved; templates fall back
-	// to runtime list scanning. Internal YAML specs may set this directly.
+	// endpoint, populated either by a path-item-level `x-resource-id` extension,
+	// a resource member path parameter that also appears in the response item,
+	// or, for OpenAPI specs, by walking the response schema. Empty when no key
+	// could be resolved; templates fall back to runtime list scanning. Internal
+	// YAML specs may set this directly.
 	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
+	// IDFieldFromPathParam is parser-only provenance used by the profiler to
+	// promote member-path primary-key hints onto same-resource list endpoints
+	// without re-inferring how IDField was resolved. It is intentionally not
+	// serialized as part of the internal spec contract.
+	IDFieldFromPathParam bool `yaml:"-" json:"-"`
 	// Critical flags this endpoint's resource as essential to a sync run. When
 	// true, a per-resource failure is treated as a hard failure even under the
 	// new (non-strict) exit-code policy. Populated from the path-item-level
