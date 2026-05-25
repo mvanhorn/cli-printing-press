@@ -105,3 +105,66 @@ func TestGeneratedGraphQLListValidatesLocalStrategyBeforeLocalDispatch(t *testin
 	require.NotEqual(t, -1, localDispatchIdx)
 	require.Less(t, validateIdx, localDispatchIdx)
 }
+
+func TestGeneratedGraphQLGetHonorsLocalStrategy(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("graphql-get-local-strategy")
+	apiSpec.BaseURL = "https://api.example.com/graphql"
+	items := apiSpec.Resources["items"]
+	listEndpoint := items.Endpoints["list"]
+	listEndpoint.Method = "GET"
+	listEndpoint.Path = "/graphql"
+	items.Endpoints["list"] = listEndpoint
+	items.Endpoints["get"] = spec.Endpoint{
+		Method:             "GET",
+		Path:               "/graphql",
+		Description:        "Get item",
+		DataSourceStrategy: spec.DataSourceStrategyLocal,
+		Params: []spec.Param{{
+			Name:        "id",
+			Type:        "string",
+			Required:    true,
+			Positional:  true,
+			Description: "Item ID",
+		}},
+	}
+	apiSpec.Resources["items"] = items
+
+	storeOutputDir := filepath.Join(t.TempDir(), "graphql-get-local-strategy-store-pp-cli")
+	storeGen := New(apiSpec, storeOutputDir)
+	storeGen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, storeGen.Generate())
+
+	storeGetSrc := generatedCLIFileContaining(t, storeOutputDir, `client.ItemsGetQuery`)
+	require.Contains(t, storeGetSrc, `validateDataSourceStrategy(flags, "local")`)
+	require.Contains(t, storeGetSrc, `flags.dataSource == "local" || "local" == "local"`)
+	require.Contains(t, storeGetSrc, `localReason = "strategy_local"`)
+	require.Contains(t, storeGetSrc, `resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "items", false, path+"/"+args[0], nil, localReason)`)
+
+	noStoreOutputDir := filepath.Join(t.TempDir(), "graphql-get-local-strategy-nostore-pp-cli")
+	noStoreGen := New(apiSpec, noStoreOutputDir)
+	noStoreGen.VisionSet = VisionTemplateSet{Export: true}
+	require.NoError(t, noStoreGen.Generate())
+
+	noStoreGetSrc := generatedCLIFileContaining(t, noStoreOutputDir, `client.ItemsGetQuery`)
+	require.Contains(t, noStoreGetSrc, `data_source_strategy local requires the local store data layer`)
+}
+
+func generatedCLIFileContaining(t *testing.T, outputDir, needle string) string {
+	t.Helper()
+
+	cliFiles, err := os.ReadDir(filepath.Join(outputDir, "internal", "cli"))
+	require.NoError(t, err)
+	for _, file := range cliFiles {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".go") {
+			continue
+		}
+		src := readGeneratedFile(t, outputDir, "internal", "cli", file.Name())
+		if strings.Contains(src, needle) {
+			return src
+		}
+	}
+	require.Failf(t, "generated CLI file not found", "no generated cli file contained %q", needle)
+	return ""
+}
