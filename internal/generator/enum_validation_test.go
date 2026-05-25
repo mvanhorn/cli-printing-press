@@ -10,9 +10,9 @@ import (
 )
 
 // TestEnumParamEmitsValidation ensures that params declared with enum constraints
-// cause the generated command to (a) emit runtime validation that warns on
-// unknown values and (b) include a "(one of: ...)" hint in the flag description.
-// Regression guard for #205.
+// cause the generated command to (a) emit runtime validation that rejects
+// unknown values with the valid set and (b) include a "(one of: ...)" hint in
+// the flag description. Regression guard for #205 and #1139.
 func TestEnumParamEmitsValidation(t *testing.T) {
 	t.Parallel()
 
@@ -59,8 +59,46 @@ func TestEnumParamEmitsValidation(t *testing.T) {
 	// Runtime validation block emitted.
 	require.Contains(t, code, `allowedStatus := []string{"active", "archived", "pending"}`,
 		"runtime validation must declare the allowed set")
-	require.Contains(t, code, `warning: --%s %q not in allowed set %v`,
-		"runtime validation must warn on unknown value")
+	require.Contains(t, code, `return fmt.Errorf("invalid value %q for --%s: must be one of %v"`,
+		"runtime validation must REJECT (return error) on unknown value, not warn")
+	require.NotContains(t, code, `"warning: --%s %q not in allowed set`,
+		"the old warn-and-continue enum behavior must be gone")
+}
+
+// TestEnumParamPromotedCommandRejects covers the promoted-command template's
+// enum path (command_promoted.go.tmpl), which carries the same warn→reject
+// change as the endpoint template but is otherwise only validated by reading
+// template source. A single-endpoint resource is promoted; its enum param must
+// reject invalid values with the same error.
+func TestEnumParamPromotedCommandRejects(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("enum-promoted")
+	apiSpec.Resources["themes"] = spec.Resource{
+		Description: "Themes",
+		Endpoints: map[string]spec.Endpoint{
+			"search": {
+				Method:      "GET",
+				Path:        "/themes/search",
+				Description: "Search themes by mode",
+				Params: []spec.Param{
+					{Name: "mode", Type: "string", Required: false, Enum: []string{"light", "dark"}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "enum-promoted-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "promoted_themes.go"))
+	require.NoError(t, err)
+	code := string(src)
+
+	require.Contains(t, code, `allowedMode := []string{"light", "dark"}`,
+		"promoted command must declare the allowed enum set")
+	require.Contains(t, code, `return fmt.Errorf("invalid value %q for --%s: must be one of %v"`,
+		"promoted command must reject unknown enum values, not warn")
 }
 
 // TestNonEnumParamDoesNotEmitValidation ensures the enum block is gated
