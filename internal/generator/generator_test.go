@@ -11678,6 +11678,21 @@ func TestBuildURLPassthroughWhenNoPlaceholders(t *testing.T) {
 	}
 }
 
+func TestBuildURLSubstitutesTemplatedSchemeAndHost(t *testing.T) {
+	vars := map[string]string{
+		"protocol": "http",
+		"host":     "localhost:41184",
+	}
+	got, err := buildURL("{protocol}://{host}", "/notes", vars)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	const want = "http://localhost:41184/notes"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestBuildURLEmptyVarValueIsTreatedAsUnset(t *testing.T) {
 	// An env var that exists but is empty must produce the same actionable
 	// error as one that's not set — otherwise a stray "export FOO=" silently
