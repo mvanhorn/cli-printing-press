@@ -32,6 +32,7 @@ learn-loop-example/internal/cli/root.go
 # search_patterns, entity_lookups, teach_log_metadata. The additive
 # v2 -> v3 migration is the contract every learn-enabled CLI inherits.
 learn-loop-example/internal/store/store.go
+learn-loop-example/internal/store/extras.go
 
 # Learn package shape — one representative file per subpackage so a
 # template rename / signature change in any subpackage trips the gate:
