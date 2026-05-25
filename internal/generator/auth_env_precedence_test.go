@@ -536,6 +536,158 @@ func TestAuthHeader_OAuth2DoesNotUseSetupEnvVars(t *testing.T) {
 	}
 }
 
+// TestAuthHeader_BearerAuthFlowInputsPreferAccessToken pins the OpenAPI
+// session-handshake shape where the declared Bearer scheme lists setup inputs
+// via x-auth-vars kind=auth_flow_input. Those values are only used by auth
+// login; the stored AccessToken is the request credential.
+func TestAuthHeader_BearerAuthFlowInputsPreferAccessToken(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bearer-flow-input")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "bearer_token",
+		Header: "Authorization",
+		Format: "Bearer {token}",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "BEARER_FLOW_IDENTIFIER", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: false},
+			{Name: "BEARER_FLOW_APP_PASSWORD", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: true},
+			{Name: "BEARER_FLOW_FALLBACK_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "bearer-flow-input-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	body := authHeaderBody(t, string(cfgSrc))
+
+	identifierCheck := "if c." + resolveEnvVarField("BEARER_FLOW_IDENTIFIER") + ` != ""`
+	passwordCheck := "if c." + resolveEnvVarField("BEARER_FLOW_APP_PASSWORD") + ` != ""`
+	fallbackCheck := "if c." + resolveEnvVarField("BEARER_FLOW_FALLBACK_TOKEN") + ` != ""`
+	require.NotContains(t, body, identifierCheck, "auth_flow_input identifier must not be used as a bearer token")
+	require.NotContains(t, body, passwordCheck, "auth_flow_input secret must not be used as a bearer token")
+	require.Contains(t, body, fallbackCheck, "per_call fallback token must remain usable")
+	require.Contains(t, body, `if c.AccessToken != ""`, "stored AccessToken must remain the Bearer request credential")
+
+	const runtimeTest = `package config
+
+import "testing"
+
+func TestBearerAuthFlowInputsUseAccessToken(t *testing.T) {
+	t.Setenv("BEARER_FLOW_IDENTIFIER", "alice.example")
+	t.Setenv("BEARER_FLOW_APP_PASSWORD", "app-password")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg.AccessToken = "access-jwt"
+
+	if got := cfg.AuthHeader(); got != "Bearer access-jwt" {
+		t.Fatalf("AuthHeader() = %q, want Bearer access-jwt", got)
+	}
+	if cfg.AuthSource != "oauth2" {
+		t.Fatalf("AuthSource after AuthHeader() = %q, want oauth2", cfg.AuthSource)
+	}
+}
+
+func TestBearerAuthFlowInputsAloneDoNotAuthenticate(t *testing.T) {
+	t.Setenv("BEARER_FLOW_IDENTIFIER", "alice.example")
+	t.Setenv("BEARER_FLOW_APP_PASSWORD", "app-password")
+	t.Setenv("BEARER_FLOW_FALLBACK_TOKEN", "")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if got := cfg.AuthHeader(); got != "" {
+		t.Fatalf("AuthHeader() = %q, want empty", got)
+	}
+}
+
+func TestBearerAuthFlowPerCallFallbackStillAuthenticates(t *testing.T) {
+	t.Setenv("BEARER_FLOW_IDENTIFIER", "alice.example")
+	t.Setenv("BEARER_FLOW_APP_PASSWORD", "app-password")
+	t.Setenv("BEARER_FLOW_FALLBACK_TOKEN", "fallback-token")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if got := cfg.AuthHeader(); got != "Bearer fallback-token" {
+		t.Fatalf("AuthHeader() = %q, want Bearer fallback-token", got)
+	}
+	}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "bearer_flow_input_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestBearerAuthFlow")
+}
+
+// TestAuthHeader_BearerHarvestedInputsPreferAccessToken pins the harvested
+// env-var variant of the non-request Bearer flow. Harvested values are setup
+// artifacts, not values to replay directly as request credentials.
+func TestAuthHeader_BearerHarvestedInputsPreferAccessToken(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bearer-harvested-input")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "bearer_token",
+		Header: "Authorization",
+		Format: "Bearer {token}",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "BEARER_HARVESTED_SESSION", Kind: spec.AuthEnvVarKindHarvested, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "bearer-harvested-input-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	body := authHeaderBody(t, string(cfgSrc))
+
+	harvestedCheck := "if c." + resolveEnvVarField("BEARER_HARVESTED_SESSION") + ` != ""`
+	require.NotContains(t, body, harvestedCheck, "harvested session material must not be used as a bearer token")
+	require.Contains(t, body, `if c.AccessToken != ""`, "stored AccessToken must remain the Bearer request credential")
+
+	const runtimeTest = `package config
+
+import "testing"
+
+func TestBearerHarvestedInputsUseAccessToken(t *testing.T) {
+	t.Setenv("BEARER_HARVESTED_SESSION", "harvested-cookie")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg.AccessToken = "access-jwt"
+
+	if got := cfg.AuthHeader(); got != "Bearer access-jwt" {
+		t.Fatalf("AuthHeader() = %q, want Bearer access-jwt", got)
+	}
+}
+
+func TestBearerHarvestedInputsAloneDoNotAuthenticate(t *testing.T) {
+	t.Setenv("BEARER_HARVESTED_SESSION", "harvested-cookie")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if got := cfg.AuthHeader(); got != "" {
+		t.Fatalf("AuthHeader() = %q, want empty", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "bearer_harvested_input_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestBearerHarvestedInputs")
+}
+
 func TestAuthLoginEnvVarsUseShellSafePrefix(t *testing.T) {
 	t.Parallel()
 

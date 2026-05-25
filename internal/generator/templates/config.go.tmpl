@@ -310,6 +310,7 @@ func (c *Config) AuthHeader() string {
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $isAuthEnvVarORCase := .Auth.IsAuthEnvVarORCase}}
 {{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
+{{- $hasNonRequestEnvVars := or (hasAuthEnvVarKind .Auth.EnvVarSpecs "auth_flow_input") (hasAuthEnvVarKind .Auth.EnvVarSpecs "harvested")}}
 {{- if and .BearerRefresh.Enabled (eq .Auth.Type "bearer_token") (ne .Auth.EffectiveOAuth2Grant "client_credentials")}}
 	if c.AuthHeaderVal != "" && c.AccessToken == "" {
 		return c.AuthHeaderVal
@@ -440,10 +441,27 @@ func (c *Config) AuthHeader() string {
 		{{- end}}
 	}
 {{- else}}
+{{- if $hasNonRequestEnvVars}}
+	// Flow-input and harvested env vars are not request credentials. When a
+	// Bearer-shaped spec declares them, auth login stores the usable token in
+	// AccessToken, so it must win before considering any per-call fallbacks.
+	if c.AccessToken != "" {
+		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
+			c.AuthSource = "oauth2"
+		}
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		{{- else}}
+		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
+		{{- end}}
+	}
+{{- else}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
+{{- end}}
 {{- end}}
 {{- if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
+{{- if eq .Kind "per_call"}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		if c.AuthSource == "" {
 			c.AuthSource = "env:{{.Name}}"
@@ -460,9 +478,12 @@ func (c *Config) AuthHeader() string {
 		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
 		{{- end}}
 	}
+{{- end}}
 {{- end}}
 {{- else}}
-	{{- with $canonicalEnvVar}}
+{{- if .Auth.EnvVarSpecs}}
+{{- range .Auth.EnvVarSpecs}}
+{{- if eq .Kind "per_call"}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		if c.AuthSource == "" {
 			c.AuthSource = "env:{{.Name}}"
@@ -479,9 +500,30 @@ func (c *Config) AuthHeader() string {
 		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
 		{{- end}}
 	}
-	{{- end}}
 {{- end}}
-{{- if not .BearerRefresh.Enabled}}
+{{- end}}
+{{- else}}
+{{- with $canonicalEnvVar}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		if c.AuthSource == "" {
+			c.AuthSource = "env:{{.Name}}"
+		}
+		{{- if $.Auth.Format}}
+		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			{{- if ne (envVarPlaceholder .Name) "token"}}
+			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+		})
+		{{- else}}
+		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
+		{{- end}}
+	}
+{{- end}}
+{{- end}}
+{{- end}}
+{{- if and (not .BearerRefresh.Enabled) (not $hasNonRequestEnvVars)}}
 	if c.AccessToken != "" {
 		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
 			c.AuthSource = "oauth2"
