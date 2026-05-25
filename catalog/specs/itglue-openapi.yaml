@@ -118,10 +118,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/ContactUpdateRequest"
+              $ref: "#/components/schemas/OrganizationContactUpdateRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/ContactUpdateRequest"
+              $ref: "#/components/schemas/OrganizationContactUpdateRequest"
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
@@ -738,6 +738,50 @@ components:
     OrganizationContactAttributes:
       type: object
       required: [name]
+      properties:
+        first-name:
+          type: string
+        last-name:
+          type: string
+        name:
+          type: string
+        title:
+          type: string
+        email:
+          type: string
+          format: email
+        notes:
+          type: string
+          nullable: true
+        important:
+          type: boolean
+        contact-type-id:
+          type: integer
+        location-id:
+          type: integer
+          nullable: true
+        archived:
+          type: boolean
+          description: Included for non-destructive deactivation where available in the tenant.
+      additionalProperties: true
+    OrganizationContactUpdateRequest:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [type, id, attributes]
+          properties:
+            type:
+              type: string
+              enum: [contacts]
+            id:
+              type: string
+            attributes:
+              $ref: "#/components/schemas/OrganizationContactUpdateAttributes"
+          additionalProperties: true
+    OrganizationContactUpdateAttributes:
+      type: object
       properties:
         first-name:
           type: string
