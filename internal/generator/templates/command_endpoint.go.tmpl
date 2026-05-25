@@ -173,12 +173,16 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if and $isGraphQLEndpoint (eq .EndpointName "list")}}
-			variables := map[string]any{
-				"first": flagFirst,
+			variables := map[string]any{}
+{{- range graphqlListParams .Endpoint}}
+{{- if or .Required .Default (eq .Name "first")}}
+			variables["{{.Name}}"] = flag{{camel (paramIdent .)}}
+{{- else}}
+			if {{flagChangedExpr .}} {
+				variables["{{.Name}}"] = flag{{camel (paramIdent .)}}
 			}
-			if flagAfter != "" {
-				variables["after"] = flagAfter
-			}
+{{- end}}
+{{- end}}
 {{- if $supportsAllPagination}}
 			var data json.RawMessage
 			if flagAll && !flags.dryRun {
