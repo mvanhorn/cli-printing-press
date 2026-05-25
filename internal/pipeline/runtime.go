@@ -694,8 +694,8 @@ func isAuxiliaryPipelineTable(table string, totalTables int) bool {
 	if totalTables <= 1 {
 		return false
 	}
-	switch strings.ToLower(table) {
-	case "config", "configs", "metadata", "settings":
+	switch strings.ToLower(strings.TrimSpace(table)) {
+	case "config", "configs", "metadata", "schema_migrations", "settings":
 		return true
 	default:
 		return false
