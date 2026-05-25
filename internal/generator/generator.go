@@ -4688,19 +4688,22 @@ func endpointUsesCSVArray(endpoint spec.Endpoint) bool {
 	if endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint) {
 		return false
 	}
-	var walk func([]spec.Param) bool
-	walk = func(params []spec.Param) bool {
+	var walk func([]spec.Param, int) bool
+	walk = func(params []spec.Param, depth int) bool {
+		if depth > maxBodyFlagDepth {
+			return false
+		}
 		for _, p := range params {
 			if isStringCSVArrayParam(p) {
 				return true
 			}
-			if walk(p.Fields) {
+			if walk(p.Fields, depth+1) {
 				return true
 			}
 		}
 		return false
 	}
-	return walk(endpoint.Body)
+	return walk(endpoint.Body, 0)
 }
 
 func hasCSVArrayRequest(apiSpec *spec.APISpec) bool {

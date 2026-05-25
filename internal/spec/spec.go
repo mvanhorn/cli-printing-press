@@ -2694,6 +2694,9 @@ func validateBodyParamTypes(context string, params []Param) error {
 				if p.ItemTemplate == nil {
 					return fmt.Errorf("%s: string_csv_array item_type object requires item_template", label)
 				}
+				if _, ok := p.ItemTemplate.(map[string]any); !ok {
+					return fmt.Errorf("%s: string_csv_array item_type object requires item_template to be an object", label)
+				}
 			default:
 				return fmt.Errorf("%s: string_csv_array item_type must be string or object", label)
 			}

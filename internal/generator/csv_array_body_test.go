@@ -66,6 +66,22 @@ func TestGenerateCSVArrayBodyFields(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./cmd/csv-array-body-pp-cli")
 }
 
+func TestEndpointUsesCSVArrayRespectsBodyFlagDepth(t *testing.T) {
+	t.Parallel()
+
+	deepCSV := spec.Param{Name: "csv", Type: "string_csv_array", ItemType: "string"}
+	for i := 4; i >= 0; i-- {
+		deepCSV = spec.Param{Name: "level", Type: "object", Fields: []spec.Param{deepCSV}}
+	}
+
+	require.False(t, endpointUsesCSVArray(spec.Endpoint{Method: "POST", Body: []spec.Param{deepCSV}}))
+	require.True(t, endpointUsesCSVArray(spec.Endpoint{Method: "POST", Body: []spec.Param{{
+		Name:   "level",
+		Type:   "object",
+		Fields: []spec.Param{{Name: "csv", Type: "string_csv_array", ItemType: "string"}},
+	}}}))
+}
+
 func readGeneratedCLIFileContaining(t *testing.T, outputDir, needle string) string {
 	t.Helper()
 

@@ -166,6 +166,32 @@ resources:
 	assert.Equal(t, "required", template["type"])
 }
 
+func TestParseCSVArrayObjectTemplateMustBeObject(t *testing.T) {
+	yamlSpec := []byte(`
+name: csv-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          - name: attendees
+            type: string_csv_array
+            item_type: object
+            item_template:
+              - not
+              - an
+              - object
+`)
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "string_csv_array item_type object requires item_template to be an object")
+}
+
 func TestValidateNameRequiresKebabSlug(t *testing.T) {
 	baseSpec := func(name string) []byte {
 		return []byte(`
