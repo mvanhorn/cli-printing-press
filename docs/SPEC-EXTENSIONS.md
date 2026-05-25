@@ -39,7 +39,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
-| `x-pp-safe-probe` | operation | Phase 1.9 reachability guidance | No |
+| `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 
 ## `info` Extensions
