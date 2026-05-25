@@ -336,13 +336,49 @@ func TestValidatePhase5Gate_NoAuthRequiresPassMarker(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "none"},
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.False(t, result.Passed)
 	assert.Contains(t, result.Detail, "no-auth")
+}
+
+func TestValidatePhase5Gate_NoAuthLANUnreachableSkipAllowed(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "sonos", CLIName: "sonos-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "sonos",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "none", LocalNetworkOnly: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "skip", result.Status)
+}
+
+func TestValidatePhase5Gate_NoAuthLANUnreachableRequiresLANOnlyEvidence(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "public-data", CLIName: "public-data-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "public-data",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "local_network_only")
 }
 
 func TestValidatePhase5Gate_LocalDatastoreNoAuthAllowsSkipMarker(t *testing.T) {
@@ -354,13 +390,49 @@ func TestValidatePhase5Gate_LocalDatastoreNoAuthAllowsSkipMarker(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "local_source_requires_operator_database",
+		SkipReason:    phase5SkipReasonLocalSourceRequiresDatabase,
 		AuthContext:   Phase5AuthContext{Type: "none", LocalSQLite: true},
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.True(t, result.Passed, result.Detail)
 	assert.Equal(t, "skip", result.Status)
+}
+
+func TestValidatePhase5Gate_LocalDatastoreNoAuthRejectsUnrecognizedSkipReason(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none", SpecFormat: "sqlite"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    "operator deferred",
+		AuthContext:   Phase5AuthContext{Type: "none", LocalSQLite: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "local datastore")
+}
+
+func TestValidatePhase5Gate_LocalDatastoreNoAuthRejectsLANUnreachableSkip(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none", SpecFormat: "sqlite"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "none", LocalNetworkOnly: true},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "local datastore")
 }
 
 func TestValidatePhase5Gate_APIKeyMissingSkipAllowed(t *testing.T) {
@@ -372,13 +444,32 @@ func TestValidatePhase5Gate_APIKeyMissingSkipAllowed(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "api_key", APIKeyAvailable: false},
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.True(t, result.Passed, result.Detail)
 	assert.Equal(t, "skip", result.Status)
+}
+
+func TestValidatePhase5Gate_CredentialAuthRejectsLANSkipReason(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "api_key"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonLANUnreachableFromHost,
+		AuthContext:   Phase5AuthContext{Type: "api_key", APIKeyAvailable: false},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "not valid")
+	assert.Contains(t, result.Detail, "api_key")
 }
 
 func TestValidatePhase5Gate_CookieAuthNotSkippedByMissingAPIKey(t *testing.T) {
@@ -390,7 +481,7 @@ func TestValidatePhase5Gate_CookieAuthNotSkippedByMissingAPIKey(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "cookie", APIKeyAvailable: false},
 	})
 
@@ -408,7 +499,7 @@ func TestValidatePhase5Gate_SkipCannotOverrideManifestAuthType(t *testing.T) {
 		RunID:         "run-1",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "api_key", APIKeyAvailable: false},
 	})
 
@@ -490,7 +581,7 @@ func TestValidatePhase5Gate_SkipMarkerRequiresIdentity(t *testing.T) {
 		APIName:       "test",
 		Status:        "skip",
 		Level:         "none",
-		SkipReason:    "auth_required_no_credential",
+		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "api_key", APIKeyAvailable: false},
 	})
 
