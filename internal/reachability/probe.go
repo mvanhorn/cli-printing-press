@@ -67,22 +67,12 @@ func Probe(ctx context.Context, url string, opts Options) (*Result, error) {
 	if runStdlib {
 		pr := runRung(ctx, url, TransportStdlib, opts)
 		result.Probes = append(result.Probes, pr)
-		if pr.Status > 0 && len(pr.Evidence) == 0 && statusIsClear(pr.Status) {
-			result.Mode = ModeStandardHTTP
-			result.Confidence = 0.95
-			result.Recommendation = Recommendation{
-				Runtime:   ModeStandardHTTP,
-				Rationale: "Plain stdlib HTTP returned a non-error response; no special transport needed.",
-			}
-			result.Partial = partial
-			return result, nil
-		}
 	}
 
 	if runSurf {
 		pr := runRung(ctx, url, TransportSurfChrome, opts)
 		result.Probes = append(result.Probes, pr)
-		if pr.Status > 0 && len(pr.Evidence) == 0 && statusIsClear(pr.Status) {
+		if pr.Status > 0 && len(pr.Evidence) == 0 && statusIsClear(pr.Status) && !stdlibCleared(result) {
 			result.Mode = ModeBrowserHTTP
 			result.Confidence = 0.85
 			result.Recommendation = Recommendation{
@@ -94,8 +84,96 @@ func Probe(ctx context.Context, url string, opts Options) (*Result, error) {
 		}
 	}
 
+	if stdlibCleared(result) {
+		classifyStdlibSuccess(result, partial)
+		return result, nil
+	}
+
 	classifyFailure(result, partial)
 	return result, nil
+}
+
+func stdlibCleared(result *Result) bool {
+	for _, pr := range result.Probes {
+		if pr.Transport == TransportStdlib && pr.Status > 0 && len(pr.Evidence) == 0 && statusIsClear(pr.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyStdlibSuccess(result *Result, partial bool) {
+	result.Mode = ModeStandardHTTP
+	result.Confidence = 0.95
+	result.Recommendation = Recommendation{
+		Runtime:   ModeStandardHTTP,
+		Rationale: "Plain stdlib HTTP returned a non-error response; no special transport needed.",
+	}
+	result.Partial = partial
+
+	stdlib, surf, ok := pairedClearProbes(result)
+	if !ok {
+		return
+	}
+	if contentTypesFlipJSONXML(stdlib.ContentType, surf.ContentType) {
+		safe := false
+		result.ImpersonationSafe = &safe
+		result.Recommendation.Rationale = fmt.Sprintf(
+			"Plain stdlib HTTP returned %s, while Surf Chrome impersonation returned %s. Prefer non-impersonating HTTP so content negotiation stays on the stdlib response type.",
+			displayContentType(stdlib.ContentType),
+			displayContentType(surf.ContentType),
+		)
+	}
+}
+
+func pairedClearProbes(result *Result) (ProbeResult, ProbeResult, bool) {
+	var stdlib ProbeResult
+	var surf ProbeResult
+	stdlibOK := false
+	surfOK := false
+	for _, pr := range result.Probes {
+		if pr.Status <= 0 || len(pr.Evidence) > 0 || !statusIsClear(pr.Status) {
+			continue
+		}
+		switch pr.Transport {
+		case TransportStdlib:
+			stdlib = pr
+			stdlibOK = true
+		case TransportSurfChrome:
+			surf = pr
+			surfOK = true
+		}
+	}
+	return stdlib, surf, stdlibOK && surfOK
+}
+
+func contentTypesFlipJSONXML(a, b string) bool {
+	ak := contentTypeKind(a)
+	bk := contentTypeKind(b)
+	return (ak == "json" && bk == "xml") || (ak == "xml" && bk == "json")
+}
+
+func contentTypeKind(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if i := strings.Index(value, ";"); i >= 0 {
+		value = strings.TrimSpace(value[:i])
+	}
+	switch {
+	case strings.Contains(value, "json"):
+		return "json"
+	case strings.Contains(value, "xml"):
+		return "xml"
+	default:
+		return ""
+	}
+}
+
+func displayContentType(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "an empty Content-Type"
+	}
+	return value
 }
 
 // statusIsClear is the status-only half of isClear. Used after evidence
