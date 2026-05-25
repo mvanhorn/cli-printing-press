@@ -176,7 +176,6 @@ func TestFindPII_PhoneUS(t *testing.T) {
 		{name: "fictional-exchange-parens", line: `"phone": "(212) 555-0100"`, expectKinds: nil},
 		{name: "fictional-exchange-country-code", line: `"phone": "+1 415 555 0199"`, expectKinds: nil},
 		{name: "fictional-555-area-compact", line: `"phone": "5555550100"`, expectKinds: nil},
-		{name: "fictional-seven-digit-local", line: `"phone": "555-0123"`, expectKinds: nil},
 		{name: "version-string", line: `"version": "1.2.3"`, expectKinds: nil},
 		{name: "ip-address", line: `"addr": "192.168.1.1"`, expectKinds: nil},
 		// NANP-shape filters — area code and exchange code must each

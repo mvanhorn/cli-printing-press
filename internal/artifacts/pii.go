@@ -540,8 +540,6 @@ func isNANPFictionalPhone(matched string) bool {
 		normalized = normalized[1:]
 	}
 	switch len(normalized) {
-	case 7:
-		return normalized[0:3] == "555" && strings.HasPrefix(normalized[3:], "01")
 	case 10:
 		return normalized[3:6] == "555" && strings.HasPrefix(normalized[6:], "01")
 	default:
