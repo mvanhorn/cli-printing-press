@@ -329,10 +329,12 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 
 {{- end}}
 {{- if .HasStore}}
+{{- if .HasResponseUnwrap}}
 			// Unwrap API response envelopes (e.g. {"status":"success","data":[...]})
 			// so output helpers see the inner data, not the wrapper.
 			data = extractResponseData(data)
 
+{{- end}}
 			// Print provenance to stderr for human-facing output only.
 			// Machine-format flags (--json, --csv, --compact, --quiet, --plain,
 			// --select) and piped stdout suppress this line; the JSON envelope
