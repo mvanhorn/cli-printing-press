@@ -220,7 +220,8 @@ func newJobsCmd(flags *rootFlags) *cobra.Command {
 
 Submit an async endpoint with --wait to block until completion; submit
 without --wait to get the job ID back immediately and track it later.`,
-		RunE: parentNoSubcommandRunE(flags),
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE:        parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newJobsListCmd(flags))
 	cmd.AddCommand(newJobsGetCmd(flags))

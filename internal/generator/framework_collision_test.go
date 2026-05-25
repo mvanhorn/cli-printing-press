@@ -35,7 +35,7 @@ func TestGenerateNoAuthRegistersAuthResource(t *testing.T) {
 	authSrc := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
 	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newAuthCmd(flags))", "the API resource should be registered when the framework auth command is inactive")
 	assert.Contains(t, authSrc, "func newAuthCmd(flags *rootFlags) *cobra.Command")
-	assert.Contains(t, authSrc, `Use:   "auth"`)
+	assert.Regexp(t, `Use:\s+"auth"`, authSrc)
 	assert.NotContains(t, authSrc, "set-token", "no framework auth template should overwrite the API resource parent")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
@@ -65,7 +65,7 @@ func TestGenerateRegistersHealthResourceWhenHealthCommandInactive(t *testing.T) 
 	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newHealthCmd(flags))", "the API resource should be registered when the framework health command is inactive")
 	assert.NotContains(t, rootSrc, "rootCmd.AddCommand(newPublichealthHealthCmd(flags))")
 	assert.Contains(t, healthSrc, "func newHealthCmd(flags *rootFlags) *cobra.Command")
-	assert.Contains(t, healthSrc, `Use:   "health"`)
+	assert.Regexp(t, `Use:\s+"health"`, healthSrc)
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
 }
