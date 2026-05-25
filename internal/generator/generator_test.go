@@ -11777,6 +11777,129 @@ func TestGenerateGraphQLCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:                "shopify-query",
+		Description:         "Shopify Admin GraphQL query fixture",
+		Version:             "2026-04",
+		BaseURL:             "https://example.myshopify.com",
+		GraphQLEndpointPath: "/admin/api/2026-04/graphql.json",
+		Auth:                spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/shopify-query-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Description: "Orders",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "Get an order",
+						ResponsePath: "data.order",
+						Params:       []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						Response:     spec.ResponseDef{Type: "object", Item: "Order"},
+					},
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List orders",
+						ResponsePath: "data.orders.nodes",
+						Params: []spec.Param{
+							{Name: "first", Type: "integer", Default: 100},
+							{Name: "after", Type: "string"},
+							{Name: "query", Type: "string", Description: "Shopify search filter"},
+						},
+						Pagination: &spec.Pagination{
+							Type:           "cursor",
+							LimitParam:     "first",
+							CursorParam:    "after",
+							NextCursorPath: "data.orders.pageInfo.endCursor",
+							HasMoreField:   "data.orders.pageInfo.hasNextPage",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Order"},
+					},
+				},
+			},
+			"fulfillment-orders": {
+				Description: "Fulfillment orders",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "Get a fulfillment order",
+						ResponsePath: "data.fulfillmentOrder",
+						Params:       []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						Response:     spec.ResponseDef{Type: "object", Item: "FulfillmentOrder"},
+					},
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List fulfillment orders",
+						ResponsePath: "data.fulfillmentOrders.nodes",
+						Params: []spec.Param{
+							{Name: "first", Type: "integer", Default: 100},
+							{Name: "after", Type: "string"},
+							{Name: "before", Type: "string"},
+						},
+						Pagination: &spec.Pagination{
+							Type:           "cursor",
+							LimitParam:     "first",
+							CursorParam:    "after",
+							NextCursorPath: "data.fulfillmentOrders.pageInfo.endCursor",
+							HasMoreField:   "data.fulfillmentOrders.pageInfo.hasNextPage",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "FulfillmentOrder"},
+					},
+				},
+			},
+			"customers": {
+				Description: "Customers",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/graphql",
+						Description:  "List customers",
+						ResponsePath: "data.customers.nodes",
+						Params: []spec.Param{
+							{Name: "status", Type: "string"},
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Customer"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Order":            {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "name", Type: "string"}}},
+			"FulfillmentOrder": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "status", Type: "string"}}},
+			"Customer":         {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "email", Type: "string"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	ordersContent := generatedCLISourceContaining(t, outputDir, `variables["query"] = flagQuery`)
+	assert.Contains(t, ordersContent, `cmd.Flags().StringVar(&flagQuery, "query", "", "Shopify search filter")`)
+	assert.Contains(t, ordersContent, `if cmd.Flags().Changed("query") {`)
+	assert.Contains(t, ordersContent, `variables["query"] = flagQuery`)
+
+	queriesGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "queries.go"))
+	require.NoError(t, err)
+	queriesContent := string(queriesGo)
+	assert.Contains(t, queriesContent, "query($first: Int!, $after: String, $query: String)")
+	assert.Contains(t, queriesContent, "orders(first: $first, after: $after, query: $query)")
+	assert.Contains(t, queriesContent, "query($first: Int!, $after: String) {\n  fulfillmentOrders(first: $first, after: $after)")
+	assert.NotContains(t, queriesContent, "before: $before")
+	assert.NotContains(t, queriesContent, "fulfillmentOrders(first: $first, after: $after, query: $query)")
+	assert.Contains(t, queriesContent, "query {\n  customers {\n")
+	assert.NotContains(t, queriesContent, "query()")
+	assert.NotContains(t, queriesContent, "customers()")
+}
+
 func TestGraphQLFieldSelectionSupportsNestedSelections(t *testing.T) {
 	t.Parallel()
 
