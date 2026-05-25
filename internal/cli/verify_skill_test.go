@@ -154,6 +154,48 @@ func newSearchCmd() *cobra.Command {
 	require.Contains(t, string(out), "All checks passed")
 }
 
+func TestVerifySkill_RecognizesTypedSliceAndMapFlagDeclarations(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	// One command declaring a representative of each newly-recognized pflag
+	// family — slice-int, slice-float, slice-bool, map (StringToString), and
+	// net.IP — all referenced in SKILL.md. A typo in any alternation entry of
+	// FLAG_DECL_RE would make that flag read as undeclared and fail the run.
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli search \"chicken\" --tag-id 1 --tag-id 2 --score 0.5 --enabled true --label k=v --addr 1.2.3.4\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"search.go": `package cli
+import (
+	"net"
+
+	"github.com/spf13/cobra"
+)
+func newSearchCmd() *cobra.Command {
+	var (
+		tagIDs []int
+		scores []float64
+		flags  []bool
+		labels map[string]string
+		addr   net.IP
+	)
+	cmd := &cobra.Command{Use: "search <query>"}
+	cmd.Flags().IntSliceVar(&tagIDs, "tag-id", nil, "Tag IDs")
+	cmd.Flags().Float64SliceVar(&scores, "score", nil, "Scores")
+	cmd.Flags().BoolSliceVar(&flags, "enabled", nil, "Enabled flags")
+	cmd.Flags().StringToStringVar(&labels, "label", nil, "Labels")
+	cmd.Flags().IPVar(&addr, "addr", nil, "Address")
+	return cmd
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "flag-commands").CombinedOutput()
+	require.NoError(t, err, "typed slice/map/IP flag declarations should be recognized: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+}
+
 func TestVerifySkill_ShellOperatorsDoNotBecomePositionals(t *testing.T) {
 	t.Parallel()
 
