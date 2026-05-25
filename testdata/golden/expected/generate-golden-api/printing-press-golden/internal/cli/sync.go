@@ -828,7 +828,7 @@ func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]jso
 			continue
 		}
 		var rawArray []json.RawMessage
-		if json.Unmarshal(raw, &rawArray) == nil {
+		if json.Unmarshal(raw, &rawArray) == nil && !isJSONNull(raw) {
 			continue
 		}
 		if !pageEnvelopeMetadataKeys[key] {
@@ -898,7 +898,10 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 			continue
 		}
 		if isJSONNull(raw) {
-			return envelopeReportsFailure(envelope)
+			if envelopeReportsFailure(envelope) {
+				return true
+			}
+			continue
 		}
 		var inner map[string]json.RawMessage
 		if json.Unmarshal(raw, &inner) == nil && isEmptyPageEnvelope(inner) {

@@ -4100,6 +4100,17 @@ func TestExtractPageItemsDetailObjectWrappedInData(t *testing.T) {
 	if len(items) != 0 || cursor != "" || hasMore {
 		t.Fatalf("detail object with child array = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
 	}
+
+	nullSibling := json.RawMessage(` + "`" + `{
+		"data": {
+			"user": null,
+			"recent_orders": [{"id": "o1"}]
+		}
+	}` + "`" + `)
+	items, cursor, hasMore = extractPageItems(nullSibling, "cursor")
+	if len(items) != 0 || cursor != "" || hasMore {
+		t.Fatalf("detail object with null sibling and child array = %d/%q/%v, want empty cursorless page", len(items), cursor, hasMore)
+	}
 }
 
 func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
@@ -4121,6 +4132,11 @@ func TestExtractPageItemsJSendNullDataEnvelope(t *testing.T) {
 	statusFail := json.RawMessage(` + "`" + `{"status": "fail", "data": null}` + "`" + `)
 	if !isEmptyPageResponse(statusFail) {
 		t.Fatalf("status=fail null data envelope should be treated as an empty page")
+	}
+
+	emptyResultSibling := json.RawMessage(` + "`" + `{"data": null, "result": {"orders": []}}` + "`" + `)
+	if !isEmptyPageResponse(emptyResultSibling) {
+		t.Fatalf("null data plus empty result sibling should be treated as an empty page")
 	}
 
 	pascalSuccessFalse := json.RawMessage(` + "`" + `{"Success": false, "Data": null}` + "`" + `)
