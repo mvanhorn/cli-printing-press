@@ -488,7 +488,11 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 		return
 	}
 	total, public := parsed.CountMCPTools()
-	m.MCPBinary = naming.MCP(parsed.Name)
+	mcpName := m.APIName
+	if mcpName == "" {
+		mcpName = parsed.Name
+	}
+	m.MCPBinary = naming.MCP(mcpName)
 	m.MCPToolCount = total
 	m.MCPPublicToolCount = public
 	m.MCPReady = computeMCPReady(parsed.Auth.Type)
