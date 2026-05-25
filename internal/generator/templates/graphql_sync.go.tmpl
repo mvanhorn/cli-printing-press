@@ -124,7 +124,7 @@ Exit codes & warnings:
 				if err != nil {
 					return fmt.Errorf("invalid --since value %q: %w", since, err)
 				}
-				sinceTS = ts.Format(time.RFC3339)
+				sinceTS = ts.UTC().Format(time.RFC3339)
 			}
 
 			// Worker pool: produce resources, N workers consume
