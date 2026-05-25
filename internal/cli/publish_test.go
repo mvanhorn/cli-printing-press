@@ -39,6 +39,21 @@ func publishCheckByName(t *testing.T, result ValidateResult, name string) CheckR
 	return CheckResult{}
 }
 
+func stubPublishIdentityCommands(t *testing.T, gitScript, ghScript string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell scripts are Unix-only")
+	}
+	dir := t.TempDir()
+	if gitScript != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "git"), []byte(gitScript), 0o755))
+	}
+	if ghScript != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(ghScript), 0o755))
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func TestPublishValidateMissingManifest(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
@@ -125,7 +140,6 @@ func TestPublishValidateRejectsStaleAttributionManifest(t *testing.T) {
 	manifestCheck := publishCheckByName(t, result, "manifest")
 	assert.False(t, manifestCheck.Passed)
 	assert.Contains(t, manifestCheck.Error, "schema_version must be 1")
-	assert.Contains(t, manifestCheck.Error, "printer_name")
 }
 
 func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
@@ -141,6 +155,99 @@ func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
 
 	require.Len(t, issues, 1)
 	assert.Contains(t, issues[0], "literal sentinel")
+}
+
+func TestPublishManifestContractBackfillsAttributionFromGh(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 0\n",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$3" = "--jq" ] && [ "$4" = ".login" ]; then
+  echo nlarkin1986
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$3" = "--jq" ] && [ "$4" = ".name" ]; then
+  echo "Nick Larkin"
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "users/nlarkin1986" ]; then
+  echo nlarkin1986
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+	})
+
+	assert.Empty(t, issues)
+}
+
+func TestBackfillPackagedManifestAttributionPreservesUnknownFields(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 0\n",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$3" = "--jq" ] && [ "$4" = ".login" ]; then
+  echo amitav13
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "user" ] && [ "$3" = "--jq" ] && [ "$4" = ".name" ]; then
+  echo "Amitav Khandelwal"
+  exit 0
+fi
+exit 1
+`,
+	)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000",
+  "custom_field": {"keep": true}
+}`+"\n"), 0o644))
+
+	require.NoError(t, backfillPackagedManifestAttribution(dir))
+
+	data, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.JSONEq(t, `"amitav13"`, string(got["printer"]))
+	assert.JSONEq(t, `"Amitav Khandelwal"`, string(got["printer_name"]))
+	assert.JSONEq(t, `{"keep": true}`, string(got["custom_field"]))
+}
+
+func TestPublishManifestContractRejectsUnresolvablePrinterHandle(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"",
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/vinnypasceri" ]; then
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "vinnypasceri",
+		PrinterName:          "Vinny Pasceri",
+	})
+
+	require.Len(t, issues, 1)
+	assert.Contains(t, issues[0], `printer "vinnypasceri" does not resolve to a GitHub user`)
 }
 
 func TestPublishManifestContractRequiresMCPMetadataFiles(t *testing.T) {
