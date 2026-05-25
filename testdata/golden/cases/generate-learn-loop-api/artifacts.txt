@@ -1,0 +1,53 @@
+# Locks the spec-declared self-learning loop emission contract end-to-end.
+# The fixture sets `learn.enabled: true` with neutral identifiers
+# (EXAMPLE-* ticker, ALPHA/BRAVO entities) so scripts/verify-learn-purity.sh
+# stays green. Without the learn-block emission path, every artifact below
+# would regress to the non-learn shape — no internal/learn/ tree, no
+# teach/recall/learnings commands, no v3 store schema, no self-learning
+# sections in README.md / SKILL.md / AGENTS.md.
+
+# Provenance manifest: slug, mcp binary name, mcp tool counts.
+learn-loop-example/.printing-press.json
+learn-loop-example/.printing-press-patches.json
+learn-loop-example/manifest.json
+
+# Spec-derived per-CLI init shim: newLearnConfig() bakes the ticker
+# patterns + stopwords from spec.Learn; initLearn() bakes the entity
+# lookup seeds. If the generator stops threading spec.Learn through to
+# this file, the bodies of both functions would regress to defaults.
+learn-loop-example/internal/cli/learn_init.go
+
+# Teach / recall / learnings commands: the 6 cobra commands the loop
+# exposes when learn.enabled is true. Locks the command surface so a
+# template regression (skip emission, rename a subcommand) is caught.
+learn-loop-example/internal/cli/teach.go
+
+# Root wiring: --no-learn persistent flag + learn-conditional command
+# registrations + learnHookSkipList. If learn-conditional registration
+# regresses, the teach/recall/learnings AddCommand calls disappear from
+# this file.
+learn-loop-example/internal/cli/root.go
+
+# Store schema v3: StoreSchemaVersion = 3 + CREATE TABLE statements for
+# search_patterns, entity_lookups, teach_log_metadata. The additive
+# v2 -> v3 migration is the contract every learn-enabled CLI inherits.
+learn-loop-example/internal/store/store.go
+
+# Learn package shape — one representative file per subpackage so a
+# template rename / signature change in any subpackage trips the gate:
+#   - internal/learn (top-level): recall.go is the read-path entrypoint
+#   - internal/learn/entities: extract.go is the per-token extractor
+#   - internal/learn/lookups: seeds.go carries SeedFromConfig, the
+#     entrypoint the spec-driven learn_init.go calls
+#   - internal/learn/patterns: apply.go is the generalization engine
+learn-loop-example/internal/learn/recall.go
+learn-loop-example/internal/learn/entities/extract.go
+learn-loop-example/internal/learn/lookups/seeds.go
+learn-loop-example/internal/learn/patterns/apply.go
+
+# Self-learning documentation surfaces. README.md and SKILL.md gain
+# user-facing sections; AGENTS.md (the printed CLI's agent guide) gains
+# the Self-Learning Loop section from U7.
+learn-loop-example/SKILL.md
+learn-loop-example/README.md
+learn-loop-example/AGENTS.md

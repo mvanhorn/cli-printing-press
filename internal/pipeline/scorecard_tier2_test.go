@@ -3833,3 +3833,76 @@ func isTerminal() bool { return false }`,
 		})
 	}
 }
+
+// TestScoreVision_LearnLoopPresenceAddsHalfPoint pins the presence-only credit
+// for the self-learning recall/teach loop. A CLI that ships internal/learn/doc.go
+// gains 0.5 in Vision tier 1 over an otherwise-identical CLI without it. The
+// credit is for the loop's presence, not its richness — teach traffic
+// accumulates value at runtime, not at print time.
+//
+// The fixture is sized so the +0.5 credit crosses an integer boundary: baseline
+// scores 3 (3.5 total → int trunc) and the learn-enabled fixture scores 4
+// (4.0 total → int).
+func TestScoreVision_LearnLoopPresenceAddsHalfPoint(t *testing.T) {
+	build := func(includeLearn bool) string {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() { rootCmd.AddCommand(newSearchCmd(nil), newExportCmd(nil)) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+func newSearchCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+func newExportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+`)
+		if includeLearn {
+			writeScorecardFixture(t, dir, "internal/learn/doc.go", `// Package learn owns the generated recall/teach loop.
+package learn
+`)
+		}
+		return dir
+	}
+
+	baseline := scoreVision(build(false))
+	withCredit := scoreVision(build(true))
+
+	assert.Equal(t, 3, baseline,
+		"export+store+search wiring should sum to 3.5 tier points → int 3")
+	assert.Equal(t, 4, withCredit,
+		"adding internal/learn/doc.go should push tier 1 to 4.0 → int 4")
+}
+
+func TestScoreVision_LearnLoopGoldenFixtureAddsHalfPoint(t *testing.T) {
+	fixture := filepath.Join("..", "..", "testdata", "golden", "expected", "generate-learn-loop-api", "learn-loop-example")
+	score := scoreVision(fixture)
+
+	assert.GreaterOrEqual(t, score, 4, "learn-enabled golden fixture should receive the doc.go presence credit")
+}
+
+func TestScoreVision_ImportPresenceAddsHalfPoint(t *testing.T) {
+	build := func(includeImport bool) string {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func newRootCmd() { rootCmd.AddCommand(newSearchCmd(nil), newExportCmd(nil)) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
+func newSearchCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/export.go", `package cli
+func newExportCmd(flags any) {}
+`)
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+`)
+		if includeImport {
+			writeScorecardFixture(t, dir, "internal/cli/import.go", `package cli
+func newImportCmd(flags any) {}
+`)
+		}
+		return dir
+	}
+
+	assert.Equal(t, 3, scoreVision(build(false)))
+	assert.Equal(t, 4, scoreVision(build(true)))
+}

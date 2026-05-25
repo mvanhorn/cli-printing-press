@@ -18,6 +18,7 @@ var reservedInternalPackages = map[string]bool{
 	"profile":  true,
 	"feedback": true,
 	"graphql":  true,
+	"learn":    true,
 }
 
 const (

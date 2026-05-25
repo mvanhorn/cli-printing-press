@@ -1,0 +1,39 @@
+{
+  "author": {
+    "name": "CLI Printing Press"
+  },
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin",
+      "linux",
+      "win32"
+    ]
+  },
+  "description": "Golden fixture exercising the spec-declared self-learning loop.",
+  "display_name": "Learn Loop Example",
+  "license": "Apache-2.0",
+  "manifest_version": "0.3",
+  "name": "learn-loop-example-pp-mcp",
+  "server": {
+    "entry_point": "bin/learn-loop-example-pp-mcp",
+    "mcp_config": {
+      "args": [],
+      "command": "${__dirname}/bin/learn-loop-example-pp-mcp",
+      "env": {
+        "LEARN_LOOP_TOKEN": "${user_config.learn_loop_token}"
+      }
+    },
+    "type": "binary"
+  },
+  "user_config": {
+    "learn_loop_token": {
+      "description": "Sets LEARN_LOOP_TOKEN for the Learn Loop Example MCP server.",
+      "required": true,
+      "sensitive": true,
+      "title": "LEARN_LOOP_TOKEN",
+      "type": "string"
+    }
+  },
+  "version": "<PRINTING_PRESS_VERSION>"
+}

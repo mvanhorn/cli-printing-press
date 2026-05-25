@@ -296,6 +296,41 @@ Commands that read from the local store or the API wrap output in a provenance e
 
 Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal AND no machine-format flag (`--json`, `--csv`, `--compact`, `--quiet`, `--plain`, `--select`) is set — piped/agent consumers and explicit-format runs get pure JSON on stdout.
 {{- end}}
+{{- if .Learn.Enabled}}
+
+## Automatic learning
+
+This CLI ships a self-learning loop: agents `recall` before doing discovery walks, and fire `teach` in the background after answering. Repeat questions skip discovery; structurally similar questions get answered via entity substitution.
+
+### Four-branch protocol
+
+For each user question:
+
+1. **Known taught pattern.** If `recall "<question>"` returns `found=true` with `results[0].entity_match == "exact"` and `results[0].confidence >= 2`, skip discovery and fetch the resources in `results[*].resource_id` directly.
+2. **Pattern match via entity substitution.** If recall misses but the query contains an entity that matches a registered seed (taught lookup or pre-seeded list), the loop's pattern engine tries substituting the entity into a stored template. If `Apply` succeeds, use the resolved resource id.
+3. **Cold start.** If both miss, run the normal discovery walk (search, list, drill). Once you've assembled the answer, fire `teach &` to record the mapping for next time.
+4. **Verification failure after a pattern apply.** If the pattern engine produced a candidate that turns out wrong when you fetch it, demote back to branch 3: re-run discovery and `teach` the correct resource so the next call doesn't repeat the mistake.
+
+Always read `warnings` on the recall envelope before trusting `results`. A non-empty `warnings` array means the validator flagged something (low confidence, parent-vs-child mismatch, store gap) and the row is a hint, not a skip-discovery hit.
+
+### Commands
+
+```bash
+{{.Name}}-pp-cli recall "<user's question>" --agent
+{{.Name}}-pp-cli teach --query "<user's question>" --resource-type <type> --resource <id> &
+{{.Name}}-pp-cli learnings list --agent
+{{.Name}}-pp-cli learnings forget "<query>" --resource <id>
+{{.Name}}-pp-cli teach-pattern --query-template "<template>" --resource-template "<template>" --resource-type <type>
+{{.Name}}-pp-cli teach-lookup --kind <kind> --canonical "<display>" --value <substitution>
+```
+
+`teach` is silent on success and safe to background with `&` — append it right before emitting the user-facing response so the write doesn't block. Errors only land in `~/.local/share/{{.Name}}-pp-cli/teach.log`.
+
+### Disabling learning
+
+- `--no-learn` on a single command short-circuits both `recall` and the `teach` write path. Use for deterministic agent flows or tests that must not be affected by accumulated learnings.
+- `{{envPrefix .Name}}_NO_LEARN=true` in the environment globally disables the pipeline.
+{{- end}}
 
 ## Agent Feedback
 

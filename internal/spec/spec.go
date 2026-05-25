@@ -193,6 +193,7 @@ type APISpec struct {
 	ExtraCommands               []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
 	Cache                       CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
 	Share                       ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
+	Learn                       LearnConfig         `yaml:"learn,omitempty" json:"learn,omitzero"`                    // self-learning loop config: ticker patterns, stopwords, and entity-lookup seeds the generated CLI uses to cache teaches and generalize through entity substitution. Absent or disabled is a benign no-op.
 	MCP                         MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, small APIs (typed-endpoint count <= DefaultRemoteTransportEndpointThreshold) get stdio+http compiled in by APISpec.EffectiveMCPTransports so the same binary can serve cloud-hosted agents. Larger APIs stay stdio-only by default. Opting into http explicitly adds a --transport/--addr flag surface regardless of size.
 	Throttling                  ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
 }
@@ -1361,6 +1362,45 @@ type ShareConfig struct {
 	DefaultBranch  string   `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`   // optional default branch for push/pull; blank means "main"
 }
 
+// LearnConfig declares the self-learning loop the generator wires into a
+// printed CLI. When Enabled, the emitted CLI ships `teach`, `recall`, and
+// `learnings` commands plus an additive SQLite schema that caches taught
+// free-text -> resource-id mappings and generalizes them through entity
+// substitution against EntityLookupSeeds. Absent or disabled is a benign
+// no-op: the loop adds no behavior, and the runtime recall path short-
+// circuits before touching the store.
+//
+// TickerPatterns is the per-CLI shape registry the recall path uses to
+// recognize resource identifiers in free-text queries (e.g., Kalshi
+// `KXTICKER-...` codes). Each pattern is validated at spec load via
+// regexp.Compile so authoring typos surface at parse time rather than at
+// end-user runtime.
+//
+// Stopwords are domain-specific tokens stripped from queries before the
+// recall path matches against learned templates. The generated CLI merges
+// these with a built-in default set; empty / whitespace-only entries are
+// dropped at parse time to match the runtime entities.Config behavior.
+//
+// EntityLookupSeeds is the canonical-name + aliases table the loop uses to
+// substitute one entity for another at recall time. The seed kind is the
+// outer map key (e.g., "country", "team"); each value is an ordered list
+// of canonical entities and their aliases.
+type LearnConfig struct {
+	Enabled           bool                    `yaml:"enabled,omitempty" json:"enabled,omitempty"`                         // master switch; when false, the loop's commands and pre-seeding hook are not emitted
+	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty"`         // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile.
+	Stopwords         []string                `yaml:"stopwords,omitempty" json:"stopwords,omitempty"`                     // domain-specific stopwords stripped from queries before recall match; merged with a built-in default set. Whitespace-only entries are dropped at parse time.
+	EntityLookupSeeds map[string][]LookupSeed `yaml:"entity_lookup_seeds,omitempty" json:"entity_lookup_seeds,omitempty"` // canonical-name + aliases table keyed by seed kind (e.g., "country"). Used by the recall path to substitute one entity for another and generalize learned templates.
+}
+
+// LookupSeed is one canonical entity plus optional aliases inside a
+// LearnConfig.EntityLookupSeeds entry. Canonical is the name the loop
+// stores against; Aliases are the alternate strings the recall path
+// recognizes as referring to the same entity.
+type LookupSeed struct {
+	Canonical string   `yaml:"canonical" json:"canonical"`                 // canonical entity name (required, non-empty)
+	Aliases   []string `yaml:"aliases,omitempty" json:"aliases,omitempty"` // alternate strings that resolve to Canonical
+}
+
 // MCPConfig declares how the generated MCP server binary is shaped. When the
 // Transport list is empty, the resolved transport set is computed by
 // APISpec.EffectiveMCPTransports: small APIs (<= DefaultRemoteTransportEndpointThreshold
@@ -2015,9 +2055,11 @@ var ReservedCobraUseNames = map[string]struct{}{
 	"help":           {},
 	"import":         {},
 	"jobs":           {},
+	"learnings":      {},
 	"load":           {},
 	"orphans":        {},
 	"profile":        {},
+	"recall":         {},
 	"refresh-bearer": {},
 	"search":         {},
 	"share":          {},
@@ -2026,6 +2068,9 @@ var ReservedCobraUseNames = map[string]struct{}{
 	"stale":          {},
 	"sync":           {},
 	"tail":           {},
+	"teach":          {},
+	"teach-lookup":   {},
+	"teach-pattern":  {},
 	"version":        {},
 	"which":          {},
 	"workflow":       {},
@@ -2449,6 +2494,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateCacheShare(s.Cache, s.Share, s.Resources); err != nil {
+		return err
+	}
+	if err := validateLearn(&s.Learn); err != nil {
 		return err
 	}
 	if err := validateMCP(s.MCP, s.Resources); err != nil {
@@ -3228,6 +3276,60 @@ func validateCacheShare(cache CacheConfig, share ShareConfig, resources map[stri
 			return fmt.Errorf("share.snapshot_tables[%d]: %q appears more than once", i, t)
 		}
 		seen[t] = struct{}{}
+	}
+	return nil
+}
+
+// learnSeedKindRe enforces the seed kind naming rules described on
+// LearnConfig.EntityLookupSeeds: lowercase letters, digits, and underscore
+// only. Whitespace, hyphens, dots, or other punctuation are rejected so
+// the kind can be used directly as a SQLite column / Go map key without
+// quoting concerns and so author typos like "team name" surface at parse
+// time rather than as a silent lookup miss at recall time.
+var learnSeedKindRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// validateLearn enforces the LearnConfig shape contract: ticker patterns
+// must compile as Go regexps, seed kinds must be SQLite-safe identifiers,
+// each seed must carry a non-empty Canonical, and canonical values must be
+// unique within a kind. Stopword sanitization (dropping whitespace-only
+// entries) happens here too so the spec's parsed view matches what the
+// generated CLI will actually load at runtime.
+func validateLearn(learn *LearnConfig) error {
+	if learn == nil {
+		return nil
+	}
+	for i, pattern := range learn.TickerPatterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("learn.ticker_patterns[%d] is not a valid Go regexp: %w", i, err)
+		}
+	}
+	// Drop whitespace-only stopword entries in place so downstream consumers
+	// see only meaningful tokens. Mirrors the runtime entities.Config behavior
+	// the generated CLI will apply when merging these with its default set.
+	if len(learn.Stopwords) > 0 {
+		filtered := learn.Stopwords[:0]
+		for _, sw := range learn.Stopwords {
+			if strings.TrimSpace(sw) == "" {
+				continue
+			}
+			filtered = append(filtered, sw)
+		}
+		learn.Stopwords = filtered
+	}
+	for kind, seeds := range learn.EntityLookupSeeds {
+		if !learnSeedKindRe.MatchString(kind) {
+			return fmt.Errorf("learn.entity_lookup_seeds: kind %q must be lowercase letters, digits, and underscore only (no whitespace or punctuation other than _)", kind)
+		}
+		seenCanonical := make(map[string]struct{}, len(seeds))
+		for i, seed := range seeds {
+			if strings.TrimSpace(seed.Canonical) == "" {
+				return fmt.Errorf("learn.entity_lookup_seeds[%s][%d]: canonical must not be empty", kind, i)
+			}
+			if _, dup := seenCanonical[seed.Canonical]; dup {
+				return fmt.Errorf("learn.entity_lookup_seeds[%s][%d]: canonical %q appears more than once in the same kind", kind, i, seed.Canonical)
+			}
+			seenCanonical[seed.Canonical] = struct{}{}
+		}
 	}
 	return nil
 }

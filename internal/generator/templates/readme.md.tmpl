@@ -357,6 +357,21 @@ Run `{{.Name}}-pp-cli --help` for the full command reference and flag list.
 {{- end}}
 {{- end}}
 {{end}}
+{{- if .Learn.Enabled}}
+
+### Self-learning loop
+
+This CLI caches per-question discovery so repeat queries skip the walk and structurally similar queries get answered via entity substitution. Agents call `recall` before discovery and fire `teach &` after answering. See the `## Automatic learning` section in `SKILL.md` for the four-branch protocol.
+
+- **`{{$.Name}}-pp-cli recall <query>`** - Look up cached resources for a query before running discovery
+- **`{{$.Name}}-pp-cli teach`** - Record a query -> resource mapping (silent on success, safe to background with `&`)
+- **`{{$.Name}}-pp-cli learnings list`** - Inspect taught rows
+- **`{{$.Name}}-pp-cli learnings forget <query>`** - Undo a teach
+- **`{{$.Name}}-pp-cli teach-pattern`** - Install a query/resource template up front
+- **`{{$.Name}}-pp-cli teach-lookup`** - Add an entity mapping (e.g. country code, team alias) for pattern substitution
+
+Pass `--no-learn` or set `{{envPrefix .Name}}_NO_LEARN=true` to disable the loop for deterministic flows.
+{{- end}}
 
 ## Output Formats
 {{- $example := firstCommandExample .Resources}}
