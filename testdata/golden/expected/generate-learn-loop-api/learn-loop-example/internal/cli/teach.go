@@ -145,8 +145,8 @@ func learnDBPath(explicit string) string {
 
 // newTeachCmd builds the `teach` cobra command — the LLM-facing write
 // surface. Silent on success, safe to background, errors only to
-// teach.log. Requires --resource-type so the v3 schema's typed
-// primary key always carries a real value.
+// teach.log. Requires --resource-type so recalls can validate returned
+// IDs against the typed resources table.
 func newTeachCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
 	var query string
 	var resources []string
@@ -285,6 +285,7 @@ type recallEnvelopeResult struct {
 	ResourceType     string     `json:"resource_type,omitempty"`
 	Venue            string     `json:"venue,omitempty"`
 	Action           string     `json:"action"`
+	AliasTarget      string     `json:"alias_target,omitempty"`
 	Confidence       int        `json:"confidence"`
 	MatchScore       float64    `json:"match_score"`
 	EntityMatch      string     `json:"entity_match,omitempty"`
@@ -389,6 +390,7 @@ func toEnvelopeResults(in []learn.Hit) []recallEnvelopeResult {
 			ResourceType:     h.ResourceType,
 			Venue:            h.Venue,
 			Action:           h.Action,
+			AliasTarget:      h.AliasTarget,
 			Confidence:       h.Confidence,
 			MatchScore:       h.MatchScore,
 			EntityMatch:      h.EntityMatch,

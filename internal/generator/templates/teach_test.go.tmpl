@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"{{modulePath}}/internal/learn"
 	"{{modulePath}}/internal/learn/entities"
 	"{{modulePath}}/internal/store"
 )
@@ -196,6 +197,26 @@ func TestRecallCommand_FoundAndNotFound(t *testing.T) {
 	}
 	if env.Found || len(env.Results) != 0 {
 		t.Errorf("unrelated recall: want empty, got %+v", env)
+	}
+}
+
+func TestRecallEnvelopeResultsCarryAliasTarget(t *testing.T) {
+	got := toEnvelopeResults([]learn.Hit{
+		{
+			ResourceID:   "old-id",
+			Action:       store.LearningActionAlias,
+			AliasTarget:  "new-id",
+			Confidence:   3,
+			MatchScore:   1,
+			EntityMatch:  learn.EntityMatchExact,
+			ResourceType: "items",
+		},
+	})
+	if len(got) != 1 {
+		t.Fatalf("want 1 result, got %d", len(got))
+	}
+	if got[0].AliasTarget != "new-id" {
+		t.Fatalf("AliasTarget = %q, want new-id", got[0].AliasTarget)
 	}
 }
 
