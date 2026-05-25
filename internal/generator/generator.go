@@ -209,6 +209,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"upper":                 strings.ToUpper,
 		"join":                  strings.Join,
 		"camel":                 toCamel,
+		"cmdIdent":              commandIdent,
 		"snake":                 naming.Snake,
 		"pascal":                toPascal,
 		"goType":                goType,
@@ -3802,6 +3803,17 @@ func toCamel(s string) string {
 		result = "V" + result
 	}
 	return result
+}
+
+func commandIdent(parts ...string) string {
+	joined := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimLeft(part, "$")
+		if part != "" {
+			joined = append(joined, part)
+		}
+	}
+	return toCamel(strings.Join(joined, "-"))
 }
 
 func toPascal(s string) string {
