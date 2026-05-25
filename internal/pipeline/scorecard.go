@@ -1495,7 +1495,7 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 func addCommandConstructorCalls(content string) map[string]bool {
 	file, err := parser.ParseFile(token.NewFileSet(), "", content, 0)
 	if err != nil {
-		return nil
+		return map[string]bool{}
 	}
 
 	ctors := map[string]bool{}

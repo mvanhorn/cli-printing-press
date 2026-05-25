@@ -175,7 +175,7 @@ func newAvailabilityGhostCmd(flags any) *cobra.Command {
 	return &cobra.Command{Use: "ghost"}
 }`)
 
-	writeFile(t, filepath.Join(dir, ".printing-press.json"), `{
+	writeFile(t, filepath.Join(dir, CLIManifestFilename), `{
   "cli_name": "demo-pp-cli",
   "novel_features": [
     {"name": "Sweep", "command": "availability sweep", "description": "x"},
