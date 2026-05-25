@@ -20,6 +20,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/modfile"
 )
 
 const (
@@ -897,10 +898,17 @@ func runGoCheck(dir string, args ...string) CheckResult {
 }
 
 func runGoCommandCheck(dir, name string, timeout time.Duration, args ...string) CheckResult {
+	return runGoCommandCheckWithEnv(dir, name, timeout, nil, args...)
+}
+
+func runGoCommandCheckWithEnv(dir, name string, timeout time.Duration, env []string, args ...string) CheckResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		errMsg := strings.TrimSpace(string(output))
@@ -918,7 +926,26 @@ func runGoVulnCheck(dir string) CheckResult {
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
 		return CheckResult{Name: govulncheck.Name, Passed: false, Error: "go.mod not found"}
 	}
-	return runGoCommandCheck(dir, govulncheck.Name, vulnCheckTimeout, govulncheck.GoRunArgs("./...")...)
+	env := govulncheckToolchainEnv(dir)
+	return runGoCommandCheckWithEnv(dir, govulncheck.Name, vulnCheckTimeout, env, govulncheck.GoRunArgs("./...")...)
+}
+
+func govulncheckToolchainEnv(dir string) []string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return nil
+	}
+	mod, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return nil
+	}
+	if mod.Toolchain != nil && mod.Toolchain.Name != "" {
+		return []string{"GOTOOLCHAIN=" + mod.Toolchain.Name}
+	}
+	if mod.Go != nil && strings.Count(mod.Go.Version, ".") >= 2 {
+		return []string{"GOTOOLCHAIN=go" + mod.Go.Version}
+	}
+	return nil
 }
 
 func checkGoModTidy(dir string) CheckResult {
