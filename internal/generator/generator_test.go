@@ -962,6 +962,16 @@ func TestBearerRefreshSavedTokenWinsOverEnvBackedField(t *testing.T) {
 	}
 }
 
+func TestBearerRefreshSavedTokenCorrectsStaleEnvSource(t *testing.T) {
+	cfg := &Config{AccessToken: "fresh-token", RefreshbearerPublicBearer: "stale-token", AuthSource: "env:REFRESHBEARER_PUBLIC_BEARER"}
+	if got := cfg.AuthHeader(); got != "Bearer fresh-token" {
+		t.Fatalf("AuthHeader() = %q, want refreshed token", got)
+	}
+	if cfg.AuthSource != "bearer_refresh" {
+		t.Fatalf("AuthSource = %q, want bearer_refresh", cfg.AuthSource)
+	}
+}
+
 func TestSaveBearerTokenClearsEnvBackedField(t *testing.T) {
 	cfg := &Config{
 		Path:                filepath.Join(t.TempDir(), "config.toml"),

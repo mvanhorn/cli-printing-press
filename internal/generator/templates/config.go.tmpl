@@ -369,7 +369,9 @@ func (c *Config) AuthHeader() string {
 	// win. Sending the client_id as Authorization: Bearer surfaces as
 	// token_rejected at the API.
 	if c.AccessToken != "" {
-		c.AuthSource = "oauth2"
+		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
+			c.AuthSource = "oauth2"
+		}
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
@@ -395,7 +397,9 @@ func (c *Config) AuthHeader() string {
 {{- if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		c.AuthSource = "env:{{.Name}}"
+		if c.AuthSource == "" {
+			c.AuthSource = "env:{{.Name}}"
+		}
 		{{- if $.Auth.Format}}
 		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
@@ -412,7 +416,9 @@ func (c *Config) AuthHeader() string {
 {{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		c.AuthSource = "env:{{.Name}}"
+		if c.AuthSource == "" {
+			c.AuthSource = "env:{{.Name}}"
+		}
 		{{- if $.Auth.Format}}
 		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
@@ -429,7 +435,9 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 {{- if not .BearerRefresh.Enabled}}
 	if c.AccessToken != "" {
-		c.AuthSource = "oauth2"
+		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
+			c.AuthSource = "oauth2"
+		}
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
@@ -444,20 +452,26 @@ func (c *Config) AuthHeader() string {
 {{- if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		c.AuthSource = "env:{{.Name}}"
+		if c.AuthSource == "" {
+			c.AuthSource = "env:{{.Name}}"
+		}
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 {{- end}}
 {{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		c.AuthSource = "env:{{.Name}}"
+		if c.AuthSource == "" {
+			c.AuthSource = "env:{{.Name}}"
+		}
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 	{{- end}}
 {{- end}}
 	if c.AccessToken != "" {
-		c.AuthSource = "browser"
+		if c.AuthSource == "" {
+			c.AuthSource = "browser"
+		}
 		return ensureAuthScheme("{{.Auth.HeaderPrefix}}", c.AccessToken)
 	}
 	return ""
@@ -466,20 +480,26 @@ func (c *Config) AuthHeader() string {
 {{- if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		c.AuthSource = "env:{{.Name}}"
+		if c.AuthSource == "" {
+			c.AuthSource = "env:{{.Name}}"
+		}
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 {{- end}}
 {{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
-		c.AuthSource = "env:{{.Name}}"
+		if c.AuthSource == "" {
+			c.AuthSource = "env:{{.Name}}"
+		}
 		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 	{{- end}}
 {{- end}}
 	if c.AccessToken != "" {
-		c.AuthSource = "chrome-composed"
+		if c.AuthSource == "" {
+			c.AuthSource = "chrome-composed"
+		}
 		return ensureAuthScheme("{{.Auth.HeaderPrefix}}", c.AccessToken)
 	}
 	return ""
