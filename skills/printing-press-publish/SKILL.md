@@ -20,8 +20,26 @@ Publish a generated CLI from your local library to the [printing-press-library](
 ```bash
 /printing-press publish notion-pp-cli
 /printing-press publish notion
+/printing-press publish notion --from-polish
 /printing-press publish
 ```
+
+## Direct User Invocation Required
+
+Publishing can fork `mvanhorn/printing-press-library`, push a branch, and open or
+update a PR. Before setup or validation, check the invocation context. If this
+skill was invoked as a chained continuation from `printing-press-polish`'s
+Publish Offer, including an `AskUserQuestion` answer or auto-resolved polish
+recommendation, stop immediately and tell the user to send
+`/printing-press-publish <cli-name> --from-polish` in a fresh message. A fresh
+user-authored request that explicitly asks to publish is sufficient; do not add
+another confirmation prompt on top of a direct publish request.
+
+If the fresh user-authored request includes `--from-polish`, record
+`POLISH_HANDOFF=true` for the terminal-state step and ignore that marker when
+resolving the CLI name. The marker is not a second confirmation and is not
+passed to `cli-printing-press`; it only preserves standalone polish's old
+post-publish retro offer after the fresh-turn publish completes.
 
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
@@ -1030,7 +1048,18 @@ Read `access` from `$PUBLISH_CONFIG` (`jq -r .access "$PUBLISH_CONFIG"`) to dete
   ```
 - **If `access` is `fork`** (community contributor): you cannot merge or label the upstream PR. There is nothing more to do once it's green.
 
-Then **report the terminal state and return control to the caller.** Do not offer a retro or any follow-up menu from this skill — that decision belongs to whoever invoked publish. The `printing-press` pipeline offers retro as its own post-publish tail; a direct human invocation just ends here.
+Then **report the terminal state and return control to the caller.** Do not offer a retro or any follow-up menu from this skill by default — that decision belongs to whoever invoked publish. The `printing-press` pipeline offers retro as its own post-publish tail; a direct human invocation without `--from-polish` just ends here.
+
+If `POLISH_HANDOFF=true`, offer retro as a soft tail after the PR is green. This preserves the standalone polish -> publish workflow without allowing polish's same-turn `AskUserQuestion` answer to create or update a public-library PR.
+
+Present via `AskUserQuestion`:
+
+> "PR opened: <PR_URL>. Run a retro? It surfaces systemic gaps from this session (generator misses, scorer bugs, skill-doc drift) as a GitHub issue for the Printing Press maintainers. Every retro filed raises the floor for the next CLI, and your session context is freshest right now."
+>
+> 1. **No, I'm done** (default)
+> 2. **Yes, run retro now**
+
+If the user picks yes, invoke `/printing-press-retro`.
 
 ## Secret & PII Protection
 

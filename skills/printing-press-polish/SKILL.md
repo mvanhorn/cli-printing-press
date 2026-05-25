@@ -709,6 +709,8 @@ Set `no` when another invocation would re-tread the same ground:
 
 **Skip this entire section unless `STANDALONE_MODE` is true.** `STANDALONE_MODE` is set in the "Resolve CLI" block above based on the caller mode: true for slash-command invocations (`/printing-press-polish ...`) or Skill-tool invocations that pass `--standalone` in `args`; false otherwise. When false, polish is being called from main SKILL Phase 5.5 or hold-path "Polish to retry," and the working CLI has not been promoted to library yet. `/printing-press-publish <slug>` would resolve to `$PRESS_LIBRARY/<slug>/`, which is either empty or holds a stale prior run — invoking publish here would either fail to resolve or ship the wrong copy. The parent skill owns the publish flow on that path; just emit the result block and return.
 
+Apply the publish turn-boundary rule: the `AskUserQuestion` answer may authorize only a handoff message, not a same-turn publish. Publishing opens or updates a public-library PR, so it requires a fresh user-authored message after polish completes. See `references/publish-turn-boundary.md` for rationale.
+
 A simple check:
 
 ```bash
@@ -750,7 +752,7 @@ Present via `AskUserQuestion`. Two example shapes:
 >
 > Recommendation: Publish.
 >
-> 1. **Publish now** (recommended) — validate, package, and open a PR
+> 1. **Publish separately** (recommended) — show the publish command for the next user message
 > 2. **Done for now** — CLI is at $PRESS_LIBRARY/<cli-name>"
 
 **Polish thinks another pass would help** (`remaining_issues` non-empty, `further_polish_recommended: yes`):
@@ -762,30 +764,22 @@ Present via `AskUserQuestion`. Two example shapes:
 > Recommendation: Polish again before publishing.
 >
 > 1. **Polish again** (recommended) — close the remaining <N> issues
-> 2. **Publish now** — ship as-is
+> 2. **Publish separately** — show the publish command to ship as-is in the next user message
 > 3. **Done for now** — CLI is at $PRESS_LIBRARY/<cli-name>"
 
 The recommended option leads, carries the `(recommended)` label, and the leading `Recommendation:` line states the agent's call explicitly. Three reinforcing channels so the user does not have to infer from ordering.
 
-### If "Publish now"
+### If "Publish separately"
 
-Check for existing PR:
-```bash
-gh pr list --repo mvanhorn/printing-press-library --head "feat/$CLI_NAME" --state open --author @me --json number,url --jq '.[0]' 2>/dev/null
-```
+Do not invoke `/printing-press-publish <cli-name>` from this same turn, and do not check or create public-library PRs here. Print a handoff that requires an explicit fresh user-authored message. Include the `--from-polish` marker so publish can offer the same post-publish retro tail that polish used to offer after a successful inline publish:
 
-Then invoke `/printing-press-publish <cli-name>`.
-
-**After publish returns success**, offer retro as a soft tail. This mirrors the main `/printing-press` skill's Phase 6 behavior so users who reach publish through polish (mid-pipeline → polish-again → publish, or standalone polish → publish) get the same retro opportunity as users who reach publish directly through Phase 6.
-
-Present via `AskUserQuestion`:
-
-> "PR opened: <PR_URL>. Run a retro? It surfaces systemic gaps from this session (generator misses, scorer bugs, skill-doc drift) as a GitHub issue for the Printing Press maintainers. Every retro filed raises the floor for the next CLI — and your session context is freshest right now."
+> "Publishing requires a separate user confirmation because it can fork `mvanhorn/printing-press-library`, push a branch, and open or update a PR.
 >
-> 1. **No — I'm done** (default)
-> 2. **Yes — run retro now**
+> To publish, send this as your next message:
+>
+> `/printing-press-publish <cli-name> --from-polish`"
 
-If the user picks yes, invoke `/printing-press-retro`.
+After printing the handoff, stop. If the user sends the command in a later message, the publish skill owns validation, packaging, public-library PR creation or update, and the `--from-polish` post-publish retro offer.
 
 (When `STANDALONE_MODE` is false this whole section is unreachable — the Publish Offer guard at the top of this section returns early — so no extra check is needed here.)
 
