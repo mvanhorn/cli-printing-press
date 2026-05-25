@@ -716,13 +716,13 @@ Before new research:
    CLI_DIR="$PRESS_LIBRARY/<api>"
    HAS_LIBRARY=false
    HAS_GOMOD=false
+   PRIOR_STEINBERGER_SCORE=""
+   PRIOR_SUB60_REPRINT=false
    if [ -d "$CLI_DIR" ]; then
      HAS_LIBRARY=true
      if [ -f "$CLI_DIR/go.mod" ]; then
        HAS_GOMOD=true
      fi
-     PRIOR_STEINBERGER_SCORE=""
-     PRIOR_SUB60_REPRINT=false
      # Read manifest if available
      MANIFEST="$CLI_DIR/.printing-press.json"
      if [ -f "$MANIFEST" ]; then
