@@ -31,7 +31,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra.Command {
+func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
 	var flag{{camel (paramIdent .)}} {{goTypeForParam .Name .Type}}

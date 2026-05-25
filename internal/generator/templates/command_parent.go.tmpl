@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func new{{camel .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
+func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "{{kebab .ResourceName}}",
 		Short: "{{.Short}}",
@@ -17,10 +17,10 @@ func new{{camel .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 		RunE: parentNoSubcommandRunE(flags),
 	}
 {{range $eName, $endpoint := .Resource.Endpoints}}
-	cmd.AddCommand(new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags))
+	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $eName}}Cmd(flags))
 {{- end}}
 {{- range $subName, $sub := .Resource.SubResources}}
-	cmd.AddCommand(new{{camel $.FuncPrefix}}{{camel $subName}}Cmd(flags))
+	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $subName}}Cmd(flags))
 {{- end}}
 	return cmd
 }
