@@ -402,9 +402,6 @@ func liveCheckExistingStageBinaryPath(cliDir, name string) (string, string) {
 			if filepath.Dir(cleanPath) != filepath.Clean(stagedDir) {
 				continue
 			}
-			if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(cleanPath), ".exe") {
-				continue
-			}
 			if _, err := os.Stat(cleanPath); err == nil {
 				return cleanPath, candidate
 			}
@@ -451,17 +448,21 @@ func newestLiveCheckSourceModTime(cliDir, cmdDir string) (time.Time, bool, error
 // is non-empty it's used verbatim; otherwise RunLiveCheck tries the common
 // `<base>-pp-cli` naming convention and falls back to `<base>`.
 func resolveBinaryPath(cliDir, name string) (string, error) {
-	candidates := liveCheckBinaryCandidates(cliDir, name)
+	return resolveBinaryPathForGOOS(cliDir, name, runtime.GOOS)
+}
+
+func resolveBinaryPathForGOOS(cliDir, name, goos string) (string, error) {
+	candidates := liveCheckBinaryCandidatesForGOOS(cliDir, name, goos)
 	var nonExecutablePath string
 	for _, candidate := range liveCheckBinaryNames(cliDir, name) {
 		var bestPath string
 		var bestModTime time.Time
-		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, runtime.GOOS) {
+		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos) {
 			info, err := os.Stat(path)
 			if err != nil {
 				continue
 			}
-			if !isLiveCheckExecutable(path, info.Mode()) {
+			if !isLiveCheckExecutableForGOOS(path, info.Mode(), goos) {
 				if nonExecutablePath == "" {
 					nonExecutablePath = path
 				}
@@ -486,19 +487,14 @@ func resolveBinaryPath(cliDir, name string) (string, error) {
 	return "", fmt.Errorf("no runnable binary found in %q (tried %v)", cliDir, candidates)
 }
 
-func isLiveCheckExecutable(path string, mode os.FileMode) bool {
-	return isLiveCheckExecutableForGOOS(path, mode, runtime.GOOS)
-}
-
 func isLiveCheckExecutableForGOOS(path string, mode os.FileMode, goos string) bool {
+	if mode.IsDir() {
+		return false
+	}
 	if goos == "windows" {
-		return strings.EqualFold(filepath.Ext(path), ".exe")
+		return true
 	}
 	return mode&0o111 != 0
-}
-
-func liveCheckBinaryCandidates(cliDir, name string) []string {
-	return liveCheckBinaryCandidatesForGOOS(cliDir, name, runtime.GOOS)
 }
 
 func liveCheckBinaryCandidatesForGOOS(cliDir, name, goos string) []string {

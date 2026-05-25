@@ -700,15 +700,33 @@ func TestLiveCheckResolveBinaryPathSkipsNonExecutableCandidate(t *testing.T) {
 	require.Equal(t, filepath.Clean(rootPath), got)
 }
 
-func TestLiveCheckExecutableHonorsWindowsExeExtension(t *testing.T) {
+func TestLiveCheckResolveBinaryPathAcceptsWindowsExtensionlessCandidate(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+
+	stagedPath := filepath.Join(stagedDir, "stub")
+	require.NoError(t, os.WriteFile(stagedPath, []byte("windows binary"), 0o644))
+
+	got, err := resolveBinaryPathForGOOS(dir, "stub", "windows")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Clean(stagedPath), got)
+}
+
+func TestLiveCheckExecutableUsesHostExecutableRules(t *testing.T) {
 	t.Parallel()
 
 	assert.True(t,
 		isLiveCheckExecutableForGOOS(`C:\tmp\petstore-pp-cli.exe`, 0o644, "windows"),
-		"Windows executability is extension-based, not POSIX mode-bit-based")
-	assert.False(t,
+		"Windows executability is path-based, not POSIX mode-bit-based")
+	assert.True(t,
 		isLiveCheckExecutableForGOOS(`C:\tmp\petstore-pp-cli`, 0o755, "windows"),
-		"Windows live-check should only accept .exe binaries")
+		"Windows live-check should skip POSIX executable-bit checks")
+	assert.False(t,
+		isLiveCheckExecutableForGOOS(`C:\tmp\petstore-pp-cli`, os.ModeDir|0o755, "windows"),
+		"Windows live-check should still reject directories")
 	assert.True(t,
 		isLiveCheckExecutableForGOOS("/tmp/petstore-pp-cli", 0o755, "linux"),
 		"Unix live-check should keep honoring executable bits")
