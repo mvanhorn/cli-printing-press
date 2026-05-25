@@ -118,10 +118,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/OrganizationContactUpdateRequest"
+              $ref: "#/components/schemas/ContactUpdateRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/OrganizationContactUpdateRequest"
+              $ref: "#/components/schemas/ContactUpdateRequest"
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
@@ -182,10 +182,10 @@ paths:
         content:
           application/vnd.api+json:
             schema:
-              $ref: "#/components/schemas/ContactUpdateRequest"
+              $ref: "#/components/schemas/OrganizationContactUpdateRequest"
           application/json:
             schema:
-              $ref: "#/components/schemas/ContactUpdateRequest"
+              $ref: "#/components/schemas/OrganizationContactUpdateRequest"
       responses:
         "200":
           $ref: "#/components/responses/JsonApiResource"
