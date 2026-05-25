@@ -2761,6 +2761,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			endpoint.NoAuth = operationAllowsAnonymous(op, doc)
 
 			// IDField fallback chain: explicit x-resource-id wins over
+			// path-param/resource-shape inference, which wins over the generic
 			// response-schema inference. Resolution happens at parse time so
 			// the profiler sees a single resolved value per endpoint and
 			// templates do not re-walk schemas at generation time.
@@ -2769,6 +2770,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride
+			} else if idField := resolveIDFieldFromPathParam(op, path, targetResourceName); idField != "" {
+				endpoint.IDField = idField
+				endpoint.IDFieldFromPathParam = true
 			} else {
 				endpoint.IDField = resolveIDFieldFromResponseSchema(op, targetResourceName)
 			}
@@ -4539,6 +4543,92 @@ func readWalkerExtension(extensions map[string]any, context string) *spec.Walker
 	return &cfg
 }
 
+// Member paths can provide a stronger primary-key signal than generic response
+// fallbacks: /sites/{siteId} points at siteId even when the schema also has a
+// display name. Prefer placeholders after the endpoint's target resource
+// segment, with a trailing member placeholder fallback for nested resources
+// whose generated name includes more context than one path segment.
+func resolveIDFieldFromPathParam(op *openapi3.Operation, path string, resourceName string) string {
+	itemSchema := responseItemSchema(op)
+	if itemSchema == nil || resourceName == "" {
+		return ""
+	}
+
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for i := 0; i < len(segments)-1; i++ {
+		if !pathSegmentMatchesResource(segments[i], resourceName) {
+			continue
+		}
+		placeholder, ok := pathPlaceholderName(segments[i+1])
+		if !ok {
+			continue
+		}
+		if field := responsePropertyForPathParam(itemSchema, placeholder); field != "" {
+			return field
+		}
+	}
+	if placeholder, ok := pathPlaceholderName(segments[len(segments)-1]); ok {
+		if field := responsePropertyForPathParam(itemSchema, placeholder); field != "" {
+			return field
+		}
+	}
+	return ""
+}
+
+func pathSegmentMatchesResource(segment string, resourceName string) bool {
+	segmentSnake := singularizeIdentifier(toSnakeCase(strings.Trim(segment, "/")))
+	resourceSnake := singularizeIdentifier(toSnakeCase(resourceName))
+	return segmentSnake != "" && segmentSnake == resourceSnake
+}
+
+func pathPlaceholderName(segment string) (string, bool) {
+	segment = strings.TrimSpace(segment)
+	if !strings.HasPrefix(segment, "{") || !strings.HasSuffix(segment, "}") {
+		return "", false
+	}
+	name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(segment, "{"), "}"))
+	return name, name != ""
+}
+
+func responsePropertyForPathParam(schema *openapi3.Schema, paramName string) string {
+	if schema == nil || paramName == "" {
+		return ""
+	}
+	if propRef, ok := schema.Properties[paramName]; ok && propRef != nil && isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+		return paramName
+	}
+	paramSnake := toSnakeCase(paramName)
+	propNames := make([]string, 0, len(schema.Properties))
+	for propName := range schema.Properties {
+		propNames = append(propNames, propName)
+	}
+	sort.Strings(propNames)
+	for _, propName := range propNames {
+		if toSnakeCase(propName) != paramSnake {
+			continue
+		}
+		if propRef := schema.Properties[propName]; propRef != nil && isPlausibleIDFieldSchema(schemaRefValue(propRef)) {
+			return propName
+		}
+	}
+	return ""
+}
+
+func responseItemSchema(op *openapi3.Operation) *openapi3.Schema {
+	if op == nil || op.Responses == nil {
+		return nil
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return nil
+	}
+	schemaRef := selectResponseSchema(success.Value)
+	if schemaRef == nil || schemaRef.Value == nil {
+		return nil
+	}
+	return unwrapItemSchema(schemaRef.Value)
+}
+
 // resolveIDFieldFromResponseSchema implements tiers 2-5 of the IDField fallback
 // chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
 // `_uuid` / `_guid`), then a vendor identifier (`gid` / `sid` / `uid` /
@@ -4552,20 +4642,7 @@ func readWalkerExtension(extensions map[string]any, context string) *spec.Walker
 // the resource-prefixed heuristic and may be empty for synthetic endpoints,
 // in which case that tier is skipped.
 func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName string) string {
-	if op == nil || op.Responses == nil {
-		return ""
-	}
-	success := selectSuccessResponse(op.Responses)
-	if success == nil || success.Value == nil {
-		return ""
-	}
-	schemaRef := selectResponseSchema(success.Value)
-	if schemaRef == nil || schemaRef.Value == nil {
-		return ""
-	}
-
-	// Walk to the item schema: arrays, {data: [...]} wrappers, or the object itself.
-	itemSchema := unwrapItemSchema(schemaRef.Value)
+	itemSchema := responseItemSchema(op)
 	if itemSchema == nil {
 		return ""
 	}

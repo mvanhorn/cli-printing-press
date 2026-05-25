@@ -11184,6 +11184,162 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_TemplatedIDFieldOverrideWins|TestUpsertBatch_GenericFallbackList|TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses")
 }
 
+func TestGeneratedSyncIDFieldOverridesFromMemberPathParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Path Param IDs
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /identity-providers:
+    get:
+      operationId: listIdentityProviders
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    idpId: {type: string}
+                    name: {type: string}
+  /identity-providers/{idpId}:
+    get:
+      operationId: getIdentityProvider
+      parameters:
+        - name: idpId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  idpId: {type: string}
+                  name: {type: string}
+`))
+	require.NoError(t, err)
+	profile := profiler.Profile(apiSpec)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "identity-providers", profile.SyncableResources[0].Name)
+	assert.Equal(t, "idpId", profile.SyncableResources[0].IDField)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(syncGo), `"identity-providers": "idpId",`)
+	assert.Contains(t, string(storeGo), `"identity-providers": "idpId",`)
+}
+
+func TestGeneratedDependentSyncIDFieldOverridesFromMemberPathParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Dependent Path Param IDs
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /sites:
+    get:
+      operationId: listSites
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+                    name: {type: string}
+  /sites/{siteId}/identity-providers:
+    get:
+      operationId: listSiteIdentityProviders
+      parameters:
+        - name: siteId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    idpId: {type: string}
+                    name: {type: string}
+  /sites/{siteId}/identity-providers/{idpId}:
+    get:
+      operationId: getSiteIdentityProvider
+      parameters:
+        - name: siteId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: idpId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  idpId: {type: string}
+                  name: {type: string}
+`))
+	require.NoError(t, err)
+	profile := profiler.Profile(apiSpec)
+	require.Len(t, profile.DependentSyncResources, 1)
+	assert.Equal(t, "identity_providers", profile.DependentSyncResources[0].Name)
+	assert.Equal(t, "idpId", profile.DependentSyncResources[0].IDField)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+	require.Len(t, gen.profile.DependentSyncResources, 1)
+	assert.Equal(t, "identity_providers", gen.profile.DependentSyncResources[0].Name)
+	assert.Equal(t, "idpId", gen.profile.DependentSyncResources[0].IDField)
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(syncGo), `"identity_providers": "idpId",`)
+	assert.Contains(t, string(storeGo), `"identity_providers": "idpId",`)
+}
+
 func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	t.Parallel()
 

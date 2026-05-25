@@ -6195,6 +6195,136 @@ paths:
 	}
 }
 
+// Member-endpoint placeholders catch acronym or vendor-shaped keys, such as
+// idpId, that cannot be derived from the resource name alone.
+func TestParseIDFieldPathParamHeuristic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		schemaYAML string
+		wantID     string
+		wantPathID bool
+	}{
+		{
+			name: "camelCase member placeholder wins over display name",
+			path: "/idps/{idpId}",
+			schemaYAML: `                  type: object
+                  properties:
+                    idpId: {type: string}
+                    name: {type: string}
+`,
+			wantID:     "idpId",
+			wantPathID: true,
+		},
+		{
+			name: "snake_case placeholder matches camelCase response property",
+			path: "/resources/{resource_id}",
+			schemaYAML: `                  type: object
+                  properties:
+                    resourceId: {type: string}
+                    name: {type: string}
+`,
+			wantID:     "resourceId",
+			wantPathID: true,
+		},
+		{
+			name: "nested member uses child placeholder, not parent placeholder",
+			path: "/sites/{siteId}/targets/{targetId}",
+			schemaYAML: `                  type: object
+                  properties:
+                    siteId: {type: string}
+                    targetId: {type: string}
+                    name: {type: string}
+`,
+			wantID:     "targetId",
+			wantPathID: true,
+		},
+		{
+			name: "child collection does not use parent placeholder as child primary key",
+			path: "/sites/{siteId}/targets",
+			schemaYAML: `                  type: object
+                  properties:
+                    siteId: {type: string}
+                    name: {type: string}
+`,
+			wantID: "name",
+		},
+		{
+			name: "path param without matching response property falls through",
+			path: "/idps/{idpId}",
+			schemaYAML: `                  type: object
+                  properties:
+                    name: {type: string}
+`,
+			wantID: "name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  ` + tt.path + `:
+    get:
+      operationId: getThing
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+` + tt.schemaYAML)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, tt.path)
+			assert.Equal(t, tt.wantID, ep.IDField)
+			assert.Equal(t, tt.wantPathID, ep.IDFieldFromPathParam)
+		})
+	}
+}
+
+func TestParseIDFieldExplicitResourceIDWinsOverPathParamHeuristic(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets/{widgetId}:
+    x-resource-id: canonical_id
+    get:
+      operationId: getWidget
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  widgetId: {type: string}
+                  canonical_id: {type: string}
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	ep := findEndpoint(t, parsed, "/widgets/{widgetId}")
+	assert.Equal(t, "canonical_id", ep.IDField)
+	assert.False(t, ep.IDFieldFromPathParam)
+}
+
 // TestParseXResourceIDAppliesToEveryOperationOnPath exercises the "extensions
 // live on the path item" rule — both GET and POST operations under /widgets
 // inherit the x-resource-id and x-critical values, even though x-critical is
