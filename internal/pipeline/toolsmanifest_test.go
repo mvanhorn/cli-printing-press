@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -383,6 +385,126 @@ func TestWriteToolsManifest_IdentNamePublicParamName(t *testing.T) {
 	assert.Empty(t, got.Tools[0].Params[0].WireName)
 	assert.Equal(t, "id-2", got.Tools[0].Params[1].Name)
 	assert.Equal(t, "id", got.Tools[0].Params[1].WireName)
+}
+
+func TestWriteToolsManifest_ReservesStdinBodyParamName(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "stdin-body",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"uploads": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/uploads",
+						Body: []spec.Param{
+							{Name: "stdin", Type: "string", Description: "Body field named stdin"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 1)
+	assert.Equal(t, "stdin-2", got.Tools[0].Params[0].Name)
+	assert.Equal(t, "stdin", got.Tools[0].Params[0].WireName)
+}
+
+func TestOpenAPIBodyFieldCollidingWithPathParamSurfacesInMCP(t *testing.T) {
+	t.Parallel()
+
+	const openAPIBodyPathCollision = `openapi: 3.0.0
+info:
+  title: Collision API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /tags/{id}/notes:
+    post:
+      summary: Add a tag to a note
+      operationId: tagNote
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Tag ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  description: Note ID to tag
+      responses:
+        '200':
+          description: ok
+`
+
+	manifestParsed, err := openapi.Parse([]byte(openAPIBodyPathCollision))
+	require.NoError(t, err)
+
+	manifestDir := filepath.Join(t.TempDir(), "direct-manifest")
+	require.NoError(t, os.MkdirAll(manifestDir, 0o755))
+	require.NoError(t, WriteToolsManifest(manifestDir, manifestParsed))
+	got, err := ReadToolsManifest(manifestDir)
+	require.NoError(t, err)
+	assertCollisionManifestParams(t, got)
+
+	parsed, err := openapi.Parse([]byte(openAPIBodyPathCollision))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "collision-api-pp-cli")
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+
+	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpSource := string(mcpTools)
+	assert.Contains(t, mcpSource, `mcplib.WithString("id", mcplib.Required(), mcplib.Description("Tag ID"))`)
+	assert.Contains(t, mcpSource, `mcplib.WithString("id-2", mcplib.Required(), mcplib.Description("Note ID to tag"))`)
+	assert.Contains(t, mcpSource, `PublicName: "id", WireName: "id", Location: "path"`)
+	assert.Contains(t, mcpSource, `PublicName: "id-2", WireName: "id", Location: "body"`)
+
+	require.NoError(t, WriteToolsManifest(outputDir, parsed))
+	got, err = ReadToolsManifest(outputDir)
+	require.NoError(t, err)
+	assertCollisionManifestParams(t, got)
+}
+
+func assertCollisionManifestParams(t *testing.T, got *ToolsManifest) {
+	t.Helper()
+
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 2)
+	assert.Equal(t, ManifestParam{
+		Name:        "id",
+		Type:        "string",
+		Location:    "path",
+		Description: "Tag ID",
+		Required:    true,
+	}, got.Tools[0].Params[0])
+	assert.Equal(t, ManifestParam{
+		Name:        "id-2",
+		WireName:    "id",
+		Type:        "string",
+		Location:    "body",
+		Description: "Note ID to tag",
+		Required:    true,
+	}, got.Tools[0].Params[1])
 }
 
 // TestWriteToolsManifest_ReclassifiedPathParamKeepsPathLocation pins

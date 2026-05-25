@@ -2725,21 +2725,6 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			params := mapParameters(pathItem, op)
 			body, requestContentType, bodyJSONFallback, bodyRequired, bodyIsArray := mapRequestBody(op.RequestBody, method, path)
 
-			// Deduplicate body params that collide with query/path params by flag name
-			if len(body) > 0 && len(params) > 0 {
-				paramFlags := map[string]bool{}
-				for _, p := range params {
-					paramFlags[toKebabCase(p.Name)] = true
-				}
-				filtered := make([]spec.Param, 0, len(body))
-				for _, b := range body {
-					if !paramFlags[toKebabCase(b.Name)] {
-						filtered = append(filtered, b)
-					}
-				}
-				body = filtered
-			}
-
 			endpoint := spec.Endpoint{
 				Method:             strings.ToUpper(method),
 				Path:               path,
