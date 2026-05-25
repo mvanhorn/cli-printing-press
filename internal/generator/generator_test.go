@@ -11486,8 +11486,17 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 		"graphql.go must render GraphQLEndpointPath into a const")
 	assert.NotContains(t, graphqlGo, `c.Post("/graphql"`,
 		"graphql.go must not retain the hardcoded /graphql path after PR-1")
-	assert.Contains(t, graphqlGo, "c.Post(ctx, graphqlEndpointPath",
-		"Query/Mutate must post against the rendered constant, not a literal")
+	queryBody := generatedFunctionBody(t, graphqlGo, "func (c *Client) Query(")
+	assert.Contains(t, queryBody, "c.PostQueryWithParams(ctx, graphqlEndpointPath",
+		"Query must use the read-only POST helper against the rendered constant")
+	assert.NotContains(t, queryBody, "c.Post(ctx, graphqlEndpointPath",
+		"GraphQL reads must not use the verify-gated POST helper")
+
+	mutateBody := generatedFunctionBody(t, graphqlGo, "func (c *Client) Mutate(")
+	assert.Contains(t, mutateBody, "c.Post(ctx, graphqlEndpointPath",
+		"GraphQL mutations must stay on the verify-gated POST helper")
+	assert.NotContains(t, mutateBody, "c.PostQueryWithParams(ctx, graphqlEndpointPath",
+		"GraphQL mutations must not use the read-only POST helper")
 
 	// The config struct must carry the templated BaseURL through unchanged so
 	// PR-2 can resolve {shop} against SHOPIFY_SHOP at Load() time without
@@ -11508,6 +11517,20 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 	).Replace(rawURL)
 	assert.Equal(t, expectedFinalURL, resolved,
 		"BaseURL + GraphQLEndpointPath must resolve to the Shopify Admin endpoint after env substitution")
+}
+
+func generatedFunctionBody(t *testing.T, src, signature string) string {
+	t.Helper()
+
+	start := strings.Index(src, signature)
+	require.NotEqual(t, -1, start, "generated source must contain %s", signature)
+
+	rest := src[start:]
+	next := strings.Index(rest[1:], "\nfunc ")
+	if next == -1 {
+		return rest
+	}
+	return rest[:next+1]
 }
 
 // shopifyTemplateVarsTestSpec returns a Shopify-shape APISpec used by
