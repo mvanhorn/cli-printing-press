@@ -5219,6 +5219,31 @@ func TestWriteThroughCacheNestedDataEnvelope(t *testing.T) {
 	}
 }
 
+func TestWriteThroughCacheSkipsMetadataErrorArray(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{
+		"success": true,
+		"errors": [{"code": "deprecation"}],
+		"warnings": [{"code": "slow-page"}],
+		"data": null
+	}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("certs count after metadata error array envelope = %d, want 0", count)
+	}
+}
+
 func TestWriteThroughCacheCachesObjectWithChildArray(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
@@ -5298,7 +5323,7 @@ func TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata(t *testing.T) 
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName|TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields|TestWriteThroughCacheNestedDataEnvelope|TestWriteThroughCacheCachesObjectWithChildArray|TestWriteThroughCacheSkipsNestedEmptyListEnvelope|TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName|TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields|TestWriteThroughCacheNestedDataEnvelope|TestWriteThroughCacheSkipsMetadataErrorArray|TestWriteThroughCacheCachesObjectWithChildArray|TestWriteThroughCacheSkipsNestedEmptyListEnvelope|TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata", "./internal/cli")
 }
 
 func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
