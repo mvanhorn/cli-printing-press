@@ -77,7 +77,15 @@ and let the divergence check (below) handle any drift.
 
 ### Resolve CLI
 
-The argument string can contain a `--standalone` flag plus one positional value (a slug, binary name, or path). The flag may appear before or after the positional value; it is the only flag this skill consumes from `args`. Strip it before path resolution.
+The argument string can contain a `--standalone` flag plus one positional value
+(a slug, binary name, or path). It can also contain a Phase 3 gate bundle on
+following lines when invoked by the main printing-press skill. The flag may
+appear before or after the positional value; it is the only flag this skill
+consumes from `args`. Strip it before path resolution.
+
+When `args` is multi-line, treat the first non-empty line as the positional
+value and parse the remaining lines as the optional Phase 3 gate bundle. Do not
+include the bundle text in path resolution.
 
 The positional value can be:
 - A short name: `redfin` (looks up `$PRESS_LIBRARY/redfin`)
@@ -97,6 +105,28 @@ Resolution order for the positional value:
 - **Skill-tool standalone override.** A non-slash caller that genuinely wants polish to publish must opt in explicitly by including `--standalone` in `args` (e.g., `args: "--standalone $PRESS_LIBRARY/redfin"`). Without that token, polish never publishes from a Skill-tool invocation — even if the resolved path happens to live under `$PRESS_LIBRARY/`. The flag is the contract; the path is not.
 
 This caller-mode-driven gate replaces the older path-substring heuristic (`*.runstate/*`). The heuristic broke when the main SKILL's Phase 5.5/5.6 ordering inverted, or when polish was invoked from a non-`.runstate` scratch layout: polish would see a `$PRESS_LIBRARY/<slug>/` path, conclude "standalone," and fire its Publish Offer (fork, global git config, public PR) inside a mid-pipeline run. The flag is unambiguous and the safer default is no-publish.
+
+### Phase 3 gate bundle
+
+Mid-pipeline callers pass these fields after the CLI path in `args`:
+
+```yaml
+phase3_transcendence_rows_planned: <planned>
+phase3_transcendence_rows_built: <built>
+phase3_transcendence_rows_missing:
+  - <manifest row name or command>
+prior_sub60_reprint: <true|false>
+partial_transcendence_override: <none or build-log note path>
+```
+
+Parse the bundle before diagnostics and keep the values available for ship
+logic. Missing bundle fields mean "no forced Phase 3 hold"; they do not block
+standalone polish. If `prior_sub60_reprint: true`,
+`phase3_transcendence_rows_missing` contains any row, and
+`partial_transcendence_override` is empty or `none`, polish must emit
+`ship_recommendation: hold` even if the local diagnostics are otherwise clean.
+Add the missing rows to `remaining_issues` so the parent skill can show the
+specific gate that blocked promotion.
 
 The lock-status check in the next code block is the safety net for the mid-pipeline scenario: if a build lock is held for this CLI (under either name form), polish refuses to run. `cli-printing-press lock` normalizes slug ↔ binary-name internally, so the check works regardless of which form the basename produces.
 
@@ -650,7 +680,7 @@ Compute the ship recommendation:
   4. List each Known Gaps write/update in `fixes_applied` so the caller can surface that this happened.
 
   If polish cannot responsibly populate Known Gaps from the available evidence (e.g., `remaining_issues` is all internal jargon with no user-facing reading), downgrade the verdict to `hold` rather than ship without disclosure.
-- **`hold`**: verify < 65% or scorecard < 65 or critical failures, **OR** verify-skill has unresolved findings, **OR** workflow-verify reports `workflow-fail` and the workflow is the CLI's primary value, **OR** (when `STANDALONE_MODE=true`) publish-validate reports `passed: false`. Mid-pipeline polish never reaches `hold` because of publish-validate — the check doesn't run in that mode and `publish_validate_*` is emitted as `skipped (mid-pipeline)`.
+- **`hold`**: verify < 65% or scorecard < 65 or critical failures, **OR** verify-skill has unresolved findings, **OR** workflow-verify reports `workflow-fail` and the workflow is the CLI's primary value, **OR** (when `STANDALONE_MODE=true`) publish-validate reports `passed: false`, **OR** the Phase 3 gate bundle says this is a prior sub-60 reprint with missing transcendence rows and no accepted `partial_transcendence_override`. Mid-pipeline polish never reaches `hold` because of publish-validate — the check doesn't run in that mode and `publish_validate_*` is emitted as `skipped (mid-pipeline)`.
 
 ### Push higher without gaming
 
