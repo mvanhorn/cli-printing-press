@@ -30,7 +30,8 @@
         "mode": {"type": "string", "enum": ["standard_http", "browser_http", "browser_clearance_http", "browser_required", "blocked", "unknown"]},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "reasons": {"type": "array", "items": {"type": "string"}},
-        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}}
+        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
+        "impersonation_safe": {"type": "boolean"}
       }
     },
     "protocols": {"type": "array", "items": {"$ref": "#/$defs/protocol_observation"}},

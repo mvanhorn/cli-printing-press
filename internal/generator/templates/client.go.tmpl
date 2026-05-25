@@ -329,8 +329,10 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 {{- else if .UsesBrowserHTTPTransport}}
 	builder := surf.NewClient().
 		Builder().
+{{- if .UseChromeImpersonation}}
 		Impersonate().
 		Chrome().
+{{- end}}
 		Timeout(timeout)
 {{- if .UsesBrowserHTTP3Transport}}
 	builder = builder.ForceHTTP3()
