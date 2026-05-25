@@ -175,14 +175,14 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if and $isGraphQLEndpoint (eq .EndpointName "list")}}
 {{- if .HasStore}}
+			if err := validateDataSourceStrategy(flags, "{{$dataSourceStrategy}}"); err != nil {
+				return err
+			}
 			var data json.RawMessage
 			var prov DataProvenance
 			if flags.dataSource == "local" || "{{$dataSourceStrategy}}" == "local" {
 				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", true, path, nil, "user_requested")
 			} else {
-				if err := validateDataSourceStrategy(flags, "{{$dataSourceStrategy}}"); err != nil {
-					return err
-				}
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")

@@ -26,9 +26,9 @@ const networkFallbackReason = "{{networkFallbackReason .APISpec}}"
 func unsupportedDataSourceError(strategy, requested string) error {
 	switch strategy {
 	case "local":
-		return fmt.Errorf("no live equivalent for this command; use --data-source local or --data-source auto")
+		return fmt.Errorf("no live equivalent for this command (requested %q); use --data-source local or --data-source auto", requested)
 	case "live":
-		return fmt.Errorf("no local data source for this command; use --data-source live or --data-source auto")
+		return fmt.Errorf("no local data source for this command (requested %q); use --data-source live or --data-source auto", requested)
 	default:
 		return fmt.Errorf("unsupported --data-source %q for strategy %q", requested, strategy)
 	}
