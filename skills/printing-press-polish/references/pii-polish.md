@@ -72,7 +72,11 @@ When a downstream consumer (parser, schema validator) needs a valid-shape value,
 
 **Manuscripts (`.manuscripts/<runID>/`).** Highest-risk source — captured browser-sniff content is by construction where customer values entered. Acceptance for manuscript findings requires the explicit `evidence_context`-cited justification; "captured data" alone is not sufficient. When in doubt, replace the value in the manuscript file directly (it's local working state) and use a hand-authored fixture with synthetic values for any downstream tests.
 
-**Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit by design — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII. The exemption is depth-1 only; the same basename nested under `testdata/` is captured content and stays in scope.
+**Generated test fixtures (`*_test.go`, `testdata/`).** Exempt from the audit by design — generated tests commonly carry standards-reserved or synthetic placeholder values, and rewriting them during polish creates churn without reducing customer-PII risk. Real PII in production code, config, README, and manuscript files remains in scope.
+
+**Tooling workspaces (`.omc/`, `.claude/`).** Exempt from the audit at the CLI root — these are agent orchestration or scratch directories, not shippable printed-CLI content.
+
+**Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit by design — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII.
 
 **Vendor spec source archived under `.manuscripts/`.** Files anywhere inside a `.manuscripts/` subtree whose head bytes match an OpenAPI 2.x/3.x or Swagger 2.0 root-document marker are exempt — the operator archived the vendor's published spec source alongside research, and its `example:` blocks are documentation. The exemption is content-based, not glob-based, so per-resource subdir basenames like `apps/calendars.json` or vendor-named files like `pushpress-v3.yaml` are covered without an allowlist. HARs, `session-state.json`, hand-edited proofs, and any other non-spec content under `.manuscripts/` stays in scope because the marker check fails on them.
 
