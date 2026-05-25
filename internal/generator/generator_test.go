@@ -1365,6 +1365,58 @@ func TestGenerateOAuth2AuthorizationCodeRegression(t *testing.T) {
 		"authorization_code spec must NOT pick the client_credentials template")
 }
 
+func TestGenerateOAuth2LoginVerifyEnvShortCircuitBeforeBrowserLaunch(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "oauth2-verifyenv-login",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "oauth2",
+			Header:           "Authorization",
+			Format:           "Bearer {token}",
+			OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+			AuthorizationURL: "https://api.example.com/oauth/authorize",
+			TokenURL:         "https://api.example.com/oauth/token",
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/oauth2-verifyenv-login-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	authBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	body := string(authBytes)
+
+	verifyIdx := strings.Index(body, "if cliutil.IsVerifyEnv() {")
+	wouldLaunchIdx := strings.Index(body, `fmt.Fprintf(w, "would launch: %s\n",`)
+	openBrowserIdx := strings.Index(body, "openBrowser(fullURL)")
+	listenIdx := strings.Index(body, `net.Listen("tcp"`)
+	require.NotEqual(t, -1, verifyIdx, "oauth2 login must short-circuit in verify mode")
+	require.NotEqual(t, -1, wouldLaunchIdx, "oauth2 login verify short-circuit must print launch URL")
+	require.NotEqual(t, -1, openBrowserIdx, "oauth2 login should still launch browser outside verify mode")
+	require.NotEqual(t, -1, listenIdx, "oauth2 login binds a callback listener outside verify mode")
+	assert.Less(t, verifyIdx, openBrowserIdx, "verify short-circuit must run before browser launch")
+	assert.Less(t, wouldLaunchIdx, openBrowserIdx, "verify short-circuit output must run before browser launch")
+	assert.Less(t, verifyIdx, listenIdx, "verify short-circuit must run before binding the callback port (no port bind in verify mode)")
+
+	// Text assertions alone pass even when the generated auth.go has a compile
+	// error (e.g. redirectURI referenced but never declared). Compile the
+	// generated module so such regressions fail this suite directly.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
 	t.Parallel()
 
