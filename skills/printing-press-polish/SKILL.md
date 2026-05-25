@@ -394,15 +394,16 @@ raw response JSON directly into tables:
    whenever they exist.
 2. Decode the API response into the typed struct before persistence. Do not
    build `INSERT INTO ...` statements from untyped `map[string]any` or raw
-   `json.RawMessage` values unless the CLI intentionally owns a custom table.
+   `json.RawMessage` values unless the table is a custom polish-owned table
+   declared in hand-authored migrations; see the raw SQL exception below.
 3. Verify the target table from the resource type, not from whichever query the
    novel command happened to start with. A command that fetched `<child>`
    records must insert `<child>` rows, not parent rows or a convenient adjacent
    table.
 4. Normalize nested response identifiers before insert. If the API wraps the
    scalar id inside an object that also contains metadata, extract the scalar id
-   field and store that value; never store the whole id object as the primary
-   key.
+   field and store that value; never store the whole id object as a primary key
+   or foreign-key reference.
 5. Check the response shape against the spec schema and a real sample response
    before deciding the insert mapping is correct.
 
