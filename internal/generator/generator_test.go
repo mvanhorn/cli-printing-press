@@ -10263,6 +10263,8 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 		"GraphQL sync.go must declare --max-pages with default 0")
 	assert.Contains(t, string(syncGo), `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
 		"GraphQL sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
+	assert.Contains(t, string(syncGo), `maxPages = 10`,
+		"GraphQL sync.go dogfood cap must still bound generated syncs to 10 pages")
 	assert.NotContains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"GraphQL sync.go must not retain the old 10-page default")
 
