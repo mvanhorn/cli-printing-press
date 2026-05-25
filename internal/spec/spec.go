@@ -752,26 +752,28 @@ func (c BearerRefreshConfig) Enabled() bool {
 }
 
 type AuthConfig struct {
-	Type             string       `yaml:"type" json:"type"`                           // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
-	Subtype          string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
-	Header           string       `yaml:"header" json:"header"`
-	Prefix           string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
-	Format           string       `yaml:"format" json:"format"`
-	EnvVars          []string     `yaml:"env_vars" json:"env_vars"`
-	EnvVarSpecs      []AuthEnvVar `yaml:"env_var_specs,omitempty" json:"env_var_specs,omitempty"`
-	Optional         bool         `yaml:"optional,omitempty" json:"optional,omitempty"`         // true when the key enhances a subset of features (e.g., USDA nutrition backfill) rather than gating core functionality; doctor treats unconfigured optional auth as INFO not FAIL and README frames the section as "Optional"
-	Scheme           string       `yaml:"scheme,omitempty" json:"scheme,omitempty"`             // OpenAPI security scheme name
-	In               string       `yaml:"in,omitempty" json:"in,omitempty"`                     // header, query, cookie
-	KeyURL           string       `yaml:"key_url,omitempty" json:"key_url,omitempty"`           // URL where users can register for an API key
-	Instructions     string       `yaml:"instructions,omitempty" json:"instructions,omitempty"` // one-line guidance shown alongside KeyURL, e.g. "Settings → Personal access tokens → Generate new"
-	Title            string       `yaml:"title,omitempty" json:"title,omitempty"`               // user-facing credential field title for install/config surfaces
-	Description      string       `yaml:"description,omitempty" json:"description,omitempty"`
-	AuthorizationURL string       `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
-	TokenURL         string       `yaml:"token_url,omitempty" json:"token_url,omitempty"`
-	Scopes           []string     `yaml:"scopes,omitempty" json:"scopes,omitempty"`
-	CookieDomain     string       `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
-	Cookies          []string     `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
-	Inferred         bool         `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
+	Type                   string       `yaml:"type" json:"type"`                           // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
+	Subtype                string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
+	Header                 string       `yaml:"header" json:"header"`
+	Prefix                 string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
+	Format                 string       `yaml:"format" json:"format"`
+	EnvVars                []string     `yaml:"env_vars" json:"env_vars"`
+	EnvVarSpecs            []AuthEnvVar `yaml:"env_var_specs,omitempty" json:"env_var_specs,omitempty"`
+	Optional               bool         `yaml:"optional,omitempty" json:"optional,omitempty"`         // true when the key enhances a subset of features (e.g., USDA nutrition backfill) rather than gating core functionality; doctor treats unconfigured optional auth as INFO not FAIL and README frames the section as "Optional"
+	Scheme                 string       `yaml:"scheme,omitempty" json:"scheme,omitempty"`             // OpenAPI security scheme name
+	In                     string       `yaml:"in,omitempty" json:"in,omitempty"`                     // header, query, cookie
+	KeyURL                 string       `yaml:"key_url,omitempty" json:"key_url,omitempty"`           // URL where users can register for an API key
+	Instructions           string       `yaml:"instructions,omitempty" json:"instructions,omitempty"` // one-line guidance shown alongside KeyURL, e.g. "Settings → Personal access tokens → Generate new"
+	Title                  string       `yaml:"title,omitempty" json:"title,omitempty"`               // user-facing credential field title for install/config surfaces
+	Description            string       `yaml:"description,omitempty" json:"description,omitempty"`
+	AuthorizationURL       string       `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
+	DeviceAuthorizationURL string       `yaml:"device_authorization_url,omitempty" json:"device_authorization_url,omitempty"`
+	TokenURL               string       `yaml:"token_url,omitempty" json:"token_url,omitempty"`
+	Scopes                 []string     `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	DefaultClientID        string       `yaml:"default_client_id,omitempty" json:"default_client_id,omitempty"`
+	CookieDomain           string       `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
+	Cookies                []string     `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
+	Inferred               bool         `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
 
 	// press-auth companion hints. When present, the generated CLI's
 	// `auth login --chrome --auto-login` can hand them off to
@@ -1153,6 +1155,12 @@ const OAuth2GrantAuthorizationCode = "authorization_code"
 // TokenURL with form-encoded client_id/client_secret, no user redirect.
 const OAuth2GrantClientCredentials = "client_credentials"
 
+// OAuth2GrantDeviceCode is the device authorization grant for CLIs that
+// cannot run a localhost redirect server and should not require a client
+// secret. The CLI requests a user_code at DeviceAuthorizationURL, polls
+// TokenURL, then stores the returned access/refresh tokens.
+const OAuth2GrantDeviceCode = "device_code"
+
 // EffectiveOAuth2Grant returns the configured OAuth2 grant type, defaulting
 // to OAuth2GrantAuthorizationCode when unset.
 func (c AuthConfig) EffectiveOAuth2Grant() string {
@@ -1215,9 +1223,16 @@ func validateAuthCompanion(c AuthConfig) error {
 // captured cookies to a network sniffer and the spec author is unlikely
 // to intend it.
 func validateCompanionLoginURL(raw string) error {
+	return validateHTTPSURL("auth.login_url", raw)
+}
+
+func validateHTTPSURL(label, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("auth.login_url is not a valid URL: %w", err)
+		return fmt.Errorf("%s is not a valid URL: %w", label, err)
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("%s must include a host", label)
 	}
 	switch u.Scheme {
 	case "https":
@@ -1227,9 +1242,9 @@ func validateCompanionLoginURL(raw string) error {
 		if host == "localhost" || host == "127.0.0.1" {
 			return nil
 		}
-		return fmt.Errorf("auth.login_url uses http://; only https:// is allowed (except for localhost/127.0.0.1)")
+		return fmt.Errorf("%s uses http://; only https:// is allowed (except for localhost/127.0.0.1)", label)
 	default:
-		return fmt.Errorf("auth.login_url must use http or https, got scheme %q", u.Scheme)
+		return fmt.Errorf("%s must use http or https, got scheme %q", label, u.Scheme)
 	}
 }
 
@@ -1289,11 +1304,25 @@ func validateAuthSubtype(c AuthConfig) error {
 // non-oauth2 types, matching how SessionTTLHours and similar fields behave.
 func validateOAuth2Grant(c AuthConfig) error {
 	switch c.OAuth2Grant {
-	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials:
+	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode:
+		if c.OAuth2Grant == OAuth2GrantDeviceCode {
+			if strings.TrimSpace(c.DeviceAuthorizationURL) == "" {
+				return fmt.Errorf("auth.device_authorization_url is required when auth.oauth2_grant is %q", OAuth2GrantDeviceCode)
+			}
+			if strings.TrimSpace(c.TokenURL) == "" {
+				return fmt.Errorf("auth.token_url is required when auth.oauth2_grant is %q", OAuth2GrantDeviceCode)
+			}
+			if err := validateHTTPSURL("auth.device_authorization_url", c.DeviceAuthorizationURL); err != nil {
+				return err
+			}
+			if err := validateHTTPSURL("auth.token_url", c.TokenURL); err != nil {
+				return err
+			}
+		}
 		return nil
 	default:
-		return fmt.Errorf("auth.oauth2_grant %q is not recognized (valid: %q, %q)",
-			c.OAuth2Grant, OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials)
+		return fmt.Errorf("auth.oauth2_grant %q is not recognized (valid: %q, %q, %q)",
+			c.OAuth2Grant, OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode)
 	}
 }
 

@@ -1337,6 +1337,188 @@ func TestGenerateOAuth2AuthorizationCodeRegression(t *testing.T) {
 		"authorization_code spec must NOT pick the client_credentials template")
 }
 
+func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "deviceauth",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:                   "bearer_token",
+			Header:                 "Authorization",
+			Format:                 "Bearer {token}",
+			OAuth2Grant:            spec.OAuth2GrantDeviceCode,
+			DeviceAuthorizationURL: "https://login.example.com/device",
+			TokenURL:               "https://login.example.com/token",
+			Scopes:                 []string{"mail.read", "calendars.read"},
+			DefaultClientID:        "public-client-id",
+			EnvVars:                []string{"DEVICEAUTH_CLIENT_ID"},
+			EnvVarSpecs: []spec.AuthEnvVar{{
+				Name:      "DEVICEAUTH_CLIENT_ID",
+				Kind:      spec.AuthEnvVarKindAuthFlowInput,
+				Required:  false,
+				Sensitive: false,
+			}},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/deviceauth-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	authGo := string(readGeneratedFile(t, outputDir, "internal", "cli", "auth.go"))
+	oauthGo := string(readGeneratedFile(t, outputDir, "internal", "oauth", "device.go"))
+	configGo := string(readGeneratedFile(t, outputDir, "internal", "config", "config.go"))
+	clientGo := string(readGeneratedFile(t, outputDir, "internal", "client", "client.go"))
+
+	assert.Contains(t, authGo, `newAuthRefreshCmd(flags)`, "device-code template exposes auth refresh")
+	assert.Contains(t, authGo, `newAuthPollCmd(flags)`, "device-code template exposes non-interactive follow-up polling")
+	assert.Contains(t, authGo, `cmd.Flags().BoolVar(&deviceCode, "device-code", true`, "auth login accepts --device-code")
+	assert.Contains(t, authGo, `cmd.Flags().BoolVar(&poll, "poll", outputIsTerminal()`, "headless login should print and return instead of blocking")
+	assert.Contains(t, authGo, `savePendingDeviceCode(cfg, state)`, "headless login stores pending device_code locally")
+	assert.Contains(t, authGo, `os.WriteFile(path, data, 0o600)`, "pending device_code state must be user-only readable")
+	assert.Contains(t, authGo, `_ = clearPendingDeviceCode(cfg)`, "logout and completed poll must remove pending device_code state")
+	assert.Contains(t, authGo, `fmt.Fprintln(w, "  deviceauth-pp-cli auth poll")`, "headless login resumes without exposing the raw device_code")
+	assert.NotContains(t, authGo, `auth poll --device-code`, "raw device_code must not be printed into shell commands")
+	assert.Contains(t, authGo, `cfg.AuthHeaderVal = ""`, "OAuth token saves must clear stale manual auth headers")
+	assert.Contains(t, authGo, `deviceAuthorizationURL := cfg.DeviceAuthorizationURL`, "login honors device endpoint overrides")
+	assert.Contains(t, authGo, `"https://login.example.com/device"`, "login falls back to the configured device endpoint")
+	assert.Contains(t, authGo, `"public-client-id"`, "login uses the spec default client id")
+	assert.Contains(t, authGo, `os.Getenv("DEVICEAUTH_CLIENT_ID")`, "client id can be overridden by env var")
+	assert.Contains(t, authGo, `cliutil.IsVerifyEnv()`, "login and refresh short-circuit in verify mode")
+	assert.Contains(t, authGo, `Annotations: map[string]string{"mcp:hidden": "true"}`, "interactive auth commands stay out of MCP")
+	assert.Contains(t, oauthGo, `const DeviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"`)
+	assert.Contains(t, oauthGo, `case "slow_down":`, "poller handles slow_down backoff")
+	assert.Contains(t, configGo, `if c.AccessToken != ""`, "config auth uses stored OAuth access token")
+	assert.Contains(t, configGo, `DeviceAuthorizationURL string`, "config supports device endpoint overrides")
+	assert.Contains(t, configGo, `DEVICEAUTH_DEVICE_AUTHORIZATION_URL`, "device endpoint can be overridden by env var")
+	assert.NotContains(t, configGo, `return "Bearer " + c.DeviceauthClientId`, "client id must not be sent as bearer token")
+	assert.Contains(t, clientGo, `"grant_type":    {"refresh_token"}`, "client auto-refresh uses refresh_token grant")
+	assert.Contains(t, clientGo, `resp.StatusCode == http.StatusUnauthorized`, "client retries once after refreshing on 401")
+	assert.Contains(t, clientGo, `!(cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv())`, "verify mode must not refresh against a live token endpoint")
+
+	oauthTest := `package oauth
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestDeviceCodeHelpers(t *testing.T) {
+	var tokenPolls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		switch r.URL.Path {
+		case "/device":
+			if got := r.Form.Get("client_id"); got != "public-client" {
+				t.Fatalf("client_id = %q", got)
+			}
+			if got := r.Form.Get("scope"); got != "mail.read calendars.read" {
+				t.Fatalf("scope = %q", got)
+			}
+			fmt.Fprint(w, ` + "`" + `{"device_code":"device-123","user_code":"USER-123","verification_uri":"https://login.example.com/device","interval":1}` + "`" + `)
+		case "/token":
+			switch r.Form.Get("grant_type") {
+			case DeviceCodeGrant:
+				tokenPolls++
+				if got := r.Form.Get("device_code"); got != "device-123" {
+					t.Fatalf("device_code = %q", got)
+				}
+				if tokenPolls == 1 {
+					http.Error(w, ` + "`" + `{"error":"authorization_pending"}` + "`" + `, http.StatusBadRequest)
+					return
+				}
+				fmt.Fprint(w, ` + "`" + `{"access_token":"access-123","refresh_token":"refresh-123","expires_in":3600}` + "`" + `)
+			case "refresh_token":
+				if got := r.Form.Get("refresh_token"); got != "refresh-123" {
+					t.Fatalf("refresh_token = %q", got)
+				}
+				fmt.Fprint(w, ` + "`" + `{"access_token":"access-456","refresh_token":"refresh-456","expires_in":1800}` + "`" + `)
+			default:
+				t.Fatalf("unexpected grant_type %q", r.Form.Get("grant_type"))
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	device, err := RequestDeviceCode(context.Background(), srv.Client(), srv.URL+"/device", "public-client", []string{"mail.read", "calendars.read"})
+	if err != nil {
+		t.Fatalf("RequestDeviceCode: %v", err)
+	}
+	if device.DeviceCode != "device-123" || device.UserCode != "USER-123" {
+		t.Fatalf("device response = %+v", device)
+	}
+
+	if _, retry, err := pollDeviceTokenOnce(context.Background(), srv.Client(), srv.URL+"/token", "public-client", device.DeviceCode); err == nil || retry != "authorization_pending" {
+		t.Fatalf("first poll err = %v retry = %q", err, retry)
+	}
+	tok, retry, err := pollDeviceTokenOnce(context.Background(), srv.Client(), srv.URL+"/token", "public-client", device.DeviceCode)
+	if err != nil || retry != "" || tok.AccessToken != "access-123" || tok.RefreshToken != "refresh-123" {
+		t.Fatalf("second poll token = %+v retry = %q err = %v", tok, retry, err)
+	}
+	refreshed, err := RefreshToken(context.Background(), srv.Client(), srv.URL+"/token", "public-client", "", tok.RefreshToken)
+	if err != nil {
+		t.Fatalf("RefreshToken: %v", err)
+	}
+	if refreshed.AccessToken != "access-456" || refreshed.RefreshToken != "refresh-456" {
+		t.Fatalf("refreshed token = %+v", refreshed)
+	}
+}
+
+func TestDeviceCodeHTTPErrorBodiesAreSanitized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if r.Form.Get("grant_type") == DeviceCodeGrant {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, ` + "`" + `{"error":"invalid_grant","error_description":"device %s for client %s was rejected"}` + "`" + `, r.Form.Get("device_code"), r.Form.Get("client_id"))
+			return
+		}
+		http.Error(w, ` + "`" + `{"error":"invalid_client","detail":"Bearer SECRET1234"}` + "`" + `, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	_, err := RequestDeviceCode(context.Background(), srv.Client(), srv.URL, "public-client", nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "Bearer SECRET1234") {
+		t.Fatalf("error leaked credential: %v", err)
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("error was not sanitized: %v", err)
+	}
+
+	_, _, err = pollDeviceTokenOnce(context.Background(), srv.Client(), srv.URL, "public-client", "device-secret")
+	if err == nil {
+		t.Fatal("expected poll error")
+	}
+	if strings.Contains(err.Error(), "device-secret") || strings.Contains(err.Error(), "public-client") {
+		t.Fatalf("structured OAuth error leaked request values: %v", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "oauth", "device_test.go"), []byte(oauthTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./...")
+}
+
 func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 	t.Parallel()
 
