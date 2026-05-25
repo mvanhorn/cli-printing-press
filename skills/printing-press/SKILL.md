@@ -677,18 +677,20 @@ Before new research:
    - List every candidate when `N <= 20`; otherwise list the first 20 sorted
      paths and print `...and N-20 more`.
    - Record the directory and candidates in `$STATE_FILE` before continuing:
-     `spec_path` is the directory, `spec_candidates` is the sorted list, and
-     `selected_spec_paths` is the list that will be generated.
+     `spec_path` is the directory and `spec_candidates` is the sorted list.
    - Ask the user to choose one spec, several specs, or all specs. If this
      runtime cannot ask a blocking question, stop after printing the warning
      and tell the user to re-run with explicit `--spec <file>` arguments. This
      is the minimum safe floor: never let a directory run finish while hiding
      that additional specs were ignored.
+   - After the user confirms the selection, update `$STATE_FILE` with
+     `selected_spec_paths` set to the list that will be generated.
    - For multiple selected specs, default to one independent printed CLI per
      spec using a derived `<api>-<spec-slug>` name and a distinct working
      directory under `$API_RUN_DIR/working/`. Do not merge all selected specs
      into one CLI unless the user explicitly asks for a combined surface and
      provides the umbrella name for `--name`.
+
 2. Check for prior research in:
    - `$PRESS_MANUSCRIPTS/<api-slug>/*/research/*`
 3. Reuse good prior work instead of redoing it.

@@ -199,7 +199,8 @@ func TestPrintingPressSkillWarnsOnMultiSpecDirectories(t *testing.T) {
 	assert.Contains(t, block, `find "$SPEC_SOURCE_DIR" -type f`)
 	assert.Contains(t, block, "N OpenAPI/Swagger specs found under <directory>")
 	assert.Contains(t, block, "`spec_candidates` is the sorted list")
-	assert.Contains(t, block, "`selected_spec_paths` is the list that will be generated")
+	assert.Contains(t, block, "After the user confirms the selection")
+	assert.Contains(t, block, "`selected_spec_paths` set to the list that will be generated")
 	assert.Contains(t, block, "stop after printing the warning")
 	assert.Contains(t, block, "one independent printed CLI per")
 }
