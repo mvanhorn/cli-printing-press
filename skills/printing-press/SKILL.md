@@ -1714,11 +1714,12 @@ Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest
 
 ```bash
 body_file="$(mktemp "${TMPDIR:-/tmp}/pp-reachability-body.XXXXXX")"
-status="$(curl -sS -L -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || printf '000')"
+trap 'rm -f "$body_file"' EXIT
+status="$(curl -s -L -o "$body_file" -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>/dev/null || printf '000')"
 printf '%s\n' "$status"
 ```
 
-Or use `WebFetch` if curl is unavailable, but keep the 4xx body in your notes. The goal is one real response code plus any 4xx body evidence the API chose to return.
+Or use `WebFetch` if curl is unavailable. Record the response status and, for any 4xx response body, run the same tier/permission keyword scan against the captured WebFetch body text before deciding. The goal is one real response code plus any 4xx body evidence the API chose to return.
 
 If `status` is any 4xx, inspect the body before deciding. Search it case-insensitively for tier or permission terms:
 
