@@ -411,9 +411,13 @@ func TestPublishSkillRerunsLiveGateBeforeManagedClone(t *testing.T) {
 	assert.Contains(t, liveGateBlock, `dogfood`)
 	assert.Contains(t, liveGateBlock, `--live`)
 	assert.Contains(t, liveGateBlock, `--level full`)
+	assert.Contains(t, liveGateBlock, `--timeout 120s`)
 	assert.Contains(t, liveGateBlock, `--write-acceptance "$PROOFS_DIR/phase5-acceptance.json"`)
 	assert.Contains(t, liveGateBlock, `"$PRINTING_PRESS_BIN" publish validate --dir "$CLI_DIR" --json`)
-	assert.Contains(t, skill, `--skip-live-test=<reason>`)
+	assert.Contains(t, liveGateBlock, `--skip-live-test=<reason>`)
+	assert.Contains(t, liveGateBlock, `auth_type=none during a known upstream outage`)
+	assert.Contains(t, liveGateBlock, `API_KEY_AVAILABLE=true`)
+	assert.Contains(t, liveGateBlock, `api_key_available: $api_key_available`)
 	assert.Contains(t, skill, "### Publish Live Gate")
 }
 

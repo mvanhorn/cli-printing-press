@@ -309,7 +309,7 @@ LIVE_GATE_ARGS=(
   --dir "$CLI_DIR"
   --live
   --level full
-  --timeout 30s
+  --timeout 120s
   --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
   --json
 )
@@ -330,12 +330,23 @@ branch, no package, no PR. Report the failed command, exit code when present,
 stderr or reason snippet, and the path to the fresh proof files so the operator
 can re-run dogfood and fix the CLI.
 
-If `SKIP_LIVE_TEST_REASON` is set, write a fresh skip marker instead of running
-dogfood:
+If `SKIP_LIVE_TEST_REASON` is set from `--skip-live-test=<reason>`, write a
+fresh skip marker instead of running dogfood:
 
 ```bash
+SKIP_REASON_LOWER=$(printf '%s' "$SKIP_LIVE_TEST_REASON" | tr '[:upper:]' '[:lower:]')
 case "$AUTH_TYPE" in
   api_key|bearer_token|oauth2)
+    ;;
+  none)
+    case "$SKIP_REASON_LOWER" in
+      *upstream*outage*)
+        ;;
+      *)
+        echo "ERROR: --skip-live-test is only valid for auth_type=none during a known upstream outage."
+        exit 1
+        ;;
+    esac
     ;;
   *)
     echo "ERROR: --skip-live-test is not valid for auth_type=$AUTH_TYPE. Run the live gate instead."
@@ -343,12 +354,19 @@ case "$AUTH_TYPE" in
     ;;
 esac
 
+API_KEY_AVAILABLE=false
+if [ -n "$AUTH_ENV" ] && [ -n "${!AUTH_ENV:-}" ]; then
+  API_KEY_AVAILABLE=true
+fi
+
 rm -f "$PROOFS_DIR/phase5-acceptance.json"
 jq -n \
   --arg api "$API_SLUG" \
   --arg run "$RUN_ID" \
   --arg reason "$SKIP_LIVE_TEST_REASON" \
   --arg auth "$AUTH_TYPE" \
+  --argjson api_key_available "$API_KEY_AVAILABLE" \
+  --argjson browser_session_available false \
   '{
     schema_version: 1,
     api_name: $api,
@@ -358,8 +376,8 @@ jq -n \
     skip_reason: $reason,
     auth_context: {
       type: $auth,
-      api_key_available: false,
-      browser_session_available: false
+      api_key_available: $api_key_available,
+      browser_session_available: $browser_session_available
     }
   }' > "$PROOFS_DIR/phase5-skip.json"
 LIVE_GATE_JSON=""
