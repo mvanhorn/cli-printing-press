@@ -346,3 +346,106 @@ func TestCompose_EmptyDescriptionStillBuildsParts(t *testing.T) {
 	got := Compose(in)
 	assert.Equal(t, "Required: name. Returns the new X.", got)
 }
+
+func TestCompose_SynthesizesResourceAwareActionForParserFallbackDescriptions(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		description string
+		wantPrefix  string
+	}{
+		{
+			name:        "create uses singular resource",
+			method:      "POST",
+			path:        "/widgets",
+			description: "Create",
+			wantPrefix:  "Create a new widget.",
+		},
+		{
+			name:        "list uses plural resource",
+			method:      "GET",
+			path:        "/widgets",
+			description: "List",
+			wantPrefix:  "List widgets.",
+		},
+		{
+			name:        "get uses singular resource",
+			method:      "GET",
+			path:        "/widgets/{id}",
+			description: "Get",
+			wantPrefix:  "Get a widget.",
+		},
+		{
+			name:        "update uses singular resource",
+			method:      "PATCH",
+			path:        "/widgets/{id}",
+			description: "Update",
+			wantPrefix:  "Update a widget.",
+		},
+		{
+			name:        "delete uses singular resource",
+			method:      "DELETE",
+			path:        "/widgets/{id}",
+			description: "Delete",
+			wantPrefix:  "Delete a widget.",
+		},
+		{
+			name:        "sibilant plural singularizes correctly",
+			method:      "GET",
+			path:        "/boxes/{id}",
+			description: "Get",
+			wantPrefix:  "Get a box.",
+		},
+		{
+			name:        "se-plural is not over-stripped",
+			method:      "GET",
+			path:        "/releases/{id}",
+			description: "Get",
+			wantPrefix:  "Get a release.",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Compose(Input{
+				Endpoint: spec.Endpoint{
+					Method:                 tc.method,
+					Path:                   tc.path,
+					Description:            tc.description,
+					DescriptionSynthesized: true,
+				},
+				AuthType: "none",
+			})
+			assert.Contains(t, got, tc.wantPrefix)
+		})
+	}
+}
+
+// A synthesized description with a verb outside the recognized set must fall
+// through to the plain humanized verb, not produce a malformed resource action.
+func TestCompose_SynthesizedUnrecognizedVerbFallsThrough(t *testing.T) {
+	got := Compose(Input{
+		Endpoint: spec.Endpoint{
+			Method:                 "GET",
+			Path:                   "/widgets",
+			Description:            "Search",
+			DescriptionSynthesized: true,
+		},
+		AuthType: "none",
+	})
+	assert.Contains(t, got, "Search.")
+	assert.NotContains(t, got, "a widget")
+}
+
+func TestCompose_DoesNotOverrideAuthoredDescriptions(t *testing.T) {
+	got := Compose(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "POST",
+			Path:        "/widgets",
+			Description: "Add a widget to inventory",
+		},
+		AuthType: "none",
+	})
+	assert.Equal(t, "Add a widget to inventory.", got)
+}
