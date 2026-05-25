@@ -716,6 +716,8 @@ Before new research:
    CLI_DIR="$PRESS_LIBRARY/<api>"
    HAS_LIBRARY=false
    HAS_GOMOD=false
+   PRIOR_STEINBERGER_SCORE=""
+   PRIOR_SUB60_REPRINT=false
    if [ -d "$CLI_DIR" ]; then
      HAS_LIBRARY=true
      if [ -f "$CLI_DIR/go.mod" ]; then
@@ -726,6 +728,10 @@ Before new research:
      if [ -f "$MANIFEST" ]; then
        PRESS_VERSION=$(cat "$MANIFEST" | grep -o '"printing_press_version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"printing_press_version"[[:space:]]*:[[:space:]]*"//;s/"//')
        GENERATED_AT=$(cat "$MANIFEST" | grep -o '"generated_at"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"generated_at"[[:space:]]*:[[:space:]]*"//;s/"//')
+       PRIOR_STEINBERGER_SCORE=$(jq -r '.scorecard.steinberger.percentage // empty' "$MANIFEST" 2>/dev/null || true)
+       if [ -n "$PRIOR_STEINBERGER_SCORE" ] && awk "BEGIN { exit !($PRIOR_STEINBERGER_SCORE < 60) }"; then
+         PRIOR_SUB60_REPRINT=true
+       fi
      fi
      # Get directory modification time as fallback
      CLI_MTIME=$(stat -f "%Sm" -t "%Y-%m-%d" "$CLI_DIR" 2>/dev/null || stat -c "%y" "$CLI_DIR" 2>/dev/null | cut -d' ' -f1)
@@ -753,6 +759,7 @@ Before new research:
    > Found existing `<api>` in library (last modified `<date>`).
 
    If `PRESS_VERSION` is available, append: `Built with printing-press v<version>.`
+   If `PRIOR_SUB60_REPRINT=true`, append: `Prior Steinberger score: <score>%. Reprint will require all approved transcendence rows to ship unless you explicitly accept partial coverage.`
 
    If prior research was also found (step 2), include the research summary alongside the library info.
 
@@ -2728,6 +2735,14 @@ When `CODEX_MODE` is false, skip this section.
 
 Build comprehensively. The absorb manifest from Phase 1.5 IS the feature list.
 
+**First Phase 3 build-log line:** Before writing code, count the shipping-scope transcendence rows in the Phase 1.5 absorb manifest and write this as the first line of `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-build-log.md`:
+
+```text
+Manifest transcendence rows: <planned> planned, 0 built. Phase 3 will not pass until all <planned> ship.
+```
+
+Use only rows that Phase 3 is expected to build: include approved transcendence rows with concrete `Command` values, exclude rows whose implementation starts with `(stub)`, and keep `spec-emits` rows out of the hand-code count while still tracking whether their approved command path exists. Update the build log's built count as rows are completed. If `PRIOR_SUB60_REPRINT=true`, this line is also the strict-gate budget: partial transcendence coverage is a hold by default.
+
 **macOS framework access:** When the plan or manifest specifies macOS framework APIs (ScreenCaptureKit, CoreGraphics, CoreAudio, Vision, Shortcuts, etc.), use the Swift subprocess bridge pattern - Go shells out to `swift -e '<inline script>'`. Swift is always available with Xcode CLT. Do NOT attempt Python+PyObjC - it requires separate installation and is unreliable across Python distributions. Reference `agent-capture-pp-cli/internal/capture/cgwindow.go` as the canonical example of this pattern.
 
 Priority 0 (foundation):
@@ -2895,6 +2910,8 @@ Include:
 **MANDATORY. Do NOT proceed to Phase 4 until this gate passes.**
 
 Before moving to shipcheck, verify the build log against the absorb manifest. Counting alone is not enough: a build that replaces an approved `keywords-data google-ads search-volume --auto-mode` with a self-contained wrapper `keywords volume` keeps the count right while shipping a different command than what Phase 1.5 approved. The gate must verify the **specific approved command path** for each row that declares one.
+
+**Sub-60 reprint strictness:** If this run is reprinting an existing library CLI whose prior `.printing-press.json` had `scorecard.steinberger.percentage < 60` (`PRIOR_SUB60_REPRINT=true` from Phase 0), partial transcendence implementation is a HOLD by default. The Phase 3 Completion Gate may not use `partial-implementation OK` semantics while any shipping-scope transcendence row is missing. To override, write an explicit `partial_transcendence_override` note in the build log that names each missing row, explains why it is intentionally deferred, and states that the user accepted the sub-60 reprint shipping with partial novel coverage. Without that note, any missing approved transcendence row blocks Phase 4.
 
 1. **Per-row Cobra resolution check.** Read approved command paths from `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`:
    - Every transcendence row's `Command` value.
@@ -3690,14 +3707,35 @@ session proof or a hold decision.
 
 **Always runs.** Invoke the `printing-press-polish` skill to run diagnostics, fix quality issues, and return a delta. The polish skill carries `context: fork` in its frontmatter, so its diagnostic-fix-rediagnose loop runs in a forked context — diagnostic spam, fix iterations, and re-audits stay scoped to the polish session and don't pollute this generation flow. The skill is autonomous — no user input needed. The goal is to ship the best CLI possible, not the fastest.
 
-Invoke via the Skill tool (**foreground** — must complete before promoting):
+Before invoking polish, collect the Phase 3 transcendence gate state and include
+it in the polish input bundle:
+
+```yaml
+phase3_transcendence_rows_planned: <planned>
+phase3_transcendence_rows_built: <built>
+phase3_transcendence_rows_missing:
+  - <manifest row name or command>
+prior_sub60_reprint: <true|false>
+partial_transcendence_override: <none or build-log note path>
+```
+
+Invoke via the Skill tool (**foreground** — must complete before promoting).
+Pass `$CLI_WORK_DIR` as the first line of `args`, followed by the Phase 3 bundle:
 
 ```
 Skill(
   skill: "cli-printing-press:printing-press-polish",
-  args: "$CLI_WORK_DIR"
+  args: "$CLI_WORK_DIR
+phase3_transcendence_rows_planned: <planned>
+phase3_transcendence_rows_built: <built>
+phase3_transcendence_rows_missing:
+  - <manifest row name or command>
+prior_sub60_reprint: <true|false>
+partial_transcendence_override: <none or build-log note path>"
 )
 ```
+
+Polish must treat `prior_sub60_reprint: true` plus any missing row as `ship_recommendation: hold` unless `partial_transcendence_override` names the accepted exception. This keeps mid-pipeline polish from recommending `ship` for a reprint that regressed from the approved manifest before Phase 6 sees the artifact.
 
 **Pass `$CLI_WORK_DIR` (the absolute working-dir path), not the API slug.** Phase 5.5 fires before Phase 5.6 promotes the working CLI to the library, so `$PRESS_LIBRARY/<slug>/` either doesn't exist yet or contains the *prior* run's CLI. If you paraphrase the args to the slug (e.g., `args: "producthunt"`), polish silently operates on the stale library copy.
 
