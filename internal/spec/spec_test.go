@@ -133,6 +133,63 @@ resources:
 	assert.Equal(t, []string{"c"}, param.Aliases)
 }
 
+func TestParseBodyObjectSchema(t *testing.T) {
+	yamlSpec := []byte(`
+name: rich-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      execute:
+        method: POST
+        path: /graphql
+        body:
+          type: object
+          required: [query]
+          properties:
+            query:
+              type: string
+              description: GraphQL document
+            variables:
+              type: object
+              description: GraphQL variables
+            options:
+              type: object
+              properties:
+                includeNulls:
+                  type: bool
+                  required: true
+            queries:
+              type: array
+              items:
+                type: object
+                required: [query]
+                properties:
+                  query:
+                    type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["queries"].Endpoints["execute"].Body
+	require.Len(t, body, 4)
+	assert.Equal(t, Param{Name: "query", Type: "string", Required: true, Description: "GraphQL document"}, body[0])
+	assert.Equal(t, "variables", body[1].Name)
+	assert.Equal(t, "object", body[1].Type)
+	assert.Equal(t, "GraphQL variables", body[1].Description)
+	require.Len(t, body[2].Fields, 1)
+	assert.Equal(t, "includeNulls", body[2].Fields[0].Name)
+	assert.Equal(t, "bool", body[2].Fields[0].Type)
+	assert.True(t, body[2].Fields[0].Required)
+	assert.Equal(t, "queries", body[3].Name)
+	assert.Equal(t, "array", body[3].Type)
+	require.Len(t, body[3].Fields, 1)
+	assert.Equal(t, "query", body[3].Fields[0].Name)
+	assert.True(t, body[3].Fields[0].Required)
+}
+
 func TestParseCSVArrayBodyParamMetadata(t *testing.T) {
 	yamlSpec := []byte(`
 name: csv-array-body
@@ -190,6 +247,180 @@ resources:
 	_, err := ParseBytes(yamlSpec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "string_csv_array item_type object requires item_template to be an object")
+}
+
+func TestParseBodySchemaWrapper(t *testing.T) {
+	yamlSpec := []byte(`
+name: rich-body-wrapper
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  datasets:
+    endpoints:
+      execute:
+        method: POST
+        path: /datasets/{datasetId}/executeQueries
+        params:
+          - name: datasetId
+            type: string
+            positional: true
+        body:
+          schema:
+            type: object
+            properties:
+              queries:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    query:
+                      type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	endpoint := s.Resources["datasets"].Endpoints["execute"]
+	assert.True(t, endpoint.BodySet)
+	require.Len(t, endpoint.Body, 1)
+	assert.Equal(t, "queries", endpoint.Body[0].Name)
+	assert.Equal(t, "array", endpoint.Body[0].Type)
+	require.Len(t, endpoint.Body[0].Fields, 1)
+	assert.Equal(t, "query", endpoint.Body[0].Fields[0].Name)
+}
+
+func TestParseBodyObjectSchemaJSON(t *testing.T) {
+	jsonSpec := []byte(`{
+  "name": "rich-body-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "graphql": {
+      "endpoints": {
+        "execute": {
+          "method": "POST",
+          "path": "/graphql",
+          "body": {
+            "properties": {
+              "query": {"type": "string", "required": true},
+              "variables": {"type": "object"}
+            }
+          }
+        }
+      }
+    }
+  }
+}`)
+	s, err := ParseBytes(jsonSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["graphql"].Endpoints["execute"].Body
+	require.Len(t, body, 2)
+	assert.Equal(t, "query", body[0].Name)
+	assert.True(t, body[0].Required)
+	assert.Equal(t, "variables", body[1].Name)
+	assert.Equal(t, "object", body[1].Type)
+}
+
+func TestParseBodyNullIsEmpty(t *testing.T) {
+	yamlSpec := []byte(`
+name: null-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      yamlNull:
+        method: POST
+        path: /graphql
+        body: ~
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, s.Resources["queries"].Endpoints["yamlNull"].Body)
+
+	jsonSpec := []byte(`{
+  "name": "null-body-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "queries": {
+      "endpoints": {
+        "jsonNull": {
+          "method": "POST",
+          "path": "/graphql",
+          "body": null
+        }
+      }
+    }
+  }
+}`)
+	s, err = ParseBytes(jsonSpec)
+	require.NoError(t, err)
+	assert.Empty(t, s.Resources["queries"].Endpoints["jsonNull"].Body)
+}
+
+func TestParseBodyObjectSchemaMalformed(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "missing properties",
+			body: `
+          schema:
+            type: object`,
+			want: "must declare properties",
+		},
+		{
+			name: "non object root",
+			body: `
+          type: string
+          properties:
+            query:
+              type: string`,
+			want: `must be type object with properties, got "string"`,
+		},
+		{
+			name: "non mapping properties",
+			body: `
+          properties:
+            - query`,
+			want: "body properties at line",
+		},
+		{
+			name: "non mapping property schema",
+			body: `
+          properties:
+            tags:
+              - string`,
+			want: `body property "tags"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yamlSpec := []byte(`
+name: malformed-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      execute:
+        method: POST
+        path: /graphql
+        body:` + tt.body + `
+`)
+			_, err := ParseBytes(yamlSpec)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			assert.NotContains(t, err.Error(), "cannot unmarshal")
+		})
+	}
 }
 
 func TestValidateNameRequiresKebabSlug(t *testing.T) {

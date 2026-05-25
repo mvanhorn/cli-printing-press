@@ -57,7 +57,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
             fields: []            # []Param nested fields for object-like params
             enum: []              # []string optional enum hints/constraints
             format: ""           # string optional format hint (date-time, email, uri, etc.)
-        body:                     # []Param request body fields (primarily for POST/PUT)
+        body:                     # []Param request body fields, or object schema with properties
           - name: email
             # flag_name and aliases are optional here too; omit unless evidence supports them
             type: string
@@ -68,6 +68,26 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
             fields: []
             enum: []
             format: email
+        # Alternative object-schema form for richer JSON bodies:
+        # body:
+        #   properties:
+        #     query:
+        #       type: string
+        #       required: true
+        #     variables:
+        #       type: object
+        #     serializerSettings:
+        #       type: object
+        #       properties:
+        #         includeNulls:
+        #           type: bool
+        #     queries:
+        #       type: array
+        #       items:
+        #         type: object
+        #         properties:
+        #           query:
+        #             type: string
         response:                 # object (ResponseDef)
           type: array             # string response shape: object | array
           item: User              # string type name referenced from `types`
@@ -291,6 +311,39 @@ body:
     type: array
     description: Pagination cursor
 ```
+
+For richer JSON bodies, `body` may instead be an object schema with
+`properties`. The parser accepts either `body.properties` directly or a
+`body.schema.properties` wrapper when copying from OpenAPI-like notes:
+
+```yaml
+body:
+  properties:
+    query:
+      type: string
+      required: true
+      description: GraphQL document
+    variables:
+      type: object
+      description: GraphQL variables JSON
+    serializerSettings:
+      type: object
+      properties:
+        includeNulls:
+          type: bool
+    queries:
+      type: array
+      items:
+        type: object
+        properties:
+          query:
+            type: string
+```
+
+Top-level scalars become typed flags. Object properties with their own
+`properties` become nested, parent-prefixed flags. Object and array properties
+without expandable scalar children remain JSON-string flags so the command can
+pass nested payloads without hand-written Go.
 
 ## 4. Validation Rules
 

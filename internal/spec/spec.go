@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"gopkg.in/yaml.v3"
@@ -1709,25 +1708,58 @@ type WalkerConfig struct {
 func (e *Endpoint) UnmarshalYAML(value *yaml.Node) error {
 	type endpointAlias Endpoint
 	var out endpointAlias
-	if err := value.Decode(&out); err != nil {
+	bodyNode := yamlMappingValue(value, "body")
+	if bodyNode != nil {
+		withoutBody := yamlMappingWithoutKey(value, "body")
+		if err := withoutBody.Decode(&out); err != nil {
+			return err
+		}
+		body, err := endpointBodyFromYAMLNode(bodyNode)
+		if err != nil {
+			return err
+		}
+		out.Body = body
+	} else if err := value.Decode(&out); err != nil {
 		return err
 	}
 	*e = Endpoint(out)
-	e.BodySet = yamlMappingHasKey(value, "body")
+	e.BodySet = bodyNode != nil
 	return nil
 }
 
 func (e *Endpoint) UnmarshalJSON(data []byte) error {
 	type endpointAlias Endpoint
 	var out endpointAlias
-	if err := json.Unmarshal(data, &out); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*e = Endpoint(out)
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err == nil {
-		_, e.BodySet = raw["body"]
+	bodyRaw, bodySet := raw["body"]
+	delete(raw, "body")
+	withoutBody, err := json.Marshal(raw)
+	if err != nil {
+		return err
 	}
+	if err := json.Unmarshal(withoutBody, &out); err != nil {
+		return err
+	}
+	if bodySet {
+		var bodyDoc yaml.Node
+		if err := yaml.Unmarshal(bodyRaw, &bodyDoc); err != nil {
+			return fmt.Errorf("decoding body schema: %w", err)
+		}
+		bodyNode := &bodyDoc
+		if bodyDoc.Kind == yaml.DocumentNode && len(bodyDoc.Content) > 0 {
+			bodyNode = bodyDoc.Content[0]
+		}
+		body, err := endpointBodyFromYAMLNode(bodyNode)
+		if err != nil {
+			return err
+		}
+		out.Body = body
+	}
+	*e = Endpoint(out)
+	e.BodySet = bodySet
 	return nil
 }
 
@@ -1855,31 +1887,7 @@ func (p Param) PublicInputName() string {
 }
 
 func publicInputNameFromIdent(name string) string {
-	name = strings.TrimLeft(name, "$")
-	var b strings.Builder
-	runes := []rune(name)
-	for i, r := range runes {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			if b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			continue
-		}
-		if i > 0 && unicode.IsUpper(r) {
-			prev := runes[i-1]
-			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
-				b.WriteByte('-')
-			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
-				b.WriteByte('-')
-			}
-		}
-		b.WriteRune(unicode.ToLower(r))
-	}
-	result := b.String()
-	for strings.Contains(result, "--") {
-		result = strings.ReplaceAll(result, "--", "-")
-	}
-	return strings.Trim(result, "-")
+	return naming.FlagName(name)
 }
 
 func (p *Param) UnmarshalYAML(value *yaml.Node) error {
@@ -1917,6 +1925,218 @@ func yamlMappingHasKey(value *yaml.Node, key string) bool {
 		}
 	}
 	return false
+}
+
+func yamlMappingValue(value *yaml.Node, key string) *yaml.Node {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == key {
+			return value.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func yamlMappingWithoutKey(value *yaml.Node, key string) *yaml.Node {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return value
+	}
+	out := *value
+	out.Content = make([]*yaml.Node, 0, len(value.Content))
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == key {
+			continue
+		}
+		out.Content = append(out.Content, value.Content[i], value.Content[i+1])
+	}
+	return &out
+}
+
+func endpointBodyFromYAMLNode(value *yaml.Node) ([]Param, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		return nil, nil
+	}
+	switch value.Kind {
+	case yaml.SequenceNode:
+		var body []Param
+		if err := value.Decode(&body); err != nil {
+			return nil, fmt.Errorf("decoding body params at line %d: %w", value.Line, err)
+		}
+		return body, nil
+	case yaml.MappingNode:
+		schemaNode := value
+		if nested := yamlMappingValue(value, "schema"); nested != nil {
+			schemaNode = nested
+		}
+		return bodyParamsFromSchemaNode(schemaNode)
+	default:
+		return nil, fmt.Errorf("body at line %d must be either a list of params or an object schema with properties", value.Line)
+	}
+}
+
+func bodyParamsFromSchemaNode(schema *yaml.Node) ([]Param, error) {
+	if schema == nil || schema.Kind != yaml.MappingNode {
+		line := 0
+		if schema != nil {
+			line = schema.Line
+		}
+		return nil, fmt.Errorf("body schema at line %d must be a mapping", line)
+	}
+	rootType := strings.TrimSpace(schemaScalarValue(yamlMappingValue(schema, "type")))
+	if rootType != "" && rootType != "object" {
+		return nil, fmt.Errorf("body schema at line %d must be type object with properties, got %q", schema.Line, rootType)
+	}
+	properties := yamlMappingValue(schema, "properties")
+	if properties == nil {
+		return nil, fmt.Errorf("body schema at line %d must declare properties", schema.Line)
+	}
+	return bodyParamsFromPropertiesNode(properties, schemaRequiredSet(schema))
+}
+
+func bodyParamsFromPropertiesNode(properties *yaml.Node, required map[string]struct{}) ([]Param, error) {
+	if properties == nil || properties.Kind != yaml.MappingNode {
+		line := 0
+		if properties != nil {
+			line = properties.Line
+		}
+		return nil, fmt.Errorf("body properties at line %d must be a mapping", line)
+	}
+	out := make([]Param, 0, len(properties.Content)/2)
+	for i := 0; i+1 < len(properties.Content); i += 2 {
+		name := properties.Content[i].Value
+		param, err := bodyParamFromSchemaNode(name, properties.Content[i+1])
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := required[name]; ok {
+			param.Required = true
+		}
+		out = append(out, param)
+	}
+	return out, nil
+}
+
+func bodyParamFromSchemaNode(name string, node *yaml.Node) (Param, error) {
+	if node == nil {
+		return Param{Name: name, Type: "string", Description: humanizeSpecFieldName(name)}, nil
+	}
+	if node.Kind == yaml.ScalarNode {
+		typeName := strings.TrimSpace(node.Value)
+		if typeName == "" {
+			typeName = "string"
+		}
+		return Param{Name: name, Type: typeName, Description: humanizeSpecFieldName(name)}, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return Param{}, fmt.Errorf("body property %q at line %d must be a mapping or scalar type", name, node.Line)
+	}
+
+	typeName := strings.TrimSpace(schemaScalarValue(yamlMappingValue(node, "type")))
+	if typeName == "" {
+		switch {
+		case yamlMappingValue(node, "properties") != nil:
+			typeName = "object"
+		case yamlMappingValue(node, "items") != nil:
+			typeName = "array"
+		default:
+			typeName = "string"
+		}
+	}
+	param := Param{
+		Name:        name,
+		Type:        typeName,
+		Description: schemaDescriptionFromNode(node, name),
+		Enum:        schemaStringSlice(yamlMappingValue(node, "enum")),
+		Format:      strings.TrimSpace(schemaScalarValue(yamlMappingValue(node, "format"))),
+	}
+	if required := yamlMappingValue(node, "required"); required != nil && required.Kind == yaml.ScalarNode {
+		var requiredBool bool
+		if err := required.Decode(&requiredBool); err == nil {
+			param.Required = requiredBool
+		}
+	}
+	if defaultNode := yamlMappingValue(node, "default"); defaultNode != nil {
+		var defaultValue any
+		if err := defaultNode.Decode(&defaultValue); err == nil {
+			param.Default = defaultValue
+		}
+	}
+	if typeName == "object" {
+		if properties := yamlMappingValue(node, "properties"); properties != nil {
+			fields, err := bodyParamsFromPropertiesNode(properties, schemaRequiredSet(node))
+			if err != nil {
+				return Param{}, err
+			}
+			param.Fields = fields
+		}
+	}
+	if typeName == "array" {
+		if items := yamlMappingValue(node, "items"); items != nil && items.Kind == yaml.MappingNode {
+			if properties := yamlMappingValue(items, "properties"); properties != nil {
+				fields, err := bodyParamsFromPropertiesNode(properties, schemaRequiredSet(items))
+				if err != nil {
+					return Param{}, err
+				}
+				param.Fields = fields
+			} else if enum := schemaStringSlice(yamlMappingValue(items, "enum")); len(enum) > 0 {
+				param.Fields = []Param{{Name: "items", Type: "string", Enum: enum}}
+			}
+		}
+	}
+	return param, nil
+}
+
+func schemaRequiredSet(schema *yaml.Node) map[string]struct{} {
+	required := map[string]struct{}{}
+	requiredNode := yamlMappingValue(schema, "required")
+	if requiredNode == nil || requiredNode.Kind != yaml.SequenceNode {
+		return required
+	}
+	for _, item := range requiredNode.Content {
+		if item.Kind == yaml.ScalarNode && strings.TrimSpace(item.Value) != "" {
+			required[item.Value] = struct{}{}
+		}
+	}
+	return required
+}
+
+func schemaDescriptionFromNode(node *yaml.Node, fallbackName string) string {
+	for _, key := range []string{"description", "title"} {
+		if value := strings.TrimSpace(schemaScalarValue(yamlMappingValue(node, key))); value != "" {
+			return value
+		}
+	}
+	return humanizeSpecFieldName(fallbackName)
+}
+
+func schemaScalarValue(node *yaml.Node) string {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return ""
+	}
+	return node.Value
+}
+
+func schemaStringSlice(node *yaml.Node) []string {
+	if node == nil || node.Kind != yaml.SequenceNode {
+		return nil
+	}
+	out := make([]string, 0, len(node.Content))
+	for _, item := range node.Content {
+		if item.Kind == yaml.ScalarNode {
+			out = append(out, item.Value)
+		}
+	}
+	return out
+}
+
+func humanizeSpecFieldName(name string) string {
+	cleaned := strings.NewReplacer("_", " ", "-", " ").Replace(name)
+	return strings.TrimSpace(cleaned)
 }
 
 type ResponseDef struct {
