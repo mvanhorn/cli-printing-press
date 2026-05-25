@@ -645,6 +645,8 @@ func runDataPipelineTest(binary, mode string, envFn func() []string, expectedRow
 		return true, "WARN: sync completed but no domain tables found in sqlite_master"
 	}
 
+	var bestShortTable string
+	var bestShortCount int
 	for _, table := range tables {
 		countQuery := fmt.Sprintf("SELECT count(*) FROM \"%s\"", table)
 		countOut, countErr := runCLIWithOutput(binary, []string{"sql", countQuery}, env, 10*time.Second)
@@ -653,11 +655,21 @@ func runDataPipelineTest(binary, mode string, envFn func() []string, expectedRow
 		}
 		count := parseCountOutput(countOut)
 		if count > 0 {
-			if expectedRows > 0 && count < expectedRows {
-				return false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", table, count, expectedRows, mode)
+			if expectedRows > 0 {
+				if count >= expectedRows {
+					return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
+				}
+				if count > bestShortCount {
+					bestShortTable = table
+					bestShortCount = count
+				}
+				continue
 			}
 			return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
 		}
+	}
+	if bestShortTable != "" {
+		return false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", bestShortTable, bestShortCount, expectedRows, mode)
 	}
 	return false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode)
 }

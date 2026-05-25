@@ -232,7 +232,16 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	})
 
 	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
-		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t)
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0)
+
+		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("passes when an auxiliary table has fewer rows before populated data table", func(t *testing.T) {
+		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 1)
 
 		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
 
@@ -586,12 +595,12 @@ func main() {
 	return binaryPath
 }
 
-func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T) string {
+func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T, settingsRows int) string {
 	t.Helper()
 
 	dir := t.TempDir()
 	mainFile := filepath.Join(dir, "main.go")
-	writeTestFile(t, mainFile, `package main
+	writeTestFile(t, mainFile, fmt.Sprintf(`package main
 
 import (
 	"fmt"
@@ -619,7 +628,7 @@ func main() {
 		}
 		if strings.Contains(query, "count(*)") {
 			if strings.Contains(query, "\"settings\"") {
-				fmt.Println(0)
+				fmt.Println(%d)
 				return
 			}
 			if strings.Contains(query, "\"items\"") {
@@ -631,7 +640,7 @@ func main() {
 	}
 	os.Exit(1)
 }
-`)
+`, settingsRows))
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
