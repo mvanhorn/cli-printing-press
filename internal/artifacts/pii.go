@@ -398,20 +398,18 @@ func redactDetectorMatches(det piiDetector, text string) string {
 	return b.String()
 }
 
-// Scoped to the capture-to-publish leak path: manuscripts, test
-// fixtures, README, and *_test.go files. Non-test Go source and
-// module metadata are excluded by default.
+// Scoped to the capture-to-publish leak path: manuscripts, operator-authored
+// JSON/YAML/Markdown, and README files. Generated test fixtures are excluded
+// because synthetic placeholder values there are not customer PII.
 var highRiskFileGlobs = []string{
 	"*.json",
 	"*.yaml",
 	"*.yml",
 	"*.md",
-	"*_test.go",
 }
 
 var highRiskDirGlobs = []string{
 	".manuscripts",
-	"testdata",
 }
 
 // ToolsPolishLedgerFilename is the tools-audit polish ledger basename.
@@ -432,9 +430,10 @@ var excludedFiles = map[string]bool{
 // `--spec`. Vendor-published `example:` values (emails, phones,
 // addresses) are documentation, not customer PII, so a Stripe/Zendesk/
 // GitHub spec doesn't false-fail every promote. Exemption is depth-1
-// only; a spec.yaml nested under .manuscripts/ or testdata/ is captured
-// content and stays in scope unless content-detection identifies it as
-// an archived vendor spec (see manuscriptsDir + looksLikeVendorAPISpec).
+// only; a spec.yaml nested under .manuscripts/ is captured content and
+// stays in scope unless content-detection identifies it as an archived vendor
+// spec (see manuscriptsDir + looksLikeVendorAPISpec). Generated test fixtures
+// under testdata/ are outside the audit scope.
 // Mirrors findArchivedSpec()'s candidate set in
 // internal/pipeline/climanifest.go.
 var rootVendorSpecFiles = map[string]bool{
@@ -501,10 +500,13 @@ func isUnderManuscripts(relSlash string) bool {
 // skippedDirs are subtree names the walker never descends into at the
 // top level. Scoping to depth-1 is deliberate — `.git` and friends as
 // direct children of the cli-dir are infrastructure; the same names
-// nested inside `.manuscripts/` or `testdata/` are captured content
-// and must be scanned.
+// nested inside `.manuscripts/` is captured content and must be scanned.
+// Generated fixture and top-level tooling workspaces are skipped at the root.
 var skippedDirs = map[string]bool{
+	".claude":      true,
 	".git":         true,
+	".omc":         true,
+	"testdata":     true,
 	"node_modules": true,
 	"vendor":       true,
 	"build":        true,

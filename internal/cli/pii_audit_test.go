@@ -52,6 +52,28 @@ func TestPIIAuditCmd_JSON(t *testing.T) {
 	assert.Equal(t, artifacts.PIIKindEmail, findings[0].Kind)
 }
 
+func TestPIIAuditCmd_ExcludesGeneratedFixturesAndOMCWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "root_test.go"), `"email": "leak@gmail.com"`+"\n")
+	writeFile(t, filepath.Join(dir, "testdata", "fixtures", "sample.json"), `"email": "leak@gmail.com"`+"\n")
+	writeFile(t, filepath.Join(dir, ".omc", "state.json"), `"email": "leak@gmail.com"`+"\n")
+	writeFile(t, filepath.Join(dir, "config.yaml"), `"email": "leak@gmail.com"`+"\n")
+
+	cmd := newPIIAuditCmd()
+	stdout := &bytes.Buffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{dir, "--json"})
+
+	require.NoError(t, cmd.Execute())
+
+	var findings []artifacts.PIIFinding
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &findings))
+	require.Len(t, findings, 1)
+	assert.Equal(t, "config.yaml", findings[0].File)
+	assert.Equal(t, artifacts.PIIKindEmail, findings[0].Kind)
+}
+
 func TestPIIAuditCmd_ManuscriptsRunDirUsesStagedPackagePaths(t *testing.T) {
 	dir := t.TempDir()
 	runDir := filepath.Join(t.TempDir(), "manuscripts", "tenderned", "20260517-211252")
