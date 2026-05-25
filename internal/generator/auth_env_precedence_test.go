@@ -626,6 +626,68 @@ func TestBearerAuthFlowPerCallFallbackStillAuthenticates(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestBearerAuthFlowInputs")
 }
 
+// TestAuthHeader_BearerHarvestedInputsPreferAccessToken pins the harvested
+// env-var variant of the non-request Bearer flow. Harvested values are setup
+// artifacts, not values to replay directly as request credentials.
+func TestAuthHeader_BearerHarvestedInputsPreferAccessToken(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bearer-harvested-input")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "bearer_token",
+		Header: "Authorization",
+		Format: "Bearer {token}",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "BEARER_HARVESTED_SESSION", Kind: spec.AuthEnvVarKindHarvested, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "bearer-harvested-input-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	body := authHeaderBody(t, string(cfgSrc))
+
+	harvestedCheck := "if c." + resolveEnvVarField("BEARER_HARVESTED_SESSION") + ` != ""`
+	require.NotContains(t, body, harvestedCheck, "harvested session material must not be used as a bearer token")
+	require.Contains(t, body, `if c.AccessToken != ""`, "stored AccessToken must remain the Bearer request credential")
+
+	const runtimeTest = `package config
+
+import "testing"
+
+func TestBearerHarvestedInputsUseAccessToken(t *testing.T) {
+	t.Setenv("BEARER_HARVESTED_SESSION", "harvested-cookie")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	cfg.AccessToken = "access-jwt"
+
+	if got := cfg.AuthHeader(); got != "Bearer access-jwt" {
+		t.Fatalf("AuthHeader() = %q, want Bearer access-jwt", got)
+	}
+}
+
+func TestBearerHarvestedInputsAloneDoNotAuthenticate(t *testing.T) {
+	t.Setenv("BEARER_HARVESTED_SESSION", "harvested-cookie")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if got := cfg.AuthHeader(); got != "" {
+		t.Fatalf("AuthHeader() = %q, want empty", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "bearer_harvested_input_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestBearerHarvestedInputs")
+}
+
 func TestAuthLoginEnvVarsUseShellSafePrefix(t *testing.T) {
 	t.Parallel()
 

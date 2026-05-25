@@ -461,6 +461,7 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 {{- if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
+{{- if eq .Kind "per_call"}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		if c.AuthSource == "" {
 			c.AuthSource = "env:{{.Name}}"
@@ -477,6 +478,7 @@ func (c *Config) AuthHeader() string {
 		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
 		{{- end}}
 	}
+{{- end}}
 {{- end}}
 {{- else}}
 {{- if .Auth.EnvVarSpecs}}
