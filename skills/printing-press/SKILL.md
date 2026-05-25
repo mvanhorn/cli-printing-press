@@ -2413,6 +2413,35 @@ The total is what an agent loads at MCP server start.
 | 30–50 | Ask the user. Suggest `mcp.transport: [stdio, http]` for remote reach; suggest `mcp.intents` if there are clear multi-step workflows. |
 | >50 | Default to recommending the Cloudflare pattern (transport + code orchestration + hidden endpoint tools). The generator will also print a warning at this size. |
 
+**Mandatory >50 endpoint-tools gate.** If the pre-generation count predicts
+more than 50 endpoint tools, or if any `generate` run prints the warning
+`spec exposes <N> MCP endpoint tools (>50 threshold)`, where `<N>` is the
+actual numeric count printed by the generator, stop before continuing to
+verification, polish, dogfood, or publish. Present the warning context via
+`AskUserQuestion`; do not treat the generator warning as informational.
+
+Question: `The spec has <N> MCP endpoint tools. Apply the recommended Cloudflare MCP pattern before continuing?`
+
+Options:
+
+1. **Apply Cloudflare MCP pattern + regenerate (recommended)** — edit the input
+   spec, then re-run `generate` so templates emit the smaller MCP surface.
+2. **Keep endpoint-mirror surface** — continue with the raw endpoint tools and
+   verify with the known agent-context cost.
+3. **Review `docs/SPEC-EXTENSIONS.md` first** — stop this skill so the user can
+   read the schema and decide before generation continues.
+
+If the user picks option 1, edit the source spec before regenerating:
+
+- OpenAPI input: write or update a root `x-mcp:` block.
+- Internal YAML input: write or update the root `mcp:` block.
+- Use `transport: [stdio, http]`, `orchestration: code`, and
+  `endpoint_tools: hidden`. Preserve any existing `intents`, `addr`, or other
+  explicit MCP fields unless the user directs otherwise.
+
+If the runtime cannot ask a blocking question, stop after printing the warning
+and do not continue with a >50 raw endpoint-mirror surface by accident.
+
 **The Cloudflare pattern** (recommended for large surfaces) — edit the spec's
 `mcp:` block (internal YAML) or `x-mcp:` block (OpenAPI) before running
 `generate`:
