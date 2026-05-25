@@ -268,6 +268,29 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_synced_at DATETIME,
 			total_count INTEGER DEFAULT 0
 		)`,
+{{- if .Streaming.Enabled}}
+		`CREATE TABLE IF NOT EXISTS {{safeNameSuffix (snake .Name) "_stream_frames"}} (
+			id TEXT PRIMARY KEY,
+			data JSON NOT NULL,
+			received_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS {{safeNameSuffix (snake .Name) "_stream_metadata"}} (
+			status TEXT NOT NULL,
+			metadata_id TEXT NOT NULL,
+			data JSON NOT NULL,
+			refreshed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (status, metadata_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS {{safeNameSuffix (snake .Name) "_rebase_log"}} (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_type TEXT NOT NULL,
+			reason TEXT,
+			detail TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS {{safeNameSuffix (snake .Name) "_stream_metadata_status"}} ON {{safeNameSuffix (snake .Name) "_stream_metadata"}}(status)`,
+		`CREATE INDEX IF NOT EXISTS {{safeNameSuffix (snake .Name) "_rebase_log_created"}} ON {{safeNameSuffix (snake .Name) "_rebase_log"}}(created_at)`,
+{{- end}}
 		resourcesFTSCreateSQL,
 {{- if .Learn.Enabled}}
 		// CLI Printing Press: learn migrations
@@ -1148,6 +1171,67 @@ func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
 	)
 	return err
 }
+
+{{- if .Streaming.Enabled}}
+
+func (s *Store) UpsertStreamFrame(data json.RawMessage) error {
+	id := streamObjectID(data, "event_id", "channel_id", "call_id", "id")
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO {{safeNameSuffix (snake .Name) "_stream_frames"}} (id, data, received_at)
+		 VALUES (?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(id) DO UPDATE SET data = excluded.data, received_at = excluded.received_at`,
+		id, string(data),
+	)
+	return err
+}
+
+func (s *Store) UpsertStreamMetadata(primaryKey, status string, data json.RawMessage) error {
+	if primaryKey == "" {
+		primaryKey = "id"
+	}
+	id := streamObjectID(data, primaryKey, "id", "event_id", "channel_id", "call_id")
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO {{safeNameSuffix (snake .Name) "_stream_metadata"}} (status, metadata_id, data, refreshed_at)
+		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(status, metadata_id) DO UPDATE SET data = excluded.data, refreshed_at = excluded.refreshed_at`,
+		status, id, string(data),
+	)
+	return err
+}
+
+func (s *Store) RecordRebaseEvent(eventType, reason, detail string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO {{safeNameSuffix (snake .Name) "_rebase_log"}} (event_type, reason, detail, created_at)
+		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+		eventType, reason, detail,
+	)
+	return err
+}
+
+func streamObjectID(data json.RawMessage, keys ...string) string {
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err == nil {
+		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+			if v := LookupFieldValue(obj, key); v != nil {
+				if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" && s != "<nil>" {
+					return s
+				}
+			}
+		}
+	}
+	return fmt.Sprintf("%x", ftsRowID("stream", string(data)))
+}
+
+{{- end}}
 
 func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced time.Time, count int, err error) {
 	err = s.db.QueryRow(

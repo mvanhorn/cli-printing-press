@@ -342,7 +342,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	}
 
 {{- range $name, $resource := .Resources}}
-{{- if and (not (index $.PromotedResourceNames $name)) (not (and (eq $name "auth") $.HasAuthCommand)) (not (index $.VisionCmdNames $name))}}
+{{- if and (not (index $.PromotedResourceNames $name)) (not (and (eq $name "auth") $.HasAuthCommand)) (not (and (eq $name "live") $.Streaming.Enabled)) (not (index $.VisionCmdNames $name))}}
 	rootCmd.AddCommand(new{{cmdIdent $name}}Cmd(flags))
 {{- end}}
 {{- end}}
@@ -374,6 +374,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- end}}
 {{- if .VisionSet.Sync}}
 	rootCmd.AddCommand(newSyncCmd(flags))
+{{- end}}
+{{- if .Streaming.Enabled}}
+	rootCmd.AddCommand(newLiveCmd(flags))
 {{- end}}
 {{- if .VisionSet.Tail}}
 	rootCmd.AddCommand(newTailCmd(flags))

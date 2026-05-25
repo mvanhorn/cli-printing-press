@@ -162,6 +162,10 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 }
 
 func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet) VisionTemplateSet {
+	if api != nil && api.Streaming.Enabled() {
+		set.Store = true
+		set.Sync = true
+	}
 	if set.Export && len(exportableResources(api)) == 0 {
 		set.Export = false
 	}
