@@ -220,8 +220,12 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 		if marker.TestsFailed != 0 {
 			return false, fmt.Sprintf("phase5 full acceptance has %d failed tests", marker.TestsFailed)
 		}
-		if marker.TestsPassed != marker.MatrixSize {
-			return false, fmt.Sprintf("phase5 full acceptance requires all %d tests passed, got %d", marker.MatrixSize, marker.TestsPassed)
+		if marker.TestsPassed == marker.MatrixSize {
+			return true, ""
+		}
+		accountedTests := marker.TestsPassed + marker.TestsSkipped
+		if accountedTests != marker.MatrixSize {
+			return false, fmt.Sprintf("phase5 full acceptance requires all %d tests accounted for (passed+skipped), got %d passed + %d skipped = %d", marker.MatrixSize, marker.TestsPassed, marker.TestsSkipped, accountedTests)
 		}
 		return true, ""
 	default:

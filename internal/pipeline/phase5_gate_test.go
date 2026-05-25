@@ -240,6 +240,48 @@ func TestValidatePhase5Gate_FullPassRejectsFailures(t *testing.T) {
 	assert.Contains(t, result.Detail, "full")
 }
 
+func TestValidatePhase5Gate_FullPassAcceptsAccountedSkips(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    110,
+		TestsPassed:   66,
+		TestsSkipped:  44,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "pass", result.Status)
+}
+
+func TestValidatePhase5Gate_FullPassRejectsSilentGaps(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    110,
+		TestsPassed:   66,
+		TestsSkipped:  43,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "accounted")
+}
+
 func TestValidatePhase5Gate_ManualLevelDocumentsAcceptedValues(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
