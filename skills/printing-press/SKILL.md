@@ -2048,9 +2048,25 @@ auth:
 ```
 
 When research or source metadata names a real env var, use only that canonical
-name in `env_vars`; do not add guessed slug-based aliases. For OpenAPI specs,
-prefer `x-auth-env-vars` on the selected security scheme when the wrapper slug
-differs from the underlying API brand.
+name in `env_vars`; do not add guessed slug-based aliases.
+
+For OpenAPI specs, choose the security scheme by wire format, not by whether
+the token feels like an API key. Use `type: http` with `scheme: bearer` when
+the upstream API sends `Authorization: Bearer <token>`, including PAT-shaped
+tokens such as Slack `xoxp`, Notion integration tokens, Linear API keys, and
+GitHub PATs. Use `type: apiKey` only when the API sends the configured value
+as the raw header or query value, such as `X-API-Key: <token>` or
+`Authorization: <token>` with no scheme prefix. The generator adds the
+`Bearer ` prefix for `http` bearer schemes; `apiKey` sends exactly the
+configured value and will not add a prefix.
+
+Quick test: if upstream docs or live traffic show `Authorization: Bearer
+<token>`, model it as `http` bearer. If they show `X-API-Key: <token>`,
+`?api_key=<token>`, or `Authorization: <token>` with no scheme prefix, model it
+as `apiKey`.
+
+For OpenAPI specs, prefer `x-auth-env-vars` on the selected security scheme
+when the wrapper slug differs from the underlying API brand.
 
 **If auth IS present** in the spec but Phase 1 evidence shows the slug-derived
 env var will differ from the canonical name users have already set for this
@@ -2118,17 +2134,18 @@ Skipping this step pushes the agent into hand-patching
 checks after a `doctor` FAIL against the operator's real environment.
 Enriching the spec avoids that round-trip.
 
-For OpenAPI specs that need richer env-var metadata (kind classification,
-optional credentials, OR-group relationships), use `x-auth-vars` on the
-security scheme. See `docs/SPEC-EXTENSIONS.md` for the canonical schema.
+For OpenAPI bearer-token specs that need richer env-var metadata (kind
+classification, optional credentials, OR-group relationships), keep the
+security scheme as `http` bearer and put `x-auth-vars` on that scheme. Do not
+switch to `apiKey` just to attach the richer metadata.
 
 ```yaml
 components:
   securitySchemes:
-    slackBot:
-      type: apiKey
-      in: header
-      name: Authorization
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: xoxp
       x-auth-vars:
         - name: SLACK_BOT_TOKEN
           kind: per_call
@@ -2141,6 +2158,26 @@ components:
           sensitive: true
           description: Set this OR `SLACK_BOT_TOKEN` for user-scoped API calls.
 ```
+
+For OpenAPI raw-key schemes that need richer env-var metadata, keep `apiKey`
+and place `x-auth-vars` on the raw-key scheme.
+
+```yaml
+components:
+  securitySchemes:
+    rawHeaderKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      x-auth-vars:
+        - name: <API_NAME>_API_KEY
+          kind: per_call
+          required: true
+          sensitive: true
+          description: Raw API key header value.
+```
+
+See `docs/SPEC-EXTENSIONS.md` for the canonical `x-auth-vars` schema.
 
 `kind` controls who supplies the value:
 - `per_call` is the default user-supplied credential used by normal commands.
