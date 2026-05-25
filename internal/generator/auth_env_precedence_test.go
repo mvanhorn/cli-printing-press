@@ -620,10 +620,10 @@ func TestBearerAuthFlowPerCallFallbackStillAuthenticates(t *testing.T) {
 	if got := cfg.AuthHeader(); got != "Bearer fallback-token" {
 		t.Fatalf("AuthHeader() = %q, want Bearer fallback-token", got)
 	}
-}
+	}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "bearer_flow_input_test.go"), []byte(runtimeTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestBearerAuthFlowInputs")
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestBearerAuthFlow")
 }
 
 // TestAuthHeader_BearerHarvestedInputsPreferAccessToken pins the harvested
