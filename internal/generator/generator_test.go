@@ -10274,6 +10274,35 @@ func TestGeneratedGraphQLSyncConcurrencyDefaultHonorsRateClass(t *testing.T) {
 	assertSyncDefaultConcurrency(t, string(syncGo), 1, "GraphQL sync.go")
 }
 
+func TestGeneratedGraphQLSyncMaxPagesDefault100(t *testing.T) {
+	t.Parallel()
+
+	gqlSpec, err := graphql.ParseSDL(filepath.Join("..", "..", "testdata", "graphql", "test.graphql"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(gqlSpec.Name))
+	gen := New(gqlSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	syncContent := string(syncGo)
+	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
+		"GraphQL sync.go must declare --max-pages with default 100")
+	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
+		"GraphQL sync.go must not retain the old 10-page default")
+	// The Long help advertises a {"event":"sync_warning",...} line in --json
+	// mode; the cap-hit path must actually emit one (not silently truncate
+	// for agent consumers).
+	assert.Contains(t, syncContent, `"reason":"max_pages_cap_hit"`,
+		"GraphQL sync.go must emit a sync_warning JSON event on --max-pages cap-hit")
+
+	// Compile the generated GraphQL CLI so the cap-hit warning plumbing
+	// (capWarn declared + threaded into syncResult.Warn) is verified to build.
+	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
 func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
 	t.Parallel()
 
