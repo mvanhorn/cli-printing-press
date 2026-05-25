@@ -653,6 +653,48 @@ Before new research:
    - If the user passed `--har <path>`, this is a HAR-first run. Run `cli-printing-press browser-sniff --har <path> --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"` to generate a spec and traffic analysis from captured traffic. If `$API_RUN_DIR/source-priority.json` exists with two or more sources, add `--preserve-hosts` so combo-CLI captures retain peer API hosts with per-endpoint `base_url` overrides instead of collapsing them into secondary evidence. Use the generated spec as the primary spec source for the rest of the pipeline. Skip the browser-sniff gate in Phase 1.7 (browser-sniff already ran).
    - If the user passed `--spec`, use it directly (existing behavior).
    - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
+
+   #### Directory spec-source guard
+
+   If any resolved spec source is a local directory, do not pass the directory
+   itself to `cli-printing-press generate` and do not silently pick the first
+   file. Enumerate candidate specs first:
+
+   ```bash
+   find "$SPEC_SOURCE_DIR" -type f \( -iname '*.json' -o -iname '*.yaml' -o -iname '*.yml' \) | sort
+   ```
+
+   Keep only files whose head looks like an OpenAPI or Swagger root document
+   (`openapi:`, `swagger:`, or JSON with a top-level `"openapi"` or `"swagger"`
+   key). Ignore unrelated JSON/YAML config files.
+
+   When the filtered candidate list is empty, abort with:
+   `No OpenAPI/Swagger spec found under <directory>. Pass --spec <file> directly.`
+   Do not continue with the raw directory as the spec source.
+
+   When the directory contains exactly one candidate, use that file as the
+   spec source and write it to `state.json` as `spec_path`.
+
+   When the directory contains more than one candidate:
+   - Print a prominent warning before generation:
+     `N OpenAPI/Swagger specs found under <directory>; no single file represents the whole API surface.`
+   - List every candidate when `N <= 20`; otherwise list the first 20 sorted
+     paths and print `...and N-20 more`.
+   - Record the directory and candidates in `$STATE_FILE` before continuing:
+     `spec_path` is the directory and `spec_candidates` is the sorted list.
+   - Ask the user to choose one spec, several specs, or all specs. If this
+     runtime cannot ask a blocking question, stop after printing the warning
+     and tell the user to re-run with explicit `--spec <file>` arguments. This
+     is the minimum safe floor: never let a directory run finish while hiding
+     that additional specs were ignored.
+   - After the user confirms the selection, update `$STATE_FILE` with
+     `selected_spec_paths` set to the list that will be generated.
+   - For multiple selected specs, default to one independent printed CLI per
+     spec using a derived `<api>-<spec-slug>` name and a distinct working
+     directory under `$API_RUN_DIR/working/`. Do not merge all selected specs
+     into one CLI unless the user explicitly asks for a combined surface and
+     provides the umbrella name for `--name`.
+
 2. Check for prior research in:
    - `$PRESS_MANUSCRIPTS/<api-slug>/*/research/*`
 3. Reuse good prior work instead of redoing it.
