@@ -1018,7 +1018,7 @@ to call once as an optional second probe after the low-risk GET/body capture.
 This extension is consumed by Printing Press skill guidance rather than the Go
 OpenAPI parser; it documents author intent for agents reviewing a resolved spec.
 
-Parsed field: Phase 1.9 reachability guidance
+Parsed field: none; consumed by skill guidance only
 
 Rules:
 - Optional.
@@ -1026,8 +1026,8 @@ Rules:
 - Accepts native boolean `true` only.
 - Use only for idempotent or otherwise harmless operations for the real account
   being used.
-- Absence means mutation probing is not allowed; agents must stop after the
-  GET/body reachability capture.
+- Absence or any value other than native boolean `true` means mutation probing
+  is not allowed; agents must stop after the GET/body reachability capture.
 
 Example:
 
