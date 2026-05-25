@@ -133,21 +133,21 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 // or local store. When local, skips pagination and returns all synced data. The
 // headers argument carries per-endpoint required headers; pass nil when the
 // endpoint declares no overrides.
-func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
 	switch flags.dataSource {
 	case "local":
 		data, prov, err := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, "user_requested")
 		return data, attachFreshness(prov, flags), err
 
 	case "live":
-		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
+		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField)
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
-		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
+		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField)
 		if err == nil {
 			writeThroughCache(ctx, resourceType, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
