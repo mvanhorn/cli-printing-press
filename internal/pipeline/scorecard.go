@@ -2871,7 +2871,7 @@ func scorePositionalArgHandling(cmdFiles []string, spec *openAPISpecInfo) int {
 	if commandFilesConsumePositionals(cmdFiles) || validatorScore > 0 {
 		score++
 	}
-	if validatorScore > 0 || (spec != nil && spec.PositionalParamCount > 0) {
+	if score > 0 && (validatorScore > 0 || (spec != nil && spec.PositionalParamCount > 0)) {
 		score++
 	}
 	return min(score, 2)
@@ -2905,14 +2905,14 @@ func hasTypedParserCoverage(dir string) bool {
 			return nil
 		}
 		if symbols := typedParserSymbols(readFileContent(path)); len(symbols) > 0 {
-			dir := filepath.Dir(path)
-			parserSymbolsByDir[dir] = append(parserSymbolsByDir[dir], symbols...)
+			fileDir := filepath.Dir(path)
+			parserSymbolsByDir[fileDir] = append(parserSymbolsByDir[fileDir], symbols...)
 		}
 		return nil
 	})
 
-	for dir, symbols := range parserSymbolsByDir {
-		testContent := testContentByDir[dir]
+	for fileDir, symbols := range parserSymbolsByDir {
+		testContent := testContentByDir[fileDir]
 		for _, symbol := range symbols {
 			if strings.Contains(testContent, symbol+"(") {
 				return true
@@ -2954,8 +2954,10 @@ func typedParserSymbols(content string) []string {
 	return symbols
 }
 
+var pathTemplateParamRe = regexp.MustCompile(`\{[^}/]+\}`)
+
 func countPathTemplateParams(path string) int {
-	return len(regexp.MustCompile(`\{[^}/]+\}`).FindAllString(path, -1))
+	return len(pathTemplateParamRe.FindAllString(path, -1))
 }
 
 // isIDFlagName returns true when a kebab-case flag name denotes an identifier

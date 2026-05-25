@@ -743,6 +743,27 @@ func init() {
 		assert.Equal(t, 0, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
 	})
 
+	t.Run("does not score advertised positionals without consuming or validating args", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/events_get.go", `
+package cli
+
+import "github.com/spf13/cobra"
+
+func newEventsGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "get <event_id>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
+	}
+}
+`)
+
+		assert.Equal(t, 0, scoreTypeFidelity(dir, &openAPISpecInfo{PositionalParamCount: 1}))
+	})
+
 	t.Run("does not score parser-looking code without tests that mention the parser", func(t *testing.T) {
 		dir := t.TempDir()
 
