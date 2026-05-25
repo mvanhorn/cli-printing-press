@@ -2510,6 +2510,9 @@ func (s *APISpec) Validate() error {
 			if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q endpoint %q base_url", name, eName), e.BaseURL); err != nil {
 				return err
 			}
+			if e.BaseURL != "" && isAbsoluteRequestPath(e.Path) {
+				return fmt.Errorf("resource %q endpoint %q declares both base_url and an absolute endpoint path; choose one routing source", name, eName)
+			}
 			if err := validateEndpointPublicParamNames(e); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
 			}
@@ -2536,6 +2539,9 @@ func (s *APISpec) Validate() error {
 				}
 				if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q sub-resource %q endpoint %q base_url", name, subName, eName), e.BaseURL); err != nil {
 					return err
+				}
+				if e.BaseURL != "" && isAbsoluteRequestPath(e.Path) {
+					return fmt.Errorf("resource %q sub-resource %q endpoint %q declares both base_url and an absolute endpoint path; choose one routing source", name, subName, eName)
 				}
 				if err := validateEndpointPublicParamNames(e); err != nil {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)

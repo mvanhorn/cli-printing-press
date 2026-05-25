@@ -3782,6 +3782,72 @@ func TestValidateRejectsAbsoluteEndpointPathWithProxyEnvelope(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsEndpointBaseURLWithAbsoluteEndpointPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(*APISpec)
+	}{
+		{
+			name: "top-level endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.Endpoints["list"] = Endpoint{
+					Method:      "GET",
+					Path:        "https://absolute.example.com/items",
+					BaseURL:     "https://override.example.com/v1",
+					Description: "List",
+				}
+				s.Resources["items"] = items
+			},
+		},
+		{
+			name: "subresource endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.SubResources = map[string]Resource{
+					"children": {
+						Endpoints: map[string]Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "https://children.example.com/items",
+								BaseURL:     "https://override.example.com/v1",
+								Description: "List children",
+							},
+						},
+					},
+				}
+				s.Resources["items"] = items
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{
+				Name:    "absolute-conflict",
+				Version: "0.1.0",
+				BaseURL: "https://api.example.com",
+				Resources: map[string]Resource{
+					"items": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items", Description: "List"},
+						},
+					},
+				},
+			}
+			tc.mutate(s)
+
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "base_url")
+			assert.Contains(t, err.Error(), "absolute endpoint path")
+		})
+	}
+}
+
 // TestValidateRejectsBasePathWithProxyEnvelope — proxy-envelope routes via
 // the envelope's Service/Path fields, not a URL-level prefix; a BasePath
 // would be silently ignored by the proxy. Validate must fail-fast.
