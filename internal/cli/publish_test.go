@@ -337,7 +337,7 @@ func TestRunGoVulnCheckRequiresGoMod(t *testing.T) {
 	assert.Equal(t, "go.mod not found", result.Error)
 }
 
-func TestRunGoVulnCheckUsesPinnedDefaultCommand(t *testing.T) {
+func TestRunGoVulnCheckUsesPinnedDefaultCommandWithModuleToolchain(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake shell go binary is Unix-only")
 	}
@@ -348,12 +348,14 @@ func TestRunGoVulnCheckUsesPinnedDefaultCommand(t *testing.T) {
 	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
 	fakeGo := filepath.Join(fakeBin, "go")
 	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+printf 'args=%s\n' "$*" >> "$FAKE_GO_CALLS"
+printf 'toolchain=%s\n' "$GOTOOLCHAIN" >> "$FAKE_GO_CALLS"
 echo "fake govulncheck failure" >&2
 exit 42
 `), 0o755))
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_GO_CALLS", callsPath)
+	t.Setenv("GOTOOLCHAIN", "auto")
 
 	result := runGoVulnCheck(dir)
 	assert.False(t, result.Passed)
@@ -362,9 +364,23 @@ exit 42
 
 	calls, err := os.ReadFile(callsPath)
 	require.NoError(t, err)
-	assert.Equal(t, "run "+govulncheck.ToolModule+" ./...\n", string(calls))
+	assert.Equal(t, "args=run "+govulncheck.ToolModule+" ./...\ntoolchain=go1.26.3\n", string(calls))
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
+}
+
+func TestGovulncheckToolchainEnvPrefersToolchainDirective(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.25.0\ntoolchain go1.26.3\n"), 0o644))
+
+	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.3"}, govulncheckToolchainEnv(dir))
+}
+
+func TestGovulncheckToolchainEnvIgnoresLanguageOnlyGoDirective(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.24\n"), 0o644))
+
+	assert.Nil(t, govulncheckToolchainEnv(dir))
 }
 
 func TestPublishPackageMissingDirFlag(t *testing.T) {
