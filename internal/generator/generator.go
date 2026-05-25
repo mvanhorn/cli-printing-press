@@ -1703,6 +1703,9 @@ func (g *Generator) prepareOutput() error {
 			filepath.Join("internal", "learn", "patterns"),
 		)
 	}
+	if g.Spec.Streaming.Enabled() {
+		dirs = append(dirs, filepath.Join("internal", "wsclient"))
+	}
 
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, d), 0755); err != nil {
@@ -2062,6 +2065,15 @@ func (g *Generator) renderOptionalSupportFiles() error {
 	if len(g.Spec.EndpointTemplateVars) > 0 {
 		if err := g.renderTemplate("url.go.tmpl", filepath.Join("internal", "client", "url.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering url helper: %w", err)
+		}
+	}
+
+	if g.Spec.Streaming.Enabled() {
+		if err := g.renderTemplate("wsclient.go.tmpl", filepath.Join("internal", "wsclient", "client.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering websocket client helper: %w", err)
+		}
+		if err := g.renderTemplate("live_ws.go.tmpl", filepath.Join("internal", "cli", "live_ws.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering websocket live command: %w", err)
 		}
 	}
 

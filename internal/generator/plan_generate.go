@@ -49,6 +49,7 @@ type planGoModData struct {
 	VisionSet struct{ Store, MCP bool }
 	Config    struct{ Format string }
 	Auth      struct{ Type, Subtype string }
+	Streaming planStreamingData
 }
 
 func (planGoModData) UsesBrowserHTTPTransport() bool {
@@ -56,6 +57,12 @@ func (planGoModData) UsesBrowserHTTPTransport() bool {
 }
 
 func (planGoModData) HasHTMLExtraction() bool {
+	return false
+}
+
+type planStreamingData struct{}
+
+func (planStreamingData) Enabled() bool {
 	return false
 }
 

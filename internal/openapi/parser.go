@@ -49,6 +49,7 @@ const (
 	extensionLegacyMCP             = "mcp"
 	extensionDataSourceStrategy    = "x-data-source-strategy"
 	extensionCache                 = "x-cache"
+	extensionStreaming             = "x-streaming"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionParamURLName          = "x-url-name"
 	extensionParamURLNames         = "x-param-url-names"
@@ -610,6 +611,10 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	streamingConfig, err := parseTypedExtension[spec.StreamingConfig](doc, extensionStreaming)
+	if err != nil {
+		return nil, err
+	}
 
 	templateVars, templateEnvOverrides, pathParamDefaults := parseEndpointTemplateExtensions(doc)
 	// Merge server-URL template placeholders into the endpoint-template-var
@@ -635,6 +640,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		TierRouting:                  tierRouting,
 		MCP:                          mcpConfig,
 		Cache:                        cacheConfig,
+		Streaming:                    streamingConfig,
 		EndpointTemplateVars:         templateVars,
 		EndpointTemplateEnvOverrides: templateEnvOverrides,
 		EndpointPathParamDefaults:    pathParamDefaults,

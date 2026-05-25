@@ -133,6 +133,60 @@ resources:
 	assert.Equal(t, []string{"c"}, param.Aliases)
 }
 
+func TestParseStreamingConfig(t *testing.T) {
+	yamlSpec := []byte(`
+name: streaming-api
+base_url: https://api.example.com
+auth:
+  type: none
+streaming:
+  transport: websocket
+  url: wss://api.example.com/v1/ws
+  subscribe_shape: '{"type":"subscribe","channels":["events"]}'
+  framing: newline_delimited_json
+  metadata:
+    endpoint: /v1/events
+    refresh_cadence: 45s
+    statuses: [live, pending]
+    primary_key: event_id
+resources:
+  events:
+    endpoints:
+      list:
+        method: GET
+        path: /v1/events
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	assert.True(t, s.Streaming.Enabled())
+	assert.Equal(t, StreamingTransportWebSocket, s.Streaming.Transport)
+	assert.Equal(t, StreamingFramingNDJSON, s.Streaming.EffectiveFraming())
+	assert.Equal(t, []string{"live", "pending"}, s.Streaming.EffectiveMetadataStatuses())
+	assert.Equal(t, "event_id", s.Streaming.Metadata.EffectivePrimaryKey())
+}
+
+func TestParseStreamingConfigRejectsBadFraming(t *testing.T) {
+	yamlSpec := []byte(`
+name: streaming-api
+base_url: https://api.example.com
+auth:
+  type: none
+streaming:
+  transport: websocket
+  url: wss://api.example.com/v1/ws
+  framing: chunks
+resources:
+  events:
+    endpoints:
+      list:
+        method: GET
+        path: /v1/events
+`)
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "streaming.framing")
+}
+
 func TestParseBodyObjectSchema(t *testing.T) {
 	yamlSpec := []byte(`
 name: rich-body

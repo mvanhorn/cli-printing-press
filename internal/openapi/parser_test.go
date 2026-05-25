@@ -52,6 +52,42 @@ func TestParsePetstore(t *testing.T) {
 	assert.Contains(t, parsed.Types, "Pet")
 }
 
+func TestParseStreamingExtension(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Streaming API
+  version: 1.0.0
+  x-streaming:
+    transport: websocket
+    url: wss://api.example.com/v1/ws
+    subscribe_shape: '{"type":"subscribe","channels":["events"]}'
+    framing: newline_delimited_json
+    metadata:
+      endpoint: /v1/events
+      refresh_cadence: 45s
+      statuses: [live, pending]
+      primary_key: event_id
+servers:
+  - url: https://api.example.com
+paths:
+  /v1/events:
+    get:
+      operationId: listEvents
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+	assert.True(t, parsed.Streaming.Enabled())
+	assert.Equal(t, spec.StreamingTransportWebSocket, parsed.Streaming.Transport)
+	assert.Equal(t, spec.StreamingFramingNDJSON, parsed.Streaming.Framing)
+	assert.Equal(t, []string{"live", "pending"}, parsed.Streaming.Metadata.Statuses)
+	assert.Equal(t, "event_id", parsed.Streaming.Metadata.PrimaryKey)
+}
+
 func TestParseLenientStubsMissingLocalSchemaRefs(t *testing.T) {
 	specBytes := []byte(`
 openapi: 3.0.3
