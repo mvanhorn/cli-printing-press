@@ -2415,8 +2415,9 @@ The total is what an agent loads at MCP server start.
 
 **Mandatory >50 endpoint-tools gate.** If the pre-generation count predicts
 more than 50 endpoint tools, or if any `generate` run prints the warning
-`spec exposes <N> MCP endpoint tools (>50 threshold)`, stop before continuing
-to verification, polish, dogfood, or publish. Present the warning context via
+`spec exposes <N> MCP endpoint tools (>50 threshold)`, where `<N>` is the
+actual numeric count printed by the generator, stop before continuing to
+verification, polish, dogfood, or publish. Present the warning context via
 `AskUserQuestion`; do not treat the generator warning as informational.
 
 Question: `The spec has <N> MCP endpoint tools. Apply the recommended Cloudflare MCP pattern before continuing?`

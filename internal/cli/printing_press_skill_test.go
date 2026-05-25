@@ -30,6 +30,7 @@ func TestPrintingPressSkillMCPEnrichmentGate(t *testing.T) {
 	content := string(data)
 	require.Contains(t, content, "Mandatory >50 endpoint-tools gate")
 	require.Contains(t, content, "spec exposes <N> MCP endpoint tools (>50 threshold)")
+	require.Contains(t, content, "actual numeric count printed by the generator")
 	require.Contains(t, content, "AskUserQuestion")
 	require.Contains(t, content, "Apply Cloudflare MCP pattern + regenerate (recommended)")
 	require.Contains(t, content, "OpenAPI input: write or update a root `x-mcp:` block")
