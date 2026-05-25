@@ -1752,11 +1752,15 @@ default:
   params when the spec or vendor docs require them. Use a benign probe value for
   `state` if required.
 
-Use a redirect-limited GET and inspect the final URL and response class:
+Use a redirect-limited GET and inspect the final URL, response body, and
+response class:
 
 ```bash
 AUTH_URL="<authorization_url_with_required_query_params>"
-curl -sS -L --max-redirs 3 -o /dev/null -w "%{http_code} %{url_effective}\n" "$AUTH_URL"
+PROBE_BODY_AND_META=$(curl -sS -L --max-redirs 10 -w "\n%{http_code} %{url_effective}" -o - "$AUTH_URL" 2>/dev/null)
+PROBE_META=$(printf "%s\n" "$PROBE_BODY_AND_META" | tail -n 1)
+PROBE_BODY=$(printf "%s\n" "$PROBE_BODY_AND_META" | sed '$d')
+printf "%s\n" "$PROBE_META"
 ```
 
 Interpret the result before Phase 2:
