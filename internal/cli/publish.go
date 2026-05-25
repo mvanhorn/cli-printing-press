@@ -968,8 +968,16 @@ func backfillPackagedManifestAttribution(dir string) error {
 		return err
 	}
 	fallback := resolvePublishAttributionFallback(manifest)
+	needsPrinter := strings.TrimSpace(manifest.Printer) == ""
+	needsPrinterName := strings.TrimSpace(manifest.PrinterName) == ""
+	if needsPrinter && fallback.Printer == "" {
+		return fmt.Errorf("printer attribution is missing and no fallback could be resolved")
+	}
+	if needsPrinterName && fallback.PrinterName == "" {
+		return fmt.Errorf("printer_name attribution is missing and no fallback could be resolved")
+	}
 	changed := false
-	if strings.TrimSpace(manifest.Printer) == "" && fallback.Printer != "" {
+	if needsPrinter && fallback.Printer != "" {
 		encoded, err := json.Marshal(fallback.Printer)
 		if err != nil {
 			return err
@@ -977,7 +985,7 @@ func backfillPackagedManifestAttribution(dir string) error {
 		raw["printer"] = encoded
 		changed = true
 	}
-	if strings.TrimSpace(manifest.PrinterName) == "" && fallback.PrinterName != "" {
+	if needsPrinterName && fallback.PrinterName != "" {
 		encoded, err := json.Marshal(fallback.PrinterName)
 		if err != nil {
 			return err

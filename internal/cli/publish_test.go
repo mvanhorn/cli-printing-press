@@ -302,6 +302,26 @@ exit 1
 	assert.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
 }
 
+func TestBackfillPackagedManifestAttributionFailsWithoutFallback(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 1\n",
+		"#!/bin/sh\nexit 1\n",
+	)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000"
+}`+"\n"), 0o644))
+
+	err := backfillPackagedManifestAttribution(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "attribution")
+	assert.Contains(t, err.Error(), "fallback")
+}
+
 func TestPublishManifestContractRejectsUnresolvablePrinterHandle(t *testing.T) {
 	stubPublishIdentityCommands(t,
 		"",
