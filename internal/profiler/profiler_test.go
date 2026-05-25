@@ -1737,6 +1737,110 @@ func TestProfileSyncableResourcePropagatesIDFieldAndCritical(t *testing.T) {
 	assert.False(t, byName["events"].Critical)
 }
 
+func TestProfileSyncableResourceUsesMemberPathIDFieldHint(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "idps",
+		Types: map[string]spec.TypeDef{
+			"IDP": {
+				Fields: []spec.TypeField{{Name: "idpId", Type: "string"}, {Name: "name", Type: "string"}},
+			},
+			"StableIDP": {
+				Fields: []spec.TypeField{{Name: "uuid", Type: "string"}, {Name: "stableIdpId", Type: "string"}},
+			},
+			"Target": {
+				Fields: []spec.TypeField{{Name: "siteId", Type: "string"}, {Name: "name", Type: "string"}},
+			},
+			"DetailOnlyIDP": {
+				Fields: []spec.TypeField{{Name: "name", Type: "string"}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"idps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/idps",
+						Response: spec.ResponseDef{Type: "array", Item: "IDP"},
+						IDField:  "name",
+					},
+					"get": {
+						Method:               "GET",
+						Path:                 "/idps/{idpId}",
+						Response:             spec.ResponseDef{Type: "object", Item: "IDP"},
+						IDField:              "idpId",
+						IDFieldFromPathParam: true,
+					},
+				},
+			},
+			"stable-idps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/stable-idps",
+						Response: spec.ResponseDef{Type: "array", Item: "StableIDP"},
+						IDField:  "uuid",
+					},
+					"get": {
+						Method:               "GET",
+						Path:                 "/stable-idps/{stableIdpId}",
+						Response:             spec.ResponseDef{Type: "object", Item: "StableIDP"},
+						IDField:              "stableIdpId",
+						IDFieldFromPathParam: true,
+					},
+				},
+			},
+			"targets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/targets",
+						Response: spec.ResponseDef{Type: "array", Item: "Target"},
+						IDField:  "name",
+					},
+					"scoped-list": {
+						Method:   "GET",
+						Path:     "/sites/{siteId}/targets",
+						Response: spec.ResponseDef{Type: "array", Item: "Target"},
+						IDField:  "siteId",
+					},
+				},
+			},
+			"detail-only-idps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/detail-only-idps",
+						Response: spec.ResponseDef{Type: "array", Item: "DetailOnlyIDP"},
+						IDField:  "name",
+					},
+					"get": {
+						Method:               "GET",
+						Path:                 "/detail-only-idps/{detailOnlyIdpId}",
+						Response:             spec.ResponseDef{Type: "object"},
+						IDField:              "detailOnlyIdpId",
+						IDFieldFromPathParam: true,
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "idps")
+	assert.Equal(t, "idpId", byName["idps"].IDField)
+	require.Contains(t, byName, "stable-idps")
+	assert.Equal(t, "uuid", byName["stable-idps"].IDField, "path-derived ID must not replace a stronger list endpoint ID")
+	require.Contains(t, byName, "targets")
+	assert.Equal(t, "name", byName["targets"].IDField, "parent siteId must not become the child target ID")
+	require.Contains(t, byName, "detail-only-idps")
+	assert.Equal(t, "name", byName["detail-only-idps"].IDField, "detail-only path ID must not replace a list response that lacks the field")
+}
+
 // TestProfileSyncableResourceUnsetMetadata pins the negative case — a spec with
 // no IDField/Critical on its endpoints emits a SyncableResource with both
 // fields zero-valued. Lets templates fall through to the runtime fallback list.

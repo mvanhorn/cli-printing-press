@@ -274,6 +274,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	resourceNames, resourceNameIndex := collectResourceNameMetadata(s.Resources)
 	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
 	syncCandidates := make(map[string][]syncableCandidate)
+	pathDerivedIDFields := make(map[string]string)
 	addSyncCandidate := func(resourceName string, meta syncableMeta) {
 		for _, candidate := range syncCandidates[resourceName] {
 			if candidate.meta.Path == meta.Path {
@@ -337,6 +338,14 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 			endpointNameLower := strings.ToLower(endpointName)
 			pathLower := strings.ToLower(endpoint.Path)
+			if endpoint.IDFieldFromPathParam && endpoint.IDField != "" {
+				key := normalizeName(resourceName)
+				// Prefer the lexicographically first path-derived field so the
+				// result stays stable regardless of map iteration order.
+				if existing := pathDerivedIDFields[key]; existing == "" || endpoint.IDField < existing {
+					pathDerivedIDFields[key] = endpoint.IDField
+				}
+			}
 
 			if containsAny(endpointNameLower, []string{"search"}) || containsAny(pathLower, []string{"search"}) {
 				hasSearchEndpoint = true
@@ -565,6 +574,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 		walk(name, resource, "", "")
 	}
 	applySyncCandidates(syncable, syncCandidates)
+	applyPathDerivedIDFields(syncable, pathDerivedIDFields, s.Types)
+	applyPathDerivedIDFieldsToParameterized(parameterized, pathDerivedIDFields, s.Types)
 
 	if p.TotalEndpoints > 0 {
 		p.ReadRatio = float64(getEndpoints) / float64(p.TotalEndpoints)
@@ -1768,6 +1779,7 @@ type syncableMeta struct {
 	IDWalkPageSize     int
 	FieldSelector      FieldSelector
 	Discriminator      DiscriminatorDispatch
+	ResponseItem       string
 }
 
 type syncableCandidate struct {
@@ -1807,6 +1819,7 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		IDWalkPageSize:     idWalkPageSize,
 		FieldSelector:      detectEndpointFieldSelector(e),
 		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+		ResponseItem:       e.Response.Item,
 	}
 }
 
@@ -1986,6 +1999,61 @@ func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string
 			addSyncableIfUnique(syncable, name, entry.meta)
 		}
 	}
+}
+
+func applyPathDerivedIDFields(syncable map[string]syncableMeta, pathDerivedIDFields map[string]string, types map[string]spec.TypeDef) {
+	for _, resourceName := range sortedKeys(syncable) {
+		idField := pathDerivedIDFieldForResource(resourceName, pathDerivedIDFields)
+		if idField == "" {
+			continue
+		}
+		meta := syncable[resourceName]
+		if !shouldUsePathDerivedIDField(meta.IDField) || !responseTypeHasField(meta.ResponseItem, types, idField) {
+			continue
+		}
+		meta.IDField = idField
+		syncable[resourceName] = meta
+	}
+}
+
+func applyPathDerivedIDFieldsToParameterized(parameterized map[string]parameterizedEntry, pathDerivedIDFields map[string]string, types map[string]spec.TypeDef) {
+	for _, key := range sortedKeys(parameterized) {
+		entry := parameterized[key]
+		idField := pathDerivedIDFieldForResource(entry.name, pathDerivedIDFields)
+		if idField == "" || !shouldUsePathDerivedIDField(entry.meta.IDField) || !responseTypeHasField(entry.meta.ResponseItem, types, idField) {
+			continue
+		}
+		entry.meta.IDField = idField
+		parameterized[key] = entry
+	}
+}
+
+func shouldUsePathDerivedIDField(existing string) bool {
+	existing = strings.TrimSpace(existing)
+	return existing == "" || strings.EqualFold(existing, "name")
+}
+
+func pathDerivedIDFieldForResource(resourceName string, pathDerivedIDFields map[string]string) string {
+	for _, variant := range nameVariants(resourceName) {
+		if idField := pathDerivedIDFields[variant]; idField != "" {
+			return idField
+		}
+	}
+	return ""
+}
+
+func responseTypeHasField(typeName string, types map[string]spec.TypeDef, fieldName string) bool {
+	typeDef, ok := lookupTypeDef(typeName, types)
+	if !ok {
+		return false
+	}
+	fieldSnake := spec.ToSnakeCase(fieldName)
+	for _, field := range typeDef.Fields {
+		if field.Name == fieldName || spec.ToSnakeCase(field.Name) == fieldSnake {
+			return true
+		}
+	}
+	return false
 }
 
 func siblingSyncResourceName(resourceName string, candidate syncableCandidate) string {
