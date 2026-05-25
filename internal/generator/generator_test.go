@@ -13549,8 +13549,7 @@ func TestToKebab_SnakeCaseInput(t *testing.T) {
 //
 // Templates intentionally NOT in this list because they mutate state
 // or write user-visible files outside the local cache:
-// export.go.tmpl (--output writes user files), share_commands.go.tmpl
-// (snapshot dirs, git pushes), import/sync/feedback/graphql_sync (writes).
+// export.go.tmpl (--output writes user files), import/sync/feedback/graphql_sync (writes).
 func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 	t.Parallel()
 	annotationRE := regexp.MustCompile(`Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`)
@@ -13568,8 +13567,9 @@ func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 		{"agent_context.go.tmpl", 1, "walks cobra tree, emits introspection JSON"},
 		{"api_discovery.go.tmpl", 1, "walks cobra tree, prints help"},
 		{"tail.go.tmpl", 1, "polls API GETs, NDJSON to stdout"},
-		{"jobs.go.tmpl", 2, "list and get; prune is omitted (mutates ledger)"},
-		{"channel_workflow.go.tmpl", 2, "status and generated payment-plan are read-only; workflow parent and archive omitted"},
+		{"jobs.go.tmpl", 3, "parent help, list, and get; prune is omitted (mutates ledger)"},
+		{"channel_workflow.go.tmpl", 3, "parent help, status, and generated payment-plan are read-only; archive omitted"},
+		{"share_commands.go.tmpl", 1, "parent help only; share subcommands write files, local cache, or git state"},
 		{"workflows/pm_stale.go.tmpl", 1, "queries the local store for stale items"},
 		{"workflows/pm_orphans.go.tmpl", 1, "queries the local store for missing fields"},
 		{"workflows/pm_load.go.tmpl", 1, "queries the local store for workload distribution"},
