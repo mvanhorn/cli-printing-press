@@ -361,11 +361,12 @@ func GenerateFromDocsLLM(docsURL, apiName string) (*spec.APISpec, error) {
 	if err != nil {
 		return nil, err
 	}
-	if preserveDocumentedEndpointPaths(parsed, extractEndpoints(html)) {
+	documentedEndpoints := extractEndpoints(html)
+	if preserveDocumentedEndpointPaths(parsed, documentedEndpoints) {
 		parsed.EnrichPathParams()
-		if err := parsed.Validate(); err != nil {
-			return nil, fmt.Errorf("validation after preserving documented paths: %w", err)
-		}
+	}
+	if err := parsed.Validate(); err != nil {
+		return nil, fmt.Errorf("validation after preserving documented paths: %w", err)
 	}
 	// The prompt template (BuildDocSpecLLMPrompt) seeds base_url with the
 	// PlaceholderBaseURL; an LLM that can't find a real host often echoes
@@ -490,6 +491,8 @@ func singularizePathToken(token string) string {
 	if len(token) <= 3 || !strings.HasSuffix(token, "s") {
 		return token
 	}
+	// Keep this conservative: -es/-ies plurals stay unmatched instead of
+	// guessing a singular form that could rewrite to the wrong documented path.
 	switch {
 	case strings.HasSuffix(token, "ss"),
 		strings.HasSuffix(token, "us"),
