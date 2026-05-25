@@ -463,6 +463,15 @@ func mapArg(arg gqlArg, enumMap map[string][]string) spec.Param {
 		Required: required,
 		Format:   format,
 	}
+	// Preserve the raw GraphQL type only for scalar args. List/array args
+	// (e.g. [String!]) are left unset so the list-query template and the
+	// variables wiring skip them: the generated flag is a scalar StringVar
+	// that can't satisfy a list-typed operation variable, so wiring it would
+	// emit a type-mismatched request. Leaving them unwired keeps the prior
+	// (inert) behavior until list-typed flags are supported.
+	if !strings.Contains(arg.Type, "[") {
+		param.GraphQLType = strings.TrimSpace(arg.Type)
+	}
 	if enumValues := enumMap[unwrapType(arg.Type)]; len(enumValues) > 0 {
 		param.Enum = append([]string(nil), enumValues...)
 	}

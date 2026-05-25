@@ -179,6 +179,17 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			if flagAfter != "" {
 				variables["after"] = flagAfter
 			}
+{{- range .Endpoint.Params}}
+{{- if isWirableListArg .}}
+{{- if .Required}}
+			variables["{{.Name}}"] = flag{{camel (paramIdent .)}}
+{{- else}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				variables["{{.Name}}"] = flag{{camel (paramIdent .)}}
+			}
+{{- end}}
+{{- end}}
+{{- end}}
 {{- if $supportsAllPagination}}
 			var data json.RawMessage
 			if flagAll && !flags.dryRun {

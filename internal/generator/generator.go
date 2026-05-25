@@ -269,9 +269,24 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"mcpParamDesc":                       g.mcpParamDescription,
 		"flagName":                           flagName,
 		"paramIdent":                         paramIdent,
-		"paramWireName":                      paramWireName,
-		"typeFieldIdent":                     typeFieldIdent,
-		"safeTypeName":                       safeTypeName,
+		// isWirableListArg reports whether a GraphQL list-field param should be
+		// wired as an operation variable: a non-pagination, non-positional,
+		// non-path arg that carries a (scalar) GraphQL type. Keeps the
+		// "wirable arg" definition in one place across the command and query
+		// templates so they can't drift.
+		"isWirableListArg": func(p spec.Param) bool {
+			if p.Positional || p.PathParam || p.GraphQLType == "" {
+				return false
+			}
+			switch p.Name {
+			case "first", "after", "last", "before":
+				return false
+			}
+			return true
+		},
+		"paramWireName":  paramWireName,
+		"typeFieldIdent": typeFieldIdent,
+		"safeTypeName":   safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
 			for _, td := range types {
 				for _, f := range td.Fields {

@@ -11543,6 +11543,75 @@ func TestGenerateGraphQLCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateGraphQLListWiresNonPaginationArgsIntoVariables(t *testing.T) {
+	t.Parallel()
+
+	const sdl = `enum IssueOrder {
+  CREATED_AT
+  UPDATED_AT
+}
+
+type Query {
+  issues(first: Int, after: String, query: String, minComments: Int, orderBy: IssueOrder, requiredFilter: String!, labels: [String!]): IssueConnection
+  issue(id: String!): Issue
+}
+
+type IssueConnection {
+  nodes: [Issue]
+  pageInfo: PageInfo
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type Issue {
+  id: ID!
+  title: String!
+}`
+
+	sdlPath := filepath.Join(t.TempDir(), "graphql_query_arg.graphql")
+	require.NoError(t, os.WriteFile(sdlPath, []byte(sdl), 0o600))
+
+	gqlSpec, err := graphql.ParseSDL(sdlPath)
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(gqlSpec.Name))
+	require.NoError(t, New(gqlSpec, outputDir).Generate())
+
+	issuesGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "issues_list.go"))
+	require.NoError(t, err)
+	content := string(issuesGo)
+
+	assert.Contains(t, content, `StringVar(&flagQuery, "query"`, "list arg flag should be registered")
+	assert.Contains(t, content, `variables["query"] = flagQuery`, "non-pagination list args should be wired into GraphQL variables")
+	assert.Contains(t, content, `variables["minComments"] = flagMinComments`, "integer list args should be wired into GraphQL variables")
+	assert.Contains(t, content, `variables["orderBy"] = flagOrderBy`, "enum list args should be wired into GraphQL variables")
+	assert.Contains(t, content, `variables["requiredFilter"] = flagRequiredFilter`, "required list args must be wired into GraphQL variables")
+	assert.NotContains(t, content, `if flagRequiredFilter != `,
+		"a required list arg must be assigned unconditionally (not gated on the zero-value) — otherwise it's dropped at default and the required operation variable breaks the request")
+
+	queriesGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "queries.go"))
+	require.NoError(t, err)
+	queriesContent := string(queriesGo)
+	assert.Contains(t, queriesContent, `query($first: Int!, $after: String, $query: String, $minComments: Int, $orderBy: IssueOrder, $requiredFilter: String!) {`,
+		"list query should declare non-pagination operation vars with raw GraphQL types (incl. required ! types)")
+	assert.Contains(t, queriesContent, `issues(first: $first, after: $after, query: $query, minComments: $minComments, orderBy: $orderBy, requiredFilter: $requiredFilter) {`,
+		"list query should pass non-pagination args into the field call")
+
+	// List/array args (labels: [String!]) are intentionally left unwired: the
+	// generated flag is a scalar StringVar that can't satisfy a list variable,
+	// so wiring it would emit a type-mismatched request. They stay inert
+	// (absent from both the operation and the variables map) rather than break.
+	assert.NotContains(t, queriesContent, "$labels",
+		"list-typed args must be skipped in the operation (scalar flag can't satisfy a list variable)")
+	assert.NotContains(t, content, `variables["labels"]`,
+		"list-typed args must not be wired into GraphQL variables")
+
+	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
 func TestGraphQLFieldSelectionSupportsNestedSelections(t *testing.T) {
 	t.Parallel()
 
