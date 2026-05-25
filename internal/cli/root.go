@@ -123,6 +123,10 @@ func newGenerateCmd() *cobra.Command {
 	var planFile string
 	var trafficAnalysisPath string
 	var authPreference string
+	var mcpOrchestration string
+	var mcpTransport []string
+	var mcpEndpointTools string
+	var mcpIntentsPath string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -176,7 +180,12 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
-				if err := applyGenerateSpecFlags(parsed, specSource, "docs", category, clientPattern, httpTransport, owner); err != nil {
+				if err := applyGenerateSpecFlags(parsed, specSource, "docs", category, clientPattern, httpTransport, owner, generateMCPFlagOverrides{
+					Orchestration: mcpOrchestration,
+					Transport:     mcpTransport,
+					EndpointTools: mcpEndpointTools,
+					IntentsPath:   mcpIntentsPath,
+				}); err != nil {
 					return err
 				}
 
@@ -233,6 +242,9 @@ func newGenerateCmd() *cobra.Command {
 			}
 
 			if planFile != "" {
+				if (generateMCPFlagOverrides{Orchestration: mcpOrchestration, Transport: mcpTransport, EndpointTools: mcpEndpointTools, IntentsPath: mcpIntentsPath}).hasAny() {
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--mcp-* flags cannot be used with --plan")}
+				}
 				if trafficAnalysisPath != "" {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--traffic-analysis cannot be used with --plan")}
 				}
@@ -357,7 +369,12 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
-			if err := applyGenerateSpecFlags(apiSpec, specSource, "", category, clientPattern, httpTransport, owner); err != nil {
+			if err := applyGenerateSpecFlags(apiSpec, specSource, "", category, clientPattern, httpTransport, owner, generateMCPFlagOverrides{
+				Orchestration: mcpOrchestration,
+				Transport:     mcpTransport,
+				EndpointTools: mcpEndpointTools,
+				IntentsPath:   mcpIntentsPath,
+			}); err != nil {
 				return err
 			}
 
@@ -472,6 +489,10 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&category, "category", "", "Public-library category for non-catalog generation")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
 	cmd.Flags().StringVar(&httpTransport, "transport", "", "HTTP transport: standard, browser-http, browser-chrome, or browser-chrome-h3 (defaults based on spec provenance and reachability)")
+	cmd.Flags().StringVar(&mcpOrchestration, "mcp-orchestration", "", "MCP orchestration mode: endpoint-mirror or code")
+	cmd.Flags().StringSliceVar(&mcpTransport, "mcp-transport", nil, "MCP transports to compile: stdio, http, or a comma-separated list")
+	cmd.Flags().StringVar(&mcpEndpointTools, "mcp-endpoint-tools", "", "MCP endpoint mirror visibility: visible or hidden")
+	cmd.Flags().StringVar(&mcpIntentsPath, "mcp-intents", "", "Path to a YAML or JSON file containing MCP intents")
 	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json and discovery/ for README source credits")
 	cmd.Flags().IntVar(&maxResources, "max-resources", 0, "Maximum resource groups to generate (default 500, raise for enormous APIs)")
 	cmd.Flags().IntVar(&maxEndpointsPerResource, "max-endpoints-per-resource", 0, "Maximum endpoints per resource (default 50, raise for large APIs)")
@@ -580,7 +601,18 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	}, nil
 }
 
-func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, category, clientPattern, httpTransport, owner string) error {
+type generateMCPFlagOverrides struct {
+	Orchestration string
+	Transport     []string
+	EndpointTools string
+	IntentsPath   string
+}
+
+func (o generateMCPFlagOverrides) hasAny() bool {
+	return o.Orchestration != "" || len(o.Transport) > 0 || o.EndpointTools != "" || o.IntentsPath != ""
+}
+
+func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, category, clientPattern, httpTransport, owner string, mcpOverrides generateMCPFlagOverrides) error {
 	if specSource != "" {
 		normalized, err := normalizeSpecSource(specSource)
 		if err != nil {
@@ -616,6 +648,47 @@ func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource
 	if owner != "" {
 		apiSpec.Owner = owner
 	}
+	if err := applyGenerateMCPOverrides(apiSpec, mcpOverrides); err != nil {
+		return &ExitError{Code: ExitInputError, Err: err}
+	}
+	return nil
+}
+
+func applyGenerateMCPOverrides(apiSpec *spec.APISpec, overrides generateMCPFlagOverrides) error {
+	if apiSpec == nil || !overrides.hasAny() {
+		return nil
+	}
+	if overrides.Orchestration != "" {
+		normalized, err := normalizeMCPOrchestration(overrides.Orchestration)
+		if err != nil {
+			return err
+		}
+		apiSpec.MCP.Orchestration = normalized
+	}
+	if len(overrides.Transport) > 0 {
+		normalized, err := normalizeMCPTransports(overrides.Transport)
+		if err != nil {
+			return err
+		}
+		apiSpec.MCP.Transport = normalized
+	}
+	if overrides.EndpointTools != "" {
+		normalized, err := normalizeMCPEndpointTools(overrides.EndpointTools)
+		if err != nil {
+			return err
+		}
+		apiSpec.MCP.EndpointTools = normalized
+	}
+	if overrides.IntentsPath != "" {
+		intents, err := readMCPIntentsFile(overrides.IntentsPath)
+		if err != nil {
+			return err
+		}
+		apiSpec.MCP.Intents = intents
+	}
+	if err := apiSpec.Validate(); err != nil {
+		return fmt.Errorf("applying MCP generation flags: %w", err)
+	}
 	return nil
 }
 
@@ -645,6 +718,82 @@ func normalizeHTTPTransport(value string) (string, error) {
 		return value, nil
 	default:
 		return "", fmt.Errorf("--transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h2, browser-chrome-h3 (got %q)", value)
+	}
+}
+
+func normalizeMCPOrchestration(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "", "endpoint-mirror", "code":
+		return strings.TrimSpace(value), nil
+	default:
+		return "", fmt.Errorf("--mcp-orchestration must be one of: endpoint-mirror, code (got %q)", value)
+	}
+}
+
+func normalizeMCPEndpointTools(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "", "visible", "hidden":
+		return strings.TrimSpace(value), nil
+	default:
+		return "", fmt.Errorf("--mcp-endpoint-tools must be one of: visible, hidden (got %q)", value)
+	}
+}
+
+func normalizeMCPTransports(values []string) ([]string, error) {
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		transport := strings.ToLower(strings.TrimSpace(value))
+		switch transport {
+		case "stdio", "http":
+		case "":
+			return nil, fmt.Errorf("--mcp-transport values must not be empty")
+		default:
+			return nil, fmt.Errorf("--mcp-transport must contain only stdio or http (got %q)", value)
+		}
+		if _, ok := seen[transport]; ok {
+			return nil, fmt.Errorf("--mcp-transport contains duplicate value %q", transport)
+		}
+		seen[transport] = struct{}{}
+		normalized = append(normalized, transport)
+	}
+	return normalized, nil
+}
+
+func readMCPIntentsFile(path string) ([]spec.Intent, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading --mcp-intents file: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parsing --mcp-intents file: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return nil, fmt.Errorf("--mcp-intents file must contain either a list of intents or an intents: list")
+	}
+
+	root := doc.Content[0]
+	switch root.Kind {
+	case yaml.SequenceNode:
+		var intents []spec.Intent
+		if err := root.Decode(&intents); err != nil {
+			return nil, fmt.Errorf("parsing --mcp-intents file: %w", err)
+		}
+		return intents, nil
+	case yaml.MappingNode:
+		var wrapped struct {
+			Intents []spec.Intent `yaml:"intents"`
+		}
+		if err := root.Decode(&wrapped); err != nil {
+			return nil, fmt.Errorf("parsing --mcp-intents file: %w", err)
+		}
+		if wrapped.Intents != nil {
+			return wrapped.Intents, nil
+		}
+		return nil, fmt.Errorf("--mcp-intents file must contain either a list of intents or an intents: list")
+	default:
+		return nil, fmt.Errorf("--mcp-intents file must contain either a list of intents or an intents: list")
 	}
 }
 
