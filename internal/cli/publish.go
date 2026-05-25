@@ -839,7 +839,7 @@ func manifestWithPublishAttributionFallbacks(manifest pipeline.CLIManifest) pipe
 	if strings.TrimSpace(manifest.Printer) != "" && strings.TrimSpace(manifest.PrinterName) != "" {
 		return manifest
 	}
-	fallback := resolvePublishAttributionFallback()
+	fallback := resolvePublishAttributionFallback(manifest)
 	if strings.TrimSpace(manifest.Printer) == "" && fallback.Printer != "" {
 		manifest.Printer = fallback.Printer
 	}
@@ -854,16 +854,66 @@ type publishAttributionFallback struct {
 	PrinterName string
 }
 
-func resolvePublishAttributionFallback() publishAttributionFallback {
-	printer := firstNonNullCommandOutput(
-		[]string{"git", "config", "github.user"},
-		[]string{"gh", "api", "user", "--jq", ".login"},
-	)
-	printerName := firstNonNullCommandOutput(
-		[]string{"git", "config", "user.name"},
-		[]string{"gh", "api", "user", "--jq", ".name"},
-	)
-	return publishAttributionFallback{Printer: printer, PrinterName: printerName}
+func resolvePublishAttributionFallback(manifest pipeline.CLIManifest) publishAttributionFallback {
+	printer := strings.TrimSpace(manifest.Printer)
+	printerName := strings.TrimSpace(manifest.PrinterName)
+	if printer != "" && printerName == "" {
+		return publishAttributionFallback{PrinterName: resolveGitHubUserName(printer)}
+	}
+	if printer == "" && printerName == "" {
+		return resolveCurrentPublishAttributionFallback()
+	}
+	return publishAttributionFallback{}
+}
+
+func resolveCurrentPublishAttributionFallback() publishAttributionFallback {
+	if fallback := resolveGitPublishAttributionFallback(); fallback.complete() {
+		return fallback
+	}
+	if fallback := resolveGhPublishAttributionFallback(); fallback.complete() {
+		return fallback
+	}
+	return publishAttributionFallback{}
+}
+
+func (fallback publishAttributionFallback) complete() bool {
+	return strings.TrimSpace(fallback.Printer) != "" && strings.TrimSpace(fallback.PrinterName) != ""
+}
+
+func resolveGitPublishAttributionFallback() publishAttributionFallback {
+	return publishAttributionFallback{
+		Printer:     firstNonNullCommandOutput([]string{"git", "config", "github.user"}),
+		PrinterName: firstNonNullCommandOutput([]string{"git", "config", "user.name"}),
+	}
+}
+
+func resolveGhPublishAttributionFallback() publishAttributionFallback {
+	var user struct {
+		Login string `json:"login"`
+		Name  string `json:"name"`
+	}
+	if !readGhAPIJSON("user", &user) {
+		return publishAttributionFallback{}
+	}
+	return publishAttributionFallback{Printer: strings.TrimSpace(user.Login), PrinterName: strings.TrimSpace(user.Name)}
+}
+
+func resolveGitHubUserName(printer string) string {
+	var user struct {
+		Name string `json:"name"`
+	}
+	if !readGhAPIJSON("users/"+url.PathEscape(strings.TrimSpace(printer)), &user) {
+		return ""
+	}
+	return strings.TrimSpace(user.Name)
+}
+
+func readGhAPIJSON(path string, target any) bool {
+	out, err := exec.Command("gh", "api", path).Output()
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(out, target) == nil
 }
 
 func firstNonNullCommandOutput(commands ...[]string) string {
@@ -896,7 +946,11 @@ func validateGitHubPrinterExists(printer string) string {
 	if strings.Contains(output, "404") || strings.Contains(strings.ToLower(output), "not found") {
 		return fmt.Sprintf("printer %q does not resolve to a GitHub user", printer)
 	}
-	return ""
+	detail := strings.Join(strings.Fields(output), " ")
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Sprintf("could not verify printer %q with gh: %s", printer, detail)
 }
 
 func backfillPackagedManifestAttribution(dir string) error {
@@ -913,7 +967,7 @@ func backfillPackagedManifestAttribution(dir string) error {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return err
 	}
-	fallback := resolvePublishAttributionFallback()
+	fallback := resolvePublishAttributionFallback(manifest)
 	changed := false
 	if strings.TrimSpace(manifest.Printer) == "" && fallback.Printer != "" {
 		encoded, err := json.Marshal(fallback.Printer)
@@ -939,7 +993,11 @@ func backfillPackagedManifestAttribution(dir string) error {
 		return err
 	}
 	updated = append(updated, '\n')
-	return os.WriteFile(manifestPath, updated, 0o644)
+	info, err := os.Stat(manifestPath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(manifestPath, updated, info.Mode())
 }
 
 func isPublishPrinterSentinel(printer string) bool {
