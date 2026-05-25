@@ -294,10 +294,11 @@ type AuthCandidate struct {
 }
 
 type ReachabilityAnalysis struct {
-	Mode       string        `json:"mode"`
-	Confidence float64       `json:"confidence"`
-	Reasons    []string      `json:"reasons,omitempty"`
-	Evidence   []EvidenceRef `json:"evidence,omitempty"`
+	Mode              string        `json:"mode"`
+	Confidence        float64       `json:"confidence"`
+	Reasons           []string      `json:"reasons,omitempty"`
+	Evidence          []EvidenceRef `json:"evidence,omitempty"`
+	ImpersonationSafe *bool         `json:"impersonation_safe,omitempty"`
 
 	// HTMLExtractSignature is set when Mode == "html_scrape" and carries
 	// which SSR state-blob signature triggered the promotion (one of
@@ -1630,6 +1631,9 @@ func deriveGenerationHints(analysis *TrafficAnalysis) []string {
 		}
 	}
 	if analysis.Reachability != nil {
+		if analysis.Reachability.ImpersonationSafe != nil && !*analysis.Reachability.ImpersonationSafe {
+			hints["impersonation_content_type_flip"] = true
+		}
 		switch analysis.Reachability.Mode {
 		case "browser_http":
 			hints["browser_http_transport"] = true

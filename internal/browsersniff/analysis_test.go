@@ -521,6 +521,21 @@ func TestAnalyzeTraffic_ClassifiesBrowserClearanceReachability(t *testing.T) {
 	assert.Contains(t, analysis.GenerationHints, "requires_browser_auth")
 }
 
+func TestDeriveGenerationHintsIncludesImpersonationContentTypeFlip(t *testing.T) {
+	t.Parallel()
+
+	impersonationSafe := false
+	analysis := &TrafficAnalysis{
+		Reachability: &ReachabilityAnalysis{
+			Mode:              "standard_http",
+			Confidence:        0.95,
+			ImpersonationSafe: &impersonationSafe,
+		},
+	}
+
+	assert.Contains(t, deriveGenerationHints(analysis), "impersonation_content_type_flip")
+}
+
 func TestAnalyzeTraffic_IgnoresThirdPartyProtectionMarkersForReachability(t *testing.T) {
 	t.Parallel()
 
