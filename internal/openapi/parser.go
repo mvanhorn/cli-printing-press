@@ -2943,7 +2943,9 @@ func resolveServerURLTemplate(server *openapi3.Server) (baseURL, basePath string
 		return "", "", placeholders, defaults
 	}
 	lowerURL := strings.ToLower(serverURL)
-	if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
+	if strings.HasPrefix(lowerURL, "http://") ||
+		strings.HasPrefix(lowerURL, "https://") ||
+		hasRuntimeTemplateScheme(serverURL, defaults) {
 		return serverURL, "", placeholders, defaults
 	}
 	return "", serverURL, placeholders, defaults
@@ -2953,7 +2955,28 @@ func resolveServerURLTemplate(server *openapi3.Server) (baseURL, basePath string
 // so the parser and the runtime substitute the same set of placeholder names.
 var templateVarPattern = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 
+func hasRuntimeTemplateScheme(s string, defaults map[string]string) bool {
+	scheme, _, ok := strings.Cut(s, "://")
+	if !ok {
+		return false
+	}
+	matches := templateVarPattern.FindStringSubmatch(scheme)
+	// Only a single bare placeholder is an absolute runtime-template scheme.
+	// Compound schemes fall through to the legacy relative-path handling so
+	// malformed or intentionally relative inputs are not broadened silently.
+	if len(matches) != 2 || matches[0] != scheme {
+		return false
+	}
+	_, ok = defaults[matches[1]]
+	return ok
+}
+
 func normalizeURLSlashes(s string) string {
+	if scheme, rest, ok := strings.Cut(s, "://"); ok {
+		if scheme != "" {
+			return scheme + "://" + strings.ReplaceAll(rest, "//", "/")
+		}
+	}
 	s = strings.ReplaceAll(s, "//", "/")
 	s = strings.Replace(s, "http:/", "http://", 1)
 	s = strings.Replace(s, "https:/", "https://", 1)

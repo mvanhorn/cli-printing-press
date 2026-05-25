@@ -11711,6 +11711,55 @@ func TestBuildURLPassthroughWhenNoPlaceholders(t *testing.T) {
 	}
 }
 
+func TestBuildURLSubstitutesTemplatedSchemeAndHost(t *testing.T) {
+	templateVarEnvNames["protocol"] = "SHOPIFY_PROTOCOL"
+	templateVarEnvNames["host"] = "SHOPIFY_HOST"
+	t.Cleanup(func() {
+		delete(templateVarEnvNames, "protocol")
+		delete(templateVarEnvNames, "host")
+	})
+
+	vars := map[string]string{
+		"protocol": "http",
+		"host":     "localhost:41184",
+	}
+	got, err := buildURL("{protocol}://{host}", "/notes", vars)
+	if err != nil {
+		t.Fatalf("buildURL: %v", err)
+	}
+	const want = "http://localhost:41184/notes"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		vars    map[string]string
+		wantErr string
+	}{
+		{
+			name:    "missing protocol",
+			vars:    map[string]string{"host": "localhost:41184"},
+			wantErr: "SHOPIFY_PROTOCOL not set",
+		},
+		{
+			name:    "missing host",
+			vars:    map[string]string{"protocol": "http"},
+			wantErr: "SHOPIFY_HOST not set",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildURL("{protocol}://{host}", "/notes", tc.vars)
+			if err == nil {
+				t.Fatal("expected missing template variable error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected error to contain %q; got %q", tc.wantErr, err.Error())
+			}
+		})
+	}
+}
+
 func TestBuildURLEmptyVarValueIsTreatedAsUnset(t *testing.T) {
 	// An env var that exists but is empty must produce the same actionable
 	// error as one that's not set — otherwise a stray "export FOO=" silently

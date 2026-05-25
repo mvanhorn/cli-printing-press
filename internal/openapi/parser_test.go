@@ -8307,6 +8307,110 @@ paths:
 		assert.Equal(t, "v1", parsed.EndpointTemplateVarDefaults["version"])
 	})
 
+	t.Run("scheme and host placeholders preserve URL separator", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Scheme Host API
+  version: 1.0.0
+servers:
+  - url: "{protocol}://{host}/v1"
+    variables:
+      protocol:
+        default: "https"
+      host:
+        default: "api.example.com"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "{protocol}://{host}/v1", parsed.BaseURL,
+			"server URL normalization must preserve :// when the scheme is a runtime placeholder")
+		assert.Empty(t, parsed.BasePath)
+		assert.Equal(t, []string{"protocol", "host"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, "https", parsed.EndpointTemplateVarDefaults["protocol"])
+		assert.Equal(t, "api.example.com", parsed.EndpointTemplateVarDefaults["host"])
+	})
+
+	t.Run("partial scheme host variables document malformed triple slash", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Partial Scheme Host API
+  version: 1.0.0
+servers:
+  - url: "{protocol}://{host}/v1"
+    variables:
+      protocol:
+        default: https
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "{protocol}:///v1", parsed.BaseURL,
+			"malformed specs with an undeclared host placeholder keep the runtime scheme URL shape")
+		assert.Empty(t, parsed.BasePath)
+		assert.Equal(t, []string{"protocol"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, "https", parsed.EndpointTemplateVarDefaults["protocol"])
+	})
+
+	t.Run("adjacent path placeholders without scheme stay relative", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Relative Var API
+  version: 1.0.0
+servers:
+  - url: "{stage}/{version}"
+    variables:
+      stage:
+        default: "api"
+      version:
+        default: "v1"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.BaseURL)
+		assert.Equal(t, "{stage}/{version}", parsed.BasePath,
+			"only a preserved :// separator should make a templated server URL absolute")
+		assert.Equal(t, []string{"stage", "version"}, parsed.EndpointTemplateVars)
+	})
+
+	t.Run("dangling scheme placeholder strips without preserving empty scheme", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Dangling Scheme API
+  version: 1.0.0
+servers:
+  - url: "{protocol}://api.example.com/v1"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.BaseURL)
+		assert.Equal(t, ":/api.example.com/v1", parsed.BasePath,
+			"dangling scheme placeholders must follow legacy strip-and-normalize behavior, not preserve ://")
+		assert.Empty(t, parsed.EndpointTemplateVars)
+	})
+
 	t.Run("placeholder with empty default registers var but no default entry", func(t *testing.T) {
 		data := []byte(`
 openapi: 3.0.3
