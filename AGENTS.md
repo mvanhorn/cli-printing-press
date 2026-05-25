@@ -209,6 +209,7 @@ See [`docs/CATALOG.md`](docs/CATALOG.md) for the inclusion rubric, evidence chec
 When you change code, check for a `_test.go` file in the same package. If one exists, read it; your change likely requires a test update. If tests fail after your change, investigate whether it is a bug in your code or a stale test; do not just delete the test.
 Add tests for new non-trivial logic. Match the package's existing style (typically table-driven with `testify/assert`). Skip tests for CLI glue, trivial wrappers, and code only meaningfully tested via integration (`FULL_RUN=1`).
 Run `go test ./...` before considering your work done.
+When the change alters what the generator emits (templates, parser, `mcpdesc`, or a `SKILL.md` generation skeleton), verify at the generated-output level, not the template text: compile the generated module, assert statement *kind* not just a message substring, mirror the template's emit/call gates exactly, and cover the fallback shape (no-default positional, summary-less operation, envelope response) — golden fixtures only carry "happy" shapes, so fallback-branch changes produce no golden diff and a scoped `-run` test can pass while a different package's compile test fails. See [`docs/solutions/best-practices/verifying-generator-fixes-at-output-level-2026-05-25.md`](docs/solutions/best-practices/verifying-generator-fixes-at-output-level-2026-05-25.md).
 
 ## Quality Gates
 Generated CLIs must pass 8 gates: `go mod tidy`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
