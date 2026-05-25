@@ -458,8 +458,8 @@ wait
 # Defensive duplicate detector. If an agent accidentally used the malformed
 # `URL=$(gh issue create ... &)` shortcut outside this reference, those
 # backgrounded issue creates may succeed even though the captured URL is empty.
-# More issues created by the current user since the run began than total WUs is
-# the signal that parallel filing leaked extra issues.
+# More issues created by the current user since the run began than WUs expected
+# to open issues is the signal that parallel filing leaked extra issues.
 RECENT_CREATED_LINES=$(gh issue list \
   --repo "$REPO" \
   --author @me \
@@ -467,10 +467,14 @@ RECENT_CREATED_LINES=$(gh issue list \
   --json number,title \
   --jq '.[] | "#\(.number) \(.title)"' \
   --limit 100 2>/dev/null || true)
+EXPECTED_CREATES=0
+for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
+  [[ "${WU_DEDUP[$wu_idx]}" == comment:* ]] || EXPECTED_CREATES=$((EXPECTED_CREATES + 1))
+done
 RECENT_CREATED_COUNT=$(printf '%s\n' "$RECENT_CREATED_LINES" | sed '/^$/d' | wc -l | tr -d ' ')
-if [ "$RECENT_CREATED_COUNT" -gt "${#SORTED_WORK_UNITS[@]}" ]; then
-  printf 'WARNING: %s issue(s) were created by the current user since %s, but this retro has %s WU(s). Check for duplicate issues before presenting results.\n' \
-    "$RECENT_CREATED_COUNT" "$ISSUE_RUN_START_ISO" "${#SORTED_WORK_UNITS[@]}" >&2
+if [ "$RECENT_CREATED_COUNT" -gt "$EXPECTED_CREATES" ]; then
+  printf 'WARNING: %s issue(s) were created by the current user since %s, but this retro expected %s new issue(s). Check for duplicate issues before presenting results.\n' \
+    "$RECENT_CREATED_COUNT" "$ISSUE_RUN_START_ISO" "$EXPECTED_CREATES" >&2
   printf '%s\n' "$RECENT_CREATED_LINES" | sed 's/^/  /' >&2
 fi
 
