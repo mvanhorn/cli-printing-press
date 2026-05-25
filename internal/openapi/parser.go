@@ -3965,6 +3965,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 	if len(properties) == 0 {
 		return nil, "", false, false, false
 	}
+	inferCSVArrays := isJSONContentType(requestContentType)
 
 	names := make([]string, 0, len(properties))
 	for name := range properties {
@@ -3991,12 +3992,15 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		}
 		param := spec.Param{
 			Name:        name,
-			Type:        mapSchemaType(paramSchema),
+			Type:        mapBodyParamType(paramSchema, inferCSVArrays),
 			Required:    isRequired(required, name),
 			Description: description,
-			Fields:      mapBodyFields(paramSchema),
+			Fields:      mapBodyFields(paramSchema, inferCSVArrays),
 			Enum:        schemaEnum(paramSchema),
 			Format:      schemaFormat(paramSchema),
+		}
+		if inferCSVArrays && isStringArraySchema(paramSchema) {
+			param.ItemType = "string"
 		}
 		if paramSchema != nil && paramSchema.Default != nil {
 			param.Default = paramSchema.Default
@@ -4136,13 +4140,13 @@ func hasDirectObjectShape(schema *openapi3.Schema) bool {
 	return len(schema.Properties) > 0
 }
 
-func mapBodyFields(schema *openapi3.Schema) []spec.Param {
-	return mapBodyFieldsDepth(schema, map[*openapi3.Schema]struct{}{}, 0)
+func mapBodyFields(schema *openapi3.Schema, inferCSVArrays bool) []spec.Param {
+	return mapBodyFieldsDepth(schema, inferCSVArrays, map[*openapi3.Schema]struct{}{}, 0)
 }
 
 const maxBodyFieldDepth = 8
 
-func mapBodyFieldsDepth(schema *openapi3.Schema, visited map[*openapi3.Schema]struct{}, depth int) []spec.Param {
+func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited map[*openapi3.Schema]struct{}, depth int) []spec.Param {
 	if !isObjectSchema(schema) || len(schema.Properties) == 0 {
 		return nil
 	}
@@ -4178,13 +4182,16 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, visited map[*openapi3.Schema]st
 		}
 		fields = append(fields, spec.Param{
 			Name:        name,
-			Type:        mapSchemaType(fieldSchema),
+			Type:        mapBodyParamType(fieldSchema, inferCSVArrays),
 			Required:    isRequired(required, name),
 			Description: description,
-			Fields:      mapBodyFieldsDepth(fieldSchema, visited, depth+1),
+			Fields:      mapBodyFieldsDepth(fieldSchema, inferCSVArrays, visited, depth+1),
 			Enum:        schemaEnum(fieldSchema),
 			Format:      schemaFormat(fieldSchema),
 		})
+		if inferCSVArrays && isStringArraySchema(fieldSchema) {
+			fields[len(fields)-1].ItemType = "string"
+		}
 	}
 	return fields
 }
@@ -5087,6 +5094,21 @@ func mapSchemaType(schema *openapi3.Schema) string {
 	default:
 		return "string"
 	}
+}
+
+func mapBodyParamType(schema *openapi3.Schema, inferCSVArrays bool) string {
+	if inferCSVArrays && isStringArraySchema(schema) {
+		return "string_csv_array"
+	}
+	return mapSchemaType(schema)
+}
+
+func isStringArraySchema(schema *openapi3.Schema) bool {
+	if schema == nil || schema.Type == nil || !schema.Type.Includes(openapi3.TypeArray) {
+		return false
+	}
+	itemSchema := schemaRefValue(schema.Items)
+	return itemSchema != nil && itemSchema.Type != nil && itemSchema.Type.Includes(openapi3.TypeString)
 }
 
 func schemaEnum(schema *openapi3.Schema) []string {
