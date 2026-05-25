@@ -681,11 +681,13 @@ components:
       properties:
         data:
           type: object
-          required: [type, attributes]
+          required: [type, id, attributes]
           properties:
             type:
               type: string
               enum: [contacts]
+            id:
+              type: string
             attributes:
               $ref: "#/components/schemas/ContactUpdateAttributes"
           additionalProperties: true
@@ -814,11 +816,13 @@ components:
       properties:
         data:
           type: object
-          required: [type, attributes]
+          required: [type, id, attributes]
           properties:
             type:
               type: string
               enum: [passwords]
+            id:
+              type: string
             attributes:
               $ref: "#/components/schemas/PasswordUpdateAttributes"
           additionalProperties: true
@@ -916,11 +920,13 @@ components:
       properties:
         data:
           type: object
-          required: [type, attributes]
+          required: [type, id, attributes]
           properties:
             type:
               type: string
               enum: [configurations]
+            id:
+              type: string
             attributes:
               $ref: "#/components/schemas/ConfigurationUpdateAttributes"
             relationships:
@@ -1072,11 +1078,13 @@ components:
       properties:
         data:
           type: object
-          required: [type, attributes]
+          required: [type, id, attributes]
           properties:
             type:
               type: string
               enum: [documents]
+            id:
+              type: string
             attributes:
               $ref: "#/components/schemas/DocumentUpdateAttributes"
             relationships:
