@@ -1764,11 +1764,11 @@ response class:
 
 ```bash
 AUTH_URL="<authorization_url_with_required_query_params>"
-PROBE_BODY_AND_META=$(curl -sS -L --max-redirs 10 -w "\n%{http_code} %{url_effective}" -o - "$AUTH_URL" 2>/dev/null)
+PROBE_BODY_AND_META=$(curl -sS -L --max-redirs 10 -m 15 -w "\n%{http_code} %{url_effective}" -o - "$AUTH_URL" 2>/dev/null)
 PROBE_META=$(printf "%s\n" "$PROBE_BODY_AND_META" | tail -n 1)
 PROBE_BODY=$(printf "%s\n" "$PROBE_BODY_AND_META" | sed '$d')
 printf "%s\n" "$PROBE_META"
-printf "%s\n" "$PROBE_BODY" | head -c 4000
+printf "%s\n" "$PROBE_BODY" | head -c 8000
 printf "\n"
 ```
 
@@ -1776,7 +1776,7 @@ Interpret the result before Phase 2:
 
 | OAuth probe result | Action |
 |--------------------|--------|
-| Final URL stays on the provider's authorization/login/consent host and does not include `error=` | **PASS** - the grant entry point is reachable; proceed to Phase 2 |
+| Final URL stays on the provider's authorization/login/consent host, does not include `error=`, and the response body does not contain an OAuth error code (`invalid_request`, `invalid_client`, `unauthorized_client`, etc.) | **PASS** - the grant entry point is reachable; proceed to Phase 2 |
 | Final URL or response body reports `invalid_request`, `invalid_client`, `redirect_uri_mismatch`, `unauthorized_client`, `unsupported_response_type`, or equivalent | **HARD STOP** - OAuth config is misconfigured; surface the provider error and point the user to the mismatched client id, redirect URI, app type, tenant, or required scope |
 | Final URL lands on a generic non-OAuth error page, marketing page, or unrelated login landing page | **WARN** - flag endpoint ambiguity or provider-specific routing for manual review before generation |
 | Timeout/DNS/connection refused | **WARN** - same handling as the generic reachability WARN |
