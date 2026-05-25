@@ -2482,6 +2482,30 @@ func doctorCheck() {
 	})
 }
 
+func TestScoreDoctorLocalDatastoreRequiresRealSQLiteReachability(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "schema_version": 1,
+  "api_name": "local",
+  "cli_name": "local-pp-cli",
+  "auth_type": "none",
+  "spec_format": "sqlite"
+}`)
+	writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+import "os"
+
+func newDoctorCmd() {}
+
+func doctorCheckPath(path string) error {
+	_, err := os.Stat(path)
+	return err
+}
+`)
+
+	assert.Equal(t, 2, scoreDoctor(dir), "local-datastore doctors should not receive auth/config/reachability credit from os.Stat alone")
+}
+
 func TestScorecardLocalDatastoreManifestCreditsLocalShape(t *testing.T) {
 	dir := t.TempDir()
 	writeScorecardFixture(t, dir, ".printing-press.json", `{
@@ -2546,9 +2570,10 @@ func NewServer() {
 	RegisterTools("context", "search")
 	_ = "Returns browsing-history results from the local SQLite database"
 }
+func handleSearch() {}
 `)
 
-	assert.GreaterOrEqual(t, scoreDoctor(dir), 8, "local SQLite reachability should substitute for HTTP reachability")
+	assert.GreaterOrEqual(t, scoreDoctor(dir), 4, "local SQLite reachability should substitute for HTTP reachability without granting unrelated credit")
 	assert.Equal(t, 10, scoreLocalCache(dir), "manifest-gated local SQLite source should count as the local datastore")
 	assert.GreaterOrEqual(t, scoreMCPQuality(dir), 6, "hand-authored local MCP server should not require generated tools.go")
 	assert.GreaterOrEqual(t, scoreDataPipelineIntegrity(dir), 8, "SQL-backed local source should count as real data pipeline")

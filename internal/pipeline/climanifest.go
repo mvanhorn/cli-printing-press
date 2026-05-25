@@ -139,7 +139,7 @@ func (m CLIManifest) IsLocalDatastore() bool {
 	format := strings.ToLower(strings.TrimSpace(m.SpecFormat))
 	source := strings.ToLower(strings.TrimSpace(m.SpecSource))
 	switch format {
-	case "sqlite", "local", "local-sqlite":
+	case "sqlite", "local-sqlite":
 		return true
 	}
 	return strings.Contains(source, "local") && strings.Contains(source, "sqlite")

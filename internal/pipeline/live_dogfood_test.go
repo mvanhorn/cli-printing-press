@@ -332,6 +332,43 @@ func TestRunLiveDogfoodAPICLIRetainsScopedHome(t *testing.T) {
 	assert.Equal(t, "PASS", report.Verdict, report.Tests)
 }
 
+func TestRunLiveDogfoodAuthenticatedLocalDatastoreRetainsScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	home := t.TempDir()
+	cacheHome := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "source.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(cacheHome, "snapshot.db"), []byte("fixture"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(configHome, "source.conf"), []byte("fixture"), 0o600))
+
+	dir, binaryName := writeLiveDogfoodHomeProbeFixture(t, `if [ -f "$HOME/source.db" ]; then echo "operator home leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CACHE_HOME/snapshot.db" ]; then echo "operator cache leaked" >&2; exit 3; fi
+  if [ -f "$XDG_CONFIG_HOME/source.conf" ]; then echo "operator config leaked" >&2; exit 3; fi`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		CLIName:       binaryName,
+		RunID:         "run-live-dogfood",
+		AuthType:      "api_key",
+		SpecFormat:    "sqlite",
+	}))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
 func TestRunLiveDogfoodProcessRetriesTransientAuth401(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")

@@ -81,7 +81,7 @@ func TestCLIManifestIsLocalDatastore(t *testing.T) {
 		want bool
 	}{
 		{name: "sqlite spec format", m: CLIManifest{SpecFormat: "sqlite"}, want: true},
-		{name: "local spec format", m: CLIManifest{SpecFormat: "local"}, want: true},
+		{name: "local spec format without sqlite is not enough", m: CLIManifest{SpecFormat: "local"}, want: false},
 		{name: "local sqlite spec source", m: CLIManifest{SpecSource: "local-sqlite"}, want: true},
 		{name: "openapi spec format", m: CLIManifest{SpecFormat: "openapi3"}, want: false},
 		{name: "remote sqlite wording is not local", m: CLIManifest{SpecSource: "remote-sqlite"}, want: false},

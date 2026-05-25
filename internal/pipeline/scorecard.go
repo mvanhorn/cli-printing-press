@@ -567,7 +567,7 @@ func scoreDoctor(dir string) int {
 	// Presence: doctor command exists
 	score += 2
 	// Quality: checks auth/token validity
-	if strings.Contains(content, "auth") || strings.Contains(content, "token") || strings.Contains(content, "Token") || localDatastore {
+	if strings.Contains(content, "auth") || strings.Contains(content, "token") || strings.Contains(content, "Token") {
 		score += 2
 	}
 	// Quality: checks API connectivity (makes an HTTP request)
@@ -575,7 +575,7 @@ func scoreDoctor(dir string) int {
 		score += 2
 	}
 	// Quality: checks config file
-	if strings.Contains(content, "config") || strings.Contains(content, "Config") || localDatastore {
+	if strings.Contains(content, "config") || strings.Contains(content, "Config") {
 		score += 2
 	}
 	// Excellence: checks version or API compatibility
@@ -602,12 +602,15 @@ func hasDoctorHTTPReachability(content string) bool {
 
 func hasLocalDatastoreReachability(content string) bool {
 	lower := strings.ToLower(content)
-	return strings.Contains(lower, "sqlite") ||
-		strings.Contains(lower, "database/sql") ||
-		strings.Contains(lower, ".db") ||
-		strings.Contains(lower, "usercachedir") ||
-		strings.Contains(lower, "userhomedir") ||
-		strings.Contains(lower, "os.stat")
+	hasSQLiteSignal := strings.Contains(lower, "sqlite") || strings.Contains(lower, "database/sql")
+	if !hasSQLiteSignal {
+		return false
+	}
+	return strings.Contains(lower, "sql.open") ||
+		strings.Contains(lower, ".ping(") ||
+		strings.Contains(lower, ".query(") ||
+		strings.Contains(lower, ".queryrow(") ||
+		strings.Contains(lower, ".exec(")
 }
 
 func scoreAgentNative(dir string) int {
@@ -721,7 +724,8 @@ func scoreMCPQuality(dir string) int {
 	if strings.Contains(mcpContent, `"sql"`) && strings.Contains(mcpContent, "handleSQL") {
 		highlevelCount++
 	}
-	if strings.Contains(mcpContent, `"search"`) && (strings.Contains(mcpContent, "handleSearch") || isLocalDatastoreCLIDir(dir)) {
+	hasRegisteredSearch := hasRuntimeMirror && hasRegisteredCommandFileWithPrefix(filepath.Join(dir, "internal", "cli"), "search")
+	if strings.Contains(mcpContent, `"search"`) && (strings.Contains(mcpContent, "handleSearch") || hasRegisteredSearch) {
 		highlevelCount++
 	}
 	if (strings.Contains(mcpContent, `"sync"`) && strings.Contains(mcpContent, "handleSync")) ||

@@ -180,7 +180,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 
 func scopeLiveDogfoodSubprocessHome(cliDir string) (func(), error) {
 	manifest, err := ReadCLIManifest(cliDir)
-	if err == nil && manifest.IsLocalDatastore() {
+	if err == nil && manifest.IsLocalDatastore() && strings.EqualFold(strings.TrimSpace(manifest.AuthType), "none") {
 		return func() {}, nil
 	}
 	return scopeSubprocessHome()
