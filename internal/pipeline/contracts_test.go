@@ -190,6 +190,20 @@ func TestPrintingPressSkillUsesRunRootStateFile(t *testing.T) {
 	assert.Contains(t, skill, `"working_dir": "$CLI_WORK_DIR"`)
 }
 
+func TestPrintingPressSkillWarnsOnMultiSpecDirectories(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	block := substringBetween(t, skill, "#### Directory spec-source guard", "2. Check for prior research")
+
+	assert.Contains(t, block, "If any resolved spec source is a local directory")
+	assert.Contains(t, block, "do not silently pick the first")
+	assert.Contains(t, block, `find "$SPEC_SOURCE_DIR" -type f`)
+	assert.Contains(t, block, "N OpenAPI/Swagger specs found under <directory>")
+	assert.Contains(t, block, "`spec_candidates` is the sorted list")
+	assert.Contains(t, block, "`selected_spec_paths` is the list that will be generated")
+	assert.Contains(t, block, "stop after printing the warning")
+	assert.Contains(t, block, "one independent printed CLI per")
+}
+
 func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	skillPath := filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")
 	full := readContractFile(t, skillPath)
