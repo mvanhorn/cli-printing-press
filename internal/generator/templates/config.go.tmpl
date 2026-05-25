@@ -47,6 +47,13 @@ type Config struct {
 	// regenerating.
 	AuthorizationURL string `{{configTag .Config.Format}}:"authorization_url,omitempty"`
 {{- end}}
+{{- if .Auth.DeviceAuthorizationURL}}
+	// DeviceAuthorizationURL overrides the spec-baked OAuth2 device authorization endpoint.
+	// Falls back to the generator default at the call site when empty so a
+	// user pointing the CLI at a non-default deployment can override without
+	// regenerating.
+	DeviceAuthorizationURL string `{{configTag .Config.Format}}:"device_authorization_url,omitempty"`
+{{- end}}
 {{- if .Auth.TokenURL}}
 	// TokenURL overrides the spec-baked OAuth2 token endpoint. Same fallback
 	// pattern as AuthorizationURL.
@@ -190,6 +197,11 @@ func Load(configPath string) (*Config, error) {
 {{- if and .HasAuthCommand .Auth.AuthorizationURL}}
 	if v := os.Getenv("{{envName .Name}}_AUTHORIZATION_URL"); v != "" {
 		cfg.AuthorizationURL = v
+	}
+{{- end}}
+{{- if and .HasAuthCommand .Auth.DeviceAuthorizationURL}}
+	if v := os.Getenv("{{envName .Name}}_DEVICE_AUTHORIZATION_URL"); v != "" {
+		cfg.DeviceAuthorizationURL = v
 	}
 {{- end}}
 {{- if and .HasAuthCommand .Auth.TokenURL}}
@@ -362,12 +374,12 @@ func (c *Config) AuthHeader() string {
 	{{- end}}
 {{- end}}
 {{- else if or (eq .Auth.Type "bearer_token") (eq .Auth.Type "oauth2")}}
-{{- if or (eq .Auth.Type "oauth2") (and (eq .Auth.Type "bearer_token") (eq .Auth.EffectiveOAuth2Grant "client_credentials"))}}
-	// Under OAuth2 (and bearer_token specs running the client_credentials
-	// grant) the configured env vars hold client credentials (client_id /
-	// client_secret), not a usable bearer; the minted AccessToken must
-	// win. Sending the client_id as Authorization: Bearer surfaces as
-	// token_rejected at the API.
+{{- if oauth2AccessTokenAuth .Auth}}
+	// Under OAuth2 (and bearer_token specs running OAuth grants such as
+	// client_credentials or device_code) the configured env vars hold flow
+	// inputs, not a usable bearer; the minted AccessToken must win. Sending
+	// the client_id as Authorization: Bearer surfaces as token_rejected at
+	// the API.
 	if c.AccessToken != "" {
 		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
 			c.AuthSource = "oauth2"

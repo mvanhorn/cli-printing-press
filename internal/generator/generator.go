@@ -249,8 +249,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authParameterName":                  authParameterName,
 		"authCommandShort":                   authCommandShort,
 		"authHarvestedEnvHint":               authHarvestedEnvHint,
+		"oauth2AccessTokenAuth":              oauth2AccessTokenAuth,
 		"basicAuthEnvVars":                   basicAuthEnvVars,
 		"clientCredentialsEnvVars":           clientCredentialsEnvVars,
+		"deviceCodeEnvVars":                  deviceCodeEnvVars,
 		"clientCredentialsScope":             clientCredentialsScope,
 		"clientCredentialsScopeUsesClientID": clientCredentialsScopeUsesClientID,
 		"clientCredentialsTenantEnvVar":      clientCredentialsTenantEnvVar,
@@ -1004,10 +1006,27 @@ func authHarvestedEnvHint(auth spec.AuthConfig) string {
 		return "populated automatically by auth login --chrome"
 	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && auth.TokenURL != "":
 		return "populated automatically by auth login --client-id/--client-secret"
+	case auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && auth.DeviceAuthorizationURL != "" && auth.TokenURL != "":
+		return "populated automatically by auth login --device-code"
 	case auth.AuthorizationURL != "":
 		return "populated automatically by auth login"
 	default:
 		return "set with auth set-token"
+	}
+}
+
+func oauth2AccessTokenAuth(auth spec.AuthConfig) bool {
+	if auth.Type == "oauth2" {
+		return true
+	}
+	if auth.Type != "bearer_token" {
+		return false
+	}
+	switch auth.EffectiveOAuth2Grant() {
+	case spec.OAuth2GrantClientCredentials, spec.OAuth2GrantDeviceCode:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1088,6 +1107,41 @@ func clientCredentialsEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 		return []spec.AuthEnvVar{clientID, clientSecret}
 	}
 	return envVars[:2]
+}
+
+func deviceCodeEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	if auth.EffectiveOAuth2Grant() != spec.OAuth2GrantDeviceCode {
+		return nil
+	}
+	if len(auth.EnvVarSpecs) > 0 {
+		var candidates []spec.AuthEnvVar
+		for _, envVar := range auth.EnvVarSpecs {
+			if strings.TrimSpace(envVar.Name) == "" || envVar.EffectiveKind() == spec.AuthEnvVarKindHarvested {
+				continue
+			}
+			candidates = append(candidates, envVar)
+		}
+		clientID, _ := clientCredentialsNamedPair(candidates)
+		if clientID.Name != "" {
+			return []spec.AuthEnvVar{clientID}
+		}
+		if len(candidates) > 0 {
+			return candidates[:1]
+		}
+		return nil
+	}
+	for _, name := range auth.EnvVars {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		return []spec.AuthEnvVar{{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindAuthFlowInput,
+			Required:  strings.TrimSpace(auth.DefaultClientID) == "",
+			Sensitive: false,
+		}}
+	}
+	return nil
 }
 
 func clientCredentialsNamedPair(envVars []spec.AuthEnvVar) (spec.AuthEnvVar, spec.AuthEnvVar) {
@@ -2585,14 +2639,17 @@ func (g *Generator) renderAuthFiles() error {
 	}
 	// Render auth command. Template selection priority:
 	//   1. OAuth2 client_credentials (server-to-server, no user redirect)
-	//   2. OAuth2 authorization_code (3-legged, AuthorizationURL non-empty)
-	//   3. Browser-cookie / composed / persisted-query
-	//   4. Simple token-management (catch-all)
+	//   2. OAuth2 device_code (agent/CLI-friendly user auth, no localhost redirect)
+	//   3. OAuth2 authorization_code (3-legged, AuthorizationURL non-empty)
+	//   4. Browser-cookie / composed / persisted-query
+	//   5. Simple token-management (catch-all)
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
 	switch {
 	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && g.Spec.Auth.TokenURL != "":
 		authTmpl = "auth_client_credentials.go.tmpl"
+	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode && g.Spec.Auth.DeviceAuthorizationURL != "" && g.Spec.Auth.TokenURL != "":
+		authTmpl = "auth_device_code.go.tmpl"
 	case g.Spec.Auth.AuthorizationURL != "":
 		authTmpl = "auth.go.tmpl"
 	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") || g.Spec.Auth.Subtype == spec.AuthSubtypeAuth0SPAInMemory:
@@ -2608,6 +2665,15 @@ func (g *Generator) renderAuthFiles() error {
 	}
 	if err := g.renderTemplate(authTmpl, authPath, authData); err != nil {
 		return fmt.Errorf("rendering auth: %w", err)
+	}
+	if g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantDeviceCode {
+		oauthPath := filepath.Join("internal", "oauth", "device.go")
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "oauth"), 0o755); err != nil {
+			return fmt.Errorf("creating OAuth helper directory: %w", err)
+		}
+		if err := g.renderTemplate("oauth_device.go.tmpl", oauthPath, g.Spec); err != nil {
+			return fmt.Errorf("rendering OAuth device-code helper: %w", err)
+		}
 	}
 
 	// For session_handshake auth, emit the session manager helper alongside
