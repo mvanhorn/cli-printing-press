@@ -371,14 +371,31 @@ func normalizePIIJSONKey(key string) string {
 func redactPIIPatterns(text string) string {
 	redacted := text
 	for _, det := range piiDetectors {
-		redacted = det.pattern.ReplaceAllStringFunc(redacted, func(match string) string {
-			if isSyntheticPIIPlaceholder(det.kind, match) {
-				return match
-			}
-			return PIIRedactedSentinel
-		})
+		redacted = redactDetectorMatches(det, redacted)
 	}
 	return redacted
+}
+
+func redactDetectorMatches(det piiDetector, text string) string {
+	locs := det.pattern.FindAllStringIndex(text, -1)
+	if len(locs) == 0 {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range locs {
+		match := text[loc[0]:loc[1]]
+		b.WriteString(text[last:loc[0]])
+		if isSyntheticPIIPlaceholder(det.kind, match) ||
+			(det.kind == PIIKindPhoneUS && isGitHubContextBarePhoneID(text, loc[0], match)) {
+			b.WriteString(match)
+		} else {
+			b.WriteString(PIIRedactedSentinel)
+		}
+		last = loc[1]
+	}
+	b.WriteString(text[last:])
+	return b.String()
 }
 
 // Scoped to the capture-to-publish leak path: manuscripts, test
@@ -545,6 +562,35 @@ func isNANPFictionalPhone(matched string) bool {
 	default:
 		return false
 	}
+}
+
+func isGitHubContextBarePhoneID(line string, matchStart int, matchedSpan string) bool {
+	if !isBareDigits(matchedSpan) {
+		return false
+	}
+	start := max(0, matchStart-30)
+	context := strings.ToLower(line[start:matchStart])
+	for _, token := range []string{
+		"comment id", "comment_id", "comment-id", "issuecomment", "discussion_r",
+		"/comments/", "/commit/", "/commits/", "/pull/", "/issues/",
+	} {
+		if strings.Contains(context, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBareDigits(span string) bool {
+	if span == "" {
+		return false
+	}
+	for _, r := range span {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // FindPII walks root, applies the file-scoping rules, and returns all
@@ -767,6 +813,9 @@ func scanPIIFileWithRel(path, relSlash string) ([]PIIFinding, error) {
 			for _, match := range det.pattern.FindAllStringIndex(line, -1) {
 				matchedSpan := line[match[0]:match[1]]
 				if isSyntheticPIIPlaceholder(det.kind, matchedSpan) {
+					continue
+				}
+				if det.kind == PIIKindPhoneUS && isGitHubContextBarePhoneID(line, match[0], matchedSpan) {
 					continue
 				}
 				findings = append(findings, PIIFinding{

@@ -72,6 +72,17 @@ func TestRedactPIIText_RedactsPlainTextPatterns(t *testing.T) {
 	require.Contains(t, got, PIIRedactedSentinel)
 }
 
+func TestRedactPIIText_KeepsGitHubContextIDAndReservedValues(t *testing.T) {
+	got := RedactPIIText("see #issuecomment-3249672648 and email user@example.com or call 212-555-0142")
+	require.Contains(t, got, "3249672648", "GitHub comment ID must not be redacted")
+	require.Contains(t, got, "user@example.com", "reserved example.com email must not be redacted")
+	require.Contains(t, got, "212-555-0142", "NANP fictional phone must not be redacted")
+
+	real := RedactPIIText("reach me at 415-234-5678")
+	require.NotContains(t, real, "415-234-5678", "a real phone must still be redacted")
+	require.Contains(t, real, PIIRedactedSentinel)
+}
+
 func TestFindPII_CardLast4(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -196,6 +207,26 @@ func TestFindPII_PhoneUS(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := scanLine(t, tt.line, "test.json")
+			assertKinds(t, got, tt.expectKinds, PIIKindPhoneUS)
+		})
+	}
+}
+
+func TestFindPII_PhoneUS_GitHubContextIDSkips(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		expectKinds []string
+	}{
+		{name: "comment-id", line: `see comment id 3249672558`, expectKinds: nil},
+		{name: "issuecomment-anchor", line: `https://github.com/o/r/pull/12#issuecomment-3249672648`, expectKinds: nil},
+		{name: "comments-url-path", line: `https://github.com/o/r/issues/5/comments/3249672700`, expectKinds: nil},
+		{name: "bare-real-phone-no-github-token", line: `contact 4152345678`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "bare-commit-word-near-real-phone-still-flags", line: `we will commit then call 4152345678`, expectKinds: []string{PIIKindPhoneUS}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanLine(t, tt.line, "README.md")
 			assertKinds(t, got, tt.expectKinds, PIIKindPhoneUS)
 		})
 	}
