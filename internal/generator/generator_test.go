@@ -1168,6 +1168,61 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 		"MCP context must expose sibling apiKey credentials to agents")
 }
 
+func TestGenerateComposedHeaderApiKeyDerivesMissingSiblingEnvVar(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Dispatch
+  version: "1.0.0"
+servers:
+  - url: https://api.servicetitan.io
+security:
+  - oauth: []
+    appKey: []
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.servicetitan.io/connect/token
+          scopes: {}
+      x-auth-env-vars:
+        - ST_CLIENT_ID
+        - ST_CLIENT_SECRET
+    appKey:
+      type: apiKey
+      in: header
+      name: ST-App-Key
+paths:
+  /customers:
+    get:
+      operationId: listCustomers
+      responses:
+        "200":
+          description: OK
+`))
+	require.NoError(t, err)
+	apiSpec.Name = "dispatch"
+	apiSpec.Config = spec.ConfigSpec{Format: "toml", Path: "~/.config/dispatch-pp-cli/config.toml"}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configSrc := string(configBytes)
+	assert.Regexp(t, `DispatchStAppKey\s+string`, configSrc)
+	assert.Contains(t, configSrc, `os.Getenv("DISPATCH_ST_APP_KEY")`)
+	assert.Contains(t, configSrc, `cfg.DispatchStAppKey = v`)
+
+	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientBytes), `req.Header.Set("ST-App-Key", v)`)
+}
+
 // Trello-shaped OpenAPI specs require two apiKey query credentials in the
 // same security requirement. The first key follows the primary auth path; the
 // sibling token must be loaded into config, counted by doctor, and attached to
