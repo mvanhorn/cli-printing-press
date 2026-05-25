@@ -20,12 +20,14 @@ queue_rules:
     # skips the bot-owned speculative check branches.
     queue_conditions:
       - base = main
-      # All Greptile/human inline review threads must be resolved before
-      # the PR enters the queue. Greptile Review's check_run going green
-      # only reflects the confidence score, not whether inline findings
-      # are addressed; without this condition a PR with unresolved P0/P1
-      # findings would auto-merge as soon as `ready-to-merge` is applied.
+      # All Greptile/human inline review threads must be resolved and no
+      # requested-changes review may remain before the PR enters the queue.
+      # Greptile Review's check_run going green only reflects the confidence
+      # score, not whether inline findings are addressed; without these
+      # conditions a PR with unresolved P0/P1 findings or stale requested
+      # changes would auto-merge as soon as `ready-to-merge` is applied.
       - "#review-threads-unresolved = 0"
+      - "#changes-requested-reviews-by = 0"
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
@@ -108,10 +110,12 @@ merge_protections:
         - and:
           - head = release-please--branches--main
           - "title ~= ^chore\\(main\\): release"
-      # Mirrors the queue_conditions rule. Belt-and-suspenders so a queued
-      # PR that picks up new Greptile findings during the queue's CI re-run
-      # is held until those threads are resolved.
+      # Mirrors the queue_conditions review-feedback rules. Belt-and-suspenders
+      # so a queued PR that picks up new Greptile findings or requested-changes
+      # state during the queue's CI re-run is held until the feedback is
+      # addressed.
       - "#review-threads-unresolved = 0"
+      - "#changes-requested-reviews-by = 0"
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
