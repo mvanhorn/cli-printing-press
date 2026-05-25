@@ -1245,6 +1245,7 @@ func determineDateRangeParam() string {
 // It tries multiple strategies:
 // 1. Direct JSON array
 // 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
+// 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
 func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
@@ -1259,51 +1260,88 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 		return nil, "", false
 	}
 
-	// Try common item keys first (fast path)
-	for _, key := range pageItemKeys {
-		if raw, ok := envelope[key]; ok {
-			if err := json.Unmarshal(raw, &items); err == nil && len(items) > 0 {
-				// Verify items are objects. If the first item is not an object
-				// (e.g. a string flag), skip this key and fall through.
-				if len(items) > 0 {
-					var obj map[string]json.RawMessage
-					if err := json.Unmarshal(items[0], &obj); err != nil {
-						continue
-					}
-				}
-				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
-				return items, nextCursor, hasMore
+	if items, ok := extractItemsByKnownKeys(envelope); ok {
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+		return items, nextCursor, hasMore
+	}
+
+	for _, key := range dataEnvelopeKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) != nil {
+			continue
+		}
+		if items, ok := extractItemsFromEnvelope(inner); ok {
+			nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			if nextCursor == "" {
+				nextCursor = outerCursor
 			}
+			hasMore = hasMore || outerHasMore
+			return items, nextCursor, hasMore
 		}
 	}
 
+	if items, ok := extractSingleObjectArraySibling(envelope); ok {
+		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+		return items, nextCursor, hasMore
+	}
+
+	return nil, "", false
+}
+
+func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	if items, ok := extractItemsByKnownKeys(envelope); ok {
+		return items, true
+	}
+	return extractSingleObjectArraySibling(envelope)
+}
+
+func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	for _, key := range pageItemKeys {
+		if raw, ok := envelope[key]; ok {
+			if items, ok := extractObjectArray(raw); ok {
+				return items, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
 	// Fallback: try every key in the envelope. If exactly one maps to a JSON
 	// array with items, use it. This handles APIs that wrap responses with the
 	// resource name (e.g., {"markets": [...], "cursor": "..."}).
-	var arrayKey string
 	var arrayItems []json.RawMessage
 	arrayCount := 0
 	for key, raw := range envelope {
-		var candidate []json.RawMessage
-		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) > 0 {
-			// Verify items are objects. If the first item is not an object,
-			// this isn't a resource collection; skip it.
-			var obj map[string]json.RawMessage
-			if err := json.Unmarshal(candidate[0], &obj); err != nil {
-				continue
-			}
-			arrayKey = key
+		if pageMetadataArrayKeys[key] {
+			continue
+		}
+		if candidate, ok := extractObjectArray(raw); ok {
 			arrayItems = candidate
 			arrayCount++
 		}
 	}
 	if arrayCount == 1 {
-		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
-		_ = arrayKey // used for detection, items extracted above
-		return arrayItems, nextCursor, hasMore
+		return arrayItems, true
 	}
+	return nil, false
+}
 
-	return nil, "", false
+func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(items[0], &obj); err != nil {
+		return nil, false
+	}
+	return items, true
 }
 
 {{- if $hasIDWalk}}
@@ -1453,13 +1491,49 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 		return false
 	}
 
+	if isEmptyPageEnvelope(envelope) {
+		return true
+	}
+
+	for _, key := range dataEnvelopeKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		if isJSONNull(raw) {
+			return envelopeReportsFailure(envelope)
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) == nil && isEmptyPageEnvelope(inner) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func envelopeReportsFailure(envelope map[string]json.RawMessage) bool {
+	if raw, ok := envelope["success"]; ok {
+		var success bool
+		return json.Unmarshal(raw, &success) == nil && !success
+	}
+	if raw, ok := envelope["status"]; ok {
+		var status string
+		if json.Unmarshal(raw, &status) == nil {
+			switch strings.ToLower(status) {
+			case "error", "fail", "failed":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isEmptyPageEnvelope(envelope map[string]json.RawMessage) bool {
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
 			var items []json.RawMessage
 			if err := json.Unmarshal(raw, &items); err == nil && !isJSONNull(raw) {
-				// If the array is empty, we still consider it a match for the
-				// key-based strategy. If it's NOT empty, we verify it's an
-				// array of objects to stay consistent with extractPageItems.
 				if len(items) > 0 {
 					var obj map[string]json.RawMessage
 					if err := json.Unmarshal(items[0], &obj); err != nil {
@@ -1470,7 +1544,10 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 			}
 		}
 	}
+	return hasExactlyOneEmptyArray(envelope)
+}
 
+func hasExactlyOneEmptyArray(envelope map[string]json.RawMessage) bool {
 	arrayCount := 0
 	for _, raw := range envelope {
 		var candidate []json.RawMessage
@@ -2345,6 +2422,13 @@ var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", 
 var pageItemKeys = []string{
 	"data", "results", "items", "records", "nodes", "entries", "features",
 	"Data", "Results", "Items", "Records", "Nodes", "Entries", "Features",
+}
+
+var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
+
+var pageMetadataArrayKeys = map[string]bool{
+	"errors": true, "Errors": true,
+	"warnings": true, "Warnings": true,
 }
 
 // criticalResources is the template-time projection of per-resource Critical
