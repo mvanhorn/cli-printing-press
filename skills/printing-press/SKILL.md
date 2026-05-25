@@ -2847,6 +2847,7 @@ func newScanFilterCmd(flags *rootFlags) *cobra.Command {
 			}
 			var matches []yourEntryType
 			scanned := 0
+			scanCapHit := true
 			for page := 1; page <= maxScanPages && len(matches) < limit; page++ {
 				data, err := c.Get("/api/v1/items", map[string]string{
 					"page":     strconv.Itoa(page),
@@ -2870,6 +2871,7 @@ func newScanFilterCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				if len(items) == 0 {
+					scanCapHit = false
 					break
 				}
 			}
@@ -2878,7 +2880,7 @@ func newScanFilterCmd(flags *rootFlags) *cobra.Command {
 				ScannedItems:  scanned,
 				MaxScanPages:  maxScanPages,
 			}
-			if len(matches) == 0 {
+			if len(matches) == 0 && scanCapHit {
 				view.Note = fmt.Sprintf("scanned %d items across up to %d pages without finding status %q; raise --max-scan-pages to widen the search", scanned, maxScanPages, status)
 			}
 			enc := json.NewEncoder(cmd.OutOrStdout())
