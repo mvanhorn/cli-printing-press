@@ -3678,16 +3678,8 @@ session proof or a hold decision.
 
 **Always runs.** Invoke the `printing-press-polish` skill to run diagnostics, fix quality issues, and return a delta. The polish skill carries `context: fork` in its frontmatter, so its diagnostic-fix-rediagnose loop runs in a forked context — diagnostic spam, fix iterations, and re-audits stay scoped to the polish session and don't pollute this generation flow. The skill is autonomous — no user input needed. The goal is to ship the best CLI possible, not the fastest.
 
-Invoke via the Skill tool (**foreground** — must complete before promoting):
-
-```
-Skill(
-  skill: "cli-printing-press:printing-press-polish",
-  args: "$CLI_WORK_DIR"
-)
-```
-
-Include the Phase 3 transcendence gate state in the polish input bundle:
+Before invoking polish, collect the Phase 3 transcendence gate state and include
+it in the polish input bundle:
 
 ```yaml
 phase3_transcendence_rows_planned: <planned>
@@ -3696,6 +3688,22 @@ phase3_transcendence_rows_missing:
   - <manifest row name or command>
 prior_sub60_reprint: <true|false>
 partial_transcendence_override: <none or build-log note path>
+```
+
+Invoke via the Skill tool (**foreground** — must complete before promoting).
+Pass `$CLI_WORK_DIR` as the first line of `args`, followed by the Phase 3 bundle:
+
+```
+Skill(
+  skill: "cli-printing-press:printing-press-polish",
+  args: "$CLI_WORK_DIR
+phase3_transcendence_rows_planned: <planned>
+phase3_transcendence_rows_built: <built>
+phase3_transcendence_rows_missing:
+  - <manifest row name or command>
+prior_sub60_reprint: <true|false>
+partial_transcendence_override: <none or build-log note path>"
+)
 ```
 
 Polish must treat `prior_sub60_reprint: true` plus any missing row as `ship_recommendation: hold` unless `partial_transcendence_override` names the accepted exception. This keeps mid-pipeline polish from recommending `ship` for a reprint that regressed from the approved manifest before Phase 6 sees the artifact.
