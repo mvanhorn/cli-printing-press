@@ -1184,3 +1184,41 @@ paths:
       responses:
         "200": {description: ok}
 ```
+
+### `x-streaming`
+
+Declares that a spec has WebSocket-primary ingest with REST metadata refresh.
+Internal YAML uses the same shape as `streaming:` at the top level.
+
+Parsed field: `APISpec.Streaming` (`spec.StreamingConfig`)
+
+Rules:
+- Optional. When omitted, REST-only generation is unchanged.
+- `transport` must currently be `websocket`.
+- `url` must be an absolute `ws://` or `wss://` URL.
+- `framing` may be `single_object_per_frame` or `newline_delimited_json`.
+  Empty defaults to `single_object_per_frame`.
+- `metadata.endpoint` is optional, but required when any metadata sub-field
+  is declared.
+- `metadata.refresh_cadence` is a Go duration. Empty defaults to `30s`.
+- `metadata.statuses` defaults to `[live, pending]`.
+- `metadata.primary_key` defaults to `id`.
+
+When present, the generator emits `live ws sync`, `live rest sync`,
+`internal/wsclient`, and local SQLite tables for stream frames, stream
+metadata, and `<api>_rebase_log` lifecycle events.
+
+Example:
+
+```yaml
+x-streaming:
+  transport: websocket
+  url: "wss://api.example.com/v1/ws"
+  subscribe_shape: '{"type":"subscribe","channels":["events"]}'
+  framing: newline_delimited_json
+  metadata:
+    endpoint: "/v1/events"
+    refresh_cadence: 30s
+    statuses: [live, pending]
+    primary_key: event_id
+```

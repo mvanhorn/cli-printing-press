@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"gopkg.in/yaml.v3"
@@ -51,6 +52,13 @@ const (
 	DataSourceStrategyAuto  = "auto"
 	DataSourceStrategyLocal = "local"
 	DataSourceStrategyLive  = "live"
+)
+
+const (
+	StreamingTransportWebSocket = "websocket"
+
+	StreamingFramingSingleObject = "single_object_per_frame"
+	StreamingFramingNDJSON       = "newline_delimited_json"
 )
 
 const (
@@ -201,6 +209,7 @@ type APISpec struct {
 	Learn                       LearnConfig         `yaml:"learn,omitempty" json:"learn,omitzero"`                    // self-learning loop config: ticker patterns, stopwords, and entity-lookup seeds the generated CLI uses to cache teaches and generalize through entity substitution. Absent or disabled is a benign no-op.
 	MCP                         MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, small APIs (typed-endpoint count <= DefaultRemoteTransportEndpointThreshold) get stdio+http compiled in by APISpec.EffectiveMCPTransports so the same binary can serve cloud-hosted agents. Larger APIs stay stdio-only by default. Opting into http explicitly adds a --transport/--addr flag surface regardless of size.
 	Throttling                  ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
+	Streaming                   StreamingConfig     `yaml:"streaming,omitempty" json:"streaming"`                     // streaming-primary ingest config; when Transport is websocket, emits a live ws sync scaffold plus REST metadata refresh and rebase-log support.
 }
 
 type TierRoutingConfig struct {
@@ -235,6 +244,67 @@ func (s *APISpec) SyncDefaultConcurrency() int {
 	default:
 		return 4
 	}
+}
+
+// StreamingConfig declares a streaming-primary ingest surface for APIs where
+// WebSocket frames are the fact stream and REST endpoints supply descriptive
+// metadata used by downstream local-store queries.
+type StreamingConfig struct {
+	Transport      string                  `yaml:"transport,omitempty" json:"transport,omitempty"`
+	URL            string                  `yaml:"url,omitempty" json:"url,omitempty"`
+	SubscribeShape string                  `yaml:"subscribe_shape,omitempty" json:"subscribe_shape,omitempty"`
+	Framing        string                  `yaml:"framing,omitempty" json:"framing,omitempty"`
+	Metadata       StreamingMetadataConfig `yaml:"metadata,omitempty" json:"metadata,omitzero"`
+}
+
+type StreamingMetadataConfig struct {
+	Endpoint       string   `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	RefreshCadence string   `yaml:"refresh_cadence,omitempty" json:"refresh_cadence,omitempty"`
+	Statuses       []string `yaml:"statuses,omitempty" json:"statuses,omitempty"`
+	PrimaryKey     string   `yaml:"primary_key,omitempty" json:"primary_key,omitempty"`
+}
+
+func (c StreamingConfig) Enabled() bool {
+	return strings.TrimSpace(c.Transport) != "" ||
+		strings.TrimSpace(c.URL) != "" ||
+		strings.TrimSpace(c.SubscribeShape) != "" ||
+		strings.TrimSpace(c.Framing) != "" ||
+		c.Metadata.Enabled()
+}
+
+func (c StreamingConfig) EffectiveFraming() string {
+	if strings.TrimSpace(c.Framing) == "" {
+		return StreamingFramingSingleObject
+	}
+	return c.Framing
+}
+
+func (c StreamingConfig) EffectiveMetadataStatuses() []string {
+	if len(c.Metadata.Statuses) == 0 {
+		return []string{"live", "pending"}
+	}
+	return c.Metadata.Statuses
+}
+
+func (c StreamingConfig) EffectiveMetadataRefreshCadence() string {
+	if strings.TrimSpace(c.Metadata.RefreshCadence) == "" {
+		return "30s"
+	}
+	return c.Metadata.RefreshCadence
+}
+
+func (m StreamingMetadataConfig) Enabled() bool {
+	return strings.TrimSpace(m.Endpoint) != "" ||
+		strings.TrimSpace(m.RefreshCadence) != "" ||
+		len(m.Statuses) > 0 ||
+		strings.TrimSpace(m.PrimaryKey) != ""
+}
+
+func (m StreamingMetadataConfig) EffectivePrimaryKey() string {
+	if strings.TrimSpace(m.PrimaryKey) == "" {
+		return "id"
+	}
+	return m.PrimaryKey
 }
 
 // EndpointTemplateEnvName returns the env-var name that resolves the given
@@ -520,6 +590,46 @@ func validateThrottling(c ThrottlingConfig) error {
 	default:
 		return fmt.Errorf("throttling.shape %q is not recognized (valid: %q)", c.Shape, ThrottleShapeShopify)
 	}
+}
+
+func validateStreaming(c StreamingConfig) error {
+	if !c.Enabled() {
+		return nil
+	}
+	if strings.TrimSpace(c.Transport) != StreamingTransportWebSocket {
+		return fmt.Errorf("streaming.transport must be %q when streaming is declared", StreamingTransportWebSocket)
+	}
+	if strings.TrimSpace(c.URL) == "" {
+		return fmt.Errorf("streaming.url is required when streaming.transport is %q", StreamingTransportWebSocket)
+	}
+	parsed, err := url.Parse(c.URL)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("streaming.url must be an absolute ws:// or wss:// URL")
+	}
+	if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
+		return fmt.Errorf("streaming.url must use ws:// or wss://")
+	}
+	switch c.EffectiveFraming() {
+	case StreamingFramingSingleObject, StreamingFramingNDJSON:
+	default:
+		return fmt.Errorf("streaming.framing must be one of: %s, %s", StreamingFramingSingleObject, StreamingFramingNDJSON)
+	}
+	if c.Metadata.Enabled() {
+		if strings.TrimSpace(c.Metadata.Endpoint) == "" {
+			return fmt.Errorf("streaming.metadata.endpoint is required when streaming.metadata is declared")
+		}
+		if strings.TrimSpace(c.Metadata.RefreshCadence) != "" {
+			if _, err := time.ParseDuration(c.Metadata.RefreshCadence); err != nil {
+				return fmt.Errorf("streaming.metadata.refresh_cadence must be a Go duration: %w", err)
+			}
+		}
+		for _, status := range c.Metadata.Statuses {
+			if strings.TrimSpace(status) == "" {
+				return fmt.Errorf("streaming.metadata.statuses cannot contain empty values")
+			}
+		}
+	}
+	return nil
 }
 
 // HasCostThrottling reports whether the spec opts into cost-based throttling
@@ -2352,6 +2462,7 @@ var ReservedCobraUseNames = map[string]struct{}{
 	"import":         {},
 	"jobs":           {},
 	"learnings":      {},
+	"live":           {},
 	"login":          {},
 	"load":           {},
 	"orphans":        {},
@@ -2385,6 +2496,9 @@ func (s *APISpec) ParseTimeReservedCobraUseName(name string) bool {
 	}
 	if kebab == "login" {
 		return s.emitsTopLevelOAuthLogin()
+	}
+	if kebab == "live" {
+		return s.Streaming.Enabled()
 	}
 	if kebab == "health" {
 		return false
@@ -2811,6 +2925,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateThrottling(s.Throttling); err != nil {
+		return err
+	}
+	if err := validateStreaming(s.Streaming); err != nil {
 		return err
 	}
 	if err := validateBearerRefresh(s); err != nil {
