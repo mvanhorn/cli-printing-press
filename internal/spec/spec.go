@@ -48,6 +48,12 @@ const (
 )
 
 const (
+	DataSourceStrategyAuto  = "auto"
+	DataSourceStrategyLocal = "local"
+	DataSourceStrategyLive  = "live"
+)
+
+const (
 	ParamPurposeFieldSelector = "field_selector"
 )
 
@@ -1530,6 +1536,10 @@ type Resource struct {
 	DescriptionDerived bool     `yaml:"-" json:"-"`
 	Path               string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
 	Operations         []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
+	// DataSourceStrategy declares how this resource's generated read commands
+	// should interpret --data-source. Empty means "auto" unless an endpoint
+	// overrides it.
+	DataSourceStrategy string `yaml:"data_source_strategy,omitempty" json:"data_source_strategy,omitempty"`
 	// BaseURL overrides the spec-level BaseURL for this resource's
 	// endpoints. Fixed at generation time. Incompatible with the
 	// proxy-envelope client pattern, which POSTs every request to a
@@ -1623,12 +1633,16 @@ type Endpoint struct {
 	// as a top-level array (params["body"]) instead of the params object,
 	// which a strict-mapping API would otherwise reject (HTTP 422 "Invalid
 	// json"). Set only for JSON-shaped array-root request bodies.
-	BodyIsArray        bool         `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
-	RequestContentType string       `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
-	Response           ResponseDef  `yaml:"response" json:"response"`
-	ResponseFormat     string       `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
-	Tags               []string     `yaml:"tags,omitempty" json:"tags,omitempty"`                       // source operation tags; used for generated defaults, not command grouping
-	HTMLExtract        *HTMLExtract `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
+	BodyIsArray        bool        `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
+	RequestContentType string      `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
+	Response           ResponseDef `yaml:"response" json:"response"`
+	ResponseFormat     string      `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	// DataSourceStrategy declares how this endpoint's generated read command
+	// should interpret --data-source. Empty inherits the resource strategy,
+	// then defaults to "auto".
+	DataSourceStrategy string       `yaml:"data_source_strategy,omitempty" json:"data_source_strategy,omitempty"`
+	Tags               []string     `yaml:"tags,omitempty" json:"tags,omitempty"`                 // source operation tags; used for generated defaults, not command grouping
+	HTMLExtract        *HTMLExtract `yaml:"html_extract,omitempty" json:"html_extract,omitempty"` // extraction options when response_format is html
 	Pagination         *Pagination  `yaml:"pagination" json:"pagination"`
 	// EmbeddedPagedSubresources names paged-envelope properties nested
 	// inside this endpoint's success response (e.g. GET /<resource>/{id}
@@ -1768,6 +1782,20 @@ func (e Endpoint) EffectiveResponseFormat() string {
 		return ResponseFormatJSON
 	}
 	return e.ResponseFormat
+}
+
+func EffectiveDataSourceStrategy(resource Resource, endpoint Endpoint) string {
+	if strategy := normalizeDataSourceStrategy(endpoint.DataSourceStrategy); strategy != "" {
+		return strategy
+	}
+	if strategy := normalizeDataSourceStrategy(resource.DataSourceStrategy); strategy != "" {
+		return strategy
+	}
+	return DataSourceStrategyAuto
+}
+
+func normalizeDataSourceStrategy(strategy string) string {
+	return strings.ToLower(strings.TrimSpace(strategy))
 }
 
 func (e Endpoint) UsesHTMLResponse() bool {
@@ -2817,6 +2845,9 @@ func (s *APISpec) Validate() error {
 		if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q base_url", name), r.BaseURL); err != nil {
 			return err
 		}
+		if err := validateDataSourceStrategy(fmt.Sprintf("resource %q data_source_strategy", name), r.DataSourceStrategy); err != nil {
+			return err
+		}
 		for eName, e := range r.Endpoints {
 			if e.Method == "" {
 				return fmt.Errorf("resource %q endpoint %q: method is required", name, eName)
@@ -2842,12 +2873,18 @@ func (s *APISpec) Validate() error {
 			if err := validateEndpointResponseFormat(e); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
 			}
+			if err := validateDataSourceStrategy(fmt.Sprintf("resource %q endpoint %q data_source_strategy", name, eName), e.DataSourceStrategy); err != nil {
+				return err
+			}
 		}
 		for subName, sub := range r.SubResources {
 			if len(sub.Endpoints) == 0 {
 				return fmt.Errorf("resource %q sub-resource %q has no endpoints", name, subName)
 			}
 			if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q sub-resource %q base_url", name, subName), sub.BaseURL); err != nil {
+				return err
+			}
+			if err := validateDataSourceStrategy(fmt.Sprintf("resource %q sub-resource %q data_source_strategy", name, subName), sub.DataSourceStrategy); err != nil {
 				return err
 			}
 			for eName, e := range sub.Endpoints {
@@ -2874,6 +2911,9 @@ func (s *APISpec) Validate() error {
 				}
 				if err := validateEndpointResponseFormat(e); err != nil {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
+				}
+				if err := validateDataSourceStrategy(fmt.Sprintf("resource %q sub-resource %q endpoint %q data_source_strategy", name, subName, eName), e.DataSourceStrategy); err != nil {
+					return err
 				}
 			}
 		}
@@ -3465,6 +3505,15 @@ func validateEndpointResponseFormat(e Endpoint) error {
 		}
 	}
 	return nil
+}
+
+func validateDataSourceStrategy(context, strategy string) error {
+	switch normalizeDataSourceStrategy(strategy) {
+	case "", DataSourceStrategyAuto, DataSourceStrategyLocal, DataSourceStrategyLive:
+		return nil
+	default:
+		return fmt.Errorf("%s must be one of: auto, local, live", context)
+	}
 }
 
 // extraCommandNameRe permits a single command leaf or a parent+leaf path

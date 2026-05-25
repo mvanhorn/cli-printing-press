@@ -3580,6 +3580,48 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.ErrorContains(t, badMethod.Validate(), "html response_format is only supported")
 }
 
+func TestEffectiveDataSourceStrategy(t *testing.T) {
+	t.Parallel()
+
+	resource := Resource{DataSourceStrategy: DataSourceStrategyLocal}
+	endpoint := Endpoint{}
+	assert.Equal(t, DataSourceStrategyLocal, EffectiveDataSourceStrategy(resource, endpoint))
+
+	endpoint.DataSourceStrategy = DataSourceStrategyLive
+	assert.Equal(t, DataSourceStrategyLive, EffectiveDataSourceStrategy(resource, endpoint))
+
+	assert.Equal(t, DataSourceStrategyAuto, EffectiveDataSourceStrategy(Resource{}, Endpoint{}))
+}
+
+func TestValidateDataSourceStrategy(t *testing.T) {
+	t.Parallel()
+
+	base := APISpec{
+		Name:    "strategy",
+		Version: "1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    AuthConfig{Type: "none"},
+		Config:  ConfigSpec{Format: "toml", Path: "~/.config/strategy/config.toml"},
+		Resources: map[string]Resource{
+			"items": {
+				DataSourceStrategy: DataSourceStrategyAuto,
+				Endpoints: map[string]Endpoint{
+					"list": {Method: "GET", Path: "/items", DataSourceStrategy: DataSourceStrategyLocal},
+				},
+			},
+		},
+	}
+	require.NoError(t, base.Validate())
+
+	bad := base
+	items := bad.Resources["items"]
+	endpoint := items.Endpoints["list"]
+	endpoint.DataSourceStrategy = "remote"
+	items.Endpoints["list"] = endpoint
+	bad.Resources["items"] = items
+	require.ErrorContains(t, bad.Validate(), "data_source_strategy")
+}
+
 func TestHTMLExtract_EmbeddedJSONMode(t *testing.T) {
 	t.Parallel()
 

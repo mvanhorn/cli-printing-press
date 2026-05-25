@@ -40,6 +40,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
+| `x-data-source-strategy` | path item or operation | `Endpoint.DataSourceStrategy` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 
@@ -960,7 +961,8 @@ only `/opportunities/search` sends `?location_id=` on the wire.
 
 Path item extensions are read from a path object, beside its HTTP operations.
 They apply to every operation under that path because sync identity and critical
-resource status are resource-scoped.
+resource status are resource-scoped, and operation-level data-source strategy
+can override the path default.
 
 ### `x-resource-id`
 
@@ -1049,6 +1051,36 @@ paths:
   /premium/search:
     get:
       x-tier: paid
+      responses:
+        "200": {description: ok}
+```
+
+### `x-data-source-strategy`
+
+Declares how a generated read command should honor the global
+`--data-source auto|local|live` flag.
+
+Parsed field: `Endpoint.DataSourceStrategy`
+
+Rules:
+- Optional.
+- May be declared on a path item or operation.
+- Operation-level values override path-item-level values.
+- Must be one of `auto`, `local`, or `live`.
+- `auto` keeps the normal live-with-local-fallback behavior for store-backed
+  reads.
+- `local` makes the command use local synced data for `auto` and `local`, and
+  reject `--data-source live` with a clear no-live-equivalent error.
+- `live` makes the command use the remote API for `auto` and `live`, and reject
+  `--data-source local` with a clear no-local-data-source error.
+
+Example:
+
+```yaml
+paths:
+  /reports/snapshot:
+    get:
+      x-data-source-strategy: local
       responses:
         "200": {description: ok}
 ```

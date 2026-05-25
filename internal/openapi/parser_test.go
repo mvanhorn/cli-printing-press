@@ -5887,6 +5887,58 @@ paths:
 	}
 }
 
+func TestParseDataSourceStrategyExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /reports:
+    x-data-source-strategy: local
+    get:
+      operationId: listReports
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+  /reports/live:
+    x-data-source-strategy: local
+    get:
+      operationId: listLiveReports
+      x-data-source-strategy: live
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	local := findEndpoint(t, parsed, "/reports")
+	require.Equal(t, spec.DataSourceStrategyLocal, local.DataSourceStrategy)
+
+	live := findEndpoint(t, parsed, "/reports/live")
+	require.Equal(t, spec.DataSourceStrategyLive, live.DataSourceStrategy)
+}
+
 func TestParseIDFieldFallbackChain(t *testing.T) {
 	t.Parallel()
 

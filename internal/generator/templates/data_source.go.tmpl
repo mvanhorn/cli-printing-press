@@ -23,6 +23,33 @@ import (
 
 const networkFallbackReason = "{{networkFallbackReason .APISpec}}"
 
+func unsupportedDataSourceError(strategy, requested string) error {
+	switch strategy {
+	case "local":
+		return fmt.Errorf("no live equivalent for this command (requested %q); use --data-source local or --data-source auto", requested)
+	case "live":
+		return fmt.Errorf("no local data source for this command (requested %q); use --data-source live or --data-source auto", requested)
+	default:
+		return fmt.Errorf("unsupported --data-source %q for strategy %q", requested, strategy)
+	}
+}
+
+func validateDataSourceStrategy(flags *rootFlags, strategy string) error {
+	switch strategy {
+	case "", "auto":
+		return nil
+	case "local":
+		if flags.dataSource == "live" {
+			return unsupportedDataSourceError(strategy, flags.dataSource)
+		}
+	case "live":
+		if flags.dataSource == "local" {
+			return unsupportedDataSourceError(strategy, flags.dataSource)
+		}
+	}
+	return nil
+}
+
 // isNetworkError returns true for errors caused by network connectivity issues
 // (DNS, connection refused, timeout). HTTP 4xx/5xx errors are NOT network errors.
 func isNetworkError(err error) bool {
@@ -98,6 +125,24 @@ func attachFreshness(prov DataProvenance, flags *rootFlags) DataProvenance {
 //     reads on per-endpoint-versioned APIs silently get the wrong response shape
 //     (cal-com retro #334 F1).
 func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolveReadWithStrategy(ctx, c, flags, "auto", resourceType, isList, path, params, headers, hintWriter)
+}
+
+func resolveReadWithStrategy(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	if err := validateDataSourceStrategy(flags, strategy); err != nil {
+		return nil, DataProvenance{}, err
+	}
+	if strategy == "local" {
+		data, prov, err := resolveLocal(ctx, flags, hintWriter, resourceType, isList, path, params, "strategy_local")
+		return data, attachFreshness(prov, flags), err
+	}
+	if strategy == "live" {
+		data, err := c.GetWithHeaders(ctx, path, params, headers)
+		if err != nil {
+			return nil, DataProvenance{}, err
+		}
+		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
+	}
 	switch flags.dataSource {
 	case "local":
 		data, prov, err := resolveLocal(ctx, flags, hintWriter, resourceType, isList, path, params, "user_requested")
@@ -134,6 +179,24 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 // headers argument carries per-endpoint required headers; pass nil when the
 // endpoint declares no overrides.
 func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolvePaginatedReadWithStrategy(ctx, c, flags, "auto", resourceType, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField, hintWriter)
+}
+
+func resolvePaginatedReadWithStrategy(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	if err := validateDataSourceStrategy(flags, strategy); err != nil {
+		return nil, DataProvenance{}, err
+	}
+	if strategy == "local" {
+		data, prov, err := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, "strategy_local")
+		return data, attachFreshness(prov, flags), err
+	}
+	if strategy == "live" {
+		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField)
+		if err != nil {
+			return nil, DataProvenance{}, err
+		}
+		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
+	}
 	switch flags.dataSource {
 	case "local":
 		data, prov, err := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, "user_requested")

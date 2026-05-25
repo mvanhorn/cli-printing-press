@@ -87,8 +87,8 @@ func TestPromotedHasStoreGetStillUsesResolveRead(t *testing.T) {
 	require.NoError(t, err)
 	got := string(src)
 
-	assert.Contains(t, got, "resolveRead(",
-		"HasStore + GET must keep routing through resolveRead (the cached fast-path)")
+	assert.Contains(t, got, "resolveReadWithStrategy(",
+		"HasStore + GET must keep routing through the cached fast-path")
 	assert.NotContains(t, got, "c.Get(cmd.Context(), path, params)",
 		"HasStore + GET must not also emit a direct c.Get call (would mean both branches fired)")
 }

@@ -47,6 +47,7 @@ const (
 	extensionRateClass             = "x-rate-class"
 	extensionMCP                   = "x-mcp"
 	extensionLegacyMCP             = "mcp"
+	extensionDataSourceStrategy    = "x-data-source-strategy"
 	extensionCache                 = "x-cache"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionParamURLName          = "x-url-name"
@@ -2735,6 +2736,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		pathResourceIDOverride := readPathItemResourceID(pathItem, path)
 		pathCritical := readPathItemCritical(pathItem, path)
 		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
+		pathDataSourceStrategy := readDataSourceStrategyExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 
 		methods := make([]string, 0, len(operations))
 		for method := range operations {
@@ -2833,6 +2835,10 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if endpoint.Tier == "" {
 				endpoint.Tier = pathTier
+			}
+			endpoint.DataSourceStrategy = readDataSourceStrategyExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			if endpoint.DataSourceStrategy == "" {
+				endpoint.DataSourceStrategy = pathDataSourceStrategy
 			}
 
 			// Namespace the inline-item synthetic name with the resource so
@@ -4609,6 +4615,31 @@ func readTierExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(tier)
+}
+
+func readDataSourceStrategyExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionDataSourceStrategy]
+	if !ok || raw == nil {
+		return ""
+	}
+	strategy, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionDataSourceStrategy, raw)
+		return ""
+	}
+	strategy = strings.ToLower(strings.TrimSpace(strategy))
+	switch strategy {
+	case spec.DataSourceStrategyAuto, spec.DataSourceStrategyLocal, spec.DataSourceStrategyLive:
+		return strategy
+	case "":
+		return ""
+	default:
+		warnf("%s: %s must be one of auto, local, live, got %q; ignoring", context, extensionDataSourceStrategy, strategy)
+		return ""
+	}
 }
 
 // readWalkerExtension reads the `x-pp-sync-walker` extension from an

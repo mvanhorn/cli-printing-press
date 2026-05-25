@@ -210,6 +210,24 @@ Use `""` for commands that scan all local resources. The helpers write only to
 stderr, so JSON/stdout output stays stable; `--max-age 0` disables stale-read
 hints.
 
+Every hand-written novel command must also declare its data-source strategy in
+the command source file:
+
+```go
+// pp:data-source local
+```
+
+Use exactly one of:
+- `auto` for commands that honor `--data-source auto|local|live` by choosing
+  live data with local fallback.
+- `local` for commands that only read synced/local SQLite data. These commands
+  must reject `--data-source live` with a clear "no live equivalent" error.
+- `live` for commands that only call the remote API. These commands must reject
+  `--data-source local` with a clear "no local data source" error.
+
+Dogfood reports hand-written novel commands that omit the annotation or use an
+unknown strategy.
+
 ## Pass 3: Adversarial cut pass
 
 This is the pass that exists because brainstorms without it produce flabby
