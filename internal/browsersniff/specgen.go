@@ -86,8 +86,8 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 	groups := deduplicateSpecEndpoints(regularEntries, options)
 	inferredTypes := newResponseTypeBuilder()
 	for _, group := range groups {
-		endpoint := buildEndpoint(group, auth)
-		inferredTypes.addEndpointTypes(group.NormalizedPath, &endpoint, inferResponseFields(group.Entries))
+		endpoint, responseFields := buildEndpoint(group, auth)
+		inferredTypes.addEndpointTypes(group.NormalizedPath, &endpoint, responseFields)
 		if options.PreserveHosts {
 			groupBaseURL := mostCommonBaseURL(group.Entries)
 			if groupBaseURL != "" && groupBaseURL != baseURL {
@@ -598,7 +598,7 @@ func DefaultCachePath(name string) string {
 	return filepath.Join(home, ".cache", "printing-press", "sniff", name+"-spec.yaml")
 }
 
-func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) spec.Endpoint {
+func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) (spec.Endpoint, []spec.Param) {
 	responseBodies := make([]string, 0, len(group.Entries))
 	for _, entry := range group.Entries {
 		if strings.TrimSpace(entry.ResponseBody) != "" {
@@ -639,7 +639,7 @@ func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) spec.Endpoint {
 		endpoint.HTMLExtract = inferHTMLExtract(group)
 		endpoint.Description = htmlEndpointDescription(group)
 	}
-	return endpoint
+	return endpoint, responseFields
 }
 
 type responseTypeBuilder struct {
@@ -652,16 +652,6 @@ func newResponseTypeBuilder() *responseTypeBuilder {
 		types: map[string]spec.TypeDef{},
 		used:  map[string]int{},
 	}
-}
-
-func inferResponseFields(entries []EnrichedEntry) []spec.Param {
-	responseBodies := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if strings.TrimSpace(entry.ResponseBody) != "" {
-			responseBodies = append(responseBodies, entry.ResponseBody)
-		}
-	}
-	return InferResponseSchema(responseBodies)
 }
 
 func (b *responseTypeBuilder) addEndpointTypes(path string, endpoint *spec.Endpoint, fields []spec.Param) {
@@ -683,12 +673,26 @@ func (b *responseTypeBuilder) addEndpointTypes(path string, endpoint *spec.Endpo
 }
 
 func firstCollectionField(fields []spec.Param) *spec.Param {
+	candidates := make([]*spec.Param, 0, len(fields))
 	for i := range fields {
 		if fields[i].Type == "array" && len(fields[i].Fields) > 0 {
-			return &fields[i]
+			candidates = append(candidates, &fields[i])
 		}
 	}
-	return nil
+	if len(candidates) == 0 {
+		return nil
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	for _, preferred := range []string{"items", "data", "results", "records", "values"} {
+		for _, candidate := range candidates {
+			if strings.EqualFold(candidate.Name, preferred) {
+				return candidate
+			}
+		}
+	}
+	return candidates[0]
 }
 
 func (b *responseTypeBuilder) addType(preferredName string, params []spec.Param) string {
@@ -799,8 +803,6 @@ func singularize(name string) string {
 	switch {
 	case strings.HasSuffix(lower, "ies") && len(name) > 3:
 		return name[:len(name)-3] + "y"
-	case strings.HasSuffix(lower, "ses") && len(name) > 2:
-		return name[:len(name)-2]
 	case strings.HasSuffix(lower, "s") && !strings.HasSuffix(lower, "ss") && !strings.HasSuffix(lower, "us") && len(name) > 1:
 		return name[:len(name)-1]
 	default:

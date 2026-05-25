@@ -1937,7 +1937,7 @@ type TypeField struct {
 	Enum []string `yaml:"enum,omitempty" json:"enum,omitempty"`
 	// OmitEmpty marks fields inferred from optional or nullable JSON samples.
 	// It only affects Go struct-tag emission; wire names still come from Name.
-	OmitEmpty bool `yaml:"omitempty,omitempty" json:"omitempty,omitempty"`
+	OmitEmpty bool `yaml:"omit_empty,omitempty" json:"omit_empty,omitempty"`
 	// Format mirrors the OpenAPI `format` hint for the field (date-time,
 	// date, email, uri, …). Carried through so SQLite column derivation
 	// can map date/date-time response fields to DATETIME instead of TEXT.
