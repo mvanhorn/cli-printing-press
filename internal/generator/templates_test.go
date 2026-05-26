@@ -68,7 +68,17 @@ func TestGoTemplatesEscapeSpecTextInStringLiterals(t *testing.T) {
 func isInsideGoDoubleQuotedString(prefix string) bool {
 	inString := false
 	escaped := false
-	for _, r := range prefix {
+	for i := 0; i < len(prefix); {
+		if strings.HasPrefix(prefix[i:], "{{") {
+			end := strings.Index(prefix[i+2:], "}}")
+			if end < 0 {
+				break
+			}
+			i += 2 + end + 2
+			continue
+		}
+		r := prefix[i]
+		i++
 		if escaped {
 			escaped = false
 			continue
@@ -83,6 +93,50 @@ func isInsideGoDoubleQuotedString(prefix string) bool {
 		}
 	}
 	return inString
+}
+
+func TestIsInsideGoDoubleQuotedStringSkipsTemplateActionSyntax(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		prefix string
+		want   bool
+	}{
+		{
+			name:   "inside static string",
+			prefix: `Short: "`,
+			want:   true,
+		},
+		{
+			name:   "inside after template action with escaped quote",
+			prefix: `Short: "{{printf "a\"b" .Foo}} `,
+			want:   true,
+		},
+		{
+			name:   "outside after template action and closing quote",
+			prefix: `Short: "{{printf "a\"b" .Foo}}"`,
+			want:   false,
+		},
+		{
+			name:   "inside static escaped quote",
+			prefix: `fmt.Println("a\"b`,
+			want:   true,
+		},
+		{
+			name:   "outside string",
+			prefix: `fmt.Println(`,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isInsideGoDoubleQuotedString(tt.prefix))
+		})
+	}
 }
 
 func goTemplateActionEscapesSpecText(action string) bool {
