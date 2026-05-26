@@ -104,6 +104,7 @@ type NovelFeaturesCheckResult struct {
 	Found           int                         `json:"found"`
 	Missing         []string                    `json:"missing,omitempty"`
 	DepthMismatches []NovelFeatureDepthMismatch `json:"depth_mismatches,omitempty"`
+	Stubbed         []string                    `json:"built_with_stub,omitempty"`
 	Skipped         bool                        `json:"skipped,omitempty"`
 }
 
@@ -451,6 +452,9 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 		if matched {
 			result.Found++
 			built = append(built, nf)
+			if novelFeatureHasStubMarker(cliDir, nf) {
+				result.Stubbed = append(result.Stubbed, nf.Command)
+			}
 			if mismatch := novelFeatureDepthMismatch(nf, paths); mismatch != nil {
 				result.DepthMismatches = append(result.DepthMismatches, *mismatch)
 			}
@@ -492,6 +496,31 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 
 	return result
 }
+
+func novelFeatureHasStubMarker(cliDir string, nf NovelFeature) bool {
+	path := commandPath(nf.Command)
+	if path == "" {
+		return false
+	}
+	files := listGoFiles(filepath.Join(cliDir, "internal", "cli"))
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		for _, match := range novelFeatureStubMarkerRe.FindAllStringSubmatch(string(data), -1) {
+			if len(match) > 1 && match[1] == path {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+var novelFeatureStubMarkerRe = regexp.MustCompile(`TODO:\s*implement novel feature[^\n]*,\s*"([^"]+)"`)
 
 // matchNovelFeature reports whether a planned novel feature has a
 // corresponding built command. When paths are available it matches on
@@ -2307,7 +2336,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool {
-		return len(r.NovelFeaturesCheck.Missing) > 0 || len(r.NovelFeaturesCheck.DepthMismatches) > 0
+		return len(r.NovelFeaturesCheck.Missing) > 0 ||
+			len(r.NovelFeaturesCheck.DepthMismatches) > 0 ||
+			len(r.NovelFeaturesCheck.Stubbed) > 0
 	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && r.MCPSurfaceParityCheck.HandEdited
@@ -2395,6 +2426,12 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		issues = append(issues, fmt.Sprintf("%d novel feature command-depth mismatches: %s",
 			len(report.NovelFeaturesCheck.DepthMismatches),
 			strings.Join(parts, "; ")))
+	}
+	if len(report.NovelFeaturesCheck.Stubbed) > 0 {
+		issues = append(issues, fmt.Sprintf("%d/%d novel features are TODO stubs: %s",
+			len(report.NovelFeaturesCheck.Stubbed),
+			report.NovelFeaturesCheck.Planned,
+			strings.Join(report.NovelFeaturesCheck.Stubbed, ", ")))
 	}
 	if mcpSurfaceCheckActive(report.MCPSurfaceParityCheck) && !report.MCPSurfaceParityCheck.Pass {
 		issues = append(issues, "MCP surface parity: "+report.MCPSurfaceParityCheck.Detail)

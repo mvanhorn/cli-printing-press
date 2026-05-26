@@ -396,6 +396,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- range .InsightConstructors}}
 	rootCmd.AddCommand(new{{.}}Cmd(flags))
 {{- end}}
+{{- range .NovelCommandStubs}}
+	rootCmd.AddCommand(newNovel{{.Ident}}Cmd(flags))
+{{- end}}
 {{- if .PromotedCommands}}
 	rootCmd.AddCommand(newAPICmd(flags))
 {{- end}}
