@@ -3239,8 +3239,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 			fetchErrors[r.idx] = r.err
 		}
 	}
-	var failures []fetchFailure
-	var successfulItems []yourEntryType
+	failures := make([]fetchFailure, 0)        // empty marshals as [] not null
+	successfulItems := make([]yourEntryType, 0) // empty marshals as [] not null
 	var total float64
 	var denominator int
 	for idx, entry := range ordered {
@@ -3327,7 +3327,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	// pulled from a typed FTS/upsert table can be NULL — use sql.Null*
 	// scan targets (or COALESCE in the SQL) for those, see the NULL-safe
 	// scans paragraph below.
-	var results []yourRowType // scan rows into the slice
+	results := make([]yourRowType, 0) // scan rows into this slice; make([]T, 0) keeps empty JSON as [] not null
+	// (loop over rows here: results = append(results, scannedRow))
 	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
