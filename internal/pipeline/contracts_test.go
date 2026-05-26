@@ -341,6 +341,19 @@ func TestAgentBrowserInstallRequiresPostInstallSetup(t *testing.T) {
 	assert.Contains(t, capture, "If a pre-existing agent-browser later reports missing browser binaries, surface `! agent-browser install`")
 }
 
+func TestBrowserSniffEscalates200ChallengeShells(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	capture := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"))
+
+	assert.Contains(t, skill, "HTTP `200` but only a content-less shell, interstitial, or deterministic-size truncation")
+	assert.Contains(t, skill, "Do not conclude `IP-blocked`, `rate-limited`, or `wait it out`")
+	assert.Contains(t, skill, "Use chrome-MCP to understand the wall")
+
+	assert.Contains(t, capture, "HTTP `200` responses that only contain a content-less shell, interstitial, deterministic-size truncation")
+	assert.Contains(t, capture, "Do not treat a 200-served shell as evidence for `IP-blocked`, `rate-limited`, or `wait it out`")
+	assert.Contains(t, capture, "HTTP 200 challenge shells or truncations")
+}
+
 func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 
