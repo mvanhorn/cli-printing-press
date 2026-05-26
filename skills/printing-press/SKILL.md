@@ -191,6 +191,75 @@ if ! command -v go >/dev/null 2>&1; then
   return 1 2>/dev/null || exit 1
 fi
 
+# Verify the installed Go tree can compile and run common standard library
+# imports. A truncated Go extraction can leave the binary working enough for
+# `go version` while missing packages under $GOROOT/src, which otherwise fails
+# deep into generation during later Go quality gates.
+_go_smoke_root="${PRINTING_PRESS_GO_SMOKE_DIR:-$HOME/.printing-press-smoke}"
+if ! mkdir -p "$_go_smoke_root"; then
+  echo ""
+  echo "[setup-error] Unable to create Go smoke-test workspace at $_go_smoke_root."
+  echo "Set PRINTING_PRESS_GO_SMOKE_DIR to a writable non-temp directory and retry."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+_go_smoke_dir="$(mktemp -d "$_go_smoke_root/stdlib.XXXXXX" 2>/dev/null || true)"
+if [ -z "$_go_smoke_dir" ]; then
+  echo ""
+  echo "[setup-error] Unable to create Go smoke-test workspace under $_go_smoke_root."
+  echo "Set PRINTING_PRESS_GO_SMOKE_DIR to a writable non-temp directory and retry."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+cat > "$_go_smoke_dir/go.mod" <<'__PP_GO_SMOKE_MOD__'
+module pp-go-stdlib-smoke
+
+go 1.20
+__PP_GO_SMOKE_MOD__
+cat > "$_go_smoke_dir/main.go" <<'__PP_GO_SMOKE_MAIN__'
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+)
+
+func main() {
+	ctx := context.Background()
+	payload, err := json.Marshal(map[string]string{"status": "ok"})
+	if err != nil {
+		panic(err)
+	}
+	if !regexp.MustCompile(`ok`).Match(payload) {
+		panic("regexp mismatch")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
+	if err != nil {
+		panic(err)
+	}
+	_, _ = fmt.Fprint(io.Discard, req.Method)
+}
+__PP_GO_SMOKE_MAIN__
+if ! (cd "$_go_smoke_dir" && GOFLAGS= GOWORK=off go run . >/dev/null 2>"$_go_smoke_dir/error.log"); then
+  _go_smoke_output="$(sed -n '1,12p' "$_go_smoke_dir/error.log" 2>/dev/null || true)"
+  rm -rf "$_go_smoke_dir"
+  echo ""
+  echo "[setup-error] Go std library is incomplete (truncated or corrupted install)."
+  echo "Reinstall Go from https://go.dev/dl/ and verify with the smoke test before retrying."
+  if [ -n "$_go_smoke_output" ]; then
+    echo ""
+    echo "Go smoke test output:"
+    printf '%s\n' "$_go_smoke_output"
+  fi
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+rm -rf "$_go_smoke_dir"
+
 # Resolve and emit the absolute path the agent must use for every later
 # `cli-printing-press` invocation. `export PATH` above only affects this one
 # Bash tool call; subsequent calls open a fresh shell and resolve bare
