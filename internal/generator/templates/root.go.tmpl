@@ -60,6 +60,9 @@ type rootFlags struct {
 {{- if .HasCostThrottling}}
 	throttleMode string
 {{- end}}
+{{- range .GlobalPathTemplateVars}}
+	templateVar{{camel .}} string
+{{- end}}
 
 	// deliverBuf captures command output when --deliver is set to a
 	// non-stdout sink. Flushed to the sink after Execute returns.
@@ -257,6 +260,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	// strict so first-time users see correct behavior; document the
 	// tradeoff loudly in --help so scripted callers know to opt out.
 	rootCmd.PersistentFlags().StringVar(&flags.throttleMode, "throttle-mode", "strict", "Cost-based throttle mode: strict (block when bucket is low), lenient (warn but proceed), off (bypass)")
+{{- end}}
+{{- range .GlobalPathTemplateVars}}
+	rootCmd.PersistentFlags().StringVar(&flags.templateVar{{camel .}}, "{{kebab .}}", "", "Set { {{- . -}} } path template value (env: {{endpointTemplateEnvName .}})")
 {{- end}}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
@@ -473,6 +479,16 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	if err != nil {
 		return nil, configErr(err)
 	}
+{{- if .GlobalPathTemplateVars}}
+	if cfg.TemplateVars == nil {
+		cfg.TemplateVars = map[string]string{}
+	}
+{{- range .GlobalPathTemplateVars}}
+	if f.templateVar{{camel .}} != "" {
+		cfg.TemplateVars["{{.}}"] = f.templateVar{{camel .}}
+	}
+{{- end}}
+{{- end}}
 	c := client.New(cfg, f.timeout, f.rateLimit)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache

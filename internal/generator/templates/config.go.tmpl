@@ -83,7 +83,7 @@ type Config struct {
 	{{envVarField .EnvVar.Name}} string `{{configTag $.Config.Format}}:"{{envVarPlaceholder .EnvVar.Name}}"`
 {{- end}}
 {{- end}}
-{{- if .EndpointTemplateVars}}
+{{- if or .EndpointTemplateVars .GlobalPathTemplateVars}}
 	// TemplateVars holds the runtime values for {placeholder} markers in
 	// BaseURL and the request path (e.g. Shopify's {shop}/{version}). Populated
 	// at Load() time from env vars; consumed by the client's buildURL helper.

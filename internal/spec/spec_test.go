@@ -4045,6 +4045,206 @@ resources:
 	})
 }
 
+func TestPromoteGlobalPathTemplateVars(t *testing.T) {
+	t.Parallel()
+
+	t.Run("promotes env-backed common path var", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [tenant_id]
+endpoint_template_env_overrides:
+  tenant_id: TESTAPI_TENANT_ID
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /tenants/{tenant_id}/accounts
+      get:
+        method: GET
+        path: /tenants/{tenant_id}/accounts/{account_id}
+      create:
+        method: POST
+        path: /tenants/{tenant_id}/accounts
+  contacts:
+    description: Contacts
+    sub_resources:
+      notes:
+        description: Contact notes
+        endpoints:
+          list:
+            method: GET
+            path: /tenants/{tenant_id}/contacts/{contact_id}/notes
+    endpoints:
+      list:
+        method: GET
+        path: /tenants/{tenant_id}/contacts
+  audit:
+    description: Audit
+    endpoints:
+      lookup:
+        method: GET
+        path: /audit
+        params:
+          - name: tenant_id
+            type: string
+            required: true
+            positional: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"tenant_id"}, s.GlobalPathTemplateVars)
+		accountsList := s.Resources["accounts"].Endpoints["list"]
+		assert.Empty(t, accountsList.Params, "global path var should not be emitted as a command positional")
+		accountsGet := s.Resources["accounts"].Endpoints["get"]
+		assert.Equal(t, []string{"account_id"}, paramNames(accountsGet.Params),
+			"sparse path params must remain per-command positionals")
+		notesList := s.Resources["contacts"].SubResources["notes"].Endpoints["list"]
+		assert.Equal(t, []string{"contact_id"}, paramNames(notesList.Params),
+			"sub-resource endpoints must also drop the global path var while preserving sparse path params")
+		auditLookup := s.Resources["audit"].Endpoints["lookup"]
+		assert.Equal(t, []string{"tenant_id"}, paramNames(auditLookup.Params),
+			"same-named positional inputs that are not path placeholders must remain command inputs")
+	})
+
+	t.Run("keeps common path var positional without env override", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [tenant_id]
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /tenants/{tenant_id}/accounts
+      get:
+        method: GET
+        path: /tenants/{tenant_id}/accounts/{account_id}
+      delete:
+        method: DELETE
+        path: /tenants/{tenant_id}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "tenant_id")
+	})
+
+	t.Run("keeps sparse env-backed path var positional", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [user_id]
+endpoint_template_env_overrides:
+  user_id: TESTAPI_USER_ID
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /accounts
+      get:
+        method: GET
+        path: /accounts/{account_id}
+      members:
+        method: GET
+        path: /users/{user_id}/members
+      contacts:
+        method: GET
+        path: /contacts
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["members"].Params), "user_id")
+	})
+
+	t.Run("promotes env-backed path var on small APIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [tenant_id]
+endpoint_template_env_overrides:
+  tenant_id: TESTAPI_TENANT_ID
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /tenants/{tenant_id}/accounts
+      get:
+        method: GET
+        path: /tenants/{tenant_id}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"tenant_id"}, s.GlobalPathTemplateVars)
+		assert.Empty(t, s.Resources["accounts"].Endpoints["list"].Params)
+		assert.Equal(t, []string{"account_id"}, paramNames(s.Resources["accounts"].Endpoints["get"].Params))
+	})
+
+	t.Run("keeps root flag name collisions positional", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [profile]
+endpoint_template_env_overrides:
+  profile: TESTAPI_PROFILE
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /profiles/{profile}/accounts
+      get:
+        method: GET
+        path: /profiles/{profile}/accounts/{account_id}
+      delete:
+        method: DELETE
+        path: /profiles/{profile}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "profile")
+	})
+}
+
+func paramNames(params []Param) []string {
+	names := make([]string, len(params))
+	for i, param := range params {
+		names[i] = param.Name
+	}
+	return names
+}
+
 func TestValidateReservedNames(t *testing.T) {
 	t.Parallel()
 
