@@ -692,7 +692,7 @@ else
 fi
 ```
 
-Record the after scores. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, publish-validate still reports `passed: false` (standalone mode only — mid-pipeline polish doesn't run this check), gosec still reports unresolved findings in hand-authored novel-feature Go, or pii-audit still has pending findings or gate failures, ship cannot fire (see ship logic below).
+Record the after scores. If the gosec command fails before writing `/tmp/polish-gosec-after.json`, treat the missing post-fix scan as a polish failure: add it to `remaining_issues`, set `ship_recommendation: hold`, and include the stderr summary. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, publish-validate still reports `passed: false` (standalone mode only — mid-pipeline polish doesn't run this check), gosec still reports unresolved findings in hand-authored novel-feature Go, or pii-audit still has pending findings or gate failures, ship cannot fire (see ship logic below).
 
 ## Ship logic
 
