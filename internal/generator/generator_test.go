@@ -6551,6 +6551,131 @@ func TestPipedJsonGateRespectsExplicitFormatFlags(t *testing.T) {
 	}
 }
 
+// Required-body-flag commands should print help on truly empty invocations
+// (no args, no flags) and only then proceed to required-flag validation.
+// This keeps command UX consistent while preserving partial-invocation errors.
+func TestRequiredFlagCommands_HelpFallbackOnEmptyInvocation(t *testing.T) {
+	t.Parallel()
+
+	guard := "if cmd.Flags().NFlag() == 0 && len(args) == 0 && !flags.dryRun {"
+
+	for _, path := range []string{
+		filepath.Join("templates", "command_endpoint.go.tmpl"),
+		filepath.Join("templates", "command_promoted.go.tmpl"),
+	} {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err, "template must exist: %s", path)
+		body := string(data)
+
+		guardIdx := strings.Index(body, guard)
+		require.GreaterOrEqual(t, guardIdx, 0,
+			"%s must guard empty invocation by returning cmd.Help() before required-flag checks", path)
+
+		requireIdx := strings.Index(body, `return fmt.Errorf("required flag \"%s\" not set",`)
+		require.GreaterOrEqual(t, requireIdx, 0,
+			"%s must continue emitting required-flag validation", path)
+
+		assert.Less(t, guardIdx, requireIdx,
+			"%s must run the empty-invocation help fallback before required-flag errors", path)
+	}
+}
+
+// The empty-invocation help fallback must be gated to commands with required
+// input. A GET list whose only param is an optional filter must still execute
+// on a bare call (no guard), while a required-body create must short-circuit
+// to help. The template-string test above passes even for an ungated guard;
+// this generated-output test fails if the guard leaks onto optional-only reads.
+func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "help-fallback-gating",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Key", In: "header", EnvVars: []string{"HFG_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/help-fallback-gating-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/items",
+						Params: []spec.Param{{Name: "status", Type: "string"}},
+					},
+					"create": {
+						Method: "POST",
+						Path:   "/items",
+						Body:   []spec.Param{{Name: "title", Type: "string", Required: true}},
+					},
+				},
+			},
+			// Single-endpoint resource → promoted top-level command; exercises
+			// the promoted template's unconditional body-required path.
+			"subscribe": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/subscribe",
+						Body:   []spec.Param{{Name: "email", Type: "string", Required: true}},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	guard := "if cmd.Flags().NFlag() == 0 && len(args) == 0 && !flags.dryRun {"
+
+	listBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_list.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(listBytes), guard,
+		"optional-only GET list must execute on bare invocation, not short-circuit to help")
+
+	createBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_create.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(createBytes), guard,
+		"required-body create must short-circuit to help on bare invocation")
+
+	// Promoted command with a required body must also short-circuit to help.
+	promotedBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "promoted_subscribe.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(promotedBytes), guard,
+		"required-body promoted command must short-circuit to help on bare invocation")
+}
+
+// endpointHasRequiredInput must mirror the template's required-check gates
+// exactly, including the `(not .Default)` truthiness on required flags: a
+// required flag with no default OR a zero-value default counts as required
+// input (template emits the error), while a required flag carrying a non-empty
+// default does not (the default satisfies it). Positional params are handled
+// by the separate positional guard, not this predicate.
+func TestEndpointHasRequiredInputMirrorsTemplateGates(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		ep   spec.Endpoint
+		want bool
+	}{
+		{"required flag, no default", spec.Endpoint{Method: "GET", Params: []spec.Param{{Name: "q", Required: true}}}, true},
+		{"required flag, empty-string default", spec.Endpoint{Method: "GET", Params: []spec.Param{{Name: "q", Required: true, Default: ""}}}, true},
+		{"required flag, non-empty default", spec.Endpoint{Method: "GET", Params: []spec.Param{{Name: "q", Required: true, Default: "active"}}}, false},
+		{"optional flag only", spec.Endpoint{Method: "GET", Params: []spec.Param{{Name: "status"}}}, false},
+		{"required positional only", spec.Endpoint{Method: "GET", Params: []spec.Param{{Name: "id", Required: true, Positional: true}}}, false},
+		{"required body field", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "title", Required: true}}}, true},
+		{"optional body only", spec.Endpoint{Method: "POST", Body: []spec.Param{{Name: "note"}}}, false},
+		{"GET with required body ignored", spec.Endpoint{Method: "GET", Body: []spec.Param{{Name: "title", Required: true}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, endpointHasRequiredInput(tc.ep))
+		})
+	}
+}
+
 func TestGeneratedOutput_GetCommandsLackMutationEnvelope(t *testing.T) {
 	t.Parallel()
 

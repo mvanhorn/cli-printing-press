@@ -21,6 +21,12 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  printing-press-golden-pp-cli reports export report-year --year 42",
 		Annotations: map[string]string{"pp:endpoint": "export.report-year", "pp:method": "GET", "pp:path": "/reports/{year}/export", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Bare invocation of a command with required input prints help
+			// instead of pflag's terse "required flag not set" error. Optional-
+			// only read commands fall through so a bare call still executes.
+			if cmd.Flags().NFlag() == 0 && len(args) == 0 && !flags.dryRun {
+				return cmd.Help()
+			}
 			if !cmd.Flags().Changed("year") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "year")
 			}
