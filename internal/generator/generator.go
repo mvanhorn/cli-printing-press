@@ -259,6 +259,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authAgentEnvVars":                   authAgentEnvVars,
 		"hasAuthEnvVarKind":                  hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":                isRequestAuthEnvVar,
+		"authEnvPlaceholder":                 authEnvPlaceholder,
+		"authEnvPlaceholderByName":           authEnvPlaceholderByName,
+		"authEnvHintComment":                 authEnvHintComment,
 		"effectiveTier":                      effectiveTier,
 		"effectiveSubTier":                   effectiveSubTier,
 		"add":                                func(a, b int) int { return a + b },
@@ -1300,6 +1303,51 @@ func hasAuthEnvVarKind(envVarSpecs []spec.AuthEnvVar, kind string) bool {
 
 func isRequestAuthEnvVar(envVar spec.AuthEnvVar) bool {
 	return envVar.IsRequestCredential()
+}
+
+func authEnvHintComment(envVar spec.AuthEnvVar) string {
+	// OneLineNormalize collapses newlines and neutralizes " and \ so the value
+	// is safe to embed verbatim in the generated Go double-quoted string literal
+	// that prints the hint; without it a description containing a quote or
+	// backslash produces non-compiling output. OneLineNormalize (not OneLine)
+	// avoids the length cap so the full description survives as a hint.
+	return naming.OneLineNormalize(strings.TrimSpace(envVar.Description))
+}
+
+func authEnvPlaceholder(envVar spec.AuthEnvVar) string {
+	return authEnvPlaceholderByName(envVar.Name)
+}
+
+func authEnvPlaceholderByName(envVarName string) string {
+	placeholder := naming.EnvVarPlaceholder(envVarName)
+	switch {
+	case placeholder == "domain" || strings.HasSuffix(placeholder, "_domain") ||
+		placeholder == "host" || strings.HasSuffix(placeholder, "_host"):
+		envNameUpper := strings.ToUpper(strings.TrimSpace(envVarName))
+		return "acme." + authEnvDomainVendor(envNameUpper, placeholder) + ".com"
+	case placeholder == "region" || strings.HasSuffix(placeholder, "_region"):
+		return "us-east-1"
+	case placeholder == "username" || strings.HasSuffix(placeholder, "_username"):
+		return "your-username"
+	case placeholder == "user_agent" || strings.HasSuffix(placeholder, "_user_agent"):
+		return "you@example.com (Your Tool Name)"
+	case placeholder == "cookies" || strings.HasSuffix(placeholder, "_cookies"):
+		return "<paste your session cookies>"
+	default:
+		return "your-token-here"
+	}
+}
+
+func authEnvDomainVendor(envNameUpper, placeholder string) string {
+	vendor := strings.TrimSuffix(strings.TrimSuffix(envNameUpper, "_DOMAIN"), "_HOST")
+	if vendor == envNameUpper {
+		vendor = strings.TrimSuffix(strings.TrimSuffix(placeholder, "_domain"), "_host")
+	}
+	vendor = strings.Trim(vendor, "_")
+	if vendor == "" {
+		return "example"
+	}
+	return strings.ToLower(strings.ReplaceAll(vendor, "_", "-"))
 }
 
 func effectiveTier(api *spec.APISpec, resource spec.Resource, endpoint spec.Endpoint) string {
