@@ -927,6 +927,8 @@ func ResourceIDString(v any) string {
 		}
 		return strconv.FormatFloat(f, 'f', -1, 32)
 	default:
+		// fmt.Sprint on typed nil pointers returns "<nil>"; callers still guard
+		// that sentinel so unresolved IDs do not become stored resource keys.
 		return strings.TrimSpace(fmt.Sprint(t))
 	}
 }
