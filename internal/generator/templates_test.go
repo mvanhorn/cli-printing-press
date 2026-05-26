@@ -3,9 +3,12 @@ package generator
 import (
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,6 +16,140 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGoTemplatesEscapeSpecTextInStringLiterals(t *testing.T) {
+	t.Parallel()
+
+	specTextField := regexp.MustCompile(`\.(?:[A-Za-z0-9_]*Description|Description|Summary|Instructions)\b`)
+	var violations []string
+
+	err := fs.WalkDir(templateFS, "templates", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go.tmpl") {
+			return nil
+		}
+
+		data, err := templateFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for lineNo, line := range strings.Split(string(data), "\n") {
+			for start := strings.Index(line, "{{"); start >= 0; {
+				end := strings.Index(line[start+2:], "}}")
+				if end < 0 {
+					break
+				}
+				end += start + 2
+				action := line[start : end+2]
+				if isInsideGoDoubleQuotedString(line[:start]) &&
+					specTextField.MatchString(action) &&
+					!goTemplateActionEscapesSpecText(action) {
+					violations = append(violations, path+":"+strconv.Itoa(lineNo+1)+": "+strings.TrimSpace(line))
+				}
+				next := end + 2
+				if next >= len(line) {
+					break
+				}
+				if rel := strings.Index(line[next:], "{{"); rel >= 0 {
+					start = next + rel
+				} else {
+					break
+				}
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Empty(t, violations, "spec-controlled prose inside Go string literals must use oneline/printf %%q; unsafe template sites:\n%s", strings.Join(violations, "\n"))
+}
+
+func isInsideGoDoubleQuotedString(prefix string) bool {
+	inString := false
+	escaped := false
+	for i := 0; i < len(prefix); {
+		if strings.HasPrefix(prefix[i:], "{{") {
+			end := strings.Index(prefix[i+2:], "}}")
+			if end < 0 {
+				break
+			}
+			i += 2 + end + 2
+			continue
+		}
+		r := prefix[i]
+		i++
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch r {
+		case '\\':
+			if inString {
+				escaped = true
+			}
+		case '"':
+			inString = !inString
+		}
+	}
+	return inString
+}
+
+func TestIsInsideGoDoubleQuotedStringSkipsTemplateActionSyntax(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		prefix string
+		want   bool
+	}{
+		{
+			name:   "inside static string",
+			prefix: `Short: "`,
+			want:   true,
+		},
+		{
+			name:   "inside after template action with escaped quote",
+			prefix: `Short: "{{printf "a\"b" .Foo}} `,
+			want:   true,
+		},
+		{
+			name:   "outside after template action and closing quote",
+			prefix: `Short: "{{printf "a\"b" .Foo}}"`,
+			want:   false,
+		},
+		{
+			name:   "inside static escaped quote",
+			prefix: `fmt.Println("a\"b`,
+			want:   true,
+		},
+		{
+			name:   "outside string",
+			prefix: `fmt.Println(`,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isInsideGoDoubleQuotedString(tt.prefix))
+		})
+	}
+}
+
+func goTemplateActionEscapesSpecText(action string) bool {
+	return strings.Contains(action, "oneline ") ||
+		strings.Contains(action, "printf \"%q\"")
+}
+
+func TestGoTemplateActionEscapesSpecTextRejectsRawStringHelper(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, goTemplateActionEscapesSpecText(`{{oneline .Description}}`))
+	assert.True(t, goTemplateActionEscapesSpecText(`{{printf "%q" .Description}}`))
+	assert.False(t, goTemplateActionEscapesSpecText(`{{goRawSafe .Description}}`))
+}
 
 func TestDoctorTemplateRendersKindAwareAuthEnvPresence(t *testing.T) {
 	t.Parallel()
