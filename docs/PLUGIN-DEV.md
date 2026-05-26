@@ -29,7 +29,7 @@ Create `.claude/local/dev-marketplace/.claude-plugin/marketplace.json`:
 }
 ```
 
-The `./../../..` source points from `.claude/local/dev-marketplace/.claude-plugin/` back to the repository root.
+The `./../../..` source points from `.claude/local/dev-marketplace/` back to the repository root.
 
 Then create or update `.claude/settings.local.json`:
 

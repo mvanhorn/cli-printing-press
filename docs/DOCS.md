@@ -26,3 +26,4 @@ The extracted developer docs are:
 - `docs/ARTIFACTS.md` — local library, manuscripts, and public-library flow
 - `docs/CURSOR.md` — using printed CLIs and skills in Cursor
 - `docs/DOCS.md` — this doc-authoring guidance
+- `docs/PLUGIN-DEV.md` — persistent local plugin development setup
