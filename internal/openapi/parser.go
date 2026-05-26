@@ -2864,26 +2864,29 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			summary := strings.TrimSpace(op.Summary)
 			desc := strings.TrimSpace(op.Description)
 			description := selectDescription(summary, desc)
+			descriptionSynthesized := false
 
 			if description == "" {
 				description = humanizeEndpointName(endpointName)
+				descriptionSynthesized = true
 			}
 
 			params := mapParameters(pathItem, op)
 			body, requestContentType, bodyJSONFallback, bodyRequired, bodyIsArray := mapRequestBody(op.RequestBody, method, path)
 
 			endpoint := spec.Endpoint{
-				Method:             strings.ToUpper(method),
-				Path:               path,
-				BaseURL:            operationServerBaseURL(out.BaseURL, pathItem, op),
-				Description:        description,
-				Params:             params,
-				Body:               body,
-				BodyJSONFallback:   bodyJSONFallback,
-				BodyRequired:       bodyRequired,
-				BodyIsArray:        bodyIsArray,
-				RequestContentType: requestContentType,
-				Tags:               append([]string{}, op.Tags...),
+				Method:                 strings.ToUpper(method),
+				Path:                   path,
+				BaseURL:                operationServerBaseURL(out.BaseURL, pathItem, op),
+				Description:            description,
+				DescriptionSynthesized: descriptionSynthesized,
+				Params:                 params,
+				Body:                   body,
+				BodyJSONFallback:       bodyJSONFallback,
+				BodyRequired:           bodyRequired,
+				BodyIsArray:            bodyIsArray,
+				RequestContentType:     requestContentType,
+				Tags:                   append([]string{}, op.Tags...),
 			}
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if endpoint.Tier == "" {
