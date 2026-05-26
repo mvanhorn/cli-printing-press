@@ -53,7 +53,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		Short: "{{oneline .Endpoint.Description}}",
 		Long:  "{{oneline .Endpoint.Description}}",
 		Example: {{printf "%q" (promotedExampleLine .PromotedName .Endpoint)}},
-		Annotations: map[string]string{"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, "pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
+		Annotations: map[string]string{"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, "pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- if endpointHasRequiredInput .Endpoint}}
 			// Bare invocation of a command with a required flag/body prints help

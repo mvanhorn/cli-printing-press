@@ -6511,6 +6511,40 @@ paths:
 	require.Equal(t, spec.DataSourceStrategyLive, live.DataSourceStrategy)
 }
 
+func TestParseHappyArgsExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Happy Args
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /referents:
+    get:
+      operationId: listReferents
+      x-happy-args: "--song-id=378195"
+      responses:
+        "200":
+          description: OK
+  /songs:
+    get:
+      operationId: listSongs
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	referents := findEndpoint(t, parsed, "/referents")
+	require.Equal(t, "--song-id=378195", referents.HappyArgs)
+
+	songs := findEndpoint(t, parsed, "/songs")
+	require.Empty(t, songs.HappyArgs)
+}
+
 func TestParseIDFieldFallbackChain(t *testing.T) {
 	t.Parallel()
 
