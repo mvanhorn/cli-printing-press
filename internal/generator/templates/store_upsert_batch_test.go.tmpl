@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -268,7 +269,7 @@ func TestUpsertBatch_PreservesLargeIntegerResourceIDs(t *testing.T) {
 		t.Fatalf("rows: %v", err)
 	}
 	want := []string{"7", "100", "55043301"}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resource ids = %v, want %v", got, want)
 	}
 
