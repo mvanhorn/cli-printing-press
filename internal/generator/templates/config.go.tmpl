@@ -170,6 +170,11 @@ func Load(configPath string) (*Config, error) {
 	if cfg.AuthSource == "" && (cfg.AuthHeaderVal != ""{{- if .HasAuthCommand}} || cfg.AccessToken != ""{{- end}}) {
 		cfg.AuthSource = "config"
 	}
+{{- if eq .Auth.Type "oauth2_refresh"}}
+	if cfg.RefreshToken != "" {
+		cfg.AuthSource = "oauth2_refresh"
+	}
+{{- end}}
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
 {{- if not (envVarIsBuiltinField .Name)}}
@@ -404,7 +409,7 @@ func (c *Config) AuthHeader() string {
 	return ""
 	{{- end}}
 {{- end}}
-{{- else if or (eq .Auth.Type "bearer_token") (eq .Auth.Type "oauth2")}}
+{{- else if or (eq .Auth.Type "bearer_token") (eq .Auth.Type "oauth2") (eq .Auth.Type "oauth2_refresh")}}
 {{- if oauth2AccessTokenAuth .Auth}}
 	// Under OAuth2 (and bearer_token specs running OAuth grants such as
 	// client_credentials or device_code) the configured env vars hold flow
@@ -413,7 +418,7 @@ func (c *Config) AuthHeader() string {
 	// the API.
 	if c.AccessToken != "" {
 		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
-			c.AuthSource = "oauth2"
+			c.AuthSource = "{{oauth2AuthSource .Auth}}"
 		}
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
@@ -441,7 +446,7 @@ func (c *Config) AuthHeader() string {
 	// AccessToken, so it must win before considering any per-call fallbacks.
 	if c.AccessToken != "" {
 		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
-			c.AuthSource = "oauth2"
+			c.AuthSource = "{{oauth2AuthSource .Auth}}"
 		}
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
@@ -520,7 +525,7 @@ func (c *Config) AuthHeader() string {
 {{- if and (not .BearerRefresh.Enabled) (not $hasNonRequestEnvVars)}}
 	if c.AccessToken != "" {
 		if c.AuthSource == "" || strings.HasPrefix(c.AuthSource, "env:") {
-			c.AuthSource = "oauth2"
+			c.AuthSource = "{{oauth2AuthSource .Auth}}"
 		}
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})

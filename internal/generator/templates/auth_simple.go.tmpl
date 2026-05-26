@@ -60,11 +60,18 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
 {{- range .Auth.EnvVarSpecs}}
-{{- if isRequestAuthEnvVar .}}
+{{- if eq $.Auth.Type "oauth2_refresh"}}
+			fmt.Fprintln(w, "  export {{.Name}}=\"{{authEnvPlaceholder .}}\"")
+{{- else if isRequestAuthEnvVar .}}
 			fmt.Fprintln(w, "  export {{.Name}}=\"<your-token>\"")
 {{- end}}
 {{- end}}
+{{- if eq .Auth.Type "oauth2_refresh"}}
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "OAuth2 refresh-token credentials are exchanged automatically before API calls.")
+{{- else}}
 			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
+{{- end}}
 {{- else if .Auth.EnvVars}}
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
@@ -129,6 +136,12 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			w := cmd.OutOrStdout()
 			header := cfg.AuthHeader()
 			authed := header != ""
+{{- if eq .Auth.Type "oauth2_refresh"}}
+			if cfg.RefreshToken != "" {
+				authed = true
+				cfg.AuthSource = "oauth2_refresh"
+			}
+{{- end}}
 			// JSON envelope: {authenticated, verified, source, config}. When not
 			// authenticated, write the envelope first then return authErr
 			// so exit code carries the auth-failure signal.
@@ -153,7 +166,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, "Set your token:")
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
-{{- if isRequestAuthEnvVar .}}
+{{- if or (isRequestAuthEnvVar .) (eq $.Auth.Type "oauth2_refresh")}}
 {{- $hint := authEnvHintComment .}}
 				fmt.Fprintln(w, "  export {{.Name}}=\"{{authEnvPlaceholder .}}\"{{if $hint}} # {{$hint}}{{end}}")
 {{- end}}
