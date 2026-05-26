@@ -83,6 +83,9 @@ func TestWriteAndLoadResearch(t *testing.T) {
 		APIName:        "test-api",
 		NoveltyScore:   8,
 		Recommendation: "proceed",
+		Auth: &ResearchAuth{
+			CanonicalEnvVar: "TEST_API_TOKEN",
+		},
 		Alternatives: []Alternative{
 			{Name: "alt-1", URL: "https://example.com/alt-1"},
 		},
@@ -98,6 +101,8 @@ func TestWriteAndLoadResearch(t *testing.T) {
 	assert.Equal(t, "test-api", loaded.APIName)
 	assert.Equal(t, 8, loaded.NoveltyScore)
 	assert.Equal(t, "proceed", loaded.Recommendation)
+	require.NotNil(t, loaded.Auth)
+	assert.Equal(t, "TEST_API_TOKEN", loaded.CanonicalAuthEnvVar())
 	assert.Len(t, loaded.Alternatives, 1)
 	assert.Equal(t, "alt-1", loaded.Alternatives[0].Name)
 }
