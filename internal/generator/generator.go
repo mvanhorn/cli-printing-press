@@ -2677,6 +2677,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 	if len(g.Spec.Resources) == 1 {
 		apiDescriptionShort = parentCommandInfoDescriptionShort(g.Spec.Description)
 	}
+	novelChildrenByParent := g.novelFeatureChildrenByParent()
 	// Generate per-resource parent files + per-endpoint command files
 	// This produces more files (one per endpoint) which improves Breadth scoring
 	for name, resource := range g.Spec.Resources {
@@ -2685,21 +2686,23 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 		if !promotedResourceNames[name] {
 			// Parent file: wires subcommands together
 			parentData := struct {
-				ResourceName string
-				FuncPrefix   string
-				CommandPath  string
-				Short        string
-				Resource     spec.Resource
-				Hidden       bool
+				ResourceName  string
+				FuncPrefix    string
+				CommandPath   string
+				Short         string
+				Resource      spec.Resource
+				NovelChildren []novelFeatureChildRender
+				Hidden        bool
 				*spec.APISpec
 			}{
-				ResourceName: name,
-				FuncPrefix:   name,
-				CommandPath:  name,
-				Short:        parentCommandShort(name, "", resource, apiDescriptionShort),
-				Resource:     resource,
-				Hidden:       hideTopLevelResources,
-				APISpec:      g.Spec,
+				ResourceName:  name,
+				FuncPrefix:    name,
+				CommandPath:   name,
+				Short:         parentCommandShort(name, "", resource, apiDescriptionShort),
+				Resource:      resource,
+				NovelChildren: novelChildrenByParent[toKebab(name)],
+				Hidden:        hideTopLevelResources,
+				APISpec:       g.Spec,
 			}
 			parentPath := filepath.Join("internal", "cli", safeResourceFileStem(name)+".go")
 			if err := g.renderTemplate("command_parent.go.tmpl", parentPath, parentData); err != nil {
@@ -2738,21 +2741,23 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 		// Sub-resource parent + endpoint files
 		for subName, subResource := range resource.SubResources {
 			subParentData := struct {
-				ResourceName string
-				FuncPrefix   string
-				CommandPath  string
-				Short        string
-				Resource     spec.Resource
-				Hidden       bool
+				ResourceName  string
+				FuncPrefix    string
+				CommandPath   string
+				Short         string
+				Resource      spec.Resource
+				NovelChildren []novelFeatureChildRender
+				Hidden        bool
 				*spec.APISpec
 			}{
-				ResourceName: subName,
-				FuncPrefix:   name + "-" + subName,
-				CommandPath:  name + " " + subName,
-				Short:        parentCommandShort(subName, name, subResource, ""),
-				Resource:     subResource,
-				Hidden:       false,
-				APISpec:      g.Spec,
+				ResourceName:  subName,
+				FuncPrefix:    name + "-" + subName,
+				CommandPath:   name + " " + subName,
+				Short:         parentCommandShort(subName, name, subResource, ""),
+				Resource:      subResource,
+				NovelChildren: novelChildrenByParent[toKebab(name)+" "+toKebab(subName)],
+				Hidden:        false,
+				APISpec:       g.Spec,
 			}
 			subParentPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName)+".go")
 			if err := g.renderTemplate("command_parent.go.tmpl", subParentPath, subParentData); err != nil {
@@ -2917,8 +2922,12 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 	if err := g.renderPromotedCommandFiles(promotedCommands); err != nil {
 		return err
 	}
+	novelCommandStubs, err := g.renderNovelFeatureStubs()
+	if err != nil {
+		return err
+	}
 
-	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, workflowConstructors, insightConstructors)
+	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, workflowConstructors, insightConstructors, novelCommandStubs)
 }
 
 // schemaWithDependentParents adds a parent_id column + index to dependent
@@ -3738,7 +3747,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	return nil
 }
 
-func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool, renderedWorkflowConstructors, renderedInsightConstructors []string) error {
+func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool, renderedWorkflowConstructors, renderedInsightConstructors []string, novelCommandStubs []novelFeatureCommandRender) error {
 	// Root --help Long surfaces ALL verified-built novel features — the
 	// whole point of this change is to stop making agents do discovery
 	// for novel capabilities. A count cap (earlier draft used 3) neuters
@@ -3769,6 +3778,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		VisionCmdNames        map[string]bool
 		WorkflowConstructors  []string
 		InsightConstructors   []string
+		NovelCommandStubs     []novelFeatureCommandRender
 		PromotedCommands      []PromotedCommand
 		PromotedResourceNames map[string]bool
 		Narrative             *ReadmeNarrative
@@ -3787,6 +3797,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		VisionCmdNames:        g.VisionSet.CmdNames(),
 		WorkflowConstructors:  renderedWorkflowConstructors,
 		InsightConstructors:   renderedInsightConstructors,
+		NovelCommandStubs:     novelCommandStubs,
 		PromotedCommands:      promotedCommands,
 		PromotedResourceNames: promotedResourceNames,
 		Narrative:             g.Narrative,
