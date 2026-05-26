@@ -244,7 +244,7 @@ func main() {
 	_, _ = fmt.Fprint(io.Discard, req.Method)
 }
 __PP_GO_SMOKE_MAIN__
-if ! (cd "$_go_smoke_dir" && go run . >/dev/null 2>"$_go_smoke_dir/error.log"); then
+if ! (cd "$_go_smoke_dir" && GOFLAGS= go run . >/dev/null 2>"$_go_smoke_dir/error.log"); then
   _go_smoke_output="$(sed -n '1,12p' "$_go_smoke_dir/error.log" 2>/dev/null || true)"
   rm -rf "$_go_smoke_dir"
   echo ""
