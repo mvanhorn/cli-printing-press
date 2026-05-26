@@ -495,11 +495,18 @@ func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
 	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
 	assert.Equal(t, happy.Reason, jsonResult.Reason)
 
+	errorResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestError)
+	require.NotNil(t, errorResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, errorResult.Status)
+	assert.Equal(t, happy.Reason, errorResult.Reason)
+
 	lines := readArgvLog(t, argvLog)
-	assert.Equal(t, 0, countArgvLines(lines, "administration get --json"),
+	assert.Equal(t, 0, countArgvLines(lines, "administration get", "--json"),
 		"json_fidelity must not invoke tier-gated endpoints when active auth tier mismatches")
 	assert.Equal(t, 0, countArgvLines(lines, "administration get")-countArgvLines(lines, "administration get --help"),
 		"happy_path must not invoke tier-gated endpoints when active auth tier mismatches")
+	assert.Equal(t, 0, countArgvLines(lines, "administration get", "__printing_press_invalid__"),
+		"error_path must not invoke tier-gated endpoints when active auth tier mismatches")
 }
 
 func TestRunLiveDogfoodRunsRequiresTierMatch(t *testing.T) {
@@ -514,6 +521,29 @@ func TestRunLiveDogfoodRunsRequiresTierMatch(t *testing.T) {
 		Level:      "quick",
 		Timeout:    2 * time.Second,
 		AuthTier:   "accountant",
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	jsonResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+}
+
+func TestRunLiveDogfoodRunsRequiresTierMatchFromEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true)
+	t.Setenv("PP_AUTH_TIER", "accountant")
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
 	})
 	require.NoError(t, err)
 
@@ -2166,7 +2196,11 @@ func writeLiveDogfoodTierFixture(t *testing.T, annotate bool, adminPass bool) (d
 	adminBody := `echo 'Error: GET /v1/administration returned HTTP 400: {"type":"badrequest","code":"EP_001","title":"This endpoint is only available to accountants.","status":400}' >&2
 exit 5`
 	if adminPass {
-		adminBody = `if [ "${3:-}" = "--json" ]; then
+		adminBody = `if [ "${3:-}" = "__printing_press_invalid__" ]; then
+  echo 'invalid id' >&2
+  exit 2
+fi
+if [ "${4:-}" = "--json" ]; then
   echo '{"id":"administration"}'
   exit 0
 fi
@@ -2185,12 +2219,13 @@ fi
 if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
 {
-  "commands": [
-    {"name":"administration","subcommands":[
-      {"name":"get"` + annotation + `}
-    ]},
-    {"name":"public","subcommands":[
-      {"name":"list"}
+	"commands": [
+	    {"name":"administration","subcommands":[
+	      {"name":"get"` + annotation + `},
+	      {"name":"list"}
+	    ]},
+	    {"name":"public","subcommands":[
+	      {"name":"list"}
     ]}
   ]
 }
@@ -2203,13 +2238,30 @@ if [ "$1" = "administration" ] && [ "$2" = "get" ] && [ "${3:-}" = "--help" ]; t
 Get administration details.
 
 Usage:
-  fixture-pp-cli administration get [flags]
+  fixture-pp-cli administration get <id> [flags]
 
 Examples:
-  fixture-pp-cli administration get
+  fixture-pp-cli administration get adm_1
 
 Flags:
       --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List administration records.
+
+Usage:
+  fixture-pp-cli administration list [flags]
+
+Examples:
+  fixture-pp-cli administration list --json
+
+Flags:
+      --json       Output JSON
+      --limit int  Limit results
 HELP
   exit 0
 fi
@@ -2232,6 +2284,11 @@ fi
 
 if [ "$1" = "administration" ] && [ "$2" = "get" ]; then
 ` + adminBody + `
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "list" ]; then
+  echo '{"results":[{"id":"adm_1"}]}'
+  exit 0
 fi
 
 if [ "$1" = "public" ] && [ "$2" = "list" ]; then

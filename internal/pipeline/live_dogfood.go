@@ -720,14 +720,21 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
 
 	tierSkip := liveDogfoodRequiresTierSkipReason(command.Annotations, ctx.authTier)
-	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
-	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
-	switch {
-	case tierSkip != "":
+	if tierSkip != "" {
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, tierSkip),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, tierSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, tierSkip),
 		)
+		if useDryRun {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, tierSkip))
+		}
+		return results
+	}
+
+	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
+	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
+	switch {
 	case fixtureSkip != "":
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, fixtureSkip),
