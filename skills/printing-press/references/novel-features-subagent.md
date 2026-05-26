@@ -174,7 +174,23 @@ Sources for candidates (label each candidate with its source):
     suggest.
 
 For each candidate capture: name, command, one-line description, persona
-served, source label from the list above.
+served, source label from the list above, and `Long Description` (`none`
+unless the overlap rule below applies).
+
+When 2+ compound-tool candidates could plausibly match the same natural-language
+request because their input surfaces overlap (for example, user UPN, market ID,
+customer email, or recipe name), plan each overlapping command's `Long:`
+description with an explicit scope redirect:
+
+```text
+Use this command for <matching intent>.
+Do NOT use this command for <nearby but wrong intent>; use '<sibling-command>' instead.
+```
+
+Only skip this pattern for single-tool CLIs or candidates whose inputs and
+operator intent do not overlap with sibling tools. A slightly longer `Long:`
+description is acceptable when it prevents an agent from choosing the wrong
+compound tool.
 
 Apply the rubric's kill/keep checks (LLM dependency, external service, auth
 gap, scope creep, verifiability, reimplementation) inline. Reframe or cut
@@ -258,6 +274,11 @@ For EVERY surviving candidate, force-answer these in writing:
      generator emits today (~50-150 LoC per feature plus `root.go`
      wiring). This is the default for transcendence features; most
      candidates fall here.
+6. **Long-description validity:** If the survivor has a planned `Long
+   Description`, confirm every named sibling command still survives with that
+   exact command name. If Pass 3 killed or renamed the sibling, revise the
+   redirect to point at the surviving command, or clear it to `none` when no
+   accurate sibling remains.
 
 Drop ~half. Target output: 4-8 survivors. Score survivors with the rubric's
 4-dimension score; only keep features scoring >= 5/10.
@@ -271,15 +292,18 @@ Return a single markdown document with these top-level sections, in this
 order:
 
 1. `## Customer model` — personas from Pass 1.
-2. `## Candidates (pre-cut)` — full Pass 2 list with source labels and
-   inline kill/keep verdicts from the rubric.
+2. `## Candidates (pre-cut)` — full Pass 2 list with source labels,
+   `Long Description` (`none` when not needed), and inline kill/keep verdicts
+   from the rubric.
 3. `## Survivors and kills`
    - `### Survivors` — features scoring >= 5/10, formatted as a
      transcendence table matching the rubric's "Transcendence Table
      Format" section (which includes the **Buildability** column,
      `spec-emits` or `hand-code` per Pass 3 question 5). Include score,
      persona-served, the one-sentence buildability proof per the rubric,
-     and the buildability tag.
+     the buildability tag, and `Long Description` (`none` when not needed).
+     Any non-`none` `Long Description` MUST reference only surviving command
+     names after Pass 3.
    - `### Killed candidates` — table with columns: feature, kill reason,
      closest-surviving-sibling.
 4. `## Reprint verdicts` (REPRINT ONLY) — per-prior-feature: keep / reframe
@@ -297,9 +321,12 @@ After the subagent returns:
 1. **Parse `### Survivors`** — these become the transcendence rows in the
    absorb manifest (Step 1.5d). The score, buildability proof, and
    `Buildability` tag flow into the transcendence table; the persona-served
-   column is the audit trail. The `Buildability` column drives Phase Gate
-   1.5's hand-code count: rows tagged `hand-code` are the agent's
-   post-generate scope commitment, rows tagged `spec-emits` are not.
+   column is the audit trail. Preserve non-`none` `Long Description` values
+   in the manifest row so Phase 3 hand-code uses them as the Cobra `Long`
+   text instead of losing them in the brainstorm audit trail. The
+   `Buildability` column drives Phase Gate 1.5's hand-code count: rows tagged
+   `hand-code` are the agent's post-generate scope commitment, rows tagged
+   `spec-emits` are not.
 2. **Parse `## Reprint verdicts`** (if present) — record dropped prior features
    under the transcendence table per the rubric's reprint surface rule, so the
    user can override drops at the Phase 1.5 gate review.

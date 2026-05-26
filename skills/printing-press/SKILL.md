@@ -1596,15 +1596,18 @@ The transcendence table in the manifest (Step 1.5d) renders rows in this shape,
 which mirrors the subagent's `### Survivors` output. The `Buildability` column
 tags each row `spec-emits` or `hand-code` per
 [references/novel-features-subagent.md](references/novel-features-subagent.md)
-so the Phase Gate 1.5 hand-code count has a source of truth in the manifest:
+so the Phase Gate 1.5 hand-code count has a source of truth in the manifest.
+The optional `Long Description` column carries agent-facing disambiguation
+text for Phase 3 Cobra `Long` fields; use `none` when no sibling redirect is
+needed:
 
 ```markdown
 ### Transcendence (only possible with our approach)
-| # | Feature | Command | Buildability | Why Only We Can Do This |
-|---|---------|---------|--------------|------------------------|
-| 1 | Bottleneck detection | bottleneck | hand-code | Requires local join across issues + assignees + cycle data |
-| 2 | Velocity trends | velocity --weeks 4 | hand-code | Requires historical cycle snapshots in SQLite |
-| 3 | What did I miss | since 2h | hand-code | Requires time-windowed aggregation no single API call provides |
+| # | Feature | Command | Buildability | Why Only We Can Do This | Long Description |
+|---|---------|---------|--------------|------------------------|------------------|
+| 1 | Bottleneck detection | bottleneck | hand-code | Requires local join across issues + assignees + cycle data | Use this command to find cross-team work blockage. Do NOT use it for personal recency checks; use 'since' instead. |
+| 2 | Velocity trends | velocity --weeks 4 | hand-code | Requires historical cycle snapshots in SQLite | none |
+| 3 | What did I miss | since 2h | hand-code | Requires time-windowed aggregation no single API call provides | Use this command for recent personal changes. Do NOT use it for backlog bottlenecks; use 'bottleneck' instead. |
 ```
 
 Minimum 5 transcendence features. These are the commands that differentiate the CLI.
@@ -1712,8 +1715,9 @@ For each tool, fill in what you know from the research. Stars and command_count 
 5. `example` is a ready-to-run invocation an agent can copy-paste. Use realistic arguments from the API's domain (e.g. `AAPL`, `customer_42`), not `<placeholder>`. Include the `--agent` flag when the feature benefits from structured output.
 6. `why_it_matters` is a single agent-facing sentence answering "when should I pick this over a generic API call?"
 7. `group` clusters related features under a theme name. Pick 2–5 themes total (e.g. "Local state that compounds", "Agent-native plumbing", "Reachability mitigation"). Use the same `group` string verbatim across features that belong together — exact matches drive README grouping. Leave `group` empty if the CLI has too few novel features to warrant clustering.
-8. If no transcendence features scored >= 5/10, omit the `novel_features` field entirely.
-9. Do not add a feature to `novel_features` merely to expose it through MCP. Any user-facing Cobra command becomes an MCP tool automatically unless it sets `cmd.Annotations["mcp:hidden"] = "true"`.
+8. If the manifest row has a non-`none` `Long Description`, keep that text with the feature implementation notes and use it as the Cobra `Long` field during Phase 3 hand-code. Do not squeeze redirect prose into `description`; `description` stays one-line user-benefit text.
+9. If no transcendence features scored >= 5/10, omit the `novel_features` field entirely.
+10. Do not add a feature to `novel_features` merely to expose it through MCP. Any user-facing Cobra command becomes an MCP tool automatically unless it sets `cmd.Annotations["mcp:hidden"] = "true"`.
 
 **Auth research rule**:
 1. `auth.canonical_env_var` is the single-token credential env var discovered from vendor docs, MCP/source analysis, or dominant SDK/CLI convention (for example `APIFY_TOKEN`, `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`). Omit it when no canonical name is known, when auth is HTTP Basic or another credential pair, or when the auth flow needs richer metadata. Fresh generation reads this env var first and keeps the parser-derived name as a fallback automatically.
@@ -3253,7 +3257,7 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "<leaf-of-Command>",                    // e.g. "stale" for "issues stale"
 		Short:   "<NovelFeature.Description, one line>", // truncate to ~70 chars
-		Long:    "<optional: Description + WhyItMatters>", // omit if Short is enough
+		Long:    "<optional: manifest Long Description, or Description + WhyItMatters>", // omit if Short is enough
 		Example: "  <cli>-pp-cli <Command> --json",       // from NovelFeature.Example
 		Annotations: map[string]string{
 			// Set "mcp:read-only": "true" only when the command does NOT mutate
