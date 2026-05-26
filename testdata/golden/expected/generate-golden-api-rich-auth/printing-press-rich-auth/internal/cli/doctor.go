@@ -156,6 +156,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["config"] = "ok"
 				report["config_path"] = cfg.Path
 				report["base_url"] = cfg.BaseURL
+				// agentcookie integration is soft: if the agentcookie daemon manages
+				// this CLI's config, it writes a marker file alongside the config and
+				// AuthSource is upgraded to "agentcookie" in config.Load. Surface the
+				// state explicitly so users can tell whether the bus is wired up.
+				if cfg.AuthSource == "agentcookie" {
+					report["agentcookie"] = "detected (managing credentials)"
+				} else {
+					report["agentcookie"] = "not detected (optional)"
+				}
 			}
 
 			// Check auth

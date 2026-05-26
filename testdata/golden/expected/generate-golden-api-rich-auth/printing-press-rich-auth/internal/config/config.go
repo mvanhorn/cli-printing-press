@@ -120,6 +120,21 @@ func Load(configPath string) (*Config, error) {
 		cfg.AuthSource = "config"
 	}
 
+	// Soft agentcookie integration: if the agentcookie daemon manages this
+	// CLI's secrets, it writes a marker file alongside the config file. When
+	// the marker is present AND credentials came from the config (not from a
+	// direct env var override that wins above), upgrade AuthSource to
+	// "agentcookie" so doctor / auth-status can surface the bus state. When
+	// the marker is absent, behavior is identical to pre-agentcookie: no
+	// import, no network, no error. agentcookie itself is never imported
+	// here — the contract is purely on-disk.
+	if cfg.AuthSource == "config" {
+		marker := filepath.Join(filepath.Dir(cfg.Path), ".agentcookie-managed")
+		if _, err := os.Stat(marker); err == nil {
+			cfg.AuthSource = "agentcookie"
+		}
+	}
+
 	// Base URL override (used by printing-press verify to point at mock/test servers)
 	if v := os.Getenv("PRINTING_PRESS_RICH_BASE_URL"); v != "" {
 		cfg.BaseURL = v
