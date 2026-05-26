@@ -16,7 +16,7 @@ var version = "1.0.0"
 func Execute() error {
 	rootCmd := &cobra.Command{
 		Use:           "{{.CLIName}}-pp-cli",
-		Short:         "{{.Description}}",
+		Short:         {{printf "%q" .Description}},
 		SilenceUsage: true,
 		Version:      version,
 	}
