@@ -7601,7 +7601,7 @@ func TestBuildPromotedCommands(t *testing.T) {
 		assert.Empty(t, promoted)
 	})
 
-	t.Run("multi-endpoint resources are not promoted even when they have a list endpoint", func(t *testing.T) {
+	t.Run("REST multi-endpoint resources are not promoted even when they have a list endpoint", func(t *testing.T) {
 		t.Parallel()
 		s := &spec.APISpec{
 			Name:    "test",
@@ -7619,6 +7619,57 @@ func TestBuildPromotedCommands(t *testing.T) {
 		}
 		promoted := buildPromotedCommands(s)
 		assert.Empty(t, promoted, "multi-endpoint resources stay nested so unknown subcommands cannot run a promoted parent action")
+	})
+
+	t.Run("GraphQL get/list resources promote get while keeping siblings", func(t *testing.T) {
+		t.Parallel()
+		s := &spec.APISpec{
+			Name:                "linear",
+			Version:             "0.1.0",
+			BaseURL:             "https://api.linear.app",
+			GraphQLEndpointPath: "/graphql",
+			Resources: map[string]spec.Resource{
+				"custom-views": {
+					Endpoints: map[string]spec.Endpoint{
+						"get": {
+							Method:      "GET",
+							Path:        "/graphql",
+							Description: "Get a single custom view",
+							Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						},
+						"list": {
+							Method:      "GET",
+							Path:        "/graphql",
+							Description: "List custom views",
+							Pagination:  &spec.Pagination{Type: "cursor", LimitParam: "first", CursorParam: "after"},
+						},
+					},
+				},
+				"cycles": {
+					Endpoints: map[string]spec.Endpoint{
+						"get": {
+							Method:      "GET",
+							Path:        "/graphql",
+							Description: "Get a single cycle",
+							Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						},
+						"list": {
+							Method:      "GET",
+							Path:        "/graphql",
+							Description: "List cycles",
+							Pagination:  &spec.Pagination{Type: "cursor", LimitParam: "first", CursorParam: "after"},
+						},
+					},
+				},
+			},
+		}
+
+		promoted := buildPromotedCommands(s)
+		require.Len(t, promoted, 2)
+		assert.Equal(t, "custom-views", promoted[0].PromotedName)
+		assert.Equal(t, "get", promoted[0].EndpointName)
+		assert.Equal(t, "cycles", promoted[1].PromotedName)
+		assert.Equal(t, "get", promoted[1].EndpointName)
 	})
 
 	t.Run("deterministically skips multi-endpoint resources", func(t *testing.T) {
@@ -7845,6 +7896,53 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 	// The resource parent command should NOT be generated — the promoted command replaces it.
 	// Generating both would leave the parent as dead code (never wired to root).
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users.go"))
+}
+
+func TestGeneratedOutput_GraphQLGetListResourcePromotesGet(t *testing.T) {
+	t.Parallel()
+
+	const sdl = `
+type Query {
+  cycle(
+    id: String!
+  ): Cycle!
+  cycles(
+    first: Int
+    after: String
+  ): CycleConnection!
+}
+
+type Cycle {
+  id: ID!
+  name: String!
+}
+
+type CycleConnection {
+  nodes: [Cycle!]!
+  pageInfo: PageInfo!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+`
+
+	apiSpec, err := graphql.ParseSDLBytes("linear-schema.graphql", []byte(sdl))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	promotedPath := filepath.Join(outputDir, "internal", "cli", "promoted_cycles.go")
+	promotedSrc, err := os.ReadFile(promotedPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(promotedSrc), `Use:         "cycles <id>"`)
+	assert.Contains(t, string(promotedSrc), "cmd.AddCommand(newCyclesListCmd(flags))")
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "cycles_list.go"))
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "cycles.go"))
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "cycles_get.go"))
 }
 
 func TestGeneratedOutput_ExtractResponseDataHelperSkippedForPromotedNonEnvelope(t *testing.T) {

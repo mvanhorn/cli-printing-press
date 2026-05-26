@@ -11,22 +11,36 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newItemsPromotedCmd(flags *rootFlags) *cobra.Command {
+func newThingsPromotedCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:         "items",
-		Short:       "Search items",
-		Long:        "Search items",
-		Example:     "  fastapi-operationids-golden-pp-cli items",
-		Annotations: map[string]string{"pp:endpoint": "items.list", "pp:method": "POST", "pp:path": "/api/items/search", "mcp:read-only": "true"},
+		Use:         "things <thing_id>",
+		Short:       "Get a thing via GraphQL",
+		Long:        "Get a thing via GraphQL",
+		Example:     "  graphql-shared-golden-pp-cli things 550e8400-e29b-41d4-a716-446655440000",
+		Annotations: map[string]string{"pp:endpoint": "things.get", "pp:method": "POST", "pp:path": "/graphql", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 
-			path := "/api/items/search"
+			path := "/graphql"
+			if len(args) < 1 {
+				// JSON envelope: {error, usage}. Written first; the
+				// usageErr return preserves exit code 2 across modes.
+				if flags.asJSON {
+					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+						"error": "thing_id is required",
+						"usage": fmt.Sprintf("%s <%s>", cmd.CommandPath(), "thing_id"),
+					}, flags); printErr != nil {
+						return printErr
+					}
+				}
+				return usageErr(fmt.Errorf("thing_id is required\nUsage: %s <%s>", cmd.CommandPath(), "thing_id"))
+			}
 			params := map[string]string{}
+			params["thing_id"] = args[0]
 			// HasStore + non-GET falls through to a live API call here
 			// rather than through resolveRead (GET-only internally); a
 			// body-aware cached read helper is filed as #425 for when a
@@ -54,6 +68,7 @@ func newItemsPromotedCmd(flags *rootFlags) *cobra.Command {
 	}
 
 	// Wire sibling endpoints and sub-resources as subcommands
+	cmd.AddCommand(newThingsListCmd(flags))
 
 	return cmd
 }

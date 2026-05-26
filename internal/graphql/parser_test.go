@@ -166,6 +166,111 @@ func TestParseSDLContent(t *testing.T) {
 	assert.NotContains(t, parsed.Types, "IssuePayload")
 }
 
+func TestParseSDLContentHandlesMultilineQueryArguments(t *testing.T) {
+	t.Parallel()
+
+	const sdl = `
+type Query {
+  """
+  One specific cycle, looked up by ID or slug.
+  """
+  cycle(
+    """
+    The identifier of the cycle to retrieve.
+    """
+    id: String!
+  ): Cycle!
+  """
+  All cycles accessible to the user.
+  """
+  cycles(
+    after: String
+    before: String
+    filter: CycleFilter
+    first: Int
+  ): CycleConnection!
+  customerStatus(
+    id: String!
+  ): CustomerStatus!
+  customerStatuses(
+    after: String
+    first: Int
+  ): CustomerStatusConnection!
+}
+
+type Cycle {
+  id: ID!
+  name: String!
+}
+
+type CustomerStatus {
+  id: ID!
+  name: String!
+}
+
+type CycleConnection {
+  nodes: [Cycle!]!
+  pageInfo: PageInfo!
+}
+
+type CustomerStatusConnection {
+  nodes: [CustomerStatus!]!
+  pageInfo: PageInfo!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+input CycleFilter {
+  teamId: String
+}
+`
+
+	parsed, err := ParseSDLBytes("linear-schema.graphql", []byte(sdl))
+	require.NoError(t, err)
+
+	cycles := parsed.Resources["cycles"]
+	require.NotNil(t, cycles.Endpoints)
+	assert.Contains(t, cycles.Endpoints, "get")
+	assert.Contains(t, cycles.Endpoints, "list")
+	require.Len(t, cycles.Endpoints["get"].Params, 1)
+	assert.True(t, cycles.Endpoints["get"].Params[0].Positional)
+	assert.ElementsMatch(t, []string{"after", "before", "filter", "first"}, paramNames(cycles.Endpoints["list"].Params))
+
+	customerStatuses := parsed.Resources["customer-statuses"]
+	require.NotNil(t, customerStatuses.Endpoints)
+	assert.Contains(t, customerStatuses.Endpoints, "get")
+	assert.Contains(t, customerStatuses.Endpoints, "list")
+}
+
+func TestParseSDLContentClampsNegativeFieldDepth(t *testing.T) {
+	t.Parallel()
+
+	const sdl = `
+type Query {
+  ): Bogus!
+  cycle(
+    id: String!
+  ): Cycle!
+}
+
+type Cycle {
+  id: ID!
+}
+`
+
+	parsed, err := ParseSDLBytes("linear-schema.graphql", []byte(sdl))
+	require.NoError(t, err)
+
+	cycles := parsed.Resources["cycles"]
+	require.NotNil(t, cycles.Endpoints)
+	get := cycles.Endpoints["get"]
+	require.Len(t, get.Params, 1)
+	assert.Equal(t, "id", get.Params[0].Name)
+}
+
 func TestBuildTypeDefDeduplicatesFields(t *testing.T) {
 	// Schema where a type has duplicate field names (e.g., pagination args
 	// mixed in with entity fields, as happens in large GraphQL schemas like Linear's).

@@ -15,12 +15,10 @@ import (
 // strips `<module>/internal/client` from per-endpoint command files when the
 // rendered body never references the `client` package.
 //
-// The endpoint template emits the import for the GraphQL list/get path, but
-// other branches reach the rendered file without producing a `client.X`
-// reference — most prominently when a GraphQL spec records list/get endpoints
-// with method POST (which is the wire-correct method, since GraphQL queries
-// POST to /graphql). Without the fixup, Go's strict unused-import rule fires
-// and `go build` fails on every such CLI.
+// The endpoint template may emit the import for GraphQL-shaped endpoints, but
+// several branches reach the rendered file without producing a `client.X`
+// reference. Without the fixup, Go's strict unused-import rule fires and
+// `go build` fails on every such CLI.
 func TestEndpointCommandDropsUnusedClientImport(t *testing.T) {
 	t.Parallel()
 
@@ -37,10 +35,10 @@ func TestEndpointCommandDropsUnusedClientImport(t *testing.T) {
 			expectClientUse: false,
 		},
 		{
-			name:            "graphql_get_keeps_used_import",
+			name:            "graphql_get_drops_unused_import",
 			method:          "GET",
-			expectImport:    true,
-			expectClientUse: true,
+			expectImport:    false,
+			expectClientUse: false,
 		},
 	}
 
@@ -63,10 +61,10 @@ func TestEndpointCommandDropsUnusedClientImport(t *testing.T) {
 					"accounts": {
 						Description: "Accounts",
 						Endpoints: map[string]spec.Endpoint{
-							"list": {Method: tt.method, Path: "/graphql", Description: "List accounts"},
 							"get": {Method: tt.method, Path: "/graphql", Description: "Get account",
 								Params: []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true, Description: "Account ID"}},
 							},
+							"search": {Method: tt.method, Path: "/graphql", Description: "Search accounts"},
 						},
 					},
 				},
@@ -76,13 +74,11 @@ func TestEndpointCommandDropsUnusedClientImport(t *testing.T) {
 			gen := New(apiSpec, outputDir)
 			require.NoError(t, gen.Generate())
 
-			for _, fname := range []string{"accounts_list.go", "accounts_get.go"} {
-				src := readGeneratedFile(t, outputDir, "internal", "cli", fname)
-				hasImport := strings.Contains(src, `/internal/client"`)
-				hasUsage := strings.Contains(src, "client.")
-				assert.Equal(t, tt.expectImport, hasImport, "%s import presence", fname)
-				assert.Equal(t, tt.expectClientUse, hasUsage, "%s client.X usage", fname)
-			}
+			src := readGeneratedFile(t, outputDir, "internal", "cli", "accounts_get.go")
+			hasImport := strings.Contains(src, `/internal/client"`)
+			hasUsage := strings.Contains(src, "client.")
+			assert.Equal(t, tt.expectImport, hasImport, "accounts_get.go import presence")
+			assert.Equal(t, tt.expectClientUse, hasUsage, "accounts_get.go client.X usage")
 		})
 	}
 }

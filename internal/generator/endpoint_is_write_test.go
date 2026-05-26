@@ -262,8 +262,7 @@ func TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse(t *testing.T) {
 
 // TestPromotedCommandVerbBranching covers the integration path: the
 // rendered promoted command emits the same HTTP verb the spec declared,
-// so a POST-only endpoint hits c.PostWithParams and a GET-only endpoint stays on
-// c.Get/resolveRead.
+// while routing read-only POSTs through the verify-safe query helper.
 func TestPromotedCommandVerbBranching(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -275,7 +274,7 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 		mustNotHave  []string
 	}{
 		{
-			name:         "POST endpoint emits c.PostWithParams",
+			name:         "read-only POST endpoint emits c.PostQueryWithParams",
 			apiName:      "post-promoted",
 			resourceName: "queries",
 			endpointName: "searchAll",
@@ -285,8 +284,22 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 				Description: "Search collections by free text",
 				Body:        []spec.Param{{Name: "queryText", Type: "string"}},
 			},
+			mustContain: []string{"c.PostQueryWithParams("},
+			mustNotHave: []string{"c.PostWithParams(", "c.Get(cmd.Context(), path, params)"},
+		},
+		{
+			name:         "mutating POST endpoint emits c.PostWithParams",
+			apiName:      "post-create-promoted",
+			resourceName: "widgets",
+			endpointName: "create",
+			endpoint: spec.Endpoint{
+				Method:      "POST",
+				Path:        "/widgets",
+				Description: "Create a widget",
+				Body:        []spec.Param{{Name: "name", Type: "string", Required: true}},
+			},
 			mustContain: []string{"c.PostWithParams("},
-			mustNotHave: []string{"c.Get(cmd.Context(), path, params)"},
+			mustNotHave: []string{"c.PostQueryWithParams(", "c.Get(cmd.Context(), path, params)"},
 		},
 		{
 			name:         "GET endpoint keeps c.Get / resolveRead",

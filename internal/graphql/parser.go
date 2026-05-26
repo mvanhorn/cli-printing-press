@@ -19,7 +19,7 @@ var (
 	docBlockRE = regexp.MustCompile(`(?s)""".*?"""`)
 	commentRE  = regexp.MustCompile(`(?m)#.*$`)
 	blockRE    = regexp.MustCompile(`(?s)\b(type|input|enum)\s+([A-Za-z_][A-Za-z0-9_]*)[^{=]*\{(.*?)\}`)
-	fieldRE    = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*:\s*([A-Za-z0-9_\[\]!]+)`)
+	fieldRE    = regexp.MustCompile(`(?s)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*:\s*([A-Za-z0-9_\[\]!]+)`)
 	scalarRE   = regexp.MustCompile(`(?m)^\s*scalar\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`)
 )
 
@@ -238,14 +238,19 @@ func parseEnumValues(body string) []string {
 
 func parseFields(body string) []gqlField {
 	var fields []gqlField
-	for rawLine := range strings.SplitSeq(body, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "@") {
-			continue
+	var current strings.Builder
+	depth := 0
+
+	flush := func() {
+		if current.Len() == 0 {
+			return
 		}
+		line := strings.TrimSpace(current.String())
+		current.Reset()
+		depth = 0
 		match := fieldRE.FindStringSubmatch(line)
 		if len(match) < 4 {
-			continue
+			return
 		}
 		field := gqlField{
 			Name: match[1],
@@ -256,7 +261,39 @@ func parseFields(body string) []gqlField {
 		}
 		fields = append(fields, field)
 	}
+
+	for rawLine := range strings.SplitSeq(body, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "@") {
+			continue
+		}
+		if current.Len() > 0 {
+			current.WriteByte('\n')
+		}
+		current.WriteString(line)
+		depth += parenDelta(line)
+		if depth < 0 {
+			depth = 0
+		}
+		if depth == 0 && strings.Contains(current.String(), ":") {
+			flush()
+		}
+	}
+	flush()
 	return fields
+}
+
+func parenDelta(s string) int {
+	delta := 0
+	for _, r := range s {
+		switch r {
+		case '(':
+			delta++
+		case ')':
+			delta--
+		}
+	}
+	return delta
 }
 
 func parseArgs(raw string) []gqlArg {
@@ -289,13 +326,13 @@ func splitArgs(raw string) []string {
 
 	for _, r := range raw {
 		switch r {
-		case '[':
+		case '[', '{', '(':
 			depth++
-		case ']':
+		case ']', '}', ')':
 			if depth > 0 {
 				depth--
 			}
-		case ',':
+		case ',', '\n':
 			if depth == 0 {
 				parts = append(parts, current.String())
 				current.Reset()

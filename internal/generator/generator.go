@@ -6353,12 +6353,14 @@ var builtinCommands = map[string]bool{
 }
 
 // buildPromotedCommands scans spec resources and returns safe top-level shortcuts.
-// Only single-endpoint resources are promoted. Multi-endpoint resources stay
-// nested so an unknown subcommand cannot silently fall back to an arbitrary
-// parent RunE action.
+// Single-endpoint resources are promoted. GraphQL resources with a canonical
+// get/list pair also promote the get endpoint so users keep a friendly
+// `<cli> resource <id>` read path while list and mutation siblings remain
+// available as subcommands under the promoted command.
 func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 	var promoted []PromotedCommand
 	usedNames := make(map[string]bool)
+	graphQL := isGraphQLSpec(s)
 
 	resourceNames := make([]string, 0, len(s.Resources))
 	for name := range s.Resources {
@@ -6368,22 +6370,35 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 
 	for _, name := range resourceNames {
 		resource := s.Resources[name]
-		if len(resource.Endpoints) > 1 {
-			continue
-		}
 
-		// Single-endpoint resources promote the only endpoint regardless of method.
-		// Without this, POST-only auth resources like `login`/`logout`/`register`
-		// render as `<cli> login login --email ...`.
 		var bestName string
 		var bestEndpoint spec.Endpoint
 		found := false
 
-		for _, eName := range sortedEndpointNames(resource.Endpoints) {
-			ep := resource.Endpoints[eName]
-			bestName = eName
-			bestEndpoint = ep
-			found = true
+		if len(resource.Endpoints) > 1 {
+			if graphQL {
+				if ep, ok := resource.Endpoints["get"]; ok {
+					if _, hasList := resource.Endpoints["list"]; !hasList {
+						continue
+					}
+					bestName = "get"
+					bestEndpoint = ep
+					found = true
+				}
+			}
+			if !found {
+				continue
+			}
+		} else {
+			// Single-endpoint resources promote the only endpoint regardless of method.
+			// Without this, POST-only auth resources like `login`/`logout`/`register`
+			// render as `<cli> login login --email ...`.
+			for _, eName := range sortedEndpointNames(resource.Endpoints) {
+				ep := resource.Endpoints[eName]
+				bestName = eName
+				bestEndpoint = ep
+				found = true
+			}
 		}
 
 		if !found {

@@ -12,10 +12,9 @@ import (
 )
 
 // TestPromotedHasStorePostRoutesThroughVerbBranch is #425's interim-fix
-// guard: HasStore + POST must route through c.Post (live API call) rather
-// than resolveRead, which is GET-only internally. Pre-fix the template
-// emitted resolveRead unconditionally for HasStore and produced
-// uncompilable code for non-GET endpoints.
+// guard: HasStore + POST must route through the POST verb branch (live API
+// call) rather than resolveRead, which is GET-only internally. Read-shaped POSTs
+// use the verify-safe query helper within that branch.
 func TestPromotedHasStorePostRoutesThroughVerbBranch(t *testing.T) {
 	t.Parallel()
 
@@ -51,8 +50,8 @@ func TestPromotedHasStorePostRoutesThroughVerbBranch(t *testing.T) {
 
 	assert.NotContains(t, got, "resolveRead(",
 		"HasStore + POST must NOT route through resolveRead (GET-only internally)")
-	assert.Contains(t, got, "c.PostWithParams(cmd.Context(), path, params, body)",
-		"HasStore + POST must route through the verb branch with a built body")
+	assert.Contains(t, got, "c.PostQueryWithParams(cmd.Context(), path, params, body)",
+		"HasStore + read-only POST must route through the verb branch with a built body")
 	assert.Contains(t, got, `attachFreshness(DataProvenance{Source: "live"}, flags)`,
 		"non-GET HasStore commands must synthesize a live-call prov so the downstream HasStore block compiles")
 }
