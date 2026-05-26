@@ -73,6 +73,34 @@ func TestClassifyResponse(t *testing.T) {
 			wantLabels: []string{"cloudflare"},
 		},
 		{
+			name:   "cloudflare turnstile interstitial on 200 is a protection signal",
+			status: 200,
+			headers: http.Header{
+				"Cf-Ray":       {"abc123"},
+				"Server":       {"cloudflare"},
+				"Content-Type": {"text/html"},
+			},
+			body: `<html><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script>
+				<p>You will be forwarded to the requested page shortly.</p></html>`,
+			wantLabels: []string{"cloudflare", "captcha"},
+		},
+		{
+			name:   "captcha unblock shell on 200 is a protection signal",
+			status: 200,
+			headers: http.Header{
+				"Content-Type": {"text/html"},
+			},
+			body:       "<html><p>Fill out the captcha to unblock this page.</p></html>",
+			wantLabels: []string{"captcha"},
+		},
+		{
+			name:        "turnstile word in normal json is not a protection signal",
+			status:      200,
+			headers:     http.Header{"Content-Type": {"application/json"}},
+			body:        `{"turnstile":false,"captcha_required":false}`,
+			emptyResult: true,
+		},
+		{
 			name:   "aws waf token",
 			status: 403,
 			headers: http.Header{
