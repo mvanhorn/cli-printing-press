@@ -851,6 +851,22 @@ type AuthConfig struct {
 	// Used by the authorization_code flow only; ignored for other grants.
 	RefreshTokenMechanism string `yaml:"refresh_token_mechanism,omitempty" json:"refresh_token_mechanism,omitempty"`
 
+	// AtomicRefreshTokens enables the bespoke OAuth2 refresh-token rotation
+	// system: tokens.json with atomic-rename persistence + per-call audit log
+	// + interprocess flock + macOS Keychain backend + ClientIDSuffix integrity
+	// check. Required for providers whose refresh_token rotates on every use
+	// (Withings, Strava, Fitbit pattern) and would otherwise be lost by naive
+	// os.WriteFile persistence between request-send and response-receive.
+	//
+	// When true, generator emits internal/tokens/{store,refresh,audit,keychain}.go
+	// plus their tests, and the auth subsystem reads/writes via tokens.FileStore
+	// instead of the default config.toml-based SaveTokens path. Independent of
+	// RefreshTokenMechanism (which controls how a refresh_token is FIRST issued);
+	// AtomicRefreshTokens controls how every subsequent rotation is PERSISTED.
+	//
+	// Used by the oauth2 grant family only; ignored for other auth types.
+	AtomicRefreshTokens bool `yaml:"atomic_refresh_tokens,omitempty" json:"atomic_refresh_tokens,omitempty"`
+
 	// AdditionalHeaders carries per-call credentials from non-winning sibling
 	// security schemes. Composed apiKey + OAuth (or apiKey + bearer) shapes
 	// declare both schemes in components.securitySchemes; selectSecurityScheme

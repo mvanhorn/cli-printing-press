@@ -28,7 +28,7 @@ import (
 {{- if .BearerRefresh.Enabled}}
 	"net/http"
 {{- end}}
-{{- if or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders .HasStore .Auth.RequiresBrowserSession .HasTierRouting}}
+{{- if or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders .HasStore .Auth.RequiresBrowserSession .HasTierRouting .Auth.AtomicRefreshTokens}}
 	"os"
 {{- end}}
 {{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
@@ -53,8 +53,27 @@ import (
 {{- if .HasStore}}
 	"{{modulePath}}/internal/store"
 {{- end}}
+{{- if .Auth.AtomicRefreshTokens}}
+	"{{modulePath}}/internal/tokens"
+{{- end}}
 	"github.com/spf13/cobra"
 )
+
+{{- if .Auth.AtomicRefreshTokens}}
+
+// hasUsableTokensFile reports whether ~/.config/{{modulePath}}/tokens.json
+// exists and contains a non-empty access_token. When AtomicRefreshTokens
+// is enabled the live bearer is sourced from this file, not from
+// config.toml's AccessToken field; without this check, doctor reports
+// auth=not-configured even when a valid bearer is sitting in tokens.json.
+func hasUsableTokensFile() bool {
+	t, err := tokens.NewFileStore("").Load()
+	if err != nil {
+		return false
+	}
+	return t != nil && t.AccessToken != ""
+}
+{{- end}}
 
 // looksLikeDoctorInterstitial reports whether the response body matches a known
 // bot-detection challenge page (Cloudflare, Akamai, Vercel, AWS WAF, DataDome,
@@ -271,6 +290,55 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["cookie_tool"] = "not found (install: pip install pycookiecheat)"
 			}
 {{- else}}
+{{- if .Auth.AtomicRefreshTokens}}
+			// AtomicRefreshTokens: three legitimate setups can produce
+			// a "configured" verdict — (a) cfg.AuthHeader() resolves
+			// (config.toml AuthHeaderVal/AccessToken path), (b) the
+			// atomic-rotation package has minted a bearer into
+			// tokens.json (the steady-state path under OAuth flows),
+			// or (c) env-driven setups (zshrc + macOS Keychain) where
+			// only cfg.ClientID/ClientSecret are populated and login
+			// still needs to mint the first bearer.
+			if cfg != nil {
+				header := cfg.AuthHeader()
+				switch {
+				case header != "":
+					authConfigured = true
+					report["auth"] = "configured"
+					report["auth_source"] = cfg.AuthSource
+				case hasUsableTokensFile():
+					authConfigured = true
+					report["auth"] = "configured"
+					report["auth_source"] = "oauth2:tokens.json"
+				case cfg.ClientID != "" && cfg.ClientSecret != "":
+					authConfigured = true
+					report["auth"] = "configured (login pending)"
+					report["auth_source"] = cfg.AuthSource
+					report["auth_hint"] = "run `{{modulePath}} login` to mint the initial bearer"
+				default:
+{{- if .Auth.Optional}}
+					report["auth"] = "optional — not configured"
+{{- else}}
+					report["auth"] = "not configured"
+{{- end}}
+{{- if and .Auth.AuthorizationURL (not (and (eq .Auth.EffectiveOAuth2Grant "client_credentials") .Auth.TokenURL))}}
+					report["auth_hint"] = "{{.Name}}-pp-cli login"
+{{- else}}
+{{- with $canonicalEnvVar}}
+					report["auth_hint"] = "export {{.Name}}=<your-key>"
+{{- end}}
+{{- end}}
+{{- if .Auth.KeyURL}}
+					report["auth_key_url"] = "{{.Auth.KeyURL}}"
+{{- else if .WebsiteURL}}
+					report["auth_docs_url"] = "{{.WebsiteURL}}"
+{{- end}}
+{{- if .Auth.Instructions}}
+					report["auth_instructions"] = {{printf "%q" .Auth.Instructions}}
+{{- end}}
+				}
+			}
+{{- else}}
 			if cfg != nil {
 				header := cfg.AuthHeader()
 				if header == "" {
@@ -300,6 +368,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth_source"] = cfg.AuthSource
 				}
 			}
+{{- end}}
 {{- end}}
 {{- if not (or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders)}}
 			_ = authConfigured

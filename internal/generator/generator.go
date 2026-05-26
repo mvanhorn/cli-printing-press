@@ -1906,6 +1906,35 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	// Emit the atomic OAuth2 refresh-token rotation package only when the
+	// spec opts in via Auth.AtomicRefreshTokens. Provides tokens.json with
+	// atomic-rename persistence + audit log + interprocess flock + macOS
+	// Keychain backend + ClientIDSuffix integrity check. Required for
+	// providers whose refresh_token rotates on every use.
+	if g.hasAtomicRefreshTokens() {
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "tokens"), 0o755); err != nil {
+			return fmt.Errorf("creating tokens dir: %w", err)
+		}
+		if err := g.renderTemplate("tokens_store.go.tmpl", filepath.Join("internal", "tokens", "store.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering tokens store: %w", err)
+		}
+		if err := g.renderTemplate("tokens_audit.go.tmpl", filepath.Join("internal", "tokens", "audit.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering tokens audit: %w", err)
+		}
+		if err := g.renderTemplate("tokens_keychain.go.tmpl", filepath.Join("internal", "tokens", "keychain.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering tokens keychain: %w", err)
+		}
+		if err := g.renderTemplate("tokens_refresh.go.tmpl", filepath.Join("internal", "tokens", "refresh.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering tokens refresh: %w", err)
+		}
+		if err := g.renderTemplate("tokens_store_test.go.tmpl", filepath.Join("internal", "tokens", "store_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering tokens store test: %w", err)
+		}
+		if err := g.renderTemplate("tokens_refresh_test.go.tmpl", filepath.Join("internal", "tokens", "refresh_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering tokens refresh test: %w", err)
+		}
+	}
+
 	// Emit the git-backed share package only when explicitly enabled and
 	// the CLI has a local store. Share requires a SnapshotTables allowlist;
 	// spec.Validate has already rejected a missing allowlist with a clear
@@ -3076,6 +3105,17 @@ func (g *Generator) hasGeneratedSyncImplementation() bool {
 
 func (g *Generator) hasAutoRefresh() bool {
 	return g != nil && g.VisionSet.Store && g.hasGeneratedSyncImplementation() && g.Spec.Cache.Enabled
+}
+
+// hasAtomicRefreshTokens reports whether the atomic OAuth2 refresh-token
+// rotation package (internal/tokens/) should be emitted. Required for
+// providers whose refresh_token rotates on every use (Withings, Strava,
+// Fitbit pattern); naive os.WriteFile persistence loses rotations and
+// forces weekly re-OAuth. Independent of hasAutoRefresh (cache read-path
+// hook) — AtomicRefreshTokens controls token PERSISTENCE, hasAutoRefresh
+// controls cache-staleness READS.
+func (g *Generator) hasAtomicRefreshTokens() bool {
+	return g != nil && g.Spec != nil && g.Spec.Auth.AtomicRefreshTokens
 }
 
 func (g *Generator) resetHTMLSyncStubCache() {
