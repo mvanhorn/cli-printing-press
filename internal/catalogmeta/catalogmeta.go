@@ -117,4 +117,10 @@ func ApplyRuntimeMetadata(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.SpecSource != "" {
 		apiSpec.SpecSource = entry.SpecSource
 	}
+	if len(entry.Regions) > 0 {
+		apiSpec.Regions = append([]string(nil), entry.Regions...)
+	}
+	if entry.APILanguage != "" {
+		apiSpec.APILanguage = entry.APILanguage
+	}
 }

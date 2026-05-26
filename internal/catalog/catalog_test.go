@@ -24,6 +24,8 @@ verified_date: "2026-03-23"
 homepage: https://example.com
 owner: test-owner
 owner_name: Trevin Chow
+regions: [NL, EU]
+api_language: nl
 mcp:
   transport: [stdio, http]
   orchestration: code
@@ -47,6 +49,8 @@ notes: Example fixture.
 	assert.Equal(t, "https://example.com", entry.Homepage)
 	assert.Equal(t, "test-owner", entry.Owner)
 	assert.Equal(t, "Trevin Chow", entry.OwnerName)
+	assert.Equal(t, []string{"NL", "EU"}, entry.Regions)
+	assert.Equal(t, "nl", entry.APILanguage)
 	assert.Equal(t, []string{"stdio", "http"}, entry.MCP.Transport)
 	assert.Equal(t, "code", entry.MCP.Orchestration)
 	assert.Equal(t, "hidden", entry.MCP.EndpointTools)
@@ -204,6 +208,34 @@ func TestValidateEntry(t *testing.T) {
 				e.AuthKeyURL = "http://example.com/keys"
 			},
 			wantErr: `auth_key_url must start with "https://"`,
+		},
+		{
+			name: "regions empty entry",
+			mutate: func(e *Entry) {
+				e.Regions = []string{"NL", ""}
+			},
+			wantErr: "regions[1] must not be empty",
+		},
+		{
+			name: "regions lowercase rejected",
+			mutate: func(e *Entry) {
+				e.Regions = []string{"nl"}
+			},
+			wantErr: "must be an uppercase two-letter region token",
+		},
+		{
+			name: "regions duplicate rejected",
+			mutate: func(e *Entry) {
+				e.Regions = []string{"NL", "NL"}
+			},
+			wantErr: `regions[1] "NL" is a duplicate`,
+		},
+		{
+			name: "api_language invalid tag rejected",
+			mutate: func(e *Entry) {
+				e.APILanguage = "not a tag"
+			},
+			wantErr: "must be a BCP 47 language tag",
 		},
 		{
 			name: "auth_env_vars empty entry",

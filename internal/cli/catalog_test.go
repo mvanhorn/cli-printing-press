@@ -103,6 +103,54 @@ func TestCatalogSearchAuth(t *testing.T) {
 	assert.True(t, found, "stytch should appear in auth search results")
 }
 
+func TestCatalogSearchMatchesRegionAndAPILanguage(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry catalog.Entry
+		query string
+	}{
+		{
+			name:  "region",
+			entry: catalog.Entry{Name: "alpha", DisplayName: "Alpha", Description: "First", Category: "maps", Regions: []string{"NL"}},
+			query: "nl",
+		},
+		{
+			name:  "api language",
+			entry: catalog.Entry{Name: "beta", DisplayName: "Beta", Description: "Second", Category: "maps", APILanguage: "da-DK"},
+			query: "da-dk",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.True(t, matchesCatalogQuery(tt.entry, tt.query))
+		})
+	}
+}
+
+func TestFilterCatalogEntriesByRegion(t *testing.T) {
+	entries := []catalog.Entry{
+		{Name: "global", Regions: []string{"*"}},
+		{Name: "netherlands", Regions: []string{"NL"}},
+		{Name: "india", Regions: []string{"IN"}},
+		{Name: "unknown"},
+	}
+
+	got := filterCatalogEntriesByRegion(entries, "nl")
+
+	require.Len(t, got, 2)
+	assert.Equal(t, "global", got[0].Name)
+	assert.Equal(t, "netherlands", got[1].Name)
+}
+
+func TestCatalogListRejectsInvalidRegionFilter(t *testing.T) {
+	cmd := newCatalogCmd()
+	cmd.SetArgs([]string{"list", "--region", "netherlands"})
+
+	_, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--region must be a two-letter region token")
+}
+
 func TestCatalogSearchNoMatches(t *testing.T) {
 	cmd := newCatalogCmd()
 	cmd.SetArgs([]string{"search", "zzz-nonexistent-query-xyz", "--json"})
@@ -149,4 +197,24 @@ func TestCatalogShowStripePlainText(t *testing.T) {
 
 	assert.Contains(t, output, "Stripe")
 	assert.Contains(t, output, "Spec URL:")
+}
+
+func TestCatalogShowPlainTextIncludesRegionMetadata(t *testing.T) {
+	output := captureStdout(t, func() {
+		entry := catalog.Entry{
+			Name:        "pdok-location",
+			DisplayName: "PDOK Location",
+			Description: "Geocoding for Dutch addresses",
+			Category:    "maps",
+			Tier:        "official",
+			SpecURL:     "https://example.com/openapi.yaml",
+			SpecFormat:  "yaml",
+			Regions:     []string{"NL"},
+			APILanguage: "nl",
+		}
+		printCatalogEntryPlainText(entry)
+	})
+
+	assert.Contains(t, output, "Regions:        NL")
+	assert.Contains(t, output, "API Language:   nl")
 }
