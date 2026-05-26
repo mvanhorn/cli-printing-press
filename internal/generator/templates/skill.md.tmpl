@@ -63,7 +63,7 @@ Do not use this CLI for:
 - {{.}}
 {{- end}}
 {{- end}}
-{{- if not .HasWriteCommands}}
+{{- if and (not .HasWriteCommands) (not (and .Narrative .Narrative.AntiTriggers))}}
 
 ## When Not to Use This CLI
 

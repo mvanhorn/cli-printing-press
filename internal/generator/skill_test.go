@@ -66,6 +66,10 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		"AntiTriggers narrative should render as its own section")
 	assert.True(t, strings.Contains(content, "- Tasks that require placing trades or moving money"),
 		"anti-triggers should render as explicit bullets")
+	assert.True(t, strings.Contains(content, "- Brokerage account management beyond read-only portfolio analysis"),
+		"all anti-trigger bullets should render")
+	assert.False(t, strings.Contains(content, "## When Not to Use This CLI"),
+		"generic read-only boundary should be omitted when anti-triggers are present")
 	assert.True(t, strings.Contains(content, "## Unique Capabilities"),
 		"Novel features should appear as Unique Capabilities so agents don't need --help discovery")
 	assert.True(t, strings.Contains(content, "### Local state that compounds"),
