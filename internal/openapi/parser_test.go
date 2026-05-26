@@ -6545,6 +6545,59 @@ paths:
 	require.Empty(t, songs.HappyArgs)
 }
 
+func TestParseHappyArgsExtensionWhitespaceOnly(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Happy Args Whitespace
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /referents:
+    get:
+      operationId: listReferents
+      x-happy-args: "   "
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	referents := findEndpoint(t, parsed, "/referents")
+	require.Empty(t, referents.HappyArgs)
+}
+
+func TestParseHappyArgsExtensionNonStringWarns(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Happy Args Non String
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /referents:
+    get:
+      operationId: listReferents
+      x-happy-args: ["--song-id=378195"]
+      responses:
+        "200":
+          description: OK
+`)
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(yamlSpec)
+	})
+	require.NoError(t, err)
+
+	referents := findEndpoint(t, parsed, "/referents")
+	require.Empty(t, referents.HappyArgs)
+	assert.Contains(t, warnings, `GET "/referents": x-happy-args must be a string`)
+}
+
 func TestParseIDFieldFallbackChain(t *testing.T) {
 	t.Parallel()
 
