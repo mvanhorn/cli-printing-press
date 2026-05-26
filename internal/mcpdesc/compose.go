@@ -15,6 +15,7 @@ package mcpdesc
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -172,8 +173,8 @@ func singularResourceName(path string) string {
 
 func resourceSegmentFromPath(path string) string {
 	parts := strings.Split(path, "/")
-	for i := len(parts) - 1; i >= 0; i-- {
-		segment := strings.TrimSpace(parts[i])
+	for _, part := range slices.Backward(parts) {
+		segment := strings.TrimSpace(part)
 		if segment == "" || strings.HasPrefix(segment, "{") {
 			continue
 		}

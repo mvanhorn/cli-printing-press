@@ -82,6 +82,19 @@ func cloudflareChallenge(_ *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+func turnstileInterstitial(_ *http.Request) (*http.Response, error) {
+	body := strings.Repeat(" ", 20*1024) + `<html><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script><p>You will be forwarded to the requested page shortly.</p></html>`
+	return &http.Response{
+		StatusCode: 200,
+		Header: http.Header{
+			"Cf-Ray":       {"abc123"},
+			"Server":       {"cloudflare"},
+			"Content-Type": {"text/html"},
+		},
+		Body: respBody(body),
+	}, nil
+}
+
 func respBody(s string) *bodyCloser {
 	return &bodyCloser{r: strings.NewReader(s)}
 }
@@ -140,6 +153,18 @@ func TestProbe_BothChallenged_RecommendsBrowserCapture(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, ModeBrowserClearanceHTTP, result.Mode)
+	assert.True(t, result.Recommendation.NeedsBrowserCapture)
+	assert.True(t, result.Recommendation.NeedsClearanceCookie)
+}
+
+func TestProbe_BothTurnstileInterstitials_RecommendsBrowserCapture(t *testing.T) {
+	result, err := Probe(context.Background(), "https://example.com", Options{
+		HTTPClientFactory: fakeFactory(turnstileInterstitial, turnstileInterstitial),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ModeBrowserClearanceHTTP, result.Mode)
+	assert.Equal(t, 200, result.Probes[0].Status)
+	assert.NotEmpty(t, result.Probes[0].Evidence)
 	assert.True(t, result.Recommendation.NeedsBrowserCapture)
 	assert.True(t, result.Recommendation.NeedsClearanceCookie)
 }

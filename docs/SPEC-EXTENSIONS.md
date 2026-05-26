@@ -45,6 +45,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
+| `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
 
 ## `info` Extensions
 
@@ -981,6 +982,34 @@ components:
 
 In this example both endpoints keep the same public `locationId` input, but
 only `/opportunities/search` sends `?location_id=` on the wire.
+
+### `x-pp-dispatch-param`
+
+Marks a query parameter as a fixed dispatch discriminator whose `default` value
+selects the upstream route rather than tuning the request. Generated runnable
+examples keep that default instead of substituting a synthetic dogfood value.
+
+Parsed field: `Param.DispatchParam`
+
+Use this for shared-path APIs where a query parameter such as `type` or
+`action` selects the report or operation. Do not use it for ordinary filters,
+limits, page sizes, or other tunable inputs.
+
+Example:
+
+```yaml
+paths:
+  /:
+    get:
+      operationId: getDomainRank
+      parameters:
+        - name: report
+          in: query
+          x-pp-dispatch-param: true
+          schema:
+            type: string
+            default: domain_rank
+```
 
 ## Path Item Extensions
 

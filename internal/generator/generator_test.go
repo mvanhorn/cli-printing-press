@@ -96,9 +96,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 70},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 75},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 72},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 71},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 76},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 73},
 	}
 
 	for _, tt := range tests {
@@ -7920,6 +7920,46 @@ func TestExampleLineUsesRenderedCommandAndFlagNames(t *testing.T) {
 	assert.NotContains(t, got, "--idempotencyKey")
 }
 
+func TestGeneratedCommandExampleKeepsDispatchParamDefault(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("dispatch-default")
+	apiSpec.Resources["domain"] = spec.Resource{
+		Description: "Domain reports",
+		Endpoints: map[string]spec.Endpoint{
+			"rank": {
+				Method:      "GET",
+				Path:        "/",
+				Description: "Fetch a domain rank report",
+				Params: []spec.Param{
+					{Name: "type", Type: "string", Required: true, Default: "domain_rank", Description: "Report type"},
+					{Name: "domain", Type: "string", Required: true, Description: "Domain"},
+				},
+			},
+			"list": {
+				Method:      "GET",
+				Path:        "/domains",
+				Description: "List domains",
+				Params: []spec.Param{
+					{Name: "limit", Type: "integer", Required: true, Default: 100, Description: "Limit"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "dispatch-default-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	rankSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "domain_rank.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rankSrc), `dispatch-default-pp-cli domain rank --type domain_rank --domain example-value`)
+
+	listSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "domain_list.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(listSrc), `dispatch-default-pp-cli domain list --limit 50`)
+}
+
 func TestGeneratedCommandExamplePrefersNarrativeQuickStart(t *testing.T) {
 	t.Parallel()
 
@@ -12030,10 +12070,11 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 
 	// Build the generated CLI to catch template-syntax / import errors that
 	// substring assertions miss. Also run the generated tests so the new
-	// per-resource override and fallback-list tests execute against real code.
+	// per-resource override, fallback-list, and numeric-ID tests execute against real code.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
-	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_TemplatedIDFieldOverrideWins|TestUpsertBatch_GenericFallbackList|TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses")
+	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_(TemplatedIDFieldOverrideWins|GenericFallbackList|PreservesLargeIntegerResourceIDs|ExtractFailuresReturnedForPerItemMisses)")
+	runGoCommand(t, outputDir, "test", "./internal/cli/...", "-run", "TestSyncSingleObject_PreservesLargeIntegerResourceIDs")
 }
 
 func TestGeneratedSyncIDFieldOverridesFromMemberPathParam(t *testing.T) {

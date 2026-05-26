@@ -2,6 +2,7 @@ package spec
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -86,8 +87,13 @@ resources:
           - name: s
             flag_name: address
             aliases: [s]
+            pp:dispatch-param: true
             type: string
             description: Street address
+          - name: action
+            dispatch_param: false
+            type: string
+            description: Search action
       search:
         method: POST
         path: /stores/search
@@ -103,6 +109,12 @@ resources:
 	assert.Equal(t, "s", param.Name)
 	assert.Equal(t, "address", param.FlagName)
 	assert.Equal(t, []string{"s"}, param.Aliases)
+	assert.True(t, param.DispatchParam)
+	assert.True(t, param.DispatchParamSet)
+	param = s.Resources["stores"].Endpoints["find"].Params[1]
+	assert.Equal(t, "action", param.Name)
+	assert.False(t, param.DispatchParam)
+	assert.True(t, param.DispatchParamSet)
 	bodyParam := s.Resources["stores"].Endpoints["search"].Body[0]
 	assert.Equal(t, "startAfter", bodyParam.Name)
 	assert.Equal(t, "searchAfter", bodyParam.BodyName)
@@ -118,7 +130,8 @@ resources:
           "method": "GET",
           "path": "/stores",
           "params": [
-            {"name": "c", "flag_name": "city", "aliases": ["c"], "type": "string"}
+            {"name": "c", "flag_name": "city", "aliases": ["c"], "pp:dispatch-param": true, "type": "string"},
+            {"name": "action", "pp:dispatch-param": false, "type": "string"}
           ]
         }
       }
@@ -131,6 +144,65 @@ resources:
 	assert.Equal(t, "c", param.Name)
 	assert.Equal(t, "city", param.FlagName)
 	assert.Equal(t, []string{"c"}, param.Aliases)
+	assert.True(t, param.DispatchParam)
+	assert.True(t, param.DispatchParamSet)
+	param = s.Resources["stores"].Endpoints["find"].Params[1]
+	assert.Equal(t, "action", param.Name)
+	assert.False(t, param.DispatchParam)
+	assert.True(t, param.DispatchParamSet)
+}
+
+func TestDispatchParamFalseSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := Param{
+		Name:             "action",
+		Type:             "string",
+		DispatchParam:    false,
+		DispatchParamSet: true,
+	}
+
+	yamlData, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(yamlData), "dispatch_param: false")
+	var yamlParam Param
+	require.NoError(t, yaml.Unmarshal(yamlData, &yamlParam))
+	assert.False(t, yamlParam.DispatchParam)
+	assert.True(t, yamlParam.DispatchParamSet)
+
+	jsonData, err := json.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(jsonData), `"dispatch_param":false`)
+	var jsonParam Param
+	require.NoError(t, json.Unmarshal(jsonData, &jsonParam))
+	assert.False(t, jsonParam.DispatchParam)
+	assert.True(t, jsonParam.DispatchParamSet)
+}
+
+func TestUnannotatedDispatchParamSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := Param{
+		Name:    "action",
+		Type:    "string",
+		Default: "create",
+	}
+
+	yamlData, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	assert.NotContains(t, string(yamlData), "dispatch_param")
+	var yamlParam Param
+	require.NoError(t, yaml.Unmarshal(yamlData, &yamlParam))
+	assert.False(t, yamlParam.DispatchParam)
+	assert.False(t, yamlParam.DispatchParamSet)
+
+	jsonData, err := json.Marshal(original)
+	require.NoError(t, err)
+	assert.NotContains(t, string(jsonData), "dispatch_param")
+	var jsonParam Param
+	require.NoError(t, json.Unmarshal(jsonData, &jsonParam))
+	assert.False(t, jsonParam.DispatchParam)
+	assert.False(t, jsonParam.DispatchParamSet)
 }
 
 func TestParseStreamingConfig(t *testing.T) {

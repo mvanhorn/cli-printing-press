@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultTimeout = 15 * time.Second
-	bodyReadCap    = 4 * 1024 // bytes scanned for protection markers
+	bodyReadCap    = 32 * 1024 // bytes scanned for protection markers
 )
 
 // Options configures Probe.
