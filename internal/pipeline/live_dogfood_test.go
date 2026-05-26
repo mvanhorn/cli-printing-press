@@ -469,6 +469,133 @@ exit 1
 	assert.Equal(t, "2", string(count), "persistent auth-shaped 401 should retry once before skip classification")
 }
 
+func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, argvLog := writeLiveDogfoodTierFixture(t, true, false, true)
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, `blocked-fixture: requires auth tier "accountant"`, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, happy.Reason, jsonResult.Reason)
+
+	errorResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestError)
+	require.NotNil(t, errorResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, errorResult.Status)
+	assert.Equal(t, happy.Reason, errorResult.Reason)
+
+	lines := readArgvLog(t, argvLog)
+	assert.Equal(t, 0, countArgvLines(lines, "administration get", "--json"),
+		"json_fidelity must not invoke tier-gated endpoints when active auth tier mismatches")
+	assert.Equal(t, 0, countArgvLines(lines, "administration get")-countArgvLines(lines, "administration get --help"),
+		"happy_path must not invoke tier-gated endpoints when active auth tier mismatches")
+	assert.Equal(t, 0, countArgvLines(lines, "administration get", "__printing_press_invalid__"),
+		"error_path must not invoke tier-gated endpoints when active auth tier mismatches")
+}
+
+func TestRunLiveDogfoodSkipsRequiresTierMismatchWithoutRunnableExample(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, false, false)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, `blocked-fixture: requires auth tier "accountant"`, happy.Reason)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
+func TestRunLiveDogfoodRunsRequiresTierMatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true, true)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+		AuthTier:   "accountant",
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	jsonResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+}
+
+func TestRunLiveDogfoodRunsRequiresTierMatchFromEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true, true)
+	t.Setenv("PP_AUTH_TIER", "accountant")
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	jsonResult := findResultByCommandKind(report, "administration get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+}
+
+func TestRunLiveDogfoodRequiresTierAbsentDoesNotSkip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, false, false, true)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
+	assert.Contains(t, happy.OutputSample, "EP_001")
+}
+
 func TestRunLiveDogfoodProcessPreservesLargeJSONUnderCap(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -1511,6 +1638,59 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 	}
 }
 
+func TestLiveDogfoodQuickCommandsSamplesAcrossFamilies(t *testing.T) {
+	commands := []liveDogfoodCommand{
+		{Path: []string{"across-admins"}},
+		{Path: []string{"administration", "get"}},
+		{Path: []string{"administration", "list"}},
+		{Path: []string{"contacts", "get"}},
+		{Path: []string{"contacts", "list"}},
+		{Path: []string{"invoices", "get"}},
+		{Path: []string{"ledger", "get"}},
+		{Path: []string{"mutations", "create"}},
+		{Path: []string{"relations", "get"}},
+		{Path: []string{"reports", "list"}},
+		{Path: []string{"transactions", "get"}},
+		{Path: []string{"transactions", "list"}},
+	}
+
+	got := liveDogfoodQuickCommands(commands)
+
+	require.Len(t, got, 6)
+	families := map[string]bool{}
+	for _, command := range got {
+		families[liveDogfoodCommandFamily(command)] = true
+	}
+	assert.GreaterOrEqual(t, len(families), 3)
+	assert.NotEqual(t, commands[:2], got,
+		"quick sampling should not collapse to the first two sorted commands")
+}
+
+func TestLiveDogfoodQuickCommandsDoesNotDeduplicateEmptyFamily(t *testing.T) {
+	commands := []liveDogfoodCommand{
+		{Path: nil},
+		{Path: []string{}},
+		{Path: []string{"administration", "get"}},
+		{Path: []string{"administration", "list"}},
+		{Path: []string{"contacts", "get"}},
+		{Path: []string{"contacts", "list"}},
+		{Path: []string{"invoices", "get"}},
+		{Path: []string{"invoices", "list"}},
+	}
+
+	got := liveDogfoodQuickCommands(commands)
+
+	require.Len(t, got, 6)
+	assert.Equal(t, []liveDogfoodCommand{
+		commands[0],
+		commands[1],
+		commands[2],
+		commands[4],
+		commands[6],
+		commands[3],
+	}, got)
+}
+
 func TestExtractFirstIDFromJSON(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2045,6 +2225,132 @@ exit 99
 `
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
 	return dir, binaryName
+}
+
+func writeLiveDogfoodTierFixture(t *testing.T, annotate bool, adminPass bool, runnableExample bool) (dir string, binaryName string, argvLog string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	argvLog = filepath.Join(t.TempDir(), "argv.log")
+	writeTestManifestForLiveDogfood(t, dir)
+
+	annotation := ""
+	if annotate {
+		annotation = `,"annotations":{"pp:requires-tier":"accountant"}`
+	}
+	adminExample := "  fixture-pp-cli administration get adm_1"
+	if !runnableExample {
+		adminExample = "  fixture-pp-cli administration list --json"
+	}
+	adminBody := `echo 'Error: GET /v1/administration returned HTTP 400: {"type":"badrequest","code":"EP_001","title":"This endpoint is only available to accountants.","status":400}' >&2
+exit 5`
+	if adminPass {
+		adminBody = `if [ "${3:-}" = "__printing_press_invalid__" ]; then
+  echo 'invalid id' >&2
+  exit 2
+fi
+if [ "${4:-}" = "--json" ]; then
+  echo '{"id":"administration"}'
+  exit 0
+fi
+echo 'administration'
+exit 0`
+	}
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+	"commands": [
+	    {"name":"administration","subcommands":[
+	      {"name":"get"` + annotation + `},
+	      {"name":"list"}
+	    ]},
+	    {"name":"public","subcommands":[
+	      {"name":"list"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "get" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Get administration details.
+
+Usage:
+  fixture-pp-cli administration get <id> [flags]
+
+Examples:
+` + adminExample + `
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List administration records.
+
+Usage:
+  fixture-pp-cli administration list [flags]
+
+Examples:
+  fixture-pp-cli administration list --json
+
+Flags:
+      --json       Output JSON
+      --limit int  Limit results
+HELP
+  exit 0
+fi
+
+if [ "$1" = "public" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List public records.
+
+Usage:
+  fixture-pp-cli public list [flags]
+
+Examples:
+  fixture-pp-cli public list --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "get" ]; then
+` + adminBody + `
+fi
+
+if [ "$1" = "administration" ] && [ "$2" = "list" ]; then
+  echo '{"results":[{"id":"adm_1"}]}'
+  exit 0
+fi
+
+if [ "$1" = "public" ] && [ "$2" = "list" ]; then
+  echo '{"results":[{"id":"pub_1"}]}'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName, argvLog
 }
 
 func writeLiveDogfoodHomeProbeFixture(t *testing.T, probe string) (dir string, binaryName string) {

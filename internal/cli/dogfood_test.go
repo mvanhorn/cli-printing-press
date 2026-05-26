@@ -90,6 +90,7 @@ func TestDogfoodHelpIncludesLiveFlags(t *testing.T) {
 
 	assert.Contains(t, output, "--live")
 	assert.Contains(t, output, "--level")
+	assert.Contains(t, output, "--auth-tier")
 	assert.Contains(t, output, "--write-acceptance")
 }
 
