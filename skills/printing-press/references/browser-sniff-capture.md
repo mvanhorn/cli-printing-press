@@ -902,10 +902,13 @@ If the thin-results check triggers a re-sniff that discovers additional endpoint
 After capture, inspect the collected responses before generating a spec. A browser-sniff is **not successful** if it only captured challenge, login, or access-denied pages.
 
 Treat the capture as failed when all or nearly all captured target-site responses match one of these:
+- HTTP `200` responses that only contain a content-less shell, interstitial, deterministic-size truncation, or other placeholder body with no real site data
 - HTTP `403` or `429` HTML with Cloudflare/Vercel/WAF/DataDome/PerimeterX/CAPTCHA markers
 - titles or body text such as "Just a moment", "Access denied", "Please enable JavaScript", "captcha", "challenge"
 - only login redirects/pages when the user expected an authenticated capture
 - no API-looking requests, no SSR embedded data, no structured HTML/feed data, and no page-context fetch evidence
+
+Do not treat a 200-served shell as evidence for `IP-blocked`, `rate-limited`, or `wait it out`. It is a clearance challenge until proven otherwise. Escalate through the same recovery menu as explicit 403/429 challenge pages, and use chrome-MCP to inspect the live browser wall when that backend is available, even if the eventual cookie-warm path still needs user help.
 
 When this happens, do not continue to Phase 2 with a challenge-page spec. Compose the recovery menu **per the availability of the MCP fallback flags set in Step 1** — the menu shape changes based on what's reachable in this runtime. Use the table below to pick the option set, then present via `AskUserQuestion`.
 
@@ -918,17 +921,17 @@ When this happens, do not continue to Phase 2 with a challenge-page spec. Compos
 | true | false | (1) Try cleared-browser capture again, (2) **Try chrome-MCP** — recommended on anti-bot trigger, (3) I'll provide a HAR from DevTools, (4) Discuss alternate CLI scope |
 | true | true | (1) Try cleared-browser capture again, (2) **Try chrome-MCP** — recommended on anti-bot trigger, (3) I'll provide a HAR from DevTools — I'll guide you with screenshots of your DevTools window, (4) Discuss alternate CLI scope |
 
-**Recommended-badge rule.** When the menu fires because of an anti-bot block (the trigger criteria above: 403/429 with WAF markers, "Just a moment", challenge titles, login-redirect-only when authenticated capture was expected), chrome-MCP carries the **(Recommended)** badge whenever it is present in the menu, regardless of whether computer-use is also detected — chrome-MCP is the highest-leverage path against an anti-bot block because it uses the user's real Chrome session. In other failure modes (thin results from the Step 2c check, time-budget bailout), no option carries the Recommended badge — let the user pick based on context.
+**Recommended-badge rule.** When the menu fires because of an anti-bot block (the trigger criteria above: HTTP 200 challenge shells or truncations, 403/429 with WAF markers, "Just a moment", challenge titles, login-redirect-only when authenticated capture was expected), chrome-MCP carries the **(Recommended)** badge whenever it is present in the menu, regardless of whether computer-use is also detected — chrome-MCP is the highest-leverage path against an anti-bot block because it uses the user's real Chrome session. In other failure modes (thin results from the Step 2c check, time-budget bailout), no option carries the Recommended badge — let the user pick based on context.
 
 **Question stem (teach the chrome-MCP mechanic when present).** When chrome-MCP is in the menu and the user has not seen this menu before in the current session, the question stem must teach the mechanic in one line. The user is mid-failure and may have never encountered chrome-MCP-as-fallback.
 
 When chrome-MCP IS in the menu:
 
-> "The browser capture only saw challenge or login pages, so it did not discover the real website data/API surface. The Chrome-extension MCP can capture from your existing Chrome window — pick this if your Chrome is open and you're already logged in to the target site. What should we do next?"
+> "The browser capture only saw challenge/login pages or a 200-served shell, so it did not discover the real website data/API surface. The Chrome-extension MCP can capture from your existing Chrome window — pick this if your Chrome is open and you're already logged in to the target site. What should we do next?"
 
 When chrome-MCP is NOT in the menu (current 3-option case, unchanged):
 
-> "The browser capture only saw challenge or login pages, so it did not discover the real website data/API surface. What should we do next?"
+> "The browser capture only saw challenge/login pages or a 200-served shell, so it did not discover the real website data/API surface. What should we do next?"
 
 **Fixed option labels and bodies.** Use these exact strings as the `AskUserQuestion` option labels and descriptions — the implementer should not paraphrase. Labels are short (4-7 words), self-contained (some harnesses render labels without descriptions), and front-load the differentiator. Composition is per the table above; pick the option set for the flag combination, then mark Recommended where the rule above says.
 
