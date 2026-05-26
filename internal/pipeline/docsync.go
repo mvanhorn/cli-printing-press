@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 )
 
 type novelFeatureDocGroup struct {
@@ -16,8 +18,6 @@ type syncedArtifact struct {
 	Path   string
 	Detail string
 }
-
-const skillInstallSectionEndSubstr = "Do not proceed with skill commands until verification succeeds."
 
 // SyncCLINarrativeDocs rewrites generated README/SKILL narrative blocks from
 // the current research.json narrative. Empty narrative fields remove only the
@@ -170,11 +170,11 @@ func syncSkillValueProp(path, valueProp string) (bool, error) {
 		return false, nil
 	}
 	return syncMarkdownFile(path, func(content string) string {
-		markerIdx := strings.Index(content, skillInstallSectionEndSubstr)
+		markerIdx := strings.Index(content, generator.SkillInstallSectionEndSubstr)
 		if markerIdx < 0 {
 			return content
 		}
-		start := markerIdx + len(skillInstallSectionEndSubstr)
+		start := markerIdx + len(generator.SkillInstallSectionEndSubstr)
 		if next := strings.IndexByte(content[start:], '\n'); next >= 0 {
 			start += next + 1
 		}
@@ -240,7 +240,8 @@ func findReadmeIntroEnd(content string, start int) int {
 	}
 	if install := findMarkdownHeadingInRange(content, "## Install", start, len(content)); install >= 0 && install < end {
 		end = install
-	} else if heading := firstMarkdownHeading(content, start, len(content), 2, 2); heading.Start >= 0 && heading.Start < end {
+	}
+	if heading := firstMarkdownHeading(content, start, end, 2, 2); heading.Start >= 0 && heading.Start < end {
 		end = heading.Start
 	}
 	return end

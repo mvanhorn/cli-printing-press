@@ -6,14 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestSkillInstallSectionEndSubstrMatchesGenerator(t *testing.T) {
-	assert.Equal(t, generator.SkillInstallSectionEndSubstr, skillInstallSectionEndSubstr)
-}
 
 func TestSyncReadmeAuthNarrativeRemovesStaleAuthenticationWhenOptionalExists(t *testing.T) {
 	dir := t.TempDir()
@@ -47,6 +42,36 @@ func TestSyncReadmeAuthNarrativeRemovesStaleAuthenticationWhenOptionalExists(t *
 	assert.NotContains(t, readme, "## Authentication")
 	assert.NotContains(t, readme, "Old required setup.")
 	assert.Contains(t, readme, "## Quick Start")
+}
+
+func TestReplaceReadmeIntroNarrativeStopsAtHeadingBeforeInstall(t *testing.T) {
+	content := strings.Join([]string{
+		"# Example CLI",
+		"",
+		"Old headline.",
+		"",
+		"## Authentication",
+		"",
+		"Keep this auth section.",
+		"",
+		"## Install",
+		"",
+		"Install instructions.",
+		"",
+	}, "\n")
+
+	updated := replaceReadmeIntroNarrative(content, &ReadmeNarrative{
+		Headline:  "New headline",
+		ValueProp: "New value proposition.",
+	})
+
+	assert.Contains(t, updated, "**New headline**")
+	assert.Contains(t, updated, "New value proposition.")
+	assert.Contains(t, updated, "## Authentication\n\nKeep this auth section.")
+	assert.Contains(t, updated, "## Install\n\nInstall instructions.")
+	assert.NotContains(t, updated, "Old headline.")
+	requireBefore(t, updated, "New value proposition.", "## Authentication")
+	requireBefore(t, updated, "## Authentication", "## Install")
 }
 
 func TestRenderSkillAuthSetupSectionDoesNotDuplicateDoctorInstruction(t *testing.T) {
