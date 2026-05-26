@@ -52,6 +52,7 @@ const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 // honor a smaller --limit) so the matrix's per-command timeout
 // doesn't kill an otherwise healthy run.
 const dogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
+const liveDogfoodAuthTierEnvVar = "PP_AUTH_TIER"
 const liveDogfoodAuthRetryDelay = time.Second
 
 type LiveDogfoodOptions struct {
@@ -61,6 +62,7 @@ type LiveDogfoodOptions struct {
 	Timeout             time.Duration
 	WriteAcceptancePath string
 	AuthEnv             string
+	AuthTier            string
 	// AllowDestructive re-enables testing of endpoints classified as
 	// destructive-at-auth. Default skips them to prevent runner-credential
 	// rotation.
@@ -155,6 +157,7 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		siblings:         buildSiblingMap(commands),
 		cache:            newCompanionCache(),
 		timeout:          timeout,
+		authTier:         resolveLiveDogfoodAuthTier(opts.AuthTier),
 		allowDestructive: opts.AllowDestructive,
 	}
 
@@ -311,6 +314,7 @@ type resolveCtx struct {
 	siblings         map[string][]liveDogfoodCommand
 	cache            *companionCache
 	timeout          time.Duration
+	authTier         string
 	allowDestructive bool
 }
 
@@ -695,6 +699,21 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 
 	command.Help = help
 	mutating := liveDogfoodCommandMutates(command)
+	useDryRun := mutating && commandSupportsDryRun(command.Help)
+
+	tierSkip := liveDogfoodRequiresTierSkipReason(command.Annotations, ctx.authTier)
+	if tierSkip != "" {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, tierSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, tierSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, tierSkip),
+		)
+		if useDryRun {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, tierSkip))
+		}
+		return results
+	}
+
 	happyArgs, ok := liveDogfoodHappyArgs(command)
 	if !ok {
 		if mutating {
@@ -712,8 +731,6 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		)
 		return results
 	}
-
-	useDryRun := mutating && commandSupportsDryRun(command.Help)
 
 	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
 	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
@@ -1017,6 +1034,7 @@ const (
 	mcpReadOnlyAnnotation      = "mcp:read-only"
 	destructiveAuthAnnotation  = "pp:destructive-auth"
 	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
+	requiresTierAnnotation     = "pp:requires-tier"
 	liveDogfoodMaxOutputBytes  = 10 << 20
 )
 
@@ -1217,6 +1235,24 @@ func liveDogfoodRequiredParamFixtureReason(run liveDogfoodRun) string {
 		return reasonRequiredParamFixture
 	}
 	return ""
+}
+
+func resolveLiveDogfoodAuthTier(flagValue string) string {
+	if tier := strings.TrimSpace(flagValue); tier != "" {
+		return tier
+	}
+	return strings.TrimSpace(os.Getenv(liveDogfoodAuthTierEnvVar))
+}
+
+func liveDogfoodRequiresTierSkipReason(annotations map[string]string, activeTier string) string {
+	requiredTier := strings.TrimSpace(annotations[requiresTierAnnotation])
+	if requiredTier == "" {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(activeTier), requiredTier) {
+		return ""
+	}
+	return fmt.Sprintf("blocked-fixture: requires auth tier %q", requiredTier)
 }
 
 func liveDogfoodAuth401(run liveDogfoodRun) bool {
@@ -1473,10 +1509,44 @@ func resolveLiveDogfoodAcceptanceIdentity(cliDir string) (apiName, runID, authTy
 }
 
 func liveDogfoodQuickCommands(commands []liveDogfoodCommand) []liveDogfoodCommand {
-	if len(commands) <= 2 {
+	const quickTarget = 6
+	if len(commands) <= quickTarget {
 		return commands
 	}
-	return commands[:2]
+	selected := make([]liveDogfoodCommand, 0, quickTarget)
+	selectedIndex := make(map[int]bool, quickTarget)
+	seenFamily := map[string]bool{}
+	for i, command := range commands {
+		family := liveDogfoodCommandFamily(command)
+		if family != "" {
+			if seenFamily[family] {
+				continue
+			}
+			seenFamily[family] = true
+		}
+		selected = append(selected, command)
+		selectedIndex[i] = true
+		if len(selected) == quickTarget {
+			return selected
+		}
+	}
+	for i, command := range commands {
+		if selectedIndex[i] {
+			continue
+		}
+		selected = append(selected, command)
+		if len(selected) == quickTarget {
+			return selected
+		}
+	}
+	return selected
+}
+
+func liveDogfoodCommandFamily(command liveDogfoodCommand) string {
+	if len(command.Path) == 0 {
+		return ""
+	}
+	return command.Path[0]
 }
 
 func normalizeLiveDogfoodLevel(level string) (string, error) {
