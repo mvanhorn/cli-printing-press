@@ -54,6 +54,15 @@ If `--version` reports "command not found" after install, the install step did n
 
 {{.Narrative.WhenToUse}}
 {{- end}}
+{{- if and .Narrative .Narrative.AntiTriggers}}
+
+## Anti-triggers
+
+Do not use this CLI for:
+{{- range .Narrative.AntiTriggers}}
+- {{.}}
+{{- end}}
+{{- end}}
 {{- if not .HasWriteCommands}}
 
 ## When Not to Use This CLI

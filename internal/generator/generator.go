@@ -94,6 +94,7 @@ type ReadmeNarrative struct {
 	QuickStart     []QuickStartStep
 	Troubleshoots  []TroubleshootTip
 	WhenToUse      string
+	AntiTriggers   []string
 	Recipes        []Recipe
 	TriggerPhrases []string
 }
