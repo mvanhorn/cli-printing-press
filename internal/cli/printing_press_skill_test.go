@@ -56,3 +56,21 @@ func TestPrintingPressSkillTranscendenceCollectorSliceInit(t *testing.T) {
 	require.NotContains(t, content, "var failures []fetchFailure")
 	require.NotContains(t, content, "var successfulItems []yourEntryType")
 }
+
+func TestPrintingPressSkillReachabilityGateAllowsLANOnlyCarveout(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+
+	content := string(data)
+	require.Contains(t, content, "Exception for LAN-only / mDNS-discovered APIs")
+	require.Contains(t, content, "http://localhost:<port>")
+	require.Contains(t, content, "http://127.0.0.1:<port>")
+	require.Contains(t, content, "http://[::1]:<port>")
+	require.Contains(t, content, "SSDP / mDNS-discovered")
+	require.Contains(t, content, "Reason: lan-only-no-global-url")
+	require.Contains(t, content, "Then proceed to Phase 2")
+	require.Contains(t, content, "do not use this carve-out for normal public/cloud origins such as `https://api.example.com`")
+	require.Contains(t, content, "those still run the reachability probe and decision matrix below")
+}
