@@ -289,7 +289,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- else}}
 					report["auth"] = "not configured"
 {{- end}}
-{{- with $canonicalEnvVar}}
+{{- with .Auth.OAuth2RefreshTokenEnvVar}}
 					report["auth_hint"] = "export {{.Name}}=<your-oauth-refresh-value>"
 {{- end}}
 {{- if .Auth.KeyURL}}

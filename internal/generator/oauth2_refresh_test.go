@@ -42,6 +42,8 @@ func TestGenerateOAuth2RefreshAuth(t *testing.T) {
 	assert.Contains(t, clientSrc, `tokenURL = "https://auth.example.com/oauth/token"`)
 	assert.Contains(t, doctorSrc, `report["auth"] = "configured (oauth2 refresh)"`)
 	assert.Contains(t, doctorSrc, `report["auth_source"] = cfg.AuthSource`)
+	assert.Contains(t, doctorSrc, `report["auth_hint"] = "export OAUTH_REFRESH_REFRESH_TOKEN=<your-oauth-refresh-value>"`)
+	assert.NotContains(t, doctorSrc, `report["auth_hint"] = "export OAUTH_REFRESH_CLIENT_ID=<your-oauth-refresh-value>"`)
 	assert.Contains(t, readme, "This CLI uses OAuth2 with refresh-token rotation.")
 	assert.Contains(t, skill, "This CLI uses OAuth2 with refresh-token rotation.")
 
@@ -86,6 +88,49 @@ func TestOAuth2RefreshDefaultsEnvVars(t *testing.T) {
 			Inferred:    true,
 		},
 	}, apiSpec.Auth.EnvVarSpecs)
+}
+
+func TestOAuth2RefreshExplicitEnvVarsKeepClientSecretOptional(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth2-refresh-explicit")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:     spec.AuthTypeOAuth2Refresh,
+		Header:   "Authorization",
+		TokenURL: "https://auth.example.com/oauth/token",
+		EnvVars: []string{
+			"OAUTH2_REFRESH_EXPLICIT_CLIENT_ID",
+			"OAUTH2_REFRESH_EXPLICIT_CLIENT_SECRET",
+			"OAUTH2_REFRESH_EXPLICIT_REFRESH_TOKEN",
+		},
+	}
+
+	require.NoError(t, apiSpec.Validate())
+	require.Equal(t, []spec.AuthEnvVar{
+		{
+			Name:      "OAUTH2_REFRESH_EXPLICIT_CLIENT_ID",
+			Kind:      spec.AuthEnvVarKindAuthFlowInput,
+			Required:  true,
+			Sensitive: false,
+			Inferred:  true,
+		},
+		{
+			Name:      "OAUTH2_REFRESH_EXPLICIT_CLIENT_SECRET",
+			Kind:      spec.AuthEnvVarKindAuthFlowInput,
+			Required:  false,
+			Sensitive: true,
+			Inferred:  true,
+		},
+		{
+			Name:      "OAUTH2_REFRESH_EXPLICIT_REFRESH_TOKEN",
+			Kind:      spec.AuthEnvVarKindAuthFlowInput,
+			Required:  true,
+			Sensitive: true,
+			Inferred:  true,
+		},
+	}, apiSpec.Auth.EnvVarSpecs)
+	require.NotNil(t, apiSpec.Auth.OAuth2RefreshTokenEnvVar())
+	assert.Equal(t, "OAUTH2_REFRESH_EXPLICIT_REFRESH_TOKEN", apiSpec.Auth.OAuth2RefreshTokenEnvVar().Name)
 }
 
 func TestOAuth2RefreshRequiresTokenURL(t *testing.T) {

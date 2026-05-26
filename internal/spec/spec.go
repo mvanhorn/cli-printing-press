@@ -1105,6 +1105,21 @@ func (v AuthEnvVar) IsRequestCredential() bool {
 	return v.EffectiveKind() == AuthEnvVarKindPerCall
 }
 
+func isOAuthClientIDEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
+}
+
+func isOAuthClientSecretEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "client_secret" || strings.HasSuffix(placeholder, "_client_secret")
+}
+
+func isOAuthRefreshTokenEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "refresh_token" || strings.HasSuffix(placeholder, "_refresh_token")
+}
+
 func (k AuthEnvVarKind) SensitivePlaceholder() string {
 	switch k {
 	case AuthEnvVarKindPerCall:
@@ -1153,6 +1168,26 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 		return &c.EnvVarSpecs[0]
 	}
 	return nil
+}
+
+// OAuth2RefreshTokenEnvVar returns the env var a user should set with the
+// long-lived refresh token for oauth2_refresh auth.
+func (c *AuthConfig) OAuth2RefreshTokenEnvVar() *AuthEnvVar {
+	if c == nil || c.Type != AuthTypeOAuth2Refresh {
+		return nil
+	}
+	c.NormalizeEnvVarSpecs("")
+	for i := range c.EnvVarSpecs {
+		if isOAuthRefreshTokenEnvVar(c.EnvVarSpecs[i].Name) {
+			return &c.EnvVarSpecs[i]
+		}
+	}
+	for i := len(c.EnvVarSpecs) - 1; i >= 0; i-- {
+		if c.EnvVarSpecs[i].EffectiveKind() == AuthEnvVarKindAuthFlowInput {
+			return &c.EnvVarSpecs[i]
+		}
+	}
+	return c.CanonicalEnvVar()
 }
 
 // NewORCaseEnvVarSpecs builds the canonical EnvVarSpecs slice for the OR-case
@@ -1235,15 +1270,17 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 		for _, name := range c.EnvVars {
 			if name = strings.TrimSpace(name); name != "" {
 				kind := AuthEnvVarKindPerCall
+				required := true
 				sensitive := true
 				if c.Type == AuthTypeOAuth2Refresh {
 					kind = AuthEnvVarKindAuthFlowInput
-					sensitive = naming.EnvVarPlaceholder(name) != "client_id"
+					required = !isOAuthClientSecretEnvVar(name)
+					sensitive = !isOAuthClientIDEnvVar(name)
 				}
 				c.EnvVarSpecs = append(c.EnvVarSpecs, AuthEnvVar{
 					Name:      name,
 					Kind:      kind,
-					Required:  true,
+					Required:  required,
 					Sensitive: sensitive,
 					Inferred:  true,
 				})
