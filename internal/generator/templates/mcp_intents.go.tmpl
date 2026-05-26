@@ -28,6 +28,10 @@ import (
 {{- if .MCP.Intents}}
 	"{{modulePath}}/internal/client"
 {{- end}}
+{{- if and .MCP.Intents .HasRequiredRoles}}
+	"{{modulePath}}/internal/cli"
+	"{{modulePath}}/internal/config"
+{{- end}}
 {{- if .RecipeIntents}}
 	"{{modulePath}}/internal/mcp/cobratree"
 {{- end}}
@@ -66,10 +70,18 @@ func RegisterIntents(s *server.MCPServer) {
 {{range .MCP.Intents}}
 // handle{{pascal .Name}} runs the {{.Name}} intent: {{.Description}}
 func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+{{- if $.HasRequiredRoles}}
+	cfg, err := newMCPConfig()
+	if err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
+	c := newMCPClientFromConfig(cfg)
+{{- else}}
 	c, err := newMCPClient()
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
+{{- end}}
 
 	input := req.GetArguments()
 	scope := map[string]any{"input": input}
@@ -83,7 +95,7 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 			params[{{printf "%q" $paramName}}] = v
 		}
 {{- end}}
-		resp, err := callIntentEndpoint(ctx, c, {{printf "%q" $step.Endpoint}}, params)
+		resp, err := callIntentEndpoint(ctx, c, {{if $.HasRequiredRoles}}cfg, {{end}}{{printf "%q" $step.Endpoint}}, params)
 		if err != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("step %d ({{$step.Endpoint}}) failed: %v", {{add $i 1}}, err)), nil
 		}
@@ -198,11 +210,16 @@ func resolveIntentBinding(scope map[string]any, expr string) (any, bool) {
 // client. It uses the generator-emitted endpoint registry below to look up
 // the HTTP method, path template, and positional-param set so the intent
 // handler can stay generic across endpoints.
-func callIntentEndpoint(ctx context.Context, c *client.Client, ref string, params map[string]any) (any, error) {
+func callIntentEndpoint(ctx context.Context, c *client.Client, {{if .HasRequiredRoles}}cfg *config.Config, {{end}}ref string, params map[string]any) (any, error) {
 	ep, ok := intentEndpoints[ref]
 	if !ok {
 		return nil, fmt.Errorf("unknown endpoint %q", ref)
 	}
+{{- if .HasRequiredRoles}}
+	if err := cli.RequireRoleWith(nil, cfg, ref, ep.requiredRole); err != nil {
+		return nil, err
+	}
+{{- end}}
 {{- if .HasTierRouting}}
 	c = c.WithTier(ep.tier)
 {{- end}}
@@ -277,6 +294,9 @@ func callIntentEndpoint(ctx context.Context, c *client.Client, ref string, param
 type intentEndpointMeta struct {
 	method string
 	path   string
+{{- if .HasRequiredRoles}}
+	requiredRole cli.Persona
+{{- end}}
 {{- if .HasTierRouting}}
 	tier   string
 {{- end}}
@@ -295,7 +315,7 @@ var intentEndpoints = map[string]intentEndpointMeta{
 {{- range .MCP.Intents}}
 {{- range .Steps}}
 {{- $ep := lookupEndpoint $.APISpec .Endpoint}}
-	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}{{if $ep.BodyIsArray}}, bodyIsArray: true{{end}}},
+	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}{{if $.HasRequiredRoles}}, requiredRole: {{if $ep.RequiresRole}}cli.Persona{{pascal $ep.RequiresRole}}{{else}}cli.Persona(""){{end}}{{end}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}{{if $ep.BodyIsArray}}, bodyIsArray: true{{end}}},
 {{- end}}
 {{- end}}
 }

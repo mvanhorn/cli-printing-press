@@ -35,6 +35,9 @@ import (
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
+{{- if .HasRequiredRoles}}
+	"{{modulePath}}/internal/config"
+{{- end}}
 {{- if or .HasSyncHelpers (and .Auth.Type (ne .Auth.Type "none"))}}
 	"{{modulePath}}/internal/client"
 {{- end}}
@@ -121,6 +124,59 @@ func authErr(err error) error     { return &cliError{code: 4, err: err} }
 func apiErr(err error) error      { return &cliError{code: 5, err: err} }
 func configErr(err error) error   { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
+
+{{- if .HasRequiredRoles}}
+type Persona string
+
+const (
+{{- range .Roles}}
+	Persona{{pascal .}} Persona = "{{.}}"
+{{- end}}
+)
+
+// MarkPersona records an authenticated account role in config after an
+// API-specific auth flow or role probe has identified it.
+func MarkPersona(cfg *config.Config, role Persona) {
+	if cfg == nil {
+		return
+	}
+	cfg.AuthRole = string(role)
+}
+
+// resolveAuthRole is intentionally a variable so a printed CLI can install an
+// API-specific resolver from a hand-authored file without editing generated
+// command files. The default returns "" (treated as unknown), so role-gated
+// commands fail closed until role evidence is available from config, env, or
+// the custom resolver.
+var resolveAuthRole = func(_ *rootFlags, _ *config.Config) (Persona, error) {
+	return "", nil
+}
+
+func RequireRoleWith(flags *rootFlags, cfg *config.Config, cmdName string, required Persona) error {
+	if required == "" {
+		return nil
+	}
+	actual := Persona("")
+	if cfg != nil {
+		actual = Persona(strings.TrimSpace(cfg.AuthRole))
+	}
+	if actual == "" {
+		resolved, err := resolveAuthRole(flags, cfg)
+		if err != nil {
+			return authErr(err)
+		}
+		actual = Persona(strings.TrimSpace(string(resolved)))
+	}
+	if actual == "" {
+		return usageErr(fmt.Errorf("%s is for [%s]. Your authenticated account role is unknown.", cmdName, required))
+	}
+	if actual == required {
+		return nil
+	}
+	return usageErr(fmt.Errorf("%s is for [%s]. Your authenticated account is role=%s.", cmdName, required, actual))
+}
+
+{{- end}}
 
 {{- if .HasMutationEndpoints}}
 // partialFailureErr signals that the upstream API returned a 2xx with a

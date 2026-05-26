@@ -1902,6 +1902,119 @@ resources:
 	})
 }
 
+func TestEndpointRequiresRole(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: role-api
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: api_key
+  header: Authorization
+  env_vars: [ROLE_API_TOKEN]
+roles: [parent, student, teacher, admin]
+config:
+  format: toml
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        requires_role: admin
+`)
+
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"parent", "student", "teacher", "admin"}, s.Roles)
+	assert.Equal(t, "admin", s.Resources["users"].Endpoints["list"].RequiresRole)
+}
+
+func TestEndpointRequiresRoleMustBeDeclared(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: role-api
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: api_key
+  header: Authorization
+  env_vars: [ROLE_API_TOKEN]
+roles: [parent]
+config:
+  format: toml
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        requires_role: admin
+`)
+
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `requires_role "admin" is not declared in roles`)
+}
+
+func TestEndpointRequiresRoleMustBeDeclaredInNestedSubResource(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: role-api
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+roles: [parent]
+config:
+  format: toml
+resources:
+  schools:
+    sub_resources:
+      classes:
+        sub_resources:
+          assignments:
+            endpoints:
+              list:
+                method: GET
+                path: /schools/{school_id}/classes/{class_id}/assignments
+                requires_role: admin
+`)
+
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `sub-resource "classes" sub-resource "assignments" endpoint "list" requires_role "admin" is not declared in roles`)
+}
+
+func TestEndpointRolePersonaConstantsMustBeUnique(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: role-api
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+roles: [site-admin, site_admin]
+config:
+  format: toml
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        requires_role: site-admin
+`)
+
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `duplicate PersonaSiteAdmin constants`)
+}
+
 func TestEndpointIDFieldAndCritical(t *testing.T) {
 	t.Parallel()
 
