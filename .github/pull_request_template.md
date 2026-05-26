@@ -52,12 +52,17 @@ N/A
 ## Output Contract
 
 <!-- Required only if this PR changes templates, generated files, manifests, command output, MCP schemas, scorecard output, catalog rendering, or pipeline artifacts. Otherwise write "N/A". -->
+<!-- For generator/template changes, name the generated-output evidence: emitted-code assertion, compiled generated CLI case, golden fixture, or why the existing cases are sufficient. -->
 
 N/A
 
 ## Verification
 
 <!-- List commands actually run. Say "Not run" with a reason if not run. -->
+
+- [ ] Generator/template change: verified generated output, including emitted-code assertions or compiled generated CLI output
+- [ ] Generator/template change: covered the affected fallback or variant shape, not only happy-path fixtures
+- [ ] Generator/template change: checked emitted definitions and call sites for matching gates
 
 ## AI / Automation Disclosure
 
