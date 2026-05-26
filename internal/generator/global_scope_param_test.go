@@ -41,7 +41,7 @@ func TestGenerateGlobalScopeParamUsesEnvDefault(t *testing.T) {
 	content := generatedCLISourceContaining(t, outputDir, "flagTenantFilter")
 
 	assert.Contains(t, content, `StringVar(&flagTenantFilter, "tenant-filter", os.Getenv("CIPP_TENANT_FILTER"), "Tenant scope (defaults from CIPP_TENANT_FILTER)")`)
-	assert.Contains(t, content, `if flagTenantFilter == "" && !flags.dryRun {`)
+	assert.Contains(t, content, `if !cmd.Flags().Changed("tenant-filter") && flagTenantFilter == "" && !flags.dryRun {`)
 	assert.Contains(t, content, `return fmt.Errorf("required flag \"%s\" not set (or set %s)", "tenant-filter", "CIPP_TENANT_FILTER")`)
 	assert.Contains(t, content, `params["TenantFilter"] = fmt.Sprintf("%v", flagTenantFilter)`)
 	assert.NotContains(t, strings.ToLower(content), `markflagrequired`)

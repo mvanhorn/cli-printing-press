@@ -3770,16 +3770,18 @@ func isGlobalFilterCandidate(param spec.Param) bool {
 
 func isGlobalScopeParamName(name string) bool {
 	normalized := strings.ToLower(globalScopeParamNormalizerRE.ReplaceAllString(name, ""))
-	return strings.Contains(normalized, "tenant") ||
-		strings.Contains(normalized, "workspace") ||
-		strings.Contains(normalized, "organization") ||
-		strings.Contains(normalized, "organisation") ||
-		normalized == "org" ||
-		strings.HasSuffix(normalized, "orgid") ||
-		normalized == "region" ||
-		strings.HasSuffix(normalized, "regionid") ||
-		normalized == "account" ||
-		strings.HasSuffix(normalized, "accountid")
+	switch normalized {
+	case "tenant", "tenantid", "tenantfilter",
+		"workspace", "workspaceid", "workspacefilter",
+		"organization", "organizationid", "organizationfilter",
+		"organisation", "organisationid", "organisationfilter",
+		"org", "orgid",
+		"region", "regionid", "regionfilter",
+		"account", "accountid", "accountfilter":
+		return true
+	default:
+		return false
+	}
 }
 
 func globalScopeParamEnvVar(apiName, paramName string) string {

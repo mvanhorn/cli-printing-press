@@ -67,7 +67,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}
 {{- if .EnvVar}}
-			if flag{{camel (paramIdent .)}} == {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} && !flags.dryRun {
+			if !{{flagChangedExpr .}} && flag{{camel (paramIdent .)}} == {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set (or set %s)", "{{publicFlagName .}}", "{{.EnvVar}}")
 			}
 {{- else}}
