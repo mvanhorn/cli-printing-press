@@ -13,9 +13,6 @@ require (
 {{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed") .Streaming.Enabled}}
 	github.com/gorilla/websocket v1.5.3
 {{- end}}
-{{- if hasNonCookieAuth .Auth}}
-	github.com/mvanhorn/agentcookie v0.14.0-beta.1
-{{- end}}
 	github.com/spf13/cobra v1.9.1
 {{- if .HasHTMLExtraction}}
 	golang.org/x/net v0.55.0
@@ -31,9 +28,4 @@ require modernc.org/sqlite v1.37.0
 
 {{- if .VisionSet.MCP}}
 require github.com/mark3labs/mcp-go v0.47.0
-{{- end}}
-
-{{- $agentcookieReplacePath := agentcookieReplacePath}}
-{{- if and (hasNonCookieAuth .Auth) $agentcookieReplacePath}}
-replace github.com/mvanhorn/agentcookie => {{$agentcookieReplacePath}}
 {{- end}}
