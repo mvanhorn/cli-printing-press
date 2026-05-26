@@ -136,35 +136,14 @@ func TestGeneratedGraphQLGetHonorsLocalStrategy(t *testing.T) {
 	storeGen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
 	require.NoError(t, storeGen.Generate())
 
-	storeGetSrc := generatedCLIFileContaining(t, storeOutputDir, `client.ItemsGetQuery`)
-	require.Contains(t, storeGetSrc, `validateDataSourceStrategy(flags, "local")`)
-	require.Contains(t, storeGetSrc, `flags.dataSource == "local" || "local" == "local"`)
-	require.Contains(t, storeGetSrc, `localReason = "strategy_local"`)
-	require.Contains(t, storeGetSrc, `resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "items", false, path+"/"+args[0], nil, localReason)`)
+	storeGetSrc := readGeneratedFile(t, storeOutputDir, "internal", "cli", "promoted_items.go")
+	require.Contains(t, storeGetSrc, `resolveReadWithStrategy(cmd.Context(), c, flags, "local", "items", false`)
 
 	noStoreOutputDir := filepath.Join(t.TempDir(), "graphql-get-local-strategy-nostore-pp-cli")
 	noStoreGen := New(apiSpec, noStoreOutputDir)
 	noStoreGen.VisionSet = VisionTemplateSet{Export: true}
 	require.NoError(t, noStoreGen.Generate())
 
-	noStoreGetSrc := generatedCLIFileContaining(t, noStoreOutputDir, `client.ItemsGetQuery`)
+	noStoreGetSrc := readGeneratedFile(t, noStoreOutputDir, "internal", "cli", "promoted_items.go")
 	require.Contains(t, noStoreGetSrc, `data_source_strategy local requires the local store data layer`)
-}
-
-func generatedCLIFileContaining(t *testing.T, outputDir, needle string) string {
-	t.Helper()
-
-	cliFiles, err := os.ReadDir(filepath.Join(outputDir, "internal", "cli"))
-	require.NoError(t, err)
-	for _, file := range cliFiles {
-		if file.IsDir() || !strings.HasSuffix(file.Name(), ".go") {
-			continue
-		}
-		src := readGeneratedFile(t, outputDir, "internal", "cli", file.Name())
-		if strings.Contains(src, needle) {
-			return src
-		}
-	}
-	require.Failf(t, "generated CLI file not found", "no generated cli file contained %q", needle)
-	return ""
 }
