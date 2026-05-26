@@ -9,6 +9,7 @@ catalog/specs/*.graphql
 .claude/local/
 /refactor/artifacts/
 /tests/artifacts/perf/
+/cli-printing-press
 /printing-press
 /press-auth
 library/
