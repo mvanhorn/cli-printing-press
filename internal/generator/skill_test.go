@@ -22,6 +22,8 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 
 	apiSpec := minimalSpec("finance")
 	apiSpec.Category = "commerce"
+	apiSpec.Regions = []string{"US", "*"}
+	apiSpec.APILanguage = "en-US"
 	outputDir := filepath.Join(t.TempDir(), "finance-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.Narrative = &ReadmeNarrative{
@@ -58,6 +60,22 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		"frontmatter description should list domain-specific trigger phrases verbatim (backtick-delimited)")
 	assert.True(t, strings.Contains(content, "library/commerce/finance/cmd/finance-pp-cli"),
 		"openclaw install manifest should use the API's category and slug-only directory")
+	assert.True(t, strings.Contains(content, `regions: ["US", "*"]`),
+		"frontmatter should expose structured geographic scope")
+	assert.True(t, strings.Contains(content, `api_language: "en-US"`),
+		"frontmatter should expose the API's native language tag")
+	require.True(t, strings.HasPrefix(content, "---\n"), "frontmatter should open with ---")
+	end := strings.Index(content[4:], "\n---\n")
+	require.NotEqual(t, -1, end, "frontmatter should close with ---")
+	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
+	var parsed struct {
+		Regions     []string `yaml:"regions"`
+		APILanguage string   `yaml:"api_language"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+		"frontmatter with region/language metadata must be valid YAML; content was:\n%s", body)
+	assert.Equal(t, []string{"US", "*"}, parsed.Regions)
+	assert.Equal(t, "en-US", parsed.APILanguage)
 
 	// Body
 	assert.True(t, strings.Contains(content, "## When to Use This CLI"),

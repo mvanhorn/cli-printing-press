@@ -21,6 +21,11 @@ var namePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // so the validator rejects shapes the generator could not emit safely.
 var authEnvVarPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
+// regionPattern accepts any two uppercase letters; the catalog does not
+// maintain a full ISO 3166-1 country-code allowlist.
+var regionPattern = regexp.MustCompile(`^[A-Z]{2}$`)
+var apiLanguagePattern = regexp.MustCompile(`^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$`)
+
 // Public categories first, alphabetized. "other" and "example" are explicitly
 // special (catch-all / test-only) and kept at the end.
 var validCategories = map[string]struct{}{
@@ -160,6 +165,14 @@ type Entry struct {
 	// appends its name-derived fallback (e.g. STRIPE_BEARER_AUTH) as the last
 	// entry so operators on existing setups don't need a migration.
 	AuthEnvVars []string `yaml:"auth_env_vars,omitempty"`
+	// Regions lists geographic availability/scope tokens for this API.
+	// Use ISO-style two-letter region tokens (NL, IN), EU for pan-European
+	// services, or * for APIs that are explicitly global.
+	Regions []string `yaml:"regions,omitempty"`
+	// APILanguage is the API's native/domain language as a BCP 47 tag
+	// (for example "nl" or "en-US"). It describes upstream terms and
+	// payload vocabulary, not the generated CLI command language.
+	APILanguage string `yaml:"api_language,omitempty"`
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
@@ -349,7 +362,48 @@ func (e *Entry) Validate() error {
 	if err := validateAuthEnvVars(e.AuthEnvVars); err != nil {
 		return err
 	}
+	if err := validateRegions(e.Regions); err != nil {
+		return err
+	}
+	if err := validateAPILanguage(e.APILanguage); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func validateRegions(regions []string) error {
+	seen := make(map[string]struct{}, len(regions))
+	for i, region := range regions {
+		trimmed := strings.TrimSpace(region)
+		if trimmed == "" {
+			return fmt.Errorf("regions[%d] must not be empty", i)
+		}
+		if trimmed != region {
+			return fmt.Errorf("regions[%d] %q must not have leading or trailing whitespace", i, region)
+		}
+		if region != "*" && !regionPattern.MatchString(region) {
+			return fmt.Errorf("regions[%d] %q must be an uppercase two-letter region token, EU, or *", i, region)
+		}
+		if _, dup := seen[region]; dup {
+			return fmt.Errorf("regions[%d] %q is a duplicate", i, region)
+		}
+		seen[region] = struct{}{}
+	}
+	return nil
+}
+
+func validateAPILanguage(language string) error {
+	if language == "" {
+		return nil
+	}
+	trimmed := strings.TrimSpace(language)
+	if trimmed != language {
+		return fmt.Errorf("api_language %q must not have leading or trailing whitespace", language)
+	}
+	if !apiLanguagePattern.MatchString(language) {
+		return fmt.Errorf("api_language %q must be a BCP 47 language tag", language)
+	}
 	return nil
 }
 

@@ -53,6 +53,8 @@ func TestLibraryListJSONWithManifests(t *testing.T) {
 		CLIName:       "notion-pp-cli",
 		Category:      "productivity",
 		CatalogEntry:  "notion",
+		Regions:       []string{"NL"},
+		APILanguage:   "nl",
 		Description:   "Notion workspace API",
 	})
 
@@ -88,6 +90,12 @@ func TestLibraryListJSONWithManifests(t *testing.T) {
 	}
 	assert.True(t, names["notion-pp-cli"])
 	assert.True(t, names["stripe-pp-cli"])
+	for _, e := range entries {
+		if e.CLIName == "notion-pp-cli" {
+			assert.Equal(t, []string{"NL"}, e.Regions)
+			assert.Equal(t, "nl", e.APILanguage)
+		}
+	}
 }
 
 func TestLibraryListEmptyLibrary(t *testing.T) {

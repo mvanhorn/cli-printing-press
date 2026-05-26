@@ -2287,6 +2287,12 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.Category != "" {
 		apiSpec.Category = entry.Category
 	}
+	if len(entry.Regions) > 0 {
+		apiSpec.Regions = append([]string(nil), entry.Regions...)
+	}
+	if entry.APILanguage != "" {
+		apiSpec.APILanguage = entry.APILanguage
+	}
 	if entry.Owner != "" && apiSpec.Owner == "" {
 		apiSpec.Owner = entry.Owner
 	}
