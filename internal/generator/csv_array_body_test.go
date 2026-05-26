@@ -102,6 +102,13 @@ func TestParseCSVResponse(t *testing.T) {
 	if len(rows) != 1 || rows[0]["Domain"] != "example.com" || rows[0]["Rank"] != "1" {
 		t.Fatalf("unexpected rows: %#v", rows)
 	}
+	quotedHeader := ParseCSV(json.RawMessage("\"Revenue,Total\";Quarter\n100;Q1\n"))
+	if len(quotedHeader) != 1 || quotedHeader[0]["Revenue,Total"] != "100" || quotedHeader[0]["Quarter"] != "Q1" {
+		t.Fatalf("unexpected quoted-header rows: %#v", quotedHeader)
+	}
+	if headerOnly := ParseCSV(json.RawMessage("Name,Score\n")); headerOnly != nil {
+		t.Fatalf("expected nil header-only CSV, got %#v", headerOnly)
+	}
 	first := ParseCSVFirstRow(json.RawMessage("\"Name,Score\\nAda,42\\n\""))
 	if first["Name"] != "Ada" || first["Score"] != "42" {
 		t.Fatalf("unexpected first row: %#v", first)

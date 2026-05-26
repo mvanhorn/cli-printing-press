@@ -24,7 +24,7 @@ func ParseCSV(raw json.RawMessage) []map[string]any {
 	r.Comma = detectCSVDelimiter(text)
 
 	records, err := r.ReadAll()
-	if err != nil || len(records) == 0 {
+	if err != nil || len(records) < 2 {
 		return nil
 	}
 
@@ -68,10 +68,34 @@ func detectCSVDelimiter(text string) rune {
 		if line == "" {
 			continue
 		}
-		if strings.Count(line, ";") > strings.Count(line, ",") {
+		commas, semicolons := countCSVDelimitersOutsideQuotes(line)
+		if semicolons > commas {
 			return ';'
 		}
 		return ','
 	}
 	return ','
+}
+
+func countCSVDelimitersOutsideQuotes(line string) (commas int, semicolons int) {
+	inQuote := false
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '"':
+			if inQuote && i+1 < len(line) && line[i+1] == '"' {
+				i++
+				continue
+			}
+			inQuote = !inQuote
+		case ',':
+			if !inQuote {
+				commas++
+			}
+		case ';':
+			if !inQuote {
+				semicolons++
+			}
+		}
+	}
+	return commas, semicolons
 }
