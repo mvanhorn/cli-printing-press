@@ -61,6 +61,7 @@ const (
 	extensionCache                 = "x-cache"
 	extensionStreaming             = "x-streaming"
 	extensionSyncWalker            = "x-pp-sync-walker"
+	extensionDispatchParam         = "x-pp-dispatch-param"
 	extensionParamURLName          = "x-url-name"
 	extensionParamURLNames         = "x-param-url-names"
 	extensionAPIName               = "x-api-name"
@@ -3946,6 +3947,10 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 				urlNameOverridesRead = true
 			}
 			param.URLName = paramURLName(paramName, parameter.Extensions, urlNameOverrides)
+			if dispatch, ok := boolExtension(parameter.Extensions, extensionDispatchParam); ok {
+				param.DispatchParam = dispatch
+				param.DispatchParamSet = true
+			}
 		}
 		if parameter.In == openapi3.ParameterInQuery && isFieldSelectorParameter(paramName, description) {
 			param.Purpose = spec.ParamPurposeFieldSelector
