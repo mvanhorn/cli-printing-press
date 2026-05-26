@@ -2019,7 +2019,7 @@ type Param struct {
 	// DispatchParam marks a fixed discriminator such as type=domain_rank.
 	// Generated runnable examples keep its default instead of substituting
 	// synthetic dogfood values that would address a different upstream route.
-	DispatchParam bool `yaml:"dispatch_param,omitempty" json:"dispatch_param,omitempty"`
+	DispatchParam bool `yaml:"dispatch_param" json:"dispatch_param"`
 	// DispatchParamSet is true when the spec explicitly contained
 	// dispatch_param, pp:dispatch-param, or x-pp-dispatch-param. It lets
 	// generator heuristics distinguish an omitted value from an explicit false.

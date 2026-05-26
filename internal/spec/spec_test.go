@@ -2,6 +2,7 @@ package spec
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -149,6 +150,33 @@ resources:
 	assert.Equal(t, "action", param.Name)
 	assert.False(t, param.DispatchParam)
 	assert.True(t, param.DispatchParamSet)
+}
+
+func TestDispatchParamFalseSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := Param{
+		Name:             "action",
+		Type:             "string",
+		DispatchParam:    false,
+		DispatchParamSet: true,
+	}
+
+	yamlData, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(yamlData), "dispatch_param: false")
+	var yamlParam Param
+	require.NoError(t, yaml.Unmarshal(yamlData, &yamlParam))
+	assert.False(t, yamlParam.DispatchParam)
+	assert.True(t, yamlParam.DispatchParamSet)
+
+	jsonData, err := json.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(jsonData), `"dispatch_param":false`)
+	var jsonParam Param
+	require.NoError(t, json.Unmarshal(jsonData, &jsonParam))
+	assert.False(t, jsonParam.DispatchParam)
+	assert.True(t, jsonParam.DispatchParamSet)
 }
 
 func TestParseStreamingConfig(t *testing.T) {
