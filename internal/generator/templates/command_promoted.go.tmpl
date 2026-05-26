@@ -28,6 +28,9 @@ import (
 	"strconv"
 {{- end}}
 
+{{ if .Endpoint.RequiresRole}}
+	"{{modulePath}}/internal/config"
+{{- end}}
 {{ if endpointUsesCSVArray .Endpoint}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
@@ -103,6 +106,15 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 {{- end}}
+{{- end}}
+{{- if .Endpoint.RequiresRole}}
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return err
+			}
+			if err := RequireRoleWith(flags, cfg, cmd.CommandPath(), Persona{{pascal .Endpoint.RequiresRole}}); err != nil {
+				return err
+			}
 {{- end}}
 			c, err := flags.newClient()
 			if err != nil {

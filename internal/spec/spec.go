@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"gopkg.in/yaml.v3"
@@ -198,6 +199,7 @@ type APISpec struct {
 	Category                    string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
 	Auth                        AuthConfig          `yaml:"auth" json:"auth"`
 	AuthWarnings                []string            `yaml:"auth_warnings,omitempty" json:"auth_warnings,omitempty"`
+	Roles                       []string            `yaml:"roles,omitempty" json:"roles,omitempty"` // per-spec authenticated persona labels that endpoints may require (e.g. parent, teacher, admin)
 	TierRouting                 TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
 	RequiredHeaders             []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
 	Config                      ConfigSpec          `yaml:"config" json:"config"`
@@ -638,6 +640,34 @@ func validateStreaming(c StreamingConfig) error {
 // Specs without this flag regenerate byte-identical to the pre-PR-3 output.
 func (s *APISpec) HasCostThrottling() bool {
 	return s != nil && s.Throttling.Enabled
+}
+
+// HasRequiredRoles reports whether any endpoint declares a role gate. Templates
+// use this to keep persona helpers out of CLIs that do not opt into RBAC.
+func (s *APISpec) HasRequiredRoles() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasRequiredRoles(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasRequiredRoles(resource Resource) bool {
+	for _, endpoint := range resource.Endpoints {
+		if strings.TrimSpace(endpoint.RequiresRole) != "" {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasRequiredRoles(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // ExtraCommand declares a hand-written cobra command so the SKILL.md
@@ -1786,6 +1816,10 @@ type Endpoint struct {
 	// inferring from spec-level signals.
 	ObservedAuth []string `yaml:"observed_auth,omitempty" json:"observed_auth,omitempty"`
 	Tier         string   `yaml:"tier,omitempty" json:"tier,omitempty"`
+	// RequiresRole gates this endpoint behind a per-spec authenticated role.
+	// The generator emits the guard framework; API-specific role discovery
+	// remains a printed-CLI concern and plugs into the generated resolver hook.
+	RequiresRole string `yaml:"requires_role,omitempty" json:"requires_role,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension,
 	// a resource member path parameter that also appears in the response item,
@@ -2952,6 +2986,9 @@ func (s *APISpec) Validate() error {
 	if err := validateAuthCompanion(s.Auth); err != nil {
 		return err
 	}
+	if err := validateRoles(s); err != nil {
+		return err
+	}
 	if err := validateAuthEnvVarSpecs("auth", s.Auth); err != nil {
 		return err
 	}
@@ -3634,6 +3671,103 @@ func validateEndpointResponseFormat(e Endpoint) error {
 		}
 	}
 	return nil
+}
+
+func validateRoles(s *APISpec) error {
+	if s == nil {
+		return nil
+	}
+	roles := make(map[string]struct{}, len(s.Roles))
+	personas := make(map[string]string, len(s.Roles))
+	normalized := make([]string, 0, len(s.Roles))
+	for _, role := range s.Roles {
+		role = strings.TrimSpace(role)
+		if role == "" {
+			return fmt.Errorf("roles cannot contain empty values")
+		}
+		if !validRoleName(role) {
+			return fmt.Errorf("role %q must match ^[A-Za-z][A-Za-z0-9_-]*$", role)
+		}
+		if _, exists := roles[role]; exists {
+			return fmt.Errorf("role %q is declared more than once", role)
+		}
+		persona := rolePersonaSuffix(role)
+		if existing, exists := personas[persona]; exists {
+			return fmt.Errorf("roles %q and %q produce duplicate Persona%s constants", existing, role, persona)
+		}
+		roles[role] = struct{}{}
+		personas[persona] = role
+		normalized = append(normalized, role)
+	}
+	s.Roles = normalized
+
+	checkEndpoint := func(context string, endpoint Endpoint) error {
+		role := strings.TrimSpace(endpoint.RequiresRole)
+		if role == "" {
+			return nil
+		}
+		if !validRoleName(role) {
+			return fmt.Errorf("%s requires_role %q must match ^[A-Za-z][A-Za-z0-9_-]*$", context, role)
+		}
+		if len(roles) == 0 {
+			return fmt.Errorf("%s requires_role %q but roles is empty", context, role)
+		}
+		if _, ok := roles[role]; !ok {
+			return fmt.Errorf("%s requires_role %q is not declared in roles", context, role)
+		}
+		return nil
+	}
+	for rName, resource := range s.Resources {
+		if err := validateResourceRoles(fmt.Sprintf("resource %q", rName), resource, checkEndpoint); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateResourceRoles(context string, resource Resource, checkEndpoint func(string, Endpoint) error) error {
+	for eName, endpoint := range resource.Endpoints {
+		if err := checkEndpoint(fmt.Sprintf("%s endpoint %q", context, eName), endpoint); err != nil {
+			return err
+		}
+	}
+	for subName, sub := range resource.SubResources {
+		if err := validateResourceRoles(fmt.Sprintf("%s sub-resource %q", context, subName), sub, checkEndpoint); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validRoleName(role string) bool {
+	if role == "" {
+		return false
+	}
+	for i, r := range role {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case i > 0 && r >= '0' && r <= '9':
+		case i > 0 && (r == '_' || r == '-'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func rolePersonaSuffix(role string) string {
+	parts := strings.FieldsFunc(role, func(r rune) bool {
+		return r == '_' || r == '-' || !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		lower := strings.ToLower(part)
+		parts[i] = strings.ToUpper(lower[:1]) + lower[1:]
+	}
+	return strings.Join(parts, "")
 }
 
 func validateDataSourceStrategy(context, strategy string) error {

@@ -41,6 +41,9 @@ type Config struct {
 	AuthHeaderVal  string `{{configTag .Config.Format}}:"auth_header"`
 	Headers        map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 	AuthSource     string `{{configTag .Config.Format}}:"-"`
+{{- if .HasRequiredRoles}}
+	AuthRole       string `{{configTag .Config.Format}}:"auth_role,omitempty"`
+{{- end}}
 {{- if .HasAuthCommand}}
 	AccessToken    string `{{configTag .Config.Format}}:"access_token"`
 	RefreshToken   string `{{configTag .Config.Format}}:"refresh_token"`
@@ -225,6 +228,16 @@ func Load(configPath string) (*Config, error) {
 	if v := os.Getenv("{{envName .Name}}_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
+{{- if .HasRequiredRoles}}
+	roleFromEnv := false
+	if v := strings.TrimSpace(os.Getenv("{{envName .Name}}_AUTH_ROLE")); v != "" {
+		cfg.AuthRole = v
+		roleFromEnv = true
+	}
+	if !roleFromEnv && (strings.HasPrefix(cfg.AuthSource, "env:") || strings.HasPrefix(cfg.AuthSource, "bus:")) {
+		cfg.AuthRole = ""
+	}
+{{- end}}
 {{- if .BasePath}}
 	if v := os.Getenv("{{envName .Name}}_BASE_PATH"); v != "" {
 		cfg.BasePath = v
@@ -640,6 +653,9 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	c.AccessToken = accessToken
 	c.RefreshToken = refreshToken
 	c.TokenExpiry = expiry
+{{- if .HasRequiredRoles}}
+	c.AuthRole = ""
+{{- end}}
 	return c.save()
 }
 
@@ -656,6 +672,9 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 func (c *Config) SaveCredential(token string) error {
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
+{{- if .HasRequiredRoles}}
+	c.AuthRole = ""
+{{- end}}
 {{- with .Auth.CanonicalEnvVar}}
 	c.{{resolveEnvVarField .Name}} = token
 {{- end}}
@@ -669,6 +688,9 @@ func (c *Config) SaveBearerToken(accessToken string, refreshedAt time.Time) erro
 	c.AccessToken = accessToken
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
+{{- if .HasRequiredRoles}}
+	c.AuthRole = ""
+{{- end}}
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
 {{- if not (envVarIsBuiltinField .Name)}}
@@ -702,6 +724,9 @@ func (c *Config) ClearTokens() error {
 	c.TokenExpiry = time.Time{}
 	c.ClientID = ""
 	c.ClientSecret = ""
+{{- if .HasRequiredRoles}}
+	c.AuthRole = ""
+{{- end}}
 {{- if .BearerRefresh.Enabled}}
 	c.BearerTokenRefreshedAt = time.Time{}
 {{- end}}

@@ -661,6 +661,7 @@ type HelperFlags struct {
 	HasEmbeddedPaged     bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
 	HasResponseUnwrap    bool // at least one generated command can call extractResponseData
 	HasMutationEndpoints bool // spec has any non-GET/HEAD endpoint → emit partial-failure helpers + --allow-partial-failure flag
+	HasRequiredRoles     bool // spec has per-endpoint requires_role gates → emit persona helpers
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -675,6 +676,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				if isMutationMethod(e.Method) {
 					flags.HasMutationEndpoints = true
+				}
+				if strings.TrimSpace(e.RequiresRole) != "" {
+					flags.HasRequiredRoles = true
 				}
 				if endpointNeedsClientLimit(e) {
 					flags.HasClientLimit = true

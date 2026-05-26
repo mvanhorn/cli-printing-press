@@ -70,9 +70,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 		),
 {{- if $.HasTierRouting}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if $endpoint.HeaderOverrides}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} }{{else}}nil{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if $endpoint.HeaderOverrides}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}[]mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- else}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if $endpoint.HeaderOverrides}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} }{{else}}nil{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if $endpoint.HeaderOverrides}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}[]mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- end}}
 	)
 {{- end}}
@@ -103,9 +103,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 		),
 {{- if $.HasTierRouting}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if $endpoint.HeaderOverrides}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} }{{else}}nil{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if $endpoint.HeaderOverrides}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}[]mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- else}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if $endpoint.HeaderOverrides}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} }{{else}}nil{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{if $isReadOnly}}true{{else}}false{{end}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, {{if $endpoint.HeaderOverrides}}map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} }{{else}}nil{{end}}, {{if $.HasRequiredRoles}}{{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}}, {{end}}[]mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .BodyPath}}, BodyPath: []string{ {{- range .BodyPath}}{{printf "%q" .}},{{end}} }{{end}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- end}}
 	)
 {{- end}}
@@ -221,15 +221,26 @@ func setNestedBodyArg(body map[string]any, path []string, value any) {
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
 {{- if .HasTierRouting}}
-func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, {{if .HasRequiredRoles}}requiredRole cli.Persona, {{end}}bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 {{- else}}
-func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, {{if .HasRequiredRoles}}requiredRole cli.Persona, {{end}}bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 {{- end}}
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+{{- if .HasRequiredRoles}}
+		cfg, err := newMCPConfig()
+		if err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		if err := cli.RequireRoleWith(nil, cfg, pathTemplate, requiredRole); err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		c := newMCPClientFromConfig(cfg)
+{{- else}}
 		c, err := newMCPClient()
 		if err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
+{{- end}}
 	{{- if .HasTierRouting}}
 		c = c.WithTier(tier)
 	{{- end}}
@@ -618,12 +629,28 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 }
 
 func newMCPClient() (*client.Client, error) {
+{{- if .HasRequiredRoles}}
+	cfg, err := newMCPConfig()
+	if err != nil {
+		return nil, err
+	}
+	return newMCPClientFromConfig(cfg), nil
+}
+
+func newMCPConfig() (*config.Config, error) {
+{{- end}}
 	home, _ := os.UserHomeDir()
 	cfgPath := filepath.Join(home, ".config", "{{.Name}}-pp-cli", "config.toml")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
+{{- if .HasRequiredRoles}}
+	return cfg, nil
+}
+
+func newMCPClientFromConfig(cfg *config.Config) *client.Client {
+{{- end}}
 {{- if eq .SpecSource "sniffed"}}
 	c := client.New(cfg, 60*time.Second, 2)
 {{- else}}
@@ -635,7 +662,11 @@ func newMCPClient() (*client.Client, error) {
 	// pre-mutation snapshot for up to the cache TTL. The interactive CLI
 	// constructs its own client and is unaffected.
 	c.NoCache = true
+{{- if .HasRequiredRoles}}
+	return c
+{{- else}}
 	return c, nil
+{{- end}}
 }
 
 func dbPath() string {

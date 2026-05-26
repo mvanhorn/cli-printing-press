@@ -52,6 +52,8 @@ const (
 	extensionSpeakeasyExample      = "x-speakeasy-example"
 	extensionTierRouting           = "x-tier-routing"
 	extensionTier                  = "x-tier"
+	extensionRoles                 = "x-roles"
+	extensionRequiresRole          = "x-requires-role"
 	extensionRateClass             = "x-rate-class"
 	extensionMCP                   = "x-mcp"
 	extensionLegacyMCP             = "mcp"
@@ -611,6 +613,10 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	roles, err := parseStringListOpenAPIExtension(doc, extensionRoles)
+	if err != nil {
+		return nil, err
+	}
 
 	mcpConfig, err := parseMCPExtension(doc)
 	if err != nil {
@@ -646,6 +652,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		ProxyRoutes:                  proxyRoutes,
 		RateClass:                    rateClass,
 		Auth:                         auth,
+		Roles:                        roles,
 		TierRouting:                  tierRouting,
 		MCP:                          mcpConfig,
 		Cache:                        cacheConfig,
@@ -671,7 +678,9 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	// has an exists-check, so Components-defined types win on name
 	// collisions; inline schemas only fill genuine gaps.
 	mapTypes(doc, result)
-	mapResources(doc, result, resourceBasePath)
+	if err := mapResources(doc, result, resourceBasePath); err != nil {
+		return nil, err
+	}
 
 	// Post-parse sweep: if the spec has no authentication at all (not inferred
 	// from description keywords), mark every endpoint as NoAuth. The per-operation
@@ -871,11 +880,33 @@ func parseStringOpenAPIExtension(doc *openapi3.T, key string) (string, error) {
 	return "", nil
 }
 
+func parseStringListOpenAPIExtension(doc *openapi3.T, key string) ([]string, error) {
+	if doc != nil && doc.Extensions != nil {
+		if _, ok := doc.Extensions[key]; ok {
+			return parseStringListExtensionValue(doc.Extensions, key)
+		}
+	}
+	if doc != nil && doc.Info != nil && doc.Info.Extensions != nil {
+		if _, ok := doc.Info.Extensions[key]; ok {
+			return parseStringListExtensionValue(doc.Info.Extensions, key)
+		}
+	}
+	return nil, nil
+}
+
 func parseStringExtensionValue(extensions map[string]any, key string) (string, error) {
 	if _, ok := extensions[key].(string); !ok {
 		return "", fmt.Errorf("%s must be a string", key)
 	}
 	return stringExtension(extensions, key), nil
+}
+
+func parseStringListExtensionValue(extensions map[string]any, key string) ([]string, error) {
+	values, ok := strictStringListValue(extensions[key])
+	if !ok {
+		return nil, fmt.Errorf("%s must be a string array", key)
+	}
+	return values, nil
 }
 
 func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
@@ -2062,6 +2093,33 @@ func stringListValue(value any) []string {
 	return nil
 }
 
+func strictStringListValue(value any) ([]string, bool) {
+	switch v := value.(type) {
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out, true
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 func boolExtension(extensions map[string]any, name string) (bool, bool) {
 	value, ok := extensions[name]
 	if !ok {
@@ -2872,9 +2930,9 @@ func pathPriorityScore(path string) int {
 	return score
 }
 
-func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
+func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 	if doc == nil || out == nil || doc.Paths == nil {
-		return
+		return nil
 	}
 
 	tagDescriptions := mapTagDescriptions(doc.Tags)
@@ -3046,6 +3104,11 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			if endpoint.Tier == "" {
 				endpoint.Tier = pathTier
 			}
+			requiresRole, err := readRequiresRoleExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			if err != nil {
+				return err
+			}
+			endpoint.RequiresRole = requiresRole
 			endpoint.DataSourceStrategy = readDataSourceStrategyExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if endpoint.DataSourceStrategy == "" {
 				endpoint.DataSourceStrategy = pathDataSourceStrategy
@@ -3119,6 +3182,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 
 	assignEndpointAliases(out.Resources)
 	filterGlobalParams(out.Resources)
+	return nil
 }
 
 func operationServerBaseURL(specBaseURL string, pathItem *openapi3.PathItem, op *openapi3.Operation) string {
@@ -4825,6 +4889,21 @@ func readTierExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(tier)
+}
+
+func readRequiresRoleExtension(extensions map[string]any, context string) (string, error) {
+	if extensions == nil {
+		return "", nil
+	}
+	raw, ok := extensions[extensionRequiresRole]
+	if !ok {
+		return "", nil
+	}
+	role, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("%s: %s must be a string, got %T", context, extensionRequiresRole, raw)
+	}
+	return strings.TrimSpace(role), nil
 }
 
 func readDataSourceStrategyExtension(extensions map[string]any, context string) string {
