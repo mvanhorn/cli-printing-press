@@ -74,7 +74,7 @@ fi
 
 safe_slug() {
   printf '%s' "$1" |
-    sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[/?#&=]+#-#g; s#[^A-Za-z0-9._-]+#-#g; s#^-+##; s#-+$##' |
+    sed -E 's%^[a-zA-Z][a-zA-Z0-9+.-]*://%%; s%[/?#&=]+%-%g; s%[^A-Za-z0-9._-]+%-%g; s%^-+%%; s%-+$%%' |
     cut -c1-80
 }
 
@@ -154,7 +154,7 @@ fi
 
 BODY_TMP="$(mktemp "$CACHE_ROOT/fetch-docs-body.XXXXXX")"
 HEADER_TMP="$(mktemp "$CACHE_ROOT/fetch-docs-headers.XXXXXX")"
-trap 'rm -f "$BODY_TMP" "$HEADER_TMP"' EXIT
+trap 'rm -f ${BODY_TMP:+"$BODY_TMP"} "$HEADER_TMP"' EXIT
 
 CURL_WRITE=$'status=%{http_code}\ncontent_type=%{content_type}\neffective_url=%{url_effective}\n'
 if ! CURL_META="$(curl -sS -L --compressed --connect-timeout 10 --max-time 30 \
