@@ -475,6 +475,23 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 		// Auth lives on URL query; Go preserves the query on relative
 		// redirects, so nothing to re-derive.
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+		// The auth cookie set on the initial request is carried verbatim by Go
+		// on same-host redirects, so re-adding it here would double the Cookie
+		// header (the same hazard the cookie-jar branch below avoids). Only the
+		// cross-host hop needs handling: Go does not strip a manually-set Cookie
+		// for custom names, so drop the auth cookie by name to keep the
+		// credential from leaking to a redirect target, while preserving any
+		// other cookies on the request.
+		if req.URL.Host != via[0].URL.Host {
+			preserved := req.Cookies()
+			req.Header.Del("Cookie")
+			for _, ck := range preserved {
+				if ck.Name != "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}" {
+					req.AddCookie(ck)
+				}
+			}
+		}
 {{- else if eq .Auth.Type "cookie"}}
 		// Cookie-auth redirects: Go's http.Client + http.CookieJar handle
 		// cookie carriage on 3xx hops natively. Setting the Cookie header
@@ -1318,6 +1335,8 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			q := req.URL.Query()
 			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
 			req.URL.RawQuery = q.Encode()
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+			req.AddCookie(&http.Cookie{Name: "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", Value: authHeader})
 {{- else if eq .Auth.Type "cookie"}}
 			// Cookie-auth: LoadCookieJar is the sole source of outbound
 			// cookies. net/http's Client.send calls jar.Cookies + AddCookie
@@ -1623,6 +1642,12 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{.Auth.TokenParamName}}", maskToken(authHeader))
 	}
 {{- end}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+	if authHeader != "" {
+		// in:cookie auth ships on the Cookie header; preview it as such so the
+		// dry run matches the live wire format.
+		fmt.Fprintf(os.Stderr, "  Cookie: %s=%s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
+	}
 {{- else if not (and .Auth .Auth.In (eq .Auth.In "query"))}}
 	if authHeader != "" {
 		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", maskToken(authHeader))
