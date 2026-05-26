@@ -699,6 +699,21 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 
 	command.Help = help
 	mutating := liveDogfoodCommandMutates(command)
+	useDryRun := mutating && commandSupportsDryRun(command.Help)
+
+	tierSkip := liveDogfoodRequiresTierSkipReason(command.Annotations, ctx.authTier)
+	if tierSkip != "" {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, tierSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, tierSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, tierSkip),
+		)
+		if useDryRun {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, tierSkip))
+		}
+		return results
+	}
+
 	happyArgs, ok := liveDogfoodHappyArgs(command)
 	if !ok {
 		if mutating {
@@ -714,21 +729,6 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "missing runnable example"),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, "missing runnable example"),
 		)
-		return results
-	}
-
-	useDryRun := mutating && commandSupportsDryRun(command.Help)
-
-	tierSkip := liveDogfoodRequiresTierSkipReason(command.Annotations, ctx.authTier)
-	if tierSkip != "" {
-		results = append(results,
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, tierSkip),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, tierSkip),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, tierSkip),
-		)
-		if useDryRun {
-			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, tierSkip))
-		}
 		return results
 	}
 
@@ -1518,10 +1518,12 @@ func liveDogfoodQuickCommands(commands []liveDogfoodCommand) []liveDogfoodComman
 	seenFamily := map[string]bool{}
 	for i, command := range commands {
 		family := liveDogfoodCommandFamily(command)
-		if seenFamily[family] {
-			continue
+		if family != "" {
+			if seenFamily[family] {
+				continue
+			}
+			seenFamily[family] = true
 		}
-		seenFamily[family] = true
 		selected = append(selected, command)
 		selectedIndex[i] = true
 		if len(selected) == quickTarget {

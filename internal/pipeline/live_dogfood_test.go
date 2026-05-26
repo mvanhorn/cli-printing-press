@@ -474,7 +474,7 @@ func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
-	dir, binaryName, argvLog := writeLiveDogfoodTierFixture(t, true, false)
+	dir, binaryName, argvLog := writeLiveDogfoodTierFixture(t, true, false, true)
 	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
 	report, err := RunLiveDogfood(LiveDogfoodOptions{
 		CLIDir:     dir,
@@ -509,12 +509,33 @@ func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
 		"error_path must not invoke tier-gated endpoints when active auth tier mismatches")
 }
 
+func TestRunLiveDogfoodSkipsRequiresTierMismatchWithoutRunnableExample(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, false, false)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "administration get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, `blocked-fixture: requires auth tier "accountant"`, happy.Reason)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+}
+
 func TestRunLiveDogfoodRunsRequiresTierMatch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
-	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true)
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true, true)
 	report, err := RunLiveDogfood(LiveDogfoodOptions{
 		CLIDir:     dir,
 		BinaryName: binaryName,
@@ -537,7 +558,7 @@ func TestRunLiveDogfoodRunsRequiresTierMatchFromEnv(t *testing.T) {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
-	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true)
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, true, true, true)
 	t.Setenv("PP_AUTH_TIER", "accountant")
 	report, err := RunLiveDogfood(LiveDogfoodOptions{
 		CLIDir:     dir,
@@ -560,7 +581,7 @@ func TestRunLiveDogfoodRequiresTierAbsentDoesNotSkip(t *testing.T) {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
-	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, false, false)
+	dir, binaryName, _ := writeLiveDogfoodTierFixture(t, false, false, true)
 	report, err := RunLiveDogfood(LiveDogfoodOptions{
 		CLIDir:     dir,
 		BinaryName: binaryName,
@@ -1645,6 +1666,31 @@ func TestLiveDogfoodQuickCommandsSamplesAcrossFamilies(t *testing.T) {
 		"quick sampling should not collapse to the first two sorted commands")
 }
 
+func TestLiveDogfoodQuickCommandsDoesNotDeduplicateEmptyFamily(t *testing.T) {
+	commands := []liveDogfoodCommand{
+		{Path: nil},
+		{Path: []string{}},
+		{Path: []string{"administration", "get"}},
+		{Path: []string{"administration", "list"}},
+		{Path: []string{"contacts", "get"}},
+		{Path: []string{"contacts", "list"}},
+		{Path: []string{"invoices", "get"}},
+		{Path: []string{"invoices", "list"}},
+	}
+
+	got := liveDogfoodQuickCommands(commands)
+
+	require.Len(t, got, 6)
+	assert.Equal(t, []liveDogfoodCommand{
+		commands[0],
+		commands[1],
+		commands[2],
+		commands[4],
+		commands[6],
+		commands[3],
+	}, got)
+}
+
 func TestExtractFirstIDFromJSON(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2181,7 +2227,7 @@ exit 99
 	return dir, binaryName
 }
 
-func writeLiveDogfoodTierFixture(t *testing.T, annotate bool, adminPass bool) (dir string, binaryName string, argvLog string) {
+func writeLiveDogfoodTierFixture(t *testing.T, annotate bool, adminPass bool, runnableExample bool) (dir string, binaryName string, argvLog string) {
 	t.Helper()
 
 	dir = t.TempDir()
@@ -2192,6 +2238,10 @@ func writeLiveDogfoodTierFixture(t *testing.T, annotate bool, adminPass bool) (d
 	annotation := ""
 	if annotate {
 		annotation = `,"annotations":{"pp:requires-tier":"accountant"}`
+	}
+	adminExample := "  fixture-pp-cli administration get adm_1"
+	if !runnableExample {
+		adminExample = "  fixture-pp-cli administration list --json"
 	}
 	adminBody := `echo 'Error: GET /v1/administration returned HTTP 400: {"type":"badrequest","code":"EP_001","title":"This endpoint is only available to accountants.","status":400}' >&2
 exit 5`
@@ -2241,7 +2291,7 @@ Usage:
   fixture-pp-cli administration get <id> [flags]
 
 Examples:
-  fixture-pp-cli administration get adm_1
+` + adminExample + `
 
 Flags:
       --json    Output JSON
