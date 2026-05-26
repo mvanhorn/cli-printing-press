@@ -130,6 +130,76 @@ func TestGenerateProjectsCompile(t *testing.T) {
 	}
 }
 
+func TestGenerateReservedResourceRenamesEmitNonCollidingCLI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		specYAML          string
+		wantResourceFiles []string
+	}{
+		{
+			name: "parent prefix",
+			specYAML: `openapi: "3.0.3"
+info:
+  title: Reserved Search Parent
+  version: "1.0"
+servers:
+  - url: https://api.example.com/notes
+paths:
+  /notes/search:
+    post:
+      operationId: run
+      responses:
+        "200":
+          description: ok
+`,
+			wantResourceFiles: []string{"promoted_notes-search.go"},
+		},
+		{
+			name: "x-pp-resource override",
+			specYAML: `openapi: "3.0.3"
+info:
+  title: Reserved Search Override
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /search:
+    post:
+      operationId: run
+      x-pp-resource: global_search
+      responses:
+        "200":
+          description: ok
+`,
+			wantResourceFiles: []string{"promoted_global-search.go"},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt //nolint:modernize // keep parallel subtest capture explicit
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec, err := openapi.Parse([]byte(tt.specYAML))
+			require.NoError(t, err)
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			for _, name := range tt.wantResourceFiles {
+				_, err := os.Stat(filepath.Join(outputDir, "internal", "cli", name))
+				require.NoError(t, err, "expected generated resource file %s", name)
+			}
+			_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "search_run.go"))
+			require.True(t, os.IsNotExist(err), "reserved search resource endpoint file must not be emitted")
+			_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "promoted_search.go"))
+			require.True(t, os.IsNotExist(err), "reserved search promoted command file must not be emitted")
+			runGoCommand(t, outputDir, "build", "./...")
+		})
+	}
+}
+
 func TestGenerateStoreExtrasHook(t *testing.T) {
 	t.Parallel()
 

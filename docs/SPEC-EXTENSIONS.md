@@ -44,6 +44,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-data-source-strategy` | path item or operation | `Endpoint.DataSourceStrategy` | No |
 | `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
 | `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
+| `x-pp-resource` | operation | resource name override | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
@@ -1163,6 +1164,34 @@ paths:
     get:
       operationId: listUsers
       x-requires-role: admin
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-resource`
+
+Overrides the resource bucket for one OpenAPI operation. Use it when the path
+parser would derive a reserved Printing Press template name such as `search`,
+or when the upstream path shape does not expose the intended resource name.
+
+Parsed field: resource map key in `APISpec.Resources`
+
+Rules:
+- Optional.
+- Must be a string.
+- The value is sanitized to the same resource-name form the parser uses for
+  path-derived names.
+- Non-string values emit a warning and are ignored.
+- Applies only to the operation where it appears.
+
+Example:
+
+```yaml
+paths:
+  /search:
+    post:
+      operationId: searchNotes
+      x-pp-resource: notes_search
       responses:
         "200": {description: ok}
 ```

@@ -64,6 +64,7 @@ const (
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
 	extensionDispatchParam         = "x-pp-dispatch-param"
+	extensionPPResource            = "x-pp-resource"
 	extensionParamURLName          = "x-url-name"
 	extensionParamURLNames         = "x-param-url-names"
 	extensionAPIName               = "x-api-name"
@@ -2955,6 +2956,10 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 	commonPrefix := detectCommonPrefix(pathKeys, basePath)
 	frameworkRenames := map[string]string{}
 	googleDiscovery := isGoogleDiscoverySpec(doc)
+	reservedTemplateRenames, err := reservedTemplateCollisionRenames(doc, pathKeys, basePath, commonPrefix, googleDiscovery, out)
+	if err != nil {
+		return err
+	}
 
 	// Auto-calibrate endpoint limit unless the user explicitly set it.
 	// Pre-scans the spec to find the largest resource or sub-resource,
@@ -3023,6 +3028,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			if primaryName == "" {
 				warnf("skipping %s %q: could not derive resource name", method, path)
 				continue
+			}
+			if renamed, ok := reservedTemplateRenames[primaryName]; ok {
+				primaryName = renamed
 			}
 			endpointResourceName := primaryName
 			if subName != "" {
@@ -5785,6 +5793,9 @@ func resourceAndSubFromPath(path, basePath string, commonPrefix []string) (strin
 }
 
 func resourceAndSubForOperation(path, basePath string, commonPrefix []string, op *openapi3.Operation, googleDiscovery bool) (string, string) {
+	if override := resourceOverrideForOperation(op, path); override != "" {
+		return override, ""
+	}
 	primary, sub := resourceAndSubFromPath(path, basePath, commonPrefix)
 	if primary != "" && !pathStartsWithCustomVerbParam(path, basePath, commonPrefix) {
 		return primary, sub
@@ -5802,6 +5813,170 @@ func resourceAndSubForOperation(path, basePath string, commonPrefix []string, op
 		return opPrimary, opSub
 	}
 	return primary, sub
+}
+
+func resourceOverrideForOperation(op *openapi3.Operation, path string) string {
+	if op == nil || op.Extensions == nil {
+		return ""
+	}
+	raw, ok := op.Extensions[extensionPPResource]
+	if !ok {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		warnf("path %q: %s must be a string, got %T; ignoring", path, extensionPPResource, raw)
+		return ""
+	}
+	value = sanitizeResourceName(toSnakeCase(value))
+	if value == "" {
+		warnf("path %q: %s is empty after sanitization; ignoring", path, extensionPPResource)
+		return ""
+	}
+	return value
+}
+
+func reservedTemplateCollisionRenames(doc *openapi3.T, pathKeys []string, basePath string, commonPrefix []string, googleDiscovery bool, out *spec.APISpec) (map[string]string, error) {
+	type candidateSet map[string]struct{}
+	candidates := map[string]candidateSet{}
+	firstPath := map[string]string{}
+	hardErrors := map[string]reservedTemplateCollision{}
+	rawResources := map[string]struct{}{}
+
+	for _, path := range pathKeys {
+		pathItem := doc.Paths.Value(path)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			primaryName, _ := resourceAndSubForOperation(path, basePath, commonPrefix, op, googleDiscovery)
+			if primaryName == "" {
+				continue
+			}
+			rawResources[primaryName] = struct{}{}
+			if primaryName == "auth" && out != nil && !out.ParseTimeReservedCobraUseName(primaryName) {
+				continue
+			}
+			if _, reserved := spec.ReservedCLIResourceNames[primaryName]; !reserved {
+				continue
+			}
+			if resourceOverrideForOperation(op, path) != "" {
+				hardErrors[primaryName] = reservedTemplateCollision{Name: primaryName, FromOverride: true}
+				continue
+			}
+			if candidate := spec.ReservedResourceParentPrefixCandidate(primaryName, path); candidate != "" {
+				if _, ok := candidates[primaryName]; !ok {
+					candidates[primaryName] = candidateSet{}
+					firstPath[primaryName] = path
+				}
+				candidates[primaryName][candidate] = struct{}{}
+				continue
+			}
+			if spec.ReservedResourcePathTerminatesAt(primaryName, path) {
+				hardErrors[primaryName] = reservedTemplateCollision{Name: primaryName}
+			}
+		}
+	}
+
+	renames := map[string]string{}
+	hardErrorCollisions := make([]reservedTemplateCollision, 0, len(hardErrors))
+	for _, collision := range hardErrors {
+		hardErrorCollisions = append(hardErrorCollisions, collision)
+	}
+	slices.SortFunc(hardErrorCollisions, func(a, b reservedTemplateCollision) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	if len(hardErrorCollisions) > 0 {
+		return nil, reservedTemplateCollisionErrors(hardErrorCollisions)
+	}
+
+	names := make([]string, 0, len(candidates))
+	for name := range candidates {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		set := candidates[name]
+		if len(set) != 1 {
+			return nil, reservedTemplateCollisionError(name, name+"_resource")
+		}
+		var candidate string
+		for value := range set {
+			candidate = value
+		}
+		if _, reserved := spec.ReservedCLIResourceNames[candidate]; reserved {
+			return nil, reservedTemplateCollisionError(name, name+"_resource")
+		}
+		if _, exists := rawResources[candidate]; exists {
+			return nil, reservedTemplateCollisionError(name, name+"_resource")
+		}
+		renames[name] = candidate
+		warnf("resource %q from path %q collides with reserved Printing Press template %q; renamed to %q", name, firstPath[name], name, candidate)
+	}
+	return renames, nil
+}
+
+type reservedTemplateCollision struct {
+	Name         string
+	Suggestion   string
+	FromOverride bool
+}
+
+func reservedTemplateCollisionError(name, suggestion string) error {
+	return reservedTemplateCollisionErrors([]reservedTemplateCollision{{
+		Name:       name,
+		Suggestion: suggestion,
+	}})
+}
+
+func reservedTemplateCollisionErrors(collisions []reservedTemplateCollision) error {
+	if len(collisions) == 1 {
+		collision := collisions[0]
+		suggestion := collision.Suggestion
+		if suggestion == "" {
+			suggestion = collision.Name + "_resource"
+		}
+		if collision.FromOverride {
+			return fmt.Errorf("%s value %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename %s to %q",
+				extensionPPResource, collision.Name, collision.Name, collision.Name, spec.SnakeToPascal(collision.Name), extensionPPResource, suggestion)
+		}
+		return fmt.Errorf("resource name %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename to %q in your spec, or set x-pp-resource on the operation",
+			collision.Name, collision.Name, collision.Name, spec.SnakeToPascal(collision.Name), suggestion)
+	}
+
+	names := make([]string, 0, len(collisions))
+	files := make([]string, 0, len(collisions))
+	functions := make([]string, 0, len(collisions))
+	suggestions := make([]string, 0, len(collisions))
+	hasOverride := false
+	hasDerived := false
+	for _, collision := range collisions {
+		suggestion := collision.Suggestion
+		if suggestion == "" {
+			suggestion = collision.Name + "_resource"
+		}
+		names = append(names, fmt.Sprintf("%q", collision.Name))
+		files = append(files, "internal/cli/"+collision.Name+".go")
+		functions = append(functions, "`new"+spec.SnakeToPascal(collision.Name)+"Cmd`")
+		suggestions = append(suggestions, fmt.Sprintf("%q", suggestion))
+		if collision.FromOverride {
+			hasOverride = true
+		} else {
+			hasDerived = true
+		}
+	}
+
+	remediation := fmt.Sprintf("Rename them in your spec, e.g. %s", strings.Join(suggestions, ", "))
+	if hasOverride && !hasDerived {
+		remediation = fmt.Sprintf("Rename each %s value, e.g. %s", extensionPPResource, strings.Join(suggestions, ", "))
+	} else if hasOverride {
+		remediation = fmt.Sprintf("Rename each resource or %s value, e.g. %s", extensionPPResource, strings.Join(suggestions, ", "))
+	} else {
+		remediation += ", or set x-pp-resource on each operation"
+	}
+
+	return fmt.Errorf("resource names %s collide with reserved Printing Press templates %s (would overwrite %s and produce duplicate %s functions). %s",
+		strings.Join(names, ", "), strings.Join(names, ", "), strings.Join(files, ", "), strings.Join(functions, ", "), remediation)
 }
 
 func resourceAndSubFromSegments(segments []string) (string, string) {

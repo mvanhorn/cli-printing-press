@@ -2562,6 +2562,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	s.expandOperations()
 	s.EnrichPathParams()
 	s.promoteParamsToBodyForWriteEndpoints()
+	s.applyReservedResourceParentPrefixes()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
 	}
@@ -2705,6 +2706,120 @@ func (s *APISpec) UniqueFrameworkCollisionResourceName(original string) string {
 	}
 }
 
+// applyReservedResourceParentPrefixes renames reserved top-level resources when
+// their endpoint paths provide one clear parent segment, such as
+// resource "search" with path "/notes/search" becoming "notes_search".
+func (s *APISpec) applyReservedResourceParentPrefixes() {
+	if s == nil || len(s.Resources) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(s.Resources))
+	taken := make(map[string]struct{}, len(s.Resources))
+	for name := range s.Resources {
+		keys = append(keys, name)
+		taken[name] = struct{}{}
+	}
+	slices.Sort(keys)
+
+	renames := map[string]string{}
+	for _, name := range keys {
+		if name == "auth" && !s.emitsAuthCommand() {
+			continue
+		}
+		if _, reserved := ReservedCLIResourceNames[name]; !reserved {
+			continue
+		}
+		candidate := s.uniqueReservedResourceParentPrefix(name, s.Resources[name], taken)
+		if candidate == "" {
+			continue
+		}
+		renames[name] = candidate
+		delete(taken, name)
+		taken[candidate] = struct{}{}
+	}
+
+	for _, name := range keys {
+		candidate, ok := renames[name]
+		if !ok {
+			continue
+		}
+		resource := s.Resources[name]
+		delete(s.Resources, name)
+		s.Resources[candidate] = resource
+		s.rewriteResourceReferences(name, candidate)
+	}
+}
+
+func (s *APISpec) uniqueReservedResourceParentPrefix(name string, resource Resource, taken map[string]struct{}) string {
+	candidates := map[string]struct{}{}
+	blocked := false
+	add := func(path string) {
+		if candidate := ReservedResourceParentPrefixCandidate(name, path); candidate != "" {
+			candidates[candidate] = struct{}{}
+			return
+		}
+		if ReservedResourcePathTerminatesAt(name, path) {
+			blocked = true
+		}
+	}
+	add(resource.Path)
+	for _, endpoint := range resource.Endpoints {
+		add(endpoint.Path)
+	}
+	if blocked {
+		return ""
+	}
+	if len(candidates) != 1 {
+		return ""
+	}
+	var candidate string
+	for value := range candidates {
+		candidate = value
+	}
+	if candidate == name {
+		return ""
+	}
+	if _, reserved := ReservedCLIResourceNames[candidate]; reserved {
+		return ""
+	}
+	if _, exists := taken[candidate]; exists {
+		return ""
+	}
+	return candidate
+}
+
+func (s *APISpec) rewriteResourceReferences(oldName, newName string) {
+	if s.Cache.Resources != nil {
+		if value, ok := s.Cache.Resources[oldName]; ok {
+			delete(s.Cache.Resources, oldName)
+			s.Cache.Resources[newName] = value
+		}
+	}
+	for i := range s.Cache.Commands {
+		for j, name := range s.Cache.Commands[i].Resources {
+			if name == oldName {
+				s.Cache.Commands[i].Resources[j] = newName
+			}
+		}
+	}
+	for i := range s.MCP.Intents {
+		for j := range s.MCP.Intents[i].Steps {
+			s.MCP.Intents[i].Steps[j].Endpoint = rewriteEndpointResourceRef(s.MCP.Intents[i].Steps[j].Endpoint, oldName, newName)
+		}
+	}
+}
+
+func rewriteEndpointResourceRef(ref, oldName, newName string) string {
+	if ref == oldName {
+		return newName
+	}
+	prefix := oldName + "."
+	if strings.HasPrefix(ref, prefix) {
+		return newName + strings.TrimPrefix(ref, oldName)
+	}
+	return ref
+}
+
 func (s *APISpec) emitsAuthCommand() bool {
 	if s == nil {
 		return false
@@ -2732,8 +2847,8 @@ func (s *APISpec) validateReservedNames() error {
 			continue
 		}
 		if _, reserved := ReservedCLIResourceNames[name]; reserved {
-			return fmt.Errorf("resource name %q collides with a reserved Printing Press template (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename the resource — e.g. %q",
-				name, name, snakeToPascal(name), name+"_resource")
+			return fmt.Errorf("resource name %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename to %q in your spec",
+				name, name, name, SnakeToPascal(name), name+"_resource")
 		}
 	}
 	return nil
@@ -2762,12 +2877,121 @@ func snakeToKebab(s string) string {
 	return strings.ReplaceAll(strings.ToLower(s), "_", "-")
 }
 
-// snakeToPascal converts a snake_case identifier to PascalCase so error
+// ReservedResourceParentPrefixCandidate returns a parent-prefixed replacement
+// for a reserved resource name when path has a concrete parent segment directly
+// before that resource. Generic routing prefixes and versions are ignored.
+func ReservedResourceParentPrefixCandidate(name, path string) string {
+	segments := splitRequestPath(path)
+	if len(segments) < 2 {
+		return ""
+	}
+	for i, segment := range segments {
+		if pathSegmentResourceName(segment) != name {
+			continue
+		}
+		if !onlyPathParamsAfter(segments[i+1:]) {
+			continue
+		}
+		for j := i - 1; j >= 0; j-- {
+			parent := pathSegmentResourceName(segments[j])
+			if parent == "" || isPathParamLikeSegment(segments[j]) || isVersionLikeSegment(segments[j]) || isGenericRoutingPrefix(parent) {
+				continue
+			}
+			return parent + "_" + name
+		}
+	}
+	return ""
+}
+
+func ReservedResourcePathTerminatesAt(name, path string) bool {
+	segments := splitRequestPath(path)
+	for i := len(segments) - 1; i >= 0; i-- {
+		if isPathParamLikeSegment(segments[i]) {
+			continue
+		}
+		return pathSegmentResourceName(segments[i]) == name
+	}
+	return false
+}
+
+func onlyPathParamsAfter(segments []string) bool {
+	for _, segment := range segments {
+		if !isPathParamLikeSegment(segment) {
+			return false
+		}
+	}
+	return true
+}
+
+func splitRequestPath(path string) []string {
+	path = strings.TrimSpace(path)
+	if u, err := url.Parse(path); err == nil && u.Path != "" {
+		path = u.Path
+	}
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return nil
+	}
+	raw := strings.Split(path, "/")
+	segments := make([]string, 0, len(raw))
+	for _, segment := range raw {
+		segment = strings.TrimSpace(segment)
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	return segments
+}
+
+func pathSegmentResourceName(segment string) string {
+	segment = strings.Trim(segment, "{}")
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range segment {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+			lastUnderscore = false
+		} else if !lastUnderscore && b.Len() > 0 {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
+}
+
+func isPathParamLikeSegment(segment string) bool {
+	return strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")
+}
+
+func isVersionLikeSegment(segment string) bool {
+	segment = strings.TrimPrefix(strings.ToLower(segment), "v")
+	segment = strings.ReplaceAll(segment, ".", "")
+	if segment == "" {
+		return false
+	}
+	for _, r := range segment {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isGenericRoutingPrefix(segment string) bool {
+	switch segment {
+	case "api", "apis", "rest":
+		return true
+	default:
+		return false
+	}
+}
+
+// SnakeToPascal converts a snake_case identifier to PascalCase so error
 // messages name the same Go function the generator would emit. Mirrors
 // generator.toCamel for snake_case input — kept here so the spec package
 // has no import-cycle dependency on the generator. Empty input → empty
 // output.
-func snakeToPascal(s string) string {
+func SnakeToPascal(s string) string {
 	if s == "" {
 		return s
 	}
@@ -2779,6 +3003,10 @@ func snakeToPascal(s string) string {
 		parts[i] = strings.ToUpper(p[:1]) + p[1:]
 	}
 	return strings.Join(parts, "")
+}
+
+func snakeToPascal(s string) string {
+	return SnakeToPascal(s)
 }
 
 // pathParamRe matches `{name}` placeholders in a path template. Names are

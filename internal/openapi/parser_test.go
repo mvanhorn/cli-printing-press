@@ -573,6 +573,14 @@ func TestParseAICLargeSpecCompletes(t *testing.T) {
 	t.Parallel()
 
 	data := readAICLargeSpec(t)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	paths := raw["paths"].(map[string]any)
+	searchPath := paths["/search"].(map[string]any)
+	searchGet := searchPath["get"].(map[string]any)
+	searchGet["x-pp-resource"] = "art_search"
+	data, err := json.Marshal(raw)
+	require.NoError(t, err)
 
 	type parseResult struct {
 		spec *spec.APISpec
@@ -3245,6 +3253,7 @@ paths:
   /search:
     get:
       operationId: searchList
+      x-pp-resource: video_search
       parameters:
         - in: query
           name: part
@@ -7567,6 +7576,165 @@ paths:
 	assert.NotContains(t, output, "shadow framework cobra command", "non-colliding spec must not emit a collision warning")
 }
 
+func TestParseReservedTemplateCollisionErrorsWithoutParentPrefix(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /search:
+    post:
+      operationId: search
+      responses:
+        "200":
+          description: ok
+`)
+
+	_, err := Parse(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `reserved Printing Press template "search"`)
+	assert.Contains(t, err.Error(), `Rename to "search_resource"`)
+	assert.Contains(t, err.Error(), "x-pp-resource")
+}
+
+func TestParseReservedTemplateCollisionParentPrefixesFromPath(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com/notes
+paths:
+  /notes/search:
+    post:
+      operationId: searchNotes
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	output := captureWarnings(t, func() {
+		var err error
+		parsed, err = Parse(yamlSpec)
+		require.NoError(t, err)
+	})
+
+	assert.NotContains(t, parsed.Resources, "search")
+	require.Contains(t, parsed.Resources, "notes_search")
+	assert.Contains(t, output, `"notes_search"`)
+	assert.Contains(t, output, "reserved Printing Press template")
+}
+
+func TestParseReservedTemplateCollisionExactPathWinsOverSiblingParentPrefix(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /notes/search:
+    post:
+      operationId: searchNotes
+      responses:
+        "200":
+          description: ok
+  /search:
+    post:
+      operationId: search
+      responses:
+        "200":
+          description: ok
+`)
+
+	_, err := Parse(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `reserved Printing Press template "search"`)
+	assert.Contains(t, err.Error(), `Rename to "search_resource"`)
+}
+
+func TestParseReservedTemplateCollisionAggregatesHardErrors(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /client:
+    get:
+      operationId: getClient
+      responses:
+        "200":
+          description: ok
+  /search:
+    post:
+      operationId: search
+      responses:
+        "200":
+          description: ok
+`)
+
+	_, err := Parse(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resource names "client", "search"`)
+	assert.Contains(t, err.Error(), `reserved Printing Press templates "client", "search"`)
+	assert.Contains(t, err.Error(), `newClientCmd`)
+	assert.Contains(t, err.Error(), `newSearchCmd`)
+	assert.Contains(t, err.Error(), `"client_resource"`)
+	assert.Contains(t, err.Error(), `"search_resource"`)
+}
+
+func TestParseXPPResourceOverrideAvoidsReservedTemplateCollision(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /search:
+    post:
+      operationId: searchNotes
+      x-pp-resource: notes_search
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.NotContains(t, parsed.Resources, "search")
+	require.Contains(t, parsed.Resources, "notes_search")
+}
+
+func TestParseXPPResourceOverrideRejectsReservedTemplateName(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      x-pp-resource: client
+      responses:
+        "200":
+          description: ok
+`)
+
+	_, err := Parse(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `reserved Printing Press template "client"`)
+	assert.Contains(t, err.Error(), `Rename x-pp-resource to "client_resource"`)
+	assert.NotContains(t, err.Error(), "set x-pp-resource on the operation")
+}
+
 func TestParseFrameworkCollisionAllowsConditionalFrameworkNamesWhenInactive(t *testing.T) {
 	yamlSpec := []byte(`openapi: "3.0.3"
 info:
@@ -7869,6 +8037,7 @@ paths:
   /search:
     get:
       operationId: geocoding
+      x-pp-resource: geocoding_search
       servers:
         - url: https://geocoding-api.open-meteo.com/v1
       responses:

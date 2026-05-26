@@ -4182,6 +4182,100 @@ resources:
 		assert.NotContains(t, err.Error(), "newAgent_contextCmd")
 	})
 
+	t.Run("reserved search resource errors with remediation hint when no parent prefix exists", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  search:
+    description: Search
+    endpoints:
+      run:
+        method: POST
+        path: /search
+        description: Search
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reserved Printing Press template "search"`)
+		assert.Contains(t, err.Error(), `Rename to "search_resource"`)
+		assert.NotContains(t, err.Error(), "x-pp-resource")
+	})
+
+	t.Run("reserved search resource is parent-prefixed when endpoint path provides one", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+cache:
+  enabled: true
+  resources:
+    search: 5m
+  commands:
+    - name: dashboard
+      resources: [search]
+mcp:
+  intents:
+    - name: note_lookup
+      description: Look up a note
+      steps:
+        - endpoint: search.run
+          capture: note
+      returns: note
+resources:
+  search:
+    description: Note search
+    endpoints:
+      run:
+        method: POST
+        path: /notes/search
+        description: Search notes
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		assert.NotContains(t, s.Resources, "search")
+		require.Contains(t, s.Resources, "notes_search")
+		assert.Contains(t, s.Resources["notes_search"].Endpoints, "run")
+		assert.NotContains(t, s.Cache.Resources, "search")
+		assert.Equal(t, "5m", s.Cache.Resources["notes_search"])
+		require.Len(t, s.Cache.Commands, 1)
+		assert.Equal(t, []string{"notes_search"}, s.Cache.Commands[0].Resources)
+		require.Len(t, s.MCP.Intents, 1)
+		require.Len(t, s.MCP.Intents[0].Steps, 1)
+		assert.Equal(t, "notes_search.run", s.MCP.Intents[0].Steps[0].Endpoint)
+	})
+
+	t.Run("reserved search resource with exact endpoint does not parent-prefix from sibling endpoint", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  search:
+    description: Search
+    endpoints:
+      notes:
+        method: POST
+        path: /notes/search
+        description: Search notes
+      global:
+        method: POST
+        path: /search
+        description: Search everything
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reserved Printing Press template "search"`)
+		assert.Contains(t, err.Error(), `Rename to "search_resource"`)
+	})
+
 	t.Run("auth resource name rejected", func(t *testing.T) {
 		t.Parallel()
 		input := `name: testapi
