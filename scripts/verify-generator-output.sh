@@ -86,6 +86,7 @@ fi
 binary="./cli-printing-press"
 echo "Building $binary"
 go build -o "$binary" ./cmd/cli-printing-press
+trap 'rm -f "$binary"' EXIT
 
 if [[ "$keep" != "true" ]]; then
   rm -rf "$output_root"

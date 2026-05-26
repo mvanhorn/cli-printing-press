@@ -92,7 +92,7 @@ jobs:
               esac
 
               case "$file" in
-                .github/workflows/main-ci.yml|scripts/verify-generator-output.sh|internal/generator/*|internal/openapi/*|testdata/golden/cases/generate-*|testdata/golden/fixtures/*|go.mod|go.sum)
+                .github/workflows/main-ci.yml|scripts/verify-generator-output.sh|cmd/*|internal/generator/*|internal/openapi/*|testdata/golden/cases/generate-*|testdata/golden/fixtures/*|go.mod|go.sum)
                   needs_generated_output=true
                   ;;
               esac
