@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 )
 
 type novelFeatureDocGroup struct {
@@ -26,6 +28,26 @@ func SyncCLINarrativeDocs(dir, apiName string, narrative *ReadmeNarrative) ([]sy
 	}
 
 	var synced []syncedArtifact
+	if strings.TrimSpace(narrative.Headline) != "" || strings.TrimSpace(narrative.ValueProp) != "" {
+		changed, err := syncReadmeIntroNarrative(filepath.Join(dir, "README.md"), narrative)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			synced = append(synced, syncedArtifact{Path: "README.md", Detail: "Value Proposition"})
+		}
+	}
+
+	if strings.TrimSpace(narrative.ValueProp) != "" {
+		changed, err := syncSkillValueProp(filepath.Join(dir, "SKILL.md"), narrative.ValueProp)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			synced = append(synced, syncedArtifact{Path: "SKILL.md", Detail: "Value Proposition"})
+		}
+	}
+
 	if len(narrative.QuickStart) > 0 {
 		changed, err := syncMarkdownFeatureSection(
 			filepath.Join(dir, "README.md"),
@@ -136,10 +158,118 @@ func syncReadmeAuthNarrative(path, authNarrative string) (bool, error) {
 	})
 }
 
+func syncReadmeIntroNarrative(path string, narrative *ReadmeNarrative) (bool, error) {
+	return syncMarkdownFile(path, func(content string) string {
+		return replaceReadmeIntroNarrative(content, narrative)
+	})
+}
+
+func syncSkillValueProp(path, valueProp string) (bool, error) {
+	valueProp = strings.TrimSpace(valueProp)
+	if valueProp == "" {
+		return false, nil
+	}
+	return syncMarkdownFile(path, func(content string) string {
+		markerIdx := strings.Index(content, generator.SkillInstallSectionEndSubstr)
+		if markerIdx < 0 {
+			return content
+		}
+		start := markerIdx + len(generator.SkillInstallSectionEndSubstr)
+		if next := strings.IndexByte(content[start:], '\n'); next >= 0 {
+			start += next + 1
+		}
+		sectionEnd := findNextLevelTwoHeading(content, start)
+		return joinMarkdownParts(content[:start], valueProp, content[sectionEnd:])
+	})
+}
+
 func syncReadmeTroubleshoots(path string, troubleshoots []TroubleshootTip) (bool, error) {
 	return syncMarkdownFile(path, func(content string) string {
 		return replaceMarkdownSubsection(content, "## Troubleshooting", "### API-specific", renderTroubleshootSubsection(troubleshoots))
 	})
+}
+
+func replaceReadmeIntroNarrative(content string, narrative *ReadmeNarrative) string {
+	title := firstMarkdownHeading(content, 0, len(content), 1, 1)
+	if title.Start < 0 {
+		return content
+	}
+	start := title.Start + len(strings.SplitN(content[title.Start:], "\n", 2)[0])
+	if start < len(content) && content[start] == '\n' {
+		start++
+	}
+	end := findReadmeIntroEnd(content, start)
+	replacement := renderReadmeIntroNarrative(narrative, existingReadmeIntroLead(content[start:end]))
+	if strings.TrimSpace(replacement) == "" {
+		return content
+	}
+	return joinMarkdownParts(content[:start], replacement, content[end:])
+}
+
+func renderReadmeIntroNarrative(narrative *ReadmeNarrative, fallbackLead string) string {
+	if narrative == nil {
+		return ""
+	}
+	var parts []string
+	if headline := strings.TrimSpace(narrative.Headline); headline != "" {
+		parts = append(parts, "**"+headline+"**")
+	} else if fallbackLead = strings.TrimSpace(fallbackLead); fallbackLead != "" {
+		parts = append(parts, fallbackLead)
+	}
+	if valueProp := strings.TrimSpace(narrative.ValueProp); valueProp != "" {
+		parts = append(parts, valueProp)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func existingReadmeIntroLead(intro string) string {
+	for paragraph := range strings.SplitSeq(strings.TrimSpace(intro), "\n\n") {
+		if paragraph = strings.TrimSpace(paragraph); paragraph != "" {
+			return paragraph
+		}
+	}
+	return ""
+}
+
+func findReadmeIntroEnd(content string, start int) int {
+	end := len(content)
+	for _, prefix := range []string{"Learn more at ", "Printed by "} {
+		if idx := findLineWithPrefix(content, start, prefix); idx >= 0 && idx < end {
+			end = idx
+		}
+	}
+	if install := findMarkdownHeadingInRange(content, "## Install", start, len(content)); install >= 0 && install < end {
+		end = install
+	}
+	if heading := firstMarkdownHeading(content, start, end, 2, 2); heading.Start >= 0 && heading.Start < end {
+		end = heading.Start
+	}
+	return end
+}
+
+func findLineWithPrefix(content string, start int, prefix string) int {
+	if start < 0 {
+		start = 0
+	}
+	if start > len(content) {
+		return -1
+	}
+	for lineStart := start; lineStart < len(content); {
+		lineEnd := strings.IndexByte(content[lineStart:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(content)
+		} else {
+			lineEnd += lineStart
+		}
+		if strings.HasPrefix(content[lineStart:lineEnd], prefix) {
+			return lineStart
+		}
+		if lineEnd == len(content) {
+			break
+		}
+		lineStart = lineEnd + 1
+	}
+	return -1
 }
 
 func renderQuickStartSection(steps []QuickStartStep) string {

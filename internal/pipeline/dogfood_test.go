@@ -1800,6 +1800,14 @@ func newHealthCmd() *cobra.Command {
 		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
 			"# Test CLI",
 			"",
+			"**Old headline**",
+			"",
+			"Old value proposition mentions old quickstart.",
+			"",
+			"Learn more at [Test CLI](https://example.com).",
+			"",
+			"Printed by [@tester](https://github.com/tester).",
+			"",
 			"## Authentication",
 			"",
 			"Use the old auth command.",
@@ -1835,6 +1843,14 @@ func newHealthCmd() *cobra.Command {
 		writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
 			"# Test Skill",
 			"",
+			"## Prerequisites: Install the CLI",
+			"",
+			"This skill drives the `test-pp-cli` binary.",
+			"",
+			"If `--version` reports \"command not found\" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.",
+			"",
+			"Old skill value proposition.",
+			"",
 			"## Unique Capabilities",
 			"",
 			"These capabilities aren't available in any other tool for this API.",
@@ -1867,6 +1883,8 @@ func newHealthCmd() *cobra.Command {
 				{Name: "Health dashboard", Command: "health", Description: "See scheduling health metrics at a glance"},
 			},
 			Narrative: &ReadmeNarrative{
+				Headline:      "Every Test feature plus verified health triage",
+				ValueProp:     "Health checks, OAuth setup, and agent-ready recipes stay in sync with research.json.",
 				AuthNarrative: "Use `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.",
 				QuickStart: []QuickStartStep{
 					{Comment: "Check credentials", Command: "test-pp-cli doctor"},
@@ -1891,6 +1909,12 @@ func newHealthCmd() *cobra.Command {
 		readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
 		require.NoError(t, err)
 		readme := string(readmeData)
+		assert.Contains(t, readme, "**Every Test feature plus verified health triage**")
+		assert.Contains(t, readme, "Health checks, OAuth setup, and agent-ready recipes stay in sync with research.json.")
+		assert.Contains(t, readme, "Learn more at [Test CLI](https://example.com).")
+		assert.Contains(t, readme, "Printed by [@tester](https://github.com/tester).")
+		assert.NotContains(t, readme, "Old headline")
+		assert.NotContains(t, readme, "Old value proposition")
 		assert.Contains(t, readme, "## Authentication\n\nUse `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.")
 		assert.Contains(t, readme, "# Check credentials\ntest-pp-cli doctor")
 		assert.Contains(t, readme, "# Inspect health\ntest-pp-cli health --agent")
@@ -1903,6 +1927,10 @@ func newHealthCmd() *cobra.Command {
 		skillData, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
 		require.NoError(t, err)
 		skill := string(skillData)
+		assert.Contains(t, skill, "## Prerequisites: Install the CLI")
+		assert.Contains(t, skill, "Do not proceed with skill commands until verification succeeds.")
+		assert.Contains(t, skill, "Health checks, OAuth setup, and agent-ready recipes stay in sync with research.json.")
+		assert.NotContains(t, skill, "Old skill value proposition")
 		assert.Contains(t, skill, "## Recipes")
 		assert.Contains(t, skill, "### Inspect health")
 		assert.Contains(t, skill, "test-pp-cli health --agent")
@@ -1912,6 +1940,8 @@ func newHealthCmd() *cobra.Command {
 		assert.NotContains(t, skill, "Old recipe")
 		requireBefore(t, skill, "## Recipes", "## Auth Setup")
 
+		assert.Contains(t, stderr, "dogfood: synced README.md (Value Proposition) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced SKILL.md (Value Proposition) from research.json narrative")
 		assert.Contains(t, stderr, "dogfood: synced README.md (Quick Start) from research.json narrative")
 		assert.Contains(t, stderr, "dogfood: synced README.md (Authentication) from research.json narrative")
 		assert.Contains(t, stderr, "dogfood: synced README.md (Troubleshooting) from research.json narrative")
@@ -1928,6 +1958,58 @@ func newHealthCmd() *cobra.Command {
 		require.NoError(t, err)
 		assert.Equal(t, beforeReadme, string(afterReadme), "unchanged narrative should not rewrite README content")
 		assert.Equal(t, beforeSkill, string(afterSkill), "unchanged narrative should not rewrite SKILL content")
+	})
+
+	t.Run("value prop only preserves README lead paragraph", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+			"# Test CLI",
+			"",
+			"Generated fallback description from the spec.",
+			"",
+			"Old value proposition.",
+			"",
+			"## Quick Start",
+			"",
+			"Run it.",
+			"",
+			"## Usage",
+			"",
+			"Run help.",
+			"",
+		}, "\n"))
+		writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), "# Test Skill\n")
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health", Description: "See scheduling health metrics at a glance"},
+			},
+			Narrative: &ReadmeNarrative{
+				ValueProp: "Updated value proposition from research.json.",
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+
+		readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		readme := string(readmeData)
+		assert.Contains(t, readme, "Generated fallback description from the spec.")
+		assert.Contains(t, readme, "Updated value proposition from research.json.")
+		assert.NotContains(t, readme, "Old value proposition.")
+		requireBefore(t, readme, "Generated fallback description from the spec.", "Updated value proposition from research.json.")
+		requireBefore(t, readme, "Updated value proposition from research.json.", "## Quick Start")
 	})
 
 	t.Run("inserts README and SKILL sections when absent", func(t *testing.T) {
