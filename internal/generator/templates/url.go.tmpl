@@ -5,6 +5,9 @@ package client
 
 import (
 	"fmt"
+{{- if .GlobalPathTemplateVars}}
+	"net/url"
+{{- end}}
 	"regexp"
 	"sort"
 	"strings"
@@ -28,6 +31,14 @@ var templateVarEnvNames = map[string]string{
 	"{{.}}": "{{endpointTemplateEnvName .}}",
 {{- end}}
 }
+{{- if .GlobalPathTemplateVars}}
+
+var globalPathTemplateVars = map[string]bool{
+{{- range .GlobalPathTemplateVars}}
+	"{{.}}": true,
+{{- end}}
+}
+{{- end}}
 
 // buildURL concatenates baseURL and path, then substitutes every {placeholder}
 // against vars. vars is normally Config.TemplateVars, populated from env at
@@ -46,6 +57,25 @@ func buildURL(baseURL, path string, vars map[string]string) (string, error) {
 	}
 	seen := map[string]bool{}
 	var unresolved []string
+{{- if .GlobalPathTemplateVars}}
+	resolve := func(raw string, pathContext bool) string {
+		return templateVarPattern.ReplaceAllStringFunc(raw, func(match string) string {
+			key := match[1 : len(match)-1]
+			if v, ok := vars[key]; ok && v != "" {
+				if pathContext && globalPathTemplateVars[key] {
+					return url.PathEscape(v)
+				}
+				return v
+			}
+			if !seen[key] {
+				seen[key] = true
+				unresolved = append(unresolved, key)
+			}
+			return match
+		})
+	}
+	resolved := resolve(baseURL, false) + resolve(path, true)
+{{- else}}
 	resolved := templateVarPattern.ReplaceAllStringFunc(full, func(match string) string {
 		key := match[1 : len(match)-1]
 		if v, ok := vars[key]; ok && v != "" {
@@ -57,6 +87,7 @@ func buildURL(baseURL, path string, vars map[string]string) (string, error) {
 		}
 		return match
 	})
+{{- end}}
 	if len(unresolved) == 0 {
 		return resolved, nil
 	}

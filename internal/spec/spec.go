@@ -158,6 +158,10 @@ type APISpec struct {
 	// whose only {placeholder}s are template vars as standalone-listable
 	// sync resources (rather than parent-context-dependent).
 	EndpointTemplateVars []string `yaml:"endpoint_template_vars,omitempty" json:"endpoint_template_vars,omitempty"`
+	// GlobalPathTemplateVars lists endpoint-path placeholders that are common
+	// enough across the API to resolve from root CLI flags / env-backed
+	// TemplateVars instead of per-command positional arguments.
+	GlobalPathTemplateVars []string `yaml:"-" json:"global_path_template_vars,omitempty"`
 	// EndpointTemplateEnvOverrides maps a placeholder in EndpointTemplateVars
 	// to an explicit env-var name, overriding the default
 	// <APINAME>_<UPPER_PLACEHOLDER> resolution. Used for per-tenant or
@@ -2561,6 +2565,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	}
 	s.expandOperations()
 	s.EnrichPathParams()
+	s.PromoteGlobalPathTemplateVars()
 	s.promoteParamsToBodyForWriteEndpoints()
 	s.applyReservedResourceParentPrefixes()
 	if err := s.validateReservedNames(); err != nil {
@@ -3038,6 +3043,208 @@ func (s *APISpec) EnrichPathParams() {
 		s.enrichResourcePathParams(&r)
 		s.Resources[resourceName] = r
 	}
+}
+
+// PromoteGlobalPathTemplateVars finds path placeholders that appear on most
+// endpoints and already have explicit env-backed EndpointTemplateVars wiring.
+// Those placeholders stay in endpoint paths for client buildURL substitution,
+// but are removed from individual command params so generated CLIs expose a
+// single root flag/env value instead of repeating a positional on every leaf.
+func (s *APISpec) PromoteGlobalPathTemplateVars() {
+	if s == nil || len(s.Resources) == 0 {
+		return
+	}
+
+	candidates := make(map[string]struct{}, len(s.EndpointTemplateVars))
+	candidateFlagNames := map[string]struct{}{}
+	candidateFieldNames := map[string]struct{}{}
+	for _, name := range s.EndpointTemplateVars {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if strings.TrimSpace(s.EndpointTemplateEnvOverrides[name]) == "" {
+			continue
+		}
+		flagName := naming.FlagName(name)
+		fieldName := "templateVar" + naming.CamelIdentifier(name)
+		if flagName == "" || !globalPathTemplateVarRootSafe(flagName, fieldName) {
+			continue
+		}
+		if _, dup := candidateFlagNames[flagName]; dup {
+			continue
+		}
+		if _, dup := candidateFieldNames[fieldName]; dup {
+			continue
+		}
+		candidateFlagNames[flagName] = struct{}{}
+		candidateFieldNames[fieldName] = struct{}{}
+		candidates[name] = struct{}{}
+	}
+	if len(candidates) == 0 && len(s.GlobalPathTemplateVars) == 0 {
+		return
+	}
+
+	totalEndpoints := 0
+	counts := make(map[string]int, len(candidates))
+	walkSpecEndpoints(s.Resources, func(endpoint *Endpoint) {
+		totalEndpoints++
+		seen := map[string]struct{}{}
+		for _, match := range pathParamRe.FindAllStringSubmatch(endpoint.Path, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			name := match[1]
+			if _, ok := candidates[name]; !ok {
+				continue
+			}
+			if _, dup := seen[name]; dup {
+				continue
+			}
+			seen[name] = struct{}{}
+			counts[name]++
+		}
+	})
+
+	global := make(map[string]struct{})
+	threshold := float64(totalEndpoints) * 0.8
+	for name, count := range counts {
+		if float64(count) >= threshold {
+			global[name] = struct{}{}
+		}
+	}
+	if len(global) == 0 && len(s.GlobalPathTemplateVars) == 0 {
+		return
+	}
+
+	existing := make(map[string]struct{}, len(s.GlobalPathTemplateVars)+len(global))
+	usedFlagNames := map[string]struct{}{}
+	usedFieldNames := map[string]struct{}{}
+	addGlobal := func(name string) {
+		if strings.TrimSpace(name) == "" {
+			return
+		}
+		flagName := naming.FlagName(name)
+		fieldName := "templateVar" + naming.CamelIdentifier(name)
+		if flagName == "" || !globalPathTemplateVarRootSafe(flagName, fieldName) {
+			return
+		}
+		if _, dup := usedFlagNames[flagName]; dup {
+			return
+		}
+		if _, dup := usedFieldNames[fieldName]; dup {
+			return
+		}
+		usedFlagNames[flagName] = struct{}{}
+		usedFieldNames[fieldName] = struct{}{}
+		existing[name] = struct{}{}
+	}
+	for _, name := range s.GlobalPathTemplateVars {
+		addGlobal(name)
+	}
+	for name := range global {
+		addGlobal(name)
+	}
+	s.GlobalPathTemplateVars = sortedStringKeys(existing)
+
+	walkSpecEndpoints(s.Resources, func(endpoint *Endpoint) {
+		if len(endpoint.Params) == 0 {
+			return
+		}
+		filtered := endpoint.Params[:0]
+		for _, param := range endpoint.Params {
+			if _, ok := existing[param.Name]; ok && (param.Positional || param.PathParam) && PathContainsPlaceholder(endpoint.Path, param.Name) {
+				continue
+			}
+			filtered = append(filtered, param)
+		}
+		endpoint.Params = filtered
+	})
+}
+
+func walkSpecEndpoints(resources map[string]Resource, visit func(endpoint *Endpoint)) {
+	for resourceName, resource := range resources {
+		for endpointName, endpoint := range resource.Endpoints {
+			visit(&endpoint)
+			resource.Endpoints[endpointName] = endpoint
+		}
+		if len(resource.SubResources) > 0 {
+			walkSpecEndpoints(resource.SubResources, visit)
+		}
+		resources[resourceName] = resource
+	}
+}
+
+func globalPathTemplateVarRootSafe(flagName, fieldName string) bool {
+	if _, exists := reservedRootFlagNames[flagName]; exists {
+		return false
+	}
+	if _, exists := reservedRootFlagFieldNames[fieldName]; exists {
+		return false
+	}
+	return true
+}
+
+var reservedRootFlagNames = map[string]struct{}{
+	"json":                  {},
+	"compact":               {},
+	"csv":                   {},
+	"plain":                 {},
+	"quiet":                 {},
+	"dry-run":               {},
+	"no-cache":              {},
+	"no-input":              {},
+	"idempotent":            {},
+	"ignore-missing":        {},
+	"yes":                   {},
+	"agent":                 {},
+	"no-learn":              {},
+	"allow-partial-failure": {},
+	"select":                {},
+	"config":                {},
+	"timeout":               {},
+	"max-age":               {},
+	"data-source":           {},
+	"profile":               {},
+	"deliver":               {},
+	"rate-limit":            {},
+	"throttle-mode":         {},
+	"no-color":              {},
+	"human-friendly":        {},
+}
+
+var reservedRootFlagFieldNames = map[string]struct{}{
+	"asJSON":              {},
+	"compact":             {},
+	"csv":                 {},
+	"plain":               {},
+	"quiet":               {},
+	"dryRun":              {},
+	"noCache":             {},
+	"noInput":             {},
+	"idempotent":          {},
+	"ignoreMissing":       {},
+	"yes":                 {},
+	"agent":               {},
+	"noLearn":             {},
+	"allowPartialFailure": {},
+	"selectFields":        {},
+	"configPath":          {},
+	"profileName":         {},
+	"deliverSpec":         {},
+	"timeout":             {},
+	"rateLimit":           {},
+	"maxAge":              {},
+	"dataSource":          {},
+	"freshnessMeta":       {},
+	"throttleMode":        {},
+	"deliverBuf":          {},
+	"deliverSink":         {},
+}
+
+// PathContainsPlaceholder reports whether path contains the literal
+// "{name}" placeholder form used by parsed endpoint paths.
+func PathContainsPlaceholder(path, name string) bool {
+	return strings.Contains(path, "{"+name+"}")
 }
 
 func (s *APISpec) enrichResourcePathParams(r *Resource) {

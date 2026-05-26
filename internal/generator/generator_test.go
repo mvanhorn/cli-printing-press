@@ -13966,6 +13966,61 @@ func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateMCPCodeOrchestrationGlobalPathTemplateVars(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:                 "tenant-code-orch",
+		Description:          "Tenant code orchestration API (test fixture)",
+		Version:              "1.0",
+		BaseURL:              "https://api.example.com",
+		EndpointTemplateVars: []string{"tenant_id"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"tenant_id": "TENANT_CODE_ORCH_TENANT_ID",
+		},
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			EnvVars: []string{"TENANT_CODE_ORCH_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/tenant-code-orch-pp-cli/config.toml",
+		},
+		MCP: spec.MCPConfig{Orchestration: "code"},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/tenants/{tenant_id}/accounts", Response: spec.ResponseDef{Type: "array", Item: "Account"}},
+					"get":  {Method: "GET", Path: "/tenants/{tenant_id}/accounts/{account_id}", Response: spec.ResponseDef{Type: "object", Item: "Account"}},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Account": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+		},
+	}
+	apiSpec.EnrichPathParams()
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	codeOrchPath := filepath.Join(outputDir, "internal", "mcp", "code_orch.go")
+	data, err := os.ReadFile(codeOrchPath)
+	require.NoError(t, err)
+	src := string(data)
+	assert.Contains(t, src, `TemplateParams []codeOrchParamBinding`)
+	assert.Contains(t, src, `TemplateParams: []codeOrchParamBinding{{PublicName: "tenant_id", WireName: "tenant_id"}}`)
+	assert.Contains(t, src, `c.Config.TemplateVars[binding.WireName] = fmt.Sprintf("%v", v)`)
+	assert.Contains(t, src, `delete(params, binding.PublicName)`,
+		"code-orchestration execute must not also route promoted template params as query/body inputs")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateMCPCodeOrchestrationSkippedByDefault guards against the
 // template accidentally emitting code_orch.go for specs that didn't opt in.
 // Small APIs should keep today's endpoint-mirror shape; the thin surface
@@ -15694,6 +15749,116 @@ func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
 	// blow up at install time for every printed CLI.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGenerateGlobalPathTemplateVarRootFlag(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:                 "tenant-scope",
+		Description:          "Tenant-scoped API (test fixture)",
+		Version:              "1.0",
+		BaseURL:              "https://api.example.com",
+		EndpointTemplateVars: []string{"tenant_id"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"tenant_id": "TENANT_SCOPE_TENANT_ID",
+		},
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			EnvVars: []string{"TENANT_SCOPE_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/tenant-scope-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/tenants/{tenant_id}/accounts", Response: spec.ResponseDef{Type: "array", Item: "Account"}},
+					"get":    {Method: "GET", Path: "/tenants/{tenant_id}/accounts/{account_id}", Response: spec.ResponseDef{Type: "object", Item: "Account"}},
+					"create": {Method: "POST", Path: "/tenants/{tenant_id}/accounts", Body: []spec.Param{{Name: "name", Type: "string", Required: true}}, Response: spec.ResponseDef{Type: "object", Item: "Account"}},
+				},
+			},
+			"contacts": {
+				Description: "Contacts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/tenants/{tenant_id}/contacts", Response: spec.ResponseDef{Type: "array", Item: "Contact"}},
+					"get":  {Method: "GET", Path: "/contacts/{contact_id}", Response: spec.ResponseDef{Type: "object", Item: "Contact"}},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Account": {Fields: []spec.TypeField{{Name: "id", Type: "string"}, {Name: "name", Type: "string"}}},
+			"Contact": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+		},
+	}
+	apiSpec.EnrichPathParams()
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	rootSrc := string(rootGo)
+	assert.Contains(t, rootSrc, `StringVar(&flags.templateVarTenantId, "tenant-id", ""`,
+		"global tenant path var must be emitted as a persistent root flag")
+	assert.Contains(t, rootSrc, `cfg.TemplateVars["tenant_id"] = f.templateVarTenantId`,
+		"root flag must override the env-populated Config.TemplateVars value")
+
+	accountsGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_list.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(accountsGo), `Use:         "list"`,
+		"global path var should not appear as a per-command positional")
+	assert.NotContains(t, string(accountsGo), "<tenant_id>")
+
+	accountsGetGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_get.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(accountsGetGo), `Use:         "get <account_id>"`,
+		"sparse path params must remain per-command positionals")
+	assert.NotContains(t, string(accountsGetGo), "<tenant_id>")
+
+	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpSrc := string(mcpGo)
+	accountsListTool := generatedMCPToolBlock(t, mcpSrc, "accounts_list")
+	assert.Contains(t, accountsListTool, `mcplib.WithString("tenant_id", mcplib.Description("Path template value for {tenant_id}; overrides env/config for this MCP call"))`,
+		"MCP endpoint tools must expose a per-call override matching the CLI root flag")
+	assert.Contains(t, mcpSrc, `Location: "template"`,
+		"MCP handler binding must route tenant_id into Config.TemplateVars instead of query params")
+	assert.Contains(t, mcpSrc, `c.Config.TemplateVars[binding.WireName] = fmt.Sprintf("%v", v)`,
+		"MCP handler must merge global template inputs into Config.TemplateVars before the request")
+	contactsGetTool := generatedMCPToolBlock(t, mcpSrc, "contacts_get")
+	assert.NotContains(t, contactsGetTool, `"tenant_id"`,
+		"MCP tools for paths that do not contain the promoted placeholder must not expose the root-scoped input")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "tenant-scope-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/tenant-scope-pp-cli")
+
+	cmd := exec.Command(binaryPath, "accounts", "list", "--tenant-id", "flag/tenant 1", "--dry-run")
+	cmd.Env = append(os.Environ(),
+		"TENANT_SCOPE_TOKEN=test-token",
+		"TENANT_SCOPE_TENANT_ID=env-tenant",
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "GET https://api.example.com/tenants/flag%2Ftenant%201/accounts",
+		"root flag value must feed buildURL path substitution, escape as one path segment, and win over env")
+	assert.NotContains(t, string(out), "env-tenant")
+}
+
+func generatedMCPToolBlock(t *testing.T, src, toolName string) string {
+	t.Helper()
+	anchor := fmt.Sprintf(`mcplib.NewTool("%s"`, toolName)
+	start := strings.Index(src, anchor)
+	require.NotEqual(t, -1, start, "generated MCP tool %q missing", toolName)
+	rest := src[start:]
+	end := strings.Index(rest, "\n\t\t),\n\t\tmakeAPIHandler")
+	require.NotEqual(t, -1, end, "generated MCP tool %q block boundary missing", toolName)
+	return rest[:end]
 }
 
 // TestGenerateParentNoSubcommandRunE_WiredOnResourceParents: every generated

@@ -66,6 +66,10 @@ type codeOrchEndpoint struct {
 {{- end}}
 	Summary     string
 	Positional  []string
+	// TemplateParams carries public-to-wire bindings for promoted global path
+	// placeholders. These resolve through Config.TemplateVars just like the
+	// per-endpoint MCP tool inputs do.
+	TemplateParams []codeOrchParamBinding
 	// QueryParams carries public-to-wire bindings for spec-declared in:query
 	// parameters. Write methods (POST/PUT/PATCH) route these to the query
 	// string instead of dumping them into the JSON body. Derived from the
@@ -109,6 +113,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}}{{end}} },
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
@@ -134,6 +139,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}}{{end}} },
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
@@ -282,6 +288,17 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 {{ end}}
 {{- if .HasTierRouting}}
 	c = c.WithTier(ep.Tier)
+{{- end}}
+{{- if .GlobalPathTemplateVars}}
+	for _, binding := range ep.TemplateParams {
+		if v, ok := params[binding.PublicName]; ok {
+			if c.Config.TemplateVars == nil {
+				c.Config.TemplateVars = map[string]string{}
+			}
+			c.Config.TemplateVars[binding.WireName] = fmt.Sprintf("%v", v)
+			delete(params, binding.PublicName)
+		}
+	}
 {{- end}}
 
 	path := ep.Path

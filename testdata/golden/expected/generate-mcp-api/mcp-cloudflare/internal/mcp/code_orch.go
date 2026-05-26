@@ -60,6 +60,10 @@ type codeOrchEndpoint struct {
 	Tier       string
 	Summary    string
 	Positional []string
+	// TemplateParams carries public-to-wire bindings for promoted global path
+	// placeholders. These resolve through Config.TemplateVars just like the
+	// per-endpoint MCP tool inputs do.
+	TemplateParams []codeOrchParamBinding
 	// QueryParams carries public-to-wire bindings for spec-declared in:query
 	// parameters. Write methods (POST/PUT/PATCH) route these to the query
 	// string instead of dumping them into the JSON body. Derived from the
@@ -89,13 +93,14 @@ type codeOrchParamBinding struct {
 // via <api>_search, so hierarchy shows up as dotted IDs, not nested maps.
 var codeOrchEndpoints = []codeOrchEndpoint{
 	{
-		ID:          "items.list",
-		Method:      "GET",
-		Path:        "/items",
-		Summary:     "List items",
-		Positional:  []string{},
-		QueryParams: []codeOrchParamBinding{},
-		keywords:    codeOrchKeywords("items", "list", "List items", "/items"),
+		ID:             "items.list",
+		Method:         "GET",
+		Path:           "/items",
+		Summary:        "List items",
+		Positional:     []string{},
+		TemplateParams: []codeOrchParamBinding{},
+		QueryParams:    []codeOrchParamBinding{},
+		keywords:       codeOrchKeywords("items", "list", "List items", "/items"),
 	},
 }
 

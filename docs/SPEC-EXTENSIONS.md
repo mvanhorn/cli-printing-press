@@ -328,8 +328,10 @@ classifies tenant-templated paths as parent-context-dependent and emits an
 empty `defaultSyncResources` / `syncResourcePath` map; sync silently no-ops
 and every downstream offline command ships broken.
 
-Parsed fields: `APISpec.EndpointTemplateVars` (`tenant` added) and
-`APISpec.EndpointTemplateEnvOverrides["tenant"]` (env-var name).
+Parsed fields: `APISpec.EndpointTemplateVars` (`tenant` added),
+`APISpec.EndpointTemplateEnvOverrides["tenant"]` (env-var name), and
+`APISpec.GlobalPathTemplateVars` when `{tenant}` is present on at least
+80% of endpoints and can safely map to a root persistent flag.
 
 Rules:
 - Optional. Specs without `x-tenant-env-var` keep single-tenant behavior;
@@ -351,6 +353,14 @@ Effect on generated output (when set):
 - The emitted `url.go` `buildURL` substitutes `{tenant}` from
   `Config.TemplateVars` at request time and names the override env var in
   the actionable error when the value is missing.
+- When `{tenant}` appears on at least 80% of endpoints and its public
+  flag name does not collide with existing root flags, the emitted root
+  command exposes `--tenant` as an optional override for the same
+  `Config.TemplateVars["tenant"]` value. Matching per-command
+  `{tenant}` positionals are removed; sparse path params remain
+  per-command inputs.
+- Typed MCP endpoint tools for tenant-scoped paths expose optional
+  `tenant` input that overrides the env/config value for that one call.
 - The emitted `sync.go` filters `{tenant}` out of the unresolved-key
   warning so per-tenant paths don't get skipped as "requires parent
   context".
@@ -379,8 +389,10 @@ set on the same entry, `default` wins and `env` is ignored — the
 placeholder is fully resolved before runtime substitution sees it.
 
 Parsed fields: `APISpec.EndpointTemplateVars`,
-`APISpec.EndpointTemplateEnvOverrides`, and
-`APISpec.EndpointPathParamDefaults`.
+`APISpec.EndpointTemplateEnvOverrides`,
+`APISpec.EndpointPathParamDefaults`, and
+`APISpec.GlobalPathTemplateVars` for env-backed placeholders that meet
+the same 80% common-path promotion rule.
 
 Rules:
 - Optional. Specs without this extension keep prior behavior; the new
@@ -391,6 +403,15 @@ Rules:
 - `env` and `default` values must be non-empty after `TrimSpace`.
   Whitespace-only values are treated as absent on the entry.
 - Entries with neither `env` nor `default` set are skipped silently.
+- Env-backed placeholders that appear in at least 80% of endpoint paths
+  are promoted to optional root persistent flags (for example
+  `{workspace}` -> `--workspace`) when the derived flag and Go field
+  names do not collide with existing root command flags. Matching
+  per-command path positionals are removed, while same-named
+  non-path positionals and sparse path params remain command inputs.
+- Typed MCP endpoint tools for promoted env-backed path placeholders
+  expose optional per-call inputs that override env/config values before
+  URL substitution.
 
 Effect on generated output (when set):
 - `env`-set entries behave exactly like `x-tenant-env-var` for the

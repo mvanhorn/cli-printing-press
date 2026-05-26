@@ -2,6 +2,7 @@ package generator
 
 import (
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -102,7 +103,7 @@ func TestRequiresRoleEmitsMCPOrchestrationGates(t *testing.T) {
 	codeOrchSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
 	require.Contains(t, codeOrchSrc, "RequiredRole cli.Persona")
 	require.Contains(t, codeOrchSrc, "cli.RequireRoleWith(nil, cfg, ep.ID, ep.RequiredRole)")
-	require.Contains(t, codeOrchSrc, "RequiredRole: cli.PersonaAdmin")
+	require.Regexp(t, regexp.MustCompile(`RequiredRole:\s+cli\.PersonaAdmin`), codeOrchSrc)
 
 	intentsSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
 	require.Contains(t, intentsSrc, "requiredRole cli.Persona")

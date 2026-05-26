@@ -168,6 +168,7 @@ type Generator struct {
 
 func New(s *spec.APISpec, outputDir string) *Generator {
 	s.InferEndpointTemplateVarsFromBaseURLs()
+	s.PromoteGlobalPathTemplateVars()
 	if s.Owner == "" {
 		s.Owner = resolveOwnerForExisting(outputDir)
 	}
@@ -338,36 +339,38 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return " (one of: " + strings.Join(values, ", ") + ")"
 		},
-		"jsonStringParam":          isJSONStringParam,
-		"jsonEnumSuggestion":       jsonEnumSuggestion,
-		"bodyMap":                  bodyMap,
-		"bodyMapForEndpoint":       bodyMapForEndpoint,
-		"bodyVarDecls":             bodyVarDecls,
-		"bodyFlagRegs":             bodyFlagRegs,
-		"bodyRequiredChecks":       bodyRequiredChecks,
-		"bodyExceedsFlagDepth":     bodyExceedsFlagDepth,
-		"bodyHasStringBackedBool":  bodyHasStringBackedBool,
-		"multipartBodyMaps":        multipartBodyMaps,
-		"endpointUsesMultipart":    endpointUsesMultipart,
-		"endpointUsesCSVArray":     endpointUsesCSVArray,
-		"endpointHasQueryFlags":    endpointHasQueryFlags,
-		"endpointHasRequestParams": endpointHasRequestParams,
-		"endpointHasRequiredInput": endpointHasRequiredInput,
-		"endpointIsReadCommand":    endpointIsReadCommand,
-		"hasMultipartRequest":      hasMultipartRequest,
-		"formBodyMaps":             formBodyMaps,
-		"endpointUsesForm":         endpointUsesForm,
-		"hasFormRequest":           hasFormRequest,
-		"hasBodyJSONFallback":      hasBodyJSONFallback,
-		"hasMCPNestedBodyPath":     hasMCPNestedBodyPath,
-		"publicFlagName":           publicFlagName,
-		"publicFlagAliases":        publicFlagAliases,
-		"flagChangedExpr":          flagChangedExpr,
-		"graphqlListParams":        graphqlListParams,
-		"graphqlVariableType":      graphqlVariableType,
-		"mcpInputName":             mcpInputName,
-		"mcpToolInputParams":       mcpToolInputParams,
-		"mcpParamBindings":         mcpParamBindings,
+		"jsonStringParam":              isJSONStringParam,
+		"jsonEnumSuggestion":           jsonEnumSuggestion,
+		"bodyMap":                      bodyMap,
+		"bodyMapForEndpoint":           bodyMapForEndpoint,
+		"bodyVarDecls":                 bodyVarDecls,
+		"bodyFlagRegs":                 bodyFlagRegs,
+		"bodyRequiredChecks":           bodyRequiredChecks,
+		"bodyExceedsFlagDepth":         bodyExceedsFlagDepth,
+		"bodyHasStringBackedBool":      bodyHasStringBackedBool,
+		"multipartBodyMaps":            multipartBodyMaps,
+		"endpointUsesMultipart":        endpointUsesMultipart,
+		"endpointUsesCSVArray":         endpointUsesCSVArray,
+		"endpointHasQueryFlags":        endpointHasQueryFlags,
+		"endpointHasRequestParams":     endpointHasRequestParams,
+		"endpointHasRequiredInput":     endpointHasRequiredInput,
+		"endpointIsReadCommand":        endpointIsReadCommand,
+		"hasMultipartRequest":          hasMultipartRequest,
+		"formBodyMaps":                 formBodyMaps,
+		"endpointUsesForm":             endpointUsesForm,
+		"hasFormRequest":               hasFormRequest,
+		"hasBodyJSONFallback":          hasBodyJSONFallback,
+		"hasMCPNestedBodyPath":         hasMCPNestedBodyPath,
+		"publicFlagName":               publicFlagName,
+		"publicFlagAliases":            publicFlagAliases,
+		"flagChangedExpr":              flagChangedExpr,
+		"graphqlListParams":            graphqlListParams,
+		"graphqlVariableType":          graphqlVariableType,
+		"mcpInputName":                 mcpInputName,
+		"mcpToolInputParams":           mcpToolInputParams,
+		"mcpParamBindings":             mcpParamBindings,
+		"mcpGlobalTemplateInputParams": mcpGlobalTemplateInputParams,
+		"mcpGlobalTemplateBindings":    mcpGlobalTemplateBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
 		// param AND no Pagination block — the spec author asked for a
@@ -4544,6 +4547,45 @@ func mcpToolInputParams(endpoint spec.Endpoint) []spec.Param {
 	}
 	params = append(params, mcpBodyInputParams(endpoint)...)
 	return params
+}
+
+func mcpGlobalTemplateInputParams(endpoint spec.Endpoint, pathTemplate string, vars []string) []spec.Param {
+	if len(vars) == 0 {
+		return nil
+	}
+	known := map[string]struct{}{}
+	for _, param := range mcpToolInputParams(endpoint) {
+		known[param.PublicInputName()] = struct{}{}
+	}
+	params := make([]spec.Param, 0, len(vars))
+	for _, name := range vars {
+		if !spec.PathContainsPlaceholder(pathTemplate, name) {
+			continue
+		}
+		if _, exists := known[name]; exists {
+			continue
+		}
+		params = append(params, spec.Param{
+			Name:        name,
+			Type:        "string",
+			Description: fmt.Sprintf("Path template value for {%s}; overrides env/config for this MCP call", name),
+		})
+		known[name] = struct{}{}
+	}
+	return params
+}
+
+func mcpGlobalTemplateBindings(endpoint spec.Endpoint, pathTemplate string, vars []string) []mcpParamBinding {
+	inputs := mcpGlobalTemplateInputParams(endpoint, pathTemplate, vars)
+	bindings := make([]mcpParamBinding, 0, len(inputs))
+	for _, param := range inputs {
+		bindings = append(bindings, mcpParamBinding{
+			PublicName: param.PublicInputName(),
+			WireName:   param.Name,
+			Location:   "template",
+		})
+	}
+	return bindings
 }
 
 func mcpBodyInputParams(endpoint spec.Endpoint) []spec.Param {

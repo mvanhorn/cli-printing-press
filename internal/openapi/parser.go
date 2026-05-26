@@ -708,6 +708,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	// request returns 404. Same pass the YAML loader uses, applied uniformly
 	// here so OpenAPI-parsed specs get the same guarantee.
 	result.EnrichPathParams()
+	result.PromoteGlobalPathTemplateVars()
 
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)

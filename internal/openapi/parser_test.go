@@ -8873,6 +8873,14 @@ func findParsedEndpointByPath(t *testing.T, parsed *spec.APISpec, method, path s
 	return spec.Endpoint{}
 }
 
+func openAPIParamNames(params []spec.Param) []string {
+	names := make([]string, len(params))
+	for i, param := range params {
+		names[i] = param.Name
+	}
+	return names
+}
+
 // TestParseSyncWalkerExtension pins the x-pp-sync-walker operation
 // extension shape. The extension declares a hierarchical-walk dependency
 // for a child endpoint (parent resource name, optional non-PK key field,
@@ -9287,6 +9295,89 @@ paths:
 		assert.Equal(t, "ST_TENANT_ID", parsed.EndpointTemplateEnvName("tenant"))
 	})
 
+	t.Run("common tenant path var becomes global path template var", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: ServiceTitan CRM
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+servers:
+  - url: https://api.servicetitan.io
+paths:
+  /tenant/{tenant}/customers:
+    get:
+      summary: List customers
+      operationId: listCustomers
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /tenant/{tenant}/customers/{customerId}:
+    get:
+      summary: Get customer
+      operationId: getCustomer
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+        - name: customerId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /tenant/{tenant}/invoices:
+    get:
+      summary: List invoices
+      operationId: listInvoices
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /tenant/{tenant}/jobs:
+    get:
+      summary: List jobs
+      operationId: listJobs
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /contacts/{contactId}:
+    get:
+      summary: Get contact
+      operationId: getContact
+      parameters:
+        - name: contactId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"tenant"}, parsed.GlobalPathTemplateVars)
+		customers := findParsedEndpointByPath(t, parsed, "GET", "/tenant/{tenant}/customers")
+		assert.Empty(t, customers.Params, "global path var should not remain as a command positional")
+		customer := findParsedEndpointByPath(t, parsed, "GET", "/tenant/{tenant}/customers/{customerId}")
+		assert.Equal(t, []string{"customerId"}, openAPIParamNames(customer.Params),
+			"sparse path params must remain per-command positionals")
+		contact := findParsedEndpointByPath(t, parsed, "GET", "/contacts/{contactId}")
+		assert.Equal(t, []string{"contactId"}, openAPIParamNames(contact.Params))
+	})
+
 	t.Run("absent extension leaves both fields empty", func(t *testing.T) {
 		data := []byte(`
 openapi: 3.0.3
@@ -9362,6 +9453,86 @@ paths:
 		assert.Equal(t, map[string]string{"workspace": "ATLASSIAN_WORKSPACE"}, parsed.EndpointTemplateEnvOverrides)
 		assert.Equal(t, "ATLASSIAN_WORKSPACE", parsed.EndpointTemplateEnvName("workspace"))
 		assert.Empty(t, parsed.EndpointPathParamDefaults, "env-only entries must not populate path-param defaults")
+	})
+
+	t.Run("common env-backed path placeholder becomes global path template var", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Atlassian Workspace API
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: ATLASSIAN_WORKSPACE
+servers:
+  - url: https://api.atlassian.com
+paths:
+  /workspaces/{workspace}/issues:
+    get:
+      operationId: listIssues
+      parameters:
+        - name: workspace
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /workspaces/{workspace}/issues/{issueId}:
+    get:
+      operationId: getIssue
+      parameters:
+        - name: workspace
+          in: path
+          required: true
+          schema: {type: string}
+        - name: issueId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /workspaces/{workspace}/projects:
+    get:
+      operationId: listProjects
+      parameters:
+        - name: workspace
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /workspaces/{workspace}/users:
+    get:
+      operationId: listUsers
+      parameters:
+        - name: workspace
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+  /teams/{teamId}:
+    get:
+      operationId: getTeam
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"workspace"}, parsed.GlobalPathTemplateVars)
+		issues := findParsedEndpointByPath(t, parsed, "GET", "/workspaces/{workspace}/issues")
+		assert.Empty(t, issues.Params, "global path var should not remain as a command positional")
+		issue := findParsedEndpointByPath(t, parsed, "GET", "/workspaces/{workspace}/issues/{issueId}")
+		assert.Equal(t, []string{"issueId"}, openAPIParamNames(issue.Params),
+			"sparse path params must remain per-command positionals")
+		team := findParsedEndpointByPath(t, parsed, "GET", "/teams/{teamId}")
+		assert.Equal(t, []string{"teamId"}, openAPIParamNames(team.Params))
 	})
 
 	t.Run("default entry bakes literal into path and drops the matching param", func(t *testing.T) {
