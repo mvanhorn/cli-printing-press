@@ -142,6 +142,15 @@ func TestFilterCatalogEntriesByRegion(t *testing.T) {
 	assert.Equal(t, "netherlands", got[1].Name)
 }
 
+func TestCatalogListRejectsInvalidRegionFilter(t *testing.T) {
+	cmd := newCatalogCmd()
+	cmd.SetArgs([]string{"list", "--region", "netherlands"})
+
+	_, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--region must be a two-letter region token")
+}
+
 func TestCatalogSearchNoMatches(t *testing.T) {
 	cmd := newCatalogCmd()
 	cmd.SetArgs([]string{"search", "zzz-nonexistent-query-xyz", "--json"})

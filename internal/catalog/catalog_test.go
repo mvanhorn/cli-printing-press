@@ -221,7 +221,7 @@ func TestValidateEntry(t *testing.T) {
 			mutate: func(e *Entry) {
 				e.Regions = []string{"nl"}
 			},
-			wantErr: "must be an uppercase ISO 3166-1 alpha-2 code",
+			wantErr: "must be an uppercase two-letter region token",
 		},
 		{
 			name: "regions duplicate rejected",

@@ -20,6 +20,9 @@ var namePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // Catalog-declared auth env vars feed directly into generated config.go reads,
 // so the validator rejects shapes the generator could not emit safely.
 var authEnvVarPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// regionPattern accepts any two uppercase letters; the catalog does not
+// maintain a full ISO 3166-1 country-code allowlist.
 var regionPattern = regexp.MustCompile(`^[A-Z]{2}$`)
 var apiLanguagePattern = regexp.MustCompile(`^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$`)
 
@@ -163,7 +166,7 @@ type Entry struct {
 	// entry so operators on existing setups don't need a migration.
 	AuthEnvVars []string `yaml:"auth_env_vars,omitempty"`
 	// Regions lists geographic availability/scope tokens for this API.
-	// Use ISO 3166-1 alpha-2 country codes (NL, IN), EU for pan-European
+	// Use ISO-style two-letter region tokens (NL, IN), EU for pan-European
 	// services, or * for APIs that are explicitly global.
 	Regions []string `yaml:"regions,omitempty"`
 	// APILanguage is the API's native/domain language as a BCP 47 tag
@@ -380,7 +383,7 @@ func validateRegions(regions []string) error {
 			return fmt.Errorf("regions[%d] %q must not have leading or trailing whitespace", i, region)
 		}
 		if region != "*" && !regionPattern.MatchString(region) {
-			return fmt.Errorf("regions[%d] %q must be an uppercase ISO 3166-1 alpha-2 code, EU, or *", i, region)
+			return fmt.Errorf("regions[%d] %q must be an uppercase two-letter region token, EU, or *", i, region)
 		}
 		if _, dup := seen[region]; dup {
 			return fmt.Errorf("regions[%d] %q is a duplicate", i, region)

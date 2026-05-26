@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/spf13/cobra"
 )
+
+var catalogRegionFilterPattern = regexp.MustCompile(`^[A-Z]{2}$`)
 
 func newCatalogCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -44,6 +47,9 @@ func newCatalogListCmd() *cobra.Command {
   cli-printing-press catalog list --json
   cli-printing-press catalog list --region NL`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateCatalogRegionFilter(region); err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
 			entries, err := catalog.ParseFS(catalogfs.FS)
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("reading catalog: %w", err)}
@@ -203,6 +209,14 @@ func catalogEntryMatchesRegion(entry catalog.Entry, region string) bool {
 		}
 	}
 	return false
+}
+
+func validateCatalogRegionFilter(region string) error {
+	region = strings.ToUpper(strings.TrimSpace(region))
+	if region == "" || region == "*" || catalogRegionFilterPattern.MatchString(region) {
+		return nil
+	}
+	return fmt.Errorf("--region must be a two-letter region token such as NL, EU, or *")
 }
 
 func newCatalogSearchCmd() *cobra.Command {
