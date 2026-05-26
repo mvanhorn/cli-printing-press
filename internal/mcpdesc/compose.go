@@ -74,7 +74,7 @@ func Compose(in Input) string {
 		composed = composeAction(desc)
 	} else {
 		var parts []string
-		if action := composeAction(desc); action != "" {
+		if action := composeActionWithFallback(in.Endpoint); action != "" {
 			parts = append(parts, action)
 		}
 		if required := composeRequired(in.Endpoint); required != "" {
@@ -123,6 +123,110 @@ func composeAction(desc string) string {
 		s += "."
 	}
 	return s
+}
+
+func composeActionWithFallback(ep spec.Endpoint) string {
+	if action := synthesizedResourceAction(ep); action != "" {
+		return action + "."
+	}
+	return composeAction(ep.Description)
+}
+
+func synthesizedResourceAction(ep spec.Endpoint) string {
+	if !ep.DescriptionSynthesized {
+		return ""
+	}
+	verb := strings.TrimSpace(ep.Description)
+	switch verb {
+	case "Create":
+		if singular := singularResourceName(ep.Path); singular != "" {
+			return "Create a new " + singular
+		}
+	case "List":
+		if plural := pluralResourceName(ep.Path); plural != "" {
+			return "List " + plural
+		}
+	case "Get", "Update", "Delete":
+		if singular := singularResourceName(ep.Path); singular != "" {
+			return verb + " a " + singular
+		}
+	}
+	return ""
+}
+
+func pluralResourceName(path string) string {
+	segment := resourceSegmentFromPath(path)
+	if segment == "" {
+		return ""
+	}
+	return strings.ReplaceAll(segment, "_", " ")
+}
+
+func singularResourceName(path string) string {
+	plural := pluralResourceName(path)
+	if plural == "" {
+		return ""
+	}
+	return singularizePhrase(plural)
+}
+
+func resourceSegmentFromPath(path string) string {
+	parts := strings.Split(path, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		segment := strings.TrimSpace(parts[i])
+		if segment == "" || strings.HasPrefix(segment, "{") {
+			continue
+		}
+		return strings.ToLower(strings.ReplaceAll(segment, "-", "_"))
+	}
+	return ""
+}
+
+func singularizePhrase(phrase string) string {
+	tokens := strings.Fields(phrase)
+	if len(tokens) == 0 {
+		return phrase
+	}
+	last := tokens[len(tokens)-1]
+	irregular := map[string]string{
+		"children": "child",
+		"people":   "person",
+		"men":      "man",
+		"women":    "woman",
+		"teeth":    "tooth",
+		"feet":     "foot",
+		"mice":     "mouse",
+		"geese":    "goose",
+	}
+	if singular, ok := irregular[last]; ok {
+		tokens[len(tokens)-1] = singular
+		return strings.Join(tokens, " ")
+	}
+	// Already-singular nouns that end in 's' — leave untouched.
+	uncountable := map[string]bool{"status": true, "series": true, "news": true, "analytics": true, "media": true}
+	if uncountable[last] {
+		return strings.Join(tokens, " ")
+	}
+	if strings.HasSuffix(last, "ies") && len(last) > 3 {
+		tokens[len(tokens)-1] = last[:len(last)-3] + "y"
+		return strings.Join(tokens, " ")
+	}
+	// -es plurals on sibilant stems (boxes→box, matches→match, dishes→dish,
+	// buzzes→buzz): strip the -es. "ses" is intentionally excluded — it is
+	// ambiguous with the far more common "-se"+s shape among API resources
+	// (releases, responses, databases, licenses), which the regular -s strip
+	// below handles correctly.
+	for _, suf := range []string{"xes", "zes", "ches", "shes"} {
+		if strings.HasSuffix(last, suf) && len(last) > 2 {
+			tokens[len(tokens)-1] = last[:len(last)-2]
+			return strings.Join(tokens, " ")
+		}
+	}
+	if strings.HasSuffix(last, "s") && len(last) > 1 && !strings.HasSuffix(last, "ss") {
+		tokens[len(tokens)-1] = last[:len(last)-1]
+		return strings.Join(tokens, " ")
+	}
+	return strings.Join(tokens, " ")
 }
 
 // composeRequired renders the "Required:" line. Path params count as
