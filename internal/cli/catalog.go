@@ -35,17 +35,20 @@ func newCatalogCmd() *cobra.Command {
 
 func newCatalogListCmd() *cobra.Command {
 	var asJSON bool
+	var region string
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all catalog entries",
 		Example: `  cli-printing-press catalog list
-  cli-printing-press catalog list --json`,
+  cli-printing-press catalog list --json
+  cli-printing-press catalog list --region NL`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entries, err := catalog.ParseFS(catalogfs.FS)
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("reading catalog: %w", err)}
 			}
+			entries = filterCatalogEntriesByRegion(entries, region)
 
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
@@ -78,6 +81,7 @@ func newCatalogListCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().StringVar(&region, "region", "", "Filter to catalog entries explicitly scoped to a region token (for example NL, EU, or *)")
 
 	return cmd
 }
@@ -103,60 +107,7 @@ func newCatalogShowCmd() *cobra.Command {
 				return enc.Encode(entry)
 			}
 
-			fmt.Printf("Name:           %s\n", entry.Name)
-			fmt.Printf("Display Name:   %s\n", entry.DisplayName)
-			fmt.Printf("Description:    %s\n", entry.Description)
-			fmt.Printf("Category:       %s\n", entry.Category)
-			fmt.Printf("Tier:           %s\n", entry.Tier)
-			if entry.IsWrapperOnly() {
-				fmt.Printf("Mode:           wrapper-only (no official spec)\n")
-			} else {
-				fmt.Printf("Spec URL:       %s\n", entry.SpecURL)
-				fmt.Printf("Spec Format:    %s\n", entry.SpecFormat)
-			}
-			if entry.OpenAPIVersion != "" {
-				fmt.Printf("OpenAPI:        %s\n", entry.OpenAPIVersion)
-			}
-			if entry.BaseURL != "" {
-				fmt.Printf("Base URL:       %s\n", entry.BaseURL)
-			}
-			if entry.Homepage != "" {
-				fmt.Printf("Homepage:       %s\n", entry.Homepage)
-			}
-			if entry.SpecSource != "" {
-				fmt.Printf("Spec Source:    %s\n", entry.SpecSource)
-			}
-			if entry.ClientPattern != "" {
-				fmt.Printf("Client Pattern: %s\n", entry.ClientPattern)
-			}
-			if entry.HTTPTransport != "" {
-				fmt.Printf("HTTP Transport: %s\n", entry.HTTPTransport)
-			}
-			if entry.AuthRequired != nil {
-				fmt.Printf("Auth Required:  %v\n", *entry.AuthRequired)
-			}
-			if entry.BearerRefresh.BundleURL != "" {
-				fmt.Printf("Bearer Refresh: %s\n", entry.BearerRefresh.BundleURL)
-			}
-			if entry.Notes != "" {
-				fmt.Printf("Notes:          %s\n", entry.Notes)
-			}
-			if entry.VerifiedDate != "" {
-				fmt.Printf("Verified:       %s\n", entry.VerifiedDate)
-			}
-			if len(entry.WrapperLibraries) > 0 {
-				fmt.Printf("\nWrapper Libraries:\n")
-				for _, w := range entry.WrapperLibraries {
-					fmt.Printf("  - %s (%s, %s)\n", w.Name, w.Language, w.IntegrationMode)
-					fmt.Printf("    %s\n", w.URL)
-					if w.License != "" {
-						fmt.Printf("    License: %s\n", w.License)
-					}
-					if w.Notes != "" {
-						fmt.Printf("    Notes: %s\n", strings.TrimSpace(w.Notes))
-					}
-				}
-			}
+			printCatalogEntryPlainText(*entry)
 
 			return nil
 		},
@@ -165,6 +116,93 @@ func newCatalogShowCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+func printCatalogEntryPlainText(entry catalog.Entry) {
+	fmt.Printf("Name:           %s\n", entry.Name)
+	fmt.Printf("Display Name:   %s\n", entry.DisplayName)
+	fmt.Printf("Description:    %s\n", entry.Description)
+	fmt.Printf("Category:       %s\n", entry.Category)
+	fmt.Printf("Tier:           %s\n", entry.Tier)
+	if entry.IsWrapperOnly() {
+		fmt.Printf("Mode:           wrapper-only (no official spec)\n")
+	} else {
+		fmt.Printf("Spec URL:       %s\n", entry.SpecURL)
+		fmt.Printf("Spec Format:    %s\n", entry.SpecFormat)
+	}
+	if entry.OpenAPIVersion != "" {
+		fmt.Printf("OpenAPI:        %s\n", entry.OpenAPIVersion)
+	}
+	if entry.BaseURL != "" {
+		fmt.Printf("Base URL:       %s\n", entry.BaseURL)
+	}
+	if entry.Homepage != "" {
+		fmt.Printf("Homepage:       %s\n", entry.Homepage)
+	}
+	if entry.SpecSource != "" {
+		fmt.Printf("Spec Source:    %s\n", entry.SpecSource)
+	}
+	if entry.ClientPattern != "" {
+		fmt.Printf("Client Pattern: %s\n", entry.ClientPattern)
+	}
+	if entry.HTTPTransport != "" {
+		fmt.Printf("HTTP Transport: %s\n", entry.HTTPTransport)
+	}
+	if entry.AuthRequired != nil {
+		fmt.Printf("Auth Required:  %v\n", *entry.AuthRequired)
+	}
+	if len(entry.Regions) > 0 {
+		fmt.Printf("Regions:        %s\n", strings.Join(entry.Regions, ", "))
+	}
+	if entry.APILanguage != "" {
+		fmt.Printf("API Language:   %s\n", entry.APILanguage)
+	}
+	if entry.BearerRefresh.BundleURL != "" {
+		fmt.Printf("Bearer Refresh: %s\n", entry.BearerRefresh.BundleURL)
+	}
+	if entry.Notes != "" {
+		fmt.Printf("Notes:          %s\n", entry.Notes)
+	}
+	if entry.VerifiedDate != "" {
+		fmt.Printf("Verified:       %s\n", entry.VerifiedDate)
+	}
+	if len(entry.WrapperLibraries) > 0 {
+		fmt.Printf("\nWrapper Libraries:\n")
+		for _, w := range entry.WrapperLibraries {
+			fmt.Printf("  - %s (%s, %s)\n", w.Name, w.Language, w.IntegrationMode)
+			fmt.Printf("    %s\n", w.URL)
+			if w.License != "" {
+				fmt.Printf("    License: %s\n", w.License)
+			}
+			if w.Notes != "" {
+				fmt.Printf("    Notes: %s\n", strings.TrimSpace(w.Notes))
+			}
+		}
+	}
+}
+
+func filterCatalogEntriesByRegion(entries []catalog.Entry, region string) []catalog.Entry {
+	region = strings.ToUpper(strings.TrimSpace(region))
+	if region == "" {
+		return entries
+	}
+	out := make([]catalog.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if catalogEntryMatchesRegion(entry, region) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func catalogEntryMatchesRegion(entry catalog.Entry, region string) bool {
+	for _, candidate := range entry.Regions {
+		candidate = strings.ToUpper(strings.TrimSpace(candidate))
+		if candidate == region || candidate == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 func newCatalogSearchCmd() *cobra.Command {
@@ -221,6 +259,8 @@ func matchesCatalogQuery(e catalog.Entry, query string) bool {
 		e.DisplayName,
 		e.Description,
 		e.Category,
+		strings.Join(e.Regions, " "),
+		e.APILanguage,
 	}
 	for _, f := range fields {
 		if strings.Contains(strings.ToLower(f), query) {

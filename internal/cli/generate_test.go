@@ -2884,6 +2884,8 @@ func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
 		DisplayName: "Test.API",
 		OwnerName:   "Trevin Chow",
 		BaseURL:     "https://api.example.com/",
+		Regions:     []string{"NL"},
+		APILanguage: "nl",
 		MCP: spec.MCPConfig{
 			Transport:     []string{"stdio", "http"},
 			Orchestration: "code",
@@ -2894,6 +2896,8 @@ func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
 	assert.Equal(t, "Test.API", apiSpec.DisplayName)
 	assert.Equal(t, "Trevin Chow", apiSpec.OwnerName)
 	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
+	assert.Equal(t, []string{"NL"}, apiSpec.Regions)
+	assert.Equal(t, "nl", apiSpec.APILanguage)
 	assert.False(t, apiSpec.BaseURLIsPlaceholder)
 	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
 	assert.Equal(t, "code", apiSpec.MCP.Orchestration)

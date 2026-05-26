@@ -5,7 +5,9 @@ author: "{{yamlDoubleQuoted .OwnerName}}"
 license: "Apache-2.0"
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
-metadata:
+{{if .Regions}}regions: [{{range $i, $region := .Regions}}{{if $i}}, {{end}}"{{yamlDoubleQuoted $region}}"{{end}}]
+{{end}}{{if .APILanguage}}api_language: "{{yamlDoubleQuoted .APILanguage}}"
+{{end}}metadata:
   openclaw:
     requires:
       bins:

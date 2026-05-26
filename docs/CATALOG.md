@@ -123,3 +123,20 @@ auth_env_vars:
   - STRIPE_SECRET_KEY  # canonical: stripe-cli, stripe-go, stripe-node, stripe-python
   - STRIPE_API_KEY     # common alias
 ```
+
+## Region and language metadata
+
+Catalog entries may declare `regions:` and `api_language:` when an API is geographically scoped, carries region-specific domain vocabulary, or is explicitly global.
+
+Rules:
+- `regions` is optional. When present, each entry must be an uppercase ISO 3166-1 alpha-2 country code such as `NL` or `IN`, `EU` for pan-European scope, or `*` for explicitly global APIs. Empty entries, duplicates, lowercase codes, and whitespace-padded values are rejected.
+- `api_language` is optional. When present, it must be a BCP 47-shaped language tag such as `nl`, `en`, or `en-US`.
+- The generator copies both fields into `APISpec`, `.printing-press.json`, SKILL.md frontmatter, local-library JSON output, and downstream registry metadata derived from the manifest.
+- These fields describe upstream API and data scope. They do not change generated command names or force CLI output translation.
+
+Example:
+
+```yaml
+regions: [NL]
+api_language: nl
+```

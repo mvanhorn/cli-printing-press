@@ -235,6 +235,12 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			if existing.Category != "" {
 				m.Category = existing.Category
 			}
+			if len(existing.Regions) > 0 {
+				m.Regions = append([]string(nil), existing.Regions...)
+			}
+			if existing.APILanguage != "" {
+				m.APILanguage = existing.APILanguage
+			}
 			if preserveExistingDescription(existing.Description) {
 				m.Description = existing.Description
 				existingDescription = existing.Description
@@ -266,6 +272,8 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	if entry, err := catalogpkg.LookupFS(catalog.FS, state.APIName); err == nil {
 		m.CatalogEntry = entry.Name
 		m.Category = entry.Category
+		m.Regions = append([]string(nil), entry.Regions...)
+		m.APILanguage = entry.APILanguage
 		if m.Description == "" {
 			m.Description = entry.Description
 		}

@@ -32,6 +32,8 @@ func TestWriteCLIManifest(t *testing.T) {
 		RunID:                "20260328T150405Z-abcd1234",
 		CatalogEntry:         "notion",
 		Category:             "productivity",
+		Regions:              []string{"NL"},
+		APILanguage:          "nl",
 		Description:          "Notion workspace API",
 	}
 
@@ -55,6 +57,8 @@ func TestWriteCLIManifest(t *testing.T) {
 	assert.Equal(t, "20260328T150405Z-abcd1234", got.RunID)
 	assert.Equal(t, "notion", got.CatalogEntry)
 	assert.Equal(t, "productivity", got.Category)
+	assert.Equal(t, []string{"NL"}, got.Regions)
+	assert.Equal(t, "nl", got.APILanguage)
 	assert.Equal(t, "Notion workspace API", got.Description)
 	assert.Equal(t, m.GeneratedAt, got.GeneratedAt)
 }
@@ -136,6 +140,12 @@ func TestWriteCLIManifestOmitsEmptyOptionalFields(t *testing.T) {
 
 	_, hasDescription := raw["description"]
 	assert.False(t, hasDescription, "description should be omitted when empty")
+
+	_, hasRegions := raw["regions"]
+	assert.False(t, hasRegions, "regions should be omitted when empty")
+
+	_, hasAPILanguage := raw["api_language"]
+	assert.False(t, hasAPILanguage, "api_language should be omitted when empty")
 }
 
 func TestWriteCLIManifestNonexistentDir(t *testing.T) {
@@ -1800,6 +1810,35 @@ func TestPopulateMCPMetadataCLIDescription(t *testing.T) {
 			Auth: spec.AuthConfig{Type: "none"},
 		})
 		assert.Equal(t, "Catalog description.", m.Description)
+	})
+}
+
+func TestPopulateMCPMetadataRegionLanguage(t *testing.T) {
+	t.Run("spec values populate empty manifest", func(t *testing.T) {
+		var m CLIManifest
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name:        "pdok-location",
+			Regions:     []string{"NL"},
+			APILanguage: "nl",
+			Auth:        spec.AuthConfig{Type: "none"},
+		})
+
+		assert.Equal(t, []string{"NL"}, m.Regions)
+		assert.Equal(t, "nl", m.APILanguage)
+	})
+
+	t.Run("empty spec values preserve catalog-derived manifest values", func(t *testing.T) {
+		m := CLIManifest{
+			Regions:     []string{"EU"},
+			APILanguage: "en",
+		}
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name: "pvgis",
+			Auth: spec.AuthConfig{Type: "none"},
+		})
+
+		assert.Equal(t, []string{"EU"}, m.Regions)
+		assert.Equal(t, "en", m.APILanguage)
 	})
 }
 

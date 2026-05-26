@@ -91,6 +91,8 @@ type CLIManifest struct {
 	RunID              string            `json:"run_id,omitempty"`
 	CatalogEntry       string            `json:"catalog_entry,omitempty"`
 	Category           string            `json:"category,omitempty"`
+	Regions            []string          `json:"regions,omitempty"`
+	APILanguage        string            `json:"api_language,omitempty"`
 	Description        string            `json:"description,omitempty"`
 	MCPBinary          string            `json:"mcp_binary,omitempty"`
 	MCPToolCount       int               `json:"mcp_tool_count,omitempty"`
@@ -510,6 +512,12 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.AuthTitle = parsed.Auth.Title
 	m.AuthDescription = parsed.Auth.Description
 	m.AuthOptional = parsed.Auth.Optional
+	if len(parsed.Regions) > 0 {
+		m.Regions = append([]string(nil), parsed.Regions...)
+	}
+	if parsed.APILanguage != "" {
+		m.APILanguage = parsed.APILanguage
+	}
 	// DisplayName precedence: explicit spec field > catalog-set existing
 	// value > spec/title-derived fallback > slug-derived fallback.
 	// OpenAPI info.title is useful as a fallback, but it is not explicit
@@ -740,6 +748,8 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if entry := lookupCatalogEntryForGenerate(p.APIName, m.SpecURL); entry != nil {
 		m.CatalogEntry = entry.Name
 		m.Category = entry.Category
+		m.Regions = append([]string(nil), entry.Regions...)
+		m.APILanguage = entry.APILanguage
 		m.Description = entry.Description
 		// Catalog's display_name wins over spec/title fallback, while explicit
 		// spec display_name / x-display-name still wins in populateMCPMetadata.
