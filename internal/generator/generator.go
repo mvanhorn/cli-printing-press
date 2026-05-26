@@ -255,8 +255,6 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"clientCredentialsTenantEnvVar":      clientCredentialsTenantEnvVar,
 		"clientCredentialsTokenURLHasTenant": clientCredentialsTokenURLHasTenant,
 		"hasNonCookieAuth":                   hasNonCookieAuth,
-		"envVarsForBus":                      envVarsForBus,
-		"agentcookieReplacePath":             agentcookieReplacePath,
 		"authAgentEnvVars":                   authAgentEnvVars,
 		"hasAuthEnvVarKind":                  hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":                isRequestAuthEnvVar,
@@ -1079,35 +1077,11 @@ func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 
 // hasNonCookieAuth reports whether the CLI has at least one env-var
 // based credential (bearer token, API key, OAuth client credentials,
-// etc.). The agentcookie secrets bus is gated on this so cookie-only
-// CLIs (instacart, airbnb, ebay, pagliacci, table-reservation-goat)
-// don't pick up the bus reader or grow an agentcookie dependency.
+// etc.). Cookie-only CLIs (instacart, airbnb, ebay, pagliacci,
+// table-reservation-goat) skip the agentcookie.toml manifest emit
+// and the bus-detection block in the generated config loader.
 func hasNonCookieAuth(auth spec.AuthConfig) bool {
 	return auth.HasNonCookieAuth()
-}
-
-// envVarsForBus returns the unified list of auth env vars the
-// secrets-bus block iterates over. Prefers EnvVarSpecs when present;
-// falls back to synthesizing AuthEnvVar entries from EnvVars with
-// Sensitive=true defaulted, since auth env vars are credentials.
-func envVarsForBus(auth spec.AuthConfig) []spec.AuthEnvVar {
-	if len(auth.EnvVarSpecs) > 0 {
-		return auth.EnvVarSpecs
-	}
-	out := make([]spec.AuthEnvVar, 0, len(auth.EnvVars))
-	for _, name := range auth.EnvVars {
-		out = append(out, spec.AuthEnvVar{
-			Name:      name,
-			Kind:      spec.AuthEnvVarKindPerCall,
-			Required:  true,
-			Sensitive: true,
-		})
-	}
-	return out
-}
-
-func agentcookieReplacePath() string {
-	return strings.TrimSpace(os.Getenv("PRINTING_PRESS_AGENTCOOKIE_REPLACE"))
 }
 
 func clientCredentialsEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {

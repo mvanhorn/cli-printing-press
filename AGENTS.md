@@ -89,7 +89,7 @@ If the "obvious" fix violates a parser, verifier, scorer, or printed-CLI invaria
 
 When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence or removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so the already-published CLIs can be retrofitted to match. Fresh prints from this generator will produce the new shape automatically, but every existing entry in the public library silently drifts from canonical shape until the sweep retrofit runs.
 
-The same rule applies to `internal/pipeline/agentcookie_manifest.go` and the `hasNonCookieAuth` / `envVarsForBus` template helpers in `internal/generator/generator.go`: when manifest shape or sweep-eligibility logic changes here, update `tools/sweep-canonical/agentcookie.go` in lockstep so existing library entries' `agentcookie.toml` retrofits match generator-side fresh prints byte-for-byte. The inline TOML render exists because the sweep tool runs in GOPATH mode; it is a deliberate duplication, not a candidate for "just import the helper".
+The same rule applies to `internal/pipeline/agentcookie_manifest.go` and the `hasNonCookieAuth` template helper in `internal/generator/generator.go`: when manifest shape or sweep-eligibility logic changes here, update `tools/sweep-canonical/agentcookie.go` in lockstep so existing library entries' `agentcookie.toml` retrofits match generator-side fresh prints byte-for-byte. The inline TOML render exists because the sweep tool runs in GOPATH mode; it is a deliberate duplication, not a candidate for "just import the helper".
 
 If you can't make the matching sweep change in the same session, file a tracking issue at https://github.com/mvanhorn/printing-press-library/issues/new before merging the template PR. The issue should include:
 
@@ -237,6 +237,12 @@ Runs informationally on landing — promote to a required branch-protection chec
 
 ## Local Artifacts
 Generated artifacts live under `~/printing-press/`, not in this repo: `library/<api-slug>/`, `manuscripts/<api-slug>/`, and `.runstate/<scope>/`. The API slug is derived by the generator from the spec title (`cleanSpecName`), and the binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it. See [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md) for local-vs-public flow and divergence rules.
+
+## Plan documents stay local
+When writing a plan document for cli-printing-press work, do not `git add` files under `docs/plans/`. This repo is public; plans frequently describe in-progress, unreleased, or third-party-collaborator work that should not be world-readable. The `/docs/plans/` entry in `.gitignore` enforces this for new files. Historical plans committed before the 2026-05-25 cutover remain visible in git history; the gitignore covers everything from that point forward. `TestPlansDirectoryGitignored` in [`internal/cli/release_test.go`](internal/cli/release_test.go) fails if the gitignore line is removed.
+
+## No private-module requires in printed CLIs
+Printed CLIs are installed by users via `go install`. A require on a private module (e.g., `github.com/mvanhorn/agentcookie`) breaks `go mod download` for anyone without read access to that module and silently regresses the install path for every freshly-printed CLI. `TestNoPrivateRequiresInGeneratedGoMod` in [`internal/generator/private_dep_guard_test.go`](internal/generator/private_dep_guard_test.go) regenerates a fixture per auth-type fork and asserts none of them carry a require on any prefix in `privateModulePrefixes`. When introducing a new internal-by-default module that any printed CLI might want to consume, add its prefix to that list rather than relying on review to catch it.
 
 ## Publishing to the Public Library
 The only supported path for **publishing a generated CLI** (adding or updating an entry under `library/<category>/<api-slug>/` in [mvanhorn/printing-press-library](https://github.com/mvanhorn/printing-press-library)) is to invoke the `/printing-press-publish` skill. The skill runs the required `gh`/`git` commands itself; do not reproduce them by hand.

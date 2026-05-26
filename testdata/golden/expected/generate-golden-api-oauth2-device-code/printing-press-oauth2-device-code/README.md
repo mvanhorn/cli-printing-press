@@ -203,6 +203,10 @@ Environment variables:
 | --- | --- | --- | --- |
 | `DEVICE_CODE_CLIENT_ID` | auth_flow_input | Yes |  |
 
+### agentcookie (optional)
+
+If you use agentcookie to sync secrets across machines, this CLI auto-adopts agentcookie-managed credentials with no extra setup. When the daemon writes to this CLI's config, `printing-press-oauth2-pp-cli doctor` reports `agentcookie: detected` and `auth-status` labels the source as `agentcookie`. Skip this section if you don't use agentcookie - the CLI works the same as any other.
+
 ## Troubleshooting
 **Authentication errors (exit code 4)**
 - Run `printing-press-oauth2-pp-cli doctor` to check credentials

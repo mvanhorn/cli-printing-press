@@ -2010,14 +2010,7 @@ func runGoCommandRequired(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	cacheDir, err := goBuildCacheDir(dir)
 	require.NoError(t, err)
-	// GOPRIVATE bypass for github.com/mvanhorn/* skips sumdb verification on
-	// pre-release tags (e.g. agentcookie v0.14.0-beta.1) that the public
-	// proxy has not indexed. Without this, every generated CLI that imports
-	// pkg/agentcookiesecret fails sumdb lookup during compile-tests.
-	cmd.Env = append(os.Environ(),
-		"GOCACHE="+cacheDir,
-		"GOPRIVATE=github.com/mvanhorn/*",
-	)
+	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }

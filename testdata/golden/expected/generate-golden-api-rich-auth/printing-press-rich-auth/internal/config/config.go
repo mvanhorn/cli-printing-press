@@ -4,17 +4,13 @@
 package config
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
-
-	"github.com/mvanhorn/agentcookie/pkg/agentcookiesecret"
 )
 
 type Config struct {
@@ -91,64 +87,6 @@ func Load(configPath string) (*Config, error) {
 		cfg.AuthSource = "env:RICH_AUTH_USER_TOKEN"
 	}
 
-	// agentcookie secrets-bus overrides: per v0.13 wire-format section 11.2,
-	// bus values win over both process env and config-file values. The reader
-	// merges process env internally at lower priority, so this block only
-	// applies values that actually came from the bus (plain or sealed). When
-	// the bus is empty or unreachable, the existing env/config values stand.
-	if busRes, busErr := agentcookiesecret.LoadDetailed("printing-press-rich-pp-cli", ""); busErr != nil {
-		if !errors.Is(busErr, agentcookiesecret.ErrInvalidCLIName) {
-			log.Printf("agentcookiesecret: %v; continuing with config + env", busErr)
-		}
-	} else if busRes != nil {
-		var busAuthSources []string
-		if v, ok := busRes.Env["RICH_AUTH_API_KEY"]; ok && v != "" {
-			if src := busRes.Sources["RICH_AUTH_API_KEY"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
-				cfg.RichAuthApiKey = v
-				busAuthSources = append(busAuthSources, "RICH_AUTH_API_KEY")
-			}
-		}
-		if v, ok := busRes.Env["RICH_AUTH_CLIENT_ID"]; ok && v != "" {
-			if src := busRes.Sources["RICH_AUTH_CLIENT_ID"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
-				cfg.RichAuthClientId = v
-				busAuthSources = append(busAuthSources, "RICH_AUTH_CLIENT_ID")
-			}
-		}
-		if v, ok := busRes.Env["RICH_AUTH_CLIENT_SECRET"]; ok && v != "" {
-			if src := busRes.Sources["RICH_AUTH_CLIENT_SECRET"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
-				cfg.RichAuthClientSecret = v
-				busAuthSources = append(busAuthSources, "RICH_AUTH_CLIENT_SECRET")
-			}
-		}
-		if v, ok := busRes.Env["RICH_AUTH_SESSION_COOKIE"]; ok && v != "" {
-			if src := busRes.Sources["RICH_AUTH_SESSION_COOKIE"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
-				cfg.RichAuthSessionCookie = v
-				busAuthSources = append(busAuthSources, "RICH_AUTH_SESSION_COOKIE")
-			}
-		}
-		if v, ok := busRes.Env["RICH_AUTH_OPTIONAL_TOKEN"]; ok && v != "" {
-			if src := busRes.Sources["RICH_AUTH_OPTIONAL_TOKEN"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
-				cfg.RichAuthOptionalToken = v
-				busAuthSources = append(busAuthSources, "RICH_AUTH_OPTIONAL_TOKEN")
-			}
-		}
-		if v, ok := busRes.Env["RICH_AUTH_BOT_TOKEN"]; ok && v != "" {
-			if src := busRes.Sources["RICH_AUTH_BOT_TOKEN"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
-				cfg.RichAuthBotToken = v
-				busAuthSources = append(busAuthSources, "RICH_AUTH_BOT_TOKEN")
-			}
-		}
-		if v, ok := busRes.Env["RICH_AUTH_USER_TOKEN"]; ok && v != "" {
-			if src := busRes.Sources["RICH_AUTH_USER_TOKEN"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
-				cfg.RichAuthUserToken = v
-				busAuthSources = append(busAuthSources, "RICH_AUTH_USER_TOKEN")
-			}
-		}
-		if len(busAuthSources) > 0 {
-			cfg.AuthSource = "bus:" + strings.Join(busAuthSources, ",")
-		}
-	}
-
 	// Label config-file-derived credentials so doctor can distinguish
 	// "credentials persisted on disk" from "no credentials at all" — without
 	// this, users who saved via set-token without an env var see a blank
@@ -180,6 +118,21 @@ func Load(configPath string) (*Config, error) {
 	}
 	if cfg.AuthSource == "" && cfg.RichAuthUserToken != "" {
 		cfg.AuthSource = "config"
+	}
+
+	// Soft agentcookie integration: if the agentcookie daemon manages this
+	// CLI's secrets, it writes a marker file alongside the config file. When
+	// the marker is present AND credentials came from the config (not from a
+	// direct env var override that wins above), upgrade AuthSource to
+	// "agentcookie" so doctor / auth-status can surface the bus state. When
+	// the marker is absent, behavior is identical to pre-agentcookie: no
+	// import, no network, no error. agentcookie itself is never imported
+	// here — the contract is purely on-disk.
+	if cfg.AuthSource == "config" {
+		marker := filepath.Join(filepath.Dir(cfg.Path), ".agentcookie-managed")
+		if _, err := os.Stat(marker); err == nil {
+			cfg.AuthSource = "agentcookie"
+		}
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)

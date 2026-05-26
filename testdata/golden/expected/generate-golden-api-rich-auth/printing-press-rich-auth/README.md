@@ -201,6 +201,10 @@ Environment variables:
 | `RICH_AUTH_BOT_TOKEN` | per_call | No | Set to your API credential. |
 | `RICH_AUTH_USER_TOKEN` | per_call | No | Set to your API credential. |
 
+### agentcookie (optional)
+
+If you use agentcookie to sync secrets across machines, this CLI auto-adopts agentcookie-managed credentials with no extra setup. When the daemon writes to this CLI's config, `printing-press-rich-pp-cli doctor` reports `agentcookie: detected` and `auth-status` labels the source as `agentcookie`. Skip this section if you don't use agentcookie - the CLI works the same as any other.
+
 ## Troubleshooting
 **Authentication errors (exit code 4)**
 - Run `printing-press-rich-pp-cli doctor` to check credentials

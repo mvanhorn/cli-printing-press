@@ -4,17 +4,13 @@
 package config
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
-
-	"github.com/mvanhorn/agentcookie/pkg/agentcookiesecret"
 )
 
 type Config struct {
@@ -61,28 +57,6 @@ func Load(configPath string) (*Config, error) {
 		cfg.AuthSource = "env:PRINTING_PRESS_GOLDEN_API_KEY"
 	}
 
-	// agentcookie secrets-bus overrides: per v0.13 wire-format section 11.2,
-	// bus values win over both process env and config-file values. The reader
-	// merges process env internally at lower priority, so this block only
-	// applies values that actually came from the bus (plain or sealed). When
-	// the bus is empty or unreachable, the existing env/config values stand.
-	if busRes, busErr := agentcookiesecret.LoadDetailed("printing-press-golden-pp-cli", ""); busErr != nil {
-		if !errors.Is(busErr, agentcookiesecret.ErrInvalidCLIName) {
-			log.Printf("agentcookiesecret: %v; continuing with config + env", busErr)
-		}
-	} else if busRes != nil {
-		var busAuthSources []string
-		if v, ok := busRes.Env["PRINTING_PRESS_GOLDEN_API_KEY"]; ok && v != "" {
-			if src := busRes.Sources["PRINTING_PRESS_GOLDEN_API_KEY"]; src == agentcookiesecret.SourceBusPlain || src == agentcookiesecret.SourceBusSealed {
-				cfg.PrintingPressGoldenApiKey = v
-				busAuthSources = append(busAuthSources, "PRINTING_PRESS_GOLDEN_API_KEY")
-			}
-		}
-		if len(busAuthSources) > 0 {
-			cfg.AuthSource = "bus:" + strings.Join(busAuthSources, ",")
-		}
-	}
-
 	// Label config-file-derived credentials so doctor can distinguish
 	// "credentials persisted on disk" from "no credentials at all" — without
 	// this, users who saved via set-token without an env var see a blank
@@ -96,6 +70,21 @@ func Load(configPath string) (*Config, error) {
 	}
 	if cfg.AuthSource == "" && cfg.PrintingPressGoldenApiKey != "" {
 		cfg.AuthSource = "config"
+	}
+
+	// Soft agentcookie integration: if the agentcookie daemon manages this
+	// CLI's secrets, it writes a marker file alongside the config file. When
+	// the marker is present AND credentials came from the config (not from a
+	// direct env var override that wins above), upgrade AuthSource to
+	// "agentcookie" so doctor / auth-status can surface the bus state. When
+	// the marker is absent, behavior is identical to pre-agentcookie: no
+	// import, no network, no error. agentcookie itself is never imported
+	// here — the contract is purely on-disk.
+	if cfg.AuthSource == "config" {
+		marker := filepath.Join(filepath.Dir(cfg.Path), ".agentcookie-managed")
+		if _, err := os.Stat(marker); err == nil {
+			cfg.AuthSource = "agentcookie"
+		}
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
