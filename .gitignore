@@ -23,3 +23,8 @@ __pycache__/
 CLAUDE.local.md
 AGENTS.override.md
 .claude/settings.local.json
+
+# Planning documents stay local — this is a public repo and plans
+# frequently describe in-progress, unreleased, or third-party work.
+# See AGENTS.md "Plan documents stay local" for the rule and rationale.
+/docs/plans/
