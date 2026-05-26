@@ -6,6 +6,7 @@ catalog/specs/*.graphql
 .gotmp/
 .omx/
 .claude/worktrees/
+.claude/local/
 /refactor/artifacts/
 /tests/artifacts/perf/
 /printing-press

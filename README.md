@@ -89,6 +89,8 @@ claude --plugin-dir .          # load this repo's skills directly
 claude --plugin-dir . -w       # ...in a new git worktree (parallel runs)
 ```
 
+For a persistent local setup that survives restarts and also loads in background sessions, see [Local Plugin Development](docs/PLUGIN-DEV.md).
+
 </details>
 
 ### 2. Start a printing session
@@ -496,7 +498,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 ## Troubleshooting
 
-**`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the skills. Run `npx -y skills@latest list -g -a claude-code` to verify the install. If you're developing from a clone, confirm `claude --plugin-dir .` was run from the cloned repo root.
+**`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the skills. Run `npx -y skills@latest list -g -a claude-code` to verify the install. If you're developing from a clone, confirm `claude --plugin-dir .` was run from the cloned repo root or use the persistent local setup in [Local Plugin Development](docs/PLUGIN-DEV.md).
 
 **`cli-printing-press: command not found` after a successful `go install`.** `$GOPATH/bin` (default `~/go/bin`) isn't on your `PATH`. Add it to your shell profile.
 
@@ -556,7 +558,7 @@ lefthook install --reset-hooks-path
 
 Use `--reset-hooks-path` so stale local `core.hooksPath` settings do not block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
 
-If you use the clone-based developer path above, `claude --plugin-dir .` loads `/printing-press` from your working copy, so local skill edits take effect on the next session start. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
+If you use the clone-based developer path above, `claude --plugin-dir .` loads `/printing-press` from your working copy, so local skill edits take effect on the next session start. For a restart-safe local plugin setup, see [Local Plugin Development](docs/PLUGIN-DEV.md). See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
 
 </details>
 

@@ -6,6 +6,7 @@ Thanks for helping improve the Printing Press. This repository contains the gene
 
 - Check for an existing issue or PR that already covers the same work.
 - Read [AGENTS.md](AGENTS.md) for the repository conventions, especially the machine vs printed CLI boundary, golden-output rules, commit style, and verification expectations.
+- If you are editing the plugin from a clone, see [docs/PLUGIN-DEV.md](docs/PLUGIN-DEV.md) for the persistent local Claude Code setup.
 - For larger behavior changes, open or comment on an issue first so the scope is clear before implementation.
 
 ## Pull Requests
