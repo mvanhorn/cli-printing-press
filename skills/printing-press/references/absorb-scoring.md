@@ -48,9 +48,9 @@ Apply to candidates that survive the kill/keep checks.
 Survivors render as rows in the absorb manifest's transcendence table:
 
 ```markdown
-| # | Feature | Command | Score | Buildability | How It Works | Evidence |
-|---|---------|---------|-------|--------------|--------------|----------|
-| N | Player comparison | compare "LeBron" "Curry" | 8/10 | hand-code | Joins player_stats + team + season tables in local SQLite | ESPN community requests, espn_scraper lacks cross-player queries |
+| # | Feature | Command | Score | Buildability | How It Works | Evidence | Long Description |
+|---|---------|---------|-------|--------------|--------------|----------|------------------|
+| N | Player comparison | compare "LeBron" "Curry" | 8/10 | hand-code | Joins player_stats + team + season tables in local SQLite | ESPN community requests, espn_scraper lacks cross-player queries | Use this command to compare two players. Do NOT use it for team-level comparisons; use 'team compare' instead. |
 ```
 
 The "How It Works" column is the buildability proof — one sentence showing the
@@ -65,6 +65,11 @@ rows from this column when reading out the hand-code commitment.
 
 The "Evidence" column MUST cite specific findings from Phase 1 or Phase 1.5
 research. "Power users would love this" is not evidence.
+
+The "Long Description" column is `none` unless the feature overlaps with a
+sibling command closely enough that an agent may choose the wrong tool. When it
+is populated, it is implementation guidance for the hand-coded Cobra `Long`
+field and must reference only command names that survived the Pass 3 cut.
 
 ## Reprint verdict rules
 
