@@ -7656,6 +7656,38 @@ paths:
 	assert.Contains(t, err.Error(), `Rename to "search_resource"`)
 }
 
+func TestParseReservedTemplateCollisionAggregatesHardErrors(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /client:
+    get:
+      operationId: getClient
+      responses:
+        "200":
+          description: ok
+  /search:
+    post:
+      operationId: search
+      responses:
+        "200":
+          description: ok
+`)
+
+	_, err := Parse(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resource names "client", "search"`)
+	assert.Contains(t, err.Error(), `reserved Printing Press templates "client", "search"`)
+	assert.Contains(t, err.Error(), `newClientCmd`)
+	assert.Contains(t, err.Error(), `newSearchCmd`)
+	assert.Contains(t, err.Error(), `"client_resource"`)
+	assert.Contains(t, err.Error(), `"search_resource"`)
+}
+
 func TestParseXPPResourceOverrideAvoidsReservedTemplateCollision(t *testing.T) {
 	yamlSpec := []byte(`openapi: "3.0.3"
 info:
@@ -7699,7 +7731,8 @@ paths:
 	_, err := Parse(yamlSpec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `reserved Printing Press template "client"`)
-	assert.Contains(t, err.Error(), `Rename to "client_resource"`)
+	assert.Contains(t, err.Error(), `Rename x-pp-resource to "client_resource"`)
+	assert.NotContains(t, err.Error(), "set x-pp-resource on the operation")
 }
 
 func TestParseFrameworkCollisionAllowsConditionalFrameworkNamesWhenInactive(t *testing.T) {

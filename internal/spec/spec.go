@@ -2843,7 +2843,7 @@ func (s *APISpec) validateReservedNames() error {
 		}
 		if _, reserved := ReservedCLIResourceNames[name]; reserved {
 			return fmt.Errorf("resource name %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename to %q in your spec, or set x-pp-resource on the operation",
-				name, name, name, snakeToPascal(name), name+"_resource")
+				name, name, name, SnakeToPascal(name), name+"_resource")
 		}
 	}
 	return nil
@@ -2981,12 +2981,12 @@ func isGenericRoutingPrefix(segment string) bool {
 	}
 }
 
-// snakeToPascal converts a snake_case identifier to PascalCase so error
+// SnakeToPascal converts a snake_case identifier to PascalCase so error
 // messages name the same Go function the generator would emit. Mirrors
 // generator.toCamel for snake_case input — kept here so the spec package
 // has no import-cycle dependency on the generator. Empty input → empty
 // output.
-func snakeToPascal(s string) string {
+func SnakeToPascal(s string) string {
 	if s == "" {
 		return s
 	}
@@ -2998,6 +2998,10 @@ func snakeToPascal(s string) string {
 		parts[i] = strings.ToUpper(p[:1]) + p[1:]
 	}
 	return strings.Join(parts, "")
+}
+
+func snakeToPascal(s string) string {
+	return SnakeToPascal(s)
 }
 
 // pathParamRe matches `{name}` placeholders in a path template. Names are

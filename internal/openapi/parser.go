@@ -5840,7 +5840,7 @@ func reservedTemplateCollisionRenames(doc *openapi3.T, pathKeys []string, basePa
 	type candidateSet map[string]struct{}
 	candidates := map[string]candidateSet{}
 	firstPath := map[string]string{}
-	hardErrors := map[string]struct{}{}
+	hardErrors := map[string]reservedTemplateCollision{}
 	rawResources := map[string]struct{}{}
 
 	for _, path := range pathKeys {
@@ -5861,7 +5861,7 @@ func reservedTemplateCollisionRenames(doc *openapi3.T, pathKeys []string, basePa
 				continue
 			}
 			if resourceOverrideForOperation(op, path) != "" {
-				hardErrors[primaryName] = struct{}{}
+				hardErrors[primaryName] = reservedTemplateCollision{Name: primaryName, FromOverride: true}
 				continue
 			}
 			if candidate := spec.ReservedResourceParentPrefixCandidate(primaryName, path); candidate != "" {
@@ -5873,19 +5873,21 @@ func reservedTemplateCollisionRenames(doc *openapi3.T, pathKeys []string, basePa
 				continue
 			}
 			if spec.ReservedResourcePathTerminatesAt(primaryName, path) {
-				hardErrors[primaryName] = struct{}{}
+				hardErrors[primaryName] = reservedTemplateCollision{Name: primaryName}
 			}
 		}
 	}
 
 	renames := map[string]string{}
-	hardErrorNames := make([]string, 0, len(hardErrors))
-	for name := range hardErrors {
-		hardErrorNames = append(hardErrorNames, name)
+	hardErrorCollisions := make([]reservedTemplateCollision, 0, len(hardErrors))
+	for _, collision := range hardErrors {
+		hardErrorCollisions = append(hardErrorCollisions, collision)
 	}
-	slices.Sort(hardErrorNames)
-	for _, name := range hardErrorNames {
-		return nil, reservedTemplateCollisionError(name, name+"_resource")
+	slices.SortFunc(hardErrorCollisions, func(a, b reservedTemplateCollision) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	if len(hardErrorCollisions) > 0 {
+		return nil, reservedTemplateCollisionErrors(hardErrorCollisions)
 	}
 
 	names := make([]string, 0, len(candidates))
@@ -5914,27 +5916,67 @@ func reservedTemplateCollisionRenames(doc *openapi3.T, pathKeys []string, basePa
 	return renames, nil
 }
 
-func reservedTemplateCollisionError(name, suggestion string) error {
-	return fmt.Errorf("resource name %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename to %q in your spec, or set x-pp-resource on the operation",
-		name, name, name, snakeToPascalForError(name), suggestion)
+type reservedTemplateCollision struct {
+	Name         string
+	Suggestion   string
+	FromOverride bool
 }
 
-func snakeToPascalForError(s string) string {
-	var b strings.Builder
-	upperNext := true
-	for _, r := range s {
-		if r == '_' || r == '-' || r == ' ' {
-			upperNext = true
-			continue
+func reservedTemplateCollisionError(name, suggestion string) error {
+	return reservedTemplateCollisionErrors([]reservedTemplateCollision{{
+		Name:       name,
+		Suggestion: suggestion,
+	}})
+}
+
+func reservedTemplateCollisionErrors(collisions []reservedTemplateCollision) error {
+	if len(collisions) == 1 {
+		collision := collisions[0]
+		suggestion := collision.Suggestion
+		if suggestion == "" {
+			suggestion = collision.Name + "_resource"
 		}
-		if upperNext {
-			b.WriteRune(unicode.ToUpper(r))
-			upperNext = false
-			continue
+		if collision.FromOverride {
+			return fmt.Errorf("%s value %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename %s to %q",
+				extensionPPResource, collision.Name, collision.Name, collision.Name, spec.SnakeToPascal(collision.Name), extensionPPResource, suggestion)
 		}
-		b.WriteRune(r)
+		return fmt.Errorf("resource name %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename to %q in your spec, or set x-pp-resource on the operation",
+			collision.Name, collision.Name, collision.Name, spec.SnakeToPascal(collision.Name), suggestion)
 	}
-	return b.String()
+
+	names := make([]string, 0, len(collisions))
+	files := make([]string, 0, len(collisions))
+	functions := make([]string, 0, len(collisions))
+	suggestions := make([]string, 0, len(collisions))
+	hasOverride := false
+	hasDerived := false
+	for _, collision := range collisions {
+		suggestion := collision.Suggestion
+		if suggestion == "" {
+			suggestion = collision.Name + "_resource"
+		}
+		names = append(names, fmt.Sprintf("%q", collision.Name))
+		files = append(files, "internal/cli/"+collision.Name+".go")
+		functions = append(functions, "`new"+spec.SnakeToPascal(collision.Name)+"Cmd`")
+		suggestions = append(suggestions, fmt.Sprintf("%q", suggestion))
+		if collision.FromOverride {
+			hasOverride = true
+		} else {
+			hasDerived = true
+		}
+	}
+
+	remediation := fmt.Sprintf("Rename them in your spec, e.g. %s", strings.Join(suggestions, ", "))
+	if hasOverride && !hasDerived {
+		remediation = fmt.Sprintf("Rename each %s value, e.g. %s", extensionPPResource, strings.Join(suggestions, ", "))
+	} else if hasOverride {
+		remediation = fmt.Sprintf("Rename each resource or %s value, e.g. %s", extensionPPResource, strings.Join(suggestions, ", "))
+	} else {
+		remediation += ", or set x-pp-resource on each operation"
+	}
+
+	return fmt.Errorf("resource names %s collide with reserved Printing Press templates %s (would overwrite %s and produce duplicate %s functions). %s",
+		strings.Join(names, ", "), strings.Join(names, ", "), strings.Join(files, ", "), strings.Join(functions, ", "), remediation)
 }
 
 func resourceAndSubFromSegments(segments []string) (string, string) {
