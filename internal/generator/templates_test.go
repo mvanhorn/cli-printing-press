@@ -3,9 +3,12 @@ package generator
 import (
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,6 +16,80 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGoTemplatesEscapeSpecTextInStringLiterals(t *testing.T) {
+	t.Parallel()
+
+	specTextField := regexp.MustCompile(`\.(?:[A-Za-z0-9_]*Description|Description|Summary|Instructions)\b`)
+	var violations []string
+
+	err := fs.WalkDir(templateFS, "templates", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go.tmpl") {
+			return nil
+		}
+
+		data, err := templateFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for lineNo, line := range strings.Split(string(data), "\n") {
+			for start := strings.Index(line, "{{"); start >= 0; {
+				end := strings.Index(line[start+2:], "}}")
+				if end < 0 {
+					break
+				}
+				end += start + 2
+				action := line[start : end+2]
+				if isInsideGoDoubleQuotedString(line[:start]) &&
+					specTextField.MatchString(action) &&
+					!goTemplateActionEscapesSpecText(action) {
+					violations = append(violations, path+":"+strconv.Itoa(lineNo+1)+": "+strings.TrimSpace(line))
+				}
+				next := end + 2
+				if next >= len(line) {
+					break
+				}
+				if rel := strings.Index(line[next:], "{{"); rel >= 0 {
+					start = next + rel
+				} else {
+					break
+				}
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Empty(t, violations, "spec-controlled prose inside Go string literals must use oneline/goRawSafe/printf %%q; unsafe template sites:\n%s", strings.Join(violations, "\n"))
+}
+
+func isInsideGoDoubleQuotedString(prefix string) bool {
+	inString := false
+	escaped := false
+	for _, r := range prefix {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch r {
+		case '\\':
+			if inString {
+				escaped = true
+			}
+		case '"':
+			inString = !inString
+		}
+	}
+	return inString
+}
+
+func goTemplateActionEscapesSpecText(action string) bool {
+	return strings.Contains(action, "oneline ") ||
+		strings.Contains(action, "printf \"%q\"") ||
+		strings.Contains(action, "goRawSafe")
+}
 
 func TestDoctorTemplateRendersKindAwareAuthEnvPresence(t *testing.T) {
 	t.Parallel()
