@@ -77,6 +77,7 @@ const (
 	TierAuthTypeNone        = "none"
 	TierAuthTypeAPIKey      = "api_key"
 	TierAuthTypeBearerToken = "bearer_token"
+	AuthTypeOAuth2Refresh   = "oauth2_refresh"
 
 	TierAuthPlacementHeader = "header"
 	TierAuthPlacementQuery  = "query"
@@ -899,7 +900,7 @@ func (c BearerRefreshConfig) Enabled() bool {
 }
 
 type AuthConfig struct {
-	Type                   string       `yaml:"type" json:"type"`                           // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
+	Type                   string       `yaml:"type" json:"type"`                           // api_key, oauth2, oauth2_refresh, bearer_token, cookie, composed, session_handshake, none
 	Subtype                string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
 	Header                 string       `yaml:"header" json:"header"`
 	Prefix                 string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
@@ -1233,11 +1234,17 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 		c.EnvVarSpecs = make([]AuthEnvVar, 0, len(c.EnvVars))
 		for _, name := range c.EnvVars {
 			if name = strings.TrimSpace(name); name != "" {
+				kind := AuthEnvVarKindPerCall
+				sensitive := true
+				if c.Type == AuthTypeOAuth2Refresh {
+					kind = AuthEnvVarKindAuthFlowInput
+					sensitive = naming.EnvVarPlaceholder(name) != "client_id"
+				}
 				c.EnvVarSpecs = append(c.EnvVarSpecs, AuthEnvVar{
 					Name:      name,
-					Kind:      AuthEnvVarKindPerCall,
+					Kind:      kind,
 					Required:  true,
-					Sensitive: true,
+					Sensitive: sensitive,
 					Inferred:  true,
 				})
 			}
@@ -1479,6 +1486,19 @@ func validateOAuth2Grant(c AuthConfig) error {
 		return fmt.Errorf("auth.oauth2_grant %q is not recognized (valid: %q, %q, %q)",
 			c.OAuth2Grant, OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode)
 	}
+}
+
+func validateOAuth2Refresh(c AuthConfig) error {
+	if c.Type != AuthTypeOAuth2Refresh {
+		return nil
+	}
+	if strings.TrimSpace(c.TokenURL) == "" {
+		return fmt.Errorf("auth.token_url is required when auth.type is %q", AuthTypeOAuth2Refresh)
+	}
+	if err := validateHTTPSURL("auth.token_url", c.TokenURL); err != nil {
+		return err
+	}
+	return nil
 }
 
 // validateSessionHandshake enforces fail-fast on session_handshake auth specs
@@ -2976,6 +2996,9 @@ func (s *APISpec) Validate() error {
 	if err := validateOAuth2Grant(s.Auth); err != nil {
 		return err
 	}
+	if err := validateOAuth2Refresh(s.Auth); err != nil {
+		return err
+	}
 	if err := validateAuthPrefix(s.Auth); err != nil {
 		return err
 	}
@@ -3129,6 +3152,35 @@ func validateReservedPlaceholderHost(label, rawURL string) error {
 func (s *APISpec) NormalizeAuthEnvVarSpecs() {
 	if s == nil {
 		return
+	}
+	if s.Auth.Type == AuthTypeOAuth2Refresh && len(s.Auth.EnvVars) == 0 && len(s.Auth.EnvVarSpecs) == 0 {
+		prefix := naming.EnvPrefix(s.Name)
+		s.Auth.EnvVarSpecs = []AuthEnvVar{
+			{
+				Name:        prefix + "_CLIENT_ID",
+				Kind:        AuthEnvVarKindAuthFlowInput,
+				Required:    true,
+				Sensitive:   false,
+				Description: "OAuth client ID.",
+				Inferred:    true,
+			},
+			{
+				Name:        prefix + "_CLIENT_SECRET",
+				Kind:        AuthEnvVarKindAuthFlowInput,
+				Required:    false,
+				Sensitive:   true,
+				Description: "OAuth client secret.",
+				Inferred:    true,
+			},
+			{
+				Name:        prefix + "_REFRESH_TOKEN",
+				Kind:        AuthEnvVarKindAuthFlowInput,
+				Required:    true,
+				Sensitive:   true,
+				Description: "OAuth refresh token.",
+				Inferred:    true,
+			},
+		}
 	}
 	s.Auth.NormalizeEnvVarSpecs("auth")
 	if !s.HasTierRouting() {

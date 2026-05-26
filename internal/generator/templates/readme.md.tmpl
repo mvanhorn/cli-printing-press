@@ -119,6 +119,15 @@ The bundle reuses your local OAuth tokens — authenticate first if you haven't:
 ```bash
 {{.Name}}-pp-cli auth login
 ```
+{{- else if eq .Auth.Type "oauth2_refresh"}}
+
+The bundle reuses your local OAuth2 refresh-token credentials — configure them first if you haven't:
+
+```bash
+{{- range .Auth.EnvVarSpecs}}
+export {{.Name}}="{{authEnvPlaceholder .}}"
+{{- end}}
+```
 {{- else if and (eq .Auth.Type "bearer_token") (not $canonicalEnvVar)}}
 
 Store your token first if you haven't:
@@ -248,6 +257,17 @@ Authorize via your browser:
 ```
 
 This opens a browser window to complete the OAuth2 flow. Your tokens are stored locally and refreshed automatically.
+{{- else if eq .Auth.Type "oauth2_refresh"}}
+
+### 2. Set Up OAuth2 Refresh Credentials
+
+This CLI uses OAuth2 with refresh-token rotation. Provide the client credentials and refresh token; access tokens are refreshed automatically.
+
+```bash
+{{- range .Auth.EnvVarSpecs}}
+export {{.Name}}="{{authEnvPlaceholder .}}"
+{{- end}}
+```
 {{- else if eq .Auth.Type "bearer_token"}}
 
 ### 2. Set Up Credentials

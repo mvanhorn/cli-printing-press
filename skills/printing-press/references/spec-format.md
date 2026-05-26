@@ -17,7 +17,7 @@ required_headers:                 # []RequiredHeader optional headers sent on ev
     value: "Mozilla/5.0 ..."
 
 auth:                             # object (AuthConfig)
-  type: api_key                   # string: api_key | oauth2 | bearer_token | none
+  type: api_key                   # string: api_key | oauth2 | oauth2_refresh | bearer_token | none
   header: "Authorization"        # string header name to set
   format: "Bearer {token}"       # string format template for auth header value
   oauth2_grant: device_code       # string optional: authorization_code | client_credentials | device_code
@@ -109,6 +109,12 @@ types:                            # map[string]TypeDef named response/body model
       - name: user_id             # string field name
         type: string              # string field type (typically string/int/bool/float)
 ```
+
+For OAuth2 refresh-token rotation without an interactive browser flow, use
+`auth.type: oauth2_refresh` with `auth.token_url`. When `env_vars` is omitted,
+the generator defaults to `<API>_CLIENT_ID`, `<API>_CLIENT_SECRET`, and
+`<API>_REFRESH_TOKEN`; access tokens are refreshed automatically before API
+calls.
 
 **`response_format` must be one of `json`, `html`, or `binary`.** Use `json`
 when the response body is JSON and can be parsed directly. Use `html` only for
