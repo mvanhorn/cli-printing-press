@@ -50,6 +50,7 @@ Apply these whenever a change alters what the generator emits:
 - Run `scripts/golden.sh verify` when output shape may change.
 - Run `scripts/verify-generator-output.sh` to generate representative CLI cases and compile the emitted modules with `go build ./...`.
 - Generate from a spec and assert on emitted code or compiled generated output, not only template text.
+- In `internal/generator` tests, use `requireGeneratedCompiles(t, outputDir)` after generating a CLI whose emitted helpers, imports, or call sites are part of the contract under test.
 - Assert statement kind, not only substrings. For example, check for `return fmt.Errorf(` and `NotContains` the old warning-only form when the behavior is supposed to become fatal.
 - Cover the affected template variants and fallback shapes: endpoint and promoted templates, missing defaults, missing summaries, envelope responses, and every generated file that participates in the contract.
 - When changing an emitted definition, grep for call sites and gate them identically.
