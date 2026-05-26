@@ -61,29 +61,40 @@ type Source interface {
 `internal/source/registry.go` owns registration and lookup:
 
 ```go
-var registry = map[string]Source{}
+var (
+    registryMu sync.RWMutex
+    registry   = map[string]Source{}
+)
 
 func Register(source Source) {
+    registryMu.Lock()
+    defer registryMu.Unlock()
     registry[source.Name()] = source
 }
 
 func All() []Source {
+    registryMu.RLock()
     out := make([]Source, 0, len(registry))
     for _, source := range registry {
         out = append(out, source)
     }
+    registryMu.RUnlock()
     sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
     return out
 }
 
 func Lookup(name string) (Source, bool) {
+    registryMu.RLock()
+    defer registryMu.RUnlock()
     source, ok := registry[name]
     return source, ok
 }
 ```
 
 Each `internal/source/<slug>/` package registers itself from `init()` and keeps
-HTTP/API details private to that source.
+HTTP/API details private to that source. The mutex keeps copied test helpers and
+late registrations race-safe; production registration should still happen from
+`init()`.
 
 ## Runtime rules
 
@@ -126,6 +137,10 @@ Add a `sources` command tree:
 - Domain commands (`browse`, `similar`, `compare`, `search`) query the unified
   store, not individual source packages directly.
 
+Annotate read-only commands, especially `sources list`, with
+`cmd.Annotations["mcp:read-only"] = "true"` so MCP hosts do not request write
+permission for registry inspection.
+
 The command tree should make source boundaries visible without requiring the
 user to know implementation package names.
 
@@ -138,6 +153,7 @@ Before shipping an aggregator CLI, verify:
 - Each source lives under `internal/source/<slug>/`.
 - Each source client has a real outbound call and per-source rate limiting.
 - `sources list` and `sources sync` exist.
+- `sources list` is annotated `mcp:read-only`.
 - Cross-source commands read from the unified store.
 - The README and SKILL explain which sources are included and which command
   syncs them.
