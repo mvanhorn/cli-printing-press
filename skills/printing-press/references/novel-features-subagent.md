@@ -176,6 +176,21 @@ Sources for candidates (label each candidate with its source):
 For each candidate capture: name, command, one-line description, persona
 served, source label from the list above.
 
+When 2+ compound-tool candidates could plausibly match the same natural-language
+request because their input surfaces overlap (for example, user UPN, market ID,
+customer email, or recipe name), plan each overlapping command's `Long:`
+description with an explicit scope redirect:
+
+```text
+Use this command for <matching intent>.
+Do NOT use this command for <nearby but wrong intent>; use '<sibling-command>' instead.
+```
+
+Only skip this pattern for single-tool CLIs or candidates whose inputs and
+operator intent do not overlap with sibling tools. A slightly longer `Long:`
+description is acceptable when it prevents an agent from choosing the wrong
+compound tool.
+
 Apply the rubric's kill/keep checks (LLM dependency, external service, auth
 gap, scope creep, verifiability, reimplementation) inline. Reframe or cut
 obvious failures NOW so they don't waste Pass 3 attention.
