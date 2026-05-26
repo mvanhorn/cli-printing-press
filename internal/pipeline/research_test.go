@@ -350,6 +350,7 @@ func TestWriteAndLoadResearchWithEnrichedNovelFeatures(t *testing.T) {
 				{Symptom: "HTTP 429 on every request", Fix: "Import a Chrome session via auth login-chrome"},
 			},
 			WhenToUse:      "Reach for this CLI when an agent needs quotes, fundamentals, or persistent portfolio state against Yahoo Finance.",
+			AntiTriggers:   []string{"Tasks that require placing trades or moving money", "Brokerage account management beyond read-only portfolio analysis"},
 			Recipes:        []Recipe{{Title: "Morning digest", Command: "yahoo-finance-pp-cli digest --watchlist tech", Explanation: "Biggest movers across a named watchlist."}},
 			TriggerPhrases: []string{"quote AAPL", "check my portfolio", "options for TSLA"},
 		},
@@ -374,6 +375,7 @@ func TestWriteAndLoadResearchWithEnrichedNovelFeatures(t *testing.T) {
 	assert.Len(t, loaded.Narrative.Troubleshoots, 1)
 	assert.Equal(t, "HTTP 429 on every request", loaded.Narrative.Troubleshoots[0].Symptom)
 	assert.Equal(t, "Reach for this CLI when an agent needs quotes, fundamentals, or persistent portfolio state against Yahoo Finance.", loaded.Narrative.WhenToUse)
+	assert.Equal(t, []string{"Tasks that require placing trades or moving money", "Brokerage account management beyond read-only portfolio analysis"}, loaded.Narrative.AntiTriggers)
 	require.Len(t, loaded.Narrative.Recipes, 1)
 	assert.Equal(t, "Morning digest", loaded.Narrative.Recipes[0].Title)
 	assert.Equal(t, []string{"quote AAPL", "check my portfolio", "options for TSLA"}, loaded.Narrative.TriggerPhrases)
