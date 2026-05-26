@@ -281,6 +281,32 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			if !cookieToolFound {
 				report["cookie_tool"] = "not found (install: pip install pycookiecheat)"
 			}
+{{- else if eq .Auth.Type "oauth2_refresh"}}
+			if cfg != nil {
+				if cfg.RefreshToken == "" {
+{{- if .Auth.Optional}}
+					report["auth"] = "optional — not configured"
+{{- else}}
+					report["auth"] = "not configured"
+{{- end}}
+{{- with .Auth.OAuth2RefreshTokenEnvVar}}
+					report["auth_hint"] = "export {{.Name}}=<your-oauth-refresh-value>"
+{{- end}}
+{{- if .Auth.KeyURL}}
+					report["auth_key_url"] = "{{.Auth.KeyURL}}"
+{{- else if .WebsiteURL}}
+					report["auth_docs_url"] = "{{.WebsiteURL}}"
+{{- end}}
+{{- if .Auth.Instructions}}
+					report["auth_instructions"] = {{printf "%q" .Auth.Instructions}}
+{{- end}}
+				} else {
+					authConfigured = true
+					report["auth"] = "configured (oauth2 refresh)"
+					cfg.AuthSource = "oauth2_refresh"
+					report["auth_source"] = cfg.AuthSource
+				}
+			}
 {{- else}}
 			if cfg != nil {
 				header := cfg.AuthHeader()

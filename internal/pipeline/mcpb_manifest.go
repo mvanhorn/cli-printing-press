@@ -20,9 +20,10 @@ const (
 	mcpbServerTypeBinary = "binary"
 	mcpbVarTypeString    = "string"
 
-	authTypeAPIKey      = "api_key"
-	authTypeBearerToken = "bearer_token"
-	authTypeOAuth2      = "oauth2"
+	authTypeAPIKey        = "api_key"
+	authTypeBearerToken   = "bearer_token"
+	authTypeOAuth2        = "oauth2"
+	authTypeOAuth2Refresh = "oauth2_refresh"
 )
 
 // defaultMCPBPlatforms is the set of host platforms our generated bundles
@@ -484,12 +485,12 @@ func envVarDescription(m CLIManifest, envVar spec.AuthEnvVar, required bool) str
 }
 
 // authRequiresCredential decides whether a user_config field is required.
-// api_key/bearer_token/oauth2 gate every API call on the credential.
+// api_key/bearer_token/oauth2/oauth2_refresh gate every API call on the credential.
 // cookie/composed flows have unauth fallbacks for some tools, so we let
 // the user skip and hit the parts that work without credentials.
 func authRequiresCredential(authType string) bool {
 	switch authType {
-	case authTypeAPIKey, authTypeBearerToken, authTypeOAuth2:
+	case authTypeAPIKey, authTypeBearerToken, authTypeOAuth2, authTypeOAuth2Refresh:
 		return true
 	default:
 		return false

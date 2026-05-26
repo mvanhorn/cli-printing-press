@@ -950,6 +950,7 @@ func TestComputeMCPReady(t *testing.T) {
 		{"api_key", "api_key", "full"},
 		{"bearer_token", "bearer_token", "full"},
 		{"oauth2 defaults to full", "oauth2", "full"},
+		{"oauth2_refresh defaults to full", "oauth2_refresh", "full"},
 		{"cookie always partial", "cookie", "partial"},
 		{"composed always partial", "composed", "partial"},
 		{"empty auth type", "", "full"},
@@ -1324,6 +1325,28 @@ func TestWriteMCPBManifest(t *testing.T) {
 			v, ok := got.UserConfig[key]
 			require.True(t, ok, "user_config must include %q", key)
 			assert.False(t, v.Required, "auth_type=none keeps env vars optional")
+		}
+	})
+
+	t.Run("oauth2_refresh env vars are required", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:     "exact-online",
+			DisplayName: "Exact Online",
+			MCPBinary:   "exact-online-pp-mcp",
+			MCPReady:    "full",
+			AuthType:    "oauth2_refresh",
+			AuthEnvVars: []string{"EXACT_ONLINE_CLIENT_ID", "EXACT_ONLINE_CLIENT_SECRET", "EXACT_ONLINE_REFRESH_TOKEN"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Len(t, got.UserConfig, 3)
+		for _, key := range []string{"exact_online_client_id", "exact_online_client_secret", "exact_online_refresh_token"} {
+			v, ok := got.UserConfig[key]
+			require.True(t, ok, "user_config must include %q", key)
+			assert.True(t, v.Required, "oauth2_refresh credentials gate API calls")
 		}
 	})
 
