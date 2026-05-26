@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.18.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.17.0...v4.18.0) (2026-05-26)
+
+
+### Features
+
+* **cli:** add oauth2_refresh auth type ([#2355](https://github.com/mvanhorn/cli-printing-press/issues/2355)) ([29b9f88](https://github.com/mvanhorn/cli-printing-press/commit/29b9f8860b17a11c605727d8bfca8b50c2e595f1))
+
+
+### Bug Fixes
+
+* **cli:** auto-apply large MCP orchestration default ([#2365](https://github.com/mvanhorn/cli-printing-press/issues/2365)) ([0c7a263](https://github.com/mvanhorn/cli-printing-press/commit/0c7a26351fc125be92537618fe4f15d0b4906db3))
+* **cli:** detect turnstile reachability interstitials ([#2341](https://github.com/mvanhorn/cli-printing-press/issues/2341)) ([0f8083f](https://github.com/mvanhorn/cli-printing-press/commit/0f8083fec3a8f5fd685ed5c024523286b522f815))
+* **cli:** emit CSV parse helpers for response specs ([#2358](https://github.com/mvanhorn/cli-printing-press/issues/2358)) ([0ba4bf5](https://github.com/mvanhorn/cli-printing-press/commit/0ba4bf5b922f5a6a65ccf2663739df764e72bb2d))
+* **cli:** emit happy args annotations ([#2359](https://github.com/mvanhorn/cli-printing-press/issues/2359)) ([7074a42](https://github.com/mvanhorn/cli-printing-press/commit/7074a4209ce298bb83c194c15433180e88de3986))
+* **cli:** guard template prose interpolation ([#2351](https://github.com/mvanhorn/cli-printing-press/issues/2351)) ([1419384](https://github.com/mvanhorn/cli-printing-press/commit/14193843ec2e480ccb8f5a9643931f6222f9f745))
+* **cli:** handle reserved search resources ([#2360](https://github.com/mvanhorn/cli-printing-press/issues/2360)) ([ef0cd96](https://github.com/mvanhorn/cli-printing-press/commit/ef0cd963e03425ca1a664d77b3282d9709badc7f))
+* **cli:** honor docs batch filter flags client-side ([#2352](https://github.com/mvanhorn/cli-printing-press/issues/2352)) ([6182abf](https://github.com/mvanhorn/cli-printing-press/commit/6182abfeb4283abe3c7ccd962b7d3aa7c420a25c))
+* **cli:** keep sole query input param from global-param filter ([#2241](https://github.com/mvanhorn/cli-printing-press/issues/2241)) ([518b3eb](https://github.com/mvanhorn/cli-printing-press/commit/518b3ebd982185fafa085370c2732fd793f288ee)), closes [#982](https://github.com/mvanhorn/cli-printing-press/issues/982)
+* **cli:** parse multiline GraphQL fields for promoted resources ([#2367](https://github.com/mvanhorn/cli-printing-press/issues/2367)) ([26edea9](https://github.com/mvanhorn/cli-printing-press/commit/26edea9434622383f44a83e74a12bc794f361231))
+* **cli:** preserve dispatch param defaults in examples ([#2346](https://github.com/mvanhorn/cli-printing-press/issues/2346)) ([623200b](https://github.com/mvanhorn/cli-printing-press/commit/623200b5df3df644df8c74cbb60837c14d9d477c))
+* **cli:** preserve numeric sync resource ids ([#2350](https://github.com/mvanhorn/cli-printing-press/issues/2350)) ([8095b32](https://github.com/mvanhorn/cli-printing-press/commit/8095b322bbabe6b74827ce937aead1825efdeeac))
+* **cli:** promote global path template vars ([#2366](https://github.com/mvanhorn/cli-printing-press/issues/2366)) ([3824012](https://github.com/mvanhorn/cli-printing-press/commit/3824012af97ca8abcaadc30deec3fe141fa9dcbb))
+* **cli:** promote global scope query params ([#2356](https://github.com/mvanhorn/cli-printing-press/issues/2356)) ([1ee18ed](https://github.com/mvanhorn/cli-printing-press/commit/1ee18ed64fe769087ee853b5ea781dd8d82de2c1))
+* **cli:** respect live dogfood auth tiers ([#2364](https://github.com/mvanhorn/cli-printing-press/issues/2364)) ([d9d0157](https://github.com/mvanhorn/cli-printing-press/commit/d9d0157677638efa33cf11777d888965ba2e713e))
+* **cli:** skip unfixturable mutating dogfood examples ([#2357](https://github.com/mvanhorn/cli-printing-press/issues/2357)) ([e49f5f1](https://github.com/mvanhorn/cli-printing-press/commit/e49f5f1f55c04d765d3f5de284c398b41dbb20ad))
+* **skills:** escalate 200 challenge shells ([#2340](https://github.com/mvanhorn/cli-printing-press/issues/2340)) ([f2eaf74](https://github.com/mvanhorn/cli-printing-press/commit/f2eaf749ac5b05d96bc55fba35e522e3ac1a590e))
+
 ## [4.17.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.16.0...v4.17.0) (2026-05-26)
 
 
