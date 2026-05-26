@@ -2514,7 +2514,11 @@ mcp:
           bind:
             id: ${input.item_id}
           capture: item
-      returns: item
+        - endpoint: items.summarize
+          bind:
+            item: ${capture.item}
+          capture: summary
+      returns: summary
 ```
 
 `mcp.transport: [stdio, http]` adds HTTP streamable transport so cloud-hosted
