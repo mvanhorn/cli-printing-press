@@ -272,7 +272,10 @@ func parseFields(body string) []gqlField {
 		}
 		current.WriteString(line)
 		depth += parenDelta(line)
-		if depth <= 0 && strings.Contains(current.String(), ":") {
+		if depth < 0 {
+			depth = 0
+		}
+		if depth == 0 && strings.Contains(current.String(), ":") {
 			flush()
 		}
 	}

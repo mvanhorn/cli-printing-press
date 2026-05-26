@@ -245,6 +245,32 @@ input CycleFilter {
 	assert.Contains(t, customerStatuses.Endpoints, "list")
 }
 
+func TestParseSDLContentClampsNegativeFieldDepth(t *testing.T) {
+	t.Parallel()
+
+	const sdl = `
+type Query {
+  ): Bogus!
+  cycle(
+    id: String!
+  ): Cycle!
+}
+
+type Cycle {
+  id: ID!
+}
+`
+
+	parsed, err := ParseSDLBytes("linear-schema.graphql", []byte(sdl))
+	require.NoError(t, err)
+
+	cycles := parsed.Resources["cycles"]
+	require.NotNil(t, cycles.Endpoints)
+	get := cycles.Endpoints["get"]
+	require.Len(t, get.Params, 1)
+	assert.Equal(t, "id", get.Params[0].Name)
+}
+
 func TestBuildTypeDefDeduplicatesFields(t *testing.T) {
 	// Schema where a type has duplicate field names (e.g., pagination args
 	// mixed in with entity fields, as happens in large GraphQL schemas like Linear's).

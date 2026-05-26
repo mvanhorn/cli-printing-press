@@ -46,7 +46,7 @@ func newThingsPromotedCmd(flags *rootFlags) *cobra.Command {
 			// body-aware cached read helper is filed as #425 for when a
 			// second store-backed POST-search consumer ships.
 			body := map[string]any{}
-			data, _, err := c.PostWithParams(cmd.Context(), path, params, body)
+			data, _, err := c.PostQueryWithParams(cmd.Context(), path, params, body)
 
 			if err != nil {
 				return classifyAPIError(err, flags)
