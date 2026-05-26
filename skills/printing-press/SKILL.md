@@ -2516,7 +2516,7 @@ mcp:
           capture: item
         - endpoint: items.summarize
           bind:
-            item: ${capture.item}
+            body: ${item.body}
           capture: summary
       returns: summary
 ```
