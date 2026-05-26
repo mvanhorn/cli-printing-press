@@ -1764,6 +1764,19 @@ directory prefix when the leaf segment has embedded IDs or suffixes. See
 
 If the browser capture contained only challenge/login/error pages, this exception does not apply.
 
+**Exception for LAN-only / mDNS-discovered APIs:** If the resolved spec's `base_url` is a localhost or loopback placeholder (`http://localhost:<port>`, `http://127.0.0.1:<port>`, or `http://[::1]:<port>`), or Phase 1 research explicitly identifies the API as LAN-only / SSDP / mDNS-discovered with no stable global origin, do not run the generic curl/WebFetch reachability probe. A probe from the generation host would test the agent's loopback or current network, not the user's appliance, speaker, bridge, or local service.
+
+For this case, record a Phase 1.9 PASS carve-out in the research brief:
+
+```markdown
+## Reachability Gate
+- Decision: PASS (carve-out)
+- Reason: lan-only-no-global-url
+- Evidence: <base_url or research line showing localhost, loopback, SSDP, mDNS, or LAN-only discovery>
+```
+
+Then proceed to Phase 2. Do not write a freeform manual proof for this case, do not call it a missing-API-key skip, and do not use this carve-out for normal public/cloud origins such as `https://api.example.com`; those still run the reachability probe and decision matrix below.
+
 ### The Check
 
 Prefer the spec's `auth.verify_path` when it is set; otherwise pick the simplest GET endpoint from the resolved spec (no required params, no auth if possible). If no such endpoint exists, use the spec's base URL. Run one HTTP request and preserve the response body when the server returns a 4xx:
