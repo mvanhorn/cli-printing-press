@@ -196,6 +196,47 @@ func newSearchCmd() *cobra.Command {
 	require.Contains(t, string(out), "All checks passed")
 }
 
+func TestVerifySkill_FlagChecksNormalizeEqualsSyntax(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\n" +
+		"fixture-pp-cli search --since=24h --score-gte=7\n" +
+		"fixture-pp-cli search --since 24h --score-gte 7\n" +
+		"```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"search.go": `package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+	var since string
+	var scoreGTE int
+	cmd := &cobra.Command{Use: "search"}
+	cmd.Flags().StringVar(&since, "since", "", "Lookback window")
+	cmd.Flags().IntVar(&scoreGTE, "score-gte", 0, "Minimum score")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSearchCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "flag-names").CombinedOutput()
+	require.NoError(t, err, "--flag=value syntax should resolve to declared flag names: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+
+	out, err = exec.Command(bin, "verify-skill", "--dir", dir, "--only", "flag-commands").CombinedOutput()
+	require.NoError(t, err, "--flag=value syntax should resolve to declared command flags: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+}
+
 func TestVerifySkill_ShellOperatorsDoNotBecomePositionals(t *testing.T) {
 	t.Parallel()
 
@@ -269,6 +310,43 @@ func Execute() error {
 	require.Error(t, err, "real positional args must still fail verify-skill")
 	require.Contains(t, string(out), "[positional-args]")
 	require.Contains(t, string(out), "got 2 positional args")
+}
+
+// A positional that follows an inline-value flag (--flag=value) must still be
+// counted as a positional, not swallowed as the flag's value. Without the
+// inline-value guard the parser drops `report.json` and the check passes
+// (false negative); with it the unexpected positional is correctly flagged.
+func TestVerifySkill_PositionalAfterInlineValueFlagIsCounted(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli export --format=json report.json\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"export.go": `package cli
+import "github.com/spf13/cobra"
+func newExportCmd() *cobra.Command {
+	var format string
+	cmd := &cobra.Command{Use: "export"}
+	cmd.Flags().StringVar(&format, "format", "", "Output format")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newExportCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
+	require.Error(t, err, "a positional after --flag=value must be counted, not swallowed: %s", string(out))
+	require.Contains(t, string(out), "[positional-args]")
+	require.Contains(t, string(out), "got 1 positional args")
 }
 
 func TestVerifySkill_PlaceholderPositionalsStillFail(t *testing.T) {

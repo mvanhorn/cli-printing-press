@@ -650,9 +650,11 @@ def _cli_invocation_from_tokens(
             i += 1
             continue
         if t.startswith("--"):
-            flags.append(t)
-            # Skip value if present and not another flag
-            if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            flags.append(t.split("=", 1)[0])
+            # Skip a space-separated value (`--flag value`), but NOT when the
+            # value is inline (`--flag=value`) — there the next token is a
+            # positional, not this flag's value.
+            if "=" not in t and i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
                 i += 2
                 continue
         elif t.startswith("-"):
