@@ -57,8 +57,7 @@ func classifyResponse(status int, headers http.Header, bodySnippet string) []Pro
 		strings.Contains(body, "<html") ||
 		strings.Contains(body, "<script") ||
 		strings.Contains(body, "<div")
-	turnstileBody := htmlBody && (strings.Contains(body, "challenges.cloudflare.com/turnstile") ||
-		strings.Contains(body, "cf-turnstile"))
+	turnstileBody := htmlBody && strings.Contains(body, "challenges.cloudflare.com/turnstile")
 	cfChallengeBody := strings.Contains(body, "cf-chl") ||
 		turnstileBody ||
 		strings.Contains(body, "just a moment") ||

@@ -96,15 +96,15 @@ func TestClassifyResponse(t *testing.T) {
 			wantLabels: []string{"cloudflare", "captcha"},
 		},
 		{
-			name:   "cloudflare turnstile widget on 200 is a protection signal",
+			name:   "cf-turnstile widget markup without script is not a protection signal",
 			status: 200,
 			headers: http.Header{
 				"Cf-Ray":       {"abc123"},
 				"Server":       {"cloudflare"},
 				"Content-Type": {"text/html"},
 			},
-			body:       `<html><div class="cf-turnstile" data-sitekey="site"></div></html>`,
-			wantLabels: []string{"cloudflare", "captcha"},
+			body:        `<html><div class="cf-turnstile" data-sitekey="site"></div></html>`,
+			emptyResult: true,
 		},
 		{
 			name:   "captcha unblock shell on 200 is a protection signal",
