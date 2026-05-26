@@ -1,6 +1,8 @@
 package generator
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,6 +79,78 @@ func TestAuthStatusHintsOnlyRequestCredentialEnvVars(t *testing.T) {
 	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_ID`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_SECRET`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_SESSION_COOKIE`)
+}
+
+func TestAuthStatusHintsUseDescriptionAndNameShapePlaceholders(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("auth-status-placeholders")
+	apiSpec.Auth = spec.AuthConfig{
+		Type: "api_key",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{
+				Name:        "FRESHSERVICE_DOMAIN",
+				Kind:        spec.AuthEnvVarKindPerCall,
+				Required:    true,
+				Sensitive:   false,
+				Description: "Tenant domain (for example acme.freshservice.com), not your Freshworks org dashboard URL.",
+			},
+			{Name: "SEC_EDGAR_USER_AGENT", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "DOMINOS_USERNAME", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "GOOGLE_ADS_LOGIN_CUSTOMER_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+			{Name: "SENTRY_AUTH_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "auth-status-placeholders-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	content := string(authSrc)
+
+	require.Contains(t, content, `export FRESHSERVICE_DOMAIN=\"acme.freshservice.com\" # Tenant domain (for example acme.freshservice.com), not your Freshworks org dashboard URL.`)
+	require.Contains(t, content, `export SEC_EDGAR_USER_AGENT=\"you@example.com (Your Tool Name)\"`)
+	require.Contains(t, content, `export DOMINOS_USERNAME=\"your-username\"`)
+	require.Contains(t, content, `export GOOGLE_ADS_LOGIN_CUSTOMER_ID=\"your-token-here\"`)
+	require.Contains(t, content, `export SENTRY_AUTH_TOKEN=\"your-token-here\"`)
+}
+
+// An auth env var description containing a double-quote or backslash must not
+// break the generated auth.go: the hint is embedded in a Go string literal, so
+// the value has to be neutralized. Regression guard for the #1329 fix.
+func TestAuthStatusHintEscapesAdversarialDescription(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("auth-status-hint-escape")
+	apiSpec.Auth = spec.AuthConfig{
+		Type: "api_key",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{
+				Name:        "QUOTED_TOKEN",
+				Kind:        spec.AuthEnvVarKindPerCall,
+				Required:    true,
+				Sensitive:   true,
+				Description: `Use the "API key" from C:\creds (see docs).`,
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "auth-status-hint-escape-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authPath := filepath.Join(outputDir, "internal", "cli", "auth.go")
+	authSrc, err := os.ReadFile(authPath)
+	require.NoError(t, err)
+
+	// The generated source must parse — a raw " or \ in the hint would produce
+	// a string-literal syntax error.
+	_, err = parser.ParseFile(token.NewFileSet(), authPath, authSrc, parser.AllErrors)
+	require.NoError(t, err, "generated auth.go with an adversarial hint description must compile")
+
+	content := string(authSrc)
+	assert.NotContains(t, content, `"API key"`,
+		"raw double-quotes from the description must be neutralized in the generated literal")
 }
 
 func TestMCPContextOmitsHarvestedAuthEnvVars(t *testing.T) {
