@@ -6,9 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSkillInstallSectionEndSubstrMatchesGenerator(t *testing.T) {
+	assert.Equal(t, generator.SkillInstallSectionEndSubstr, skillInstallSectionEndSubstr)
+}
 
 func TestSyncReadmeAuthNarrativeRemovesStaleAuthenticationWhenOptionalExists(t *testing.T) {
 	dir := t.TempDir()
