@@ -34,6 +34,7 @@ jobs:
       needs_build: ${{ steps.changes.outputs.needs_build }}
       needs_tests: ${{ steps.changes.outputs.needs_tests }}
       needs_golden: ${{ steps.changes.outputs.needs_golden }}
+      needs_generated_output: ${{ steps.changes.outputs.needs_generated_output }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -48,6 +49,7 @@ jobs:
           needs_build=false
           needs_tests=false
           needs_golden=false
+          needs_generated_output=false
 
           if [[ "${{ github.event_name }}" == "push" ]]; then
             # Keep the post-merge alarm full-strength on main. PRs get the
@@ -55,6 +57,7 @@ jobs:
             needs_build=true
             needs_tests=true
             needs_golden=true
+            needs_generated_output=true
           else
             git fetch --no-tags --prune origin "${{ github.base_ref }}"
             mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
@@ -68,6 +71,7 @@ jobs:
                   needs_build=true
                   needs_tests=true
                   needs_golden=true
+                  needs_generated_output=true
                   ;;
                 *.go|go.mod|go.sum|cmd/*|catalog/*|internal/*)
                   needs_build=true
@@ -86,6 +90,12 @@ jobs:
                   needs_golden=true
                   ;;
               esac
+
+              case "$file" in
+                .github/workflows/main-ci.yml|scripts/verify-generator-output.sh|cmd/*|internal/generator/*|internal/openapi/*|testdata/golden/cases/generate-*|testdata/golden/fixtures/*|go.mod|go.sum)
+                  needs_generated_output=true
+                  ;;
+              esac
             done
           fi
 
@@ -93,6 +103,7 @@ jobs:
             echo "needs_build=$needs_build"
             echo "needs_tests=$needs_tests"
             echo "needs_golden=$needs_golden"
+            echo "needs_generated_output=$needs_generated_output"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -101,6 +112,7 @@ jobs:
             echo "- build: \`$needs_build\`"
             echo "- tests: \`$needs_tests\`"
             echo "- golden: \`$needs_golden\`"
+            echo "- generated-output: \`$needs_generated_output\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   full-build:
@@ -163,6 +175,26 @@ jobs:
       - name: Verify golden fixtures
         run: bash scripts/golden.sh verify
 
+  generated_output_compile:
+    name: generated-output-compile
+    runs-on: ubuntu-latest
+    needs: classify
+    if: needs.classify.outputs.needs_generated_output == 'true'
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Compile generated CLI outputs
+        run: bash scripts/verify-generator-output.sh
+
   build-and-test:
     runs-on: ubuntu-latest
     needs:
@@ -170,6 +202,7 @@ jobs:
       - full-build
       - full-test
       - full-golden
+      - generated_output_compile
     if: ${{ always() }}
     timeout-minutes: 5
     steps:
@@ -192,8 +225,13 @@ jobs:
             echo "full-golden failed or was cancelled."
             exit 1
           fi
+          if [[ "${{ needs.classify.outputs.needs_generated_output }}" == "true" && "${{ needs.generated_output_compile.result }}" != "success" ]]; then
+            echo "generated-output-compile failed or was cancelled."
+            exit 1
+          fi
 
           echo "Full-suite scope:"
           echo "  build=${{ needs.classify.outputs.needs_build }} result=${{ needs.full-build.result }}"
           echo "  tests=${{ needs.classify.outputs.needs_tests }} result=${{ needs.full-test.result }}"
           echo "  golden=${{ needs.classify.outputs.needs_golden }} result=${{ needs.full-golden.result }}"
+          echo "  generated-output=${{ needs.classify.outputs.needs_generated_output }} result=${{ needs.generated_output_compile.result }}"

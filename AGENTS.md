@@ -71,6 +71,20 @@ Run `scripts/golden.sh verify` whenever a change may affect CLI command output, 
 Never update goldens just to make a failing check pass. Run `scripts/golden.sh update` only when the behavior change is intentional, then inspect the diff and explain it in your final response. See [`docs/GOLDEN.md`](docs/GOLDEN.md) for the decision rubric, fixture conventions, and failure handling.
 When adding a new deterministic CLI behavior or generated artifact contract, explicitly decide whether the golden suite needs a new or expanded fixture. A passing `scripts/golden.sh verify` on existing cases does not prove coverage for new auth, pagination, MCP, manifest, naming, or similar deterministic generation behavior.
 
+### Generator fixes require generated-output proof
+When touching `internal/generator/**`, `internal/openapi/**`, generator templates, parser-derived fields, MCP descriptions, naming, auth emission, or SKILL.md skeletons, verify the generated CLI behavior, not only the Printing Press source or template text.
+
+Required before handoff:
+- Run `go test ./...`, not only scoped `-run` tests. Scoped tests plus `scripts/golden.sh verify` are not enough for conditional or fallback branches.
+- Run `scripts/golden.sh verify` when output shape may change.
+- Run `scripts/verify-generator-output.sh` for generator/template changes that can alter emitted Go. Pass extra golden case names when the default cases do not exercise the affected variant.
+- Add or update a generated-output test when the fix changes an emitted contract. Prefer assertions on emitted code or compile-level behavior over assertions on template source.
+- Cover the fallback shape affected by the fix: missing defaults, missing summaries, envelope responses, promoted templates, endpoint templates, or every generated file involved.
+- When changing an emitted definition, grep for call sites and gate them with the same condition. When changing data flow, check dependent reporting and consumers.
+- Prefer established generator idioms: `oneline` / `OneLineNormalize` / `printf "%q"` for emitted literals, and `text/template.IsTrue` or a shared helper when Go code mirrors template truthiness.
+
+If the "obvious" fix violates a parser, verifier, scorer, or printed-CLI invariant, stop and resolve the invariant conflict rather than shipping a narrow band-aid.
+
 ## Cross-repo dependency: published-library sweep tool
 
 When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence or removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so the already-published CLIs can be retrofitted to match. Fresh prints from this generator will produce the new shape automatically, but every existing entry in the public library silently drifts from canonical shape until the sweep retrofit runs.
