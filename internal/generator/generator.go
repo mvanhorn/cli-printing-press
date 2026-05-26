@@ -375,8 +375,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// `?limit=N` query param without honoring it; truncating client-
 		// side means the user-facing --limit flag works regardless.
 		// Surfaced by hackernews retro #350 finding F6.
-		"endpointNeedsClientLimit": endpointNeedsClientLimit,
-		"envName":                  naming.EnvPrefix,
+		"endpointNeedsClientLimit":  endpointNeedsClientLimit,
+		"endpointClientSideFilters": endpointClientSideFilters,
+		"envName":                   naming.EnvPrefix,
 		// endpointTemplateEnvName resolves the env-var name for a
 		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
 		// override (e.g. ST_TENANT_ID for {tenant}) when one exists, else
@@ -656,6 +657,7 @@ type HelperFlags struct {
 	HasDataLayer         bool // CLI has a local store (sync/search) → emit provenance helpers
 	HasSyncHelpers       bool // generated sync implementation calls sync-only helpers
 	HasClientLimit       bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
+	HasClientFilters     bool // at least one docs-derived endpoint needs client-side response filtering
 	HasEmbeddedPaged     bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
 	HasResponseUnwrap    bool // at least one generated command can call extractResponseData
 	HasMutationEndpoints bool // spec has any non-GET/HEAD endpoint → emit partial-failure helpers + --allow-partial-failure flag
@@ -680,6 +682,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				if endpointNeedsClientLimit(e) {
 					flags.HasClientLimit = true
+				}
+				if len(endpointClientSideFilters(s, e)) > 0 {
+					flags.HasClientFilters = true
 				}
 				if len(e.EmbeddedPagedSubresources) > 0 {
 					flags.HasEmbeddedPaged = true
@@ -4672,6 +4677,151 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 		}
 	}
 	return false
+}
+
+type clientSideFilter struct {
+	Param spec.Param
+	Field string
+}
+
+// endpointClientSideFilters reports best-effort response filters for
+// docs-derived batch GET endpoints. Docs-derived specs sometimes expose
+// a documented query flag that the API accepts but ignores; when the flag name
+// matches a scalar response item field (including simple plural-to-singular
+// forms like symbols -> symbol), generated commands locally narrow the returned
+// JSON so the public flag stays truthful.
+func endpointClientSideFilters(apiSpec *spec.APISpec, endpoint spec.Endpoint) []clientSideFilter {
+	if apiSpec == nil || strings.TrimSpace(apiSpec.SpecSource) != "docs" {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") || endpoint.Pagination != nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Response.Type), "array") {
+		return nil
+	}
+	if !endpointLooksLikeClientFilteredBatch(endpoint) {
+		return nil
+	}
+	if endpoint.Response.Item == "" {
+		return nil
+	}
+	itemType, ok := apiSpec.Types[endpoint.Response.Item]
+	if !ok || len(itemType.Fields) == 0 {
+		return nil
+	}
+
+	fieldsByKey := map[string]string{}
+	for _, field := range itemType.Fields {
+		if strings.TrimSpace(field.Name) == "" {
+			continue
+		}
+		fieldsByKey[normalizeClientSideFilterKey(field.Name)] = field.Name
+	}
+
+	var filters []clientSideFilter
+	seenFields := map[string]struct{}{}
+	for _, param := range endpoint.Params {
+		if !clientSideFilterParamEligible(param) {
+			continue
+		}
+		for _, candidate := range clientSideFilterFieldCandidates(param) {
+			field, ok := fieldsByKey[normalizeClientSideFilterKey(candidate)]
+			if !ok {
+				continue
+			}
+			if _, seen := seenFields[field]; seen {
+				continue
+			}
+			filters = append(filters, clientSideFilter{Param: param, Field: field})
+			seenFields[field] = struct{}{}
+			break
+		}
+	}
+	return filters
+}
+
+func endpointLooksLikeClientFilteredBatch(endpoint spec.Endpoint) bool {
+	for _, value := range []string{endpoint.Path, endpoint.Description} {
+		parts := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+			return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+		})
+		if slices.Contains(parts, "batch") {
+			return true
+		}
+	}
+	return false
+}
+
+func clientSideFilterParamEligible(param spec.Param) bool {
+	if param.Positional || param.PathParam {
+		return false
+	}
+	if param.Purpose == spec.ParamPurposeFieldSelector {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(param.Type)) {
+	case "", "string", "string_csv_array":
+	default:
+		return false
+	}
+	name := normalizeClientSideFilterKey(param.WireName())
+	switch name {
+	case "", "limit", "page", "pagesize", "perpage", "offset", "cursor", "after", "before", "next", "sort", "order", "orderby", "fields", "field", "select", "include", "expand", "q", "query", "search":
+		return false
+	default:
+		return true
+	}
+}
+
+func clientSideFilterFieldCandidates(param spec.Param) []string {
+	names := []string{param.WireName(), param.Name}
+	var out []string
+	seen := map[string]struct{}{}
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		for _, candidate := range []string{trimmed, singularClientSideFilterName(trimmed)} {
+			key := normalizeClientSideFilterKey(candidate)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func singularClientSideFilterName(name string) string {
+	if strings.HasSuffix(name, "ies") && len(name) > len("ies") {
+		return strings.TrimSuffix(name, "ies") + "y"
+	}
+	if strings.HasSuffix(name, "ses") {
+		if len(name) > len("ses") {
+			return strings.TrimSuffix(name, "es")
+		}
+		return name
+	}
+	if strings.HasSuffix(name, "s") && len(name) > 1 {
+		return strings.TrimSuffix(name, "s")
+	}
+	return name
+}
+
+func normalizeClientSideFilterKey(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // maxBodyFlagDepth caps how many levels of nested-object recursion the

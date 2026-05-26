@@ -593,6 +593,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			_, err = cmd.OutOrStdout().Write(data)
 			return err
 {{- else}}
+{{- range endpointClientSideFilters .APISpec .Endpoint}}
+			if flag{{camel (paramIdent .Param)}} != {{zeroValForParamRequired .Param.Name .Param.Type .Param.Required (hasDefault .Param)}} {
+				data = filterJSONByFieldValues(data, {{printf "%q" .Field}}, fmt.Sprintf("%v", flag{{camel (paramIdent .Param)}}))
+			}
+{{- end}}
 {{- if endpointNeedsClientLimit .Endpoint}}
 			// Honor --limit when the API accepts but ignores ?limit=N.
 			data = truncateJSONArray(data, flagLimit)

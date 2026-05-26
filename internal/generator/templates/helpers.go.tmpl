@@ -2235,6 +2235,133 @@ func truncateJSONArray(data json.RawMessage, n int) json.RawMessage {
 	return out
 }
 {{- end}}
+{{- if .HasClientFilters}}
+
+// filterJSONByFieldValues returns data narrowed to items whose field value
+// matches one of the comma-separated filter values. It supports both bare JSON
+// arrays and common list envelopes such as {"data":[...]} so docs-derived
+// batch endpoints can keep filter flags honest even when the server ignores
+// the corresponding query param.
+func filterJSONByFieldValues(data json.RawMessage, field string, rawValues string) json.RawMessage {
+	targets := clientSideFilterTargets(rawValues)
+	if len(targets) == 0 {
+		return data
+	}
+	if filtered, ok := filterJSONArrayByFieldValues(data, field, targets); ok {
+		return filtered
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return data
+	}
+	for _, key := range []string{"data", "results", "items"} {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		filtered, ok := filterJSONArrayByFieldValues(raw, field, targets)
+		if !ok {
+			continue
+		}
+		envelope[key] = filtered
+		out, err := json.Marshal(envelope)
+		if err != nil {
+			return data
+		}
+		return out
+	}
+	return data
+}
+
+func clientSideFilterTargets(rawValues string) map[string]struct{} {
+	targets := map[string]struct{}{}
+	for _, value := range strings.Split(rawValues, ",") {
+		normalized := normalizeClientSideFilterValue(value)
+		if normalized == "" {
+			continue
+		}
+		targets[normalized] = struct{}{}
+	}
+	return targets
+}
+
+func filterJSONArrayByFieldValues(data json.RawMessage, field string, targets map[string]struct{}) (json.RawMessage, bool) {
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, false
+	}
+	sawField := false
+	filtered := make([]map[string]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		raw, ok := lookupClientSideFilterField(item, field)
+		if !ok {
+			filtered = append(filtered, item)
+			continue
+		}
+		sawField = true
+		if jsonValueMatchesClientSideFilter(raw, targets) {
+			filtered = append(filtered, item)
+		}
+	}
+	if !sawField {
+		return data, false
+	}
+	out, err := json.Marshal(filtered)
+	if err != nil {
+		return data, true
+	}
+	return out, true
+}
+
+func lookupClientSideFilterField(item map[string]json.RawMessage, field string) (json.RawMessage, bool) {
+	if raw, ok := item[field]; ok {
+		return raw, true
+	}
+	want := normalizeClientSideFilterField(field)
+	for key, raw := range item {
+		if normalizeClientSideFilterField(key) == want {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+func jsonValueMatchesClientSideFilter(raw json.RawMessage, targets map[string]struct{}) bool {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	switch v := value.(type) {
+	case string:
+		_, ok := targets[normalizeClientSideFilterValue(v)]
+		return ok
+	case float64, bool:
+		_, ok := targets[normalizeClientSideFilterValue(fmt.Sprintf("%v", v))]
+		return ok
+	case []any:
+		for _, item := range v {
+			if _, ok := targets[normalizeClientSideFilterValue(fmt.Sprintf("%v", item))]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeClientSideFilterField(field string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(field)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func normalizeClientSideFilterValue(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+{{- end}}
 
 // defaultDBPath returns the canonical path for the local SQLite database.
 func defaultDBPath(name string) string {
