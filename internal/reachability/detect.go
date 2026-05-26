@@ -14,7 +14,7 @@ type Protection struct {
 }
 
 // classifyResponse returns protection signals detected in the response.
-// bodySnippet is expected to be a small (~4KB) lowercased read of the
+// bodySnippet is expected to be a bounded lowercased read of the
 // response body — full body reads would be wasteful for large pages.
 func classifyResponse(status int, headers http.Header, bodySnippet string) []Protection {
 	var out []Protection
@@ -52,7 +52,14 @@ func classifyResponse(status int, headers http.Header, bodySnippet string) []Pro
 	// DataDome and PerimeterX header presence stays a strong signal — those
 	// products only ship as bot mitigation, not as plain CDN.
 	cfFingerprint := strings.Contains(server, "cloudflare") || h["cf-ray"] != ""
+	contentType := h["content-type"]
+	htmlBody := strings.Contains(contentType, "html") ||
+		strings.Contains(body, "<html") ||
+		strings.Contains(body, "<script") ||
+		strings.Contains(body, "<div")
+	turnstileBody := htmlBody && strings.Contains(body, "challenges.cloudflare.com/turnstile")
 	cfChallengeBody := strings.Contains(body, "cf-chl") ||
+		turnstileBody ||
 		strings.Contains(body, "just a moment") ||
 		strings.Contains(body, "checking your browser") ||
 		strings.Contains(body, "ddos protection by cloudflare")
@@ -71,8 +78,13 @@ func classifyResponse(status int, headers http.Header, bodySnippet string) []Pro
 		out = append(out, Protection{Label: "perimeterx", Evidence: "PerimeterX marker"})
 	}
 
-	if strings.Contains(body, "recaptcha") || strings.Contains(body, "hcaptcha") ||
-		strings.Contains(body, "g-recaptcha") {
+	switch {
+	case turnstileBody:
+		out = append(out, Protection{Label: "captcha", Evidence: "Cloudflare Turnstile interstitial"})
+	case strings.Contains(body, "fill out the captcha to unblock"):
+		out = append(out, Protection{Label: "captcha", Evidence: "CAPTCHA unblock shell"})
+	case strings.Contains(body, "recaptcha") || strings.Contains(body, "hcaptcha") ||
+		strings.Contains(body, "g-recaptcha"):
 		out = append(out, Protection{Label: "captcha", Evidence: "CAPTCHA widget"})
 	}
 
