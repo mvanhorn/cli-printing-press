@@ -498,12 +498,11 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 }
 
 func novelFeatureHasStubMarker(cliDir string, nf NovelFeature) bool {
-	leaf := lastPathSegment(commandPath(nf.Command))
-	if leaf == "" {
+	path := commandPath(nf.Command)
+	if path == "" {
 		return false
 	}
 	files := listGoFiles(filepath.Join(cliDir, "internal", "cli"))
-	markerRe := regexp.MustCompile(`TODO:\s*implement novel feature`)
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
 			continue
@@ -512,18 +511,16 @@ func novelFeatureHasStubMarker(cliDir string, nf NovelFeature) bool {
 		if err != nil {
 			continue
 		}
-		content := string(data)
-		if !markerRe.MatchString(content) {
-			continue
-		}
-		for _, use := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
-			if len(use) > 1 && use[1] == leaf {
+		for _, match := range novelFeatureStubMarkerRe.FindAllStringSubmatch(string(data), -1) {
+			if len(match) > 1 && match[1] == path {
 				return true
 			}
 		}
 	}
 	return false
 }
+
+var novelFeatureStubMarkerRe = regexp.MustCompile(`TODO:\s*implement novel feature[^\n]*,\s*"([^"]+)"`)
 
 // matchNovelFeature reports whether a planned novel feature has a
 // corresponding built command. When paths are available it matches on

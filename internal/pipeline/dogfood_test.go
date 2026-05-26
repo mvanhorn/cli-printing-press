@@ -1625,6 +1625,59 @@ func newNovelHealthCmd() *cobra.Command {
 		assert.Equal(t, []string{"health"}, result.Stubbed)
 	})
 
+	t.Run("does not confuse stubs that share a leaf command", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"),
+			`package cli
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "test-pp-cli"}
+	rootCmd.AddCommand(newRunsCmd(), newAnalyticsCmd())
+	return rootCmd
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "runs.go"),
+			`package cli
+func newRunsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "runs"}
+	cmd.AddCommand(newRunsClassifyCmd())
+	return cmd
+}
+func newRunsClassifyCmd() *cobra.Command {
+	return &cobra.Command{Use: "classify"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "analytics.go"),
+			`package cli
+func newAnalyticsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "analytics"}
+	cmd.AddCommand(newAnalyticsClassifyCmd())
+	return cmd
+}
+func newAnalyticsClassifyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "classify",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "analytics classify")
+		},
+	}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Run classifier", Command: "runs classify"},
+				{Name: "Analytics classifier", Command: "analytics classify"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+		assert.Equal(t, []string{"analytics classify"}, result.Stubbed)
+	})
+
 	t.Run("warns when advertised command depth differs from registered path", func(t *testing.T) {
 		cliDir := t.TempDir()
 		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
