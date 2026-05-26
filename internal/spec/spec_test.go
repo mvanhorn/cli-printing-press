@@ -179,6 +179,32 @@ func TestDispatchParamFalseSurvivesRoundTrip(t *testing.T) {
 	assert.True(t, jsonParam.DispatchParamSet)
 }
 
+func TestUnannotatedDispatchParamSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := Param{
+		Name:    "action",
+		Type:    "string",
+		Default: "create",
+	}
+
+	yamlData, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	assert.NotContains(t, string(yamlData), "dispatch_param")
+	var yamlParam Param
+	require.NoError(t, yaml.Unmarshal(yamlData, &yamlParam))
+	assert.False(t, yamlParam.DispatchParam)
+	assert.False(t, yamlParam.DispatchParamSet)
+
+	jsonData, err := json.Marshal(original)
+	require.NoError(t, err)
+	assert.NotContains(t, string(jsonData), "dispatch_param")
+	var jsonParam Param
+	require.NoError(t, json.Unmarshal(jsonData, &jsonParam))
+	assert.False(t, jsonParam.DispatchParam)
+	assert.False(t, jsonParam.DispatchParamSet)
+}
+
 func TestParseStreamingConfig(t *testing.T) {
 	yamlSpec := []byte(`
 name: streaming-api

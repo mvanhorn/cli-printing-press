@@ -2100,6 +2100,18 @@ func (p *Param) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+func (p Param) MarshalYAML() (any, error) {
+	type paramAlias Param
+	var node yaml.Node
+	if err := node.Encode(paramAlias(p)); err != nil {
+		return nil, err
+	}
+	if !p.DispatchParamSet && !p.DispatchParam {
+		return yamlMappingWithoutKey(&node, "dispatch_param"), nil
+	}
+	return &node, nil
+}
+
 func (p *Param) UnmarshalJSON(data []byte) error {
 	type paramAlias Param
 	var out paramAlias
@@ -2120,6 +2132,23 @@ func (p *Param) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
+}
+
+func (p Param) MarshalJSON() ([]byte, error) {
+	type paramAlias Param
+	data, err := json.Marshal(paramAlias(p))
+	if err != nil {
+		return nil, err
+	}
+	if p.DispatchParamSet || p.DispatchParam {
+		return data, nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	delete(raw, "dispatch_param")
+	return json.Marshal(raw)
 }
 
 func yamlMappingHasKey(value *yaml.Node, key string) bool {
