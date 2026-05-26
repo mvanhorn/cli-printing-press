@@ -2159,6 +2159,9 @@ func applyCanonicalAuthEnvVar(auth *spec.AuthConfig, canonical string) {
 	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
 		return
 	}
+	if len(auth.EnvVars) > 1 {
+		return
+	}
 	if len(auth.EnvVars) > 0 && strings.TrimSpace(auth.EnvVars[0]) == canonical {
 		return
 	}

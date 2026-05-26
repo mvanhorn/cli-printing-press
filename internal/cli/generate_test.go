@@ -3175,6 +3175,21 @@ func TestApplyResearchAuthMetadataRejectsUnsafeCanonicalEnvVars(t *testing.T) {
 			wantEnvVars:  []string{"TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"},
 			wantSpecName: "TWILIO_ACCOUNT_SID",
 		},
+		{
+			name:      "multi credential auth ignored",
+			canonical: "STRIPE_SECRET_KEY",
+			auth: spec.AuthConfig{
+				Type:    "oauth2",
+				Format:  "Bearer {access_token}",
+				EnvVars: []string{"CLIENT_ID", "CLIENT_SECRET"},
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false, Inferred: true},
+					{Name: "CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+				},
+			},
+			wantEnvVars:  []string{"CLIENT_ID", "CLIENT_SECRET"},
+			wantSpecName: "CLIENT_ID",
+		},
 	}
 
 	for _, tt := range tests {
