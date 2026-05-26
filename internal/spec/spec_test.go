@@ -4194,7 +4194,7 @@ resources:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `reserved Printing Press template "search"`)
 		assert.Contains(t, err.Error(), `Rename to "search_resource"`)
-		assert.Contains(t, err.Error(), "x-pp-resource")
+		assert.NotContains(t, err.Error(), "x-pp-resource")
 	})
 
 	t.Run("reserved search resource is parent-prefixed when endpoint path provides one", func(t *testing.T) {

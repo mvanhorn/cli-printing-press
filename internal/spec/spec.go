@@ -2842,7 +2842,7 @@ func (s *APISpec) validateReservedNames() error {
 			continue
 		}
 		if _, reserved := ReservedCLIResourceNames[name]; reserved {
-			return fmt.Errorf("resource name %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename to %q in your spec, or set x-pp-resource on the operation",
+			return fmt.Errorf("resource name %q collides with reserved Printing Press template %q (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename to %q in your spec",
 				name, name, name, SnakeToPascal(name), name+"_resource")
 		}
 	}
