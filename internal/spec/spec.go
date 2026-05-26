@@ -77,6 +77,7 @@ const (
 	TierAuthTypeNone        = "none"
 	TierAuthTypeAPIKey      = "api_key"
 	TierAuthTypeBearerToken = "bearer_token"
+	AuthTypeOAuth2Refresh   = "oauth2_refresh"
 
 	TierAuthPlacementHeader = "header"
 	TierAuthPlacementQuery  = "query"
@@ -899,7 +900,7 @@ func (c BearerRefreshConfig) Enabled() bool {
 }
 
 type AuthConfig struct {
-	Type                   string       `yaml:"type" json:"type"`                           // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
+	Type                   string       `yaml:"type" json:"type"`                           // api_key, oauth2, oauth2_refresh, bearer_token, cookie, composed, session_handshake, none
 	Subtype                string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
 	Header                 string       `yaml:"header" json:"header"`
 	Prefix                 string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
@@ -1104,6 +1105,21 @@ func (v AuthEnvVar) IsRequestCredential() bool {
 	return v.EffectiveKind() == AuthEnvVarKindPerCall
 }
 
+func isOAuthClientIDEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "client_id" || strings.HasSuffix(placeholder, "_client_id")
+}
+
+func isOAuthClientSecretEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "client_secret" || strings.HasSuffix(placeholder, "_client_secret")
+}
+
+func isOAuthRefreshTokenEnvVar(name string) bool {
+	placeholder := naming.EnvVarPlaceholder(name)
+	return placeholder == "refresh_token" || strings.HasSuffix(placeholder, "_refresh_token")
+}
+
 func (k AuthEnvVarKind) SensitivePlaceholder() string {
 	switch k {
 	case AuthEnvVarKindPerCall:
@@ -1152,6 +1168,26 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 		return &c.EnvVarSpecs[0]
 	}
 	return nil
+}
+
+// OAuth2RefreshTokenEnvVar returns the env var a user should set with the
+// long-lived refresh token for oauth2_refresh auth.
+func (c *AuthConfig) OAuth2RefreshTokenEnvVar() *AuthEnvVar {
+	if c == nil || c.Type != AuthTypeOAuth2Refresh {
+		return nil
+	}
+	c.NormalizeEnvVarSpecs("")
+	for i := range c.EnvVarSpecs {
+		if isOAuthRefreshTokenEnvVar(c.EnvVarSpecs[i].Name) {
+			return &c.EnvVarSpecs[i]
+		}
+	}
+	for i := len(c.EnvVarSpecs) - 1; i >= 0; i-- {
+		if c.EnvVarSpecs[i].EffectiveKind() == AuthEnvVarKindAuthFlowInput {
+			return &c.EnvVarSpecs[i]
+		}
+	}
+	return c.CanonicalEnvVar()
 }
 
 // NewORCaseEnvVarSpecs builds the canonical EnvVarSpecs slice for the OR-case
@@ -1233,11 +1269,19 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 		c.EnvVarSpecs = make([]AuthEnvVar, 0, len(c.EnvVars))
 		for _, name := range c.EnvVars {
 			if name = strings.TrimSpace(name); name != "" {
+				kind := AuthEnvVarKindPerCall
+				required := true
+				sensitive := true
+				if c.Type == AuthTypeOAuth2Refresh {
+					kind = AuthEnvVarKindAuthFlowInput
+					required = !isOAuthClientSecretEnvVar(name)
+					sensitive = !isOAuthClientIDEnvVar(name)
+				}
 				c.EnvVarSpecs = append(c.EnvVarSpecs, AuthEnvVar{
 					Name:      name,
-					Kind:      AuthEnvVarKindPerCall,
-					Required:  true,
-					Sensitive: true,
+					Kind:      kind,
+					Required:  required,
+					Sensitive: sensitive,
 					Inferred:  true,
 				})
 			}
@@ -1479,6 +1523,19 @@ func validateOAuth2Grant(c AuthConfig) error {
 		return fmt.Errorf("auth.oauth2_grant %q is not recognized (valid: %q, %q, %q)",
 			c.OAuth2Grant, OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode)
 	}
+}
+
+func validateOAuth2Refresh(c AuthConfig) error {
+	if c.Type != AuthTypeOAuth2Refresh {
+		return nil
+	}
+	if strings.TrimSpace(c.TokenURL) == "" {
+		return fmt.Errorf("auth.token_url is required when auth.type is %q", AuthTypeOAuth2Refresh)
+	}
+	if err := validateHTTPSURL("auth.token_url", c.TokenURL); err != nil {
+		return err
+	}
+	return nil
 }
 
 // validateSessionHandshake enforces fail-fast on session_handshake auth specs
@@ -3043,6 +3100,9 @@ func (s *APISpec) Validate() error {
 	if err := validateOAuth2Grant(s.Auth); err != nil {
 		return err
 	}
+	if err := validateOAuth2Refresh(s.Auth); err != nil {
+		return err
+	}
 	if err := validateAuthPrefix(s.Auth); err != nil {
 		return err
 	}
@@ -3196,6 +3256,35 @@ func validateReservedPlaceholderHost(label, rawURL string) error {
 func (s *APISpec) NormalizeAuthEnvVarSpecs() {
 	if s == nil {
 		return
+	}
+	if s.Auth.Type == AuthTypeOAuth2Refresh && len(s.Auth.EnvVars) == 0 && len(s.Auth.EnvVarSpecs) == 0 {
+		prefix := naming.EnvPrefix(s.Name)
+		s.Auth.EnvVarSpecs = []AuthEnvVar{
+			{
+				Name:        prefix + "_CLIENT_ID",
+				Kind:        AuthEnvVarKindAuthFlowInput,
+				Required:    true,
+				Sensitive:   false,
+				Description: "OAuth client ID.",
+				Inferred:    true,
+			},
+			{
+				Name:        prefix + "_CLIENT_SECRET",
+				Kind:        AuthEnvVarKindAuthFlowInput,
+				Required:    false,
+				Sensitive:   true,
+				Description: "OAuth client secret.",
+				Inferred:    true,
+			},
+			{
+				Name:        prefix + "_REFRESH_TOKEN",
+				Kind:        AuthEnvVarKindAuthFlowInput,
+				Required:    true,
+				Sensitive:   true,
+				Description: "OAuth refresh token.",
+				Inferred:    true,
+			},
+		}
 	}
 	s.Auth.NormalizeEnvVarSpecs("auth")
 	if !s.HasTierRouting() {

@@ -247,6 +247,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authCommandShort":                   authCommandShort,
 		"authHarvestedEnvHint":               authHarvestedEnvHint,
 		"oauth2AccessTokenAuth":              oauth2AccessTokenAuth,
+		"oauth2AuthSource":                   oauth2AuthSource,
 		"basicAuthEnvVars":                   basicAuthEnvVars,
 		"clientCredentialsEnvVars":           clientCredentialsEnvVars,
 		"deviceCodeEnvVars":                  deviceCodeEnvVars,
@@ -1033,7 +1034,7 @@ func authHarvestedEnvHint(auth spec.AuthConfig) string {
 }
 
 func oauth2AccessTokenAuth(auth spec.AuthConfig) bool {
-	if auth.Type == "oauth2" {
+	if auth.Type == "oauth2" || auth.Type == spec.AuthTypeOAuth2Refresh {
 		return true
 	}
 	if auth.Type != "bearer_token" {
@@ -1045,6 +1046,13 @@ func oauth2AccessTokenAuth(auth spec.AuthConfig) bool {
 	default:
 		return false
 	}
+}
+
+func oauth2AuthSource(auth spec.AuthConfig) string {
+	if auth.Type == spec.AuthTypeOAuth2Refresh {
+		return spec.AuthTypeOAuth2Refresh
+	}
+	return "oauth2"
 }
 
 func authFormatIsBasic(auth spec.AuthConfig) bool {
