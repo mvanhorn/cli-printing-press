@@ -79,6 +79,7 @@ Required before handoff:
 - Run `scripts/golden.sh verify` when output shape may change.
 - Run `scripts/verify-generator-output.sh` for generator/template changes that can alter emitted Go. Pass extra golden case names when the default cases do not exercise the affected variant.
 - Add or update a generated-output test when the fix changes an emitted contract. Prefer assertions on emitted code or compile-level behavior over assertions on template source.
+- When a generator test changes or verifies emitted helper definitions, call sites, imports, or cross-file contracts, compile the generated module in that test with `requireGeneratedCompiles(t, outputDir)` instead of relying only on `strings.Contains` or golden text.
 - Cover the fallback shape affected by the fix: missing defaults, missing summaries, envelope responses, promoted templates, endpoint templates, or every generated file involved.
 - When changing an emitted definition, grep for call sites and gate them with the same condition. When changing data flow, check dependent reporting and consumers.
 - Prefer established generator idioms: `oneline` / `OneLineNormalize` / `printf "%q"` for emitted literals, and `text/template.IsTrue` or a shared helper when Go code mirrors template truthiness.

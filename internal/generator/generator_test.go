@@ -1994,6 +1994,13 @@ func runGoCommand(t *testing.T, dir string, args ...string) {
 	runGoCommandRequired(t, dir, args...)
 }
 
+func requireGeneratedCompiles(t *testing.T, dir string) {
+	t.Helper()
+	// No-op in this test harness; module resolution is exercised via -mod=mod.
+	runGoCommand(t, dir, "mod", "tidy")
+	runGoCommand(t, dir, "build", "./...")
+}
+
 func runGoCommandRequired(t *testing.T, dir string, args ...string) {
 	t.Helper()
 
@@ -7742,7 +7749,7 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "promtest-pp-cli")
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	// Promoted command file SHOULD exist — it provides a user-friendly shortcut.
@@ -7763,6 +7770,7 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(promotedSrc), "data = extractResponseData(data)",
 		"promoted command must call extractResponseData on the envelope path")
+	requireGeneratedCompiles(t, outputDir)
 
 	// The resource parent command should NOT be generated — the promoted command replaces it.
 	// Generating both would leave the parent as dead code (never wired to root).
@@ -7803,13 +7811,14 @@ func TestGeneratedOutput_ExtractResponseDataHelperSkippedForPromotedNonEnvelope(
 
 	outputDir := filepath.Join(t.TempDir(), "promnonenvelope-pp-cli")
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(helpersSrc), "func extractResponseData(",
 		"helpers.go must skip extractResponseData when promoted commands do not advertise status/success+data envelopes")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedOutput_ExtractResponseDataHelperOnlyForPromotedCommands(t *testing.T) {
@@ -7845,6 +7854,7 @@ func TestGeneratedOutput_ExtractResponseDataHelperOnlyForPromotedCommands(t *tes
 	require.NoError(t, err)
 	assert.NotContains(t, string(helpersSrc), "func extractResponseData(",
 		"helpers.go must not emit promoted-command-only helpers when no promoted command can call them")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedOutput_ExtractResponseDataHelperSkippedForPromotedNoStoreCLI(t *testing.T) {
@@ -7880,6 +7890,7 @@ func TestGeneratedOutput_ExtractResponseDataHelperSkippedForPromotedNoStoreCLI(t
 	require.NoError(t, err)
 	assert.NotContains(t, string(helpersSrc), "func extractResponseData(",
 		"helpers.go must not emit extractResponseData when promoted commands cannot call it")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedOutput_PromotedCommandKeepsSubresourceParents(t *testing.T) {
@@ -8862,9 +8873,7 @@ func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
 	// API discovery command should also be generated
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "api_discovery.go"))
 
-	// Must compile
-	runGoCommand(t, outputDir, "mod", "tidy")
-	runGoCommand(t, outputDir, "build", "./...")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // A resource named `test` produces `promoted_test.go`; Go treats *_test.go as a
@@ -9283,9 +9292,7 @@ func TestGeneratedHelpers_AuthWithKeyURL_Compiles(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	// Must compile
-	runGoCommand(t, outputDir, "mod", "tidy")
-	runGoCommand(t, outputDir, "build", "./...")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // Adversarial Instructions values must not break generated Go. The auth setup,
