@@ -4071,6 +4071,34 @@ paths:
 	assert.Empty(t, parsed.Auth.Scheme)
 }
 
+func TestParseGoogleDiscoveryWithoutSecurityDoesNotInjectAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Public Google Discovery API
+  version: "v1"
+  x-origin:
+    - format: google
+      url: https://public.googleapis.com/$discovery/rest?version=v1
+servers:
+  - url: https://public.googleapis.com
+components:
+  securitySchemes: {}
+paths:
+  /public:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.Scheme)
+}
+
 func TestParseGoogleAPIsOperationServerInjectsAPIKeyAuth(t *testing.T) {
 	t.Parallel()
 

@@ -944,10 +944,10 @@ func injectGoogleDiscoveryAPIKeyAuth(doc *openapi3.T, name string) {
 }
 
 func shouldInjectGoogleAPIKeyAuth(doc *openapi3.T) bool {
-	if isGoogleDiscoverySpec(doc) {
-		return true
+	if !hasNonAnonymousSecurityRequirements(doc) {
+		return false
 	}
-	return hasGoogleAPIsServer(doc) && hasNonAnonymousSecurityRequirements(doc)
+	return isGoogleDiscoverySpec(doc) || hasGoogleAPIsServer(doc)
 }
 
 func googleAPIKeySecuritySchemeName(doc *openapi3.T) string {
@@ -6275,22 +6275,6 @@ func isGoogleAPIsServerURL(raw string) bool {
 		if host := strings.ToLower(strings.TrimSpace(parsed.Hostname())); host == "googleapis.com" || strings.HasSuffix(host, ".googleapis.com") {
 			return true
 		}
-		if parsed.Host != "" {
-			host := strings.ToLower(strings.Trim(parsed.Host, "[]"))
-			if host == "googleapis.com" || strings.HasSuffix(host, ".googleapis.com") {
-				return true
-			}
-		}
-	}
-	if strings.HasPrefix(raw, "https://") || strings.HasPrefix(raw, "http://") {
-		host := raw
-		if afterScheme, ok := strings.CutPrefix(host, "https://"); ok {
-			host = afterScheme
-		} else if afterScheme, ok := strings.CutPrefix(host, "http://"); ok {
-			host = afterScheme
-		}
-		host = strings.ToLower(strings.TrimSpace(strings.SplitN(host, "/", 2)[0]))
-		return host == "googleapis.com" || strings.HasSuffix(host, ".googleapis.com")
 	}
 	return false
 }
