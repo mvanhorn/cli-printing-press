@@ -7549,7 +7549,20 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 			"users": {
 				Description: "Manage users",
 				Endpoints: map[string]spec.Endpoint{
-					"list": {Method: "GET", Path: "/users", Description: "List all users"},
+					"list": {
+						Method:      "GET",
+						Path:        "/users",
+						Description: "List all users",
+						Response:    spec.ResponseDef{Type: "object", Item: "UsersEnvelope"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"UsersEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "status", Type: "string"},
+					{Name: "data", Type: "array"},
 				},
 			},
 		},
@@ -7567,11 +7580,64 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(helpersSrc), "func extractResponseData(",
-		"promoted commands call extractResponseData, so helpers.go must emit it when a promoted command exists")
+		"helpers.go must emit extractResponseData when promoted commands can hit status/data envelopes")
+
+	// The call site must be emitted alongside the helper: emission and call are
+	// both gated on HasResponseUnwrap, so on the envelope path the helper is
+	// emitted AND invoked. Asserting both present locks the gates together — a
+	// helper emitted-but-uncalled (still-dead) or called-but-unemitted (build
+	// break) would fail one of these two assertions.
+	promotedSrc, err := os.ReadFile(promotedFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(promotedSrc), "data = extractResponseData(data)",
+		"promoted command must call extractResponseData on the envelope path")
 
 	// The resource parent command should NOT be generated — the promoted command replaces it.
 	// Generating both would leave the parent as dead code (never wired to root).
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users.go"))
+}
+
+func TestGeneratedOutput_ExtractResponseDataHelperSkippedForPromotedNonEnvelope(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "promnonenvelope",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PROM_NON_ENVELOPE_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/promnonenvelope-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/users",
+						Description: "List all users",
+						Response:    spec.ResponseDef{Type: "object", Item: "UsersList"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"UsersList": {
+				Fields: []spec.TypeField{
+					{Name: "results", Type: "array"},
+					{Name: "total_count", Type: "integer"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promnonenvelope-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(helpersSrc), "func extractResponseData(",
+		"helpers.go must skip extractResponseData when promoted commands do not advertise status/success+data envelopes")
 }
 
 func TestGeneratedOutput_ExtractResponseDataHelperOnlyForPromotedCommands(t *testing.T) {

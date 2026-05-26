@@ -1872,7 +1872,7 @@ func (g *Generator) renderSingleFiles() error {
 			hFlags := computeHelperFlags(g.Spec)
 			hFlags.HasDataLayer = g.VisionSet.Store
 			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
-			hFlags.HasResponseUnwrap = g.VisionSet.Store && promotedCommandsCanUnwrapResponse(g.PromotedCommands)
+			hFlags.HasResponseUnwrap = g.VisionSet.Store && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,
@@ -2437,9 +2437,40 @@ func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[str
 	return promotedCommands, promotedResourceNames, promotedEndpointNames
 }
 
-func promotedCommandsCanUnwrapResponse(commands []PromotedCommand) bool {
+func promotedCommandsCanUnwrapResponse(commands []PromotedCommand, types map[string]spec.TypeDef) bool {
 	for _, cmd := range commands {
-		if !cmd.Endpoint.UsesBinaryResponse() {
+		if !cmd.Endpoint.UsesBinaryResponse() && endpointHasStatusDataEnvelope(cmd.Endpoint, types) {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointHasStatusDataEnvelope reports whether the endpoint's response type
+// looks like a {status/success, data} envelope, gating extractResponseData
+// emission. The runtime helper keys on the "status" field; "success" is
+// accepted here too so success-keyed envelopes still emit the helper. A type
+// with data+success but no status passes detection and the helper no-ops on it
+// at runtime — harmless over-emission, and emit/call stay aligned either way.
+func endpointHasStatusDataEnvelope(endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
+	item := strings.TrimSpace(endpoint.Response.Item)
+	if item == "" {
+		return false
+	}
+	typedef, ok := types[item]
+	if !ok {
+		return false
+	}
+	hasData := false
+	hasStatusOrSuccess := false
+	for _, field := range typedef.Fields {
+		switch strings.ToLower(strings.TrimSpace(field.Name)) {
+		case "data":
+			hasData = true
+		case "status", "success":
+			hasStatusOrSuccess = true
+		}
+		if hasData && hasStatusOrSuccess {
 			return true
 		}
 	}
@@ -3665,16 +3696,17 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 		// Look up the full resource to pass sibling endpoints/sub-resources.
 		resource := g.Spec.Resources[pc.ResourceName]
 		promotedData := struct {
-			PromotedName  string
-			ResourceName  string
-			EndpointName  string
-			EffectivePath string
-			Endpoint      spec.Endpoint
-			EffectiveTier string
-			HasStore      bool
-			Resource      spec.Resource
-			FuncPrefix    string
-			IsReadOnly    bool
+			PromotedName      string
+			ResourceName      string
+			EndpointName      string
+			EffectivePath     string
+			Endpoint          spec.Endpoint
+			EffectiveTier     string
+			HasStore          bool
+			HasResponseUnwrap bool
+			Resource          spec.Resource
+			FuncPrefix        string
+			IsReadOnly        bool
 			*spec.APISpec
 		}{
 			PromotedName:  pc.PromotedName,
@@ -3684,10 +3716,17 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			Endpoint:      pc.Endpoint,
 			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
 			HasStore:      g.VisionSet.Store,
-			Resource:      resource,
-			FuncPrefix:    pc.ResourceName,
-			IsReadOnly:    endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
-			APISpec:       g.Spec,
+			// Per-command: emit the extractResponseData call only on commands
+			// whose own response is envelope-shaped, so a non-envelope command
+			// in a mixed-envelope spec is never unwrapped. This is a subset of
+			// the CLI-level helper-emission gate (helpers.go emits the helper
+			// when ANY promoted command qualifies), so call ⊆ emit — no call to
+			// an unemitted helper.
+			HasResponseUnwrap: g.VisionSet.Store && !pc.Endpoint.UsesBinaryResponse() && endpointHasStatusDataEnvelope(pc.Endpoint, g.Spec.Types),
+			Resource:          resource,
+			FuncPrefix:        pc.ResourceName,
+			IsReadOnly:        endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			APISpec:           g.Spec,
 		}
 		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
