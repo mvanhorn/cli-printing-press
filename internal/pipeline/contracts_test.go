@@ -222,6 +222,29 @@ func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	assert.Contains(t, block, `https://go.dev/dl/`)
 }
 
+func TestPrintingPressSkillPreflightSmokeTestsGoStdlib(t *testing.T) {
+	skillPath := filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")
+	full := readContractFile(t, skillPath)
+	block := extractContractBlock(t, full)
+
+	smokeBlock := substringBetween(t, block, `_go_smoke_root=`, `# Resolve and emit the absolute path`)
+
+	assert.Contains(t, smokeBlock, `$HOME/.printing-press-smoke`)
+	assert.Contains(t, smokeBlock, `mktemp -d "$_go_smoke_root/stdlib.XXXXXX"`)
+	assert.Contains(t, smokeBlock, `GOFLAGS= GOWORK=off go run .`)
+	assert.Contains(t, smokeBlock, `"fmt"`)
+	assert.Contains(t, smokeBlock, `"io"`)
+	assert.Contains(t, smokeBlock, `"net/http"`)
+	assert.Contains(t, smokeBlock, `"encoding/json"`)
+	assert.Contains(t, smokeBlock, `"regexp"`)
+	assert.Contains(t, smokeBlock, `"context"`)
+	assert.Contains(t, smokeBlock, `[setup-error] Go std library is incomplete (truncated or corrupted install).`)
+	assert.Contains(t, smokeBlock, `Reinstall Go from https://go.dev/dl/`)
+	assert.Contains(t, smokeBlock, `rm -rf "$_go_smoke_dir"`)
+	assert.NotContains(t, smokeBlock, `${TMPDIR`)
+	assert.NotContains(t, smokeBlock, `/tmp`)
+}
+
 func TestPrintingPressSkillDistinguishesBearerFromRawAPIKey(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	block := substringBetween(t, skill, "### Pre-Generation Auth Enrichment", "**Why enrich before generation")
