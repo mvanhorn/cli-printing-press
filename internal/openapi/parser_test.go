@@ -8383,6 +8383,55 @@ components:
 	assert.Equal(t, "acct_id", sharedDelete.Params[0].URLName)
 }
 
+func TestParseDispatchParamExtension(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Dispatch Param API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /reports:
+    get:
+      operationId: getDomainRank
+      parameters:
+        - name: mode
+          in: query
+          x-pp-dispatch-param: true
+          schema:
+            type: string
+            default: domain_rank
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: action
+          in: query
+          x-pp-dispatch-param: false
+          schema:
+            type: string
+            default: create
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "GET", "/reports")
+	require.Len(t, endpoint.Params, 3)
+	assert.True(t, endpoint.Params[0].DispatchParam)
+	assert.True(t, endpoint.Params[0].DispatchParamSet)
+	assert.False(t, endpoint.Params[1].DispatchParam)
+	assert.False(t, endpoint.Params[1].DispatchParamSet)
+	assert.False(t, endpoint.Params[2].DispatchParam)
+	assert.True(t, endpoint.Params[2].DispatchParamSet)
+}
+
 // TestParseJSONPreferredOverFormUrlencoded asserts the parser still picks
 // application/json when the spec offers both content types — keeping JSON-
 // declared specs byte-identical and letting form-only OAuth/legacy endpoints
