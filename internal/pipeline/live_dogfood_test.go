@@ -855,6 +855,10 @@ func TestRunLiveDogfoodSkipsMutatingCommandsWithoutRunnableExample(t *testing.T)
 	})
 	require.NoError(t, err)
 
+	updateHelp := findResultByCommandKind(report, "templates update", LiveDogfoodTestHelp)
+	require.NotNil(t, updateHelp, "expected templates update help result")
+	assert.Equal(t, LiveDogfoodStatusPass, updateHelp.Status)
+
 	updateHappy := findResultByCommandKind(report, "templates update", LiveDogfoodTestHappy)
 	require.NotNil(t, updateHappy, "expected templates update happy_path result")
 	assert.Equal(t, LiveDogfoodStatusSkip, updateHappy.Status)
