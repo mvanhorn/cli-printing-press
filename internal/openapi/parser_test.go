@@ -7917,6 +7917,126 @@ paths:
 	}
 }
 
+// TestFilterGlobalParamsKeepsOnlyQueryInputParam guards against specs that
+// carry per-call input through a single optional query parameter (e.g.
+// `input`). Even when that parameter appears on most/all endpoints, dropping
+// it would leave the commands with no query-input surface.
+func TestFilterGlobalParamsKeepsOnlyQueryInputParam(t *testing.T) {
+	t.Parallel()
+
+	specYAML := `openapi: 3.0.0
+info:
+  title: Trpc Input API
+  version: "1.0"
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      parameters:
+        - name: input
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: ok
+  /projects:
+    get:
+      operationId: listProjects
+      tags: [projects]
+      parameters:
+        - name: input
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: ok
+  /tasks:
+    get:
+      operationId: listTasks
+      tags: [tasks]
+      parameters:
+        - name: input
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: ok
+`
+	parsed, err := Parse([]byte(specYAML))
+	require.NoError(t, err)
+
+	for _, path := range []string{"/users", "/projects", "/tasks"} {
+		endpoint := findEndpoint(t, parsed, path)
+		require.Len(t, endpoint.Params, 1, "%s must retain the only query input param", path)
+		assert.Equal(t, "input", endpoint.Params[0].Name)
+		assert.False(t, endpoint.Params[0].Required)
+	}
+}
+
+// TestFilterGlobalParamsMixedEndpoints covers the asymmetric case: endpoints
+// whose only non-path param is the global `input` retain it, while an endpoint
+// that also carries a non-global param still loses `input` through the normal
+// filter. This guards against the retain-sole-input path over-firing and
+// leaving `input` on endpoints that should drop it.
+func TestFilterGlobalParamsMixedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	specYAML := `openapi: 3.0.0
+info:
+  title: Trpc Mixed API
+  version: "1.0"
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      parameters:
+        - {name: input, in: query, schema: {type: string}}
+      responses: {"200": {description: ok}}
+  /projects:
+    get:
+      operationId: listProjects
+      tags: [projects]
+      parameters:
+        - {name: input, in: query, schema: {type: string}}
+      responses: {"200": {description: ok}}
+  /tasks:
+    get:
+      operationId: listTasks
+      tags: [tasks]
+      parameters:
+        - {name: input, in: query, schema: {type: string}}
+      responses: {"200": {description: ok}}
+  /reports:
+    get:
+      operationId: listReports
+      tags: [reports]
+      parameters:
+        - {name: input, in: query, schema: {type: string}}
+        - {name: expand, in: query, schema: {type: string}}
+      responses: {"200": {description: ok}}
+`
+	parsed, err := Parse([]byte(specYAML))
+	require.NoError(t, err)
+
+	for _, path := range []string{"/users", "/projects", "/tasks"} {
+		endpoint := findEndpoint(t, parsed, path)
+		require.Len(t, endpoint.Params, 1, "%s must retain its sole input param", path)
+		assert.Equal(t, "input", endpoint.Params[0].Name)
+	}
+
+	reports := findEndpoint(t, parsed, "/reports")
+	var names []string
+	for _, p := range reports.Params {
+		names = append(names, p.Name)
+	}
+	assert.NotContains(t, names, "input",
+		"/reports has another non-path param, so the global input is still filtered")
+	assert.Contains(t, names, "expand",
+		"/reports keeps its non-global param")
+}
+
 // TestParsePerOperationServersFallback covers the case where a spec has no
 // top-level `servers:` block but each operation declares its own. The parser
 // must walk per-operation servers and pick the most common one as base URL.

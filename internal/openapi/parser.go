@@ -3725,7 +3725,38 @@ func classifyGlobalParams(apiName string, resources map[string]spec.Resource) {
 		return
 	}
 
+	// droppedCounts records how many endpoints each global param was actually
+	// removed from, so the warning reflects reality: a param retained on every
+	// endpoint (because dropping it would empty the surface) must not be
+	// reported as filtered.
+	droppedCounts := map[string]int{}
 	walkResourceEndpoints(resources, func(endpoint *spec.Endpoint) {
+		// Keep tRPC-style global `input` params when dropping them would leave
+		// the endpoint with no non-path request params at all. Other global
+		// query params like `limit` should still be filtered even when that
+		// leaves an endpoint with no request surface.
+		hasNonFilteredSurface := false
+		nonPathCount := 0
+		for _, param := range endpoint.Params {
+			if isPathSubstitutionParam(param) {
+				continue
+			}
+			nonPathCount++
+			if isGlobalFilterCandidate(param) {
+				key := strings.ToLower(param.Name)
+				if _, ok := filteredParams[key]; ok {
+					if isRetainableSoleGlobalInputParam(param) {
+						continue
+					}
+				}
+			}
+			hasNonFilteredSurface = true
+			break
+		}
+		if nonPathCount > 0 && !hasNonFilteredSurface {
+			return
+		}
+
 		filtered := endpoint.Params[:0]
 		for _, param := range endpoint.Params {
 			key := strings.ToLower(param.Name)
@@ -3735,6 +3766,7 @@ func classifyGlobalParams(apiName string, resources map[string]spec.Resource) {
 					param.GlobalScope = true
 					param.EnvVar = globalScopeParamEnvVar(apiName, scopeParam.name)
 				} else if _, ok := filteredParams[key]; ok {
+					droppedCounts[key]++
 					continue
 				}
 			}
@@ -3754,15 +3786,14 @@ func classifyGlobalParams(apiName string, resources map[string]spec.Resource) {
 		warnf("promoted global scope query param %q to required env-backed flag: present on %d/%d endpoints", name, scopeParams[key].count, totalEndpoints)
 	}
 
-	filteredNames := make([]string, 0, len(filteredParams))
-	for _, param := range filteredParams {
-		filteredNames = append(filteredNames, param.name)
+	filteredNames := make([]string, 0, len(droppedCounts))
+	for key := range droppedCounts {
+		filteredNames = append(filteredNames, key)
 	}
 	sort.Strings(filteredNames)
 
-	for _, name := range filteredNames {
-		key := strings.ToLower(name)
-		warnf("filtered global query param %q from generated commands: present on %d/%d endpoints", name, filteredParams[key].count, totalEndpoints)
+	for _, key := range filteredNames {
+		warnf("filtered global query param %q from generated commands: dropped from %d/%d endpoints where present (%d total)", filteredParams[key].name, droppedCounts[key], filteredParams[key].count, totalEndpoints)
 	}
 }
 
@@ -3778,6 +3809,10 @@ func isPathSubstitutionParam(param spec.Param) bool {
 
 func isGlobalFilterCandidate(param spec.Param) bool {
 	return !isPathSubstitutionParam(param) && !param.Required
+}
+
+func isRetainableSoleGlobalInputParam(param spec.Param) bool {
+	return strings.EqualFold(param.Name, "input")
 }
 
 func isGlobalScopeParamName(name string) bool {
