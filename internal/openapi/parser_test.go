@@ -3518,6 +3518,127 @@ func TestDetectRequiredHeaders(t *testing.T) {
 	})
 }
 
+func TestPromoteGlobalScopeQueryParams(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: CIPP
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      parameters:
+        - in: query
+          name: TenantFilter
+          schema: {type: string}
+        - in: query
+          name: limit
+          schema: {type: integer}
+      responses: {"200": {description: ok}}
+  /mailboxes:
+    get:
+      operationId: listMailboxes
+      parameters:
+        - in: query
+          name: TenantFilter
+          schema: {type: string}
+        - in: query
+          name: limit
+          schema: {type: integer}
+      responses: {"200": {description: ok}}
+  /devices:
+    get:
+      operationId: listDevices
+      parameters:
+        - in: query
+          name: TenantFilter
+          schema: {type: string}
+        - in: query
+          name: limit
+          schema: {type: integer}
+      responses: {"200": {description: ok}}
+  /audit:
+    get:
+      operationId: listAudit
+      parameters:
+        - in: query
+          name: limit
+          schema: {type: integer}
+      responses: {"200": {description: ok}}
+  /single:
+    get:
+      operationId: getSingle
+      parameters:
+        - in: query
+          name: workspace
+          schema: {type: string}
+        - in: query
+          name: limit
+          schema: {type: integer}
+      responses: {"200": {description: ok}}
+`))
+	require.NoError(t, err)
+
+	for _, resourceName := range []string{"users", "mailboxes", "devices"} {
+		endpoint := parsed.Resources[resourceName].Endpoints["list"]
+		var tenant spec.Param
+		for _, param := range endpoint.Params {
+			if param.Name == "TenantFilter" {
+				tenant = param
+				break
+			}
+		}
+		require.Equal(t, "TenantFilter", tenant.Name, "%s should keep TenantFilter", resourceName)
+		assert.True(t, tenant.Required)
+		assert.True(t, tenant.GlobalScope)
+		assert.Equal(t, "CIPP_TENANT_FILTER", tenant.EnvVar)
+		for _, param := range endpoint.Params {
+			assert.NotEqual(t, "limit", param.Name, "%s should still filter non-scope global params", resourceName)
+		}
+	}
+
+	assert.Empty(t, parsed.Resources["audit"].Endpoints["list"].Params, "non-scope global params should still be filtered")
+
+	single := parsed.Resources["single"].Endpoints["get"]
+	require.Len(t, single.Params, 1)
+	assert.Equal(t, "workspace", single.Params[0].Name)
+	assert.False(t, single.Params[0].Required)
+	assert.False(t, single.Params[0].GlobalScope)
+	assert.Empty(t, single.Params[0].EnvVar)
+}
+
+func TestIsGlobalScopeParamNameAvoidsSubstringMatches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{name: "tenant", want: true},
+		{name: "TenantFilter", want: true},
+		{name: "workspace_id", want: true},
+		{name: "organizationId", want: true},
+		{name: "org_id", want: true},
+		{name: "regionFilter", want: true},
+		{name: "account-id", want: true},
+		{name: "workspace_type", want: false},
+		{name: "organizationUnit", want: false},
+		{name: "subWorkspace", want: false},
+		{name: "customerAccountStatus", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isGlobalScopeParamName(tt.name))
+		})
+	}
+}
+
 func TestInferDescriptionAuth(t *testing.T) {
 	t.Parallel()
 

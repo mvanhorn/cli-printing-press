@@ -24,9 +24,10 @@ import (
 )
 
 var (
-	maxResources            = 500
-	maxEndpointsPerResource = 50
-	endpointLimitExplicit   = false // true when user set --max-endpoints-per-resource
+	maxResources                 = 500
+	maxEndpointsPerResource      = 50
+	endpointLimitExplicit        = false // true when user set --max-endpoints-per-resource
+	globalScopeParamNormalizerRE = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 )
 
 type additionalHeaderFallbackMode int
@@ -3182,7 +3183,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 	}
 
 	assignEndpointAliases(out.Resources)
-	filterGlobalParams(out.Resources)
+	classifyGlobalParams(out.Name, out.Resources)
 	return nil
 }
 
@@ -3659,9 +3660,9 @@ func computeAlias(method, path, endpointName string) string {
 	}
 }
 
-func filterGlobalParams(resources map[string]spec.Resource) {
+func classifyGlobalParams(apiName string, resources map[string]spec.Resource) {
 	totalEndpoints := 0
-	paramCounts := map[string]int{}
+	paramCounts := map[string]*globalParamCount{}
 
 	walkResourceEndpoints(resources, func(endpoint *spec.Endpoint) {
 		totalEndpoints++
@@ -3671,11 +3672,17 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 			if !isGlobalFilterCandidate(param) {
 				continue
 			}
-			if _, ok := seen[param.Name]; ok {
+			key := strings.ToLower(param.Name)
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[param.Name] = struct{}{}
-			paramCounts[param.Name]++
+			seen[key] = struct{}{}
+			count := paramCounts[key]
+			if count == nil {
+				count = &globalParamCount{name: param.Name, typ: param.Type}
+				paramCounts[key] = count
+			}
+			count.count++
 		}
 	})
 
@@ -3690,23 +3697,33 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 		return
 	}
 
-	globalParams := map[string]int{}
-	threshold := float64(totalEndpoints) * 0.8
-	for name, count := range paramCounts {
-		if float64(count) > threshold {
-			globalParams[name] = count
+	scopeParams := map[string]*globalParamCount{}
+	filteredParams := map[string]*globalParamCount{}
+	scopeThreshold := float64(totalEndpoints) * 0.5
+	filterThreshold := float64(totalEndpoints) * 0.8
+	for key, count := range paramCounts {
+		switch {
+		case float64(count.count) >= scopeThreshold && isGlobalScopeParamName(count.name) && strings.EqualFold(count.typ, "string"):
+			scopeParams[key] = count
+		case float64(count.count) > filterThreshold:
+			filteredParams[key] = count
 		}
 	}
 
-	if len(globalParams) == 0 {
+	if len(scopeParams) == 0 && len(filteredParams) == 0 {
 		return
 	}
 
 	walkResourceEndpoints(resources, func(endpoint *spec.Endpoint) {
 		filtered := endpoint.Params[:0]
 		for _, param := range endpoint.Params {
+			key := strings.ToLower(param.Name)
 			if isGlobalFilterCandidate(param) {
-				if _, ok := globalParams[param.Name]; ok {
+				if scopeParam, ok := scopeParams[key]; ok {
+					param.Required = true
+					param.GlobalScope = true
+					param.EnvVar = globalScopeParamEnvVar(apiName, scopeParam.name)
+				} else if _, ok := filteredParams[key]; ok {
 					continue
 				}
 			}
@@ -3715,15 +3732,33 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 		endpoint.Params = filtered
 	})
 
-	names := make([]string, 0, len(globalParams))
-	for name := range globalParams {
-		names = append(names, name)
+	scopeNames := make([]string, 0, len(scopeParams))
+	for _, param := range scopeParams {
+		scopeNames = append(scopeNames, param.name)
 	}
-	sort.Strings(names)
+	sort.Strings(scopeNames)
 
-	for _, name := range names {
-		warnf("filtered global query param %q from generated commands: present on %d/%d endpoints", name, globalParams[name], totalEndpoints)
+	for _, name := range scopeNames {
+		key := strings.ToLower(name)
+		warnf("promoted global scope query param %q to required env-backed flag: present on %d/%d endpoints", name, scopeParams[key].count, totalEndpoints)
 	}
+
+	filteredNames := make([]string, 0, len(filteredParams))
+	for _, param := range filteredParams {
+		filteredNames = append(filteredNames, param.name)
+	}
+	sort.Strings(filteredNames)
+
+	for _, name := range filteredNames {
+		key := strings.ToLower(name)
+		warnf("filtered global query param %q from generated commands: present on %d/%d endpoints", name, filteredParams[key].count, totalEndpoints)
+	}
+}
+
+type globalParamCount struct {
+	name  string
+	typ   string
+	count int
 }
 
 func isPathSubstitutionParam(param spec.Param) bool {
@@ -3732,6 +3767,34 @@ func isPathSubstitutionParam(param spec.Param) bool {
 
 func isGlobalFilterCandidate(param spec.Param) bool {
 	return !isPathSubstitutionParam(param) && !param.Required
+}
+
+func isGlobalScopeParamName(name string) bool {
+	normalized := strings.ToLower(globalScopeParamNormalizerRE.ReplaceAllString(name, ""))
+	switch normalized {
+	case "tenant", "tenantid", "tenantfilter",
+		"workspace", "workspaceid", "workspacefilter",
+		"organization", "organizationid", "organizationfilter",
+		"organisation", "organisationid", "organisationfilter",
+		"org", "orgid",
+		"region", "regionid", "regionfilter",
+		"account", "accountid", "accountfilter":
+		return true
+	default:
+		return false
+	}
+}
+
+func globalScopeParamEnvVar(apiName, paramName string) string {
+	prefix := naming.EnvPrefix(apiName)
+	param := strings.ToUpper(naming.Snake(paramName))
+	if prefix == "" {
+		return param
+	}
+	if param == "" {
+		return prefix
+	}
+	return prefix + "_" + param
 }
 
 func walkResourceEndpoints(resources map[string]spec.Resource, fn func(endpoint *spec.Endpoint)) {
