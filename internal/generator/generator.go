@@ -352,6 +352,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointUsesCSVArray":     endpointUsesCSVArray,
 		"endpointHasQueryFlags":    endpointHasQueryFlags,
 		"endpointHasRequestParams": endpointHasRequestParams,
+		"endpointHasRequiredInput": endpointHasRequiredInput,
 		"endpointIsReadCommand":    endpointIsReadCommand,
 		"hasMultipartRequest":      hasMultipartRequest,
 		"formBodyMaps":             formBodyMaps,
@@ -5106,6 +5107,34 @@ func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
 		if !p.Positional && !p.PathParam {
 			return true
 		}
+	}
+	return false
+}
+
+// endpointHasRequiredInput reports whether a bare invocation of the generated
+// command (no flags, no args) would fail a required-input check before
+// reaching the request: a required non-positional flag or a required body
+// field. It gates the empty-invocation help short-circuit so read commands
+// with only optional filters still execute on a bare call instead of printing
+// help. Both halves mirror exactly when the template emits a required check:
+// the flag half uses template.IsTrue to match the template's `(not .Default)`
+// gate (so a required flag carrying a non-empty default — which the template
+// lets satisfy itself — does not trigger the guard, just as it emits no
+// required-flag error), and the body half reuses bodyRequiredChecks, gated on
+// the body-bearing verbs the command template actually emits the body check
+// for (POST/PUT/PATCH/DELETE) so a GET that happens to declare a required body
+// param does not falsely trip the guard.
+func endpointHasRequiredInput(endpoint spec.Endpoint) bool {
+	for _, p := range endpoint.Params {
+		if p.Required && !p.Positional {
+			if truth, _ := template.IsTrue(p.Default); !truth {
+				return true
+			}
+		}
+	}
+	switch strings.ToUpper(endpoint.Method) {
+	case "POST", "PUT", "PATCH", "DELETE":
+		return strings.TrimSpace(bodyRequiredChecks(endpoint, "")) != ""
 	}
 	return false
 }
