@@ -3004,6 +3004,20 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
 Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
 
+Multi-positional commands (N >= 2 required args) must use a two-check shape so only the bare help probe returns exit 0:
+
+```go
+if len(args) == 0 && cmd.Flags().NFlag() == 0 {
+	return cmd.Help() // bare invocation help probe
+}
+if len(args) < N {
+	_ = cmd.Usage()
+	return usageErr(fmt.Errorf("missing required positional argument"))
+}
+```
+
+This preserves verify-friendly help behavior for 0 args while making partial positional input (`1..N-1`) fail with exit 2 in dogfood `error_path`. Single-positional commands can keep the single required-input check. If a multi-positional command supports `--dry-run`, place its `dryRunOK(flags)` branch after the `len(args) < N` gate (once all N positionals are present), so the dry-run probe still short-circuits.
+
 Do not collapse the first and third branches into `if len(args) == 0 || <flag empty> { return cmd.Help() }`. `cmd.Help()` returns `nil`, so agents and scripts cannot distinguish "help was requested" from "the command skipped required work."
 
 For commands with no required inputs, omit the `usageErr(...)` branch entirely and keep the help-only plus dry-run branches.

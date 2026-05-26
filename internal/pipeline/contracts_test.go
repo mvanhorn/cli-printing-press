@@ -252,6 +252,14 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Contains(t, template, "_ = cmd.Usage()")
 	assert.Contains(t, template, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`)
 	assert.Contains(t, template, "Do not collapse the first and third branches")
+	assert.Contains(t, template, "Multi-positional commands (N >= 2 required args) must use a two-check shape")
+	assert.Contains(t, template, "if len(args) < N {")
+	assert.Contains(t, template, `return usageErr(fmt.Errorf("missing required positional argument"))`)
+	// The multi-positional block specifically must print usage before the
+	// error (the bare Contains for "_ = cmd.Usage()" above is satisfied by the
+	// single-positional block, so scope this assertion to the new branch).
+	assert.Regexp(t, regexp.MustCompile(`if len\(args\) < N \{\s+_ = cmd\.Usage\(\)\s+return usageErr\(fmt\.Errorf\("missing required positional argument"\)\)`), template,
+		"multi-positional block must call cmd.Usage() before returning the usage error")
 
 	assert.Equal(t, 3, strings.Count(starters, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {"))
 	assert.Equal(t, 3, strings.Count(starters, "return cmd.Help()"))
