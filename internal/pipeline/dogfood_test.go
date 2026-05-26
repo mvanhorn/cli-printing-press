@@ -1588,6 +1588,43 @@ func newHealthCmd() *cobra.Command {
 		assert.Equal(t, "health", (*updated.NovelFeaturesBuilt)[0].Command)
 	})
 
+	t.Run("flags generated TODO stubs separately from missing commands", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"),
+			`package cli
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "test-pp-cli"}
+	rootCmd.AddCommand(newNovelHealthCmd())
+	return rootCmd
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newNovelHealthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "health",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "health")
+		},
+	}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+		assert.Equal(t, []string{"health"}, result.Stubbed)
+	})
+
 	t.Run("warns when advertised command depth differs from registered path", func(t *testing.T) {
 		cliDir := t.TempDir()
 		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
@@ -2386,6 +2423,10 @@ func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
 	}
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
 
+	// TODO stubs → WARN
+	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 2, Found: 2, Stubbed: []string{"call"}}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+
 	// All found → PASS
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 2, Found: 2}
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(base, true))
@@ -3079,6 +3120,19 @@ func TestCollectDogfoodIssues_IncludesNovelFeatureDepthMismatch(t *testing.T) {
 
 	issues := collectDogfoodIssues(report, false)
 	assert.Contains(t, issues, "1 novel feature command-depth mismatches: grab advertised as grab but registered as assets grab")
+}
+
+func TestCollectDogfoodIssues_IncludesNovelFeatureStubs(t *testing.T) {
+	report := &DogfoodReport{
+		NovelFeaturesCheck: NovelFeaturesCheckResult{
+			Planned: 2,
+			Found:   2,
+			Stubbed: []string{"call"},
+		},
+	}
+
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "1/2 novel features are TODO stubs: call")
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {

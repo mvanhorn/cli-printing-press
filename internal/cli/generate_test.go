@@ -777,6 +777,14 @@ resources:
 	var manifest pipeline.CLIManifest
 	require.NoError(t, json.Unmarshal(data, &manifest))
 	assert.Empty(t, manifest.NovelFeatures)
+
+	parent, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(parent), "cmd.AddCommand(newNovelItemsInsightCmd(flags))")
+	stub, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_insight.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(stub), `Use:         "insight"`)
+	assert.Contains(t, string(stub), `TODO: implement novel feature %q", "items insight"`)
 }
 
 func TestGenerateCmdCarriesVerifiedNovelFeaturesIntoManifest(t *testing.T) {

@@ -23,5 +23,8 @@ func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 {{- range $subName, $sub := .Resource.SubResources}}
 	cmd.AddCommand(new{{cmdIdent $.FuncPrefix $subName}}Cmd(flags))
 {{- end}}
+{{- range .NovelChildren}}
+	cmd.AddCommand(newNovel{{.Ident}}Cmd(flags))
+{{- end}}
 	return cmd
 }
