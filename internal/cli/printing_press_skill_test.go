@@ -37,3 +37,22 @@ func TestPrintingPressSkillMCPEnrichmentGate(t *testing.T) {
 	require.Contains(t, content, "Internal YAML input: write or update the root `mcp:` block")
 	require.Contains(t, content, "If the runtime cannot ask a blocking question, stop")
 }
+
+func TestPrintingPressSkillTranscendenceCollectorSliceInit(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+
+	content := string(data)
+	require.Contains(t, content, "results := make([]yourRowType, 0)")
+	require.Contains(t, content, "empty marshals")
+	require.NotContains(t, content, "var results []yourRowType")
+
+	// The aggregation skeleton's other collector slices must use make() too, so
+	// empty results marshal as [] not null across every emitted slice.
+	require.Contains(t, content, "failures := make([]fetchFailure, 0)")
+	require.Contains(t, content, "successfulItems := make([]yourEntryType, 0)")
+	require.NotContains(t, content, "var failures []fetchFailure")
+	require.NotContains(t, content, "var successfulItems []yourEntryType")
+}
