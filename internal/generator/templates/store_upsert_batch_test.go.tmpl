@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -223,6 +224,64 @@ func TestUpsertBatch_GenericFallbackList(t *testing.T) {
 				t.Fatalf("extractFailures = %d, want 1 (%q drop must surface as extract failure)", extractFailures, key)
 			}
 		})
+	}
+}
+
+func TestUpsertBatch_PreservesLargeIntegerResourceIDs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"id": 55043301, "name": "large"}`),
+		json.RawMessage(`{"id": 100, "name": "small"}`),
+		json.RawMessage(`{"id": 7, "name": "tiny"}`),
+	}
+	stored, extractFailures, err := s.UpsertBatch("numeric_ids", items)
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+	if stored != len(items) {
+		t.Fatalf("stored = %d, want %d", stored, len(items))
+	}
+	if extractFailures != 0 {
+		t.Fatalf("extractFailures = %d, want 0", extractFailures)
+	}
+
+	rows, err := s.DB().Query(`SELECT id FROM resources WHERE resource_type = ? ORDER BY CAST(id AS INTEGER)`, "numeric_ids")
+	if err != nil {
+		t.Fatalf("query resources: %v", err)
+	}
+	defer rows.Close()
+
+	var got []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan id: %v", err)
+		}
+		got = append(got, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	want := []string{"7", "100", "55043301"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resource ids = %v, want %v", got, want)
+	}
+
+	var literalMatches int
+	if err := s.DB().QueryRow(
+		`SELECT COUNT(*) FROM resources WHERE resource_type = ? AND id IN ('55043301', '100', '7')`,
+		"numeric_ids",
+	).Scan(&literalMatches); err != nil {
+		t.Fatalf("count literal id matches: %v", err)
+	}
+	if literalMatches != len(items) {
+		t.Fatalf("literal id matches = %d, want %d", literalMatches, len(items))
 	}
 }
 
