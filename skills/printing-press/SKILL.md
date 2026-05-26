@@ -2587,10 +2587,23 @@ mcp:
   orchestration: code         # thin <api>_search + <api>_execute pair
   endpoint_tools: hidden      # suppress raw per-endpoint mirrors
   intents:                    # optional; named multi-step intents
-    - name: <intent_name>
-      description: <agent-facing intent description>
-      params: [...]
-      steps: [...]
+    - name: fetch_and_summarize
+      description: Fetch an item then summarize it
+      params:
+        - name: item_id
+          type: string
+          required: true
+          description: item identifier
+      steps:
+        - endpoint: items.get
+          bind:
+            id: ${input.item_id}
+          capture: item
+        - endpoint: items.summarize
+          bind:
+            body: ${item.body}
+          capture: summary
+      returns: summary
 ```
 
 `mcp.transport: [stdio, http]` adds HTTP streamable transport so cloud-hosted
