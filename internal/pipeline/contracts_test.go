@@ -231,7 +231,7 @@ func TestPrintingPressSkillPreflightSmokeTestsGoStdlib(t *testing.T) {
 
 	assert.Contains(t, smokeBlock, `$HOME/.printing-press-smoke`)
 	assert.Contains(t, smokeBlock, `mktemp -d "$_go_smoke_root/stdlib.XXXXXX"`)
-	assert.Contains(t, smokeBlock, `GOFLAGS= go run .`)
+	assert.Contains(t, smokeBlock, `GOFLAGS= GOWORK=off go run .`)
 	assert.Contains(t, smokeBlock, `"fmt"`)
 	assert.Contains(t, smokeBlock, `"io"`)
 	assert.Contains(t, smokeBlock, `"net/http"`)
