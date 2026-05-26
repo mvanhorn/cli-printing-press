@@ -16,8 +16,8 @@ import (
 // for anyone without read access to that module.
 //
 // Expand this list whenever a new internal-by-default module is created.
-// See AGENTS.md "Plan documents stay local" for the related rule about
-// not committing internal-only artifacts into a public repo.
+// See AGENTS.md "No private-module requires in printed CLIs" for the rule
+// and rationale.
 var privateModulePrefixes = []string{
 	// github.com/mvanhorn/agentcookie is a private project. PR #1972
 	// introduced a require here and broke `go install` for every user
