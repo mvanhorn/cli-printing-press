@@ -35,6 +35,10 @@ type ResearchResult struct {
 	// NOT omitempty: an empty [] means "dogfood ran, nothing survived" while a
 	// missing field means "dogfood hasn't validated yet."
 	NovelFeaturesBuilt *[]NovelFeature `json:"novel_features_built,omitempty"`
+	// Auth holds auth-specific research signals discovered by the skill flow.
+	// These signals complement, but do not replace, the parsed OpenAPI/internal
+	// YAML auth model.
+	Auth *ResearchAuth `json:"auth,omitempty"`
 	// Narrative holds LLM-authored prose for README and SKILL.md rendering.
 	// Optional: templates fall back to generic content when absent. Populated
 	// during the absorb phase alongside NovelFeatures.
@@ -92,6 +96,19 @@ func (f *flexibleResearchStrings) UnmarshalJSON(data []byte) error {
 
 	*f = out
 	return nil
+}
+
+// ResearchAuth holds auth-specific research signals that are not part of the
+// source spec but should influence fresh generation.
+type ResearchAuth struct {
+	CanonicalEnvVar string `json:"canonical_env_var,omitempty"`
+}
+
+func (r *ResearchResult) CanonicalAuthEnvVar() string {
+	if r == nil || r.Auth == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Auth.CanonicalEnvVar)
 }
 
 func renderResearchString(name, reason string) string {
