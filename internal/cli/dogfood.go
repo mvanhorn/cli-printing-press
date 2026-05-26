@@ -23,6 +23,7 @@ func newDogfoodCmd() *cobra.Command {
 	var timeout time.Duration
 	var writeAcceptance string
 	var authEnv string
+	var authTier string
 	var allowDestructive bool
 
 	cmd := &cobra.Command{
@@ -42,6 +43,7 @@ func newDogfoodCmd() *cobra.Command {
 					Timeout:             timeout,
 					WriteAcceptancePath: writeAcceptance,
 					AuthEnv:             authEnv,
+					AuthTier:            authTier,
 					AllowDestructive:    allowDestructive,
 				})
 				if err != nil {
@@ -95,6 +97,7 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for each live dogfood test")
 	cmd.Flags().StringVar(&writeAcceptance, "write-acceptance", "", "Write phase5-acceptance.json to this path on every outcome (status:pass on success, status:fail with a failure_summary block on failure)")
 	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker")
+	cmd.Flags().StringVar(&authTier, "auth-tier", "", "Credential tier for live dogfood; falls back to PP_AUTH_TIER and skips commands annotated pp:requires-tier on mismatch")
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Re-enable testing of endpoints classified as destructive-at-auth. Default skips them to prevent runner-credential rotation.")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
