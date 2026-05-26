@@ -40,11 +40,27 @@ func injectRootAST(src []byte, opts injectOptions) ([]byte, bool, error) {
 	if !opts.skip("deliver") {
 		changed = addImports(file, "bytes", "io", "os") || changed
 	}
-	changed = addPersistentFlags(file, opts) || changed
-	changed = addPreRunBlocks(file, opts) || changed
-	changed = addCommands(file, opts) || changed
+	flagsChanged, err := addPersistentFlags(file, opts)
+	if err != nil {
+		return nil, false, fmt.Errorf("inject persistent flags: %w", err)
+	}
+	changed = flagsChanged || changed
+	preRunChanged, err := addPreRunBlocks(file, opts)
+	if err != nil {
+		return nil, false, fmt.Errorf("inject pre-run blocks: %w", err)
+	}
+	changed = preRunChanged || changed
+	commandsChanged, err := addCommands(file, opts)
+	if err != nil {
+		return nil, false, fmt.Errorf("inject commands: %w", err)
+	}
+	changed = commandsChanged || changed
 	if !opts.skip("deliver") {
-		changed = addPostExecuteFlush(file) || changed
+		flushChanged, err := addPostExecuteFlush(file)
+		if err != nil {
+			return nil, false, fmt.Errorf("inject post-execute flush: %w", err)
+		}
+		changed = flushChanged || changed
 	}
 
 	if !changed {
@@ -150,7 +166,7 @@ func addImports(file *dst.File, pkgs ...string) bool {
 // addPersistentFlags inserts --profile and --deliver after the last existing
 // PersistentFlags() registration inside Execute(). Skipped features are
 // omitted; if both profile and deliver are skipped, no flag is added.
-func addPersistentFlags(file *dst.File, opts injectOptions) bool {
+func addPersistentFlags(file *dst.File, opts injectOptions) (bool, error) {
 	return appendExecuteStatementsAfterLast(file, opts, []executeStatementInsertion{
 		{
 			feature: "profile",
@@ -167,9 +183,13 @@ func addPersistentFlags(file *dst.File, opts injectOptions) bool {
 
 // addPreRunBlocks inserts the deliver-setup and profile-lookup blocks at the
 // top of the PersistentPreRunE function body. Skipped features are omitted.
-func addPreRunBlocks(file *dst.File, opts injectOptions) bool {
+func addPreRunBlocks(file *dst.File, opts injectOptions) (bool, error) {
 	changed := false
+	var parseErr error
 	dst.Inspect(file, func(n dst.Node) bool {
+		if parseErr != nil {
+			return false
+		}
 		assign, ok := n.(*dst.AssignStmt)
 		if !ok || len(assign.Lhs) != 1 {
 			return true
@@ -187,7 +207,7 @@ func addPreRunBlocks(file *dst.File, opts injectOptions) bool {
 		}
 		var prepend []dst.Stmt
 		if !opts.skip("deliver") && !nodeReferences(fn, "deliverSpec") {
-			prepend = append(prepend, parseStmt(`if flags.deliverSpec != "" {
+			stmt, err := parseStmt(`if flags.deliverSpec != "" {
 				sink, err := ParseDeliverSink(flags.deliverSpec)
 				if err != nil {
 					return err
@@ -197,10 +217,15 @@ func addPreRunBlocks(file *dst.File, opts injectOptions) bool {
 					flags.deliverBuf = &bytes.Buffer{}
 					cmd.SetOut(io.MultiWriter(os.Stdout, flags.deliverBuf))
 				}
-			}`))
+			}`)
+			if err != nil {
+				parseErr = err
+				return false
+			}
+			prepend = append(prepend, stmt)
 		}
 		if !opts.skip("profile") && !nodeReferences(fn, "profileName") {
-			prepend = append(prepend, parseStmt(`if flags.profileName != "" {
+			stmt, err := parseStmt(`if flags.profileName != "" {
 				profile, err := GetProfile(flags.profileName)
 				if err != nil {
 					return err
@@ -211,7 +236,12 @@ func addPreRunBlocks(file *dst.File, opts injectOptions) bool {
 				if err := ApplyProfileToFlags(cmd, profile); err != nil {
 					return err
 				}
-			}`))
+			}`)
+			if err != nil {
+				parseErr = err
+				return false
+			}
+			prepend = append(prepend, stmt)
 		}
 		if len(prepend) == 0 {
 			return false
@@ -220,12 +250,12 @@ func addPreRunBlocks(file *dst.File, opts injectOptions) bool {
 		changed = true
 		return false
 	})
-	return changed
+	return changed, parseErr
 }
 
 // addCommands appends newProfileCmd and newFeedbackCmd AddCommand calls after
 // the last existing rootCmd.AddCommand entry. Skipped features are omitted.
-func addCommands(file *dst.File, opts injectOptions) bool {
+func addCommands(file *dst.File, opts injectOptions) (bool, error) {
 	return appendExecuteStatementsAfterLast(file, opts, []executeStatementInsertion{
 		{
 			feature: "profile",
@@ -246,9 +276,13 @@ type executeStatementInsertion struct {
 	exists  func(dst.Stmt) bool
 }
 
-func appendExecuteStatementsAfterLast(file *dst.File, opts injectOptions, insertions []executeStatementInsertion, anchor func(dst.Stmt) bool) bool {
+func appendExecuteStatementsAfterLast(file *dst.File, opts injectOptions, insertions []executeStatementInsertion, anchor func(dst.Stmt) bool) (bool, error) {
 	changed := false
+	var parseErr error
 	dst.Inspect(file, func(n dst.Node) bool {
+		if parseErr != nil {
+			return false
+		}
 		fn, ok := n.(*dst.FuncDecl)
 		if !ok || fn.Name.Name != "Execute" {
 			return true
@@ -259,7 +293,12 @@ func appendExecuteStatementsAfterLast(file *dst.File, opts injectOptions, insert
 				continue
 			}
 			if !slices.ContainsFunc(fn.Body.List, insertion.exists) {
-				newStmts = append(newStmts, parseStmt(insertion.stmt))
+				stmt, err := parseStmt(insertion.stmt)
+				if err != nil {
+					parseErr = err
+					return false
+				}
+				newStmts = append(newStmts, stmt)
 			}
 		}
 		if len(newStmts) == 0 {
@@ -278,14 +317,18 @@ func appendExecuteStatementsAfterLast(file *dst.File, opts injectOptions, insert
 		changed = true
 		return false
 	})
-	return changed
+	return changed, parseErr
 }
 
 // addPostExecuteFlush inserts the deliverBuf flush block between the last
 // rootCmd.Execute() result handling and the final `return err` of Execute().
-func addPostExecuteFlush(file *dst.File) bool {
+func addPostExecuteFlush(file *dst.File) (bool, error) {
 	changed := false
+	var parseErr error
 	dst.Inspect(file, func(n dst.Node) bool {
+		if parseErr != nil {
+			return false
+		}
 		fn, ok := n.(*dst.FuncDecl)
 		if !ok || fn.Name.Name != "Execute" {
 			return true
@@ -308,17 +351,21 @@ func addPostExecuteFlush(file *dst.File) bool {
 		if returnIdx < 0 {
 			return false
 		}
-		flushBlock := parseStmt(`if err == nil && flags.deliverBuf != nil {
+		flushBlock, err := parseStmt(`if err == nil && flags.deliverBuf != nil {
 			if derr := Deliver(flags.deliverSink, flags.deliverBuf.Bytes(), flags.compact); derr != nil {
 				fmt.Fprintf(os.Stderr, "warning: deliver to %s:%s failed: %v\n", flags.deliverSink.Scheme, flags.deliverSink.Target, derr)
 				return derr
 			}
 		}`)
+		if err != nil {
+			parseErr = err
+			return false
+		}
 		fn.Body.List = append(fn.Body.List[:returnIdx], append([]dst.Stmt{flushBlock}, fn.Body.List[returnIdx:]...)...)
 		changed = true
 		return false
 	})
-	return changed
+	return changed, parseErr
 }
 
 // --- AST helpers ---
@@ -474,12 +521,12 @@ func checkRootShape(src []byte) string {
 
 // parseStmt parses a single Go statement and returns it as a dst.Stmt.
 // Wraps the snippet in a synthetic function so go/parser accepts it.
-func parseStmt(src string) dst.Stmt {
+func parseStmt(src string) (dst.Stmt, error) {
 	wrapper := "package _p\nfunc _() {\n" + src + "\n}\n"
 	file, err := decorator.Parse(wrapper)
 	if err != nil {
-		panic(fmt.Errorf("patch.parseStmt: %w (src=%q)", err, src))
+		return nil, fmt.Errorf("patch.parseStmt: %w (src=%q)", err, src)
 	}
 	fn := file.Decls[0].(*dst.FuncDecl)
-	return fn.Body.List[0]
+	return fn.Body.List[0], nil
 }

@@ -178,6 +178,15 @@ func Execute() error { return rootCmd.Execute() }
 		"must flag missing rootFlags struct")
 }
 
+// TestParseStmt_ReturnsErrorOnInvalidGo verifies that parseStmt propagates a
+// parse error instead of panicking when given syntactically invalid Go source.
+func TestParseStmt_ReturnsErrorOnInvalidGo(t *testing.T) {
+	t.Parallel()
+	_, err := parseStmt(`this is not valid Go !!!`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "patch.parseStmt")
+}
+
 // TestInjectRootAST_NoPersistentFlagsBlock exercises the "refuse silently"
 // path: if the target root.go doesn't have the expected shape, no mutation.
 func TestInjectRootAST_NoPersistentFlagsBlock(t *testing.T) {
