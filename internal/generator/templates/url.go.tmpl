@@ -57,15 +57,14 @@ func buildURL(baseURL, path string, vars map[string]string) (string, error) {
 	}
 	seen := map[string]bool{}
 	var unresolved []string
+{{- if .GlobalPathTemplateVars}}
 	resolve := func(raw string, pathContext bool) string {
 		return templateVarPattern.ReplaceAllStringFunc(raw, func(match string) string {
 			key := match[1 : len(match)-1]
 			if v, ok := vars[key]; ok && v != "" {
-{{- if .GlobalPathTemplateVars}}
 				if pathContext && globalPathTemplateVars[key] {
 					return url.PathEscape(v)
 				}
-{{- end}}
 				return v
 			}
 			if !seen[key] {
@@ -76,6 +75,19 @@ func buildURL(baseURL, path string, vars map[string]string) (string, error) {
 		})
 	}
 	resolved := resolve(baseURL, false) + resolve(path, true)
+{{- else}}
+	resolved := templateVarPattern.ReplaceAllStringFunc(full, func(match string) string {
+		key := match[1 : len(match)-1]
+		if v, ok := vars[key]; ok && v != "" {
+			return v
+		}
+		if !seen[key] {
+			seen[key] = true
+			unresolved = append(unresolved, key)
+		}
+		return match
+	})
+{{- end}}
 	if len(unresolved) == 0 {
 		return resolved, nil
 	}

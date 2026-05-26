@@ -4535,7 +4535,7 @@ func mcpGlobalTemplateInputParams(endpoint spec.Endpoint, pathTemplate string, v
 	}
 	params := make([]spec.Param, 0, len(vars))
 	for _, name := range vars {
-		if !pathContainsPlaceholder(pathTemplate, name) {
+		if !spec.PathContainsPlaceholder(pathTemplate, name) {
 			continue
 		}
 		if _, exists := known[name]; exists {
@@ -4549,10 +4549,6 @@ func mcpGlobalTemplateInputParams(endpoint spec.Endpoint, pathTemplate string, v
 		known[name] = struct{}{}
 	}
 	return params
-}
-
-func pathContainsPlaceholder(pathTemplate, name string) bool {
-	return strings.Contains(pathTemplate, "{"+name+"}")
 }
 
 func mcpGlobalTemplateBindings(endpoint spec.Endpoint, pathTemplate string, vars []string) []mcpParamBinding {

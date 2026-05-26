@@ -2788,7 +2788,7 @@ func (s *APISpec) PromoteGlobalPathTemplateVars() {
 		}
 		filtered := endpoint.Params[:0]
 		for _, param := range endpoint.Params {
-			if _, ok := existing[param.Name]; ok && (param.Positional || param.PathParam) && pathContainsPlaceholder(endpoint.Path, param.Name) {
+			if _, ok := existing[param.Name]; ok && (param.Positional || param.PathParam) && PathContainsPlaceholder(endpoint.Path, param.Name) {
 				continue
 			}
 			filtered = append(filtered, param)
@@ -2877,7 +2877,9 @@ var reservedRootFlagFieldNames = map[string]struct{}{
 	"deliverSink":         {},
 }
 
-func pathContainsPlaceholder(path, name string) bool {
+// PathContainsPlaceholder reports whether path contains the literal
+// "{name}" placeholder form used by parsed endpoint paths.
+func PathContainsPlaceholder(path, name string) bool {
 	return strings.Contains(path, "{"+name+"}")
 }
 

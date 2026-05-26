@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -4235,6 +4236,37 @@ resources:
 		assert.Empty(t, s.GlobalPathTemplateVars)
 		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "profile")
 	})
+}
+
+func TestReservedRootFlagsMatchRootTemplate(t *testing.T) {
+	t.Parallel()
+
+	srcBytes, err := os.ReadFile("../generator/templates/root.go.tmpl")
+	require.NoError(t, err)
+	src := string(srcBytes)
+
+	flagRe := regexp.MustCompile(`PersistentFlags\(\)\.\w+Var\([^,]+,\s*"([^"{]+)"`)
+	var flagNames []string
+	for _, match := range flagRe.FindAllStringSubmatch(src, -1) {
+		flagNames = append(flagNames, match[1])
+	}
+	require.NotEmpty(t, flagNames, "root.go.tmpl persistent flags should be discoverable")
+	for _, name := range flagNames {
+		assert.Contains(t, reservedRootFlagNames, name, "promotable path template vars must not collide with root flag %q", name)
+	}
+
+	structRe := regexp.MustCompile(`(?s)type rootFlags struct \{(.*?)\n\}`)
+	structMatch := structRe.FindStringSubmatch(src)
+	require.Len(t, structMatch, 2, "root.go.tmpl rootFlags struct should be discoverable")
+	fieldRe := regexp.MustCompile(`(?m)^\s*([a-z][A-Za-z0-9]*)\s+`)
+	var fieldNames []string
+	for _, match := range fieldRe.FindAllStringSubmatch(structMatch[1], -1) {
+		fieldNames = append(fieldNames, match[1])
+	}
+	require.NotEmpty(t, fieldNames, "rootFlags fields should be discoverable")
+	for _, name := range fieldNames {
+		assert.Contains(t, reservedRootFlagFieldNames, name, "reserved root field list must track rootFlags.%s", name)
+	}
 }
 
 func paramNames(params []Param) []string {
