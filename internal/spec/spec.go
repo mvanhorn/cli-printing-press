@@ -1855,6 +1855,11 @@ type Endpoint struct {
 	Tags               []string     `yaml:"tags,omitempty" json:"tags,omitempty"`                 // source operation tags; used for generated defaults, not command grouping
 	HTMLExtract        *HTMLExtract `yaml:"html_extract,omitempty" json:"html_extract,omitempty"` // extraction options when response_format is html
 	Pagination         *Pagination  `yaml:"pagination" json:"pagination"`
+	// HappyArgs declares realistic happy-path fixture args for live dogfood
+	// probes when generic synthesized args cannot satisfy an endpoint's
+	// conditional input contract. The runtime consumes it from the generated
+	// Cobra annotation `pp:happy-args`.
+	HappyArgs string `yaml:"happy_args,omitempty" json:"happy_args,omitempty"`
 	// EmbeddedPagedSubresources names paged-envelope properties nested
 	// inside this endpoint's success response (e.g. GET /<resource>/{id}
 	// where the API caps the embedded sub-resource at the first page

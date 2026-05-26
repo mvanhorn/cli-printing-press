@@ -6639,6 +6639,60 @@ func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
 		"required-body promoted command must short-circuit to help on bare invocation")
 }
 
+func TestHappyArgsAnnotationEmittedFromSpec(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("happy-args")
+	apiSpec.Resources = map[string]spec.Resource{
+		"lookup": {
+			Description: "Lookup a page",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/lookup",
+					Description: "Lookup a page",
+					Params:      []spec.Param{{Name: "q", Type: "string", Required: true}},
+					HappyArgs:   "--q=example-page",
+				},
+			},
+		},
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"search": {
+					Method:      "GET",
+					Path:        "/items/search",
+					Description: "Search items",
+					Params:      []spec.Param{{Name: "q", Type: "string", Required: true}},
+					HappyArgs:   "--q=example-item",
+				},
+				"get": {
+					Method:      "GET",
+					Path:        "/items/{id}",
+					Description: "Get item",
+					Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true, PathParam: true}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	promoted := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_lookup.go")
+	assert.Contains(t, promoted, `"pp:happy-args": "--q=example-page"`,
+		"promoted command must carry spec-declared happy-path fixtures for live dogfood")
+
+	endpoint := readGeneratedFile(t, outputDir, "internal", "cli", "items_search.go")
+	assert.Contains(t, endpoint, `"pp:happy-args": "--q=example-item"`,
+		"non-promoted endpoint commands should also carry their own happy-path fixtures")
+
+	withoutHappyArgs := readGeneratedFile(t, outputDir, "internal", "cli", "items_get.go")
+	assert.NotContains(t, withoutHappyArgs, "pp:happy-args",
+		"endpoints without happy_args must keep the existing annotation shape")
+}
+
 // endpointHasRequiredInput must mirror the template's required-check gates
 // exactly, including the `(not .Default)` truthiness on required flags: a
 // required flag with no default OR a zero-value default counts as required
