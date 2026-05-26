@@ -24,6 +24,9 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+{{ if .HasRequiredRoles}}
+	"{{modulePath}}/internal/cli"
+{{- end}}
 )
 
 // RegisterCodeOrchestrationTools registers the two agent-facing tools that
@@ -58,6 +61,9 @@ type codeOrchEndpoint struct {
 	Method      string
 	Path        string
 	Tier        string
+{{- if .HasRequiredRoles}}
+	RequiredRole cli.Persona
+{{- end}}
 	Summary     string
 	Positional  []string
 	// QueryParams carries public-to-wire bindings for spec-declared in:query
@@ -95,6 +101,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		ID:      "{{$name}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
 		Path:    "{{$path}}",
+{{- if $.HasRequiredRoles}}
+		RequiredRole: {{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}},
+{{- end}}
 {{- if $.HasTierRouting}}
 		Tier:    {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}},
 {{- end}}
@@ -117,6 +126,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		ID:      "{{$name}}.{{$subName}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
 		Path:    "{{$path}}",
+{{- if $.HasRequiredRoles}}
+		RequiredRole: {{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}},
+{{- end}}
 {{- if $.HasTierRouting}}
 		Tier:    {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}},
 {{- end}}
@@ -252,10 +264,22 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		params = map[string]any{}
 	}
 
+{{- if .HasRequiredRoles}}
+	cfg, err := newMCPConfig()
+	if err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
+	if err := cli.RequireRoleWith(nil, cfg, ep.ID, ep.RequiredRole); err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
+	c := newMCPClientFromConfig(cfg)
+{{ else}}
+
 	c, err := newMCPClient()
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
+{{ end}}
 {{- if .HasTierRouting}}
 	c = c.WithTier(ep.Tier)
 {{- end}}
