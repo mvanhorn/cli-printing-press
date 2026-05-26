@@ -44,6 +44,36 @@ func TestSyncReadmeAuthNarrativeRemovesStaleAuthenticationWhenOptionalExists(t *
 	assert.Contains(t, readme, "## Quick Start")
 }
 
+func TestReplaceReadmeIntroNarrativeStopsAtHeadingBeforeInstall(t *testing.T) {
+	content := strings.Join([]string{
+		"# Example CLI",
+		"",
+		"Old headline.",
+		"",
+		"## Authentication",
+		"",
+		"Keep this auth section.",
+		"",
+		"## Install",
+		"",
+		"Install instructions.",
+		"",
+	}, "\n")
+
+	updated := replaceReadmeIntroNarrative(content, &ReadmeNarrative{
+		Headline:  "New headline",
+		ValueProp: "New value proposition.",
+	})
+
+	assert.Contains(t, updated, "**New headline**")
+	assert.Contains(t, updated, "New value proposition.")
+	assert.Contains(t, updated, "## Authentication\n\nKeep this auth section.")
+	assert.Contains(t, updated, "## Install\n\nInstall instructions.")
+	assert.NotContains(t, updated, "Old headline.")
+	requireBefore(t, updated, "New value proposition.", "## Authentication")
+	requireBefore(t, updated, "## Authentication", "## Install")
+}
+
 func TestRenderSkillAuthSetupSectionDoesNotDuplicateDoctorInstruction(t *testing.T) {
 	section := renderSkillAuthSetupSection(
 		"test",
