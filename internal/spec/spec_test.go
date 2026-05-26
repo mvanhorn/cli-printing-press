@@ -3806,8 +3806,16 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	assert.True(t, base.HasHTMLExtraction())
 	assert.True(t, base.Resources["posts"].Endpoints["list"].UsesHTMLResponse())
 
+	csvSpec := validHTMLSpec()
+	ep := csvSpec.Resources["posts"].Endpoints["list"]
+	ep.ResponseFormat = ResponseFormatCSV
+	ep.HTMLExtract = nil
+	csvSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, csvSpec.Validate())
+	assert.True(t, csvSpec.Resources["posts"].Endpoints["list"].UsesCSVResponse())
+
 	badFormat := validHTMLSpec()
-	ep := badFormat.Resources["posts"].Endpoints["list"]
+	ep = badFormat.Resources["posts"].Endpoints["list"]
 	ep.ResponseFormat = "xml"
 	badFormat.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badFormat.Validate(), "response_format must be one of")

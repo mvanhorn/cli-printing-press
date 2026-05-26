@@ -95,7 +95,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
           type: cursor            # string pagination style: cursor | offset | page_token
           cursor_field: cursor    # string response field containing next cursor
           has_more_field: data.has_more # string response field indicating more results
-        response_format: json     # string optional: json | html | binary; defaults to json
+        response_format: json     # string optional: json | csv | html | binary; defaults to json
         html_extract:             # object optional, only with response_format: html
           mode: page              # string optional: page | links | embedded-json
           link_prefixes: []       # []string optional for links; path-segment-anchored prefixes
@@ -116,12 +116,13 @@ the generator defaults to `<API>_CLIENT_ID`, `<API>_CLIENT_SECRET`, and
 `<API>_REFRESH_TOKEN`; access tokens are refreshed automatically before API
 calls.
 
-**`response_format` must be one of `json`, `html`, or `binary`.** Use `json`
+**`response_format` must be one of `json`, `csv`, `html`, or `binary`.** Use `json`
 when the response body is JSON and can be parsed directly. Use `html` only for
 GET/HEAD HTML documents, including HTML pages with embedded JSON such as
 Next.js `__NEXT_DATA__` or schema.org JSON-LD; prefer `html_extract` modes
 `page`, `links`, or `embedded-json` before writing custom extraction code. Use
-`binary` for opaque byte payloads.
+`csv` for CSV responses that novel commands may parse through
+`cliutil.ParseCSV`, and `binary` for opaque byte payloads.
 
 **`html_extract.link_prefixes` are path-segment anchored.** In `mode: links`, a
 prefix such as `/items` keeps links whose path is exactly `/items` or starts

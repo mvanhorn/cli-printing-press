@@ -1024,7 +1024,7 @@ Two fields trip up hand-edits often enough to call out:
 
 Before hand-writing or repairing the sniffed YAML spec, check
 `spec-format.md`; two common traps are `types.X.fields` list shape (`- name:`
-items, not a map) and the `response_format` enum (`json`, `html`, or `binary`;
+items, not a map) and the `response_format` enum (`json`, `csv`, `html`, or `binary`;
 use `html` only for GET/HEAD HTML and embedded-JSON surfaces, with
 `html_extract` when the built-in page, links, or embedded-json modes fit).
 

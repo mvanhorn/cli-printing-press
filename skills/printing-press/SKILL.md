@@ -3315,6 +3315,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("fetching <resource>: %w", err)
 	}
+	// If the API returns CSV (`response_format: csv` in any spec endpoint),
+	// wrap raw client data with cliutil.ParseCSV(data) before embedding it in a JSON envelope.
 	// Parse data into your feature's view. Use cliutil.CleanText for any
 	// text extracted from HTML or schema.org JSON-LD; re-implementing
 	// HTML-entity unescape inline is the &#39; bug class.

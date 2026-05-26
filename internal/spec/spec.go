@@ -45,6 +45,7 @@ const (
 
 const (
 	ResponseFormatJSON   = "json"
+	ResponseFormatCSV    = "csv"
 	ResponseFormatHTML   = "html"
 	ResponseFormatBinary = "binary"
 )
@@ -1847,7 +1848,7 @@ type Endpoint struct {
 	BodyIsArray        bool        `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
 	RequestContentType string      `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
 	Response           ResponseDef `yaml:"response" json:"response"`
-	ResponseFormat     string      `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	ResponseFormat     string      `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default), csv, html, or binary
 	// DataSourceStrategy declares how this endpoint's generated read command
 	// should interpret --data-source. Empty inherits the resource strategy,
 	// then defaults to "auto".
@@ -2024,6 +2025,10 @@ func (e Endpoint) UsesHTMLResponse() bool {
 
 func (e Endpoint) UsesBinaryResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatBinary
+}
+
+func (e Endpoint) UsesCSVResponse() bool {
+	return e.EffectiveResponseFormat() == ResponseFormatCSV
 }
 
 type HTMLExtract struct {
@@ -3801,9 +3806,9 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 
 func validateEndpointResponseFormat(e Endpoint) error {
 	switch e.ResponseFormat {
-	case "", ResponseFormatJSON, ResponseFormatHTML, ResponseFormatBinary:
+	case "", ResponseFormatJSON, ResponseFormatCSV, ResponseFormatHTML, ResponseFormatBinary:
 	default:
-		return fmt.Errorf("response_format must be one of: json, html, binary")
+		return fmt.Errorf("response_format must be one of: json, csv, html, binary")
 	}
 	if !e.UsesHTMLResponse() {
 		return nil

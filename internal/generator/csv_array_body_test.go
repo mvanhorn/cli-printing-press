@@ -66,6 +66,70 @@ func TestGenerateCSVArrayBodyFields(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./cmd/csv-array-body-pp-cli")
 }
 
+func TestGenerateCSVResponseParseHelpers(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("csv-response")
+	apiSpec.Resources["reports"] = spec.Resource{
+		Description: "Reports",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {
+				Method:         "GET",
+				Path:           "/reports",
+				Description:    "List reports",
+				ResponseFormat: spec.ResponseFormatCSV,
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "csv-response-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	helper, err := os.ReadFile(filepath.Join(outputDir, "internal", "cliutil", "csv_parse.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(helper), `func ParseCSV(raw json.RawMessage) []map[string]any`)
+	require.Contains(t, string(helper), `func ParseCSVFirstRow(raw json.RawMessage) map[string]any`)
+
+	testSrc := []byte(`package cliutil
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestParseCSVResponse(t *testing.T) {
+	rows := ParseCSV(json.RawMessage("Domain;Rank\nexample.com;1\n"))
+	if len(rows) != 1 || rows[0]["Domain"] != "example.com" || rows[0]["Rank"] != "1" {
+		t.Fatalf("unexpected rows: %#v", rows)
+	}
+	quotedHeader := ParseCSV(json.RawMessage("\"Revenue,Total\";Quarter\n100;Q1\n"))
+	if len(quotedHeader) != 1 || quotedHeader[0]["Revenue,Total"] != "100" || quotedHeader[0]["Quarter"] != "Q1" {
+		t.Fatalf("unexpected quoted-header rows: %#v", quotedHeader)
+	}
+	if headerOnly := ParseCSV(json.RawMessage("Name,Score\n")); headerOnly != nil {
+		t.Fatalf("expected nil header-only CSV, got %#v", headerOnly)
+	}
+	first := ParseCSVFirstRow(json.RawMessage("\"Name,Score\\nAda,42\\n\""))
+	if first["Name"] != "Ada" || first["Score"] != "42" {
+		t.Fatalf("unexpected first row: %#v", first)
+	}
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cliutil", "csv_parse_extra_test.go"), testSrc, 0o600))
+	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
+}
+
+func TestGenerateJSONOnlyOmitsCSVResponseParseHelpers(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("json-only")
+	outputDir := filepath.Join(t.TempDir(), "json-only-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	_, err := os.Stat(filepath.Join(outputDir, "internal", "cliutil", "csv_parse.go"))
+	require.True(t, os.IsNotExist(err), "JSON-only CLIs should not emit csv_parse.go")
+}
+
 func TestEndpointUsesCSVArrayRespectsBodyFlagDepth(t *testing.T) {
 	t.Parallel()
 
