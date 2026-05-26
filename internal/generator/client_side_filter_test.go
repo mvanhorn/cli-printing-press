@@ -56,6 +56,44 @@ func TestEndpointClientSideFilters(t *testing.T) {
 	assert.Empty(t, endpointClientSideFilters(apiSpec, endpoint), "ordinary docs-derived list endpoints should keep trusting server-side filters")
 }
 
+func TestEndpointClientSideFiltersTriesLaterCandidatesAfterSeenField(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("filterdocs")
+	apiSpec.SpecSource = "docs"
+	apiSpec.Types = map[string]spec.TypeDef{
+		"CurrencyRate": {
+			Fields: []spec.TypeField{
+				{Name: "currencies", Type: "string"},
+				{Name: "currency", Type: "string"},
+			},
+		},
+	}
+	endpoint := spec.Endpoint{
+		Method: "GET",
+		Path:   "/currency/batch",
+		Params: []spec.Param{
+			{Name: "currency_list", URLName: "currencies", Type: "string"},
+			{Name: "currencies", Type: "string"},
+		},
+		Response: spec.ResponseDef{Type: "array", Item: "CurrencyRate"},
+	}
+
+	filters := endpointClientSideFilters(apiSpec, endpoint)
+	require.Len(t, filters, 2)
+	assert.Equal(t, "currency_list", filters[0].Param.Name)
+	assert.Equal(t, "currencies", filters[0].Field)
+	assert.Equal(t, "currencies", filters[1].Param.Name)
+	assert.Equal(t, "currency", filters[1].Field)
+}
+
+func TestSingularClientSideFilterNameLeavesBareSuffixes(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "ses", singularClientSideFilterName("ses"))
+	assert.Equal(t, "class", singularClientSideFilterName("classes"))
+}
+
 func TestGeneratedDocsClientSideFilterNarrowsIgnoredBatchParam(t *testing.T) {
 	t.Parallel()
 
@@ -221,7 +259,41 @@ func TestDocsClientSideFilterFailsOpenWhenResponseFieldIsAbsent(t *testing.T) {
 		t.Fatalf("filtered data = %+v, want original two rows; stdout=%s", payload.Results, stdout.String())
 	}
 }
-`
+
+func TestDocsClientSideFilterKeepsRowsWithMissingField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("symbols"); got != "BTCUSDT" {
+			t.Fatalf("symbols query = %q, want BTCUSDT", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(` + "`" + `[{"symbol":"BTCUSDT","rate":"0.01"},{"pair":"legacy","rate":"0.02"},{"symbol":"ETHUSDT","rate":"0.03"}]` + "`" + `))
+	}))
+	defer server.Close()
+	t.Setenv("FILTERDOCS_BASE_URL", server.URL)
+
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"market", "get-funding-rate-batch", "--symbols", "BTCUSDT", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute command: %v; stderr=%s", err, stderr.String())
+	}
+
+	var payload struct {
+		Results []map[string]string ` + "`" + `json:"results"` + "`" + `
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("parse output: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(payload.Results) != 2 {
+		t.Fatalf("filtered data = %+v, want matching row plus row without symbol; stdout=%s", payload.Results, stdout.String())
+	}
+	if payload.Results[0]["symbol"] != "BTCUSDT" || payload.Results[1]["pair"] != "legacy" {
+		t.Fatalf("filtered data = %+v, want BTCUSDT plus legacy row; stdout=%s", payload.Results, stdout.String())
+	}
+}
+	`
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "docs_client_side_filter_test.go"), []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestDocsClientSideFilter", "-count=1")

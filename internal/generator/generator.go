@@ -4726,7 +4726,7 @@ func endpointClientSideFilters(apiSpec *spec.APISpec, endpoint spec.Endpoint) []
 				continue
 			}
 			if _, seen := seenFields[field]; seen {
-				break
+				continue
 			}
 			filters = append(filters, clientSideFilter{Param: param, Field: field})
 			seenFields[field] = struct{}{}
@@ -4797,8 +4797,11 @@ func singularClientSideFilterName(name string) string {
 	if strings.HasSuffix(name, "ies") && len(name) > len("ies") {
 		return strings.TrimSuffix(name, "ies") + "y"
 	}
-	if strings.HasSuffix(name, "ses") && len(name) > len("es") {
-		return strings.TrimSuffix(name, "es")
+	if strings.HasSuffix(name, "ses") {
+		if len(name) > len("ses") {
+			return strings.TrimSuffix(name, "es")
+		}
+		return name
 	}
 	if strings.HasSuffix(name, "s") && len(name) > 1 {
 		return strings.TrimSuffix(name, "s")

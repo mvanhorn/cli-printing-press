@@ -2295,6 +2295,7 @@ func filterJSONArrayByFieldValues(data json.RawMessage, field string, targets ma
 	for _, item := range items {
 		raw, ok := lookupClientSideFilterField(item, field)
 		if !ok {
+			filtered = append(filtered, item)
 			continue
 		}
 		sawField = true
