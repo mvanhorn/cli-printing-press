@@ -1957,6 +1957,12 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	if hasCSVResponse(g.Spec) {
+		if err := g.renderTemplate("cliutil_csv_parse.go.tmpl", filepath.Join("internal", "cliutil", "csv_parse.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil csv parse: %w", err)
+		}
+	}
+
 	// Emit the cliutil proxypath helper only for proxy-envelope clients —
 	// the BuildPath function is the only caller of net/url.Values in the
 	// cliutil package, and there's no point shipping it (and its tests)
@@ -5344,6 +5350,14 @@ func endpointUsesCSVArray(endpoint spec.Endpoint) bool {
 
 func hasCSVArrayRequest(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, endpointUsesCSVArray)
+}
+
+func endpointUsesCSVResponse(endpoint spec.Endpoint) bool {
+	return endpoint.UsesCSVResponse()
+}
+
+func hasCSVResponse(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesCSVResponse)
 }
 
 func endpointUsesBodyJSONFallback(endpoint spec.Endpoint) bool {
