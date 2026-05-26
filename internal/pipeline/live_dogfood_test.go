@@ -841,6 +841,45 @@ func TestRunLiveDogfoodSkipsHappyPathOnRequiredParam4xx(t *testing.T) {
 	assert.Equal(t, reasonRequiredParamFixture, summaryJSON.Reason)
 }
 
+func TestRunLiveDogfoodSkipsMutatingCommandsWithoutRunnableExample(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodMissingRunnableExampleFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	updateHelp := findResultByCommandKind(report, "templates update", LiveDogfoodTestHelp)
+	require.NotNil(t, updateHelp, "expected templates update help result")
+	assert.Equal(t, LiveDogfoodStatusPass, updateHelp.Status)
+
+	updateHappy := findResultByCommandKind(report, "templates update", LiveDogfoodTestHappy)
+	require.NotNil(t, updateHappy, "expected templates update happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, updateHappy.Status)
+	assert.Equal(t, reasonMutatingRunnableFixture, updateHappy.Reason)
+
+	updateJSON := findResultByCommandKind(report, "templates update", LiveDogfoodTestJSON)
+	require.NotNil(t, updateJSON, "expected templates update json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, updateJSON.Status)
+	assert.Equal(t, reasonMutatingRunnableFixture, updateJSON.Reason)
+
+	updateError := findResultByCommandKind(report, "templates update", LiveDogfoodTestError)
+	require.NotNil(t, updateError, "expected templates update error_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, updateError.Status)
+	assert.Equal(t, reasonMutatingRunnableFixture, updateError.Reason)
+
+	detailsHappy := findResultByCommandKind(report, "reports details", LiveDogfoodTestHappy)
+	require.NotNil(t, detailsHappy, "expected reports details happy_path result")
+	assert.Equal(t, LiveDogfoodStatusFail, detailsHappy.Status)
+	assert.Equal(t, "missing runnable example", detailsHappy.Reason)
+}
+
 func TestRunLiveDogfoodKeepsOrdinary4xxFailures(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -988,6 +1027,70 @@ fi
 
 if [ "$1" = "reports" ] && [ "$2" = "summary" ]; then
   echo 'summary'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodMissingRunnableExampleFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"templates","subcommands":[
+      {"name":"update","annotations":{"pp:method":"PUT"}}
+    ]},
+    {"name":"reports","subcommands":[
+      {"name":"details","annotations":{"pp:method":"GET"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "templates" ] && [ "$2" = "update" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Update a template.
+
+Usage:
+  fixture-pp-cli templates update [flags]
+
+Examples:
+  # Supply a real template id before running this write command.
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "reports" ] && [ "$2" = "details" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Read report details.
+
+Usage:
+  fixture-pp-cli reports details [flags]
+
+Examples:
+  # No runnable example is documented for this read command.
+
+Flags:
+      --json    Output JSON
+HELP
   exit 0
 fi
 
