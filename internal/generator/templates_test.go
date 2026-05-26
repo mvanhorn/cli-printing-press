@@ -62,7 +62,7 @@ func TestGoTemplatesEscapeSpecTextInStringLiterals(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	require.Empty(t, violations, "spec-controlled prose inside Go string literals must use oneline/goRawSafe/printf %%q; unsafe template sites:\n%s", strings.Join(violations, "\n"))
+	require.Empty(t, violations, "spec-controlled prose inside Go string literals must use oneline/printf %%q; unsafe template sites:\n%s", strings.Join(violations, "\n"))
 }
 
 func isInsideGoDoubleQuotedString(prefix string) bool {
@@ -140,8 +140,15 @@ func TestIsInsideGoDoubleQuotedStringSkipsTemplateActionSyntax(t *testing.T) {
 
 func goTemplateActionEscapesSpecText(action string) bool {
 	return strings.Contains(action, "oneline ") ||
-		strings.Contains(action, "printf \"%q\"") ||
-		strings.Contains(action, "goRawSafe")
+		strings.Contains(action, "printf \"%q\"")
+}
+
+func TestGoTemplateActionEscapesSpecTextRejectsRawStringHelper(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, goTemplateActionEscapesSpecText(`{{oneline .Description}}`))
+	assert.True(t, goTemplateActionEscapesSpecText(`{{printf "%q" .Description}}`))
+	assert.False(t, goTemplateActionEscapesSpecText(`{{goRawSafe .Description}}`))
 }
 
 func TestDoctorTemplateRendersKindAwareAuthEnvPresence(t *testing.T) {
