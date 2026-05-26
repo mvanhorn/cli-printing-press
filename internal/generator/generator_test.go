@@ -1996,6 +1996,7 @@ func runGoCommand(t *testing.T, dir string, args ...string) {
 
 func requireGeneratedCompiles(t *testing.T, dir string) {
 	t.Helper()
+	// No-op in this test harness; module resolution is exercised via -mod=mod.
 	runGoCommand(t, dir, "mod", "tidy")
 	runGoCommand(t, dir, "build", "./...")
 }
