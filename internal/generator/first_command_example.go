@@ -143,7 +143,13 @@ func dispatchParamDefaultValue(ep spec.Endpoint, p spec.Param) (string, bool) {
 	if defaultValue == "" {
 		return "", false
 	}
-	if p.DispatchParam || pathUsesDispatchDefault(ep.Path, p, defaultValue) || isDispatchStyleParam(p) {
+	if p.DispatchParam {
+		return defaultValue, true
+	}
+	if p.DispatchParamSet {
+		return "", false
+	}
+	if pathUsesDispatchDefault(ep.Path, p, defaultValue) || isDispatchStyleParam(p) {
 		return defaultValue, true
 	}
 	return "", false
@@ -155,9 +161,6 @@ func pathUsesDispatchDefault(path string, p spec.Param, defaultValue string) boo
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
-		}
-		if strings.Contains(path, "{"+name+"}") {
-			return true
 		}
 		if queryParamDefaultInPath(path, name, defaultValue) {
 			return true

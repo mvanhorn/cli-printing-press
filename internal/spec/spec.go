@@ -2019,10 +2019,14 @@ type Param struct {
 	// DispatchParam marks a fixed discriminator such as type=domain_rank.
 	// Generated runnable examples keep its default instead of substituting
 	// synthetic dogfood values that would address a different upstream route.
-	DispatchParam bool   `yaml:"dispatch_param,omitempty" json:"dispatch_param,omitempty"`
-	ItemType      string `yaml:"item_type,omitempty" json:"item_type,omitempty"`
-	ItemTemplate  any    `yaml:"item_template,omitempty" json:"item_template,omitempty"`
-	Purpose       string `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	DispatchParam bool `yaml:"dispatch_param,omitempty" json:"dispatch_param,omitempty"`
+	// DispatchParamSet is true when the spec explicitly contained
+	// dispatch_param, pp:dispatch-param, or x-pp-dispatch-param. It lets
+	// generator heuristics distinguish an omitted value from an explicit false.
+	DispatchParamSet bool   `yaml:"-" json:"-"`
+	ItemType         string `yaml:"item_type,omitempty" json:"item_type,omitempty"`
+	ItemTemplate     any    `yaml:"item_template,omitempty" json:"item_template,omitempty"`
+	Purpose          string `yaml:"purpose,omitempty" json:"purpose,omitempty"`
 	// FieldSelectorDefault is a sync-time default for field-selector params
 	// such as opt_fields, fields, expand, include, or select. It stays separate
 	// from Default so generated endpoint commands do not silently change their
@@ -2088,8 +2092,10 @@ func (p *Param) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*p = Param(out)
 	p.FlagNameSet = yamlMappingHasKey(value, "flag_name")
+	p.DispatchParamSet = yamlMappingHasKey(value, "dispatch_param")
 	if dispatch, ok := yamlMappingBool(value, "pp:dispatch-param"); ok {
 		p.DispatchParam = dispatch
+		p.DispatchParamSet = true
 	}
 	return nil
 }
@@ -2104,10 +2110,12 @@ func (p *Param) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err == nil {
 		_, p.FlagNameSet = raw["flag_name"]
+		_, p.DispatchParamSet = raw["dispatch_param"]
 		if rawDispatch, ok := raw["pp:dispatch-param"]; ok {
 			var dispatch bool
 			if err := json.Unmarshal(rawDispatch, &dispatch); err == nil {
 				p.DispatchParam = dispatch
+				p.DispatchParamSet = true
 			}
 		}
 	}

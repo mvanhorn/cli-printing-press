@@ -8408,6 +8408,12 @@ paths:
           schema:
             type: integer
             default: 100
+        - name: action
+          in: query
+          x-pp-dispatch-param: false
+          schema:
+            type: string
+            default: create
       responses:
         "200":
           description: ok
@@ -8417,9 +8423,13 @@ paths:
 	require.NoError(t, err)
 
 	endpoint := findParsedEndpointByPath(t, parsed, "GET", "/reports")
-	require.Len(t, endpoint.Params, 2)
+	require.Len(t, endpoint.Params, 3)
 	assert.True(t, endpoint.Params[0].DispatchParam)
+	assert.True(t, endpoint.Params[0].DispatchParamSet)
 	assert.False(t, endpoint.Params[1].DispatchParam)
+	assert.False(t, endpoint.Params[1].DispatchParamSet)
+	assert.False(t, endpoint.Params[2].DispatchParam)
+	assert.True(t, endpoint.Params[2].DispatchParamSet)
 }
 
 // TestParseJSONPreferredOverFormUrlencoded asserts the parser still picks

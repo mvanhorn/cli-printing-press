@@ -283,6 +283,60 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			want: "reports list --mode summary",
 		},
 		{
+			name: "explicit dispatch false suppresses action heuristic",
+			resources: map[string]spec.Resource{
+				"jobs": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/jobs",
+							Params: []spec.Param{
+								{Name: "action", Required: true, Type: "string", Default: "create", DispatchParamSet: true},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/jobs/refresh"},
+					},
+				},
+			},
+			want: "jobs list --action example-value",
+		},
+		{
+			name: "path placeholder sharing query param name does not keep default",
+			resources: map[string]spec.Resource{
+				"reports": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/items/{mode}/reports",
+							Params: []spec.Param{
+								{Name: "mode", Required: true, Type: "string", Default: "summary"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/reports/refresh"},
+					},
+				},
+			},
+			want: "reports list --mode example-value",
+		},
+		{
+			name: "path query default keeps required param default",
+			resources: map[string]spec.Resource{
+				"reports": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/reports?mode=summary",
+							Params: []spec.Param{
+								{Name: "mode", Required: true, Type: "string", Default: "summary"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/reports/refresh"},
+					},
+				},
+			},
+			want: "reports list --mode summary",
+		},
+		{
 			name: "non-dispatch string default still uses synthetic value",
 			resources: map[string]spec.Resource{
 				"search": {
