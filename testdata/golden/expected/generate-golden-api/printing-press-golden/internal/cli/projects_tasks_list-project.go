@@ -37,7 +37,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				if !validPriority {
-					fmt.Fprintf(os.Stderr, "warning: --%s %q not in allowed set %v\n", "priority", flagPriority, allowedPriority)
+					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flagPriority, "priority", allowedPriority)
 				}
 			}
 			c, err := flags.newClient()

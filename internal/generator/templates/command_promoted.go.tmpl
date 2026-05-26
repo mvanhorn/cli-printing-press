@@ -81,7 +81,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 				if !valid{{camel (paramIdent .)}} {
-					fmt.Fprintf(os.Stderr, "warning: --%s %q not in allowed set %v\n", "{{publicFlagName .}}", flag{{camel (paramIdent .)}}, allowed{{camel (paramIdent .)}})
+					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", allowed{{camel (paramIdent .)}})
 				}
 			}
 {{- end}}
