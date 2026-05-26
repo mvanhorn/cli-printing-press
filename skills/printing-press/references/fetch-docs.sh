@@ -189,7 +189,7 @@ OUT_FILE="$RAW_FILE"
 if [[ "$WANT_MD" == "true" && "$ext" != "md" && "$ext" != "mdx" ]]; then
   MD_FILE="$BASE.md"
   if command -v readability-cli >/dev/null 2>&1 && command -v turndown-cli >/dev/null 2>&1; then
-    if readability-cli "$RAW_FILE" | turndown-cli > "$MD_FILE"; then
+    if readability-cli "$effective_url" < "$RAW_FILE" | turndown-cli > "$MD_FILE"; then
       OUT_FILE="$MD_FILE"
       content_type="text/markdown; converted-from=$content_type"
     else
@@ -197,7 +197,7 @@ if [[ "$WANT_MD" == "true" && "$ext" != "md" && "$ext" != "mdx" ]]; then
       rm -f "$MD_FILE"
     fi
   elif command -v npx >/dev/null 2>&1; then
-    if npx --yes readability-cli "$RAW_FILE" | npx --yes turndown-cli > "$MD_FILE"; then
+    if npx --yes readability-cli "$effective_url" < "$RAW_FILE" | npx --yes turndown-cli > "$MD_FILE"; then
       OUT_FILE="$MD_FILE"
       content_type="text/markdown; converted-from=$content_type"
     else
