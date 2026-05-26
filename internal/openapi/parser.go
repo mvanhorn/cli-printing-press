@@ -594,6 +594,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		baseURLIsPlaceholder = true
 	}
 
+	injectGoogleDiscoveryAPIKeyAuth(doc, name)
 	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes, authPreference)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
 		auth = spec.AuthConfig{Type: "none"}
@@ -879,6 +880,159 @@ func parseStringExtensionValue(extensions map[string]any, key string) (string, e
 
 func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 	return mapAuthWithDescriptionInference(doc, name, true, "")
+}
+
+func injectGoogleDiscoveryAPIKeyAuth(doc *openapi3.T, name string) {
+	if doc == nil || !shouldInjectGoogleAPIKeyAuth(doc) {
+		return
+	}
+	if doc.Components == nil {
+		doc.Components = &openapi3.Components{}
+	}
+	if doc.Components.SecuritySchemes == nil {
+		doc.Components.SecuritySchemes = openapi3.SecuritySchemes{}
+	}
+
+	schemeName := googleAPIKeySecuritySchemeName(doc)
+	if schemeName == "" {
+		schemeName = uniqueSecuritySchemeName(doc.Components.SecuritySchemes, "ApiKey")
+		doc.Components.SecuritySchemes[schemeName] = &openapi3.SecuritySchemeRef{
+			Value: &openapi3.SecurityScheme{
+				Type: "apiKey",
+				In:   "query",
+				Name: "key",
+				Extensions: map[string]any{
+					extensionAuthVars: []any{
+						map[string]any{
+							"name":      naming.EnvPrefix(name) + "_API_KEY",
+							"kind":      string(spec.AuthEnvVarKindPerCall),
+							"required":  true,
+							"sensitive": true,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	requirement := openapi3.SecurityRequirement{schemeName: []string{}}
+	if doc.Security == nil {
+		if !hasNonAPIKeySecurityScheme(doc) {
+			doc.Security = openapi3.SecurityRequirements{requirement}
+		}
+	} else if !securityRequirementsReferenceScheme(doc.Security, schemeName) && !securityRequirementsAllowAnonymous(doc.Security) {
+		doc.Security = append(doc.Security, requirement)
+	}
+
+	if doc.Paths == nil {
+		return
+	}
+	for _, pathItem := range doc.Paths.Map() {
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil || op.Security == nil {
+				continue
+			}
+			if securityRequirementsAllowAnonymous(*op.Security) || securityRequirementsReferenceScheme(*op.Security, schemeName) {
+				continue
+			}
+			*op.Security = append(*op.Security, requirement)
+		}
+	}
+}
+
+func shouldInjectGoogleAPIKeyAuth(doc *openapi3.T) bool {
+	if !hasNonAnonymousSecurityRequirements(doc) {
+		return false
+	}
+	return isGoogleDiscoverySpec(doc) || hasGoogleAPIsServer(doc)
+}
+
+func googleAPIKeySecuritySchemeName(doc *openapi3.T) string {
+	if doc == nil || doc.Components == nil {
+		return ""
+	}
+	for _, name := range allSecuritySchemeNames(doc) {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme != nil &&
+			strings.EqualFold(scheme.Type, "apiKey") &&
+			strings.EqualFold(strings.TrimSpace(scheme.In), "query") &&
+			strings.EqualFold(strings.TrimSpace(scheme.Name), "key") {
+			return name
+		}
+	}
+	return ""
+}
+
+func uniqueSecuritySchemeName(schemes openapi3.SecuritySchemes, base string) string {
+	if _, ok := schemes[base]; !ok {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s%d", base, i)
+		if _, ok := schemes[candidate]; !ok {
+			return candidate
+		}
+	}
+}
+
+func securityRequirementsReferenceScheme(requirements openapi3.SecurityRequirements, schemeName string) bool {
+	for _, requirement := range requirements {
+		if _, ok := requirement[schemeName]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonAPIKeySecurityScheme(doc *openapi3.T) bool {
+	if doc == nil || doc.Components == nil {
+		return false
+	}
+	for _, name := range allSecuritySchemeNames(doc) {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme != nil && !strings.EqualFold(scheme.Type, "apiKey") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonAnonymousSecurityRequirements(doc *openapi3.T) bool {
+	if doc == nil {
+		return false
+	}
+	if nonAnonymousSecurityRequirements(doc.Security) {
+		return true
+	}
+	if doc.Paths == nil {
+		return false
+	}
+	for _, pathItem := range doc.Paths.Map() {
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op != nil && op.Security != nil && nonAnonymousSecurityRequirements(*op.Security) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nonAnonymousSecurityRequirements(requirements openapi3.SecurityRequirements) bool {
+	if len(requirements) == 0 {
+		return false
+	}
+	for _, requirement := range requirements {
+		if len(requirement) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool, authPreference string) spec.AuthConfig {
@@ -6060,7 +6214,68 @@ func isGoogleDiscoverySpec(doc *openapi3.T) bool {
 		if format, ok := entry["format"].(string); ok && strings.EqualFold(strings.TrimSpace(format), "google") {
 			return true
 		}
-		if originURL, ok := entry["url"].(string); ok && strings.Contains(originURL, "googleapis.com/$discovery") {
+		if originURL, ok := entry["url"].(string); ok && isGoogleDiscoveryOriginURL(originURL) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGoogleDiscoveryOriginURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if host != "googleapis.com" && !strings.HasSuffix(host, ".googleapis.com") {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimLeft(parsed.EscapedPath(), "/"), "$discovery/")
+}
+
+func hasGoogleAPIsServer(doc *openapi3.T) bool {
+	if doc == nil {
+		return false
+	}
+	for _, server := range doc.Servers {
+		if server != nil && isGoogleAPIsServerURL(server.URL) {
+			return true
+		}
+	}
+	if doc.Paths == nil {
+		return false
+	}
+	for _, pathItem := range doc.Paths.Map() {
+		if pathItem == nil {
+			continue
+		}
+		for _, server := range pathItem.Servers {
+			if server != nil && isGoogleAPIsServerURL(server.URL) {
+				return true
+			}
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil || op.Servers == nil {
+				continue
+			}
+			for _, server := range *op.Servers {
+				if server != nil && isGoogleAPIsServerURL(server.URL) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func isGoogleAPIsServerURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err == nil {
+		if host := strings.ToLower(strings.TrimSpace(parsed.Hostname())); host == "googleapis.com" || strings.HasSuffix(host, ".googleapis.com") {
 			return true
 		}
 	}

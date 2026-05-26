@@ -3825,6 +3825,361 @@ paths:
 	}
 }
 
+func TestParseGoogleDiscoveryOriginInjectsAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: YouTube Data API
+  version: "v3"
+  x-origin:
+    - format: google
+      url: https://youtube.googleapis.com/$discovery/rest?version=v3
+servers:
+  - url: https://youtube.googleapis.com
+components:
+  securitySchemes: {}
+paths:
+  /youtube/v3/search:
+    get:
+      operationId: youtube.search.list
+      security:
+        - Oauth2:
+            - https://www.googleapis.com/auth/youtube.readonly
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "ApiKey", parsed.Auth.Scheme)
+	assert.Equal(t, "query", parsed.Auth.In)
+	assert.Equal(t, "key", parsed.Auth.Header)
+	assert.Equal(t, []string{"YOUTUBE_DATA_API_KEY"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, spec.AuthEnvVarKindPerCall, parsed.Auth.EnvVarSpecs[0].Kind)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Required)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+}
+
+func TestParseGoogleAPIsServerInjectsAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Cloud Run Admin API
+  version: "v2"
+servers:
+  - url: https://run.googleapis.com
+components:
+  securitySchemes: {}
+paths:
+  /v2/projects/{project}/locations:
+    get:
+      operationId: run.projects.locations.list
+      security:
+        - Oauth2:
+            - https://www.googleapis.com/auth/cloud-platform
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "ApiKey", parsed.Auth.Scheme)
+	assert.Equal(t, []string{"CLOUD_RUN_ADMIN_API_KEY"}, parsed.Auth.EnvVars)
+}
+
+func TestParseGoogleDiscoveryDoesNotOverrideExistingAPIKeyScheme(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Google Example API
+  version: "v1"
+  x-origin:
+    - format: google
+servers:
+  - url: https://example.googleapis.com
+components:
+  securitySchemes:
+    ExistingKey:
+      type: apiKey
+      in: query
+      name: key
+paths:
+  /items:
+    get:
+      security:
+        - OAuth2:
+            - https://www.googleapis.com/auth/example
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "ExistingKey", parsed.Auth.Scheme)
+	assert.Equal(t, "key", parsed.Auth.Header)
+}
+
+func TestParseGoogleDiscoveryIgnoresIncompatibleExistingAPIKeyScheme(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Google Example API
+  version: "v1"
+  x-origin:
+    - format: google
+servers:
+  - url: https://example.googleapis.com
+components:
+  securitySchemes:
+    HeaderKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+paths:
+  /items:
+    get:
+      security:
+        - OAuth2:
+            - https://www.googleapis.com/auth/example
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "ApiKey", parsed.Auth.Scheme)
+	assert.Equal(t, "query", parsed.Auth.In)
+	assert.Equal(t, "key", parsed.Auth.Header)
+}
+
+func TestParseGoogleDiscoveryKeepsOAuthPrimaryWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Gmail API
+  version: "v1"
+  x-origin:
+    - format: google
+servers:
+  - url: https://gmail.googleapis.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/gmail.readonly: Read mail
+paths:
+  /gmail/v1/users/{userId}/messages:
+    get:
+      security:
+        - OAuth2:
+            - https://www.googleapis.com/auth/gmail.readonly
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme)
+}
+
+func TestParseGoogleDiscoveryDoesNotMakeSyntheticAPIKeyGlobalDefaultWhenOAuthExists(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Gmail API
+  version: "v1"
+  x-origin:
+    - format: google
+servers:
+  - url: https://gmail.googleapis.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/gmail.readonly: Read mail
+paths:
+  /gmail/v1/users/{userId}/profile:
+    get:
+      responses:
+        "200":
+          description: OK
+  /gmail/v1/users/{userId}/messages:
+    get:
+      security:
+        - OAuth2:
+            - https://www.googleapis.com/auth/gmail.readonly
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme)
+}
+
+func TestParseGoogleAPIsServerWithoutSecurityDoesNotInjectAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Public Google API
+  version: "v1"
+servers:
+  - url: https://public.googleapis.com
+components:
+  securitySchemes: {}
+paths:
+  /public:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.Scheme)
+}
+
+func TestParseGoogleDiscoveryWithoutSecurityDoesNotInjectAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Public Google Discovery API
+  version: "v1"
+  x-origin:
+    - format: google
+      url: https://public.googleapis.com/$discovery/rest?version=v1
+servers:
+  - url: https://public.googleapis.com
+components:
+  securitySchemes: {}
+paths:
+  /public:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.Scheme)
+}
+
+func TestParseGoogleAPIsOperationServerInjectsAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Books API
+  version: "v1"
+components:
+  securitySchemes: {}
+paths:
+  /books/v1/volumes:
+    get:
+      servers:
+        - url: https://books.googleapis.com
+      security:
+        - OAuth2:
+            - https://www.googleapis.com/auth/books
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "ApiKey", parsed.Auth.Scheme)
+	assert.Equal(t, []string{"BOOKS_API_KEY"}, parsed.Auth.EnvVars)
+}
+
+func TestParseNonGoogleOriginURLContainingGoogleDiscoveryPathDoesNotInjectAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Proxy API
+  version: "1.0.0"
+  x-origin:
+    - url: https://example.com/proxy/googleapis.com/$discovery/rest?version=v1
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes: {}
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.Scheme)
+}
+
+func TestParseNonGoogleSpecDoesNotInjectAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Linear API
+  version: "1.0.0"
+servers:
+  - url: https://api.linear.app
+components:
+  securitySchemes: {}
+paths:
+  /viewer:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.Scheme)
+}
+
 func TestSpeakeasyAuthExampleOverridesDerivedEnvVar(t *testing.T) {
 	t.Parallel()
 
