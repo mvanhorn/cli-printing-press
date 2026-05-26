@@ -86,6 +86,7 @@ resources:
           - name: s
             flag_name: address
             aliases: [s]
+            pp:dispatch-param: true
             type: string
             description: Street address
       search:
@@ -103,6 +104,7 @@ resources:
 	assert.Equal(t, "s", param.Name)
 	assert.Equal(t, "address", param.FlagName)
 	assert.Equal(t, []string{"s"}, param.Aliases)
+	assert.True(t, param.DispatchParam)
 	bodyParam := s.Resources["stores"].Endpoints["search"].Body[0]
 	assert.Equal(t, "startAfter", bodyParam.Name)
 	assert.Equal(t, "searchAfter", bodyParam.BodyName)
@@ -118,7 +120,7 @@ resources:
           "method": "GET",
           "path": "/stores",
           "params": [
-            {"name": "c", "flag_name": "city", "aliases": ["c"], "type": "string"}
+            {"name": "c", "flag_name": "city", "aliases": ["c"], "pp:dispatch-param": true, "type": "string"}
           ]
         }
       }
@@ -131,6 +133,7 @@ resources:
 	assert.Equal(t, "c", param.Name)
 	assert.Equal(t, "city", param.FlagName)
 	assert.Equal(t, []string{"c"}, param.Aliases)
+	assert.True(t, param.DispatchParam)
 }
 
 func TestParseStreamingConfig(t *testing.T) {

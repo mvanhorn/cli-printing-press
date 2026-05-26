@@ -2002,23 +2002,27 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 }
 
 type Param struct {
-	Name         string   `yaml:"name" json:"name"`
-	FlagName     string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
-	URLName      string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
-	BodyName     string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
-	Aliases      []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	Type         string   `yaml:"type" json:"type"`
-	Required     bool     `yaml:"required" json:"required"`
-	Positional   bool     `yaml:"positional" json:"positional"`
-	PathParam    bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
-	Default      any      `yaml:"default" json:"default"`
-	Description  string   `yaml:"description" json:"description"`
-	Fields       []Param  `yaml:"fields" json:"fields"`                     // for nested objects
-	Enum         []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
-	Format       string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
-	ItemType     string   `yaml:"item_type,omitempty" json:"item_type,omitempty"`
-	ItemTemplate any      `yaml:"item_template,omitempty" json:"item_template,omitempty"`
-	Purpose      string   `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	Name        string   `yaml:"name" json:"name"`
+	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
+	BodyName    string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
+	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	Type        string   `yaml:"type" json:"type"`
+	Required    bool     `yaml:"required" json:"required"`
+	Positional  bool     `yaml:"positional" json:"positional"`
+	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
+	Default     any      `yaml:"default" json:"default"`
+	Description string   `yaml:"description" json:"description"`
+	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
+	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
+	Format      string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	// DispatchParam marks a fixed discriminator such as type=domain_rank.
+	// Generated runnable examples keep its default instead of substituting
+	// synthetic dogfood values that would address a different upstream route.
+	DispatchParam bool   `yaml:"dispatch_param,omitempty" json:"dispatch_param,omitempty"`
+	ItemType      string `yaml:"item_type,omitempty" json:"item_type,omitempty"`
+	ItemTemplate  any    `yaml:"item_template,omitempty" json:"item_template,omitempty"`
+	Purpose       string `yaml:"purpose,omitempty" json:"purpose,omitempty"`
 	// FieldSelectorDefault is a sync-time default for field-selector params
 	// such as opt_fields, fields, expand, include, or select. It stays separate
 	// from Default so generated endpoint commands do not silently change their
@@ -2084,6 +2088,9 @@ func (p *Param) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*p = Param(out)
 	p.FlagNameSet = yamlMappingHasKey(value, "flag_name")
+	if dispatch, ok := yamlMappingBool(value, "pp:dispatch-param"); ok {
+		p.DispatchParam = dispatch
+	}
 	return nil
 }
 
@@ -2097,6 +2104,12 @@ func (p *Param) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err == nil {
 		_, p.FlagNameSet = raw["flag_name"]
+		if rawDispatch, ok := raw["pp:dispatch-param"]; ok {
+			var dispatch bool
+			if err := json.Unmarshal(rawDispatch, &dispatch); err == nil {
+				p.DispatchParam = dispatch
+			}
+		}
 	}
 	return nil
 }
@@ -2111,6 +2124,23 @@ func yamlMappingHasKey(value *yaml.Node, key string) bool {
 		}
 	}
 	return false
+}
+
+func yamlMappingBool(value *yaml.Node, key string) (bool, bool) {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return false, false
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value != key {
+			continue
+		}
+		var out bool
+		if err := value.Content[i+1].Decode(&out); err != nil {
+			return false, false
+		}
+		return out, true
+	}
+	return false, false
 }
 
 func yamlMappingValue(value *yaml.Node, key string) *yaml.Node {

@@ -246,6 +246,79 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			want: "search list --search-query example-value",
 		},
 		{
+			name: "required dispatch type param keeps string default",
+			resources: map[string]spec.Resource{
+				"domain": {
+					Endpoints: map[string]spec.Endpoint{
+						"rank": {
+							Method: "GET",
+							Path:   "/",
+							Params: []spec.Param{
+								{Name: "type", Required: true, Type: "string", Default: "domain_rank"},
+								{Name: "domain", Required: true, Type: "string"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/domain/refresh"},
+					},
+				},
+			},
+			want: "domain rank --type domain_rank --domain example-value",
+		},
+		{
+			name: "explicit dispatch param keeps string default",
+			resources: map[string]spec.Resource{
+				"reports": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/reports",
+							Params: []spec.Param{
+								{Name: "mode", Required: true, Type: "string", Default: "summary", DispatchParam: true},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/reports/refresh"},
+					},
+				},
+			},
+			want: "reports list --mode summary",
+		},
+		{
+			name: "non-dispatch string default still uses synthetic value",
+			resources: map[string]spec.Resource{
+				"search": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/search",
+							Params: []spec.Param{
+								{Name: "query", Required: true, Type: "string", Default: "cats"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/search/refresh"},
+					},
+				},
+			},
+			want: "search list --query example-value",
+		},
+		{
+			name: "numeric default still uses synthetic value",
+			resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/items",
+							Params: []spec.Param{
+								{Name: "limit", Required: true, Type: "integer", Default: 100},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/items/refresh"},
+					},
+				},
+			},
+			want: "items list --limit 50",
+		},
+		{
 			name: "required body field uses public flag name",
 			resources: map[string]spec.Resource{
 				"stores": {

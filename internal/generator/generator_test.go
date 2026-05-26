@@ -7920,6 +7920,46 @@ func TestExampleLineUsesRenderedCommandAndFlagNames(t *testing.T) {
 	assert.NotContains(t, got, "--idempotencyKey")
 }
 
+func TestGeneratedCommandExampleKeepsDispatchParamDefault(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("dispatch-default")
+	apiSpec.Resources["domain"] = spec.Resource{
+		Description: "Domain reports",
+		Endpoints: map[string]spec.Endpoint{
+			"rank": {
+				Method:      "GET",
+				Path:        "/",
+				Description: "Fetch a domain rank report",
+				Params: []spec.Param{
+					{Name: "type", Type: "string", Required: true, Default: "domain_rank", Description: "Report type"},
+					{Name: "domain", Type: "string", Required: true, Description: "Domain"},
+				},
+			},
+			"list": {
+				Method:      "GET",
+				Path:        "/domains",
+				Description: "List domains",
+				Params: []spec.Param{
+					{Name: "limit", Type: "integer", Required: true, Default: 100, Description: "Limit"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "dispatch-default-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	rankSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "domain_rank.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rankSrc), `dispatch-default-pp-cli domain rank --type domain_rank --domain example-value`)
+
+	listSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "domain_list.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(listSrc), `dispatch-default-pp-cli domain list --limit 50`)
+}
+
 func TestGeneratedCommandExamplePrefersNarrativeQuickStart(t *testing.T) {
 	t.Parallel()
 
