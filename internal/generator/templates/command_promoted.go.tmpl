@@ -66,9 +66,15 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}
+{{- if .EnvVar}}
+			if !{{flagChangedExpr .}} && flag{{camel (paramIdent .)}} == {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} && !flags.dryRun {
+				return fmt.Errorf("required flag \"%s\" not set (or set %s)", "{{publicFlagName .}}", "{{.EnvVar}}")
+			}
+{{- else}}
 			if !{{flagChangedExpr .}} && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
 			}
+{{- end}}
 {{- end}}
 {{- end}}
 {{- bodyRequiredChecks .Endpoint "\t\t\t"}}
@@ -413,12 +419,20 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
 {{- $param := .}}
+{{- if .EnvVar}}
+	cmd.Flags().{{cobraFlagFuncForParamRequired .Name .Type .Required (hasDefault .)}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", os.Getenv("{{.EnvVar}}"), "{{oneline .Description}}{{enumDescriptionHint .Enum}} (defaults from {{.EnvVar}})")
+{{- else}}
 	cmd.Flags().{{cobraFlagFuncForParamRequired .Name .Type .Required (hasDefault .)}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultValForParamRequired . .Required (hasDefault .)}}, "{{oneline .Description}}{{enumDescriptionHint .Enum}}")
+{{- end}}
 {{- if isConstDefault .}}
 	_ = cmd.Flags().MarkHidden("{{publicFlagName .}}")
 {{- end}}
 {{- range publicFlagAliases $param}}
+{{- if $param.EnvVar}}
+	cmd.Flags().{{cobraFlagFuncForParamRequired $param.Name $param.Type $param.Required (hasDefault $param)}}(&flag{{camel (paramIdent $param)}}, "{{.}}", os.Getenv("{{$param.EnvVar}}"), "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}} (defaults from {{$param.EnvVar}})")
+{{- else}}
 	cmd.Flags().{{cobraFlagFuncForParamRequired $param.Name $param.Type $param.Required (hasDefault $param)}}(&flag{{camel (paramIdent $param)}}, "{{.}}", {{defaultValForParamRequired $param $param.Required (hasDefault $param)}}, "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}}")
+{{- end}}
 	_ = cmd.Flags().MarkHidden("{{.}}")
 {{- end}}
 {{- end}}
