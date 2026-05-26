@@ -3282,6 +3282,8 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 //   issuesCmd.AddCommand(newIssuesStaleCmd(flags))
 //   rootCmd.AddCommand(issuesCmd)
 // Leaf commands must declare every non-root flag used in their examples.
+// Use kebab-case flag names, such as --max-age instead of --maxAge, so the
+// generated CLI convention and verify-skill flag scanner stay aligned.
 // Do not rely on parent-local flags like --org or --project being accepted by
 // child commands unless the parent registered them with PersistentFlags().
 // Single-word Commands register directly: rootCmd.AddCommand(newXxxCmd(flags)).
