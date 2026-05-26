@@ -3114,6 +3114,17 @@ The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed A
 
 **Starter templates for novel commands.** Cobra wiring is mechanical and consistent across novel features; the actual feature work lives in the RunE body. Copy the wrapper below and one of the RunE skeletons that follows, fill in the placeholders from the absorb manifest's transcendence row (`Name`, `Command`, `Description`, `Example`, `WhyItMatters`), and replace the body comments with your implementation. Dogfood, verify, and scorecard still apply to the result — the templates raise the floor without changing what shipcheck checks.
 
+**Helpers already emitted by the generator.** Do not reinvent these helpers in novel command files. They live in `internal/cli/helpers.go` after generation and are available to every hand-written command in package `cli`:
+
+- `printJSONFiltered(w io.Writer, v any, flags *rootFlags) error` - apply `--select`, `--compact`, `--csv`, and `--quiet` while writing JSON from a Go value.
+- `printAutoTable(w io.Writer, items []map[string]any) error` - render JSON-like rows as the generated human table format.
+- `defaultDBPath(name string) string` - resolve the local SQLite database path for `<name>`.
+- `dryRunOK(flags *rootFlags) bool` - detect verify-friendly `--dry-run` short-circuits before network, store, or filesystem work.
+- `filterFields(data json.RawMessage, fields string) json.RawMessage` - apply `--select` to a JSON blob.
+- `compactFields(data json.RawMessage) json.RawMessage` - apply `--compact` to a JSON blob.
+- `isTerminal(w io.Writer) bool` - detect terminal output versus pipes.
+- `wantsHumanTable(w io.Writer, flags *rootFlags) bool` - detect when output should use the generated human table instead of machine JSON.
+
 ```go
 // internal/cli/<command>.go — replace <command> with the kebab leaf
 // of NovelFeature.Command (e.g., "issues stale" → "issues_stale.go").
