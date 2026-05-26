@@ -43,6 +43,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
 | `x-data-source-strategy` | path item or operation | `Endpoint.DataSourceStrategy` | No |
 | `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
+| `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
@@ -1191,6 +1192,36 @@ paths:
   /webhooks/test:
     post:
       x-pp-safe-probe: true
+      responses:
+        "200": {description: ok}
+```
+
+### `x-happy-args`
+
+Declares live-dogfood happy-path fixture arguments for one operation. Use it
+when generic synthesized inputs cannot satisfy the endpoint contract, such as a
+search endpoint that requires `q` or a lookup endpoint that requires one of
+several conditional query flags.
+
+Parsed field: `Endpoint.HappyArgs`
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Must be a string in the runtime annotation format consumed by
+  `pp:happy-args`.
+- Tokens are semicolon-separated. `<label>=value` overlays synthesized
+  positional args, and `--flag=value` overlays or adds flag/value pairs.
+- Empty or whitespace-only values behave the same as absence.
+
+Example:
+
+```yaml
+paths:
+  /referents:
+    get:
+      operationId: listReferents
+      x-happy-args: "--song-id=378195"
       responses:
         "200": {description: ok}
 ```

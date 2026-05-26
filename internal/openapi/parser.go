@@ -62,6 +62,7 @@ const (
 	extensionCache                 = "x-cache"
 	extensionStreaming             = "x-streaming"
 	extensionSyncWalker            = "x-pp-sync-walker"
+	extensionHappyArgs             = "x-happy-args"
 	extensionDispatchParam         = "x-pp-dispatch-param"
 	extensionParamURLName          = "x-url-name"
 	extensionParamURLNames         = "x-param-url-names"
@@ -3115,6 +3116,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			if endpoint.DataSourceStrategy == "" {
 				endpoint.DataSourceStrategy = pathDataSourceStrategy
 			}
+			endpoint.HappyArgs = readHappyArgsExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 
 			// Namespace the inline-item synthetic name with the resource so
 			// two resources whose default GET endpoints both compute the
@@ -4997,6 +4999,22 @@ func readDataSourceStrategyExtension(extensions map[string]any, context string) 
 		warnf("%s: %s must be one of auto, local, live, got %q; ignoring", context, extensionDataSourceStrategy, strategy)
 		return ""
 	}
+}
+
+func readHappyArgsExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionHappyArgs]
+	if !ok || raw == nil {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionHappyArgs, raw)
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 // readWalkerExtension reads the `x-pp-sync-walker` extension from an
