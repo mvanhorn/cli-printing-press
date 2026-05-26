@@ -181,6 +181,9 @@ type ReadmeNarrative struct {
 	// WhenToUse is a 2–4 sentence narrative rendered in SKILL.md describing
 	// the CLI's ideal use cases. Not rendered in README.
 	WhenToUse string `json:"when_to_use,omitempty"`
+	// AntiTriggers are explicit "do not use this CLI for..." boundaries
+	// rendered in SKILL.md so agents can reject mismatched tasks quickly.
+	AntiTriggers []string `json:"anti_triggers,omitempty"`
 	// Recipes are worked examples rendered in README/SKILL Recipes sections.
 	// Each recipe is a titled command with an explanation.
 	Recipes []Recipe `json:"recipes,omitempty"`

@@ -2988,8 +2988,9 @@ func TestRunGenerateProjectReturnsResearchNarrativeCatalogMetadata(t *testing.T)
 	researchData, err := json.Marshal(&pipeline.ResearchResult{
 		APIName: "alaska-airlines",
 		Narrative: &pipeline.ReadmeNarrative{
-			DisplayName: "Alaska Airlines",
-			Headline:    "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.",
+			DisplayName:  "Alaska Airlines",
+			Headline:     "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.",
+			AntiTriggers: []string{"Booking or changing flights"},
 		},
 	})
 	require.NoError(t, err)
@@ -3016,6 +3017,10 @@ func TestRunGenerateProjectReturnsResearchNarrativeCatalogMetadata(t *testing.T)
 
 	assert.Equal(t, "Alaska Airlines", got.DisplayName)
 	assert.Equal(t, "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.", got.CatalogDescription)
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skill), "## Anti-triggers")
+	assert.Contains(t, string(skill), "- Booking or changing flights")
 }
 
 func TestRunGenerateProjectAppliesResearchCanonicalAuthEnvVar(t *testing.T) {
