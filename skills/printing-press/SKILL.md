@@ -1657,6 +1657,9 @@ cat > "$API_RUN_DIR/research.json" <<REOF
     {"name": "<tool1>", "url": "<github-url>", "language": "<Go|JavaScript|Python|etc>", "stars": <N>, "command_count": <N>},
     ...
   ],
+  "auth": {
+    "canonical_env_var": "<CANONICAL_ENV_VAR, omit when unknown>"
+  },
   "novel_features": [
     {
       "name": "<Feature Name>",
@@ -1709,6 +1712,9 @@ For each tool, fill in what you know from the research. Stars and command_count 
 7. `group` clusters related features under a theme name. Pick 2–5 themes total (e.g. "Local state that compounds", "Agent-native plumbing", "Reachability mitigation"). Use the same `group` string verbatim across features that belong together — exact matches drive README grouping. Leave `group` empty if the CLI has too few novel features to warrant clustering.
 8. If no transcendence features scored >= 5/10, omit the `novel_features` field entirely.
 9. Do not add a feature to `novel_features` merely to expose it through MCP. Any user-facing Cobra command becomes an MCP tool automatically unless it sets `cmd.Annotations["mcp:hidden"] = "true"`.
+
+**Auth research rule**:
+1. `auth.canonical_env_var` is the single-token credential env var discovered from vendor docs, MCP/source analysis, or dominant SDK/CLI convention (for example `APIFY_TOKEN`, `GITHUB_TOKEN`, `STRIPE_SECRET_KEY`). Omit it when no canonical name is known, when auth is HTTP Basic or another credential pair, or when the auth flow needs richer metadata. Fresh generation reads this env var first and keeps the parser-derived name as a fallback automatically.
 
 **Narrative rules** (the `narrative` object drives README headline, Quick Start, Auth, Troubleshooting, and the entire SKILL.md):
 1. `display_name` is the canonical prose name, discovered during research, with exact brand casing and spacing. This is agentic/research-owned, not slug-inferred by Go code. Good: "Product Hunt", "GitHub", "YouTube", "Cal.com". Bad: "Producthunt", "Github", "Youtube", "Cal Com". Use the slug only for binary names, directories, module paths, config paths, and env-var prefixes.
@@ -2132,8 +2138,11 @@ auth:
     - <API_NAME>_TOKEN  # bearer_token → _TOKEN, api_key → _API_KEY
 ```
 
-When research or source metadata names a real env var, use only that canonical
-name in `env_vars`; do not add guessed slug-based aliases.
+When research or source metadata names a real single-token env var, record it
+in `research.json` as `auth.canonical_env_var`; fresh generation reads that
+name first and keeps the parser-derived env var as a trailing fallback. When
+you are editing an internal YAML spec directly, use only the canonical name in
+`env_vars`; do not add guessed slug-based aliases.
 
 For OpenAPI specs, choose the security scheme by wire format, not by whether
 the token feels like an API key. Use `type: http` with `scheme: bearer` when
@@ -2174,11 +2183,15 @@ Walk through:
 2. Check Phase 1 research, Phase 1.5a MCP source code analysis, and community
    wrapper READMEs for a canonical env var name documented by the vendor or
    in widespread use.
-3. If they differ, add `x-auth-env-vars` on the selected security scheme
-   (OpenAPI) or set `auth.env_vars` to the canonical name (internal YAML).
-   Use only the canonical name; do not retain the slug-derived form as an
-   alias. For HTTP Basic, supply the full two-entry canonical pair
-   (username position first, password position second). For OAuth2
+3. If they differ and the canonical name is a single-token credential, record
+   it in `research.json` as `auth.canonical_env_var`. The generator will read
+   the canonical name first and retain the slug-derived form as a fallback.
+   If you are editing the source spec directly instead, add `x-auth-env-vars`
+   on the selected security scheme (OpenAPI) or set `auth.env_vars` to the
+   canonical name (internal YAML). Use only the canonical name in the spec
+   edit; do not retain guessed aliases there. For HTTP Basic, supply the full
+   two-entry canonical pair (username position first, password position
+   second) via `x-auth-env-vars`. For OAuth2
    `client_credentials`, the parser silently re-applies the
    `CLIENT_ID`/`CLIENT_SECRET` default when `x-auth-env-vars` has fewer
    than two entries (see `applyAuthEnvVarDefaults` in

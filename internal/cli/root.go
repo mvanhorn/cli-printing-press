@@ -550,6 +550,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	if apiSpec != nil {
 		catalogEntry = lookupCatalogEntryForGenerateSpec(apiSpec.Name, catalogSpecLookupRefs(opts.specFiles, opts.specURL))
 		enrichSpecFromCatalogEntry(apiSpec, catalogEntry)
+		applyResearchAuthMetadata(apiSpec, opts.researchDir)
 	}
 	gen := generator.New(apiSpec, absOut)
 	if catalogEntry != nil {
@@ -2114,6 +2115,108 @@ func translateNarrative(n *pipeline.ReadmeNarrative) *generator.ReadmeNarrative 
 		})
 	}
 	return out
+}
+
+func applyResearchAuthMetadata(apiSpec *spec.APISpec, researchDir string) {
+	if apiSpec == nil || strings.TrimSpace(researchDir) == "" {
+		return
+	}
+	research, err := pipeline.LoadResearch(researchDir)
+	if err != nil {
+		return
+	}
+	envVar := research.CanonicalAuthEnvVar()
+	if !isResearchCanonicalEnvVar(envVar) {
+		return
+	}
+	applyCanonicalAuthEnvVar(&apiSpec.Auth, envVar)
+}
+
+func isResearchCanonicalEnvVar(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if i == 0 {
+			if c < 'A' || c > 'Z' {
+				return false
+			}
+			continue
+		}
+		if (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func applyCanonicalAuthEnvVar(auth *spec.AuthConfig, canonical string) {
+	if auth == nil || canonical == "" || auth.Type == "" || auth.Type == "none" {
+		return
+	}
+	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+		return
+	}
+	if len(auth.EnvVars) > 1 {
+		return
+	}
+	if len(auth.EnvVars) > 0 && strings.TrimSpace(auth.EnvVars[0]) == canonical {
+		return
+	}
+	oldEnvVars := append([]string(nil), auth.EnvVars...)
+	merged := mergeAuthEnvVarNames([]string{canonical}, auth.EnvVars)
+	if len(merged) == 0 {
+		return
+	}
+	normalizeSingleTokenAuthFormatForAliases(auth, oldEnvVars)
+	auth.EnvVars = merged
+	if len(merged) == 1 {
+		auth.EnvVarSpecs = []spec.AuthEnvVar{{
+			Name:      merged[0],
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: true,
+			Inferred:  true,
+		}}
+		return
+	}
+	auth.EnvVarSpecs = spec.NewORCaseEnvVarSpecs(merged)
+}
+
+func normalizeSingleTokenAuthFormatForAliases(auth *spec.AuthConfig, oldEnvVars []string) {
+	if auth == nil || auth.Format == "" || len(oldEnvVars) != 1 {
+		return
+	}
+	oldName := strings.TrimSpace(oldEnvVars[0])
+	if oldName == "" {
+		return
+	}
+	oldPlaceholder := naming.EnvVarPlaceholder(oldName)
+	if oldPlaceholder != "" {
+		auth.Format = strings.ReplaceAll(auth.Format, "{"+oldPlaceholder+"}", "{token}")
+	}
+	auth.Format = strings.ReplaceAll(auth.Format, "{"+oldName+"}", "{token}")
+}
+
+func mergeAuthEnvVarNames(canonical, existing []string) []string {
+	seen := make(map[string]struct{}, len(canonical)+len(existing))
+	merged := make([]string, 0, len(canonical)+len(existing))
+	for _, source := range [][]string{canonical, existing} {
+		for _, name := range source {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			merged = append(merged, name)
+		}
+	}
+	return merged
 }
 
 // enrichSpecFromCatalog looks up the API in the embedded catalog and copies

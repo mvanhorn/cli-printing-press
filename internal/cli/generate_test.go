@@ -3010,6 +3010,216 @@ func TestRunGenerateProjectReturnsResearchNarrativeCatalogMetadata(t *testing.T)
 	assert.Equal(t, "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.", got.CatalogDescription)
 }
 
+func TestRunGenerateProjectAppliesResearchCanonicalAuthEnvVar(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	researchData, err := json.Marshal(&pipeline.ResearchResult{
+		APIName: "apify",
+		Auth: &pipeline.ResearchAuth{
+			CanonicalEnvVar: "APIFY_TOKEN",
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), researchData, 0o644))
+
+	apiSpec := &spec.APISpec{
+		Name:    "apify",
+		Version: "1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			EnvVars: []string{"APIFY_HTTP_BEARER"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "APIFY_HTTP_BEARER", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "apify")
+
+	_, err = runGenerateProject(apiSpec, outputDir, generateProjectOptions{researchDir: researchDir})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"APIFY_TOKEN", "APIFY_HTTP_BEARER"}, apiSpec.Auth.EnvVars)
+	require.Len(t, apiSpec.Auth.EnvVarSpecs, 2)
+	assert.True(t, apiSpec.Auth.IsAuthEnvVarORCase(), "canonical and fallback names should behave as alternatives")
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	content := string(cfgSrc)
+	canonicalIdx := strings.Index(content, `os.Getenv("APIFY_TOKEN")`)
+	fallbackIdx := strings.Index(content, `os.Getenv("APIFY_HTTP_BEARER")`)
+	require.NotEqual(t, -1, canonicalIdx, "config must read the research-discovered canonical env var")
+	require.NotEqual(t, -1, fallbackIdx, "config must retain the parser-derived fallback env var")
+	assert.Less(t, canonicalIdx, fallbackIdx, "canonical env var should be checked before fallback")
+}
+
+func TestRunGenerateProjectCanonicalAuthEnvVarPreservesFormattedAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	researchData, err := json.Marshal(&pipeline.ResearchResult{
+		APIName: "format-test",
+		Auth: &pipeline.ResearchAuth{
+			CanonicalEnvVar: "DISCORD_TOKEN",
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), researchData, 0o644))
+
+	apiSpec := &spec.APISpec{
+		Name:    "format-test",
+		Version: "1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			In:      "header",
+			Format:  "Bot {bot_token}",
+			EnvVars: []string{"DISCORD_BOT_TOKEN"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "DISCORD_BOT_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"users": {
+				Description: "Users",
+				Endpoints: map[string]spec.Endpoint{
+					"me": {Method: "GET", Path: "/users/@me", Description: "Current user"},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "format-test")
+
+	_, err = runGenerateProject(apiSpec, outputDir, generateProjectOptions{researchDir: researchDir})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"DISCORD_TOKEN", "DISCORD_BOT_TOKEN"}, apiSpec.Auth.EnvVars)
+	assert.Equal(t, "Bot {token}", apiSpec.Auth.Format)
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	content := string(cfgSrc)
+	assert.Contains(t, content, `return applyAuthFormat("Bot {token}", map[string]string{`)
+	assert.Contains(t, content, `"token":`)
+	assert.Contains(t, content, `c.DiscordToken,`)
+	assert.NotContains(t, content, `applyAuthFormat("Bot {bot_token}"`)
+}
+
+func TestApplyResearchAuthMetadataRejectsUnsafeCanonicalEnvVars(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		canonical    string
+		auth         spec.AuthConfig
+		wantEnvVars  []string
+		wantSpecName string
+	}{
+		{
+			name:      "placeholder value ignored",
+			canonical: "<CANONICAL_ENV_VAR, omit when unknown>",
+			auth: spec.AuthConfig{
+				Type:    "bearer_token",
+				EnvVars: []string{"APIFY_HTTP_BEARER"},
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "APIFY_HTTP_BEARER", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+				},
+			},
+			wantEnvVars:  []string{"APIFY_HTTP_BEARER"},
+			wantSpecName: "APIFY_HTTP_BEARER",
+		},
+		{
+			name:      "lowercase value ignored",
+			canonical: "apify_token",
+			auth: spec.AuthConfig{
+				Type:    "bearer_token",
+				EnvVars: []string{"APIFY_HTTP_BEARER"},
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "APIFY_HTTP_BEARER", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+				},
+			},
+			wantEnvVars:  []string{"APIFY_HTTP_BEARER"},
+			wantSpecName: "APIFY_HTTP_BEARER",
+		},
+		{
+			name:      "no auth ignored",
+			canonical: "APIFY_TOKEN",
+			auth: spec.AuthConfig{
+				Type: "none",
+			},
+			wantEnvVars: nil,
+		},
+		{
+			name:      "basic auth ignored",
+			canonical: "TWILIO_TOKEN",
+			auth: spec.AuthConfig{
+				Type:    "api_key",
+				Format:  "Basic {credentials}",
+				EnvVars: []string{"TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"},
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "TWILIO_ACCOUNT_SID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false, Inferred: true},
+					{Name: "TWILIO_AUTH_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+				},
+			},
+			wantEnvVars:  []string{"TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"},
+			wantSpecName: "TWILIO_ACCOUNT_SID",
+		},
+		{
+			name:      "multi credential auth ignored",
+			canonical: "STRIPE_SECRET_KEY",
+			auth: spec.AuthConfig{
+				Type:    "oauth2",
+				Format:  "Bearer {access_token}",
+				EnvVars: []string{"CLIENT_ID", "CLIENT_SECRET"},
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "CLIENT_ID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false, Inferred: true},
+					{Name: "CLIENT_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+				},
+			},
+			wantEnvVars:  []string{"CLIENT_ID", "CLIENT_SECRET"},
+			wantSpecName: "CLIENT_ID",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			researchDir := t.TempDir()
+			researchData, err := json.Marshal(&pipeline.ResearchResult{
+				APIName: "test",
+				Auth: &pipeline.ResearchAuth{
+					CanonicalEnvVar: tt.canonical,
+				},
+			})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), researchData, 0o644))
+
+			apiSpec := &spec.APISpec{Name: "test", Auth: tt.auth}
+			applyResearchAuthMetadata(apiSpec, researchDir)
+
+			assert.Equal(t, tt.wantEnvVars, apiSpec.Auth.EnvVars)
+			if tt.wantSpecName == "" {
+				assert.Empty(t, apiSpec.Auth.EnvVarSpecs)
+			} else {
+				require.NotEmpty(t, apiSpec.Auth.EnvVarSpecs)
+				assert.Equal(t, tt.wantSpecName, apiSpec.Auth.EnvVarSpecs[0].Name)
+			}
+		})
+	}
+}
+
 func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {
 	apiSpec := &spec.APISpec{
 		Name:                        "trigger-dev",
