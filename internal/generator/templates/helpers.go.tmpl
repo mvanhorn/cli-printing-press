@@ -145,8 +145,9 @@ func MarkPersona(cfg *config.Config, role Persona) {
 
 // resolveAuthRole is intentionally a variable so a printed CLI can install an
 // API-specific resolver from a hand-authored file without editing generated
-// command files. The default is "unknown", so role-gated commands fail closed
-// until role evidence is available from config, env, or the custom resolver.
+// command files. The default returns "" (treated as unknown), so role-gated
+// commands fail closed until role evidence is available from config, env, or
+// the custom resolver.
 var resolveAuthRole = func(_ *rootFlags, _ *config.Config) (Persona, error) {
 	return "", nil
 }
