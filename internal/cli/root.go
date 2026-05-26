@@ -2093,6 +2093,7 @@ func translateNarrative(n *pipeline.ReadmeNarrative) *generator.ReadmeNarrative 
 		ValueProp:      n.ValueProp,
 		AuthNarrative:  n.AuthNarrative,
 		WhenToUse:      n.WhenToUse,
+		AntiTriggers:   append([]string(nil), n.AntiTriggers...),
 		TriggerPhrases: append([]string(nil), n.TriggerPhrases...),
 	}
 	for _, qs := range n.QuickStart {

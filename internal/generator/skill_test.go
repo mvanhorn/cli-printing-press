@@ -28,6 +28,7 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		Headline:       "Quotes, charts, and a local portfolio nothing else has",
 		ValueProp:      "Quotes, charts, fundamentals, options chains, and a SQLite-backed portfolio tracker.",
 		WhenToUse:      "Reach for this CLI when an agent needs quotes, fundamentals, or persistent portfolio state against Yahoo Finance.",
+		AntiTriggers:   []string{"Tasks that require placing trades or moving money", "Brokerage account management beyond read-only portfolio analysis"},
 		TriggerPhrases: []string{"quote AAPL", "check my portfolio", "options for TSLA"},
 		Recipes: []Recipe{
 			{Title: "Morning digest", Command: "finance-pp-cli digest --watchlist tech", Explanation: "Biggest movers across a named watchlist."},
@@ -61,6 +62,14 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 	// Body
 	assert.True(t, strings.Contains(content, "## When to Use This CLI"),
 		"WhenToUse narrative should render as its own section")
+	assert.True(t, strings.Contains(content, "## Anti-triggers"),
+		"AntiTriggers narrative should render as its own section")
+	assert.True(t, strings.Contains(content, "- Tasks that require placing trades or moving money"),
+		"anti-triggers should render as explicit bullets")
+	assert.True(t, strings.Contains(content, "- Brokerage account management beyond read-only portfolio analysis"),
+		"all anti-trigger bullets should render")
+	assert.False(t, strings.Contains(content, "## When Not to Use This CLI"),
+		"generic read-only boundary should be omitted when anti-triggers are present")
 	assert.True(t, strings.Contains(content, "## Unique Capabilities"),
 		"Novel features should appear as Unique Capabilities so agents don't need --help discovery")
 	assert.True(t, strings.Contains(content, "### Local state that compounds"),
@@ -122,6 +131,8 @@ func TestSkillFallsBackWhenNarrativeAbsent(t *testing.T) {
 		"description falls back to spec description")
 	assert.False(t, strings.Contains(content, "## When to Use This CLI"),
 		"WhenToUse section should be omitted when narrative is absent")
+	assert.False(t, strings.Contains(content, "## Anti-triggers"),
+		"Anti-triggers section should be omitted when narrative is absent")
 	assert.False(t, strings.Contains(content, "## Recipes"),
 		"Recipes section should be omitted when narrative is absent")
 	assert.True(t, strings.Contains(content, "## Auth Setup"),
