@@ -17,6 +17,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-proxy-routes` | `info` | `APISpec.ProxyRoutes` | No |
 | `x-origin` | `info` | Google Discovery resource fallback | No |
 | `x-providerName` | `info` | Google Discovery resource fallback | No |
+| `x-roles` | root or `info` | `APISpec.Roles` | No |
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
 | `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
@@ -41,6 +42,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
 | `x-data-source-strategy` | path item or operation | `Endpoint.DataSourceStrategy` | No |
+| `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 
@@ -194,6 +196,26 @@ x-tier-routing:
         in: query
         header: api_key
         env_vars: [EXAMPLE_PAID_KEY]
+```
+
+### `x-roles`
+
+Declares the authenticated persona labels that operation-level RBAC gates may
+reference.
+
+Parsed field: `APISpec.Roles`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`.
+- Must be a string list.
+- Each role must match `^[A-Za-z][A-Za-z0-9_-]*$`.
+- Every operation-level `x-requires-role` value must name one declared role.
+
+Example:
+
+```yaml
+x-roles: [parent, student, teacher, admin]
 ```
 
 ### `x-rate-class`
@@ -1084,6 +1106,33 @@ paths:
   /reports/snapshot:
     get:
       x-data-source-strategy: local
+      responses:
+        "200": {description: ok}
+```
+
+### `x-requires-role`
+
+Requires the authenticated account to have one of the declared `x-roles` before
+the generated command calls the API.
+
+Parsed field: `Endpoint.RequiresRole`
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Must be a string naming a role declared by `x-roles`.
+- The generator emits the guard framework and endpoint call site. How a printed
+  CLI discovers the authenticated account's role remains API-specific.
+
+Example:
+
+```yaml
+x-roles: [parent, student, teacher, admin]
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      x-requires-role: admin
       responses:
         "200": {description: ok}
 ```

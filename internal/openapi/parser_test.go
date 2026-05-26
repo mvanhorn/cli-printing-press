@@ -88,6 +88,82 @@ paths:
 	assert.Equal(t, "event_id", parsed.Streaming.Metadata.PrimaryKey)
 }
 
+func TestParseRequiresRoleExtension(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+x-roles: [parent, student, teacher, admin]
+info:
+  title: Role API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      x-requires-role: admin
+      responses:
+        "200":
+          description: ok
+  /users/me:
+    get:
+      operationId: getCurrentUser
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"parent", "student", "teacher", "admin"}, parsed.Roles)
+	assert.Equal(t, "admin", parsed.Resources["users"].Endpoints["list"].RequiresRole)
+	assert.Empty(t, parsed.Resources["users"].Endpoints["get-current-user"].RequiresRole)
+}
+
+func TestParseRequiresRoleExtensionRejectsInvalidShapes(t *testing.T) {
+	t.Parallel()
+
+	_, err := Parse([]byte(`
+openapi: 3.0.3
+x-roles: [admin]
+info:
+  title: Role API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      x-requires-role: [admin]
+      responses:
+        "200":
+          description: ok
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "x-requires-role must be a string")
+
+	_, err = Parse([]byte(`
+openapi: 3.0.3
+x-roles: admin
+info:
+  title: Role API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      x-requires-role: admin
+      responses:
+        "200":
+          description: ok
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "x-roles must be a string array")
+}
+
 func TestParseLenientStubsMissingLocalSchemaRefs(t *testing.T) {
 	specBytes := []byte(`
 openapi: 3.0.3
