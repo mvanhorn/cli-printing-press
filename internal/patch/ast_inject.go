@@ -527,6 +527,12 @@ func parseStmt(src string) (dst.Stmt, error) {
 	if err != nil {
 		return nil, fmt.Errorf("patch.parseStmt: %w (src=%q)", err, src)
 	}
-	fn := file.Decls[0].(*dst.FuncDecl)
-	return fn.Body.List[0], nil
+	for _, d := range file.Decls {
+		fn, ok := d.(*dst.FuncDecl)
+		if !ok || fn.Body == nil || len(fn.Body.List) == 0 {
+			continue
+		}
+		return fn.Body.List[0], nil
+	}
+	return nil, fmt.Errorf("patch.parseStmt: no statement parsed from %q", src)
 }

@@ -282,7 +282,11 @@ func injectAddCommands(hostPath string, calls []string) error {
 	// just before that function's trailing return statement (or at the end
 	// of its body if no trailing return).
 	injected := false
+	var injectErr error
 	dst.Inspect(file, func(n dst.Node) bool {
+		if injectErr != nil {
+			return false
+		}
 		fn, ok := n.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
 			return true
@@ -297,7 +301,8 @@ func injectAddCommands(hostPath string, calls []string) error {
 		for _, src := range calls {
 			stmt, perr := parseStmtViaDST(src)
 			if perr != nil {
-				continue
+				injectErr = fmt.Errorf("inject AddCommand %q: %w", src, perr)
+				return false
 			}
 			newStmts = append(newStmts, stmt)
 		}
@@ -316,6 +321,9 @@ func injectAddCommands(hostPath string, calls []string) error {
 		return false
 	})
 
+	if injectErr != nil {
+		return injectErr
+	}
 	if !injected {
 		return fmt.Errorf("no function with AddCommand calls found in %s", hostPath)
 	}
