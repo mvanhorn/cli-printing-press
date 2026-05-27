@@ -79,8 +79,14 @@ func Open(dbPath string) (*Store, error) {
 // mattn/go-sqlite3 _journal_mode=WAL / _busy_timeout=5000 form and drops
 // those keys silently, so the busy_timeout below is what keeps a read
 // concurrent with a writer from failing immediately with SQLITE_BUSY.
+//
+// Deliberately no journal_mode pragma here: journal mode is a property of
+// the database file, set by the read-write open, not the connection. Issuing
+// PRAGMA journal_mode=WAL on a read-only handle to a DB still in the default
+// delete mode (e.g. a pre-WAL database opened by an old binary before its
+// first read-write open) errors with "attempt to write a readonly database".
 func OpenReadOnly(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
