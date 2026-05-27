@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.18.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.18.0...v4.18.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **cli:** apply store SQLite pragmas via modernc _pragma= DSN syntax ([#2399](https://github.com/mvanhorn/cli-printing-press/issues/2399)) ([d8b6b5f](https://github.com/mvanhorn/cli-printing-press/commit/d8b6b5f758bc979f1a361b9dd7121dcf4ae0d22a))
+* **cli:** gofmt Go source after publish-time module-path rewrite ([#2405](https://github.com/mvanhorn/cli-printing-press/issues/2405)) ([6183f1b](https://github.com/mvanhorn/cli-printing-press/commit/6183f1b271be92d1dca92acd996ad383d8bfb8c6))
+
 ## [4.18.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.17.0...v4.18.0) (2026-05-26)
 
 
