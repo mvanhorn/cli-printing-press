@@ -719,6 +719,181 @@ func TestMigrate_V3ToV6IsAdditive(t *testing.T) {
 		t.Fatalf("preserved row payload = %s, want original", data)
 	}
 }
+
+// TestSchemaVersion_FreshDBHasPlaybooksTable verifies that a fresh learn-
+// enabled database carries the learning_playbooks table after Open. The
+// v7 migration is the canonical home of the playbook primitive; opening a
+// new DB must leave it queryable without an upgrade step.
+func TestSchemaVersion_FreshDBHasPlaybooksTable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open fresh db: %v", err)
+	}
+	defer s.Close()
+
+	var name string
+	err = s.DB().QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='learning_playbooks'`,
+	).Scan(&name)
+	if err != nil {
+		t.Fatalf("learning_playbooks table should exist after Open on a fresh learn-enabled DB: %v", err)
+	}
+	if name != "learning_playbooks" {
+		t.Fatalf("expected learning_playbooks, got %q", name)
+	}
+
+	// Schema sanity: inserting a row exercises the NOT NULL + DEFAULT
+	// constraints in the migration. If the canonical column shape ever
+	// drifts (e.g., a NOT NULL added without a DEFAULT), this fails fast.
+	if _, err := s.DB().Exec(
+		`INSERT INTO learning_playbooks (query_family, playbook_json) VALUES (?, ?)`,
+		"odds_for_X", `{"slots":["X"]}`,
+	); err != nil {
+		t.Fatalf("insert into learning_playbooks: %v", err)
+	}
+}
+
+// TestMigrate_V6ToV7AddsPlaybooks verifies that opening a v6-stamped
+// database upgrades to v7 by adding the learning_playbooks table without
+// touching any existing data. The v7 migration is purely additive; a
+// future refactor that turns it destructive would silently nuke every
+// existing library CLI's learn-loop state on first reopen.
+func TestMigrate_V6ToV7AddsPlaybooks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	// Mirror the v6-stamped shape: resources composite key plus the
+	// learn-loop tables that existed at v6 (search_learnings,
+	// entity_lookups, search_patterns). Seed a row in each so we can
+	// prove the upgrade preserves them.
+	stmts := []string{
+		`CREATE TABLE resources (
+			id TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			data JSON NOT NULL,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)`,
+		`INSERT INTO resources (id, resource_type, data) VALUES ('user-1', 'user', '{"id":"user-1","name":"alice"}')`,
+		`CREATE TABLE search_learnings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_pattern TEXT NOT NULL,
+			query_entities TEXT,
+			venue TEXT,
+			resource_type TEXT,
+			resource_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			alias_target TEXT,
+			source TEXT NOT NULL,
+			confidence INTEGER DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_observed_at DATETIME,
+			notes TEXT
+		)`,
+		`INSERT INTO search_learnings (query_pattern, resource_id, action, source) VALUES ('alice', 'user-1', 'boost', 'taught')`,
+		`PRAGMA user_version = 6`,
+	}
+	for _, stmt := range stmts {
+		if _, err := raw.Exec(stmt); err != nil {
+			raw.Close()
+			t.Fatalf("seed v6 db (%s): %v", stmt, err)
+		}
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open upgraded db: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("upgraded version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	// learning_playbooks must exist post-upgrade and be writable.
+	var name string
+	if err := s.DB().QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='learning_playbooks'`,
+	).Scan(&name); err != nil {
+		t.Fatalf("learning_playbooks should exist after v6->v7 upgrade: %v", err)
+	}
+	if _, err := s.DB().Exec(
+		`INSERT INTO learning_playbooks (query_family, notes_text) VALUES (?, ?)`,
+		"family_X", "hand-authored notes",
+	); err != nil {
+		t.Fatalf("insert into upgraded learning_playbooks: %v", err)
+	}
+
+	// Pre-existing data preserved: resources row, search_learnings row.
+	data, err := s.Get("user", "user-1")
+	if err != nil {
+		t.Fatalf("get preserved resources row: %v", err)
+	}
+	if string(data) != `{"id":"user-1","name":"alice"}` {
+		t.Fatalf("preserved row payload = %s, want original", data)
+	}
+	var learnedCount int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM search_learnings WHERE resource_id = 'user-1'`).Scan(&learnedCount); err != nil {
+		t.Fatalf("count preserved search_learnings: %v", err)
+	}
+	if learnedCount != 1 {
+		t.Fatalf("preserved search_learnings count = %d, want 1", learnedCount)
+	}
+}
+
+// TestMigrate_V6ToV7IsIdempotent verifies that running Open twice on a
+// learn-enabled DB does not double-migrate or trip a duplicate-table /
+// duplicate-index error. Every v7 migration statement uses IF NOT EXISTS,
+// so the second Open should reach the version stamp without an error and
+// leave learning_playbooks untouched.
+func TestMigrate_V6ToV7IsIdempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	s1, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	if _, err := s1.DB().Exec(
+		`INSERT INTO learning_playbooks (query_family, playbook_json) VALUES (?, ?)`,
+		"family_idem", `{"slots":["X"]}`,
+	); err != nil {
+		s1.Close()
+		t.Fatalf("seed playbook row: %v", err)
+	}
+	s1.Close()
+
+	s2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	defer s2.Close()
+
+	v, err := s2.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version after re-open: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("re-opened version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	var count int
+	if err := s2.DB().QueryRow(`SELECT COUNT(*) FROM learning_playbooks WHERE query_family = 'family_idem'`).Scan(&count); err != nil {
+		t.Fatalf("count seeded playbook row: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("playbook row count after re-open = %d, want 1", count)
+	}
+}
 {{- end}}
 
 // TestOpenReadOnly_RejectsWrites pins the contract: direct and CTE-wrapped

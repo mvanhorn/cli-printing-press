@@ -25,13 +25,13 @@ func TestGenerateStoreSchemaVersion_DisabledAdvancesToV3(t *testing.T) {
 	require.NoError(t, err)
 	src := string(storeGo)
 	require.Contains(t, src, "const StoreSchemaVersion = 3")
-	require.NotContains(t, src, "const StoreSchemaVersion = 6")
-	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups"} {
+	require.NotContains(t, src, "const StoreSchemaVersion = 7")
+	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups", "learning_playbooks"} {
 		require.NotContains(t, src, table, "learn-disabled spec must not emit %s migration", table)
 	}
 }
 
-func TestGenerateStoreSchemaVersion_EnabledAdvancesToV6WithLearnTables(t *testing.T) {
+func TestGenerateStoreSchemaVersion_EnabledAdvancesToV7WithLearnTables(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-version-enabled")
@@ -44,15 +44,19 @@ func TestGenerateStoreSchemaVersion_EnabledAdvancesToV6WithLearnTables(t *testin
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 6")
-	require.NotContains(t, src, "const StoreSchemaVersion = 2")
+	require.Contains(t, src, "const StoreSchemaVersion = 7")
+	require.NotContains(t, src, "const StoreSchemaVersion = 3")
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS search_learnings",
 		"CREATE TABLE IF NOT EXISTS search_patterns",
 		"CREATE TABLE IF NOT EXISTS entity_lookups",
+		"CREATE TABLE IF NOT EXISTS learning_playbooks",
 		"CREATE INDEX IF NOT EXISTS idx_learn_query",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_learn_unique",
 		"CREATE INDEX IF NOT EXISTS idx_entity_lookup_canonical",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_playbooks_family",
+		"CREATE INDEX IF NOT EXISTS idx_playbooks_source",
+		"CREATE INDEX IF NOT EXISTS idx_playbooks_last_observed_at",
 	} {
 		require.Contains(t, src, want, "learn-enabled spec must emit %q", want)
 	}
