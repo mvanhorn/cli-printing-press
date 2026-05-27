@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -73,6 +74,20 @@ func RewriteModulePath(dir, oldPath, newPath string) error {
 		result = rewriteGitHubRepoURLs(result, oldPath, newPath)
 		if result == string(content) {
 			return nil // no changes needed
+		}
+
+		// Reformat rewritten Go source. Swapping the module path changes
+		// import-path length and alphabetical order, so a string-only
+		// replace leaves the import block out of gofmt order. Without this
+		// pass every published CLI's imports drift from gofmt-clean — the
+		// generator emits clean code, but the publish-time rewrite undoes
+		// it. Reformatting here keeps published output clean by construction.
+		if strings.HasSuffix(path, ".go") {
+			formatted, ferr := format.Source([]byte(result))
+			if ferr != nil {
+				return fmt.Errorf("gofmt after module-path rewrite of %s: %w", path, ferr)
+			}
+			result = string(formatted)
 		}
 
 		return os.WriteFile(path, []byte(result), 0o644)

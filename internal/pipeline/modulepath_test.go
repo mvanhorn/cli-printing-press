@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"go/format"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,4 +197,52 @@ brews:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "does not contain expected module path")
 	})
+}
+
+// TestRewriteModulePath_ProducesGofmtCleanImports guards the publish-time
+// invariant that drove the library-wide gofmt drift: rewriting the module path
+// via string replacement reorders the import block (the new path sorts
+// differently than the old one), so without a reformat pass every published
+// CLI's imports land out of gofmt order. The input here is gofmt-clean under
+// the old short module path; the rewrite must leave it gofmt-clean under the
+// new path too.
+func TestRewriteModulePath_ProducesGofmtCleanImports(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module acme-pp-cli\n\ngo 1.23\n"), 0o644))
+
+	// Sorted under "acme-pp-cli": the local imports lead the group because
+	// "acme" precedes the stdlib names. After the rewrite to a github.com
+	// path they must move below "fmt", which only happens if the rewrite
+	// reformats.
+	src := `package cli
+
+import (
+	"acme-pp-cli/internal/cliutil"
+	"acme-pp-cli/internal/config"
+	"context"
+	"fmt"
+)
+
+var _ = context.Background
+var _ = fmt.Sprint
+var _ = cliutil.X
+var _ = config.Y
+`
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	goPath := filepath.Join(dir, "internal", "cli", "root.go")
+	require.NoError(t, os.WriteFile(goPath, []byte(src), 0o644))
+
+	const newPath = "github.com/mvanhorn/printing-press-library/library/other/acme-pp-cli"
+	require.NoError(t, RewriteModulePath(dir, "acme-pp-cli", newPath))
+
+	out, err := os.ReadFile(goPath)
+	require.NoError(t, err)
+
+	formatted, err := format.Source(out)
+	require.NoError(t, err)
+	assert.Equal(t, string(formatted), string(out), "rewritten .go file must be gofmt-clean")
+	assert.Contains(t, string(out), newPath+"/internal/cliutil")
 }
