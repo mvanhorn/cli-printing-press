@@ -18,10 +18,18 @@ import (
 // Default thresholds. Keep in sync with the documented contract in
 // SKILL.md: the recall match-score floor is 0.6 (token-set Jaccard)
 // and the default result cap is 10.
+//
+// defaultCrossAliasJaccardMin is the floor applied specifically when
+// the canonical-overlap fallback fires. Cross-alias matches differ on
+// literal entity strings, so non-entity Jaccard is the only signal
+// left to score on, and it's naturally lower for paraphrased
+// same-shape queries -- a separate floor avoids gating out legitimate
+// paraphrase hits.
 const (
-	defaultJaccardMin    = 0.6
-	defaultRecallLimit   = 10
-	defaultMinConfidence = 1
+	defaultJaccardMin           = 0.6
+	defaultCrossAliasJaccardMin = 0.3
+	defaultRecallLimit          = 10
+	defaultMinConfidence        = 1
 )
 
 // SourcePattern marks a Hit synthesized by the pattern substitution
@@ -86,14 +94,20 @@ type Result struct {
 // kinds (from LearnConfig.EntityLookupSeeds) the pattern engine
 // should try ahead of the built-in computed kinds.
 type Opts struct {
-	MinConfidence      int
-	Limit              int
-	JaccardMin         float64
-	DebugMismatches    bool
-	NoLearn            bool
-	EntityConfig       *entities.Config
-	ResourceTypeFields map[string][]string
-	PatternKinds       []string
+	MinConfidence int
+	Limit         int
+	JaccardMin    float64
+	// CrossAliasJaccardMin is the floor used when the canonical-overlap
+	// fallback fires. Defaults to 0.3 (defaultCrossAliasJaccardMin) when
+	// zero. Cross-alias matches share canonicals across different
+	// literal aliases, so non-entity Jaccard is naturally lower and a
+	// separate floor avoids gating out legitimate paraphrase hits.
+	CrossAliasJaccardMin float64
+	DebugMismatches      bool
+	NoLearn              bool
+	EntityConfig         *entities.Config
+	ResourceTypeFields   map[string][]string
+	PatternKinds         []string
 }
 
 // Recall is the entity-aware read path. db is the open *sql.DB
@@ -138,10 +152,51 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	if jMin < 0 {
 		jMin = 0
 	}
+	crossAliasMin := opts.CrossAliasJaccardMin
+	if crossAliasMin == 0 {
+		crossAliasMin = defaultCrossAliasJaccardMin
+	}
+	if crossAliasMin < 0 {
+		crossAliasMin = 0
+	}
 
-	queryTokens := strings.Fields(normalized.NonEntityNormalized)
-	if len(queryTokens) == 0 && len(normalized.Entities) == 0 && len(normalized.Tickers) == 0 {
+	if len(strings.Fields(normalized.NonEntityNormalized)) == 0 && len(normalized.Entities) == 0 && len(normalized.Tickers) == 0 {
 		return result, nil
+	}
+
+	// Build a per-call canonical resolver. Looks up each entity in
+	// entity_lookups to find the canonical(s) it belongs to. Caches
+	// per-call so a query with N entities does N lookups max, not
+	// N*M where M is the number of candidate rows.
+	resolver := NewCanonicalResolver(ctx, db)
+
+	// Post-Normalize entity promotion via entity_lookups. The
+	// capitalization-based entity extractor misses aliases that the
+	// lookup table knows about (numeric prefixes, lowercase short
+	// codes) because they don't match its detection rules.
+	// PromoteEntities walks the non-entity tokens and promotes any
+	// whose lowercased form has a row in entity_lookups. Same helper
+	// runs at teach time so stored query_entities stays symmetric
+	// with what recall sees.
+	normalized = PromoteEntities(normalized, resolver)
+	queryTokens := strings.Fields(normalized.NonEntityNormalized)
+	result.QueryEntities = append([]string(nil), normalized.Entities...)
+	if result.QueryEntities == nil {
+		result.QueryEntities = []string{}
+	}
+	result.Normalized = normalized.NonEntityNormalized
+
+	queryCanonicals := resolver.ResolveSet(normalized.Entities)
+	// Ambiguous-alias warning surfaces only when a SINGLE query entity
+	// resolves to multiple canonicals. A perfectly ordinary multi-entity
+	// query resolves to two canonicals via two different entities and
+	// must NOT trip this warning. The agent can pass --debug-mismatches
+	// to investigate.
+	for _, e := range normalized.Entities {
+		if len(resolver.Resolve(e)) > 1 {
+			result.Warnings = append(result.Warnings, WarningAmbiguousAlias)
+			break
+		}
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT query_pattern, COALESCE(query_entities, ''),
@@ -156,6 +211,13 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 
 	var hits []Hit
 	var mismatches []Hit
+	// Track canonicals of stored rows routed to mismatches[] so we
+	// can surface a top-level "similar_shape_different_entity"
+	// warning even when --debug-mismatches isn't passed. The agent
+	// then sees that a structurally-similar learning exists for a
+	// different entity, rather than the misleading
+	// no_learnings_for_query_family.
+	mismatchCanonicals := make(map[string]struct{})
 
 	for rows.Next() {
 		var (
@@ -177,14 +239,141 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		}
 
 		storedNorm := Normalize(queryPattern, cfg)
-		score := Jaccard(queryTokens, strings.Fields(storedNorm.NonEntityNormalized))
-		if score < jMin {
-			continue
-		}
-
 		storedEntitySlice, _ := ParseStoredEntities(storedEntities)
 		if len(storedEntitySlice) == 0 {
 			storedEntitySlice = storedNorm.Entities
+		}
+		// Opportunistic backfill for legacy null-entity rows. Rows
+		// written before symmetric teach-time promotion landed have
+		// query_entities=null and storedNorm.Entities=empty because
+		// query_pattern is lowercased on write. Walk the lowercased
+		// query_pattern tokens through the resolver and use canonical-
+		// resolvable tokens as the effective entity slice for cross-
+		// alias matching this call. Read-only -- the stored column
+		// stays null so we never silently rewrite user data.
+		if len(storedEntitySlice) == 0 {
+			for _, tok := range strings.Fields(strings.ToLower(queryPattern)) {
+				if cfg != nil && cfg.IsStopword(tok) {
+					continue
+				}
+				if cans := resolver.Resolve(tok); len(cans) > 0 {
+					storedEntitySlice = append(storedEntitySlice, tok)
+				}
+			}
+		}
+
+		// Compute the stored non-entity tokens by stripping case-folded
+		// stored entities (from the query_entities column, which preserves
+		// the original case the entity extractor saw at teach time) plus
+		// stopwords from the lowercased query_pattern. The plain
+		// Normalize(queryPattern, cfg) misses entities whose stored form
+		// is uppercase because query_pattern is lowercased on write --
+		// the capitalization-based entity detector can't recover the
+		// entity in the lowercased form. Using the stored entity column
+		// directly rebuilds the correct non-entity token set.
+		storedEntitySet := make(map[string]struct{}, len(storedEntitySlice))
+		for _, e := range storedEntitySlice {
+			storedEntitySet[strings.ToLower(strings.TrimSpace(e))] = struct{}{}
+		}
+		storedNonEntityTokens := make([]string, 0)
+		for _, raw := range strings.Fields(strings.ToLower(queryPattern)) {
+			if _, isEntity := storedEntitySet[raw]; isEntity {
+				continue
+			}
+			if cfg.IsStopword(raw) {
+				continue
+			}
+			storedNonEntityTokens = append(storedNonEntityTokens, raw)
+		}
+
+		score := Jaccard(queryTokens, storedNonEntityTokens)
+
+		// Resolve stored entities to canonicals for cross-alias matching.
+		// Combined with queryCanonicals computed once at the top, this
+		// lets a query alias match a row taught under a different alias
+		// when both entities resolve to the same canonical via entity_lookups.
+		storedCanonicals := resolver.ResolveSet(storedEntitySlice)
+		canonicalOverlap := setIntersects(queryCanonicals, storedCanonicals)
+
+		// Two fallback paths when literal non-entity Jaccard misses:
+		//   1. Entity-only fallback: both sides have empty non-entity
+		//      content, both have entities -> use literal entity-Jaccard.
+		//   2. Cross-alias fallback: canonicals overlap even when literal
+		//      entities don't. Also covers paraphrased same-shape queries
+		//      where non-entity Jaccard is naturally lower; a separate
+		//      CrossAliasJaccardMin floor lets these through. The
+		//      downstream validateResource still gates entity match
+		//      against the stored resource, so an ambiguous query that
+		//      happens to canonical-overlap a stored row still gets
+		//      caught at that layer.
+		if score < jMin {
+			if len(queryTokens) == 0 && len(storedNonEntityTokens) == 0 &&
+				len(normalized.Entities) > 0 && len(storedEntitySlice) > 0 {
+				score = Jaccard(normalized.Entities, storedEntitySlice)
+			}
+			if score < jMin {
+				// Three fallback branches, gated by the lower
+				// crossAliasMin floor:
+				//   - canonicalOverlap: cross-alias hit candidate,
+				//     promotion to Exact happens downstream.
+				//   - no overlap, both sides have entities,
+				//     structural overlap >= crossAliasMin:
+				//     similar-shape mismatch candidate. Surfaces in
+				//     mismatches[] so the envelope warning carries
+				//     an alternative canonical instead of misleading
+				//     no_learnings_for_query_family.
+				//   - otherwise: row is genuine noise, drop it.
+				switch {
+				case canonicalOverlap:
+					// Case 1's purpose is cross-alias matching: the
+					// query and stored row use DIFFERENT literal
+					// entities that resolve to the same canonical.
+					// The canonicalJaccard boost to 1.0 (single
+					// canonical on each side, identical) rewards that
+					// real cross-alias hit. But when query and stored
+					// share the SAME literal entity that happens to
+					// be in entity_lookups, canonicalOverlap is also
+					// true and canonicalJaccard is also 1.0 --
+					// boosting structurally-unrelated rows to score=1.0
+					// and admitting them above jMin. Guard the boost:
+					// only fire when literal entities genuinely differ.
+					// Same-entity rows that miss jMin are genuine
+					// structural noise and should drop.
+					if entitySlicesIntersect(normalized.Entities, storedEntitySlice) {
+						continue
+					}
+					canonScore := canonicalJaccard(queryCanonicals, storedCanonicals)
+					if canonScore > score {
+						score = canonScore
+					}
+					if score < crossAliasMin {
+						continue
+					}
+				case len(normalized.Entities) > 0 && len(storedEntitySlice) > 0:
+					// Case 2 is the "similar shape, different entity"
+					// candidate path -- its job is to surface
+					// similar_shape_different_entity warnings, not
+					// admit hits the jMin floor would otherwise reject.
+					// If query and stored share a literal entity yet
+					// canonicalOverlap is false, entity_lookups has no
+					// row for that entity (queryCanonicals and
+					// storedCanonicals are both empty, so setIntersects
+					// returned false). Without this guard the looser
+					// crossAliasMin floor would silently downgrade
+					// jMin to 0.3 for any unregistered entity. Drop
+					// such rows instead -- case 1 covers the matching-
+					// canonical path, case 2 is reserved for actually
+					// different entities.
+					if entitySlicesIntersect(normalized.Entities, storedEntitySlice) {
+						continue
+					}
+					if score < crossAliasMin {
+						continue
+					}
+				default:
+					continue
+				}
+			}
 		}
 
 		hit := Hit{
@@ -202,7 +391,30 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			hit.LastObservedAt = &t
 		}
 		validateResource(ctx, db, cfg, &hit, normalized.Entities, storedEntitySlice, opts.ResourceTypeFields)
+		// Cross-alias promotion: if canonicals overlap, the entities
+		// are equivalent even when their literal forms differ. Override
+		// a Mismatch verdict so the learning isn't filtered into the
+		// mismatches bucket. The warning flags it for diagnostic clarity.
+		if canonicalOverlap && hit.EntityMatch == EntityMatchMismatch {
+			hit.EntityMatch = EntityMatchExact
+			hit.Warnings = append(hit.Warnings, WarningCrossAliasMatch)
+		}
 		if hit.EntityMatch == EntityMatchMismatch {
+			// Surface canonicals for the envelope-level similar-shape
+			// warning. Fall back to literal stored entities when the
+			// row has no canonical resolution -- better to name the
+			// raw entity than to silently drop the hint.
+			if len(storedCanonicals) > 0 {
+				for c := range storedCanonicals {
+					mismatchCanonicals[c] = struct{}{}
+				}
+			} else {
+				for _, e := range storedEntitySlice {
+					if e = strings.TrimSpace(e); e != "" {
+						mismatchCanonicals[e] = struct{}{}
+					}
+				}
+			}
 			mismatches = append(mismatches, hit)
 		} else {
 			hits = append(hits, hit)
@@ -271,6 +483,24 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	result.Found = len(hits) > 0
 	if result.Found {
 		result.MatchScore = hits[0].MatchScore
+	}
+
+	// Surface mismatches whose structural shape matches the query
+	// as envelope-level warnings naming the alternative canonical.
+	// Same-shape rows already passed the Jaccard floor; the only
+	// reason they landed in mismatches is the entity differed.
+	// Emitting the canonical here lets the agent see that a
+	// similar-shape learning exists for a different entity, instead
+	// of treating it as a cold start.
+	if len(mismatchCanonicals) > 0 {
+		canonicals := make([]string, 0, len(mismatchCanonicals))
+		for c := range mismatchCanonicals {
+			canonicals = append(canonicals, c)
+		}
+		sort.Strings(canonicals)
+		for _, c := range canonicals {
+			result.Warnings = append(result.Warnings, WarningSimilarShapeDifferentEntity+":"+c)
+		}
 	}
 
 	if !result.Found && len(mismatches) == 0 {
@@ -365,4 +595,70 @@ func entityMatchPriority(em string) int {
 	default:
 		return 4
 	}
+}
+
+// entitySlicesIntersect reports whether two literal entity slices
+// share at least one element after case-insensitive comparison.
+// Used to detect "same literal entity" -- normalized.Entities is
+// lowercased by Normalize, but storedEntitySlice comes straight from
+// ParseStoredEntities (which preserves the case the extractor saw at
+// teach time). A naive case-sensitive comparison would miss the match.
+// Same-entity rows must not slip through the lower crossAliasMin floor
+// or get inflated by canonicalJaccard.
+func entitySlicesIntersect(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, v := range a {
+		seen[strings.ToLower(strings.TrimSpace(v))] = struct{}{}
+	}
+	for _, v := range b {
+		if _, ok := seen[strings.ToLower(strings.TrimSpace(v))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// setIntersects reports whether two canonical sets share at least one
+// element. Used as the cross-alias gate for entity-classification
+// promotion (Mismatch -> Exact when canonicals overlap).
+func setIntersects(a, b map[string]struct{}) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	// Walk the smaller set for efficiency.
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	for k := range a {
+		if _, ok := b[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalJaccard returns the Jaccard score between two canonical
+// sets. Used as the score for cross-alias matches when literal
+// Jaccard misses the threshold but canonicals overlap.
+func canonicalJaccard(a, b map[string]struct{}) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	var inter int
+	for k := range a {
+		if _, ok := b[k]; ok {
+			inter++
+		}
+	}
+	union := len(a) + len(b) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
 }
