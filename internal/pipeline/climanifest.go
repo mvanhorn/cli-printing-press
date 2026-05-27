@@ -75,14 +75,22 @@ type CLIManifest struct {
 	// CLIName is the executable/binary name (for example "espn-pp-cli").
 	// It does not track the slug-keyed library directory.
 	CLIName string `json:"cli_name"`
-	// Owner is the attribution recorded in generated copyright headers
-	// (for example "hiten-shah"). Persisted here so subsequent regens
-	// preserve attribution regardless of who's running the generator.
-	Owner string `json:"owner,omitempty"`
+	// Creator is the permanent original author (handle + display name),
+	// preserved across regens regardless of who runs the generator. Source
+	// of truth for every attribution surface.
+	Creator *spec.Person `json:"creator,omitempty"`
+	// Contributors accrue as others improve the CLI (reprinter first).
+	// Preserved on plain regen/sync; appended only by deliberate
+	// contribution flows (publish/amend/reprint by a non-creator).
+	Contributors []spec.Person `json:"contributors,omitempty"`
+	// Owner/Printer/PrinterName are legacy attribution fields, dual-written
+	// from Creator during the transition window so older skills/tooling that
+	// read them keep working. A future major release removes them.
+	Owner string `json:"owner,omitempty"` // legacy: derived from Creator.Handle
 	// Printer is the original printer's GitHub handle, preserved across regens.
-	Printer string `json:"printer,omitempty"`
+	Printer string `json:"printer,omitempty"` // legacy: derived from Creator.Handle
 	// PrinterName is the optional display name rendered beside the printer handle.
-	PrinterName        string            `json:"printer_name,omitempty"`
+	PrinterName        string            `json:"printer_name,omitempty"` // legacy: derived from Creator.Name
 	SpecURL            string            `json:"spec_url,omitempty"`
 	SpecPath           string            `json:"spec_path,omitempty"`
 	SpecFormat         string            `json:"spec_format,omitempty"`
@@ -619,9 +627,11 @@ type GenerateManifestParams struct {
 	OutputDir     string
 	Description   string                 // best generated user-facing catalog description
 	DisplayName   string                 // best generated user-facing catalog display name
-	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
-	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > empty)
-	PrinterName   string                 // resolved printer display name (manifest preserve > git config user.name > empty)
+	Creator       spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
+	Contributors  []spec.Person          // resolved contributors, preserved from the existing manifest
+	Owner         string                 // legacy, derived from Creator.Handle (dual-write)
+	Printer       string                 // legacy, derived from Creator.Handle (dual-write)
+	PrinterName   string                 // legacy, derived from Creator.Name (dual-write)
 	RunID         string                 // YYYYMMDD-HHMMSS, derived from --research-dir basename when empty
 	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
 	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)

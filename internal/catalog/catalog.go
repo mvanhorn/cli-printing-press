@@ -121,22 +121,25 @@ var validIntegrationModes = map[string]struct{}{
 }
 
 type Entry struct {
-	Name              string     `yaml:"name"`
-	DisplayName       string     `yaml:"display_name"`
-	Description       string     `yaml:"description"`
-	Category          string     `yaml:"category"`
-	SpecURL           string     `yaml:"spec_url"`
-	SpecFormat        string     `yaml:"spec_format"`
-	OpenAPIVersion    string     `yaml:"openapi_version"`
-	BaseURL           string     `yaml:"base_url,omitempty"`
-	Tier              string     `yaml:"tier"`
-	VerifiedDate      string     `yaml:"verified_date"`
-	Homepage          string     `yaml:"homepage"`
-	Notes             string     `yaml:"notes"`
-	Owner             string     `yaml:"owner,omitempty"`
-	OwnerName         string     `yaml:"owner_name,omitempty"`
-	KnownAlternatives []KnownAlt `yaml:"known_alternatives,omitempty"`
-	SandboxEndpoint   string     `yaml:"sandbox_endpoint,omitempty"`
+	Name           string `yaml:"name"`
+	DisplayName    string `yaml:"display_name"`
+	Description    string `yaml:"description"`
+	Category       string `yaml:"category"`
+	SpecURL        string `yaml:"spec_url"`
+	SpecFormat     string `yaml:"spec_format"`
+	OpenAPIVersion string `yaml:"openapi_version"`
+	BaseURL        string `yaml:"base_url,omitempty"`
+	Tier           string `yaml:"tier"`
+	VerifiedDate   string `yaml:"verified_date"`
+	Homepage       string `yaml:"homepage"`
+	Notes          string `yaml:"notes"`
+	// Creator overrides the resolved creator for this catalog entry. Legacy
+	// Owner/OwnerName remain for backward compatibility and read-fallback.
+	Creator           *spec.Person `yaml:"creator,omitempty"`
+	Owner             string       `yaml:"owner,omitempty"`
+	OwnerName         string       `yaml:"owner_name,omitempty"`
+	KnownAlternatives []KnownAlt   `yaml:"known_alternatives,omitempty"`
+	SandboxEndpoint   string       `yaml:"sandbox_endpoint,omitempty"`
 	// SpecSource describes how the spec was obtained. Empty defaults to "official".
 	// Values: official, community, sniffed, docs.
 	SpecSource string `yaml:"spec_source,omitempty"`
