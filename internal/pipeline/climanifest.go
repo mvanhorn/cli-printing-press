@@ -242,6 +242,75 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 	return nil
 }
 
+// AppendContributor adds p to the manifest's contributors[] in dir, returning
+// whether a write happened. It is the deliberate-contribution counterpart to
+// the resolver's preserve-on-regen behavior: only the publish/amend/reprint
+// flows call it, never a plain regen.
+//
+// The append is idempotent and skips self-attribution: p is dropped when it is
+// the creator or already a contributor (matched case-insensitively by handle).
+// With front=true the contributor is prepended (used by the reprint flow so
+// the reprinter is listed first); otherwise appended. All other manifest fields
+// — including unknown/future keys — are preserved verbatim via the raw map.
+func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
+	if p.IsZero() {
+		return false, nil
+	}
+	path := filepath.Join(dir, CLIManifestFilename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("reading CLI manifest: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+
+	sameHandle := func(a, b string) bool {
+		return a != "" && strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+	}
+
+	var creator spec.Person
+	if rc, ok := raw["creator"]; ok {
+		_ = json.Unmarshal(rc, &creator)
+	}
+	if sameHandle(p.Handle, creator.Handle) {
+		return false, nil
+	}
+
+	var contributors []spec.Person
+	if rc, ok := raw["contributors"]; ok {
+		if err := json.Unmarshal(rc, &contributors); err != nil {
+			return false, fmt.Errorf("parsing contributors: %w", err)
+		}
+	}
+	for _, c := range contributors {
+		if sameHandle(p.Handle, c.Handle) {
+			return false, nil
+		}
+	}
+
+	if front {
+		contributors = append([]spec.Person{p}, contributors...)
+	} else {
+		contributors = append(contributors, p)
+	}
+	enc, err := json.Marshal(contributors)
+	if err != nil {
+		return false, fmt.Errorf("encoding contributors: %w", err)
+	}
+	raw["contributors"] = enc
+
+	out, err := marshalCLIManifestObject(raw)
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return false, fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return true, nil
+}
+
 // WritePatchesIndex emits .printing-press-patches.json into the generated
 // CLI directory. The library's Verify CI rejects fresh-print publishes
 // without this file; emitting an empty index here removes the friction

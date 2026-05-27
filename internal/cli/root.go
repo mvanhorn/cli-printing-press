@@ -72,6 +72,7 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newVerifyInternalSkillCmd())
 	rootCmd.AddCommand(newEmbossCmd())
 	rootCmd.AddCommand(newPatchCmd())
+	rootCmd.AddCommand(newContributorsCmd())
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
