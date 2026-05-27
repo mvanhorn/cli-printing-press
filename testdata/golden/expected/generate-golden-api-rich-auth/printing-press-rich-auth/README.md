@@ -2,7 +2,7 @@
 
 Purpose-built fixture for rich auth env-var model coverage.
 
-Printed by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
+Created by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
 
 ## Install
 

@@ -6,6 +6,10 @@
   ],
   "auth_type": "api_key",
   "cli_name": "cafe-bistro-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
   "description": "Purpose-built fixture for the Unicode-to-ASCII slug contract.",
   "display_name": "Café Bistro",
   "generated_at": "<GENERATED_AT>",

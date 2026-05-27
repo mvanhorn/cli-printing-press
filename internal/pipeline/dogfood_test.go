@@ -1896,7 +1896,7 @@ func newHealthCmd() *cobra.Command {
 			"",
 			"Learn more at [Test CLI](https://example.com).",
 			"",
-			"Printed by [@tester](https://github.com/tester).",
+			"Created by [@tester](https://github.com/tester).",
 			"",
 			"## Authentication",
 			"",
@@ -2002,7 +2002,7 @@ func newHealthCmd() *cobra.Command {
 		assert.Contains(t, readme, "**Every Test feature plus verified health triage**")
 		assert.Contains(t, readme, "Health checks, OAuth setup, and agent-ready recipes stay in sync with research.json.")
 		assert.Contains(t, readme, "Learn more at [Test CLI](https://example.com).")
-		assert.Contains(t, readme, "Printed by [@tester](https://github.com/tester).")
+		assert.Contains(t, readme, "Created by [@tester](https://github.com/tester).")
 		assert.NotContains(t, readme, "Old headline")
 		assert.NotContains(t, readme, "Old value proposition")
 		assert.Contains(t, readme, "## Authentication\n\nUse `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.")

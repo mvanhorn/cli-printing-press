@@ -176,7 +176,24 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	// below (dual-write) so older skills and library tooling that still read
 	// them keep working during the transition window.
 	if s.Creator.IsZero() {
-		s.Creator = resolveCreatorForExisting(outputDir)
+		switch {
+		case s.Printer != "" || s.PrinterName != "":
+			// Printer names the human — bridge it into the creator in full.
+			s.Creator = spec.Person{Handle: s.Printer, Name: s.PrinterName}
+		case s.OwnerName != "" || s.Owner != "":
+			// An explicitly-set legacy owner drove the copyright header before
+			// the creator model existed; preserve that for backward-compat by
+			// seeding only the creator NAME. Handle is left empty so the owner
+			// slug never leaks into the printer byline (it is the vendor/module
+			// identity, not the human).
+			name := s.OwnerName
+			if name == "" {
+				name = s.Owner
+			}
+			s.Creator = spec.Person{Name: name}
+		default:
+			s.Creator = resolveCreatorForExisting(outputDir)
+		}
 	}
 	if s.Contributors == nil {
 		s.Contributors = resolveContributorsForExisting(outputDir)
@@ -293,6 +310,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"promotedExampleLine": g.promotedExampleLine,
 		"commandExampleArgs":  commandExampleArgs,
 		"currentYear":         func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder": func() string {
+			return copyrightHolderString(g.Spec.Creator, g.Spec.OwnerName, g.Spec.Owner)
+		},
 		"modulePath": func() string {
 			if g.ModulePath != "" {
 				return g.ModulePath

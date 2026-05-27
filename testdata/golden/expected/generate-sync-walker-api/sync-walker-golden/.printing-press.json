@@ -6,6 +6,10 @@
   ],
   "auth_type": "bearer_token",
   "cli_name": "sync-walker-golden-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
   "description": "Golden fixture for the Tier 2 spec-declared walker mechanism.",
   "display_name": "Sync Walker Golden",
   "generated_at": "<GENERATED_AT>",

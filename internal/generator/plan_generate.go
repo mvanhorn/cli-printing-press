@@ -75,6 +75,9 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 	}
 
 	owner := resolveOwnerForExisting(outputDir)
+	// Creator drives the copyright header (display name + " and contributors");
+	// owner stays the slug for module path / Homebrew tap.
+	creator := resolveCreatorForExisting(outputDir)
 
 	// Create directory structure
 	dirs := []string{
@@ -89,15 +92,16 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 
 	// Build template FuncMap (subset of the full generator's FuncMap)
 	funcs := template.FuncMap{
-		"title":       cases.Title(language.English).String,
-		"lower":       strings.ToLower,
-		"upper":       strings.ToUpper,
-		"pascal":      toPascal,
-		"camel":       toCamel,
-		"snake":       naming.Snake,
-		"kebab":       toKebab,
-		"currentYear": func() string { return strconv.Itoa(time.Now().Year()) },
-		"modulePath":  func() string { return naming.CLI(cliName) },
+		"title":           cases.Title(language.English).String,
+		"lower":           strings.ToLower,
+		"upper":           strings.ToUpper,
+		"pascal":          toPascal,
+		"camel":           toCamel,
+		"snake":           naming.Snake,
+		"kebab":           toKebab,
+		"currentYear":     func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder": func() string { return copyrightHolderString(creator, "", owner) },
+		"modulePath":      func() string { return naming.CLI(cliName) },
 		// Stub: plan-generated scaffolds never declare auth env vars. The full
 		// generator's hasNonCookieAuth (which inspects the real spec.AuthConfig)
 		// is registered separately on its own FuncMap.
@@ -588,4 +592,23 @@ func resolveContributorsForExisting(outputDir string) []spec.Person {
 		return nil
 	}
 	return m.Contributors
+}
+
+// copyrightHolderString builds the copyright-header holder: the creator
+// display name (falling back to a prose owner name, then the owner slug),
+// always followed by " and contributors" so the header is a constant shape
+// regardless of contributor count. Shared by the full generator and the
+// plan-scaffold func maps.
+func copyrightHolderString(creator spec.Person, ownerName, ownerSlug string) string {
+	holder := creator.Name
+	if holder == "" {
+		holder = ownerName
+	}
+	if holder == "" {
+		holder = ownerSlug
+	}
+	if holder == "" {
+		return "and contributors"
+	}
+	return holder + " and contributors"
 }

@@ -6,6 +6,10 @@
   ],
   "auth_type": "api_key",
   "cli_name": "printing-press-golden-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
   "description": "Purpose-built fixture for golden generation coverage.",
   "display_name": "Printing Press Studio",
   "generated_at": "<GENERATED_AT>",
