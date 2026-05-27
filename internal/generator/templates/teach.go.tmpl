@@ -269,15 +269,22 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 
 // recallEnvelope is the JSON shape returned by `recall --agent`. The
 // LLM consumes this before deciding whether to skip discovery.
+//
+// Playbook + Notes surface the learning_playbooks row matching the
+// query's structural family (when one exists). Older agent prompts
+// that only consume {found, results} continue to work; the new fields
+// are purely additive.
 type recallEnvelope struct {
-	Found         bool                   `json:"found"`
-	Query         string                 `json:"query"`
-	Normalized    string                 `json:"normalized"`
-	QueryEntities []string               `json:"query_entities"`
-	MatchScore    float64                `json:"match_score,omitempty"`
-	Results       []recallEnvelopeResult `json:"results"`
-	Mismatches    []recallEnvelopeResult `json:"mismatches,omitempty"`
-	Warnings      []string               `json:"warnings,omitempty"`
+	Found         bool                    `json:"found"`
+	Query         string                  `json:"query"`
+	Normalized    string                  `json:"normalized"`
+	QueryEntities []string                `json:"query_entities"`
+	MatchScore    float64                 `json:"match_score,omitempty"`
+	Results       []recallEnvelopeResult  `json:"results"`
+	Mismatches    []recallEnvelopeResult  `json:"mismatches,omitempty"`
+	Warnings      []string                `json:"warnings,omitempty"`
+	Playbook      *learn.ResolvedPlaybook `json:"playbook,omitempty"`
+	Notes         string                  `json:"notes,omitempty"`
 }
 
 type recallEnvelopeResult struct {
@@ -369,6 +376,8 @@ when learnings exist.`,
 				envelope.Mismatches = toEnvelopeResults(result.Mismatches)
 			}
 			envelope.Warnings = result.Warnings
+			envelope.Playbook = result.Playbook
+			envelope.Notes = result.Notes
 			return emitRecall(cmd, flags, envelope)
 		},
 	}

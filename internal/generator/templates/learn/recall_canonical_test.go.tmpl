@@ -81,6 +81,16 @@ func openRecallCanonicalTestDB(t *testing.T) *sql.DB {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (kind, canonical, value)
 		)`,
+		`CREATE TABLE learning_playbooks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_family TEXT NOT NULL UNIQUE,
+			playbook_json TEXT,
+			notes_text TEXT,
+			source TEXT NOT NULL,
+			confidence INTEGER NOT NULL DEFAULT 2,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_observed_at DATETIME
+		)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatalf("schema: %v", err)
@@ -586,5 +596,224 @@ func TestRecall_NoMismatches_KeepsNoLearningsWarning(t *testing.T) {
 	}
 	if !hasNoLearnings {
 		t.Errorf("cold envelope should carry %q; got %v", TopWarningNoLearningsForQueryFamily, got.Warnings)
+	}
+}
+
+// seedPlaybookRow inserts a learning_playbooks row directly via SQL.
+// Keeps the playbook-envelope tests decoupled from the store wrapper --
+// the recall path queries the underlying *sql.DB directly.
+func seedPlaybookRow(t *testing.T, db *sql.DB, family, playbookJSON, notes string) {
+	t.Helper()
+	if _, err := db.Exec(
+		`INSERT INTO learning_playbooks (query_family, playbook_json, notes_text, source, confidence)
+		 VALUES (?, ?, ?, 'taught', 2)`,
+		family, playbookJSON, notes,
+	); err != nil {
+		t.Fatalf("seed playbook: %v", err)
+	}
+}
+
+// TestRecall_PlaybookSurfaces_OnFamilyMatch covers U6's primary
+// contract: a query whose QueryFamily matches a stored
+// learning_playbooks row carries the resolved playbook + notes on the
+// recall envelope. Empty results list is fine -- playbooks live on the
+// envelope orthogonally to per-resource hits.
+func TestRecall_PlaybookSurfaces_OnFamilyMatch(t *testing.T) {
+	t.Parallel()
+	db := openRecallCanonicalTestDB(t)
+	cfg := canonicalTestConfig()
+	seedCanonicalLookup(t, db, "alpha_kind", "Alpha-Widget-Canonical",
+		[]string{"Alpha-Widget-Canonical", "Alpha"})
+
+	query := "report Alpha widget today"
+	family := QueryFamily(PromoteEntities(
+		Normalize(query, cfg),
+		NewCanonicalResolver(context.Background(), db),
+	))
+	if family == "" {
+		t.Fatalf("expected non-empty family for query %q", query)
+	}
+	playbookJSON := `{
+		"query_family_examples": ["report Alpha widget today"],
+		"entity_slots": ["$ENTITY"],
+		"expected_tool_calls": 2,
+		"steps": [
+			{"cmd": "example-pp-cli items list --query {$ENTITY.canonical}", "purpose": "find item"}
+		]
+	}`
+	seedPlaybookRow(t, db, family, playbookJSON,
+		"Parent rollups sometimes hide per-entity rows; always drill to children.\n")
+
+	got, err := Recall(context.Background(), db, query, Opts{EntityConfig: cfg})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if got.Playbook == nil {
+		t.Fatalf("want Playbook on envelope; got nil. Result=%+v", got)
+	}
+	if got.Playbook.QueryFamily != family {
+		t.Errorf("Playbook.QueryFamily = %q, want %q", got.Playbook.QueryFamily, family)
+	}
+	if len(got.Playbook.Playbook.Steps) == 0 {
+		t.Errorf("want >=1 step on playbook; got 0")
+	}
+	if got.Notes == "" {
+		t.Errorf("want non-empty Notes on envelope; got empty")
+	}
+	if got.Playbook.SlotsResolved["$ENTITY"] == nil {
+		t.Errorf("want $ENTITY slot resolved; got SlotsResolved=%v", got.Playbook.SlotsResolved)
+	}
+}
+
+// TestRecall_PlaybookSurfaces_DifferentEntitySameFamily is the killer-
+// feature test. A playbook seeded for one entity ("Alpha") is retrieved
+// by a structurally-identical query for a different entity ("Bravo").
+// The family key is entity-stripped, so the lookup hits; slot
+// resolution then binds $ENTITY to Bravo's canonical via the per-call
+// resolver. Demonstrates playbooks are entity-agnostic at the slot-
+// binding layer -- one author lift, infinite-entity replay.
+func TestRecall_PlaybookSurfaces_DifferentEntitySameFamily(t *testing.T) {
+	t.Parallel()
+	db := openRecallCanonicalTestDB(t)
+	cfg := canonicalTestConfig()
+	seedCanonicalLookup(t, db, "alpha_kind", "Alpha-Widget-Canonical",
+		[]string{"Alpha-Widget-Canonical", "Alpha"})
+	seedCanonicalLookup(t, db, "alpha_kind", "Bravo-Widget-Canonical",
+		[]string{"Bravo-Widget-Canonical", "Bravo"})
+
+	// Teach the playbook against the Alpha query.
+	alphaQuery := "report Alpha widget today"
+	family := QueryFamily(PromoteEntities(
+		Normalize(alphaQuery, cfg),
+		NewCanonicalResolver(context.Background(), db),
+	))
+	playbookJSON := `{
+		"query_family_examples": ["report Alpha widget today"],
+		"entity_slots": ["$ENTITY"],
+		"expected_tool_calls": 2,
+		"steps": [
+			{"cmd": "example-pp-cli items list --query {$ENTITY.canonical}"}
+		]
+	}`
+	seedPlaybookRow(t, db, family, playbookJSON, "Endpoint envelope varies by upstream.\n")
+
+	// Bravo query MUST hit the same playbook.
+	got, err := Recall(context.Background(), db, "report Bravo widget today", Opts{EntityConfig: cfg})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if got.Playbook == nil {
+		t.Fatalf("cross-entity replay failed: want Playbook on envelope, got nil. Result=%+v", got)
+	}
+	if got.Playbook.QueryFamily != family {
+		t.Errorf("Playbook.QueryFamily = %q, want %q", got.Playbook.QueryFamily, family)
+	}
+	// Slot must bind to Bravo's canonical, not Alpha's.
+	slot := got.Playbook.SlotsResolved["$ENTITY"]
+	if slot == nil {
+		t.Fatalf("want $ENTITY slot resolved on Bravo query; got SlotsResolved=%v",
+			got.Playbook.SlotsResolved)
+	}
+	if canonical, ok := slot["canonical"].(string); !ok || canonical != "Bravo-Widget-Canonical" {
+		t.Errorf("$ENTITY.canonical = %v, want Bravo-Widget-Canonical (slot must bind to query entity, not playbook author's)", slot)
+	}
+}
+
+// TestRecall_PlaybookAbsent_NoMatch covers the negative case: a query
+// whose family has no stored playbook returns envelope.Playbook = nil
+// and no error. Notes also empty.
+func TestRecall_PlaybookAbsent_NoMatch(t *testing.T) {
+	t.Parallel()
+	db := openRecallCanonicalTestDB(t)
+	// No playbook rows seeded.
+	got, err := Recall(context.Background(), db, "some unrelated query", Opts{EntityConfig: canonicalTestConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if got.Playbook != nil {
+		t.Errorf("want envelope.Playbook = nil when family has no row; got %+v", got.Playbook)
+	}
+	if got.Notes != "" {
+		t.Errorf("want envelope.Notes empty; got %q", got.Notes)
+	}
+}
+
+// TestRecall_PlaybookNotesOnly covers the notes-only row: a stored
+// playbook with empty playbook_json but populated notes_text surfaces
+// Notes on the envelope; the Playbook wrapper is still attached so the
+// agent gets the guidance even without structured choreography. The
+// embedded Playbook value has zero steps.
+func TestRecall_PlaybookNotesOnly(t *testing.T) {
+	t.Parallel()
+	db := openRecallCanonicalTestDB(t)
+	cfg := canonicalTestConfig()
+	query := "guidance workaround warning"
+	family := QueryFamily(PromoteEntities(
+		Normalize(query, cfg),
+		NewCanonicalResolver(context.Background(), db),
+	))
+	notes := "Upstream rollups don't carry per-entity rows; always drill to children.\n"
+	seedPlaybookRow(t, db, family, "", notes)
+
+	got, err := Recall(context.Background(), db, query, Opts{EntityConfig: cfg})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if got.Notes != notes {
+		t.Errorf("Notes = %q, want %q", got.Notes, notes)
+	}
+	if got.Playbook == nil {
+		t.Fatalf("notes-only row should still attach Playbook wrapper carrying the notes; got nil")
+	}
+	if len(got.Playbook.Playbook.Steps) != 0 {
+		t.Errorf("notes-only row should have zero steps; got %d", len(got.Playbook.Playbook.Steps))
+	}
+	if got.Playbook.Notes != notes {
+		t.Errorf("ResolvedPlaybook.Notes = %q, want %q", got.Playbook.Notes, notes)
+	}
+}
+
+// TestRecall_PlaybookCoexistsWithResourceHit confirms playbooks land
+// on the envelope orthogonally to per-resource hits. A query that hits
+// both a search_learnings row AND has a stored playbook for its family
+// returns both surfaces populated.
+func TestRecall_PlaybookCoexistsWithResourceHit(t *testing.T) {
+	t.Parallel()
+	db := openRecallCanonicalTestDB(t)
+	cfg := canonicalTestConfig()
+	seedCanonicalLookup(t, db, "alpha_kind", "Alpha-Widget-Canonical",
+		[]string{"Alpha-Widget-Canonical", "Alpha"})
+
+	query := "report Alpha widget today"
+	// Seed a direct learning that matches.
+	seedCanonicalLearning(t, db, "report alpha widget today", `["Alpha"]`,
+		"A1-RESOURCE", "widgets")
+	// Seed a playbook for the same family.
+	family := QueryFamily(PromoteEntities(
+		Normalize(query, cfg),
+		NewCanonicalResolver(context.Background(), db),
+	))
+	playbookJSON := `{
+		"query_family_examples": ["report Alpha widget today"],
+		"entity_slots": ["$ENTITY"],
+		"steps": [{"cmd": "example-pp-cli items get A1-{$ENTITY.canonical}"}]
+	}`
+	seedPlaybookRow(t, db, family, playbookJSON, "Drill to child item.\n")
+
+	got, err := Recall(context.Background(), db, query, Opts{EntityConfig: cfg})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if !got.Found {
+		t.Errorf("want Found=true (direct learning hit); got Result=%+v", got)
+	}
+	if len(got.Results) == 0 {
+		t.Errorf("want >=1 result from search_learnings; got 0")
+	}
+	if got.Playbook == nil {
+		t.Errorf("want envelope.Playbook attached alongside results; got nil")
+	}
+	if got.Notes == "" {
+		t.Errorf("want envelope.Notes populated alongside results; got empty")
 	}
 }
