@@ -80,6 +80,39 @@ func requirePragma(t *testing.T, db *sql.DB, name, want string) {
 	}
 }
 
+// TestOpenReadOnly_DeleteModeDBDoesNotWrite guards the read-only DSN against
+// mutating the database. journal_mode is a file-level property set by the
+// read-write open, not the connection — issuing PRAGMA journal_mode=WAL on a
+// read-only handle to a DB still in the default delete journal mode (a pre-WAL
+// database from an older binary, read before its first read-write open) fails
+// with "attempt to write a readonly database". OpenReadOnly must read such a
+// DB without error, so its DSN carries no journal_mode pragma.
+func TestOpenReadOnly_DeleteModeDBDoesNotWrite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	// Create a delete-journal-mode DB directly (no WAL conversion), mirroring
+	// a database written by a binary that predated the WAL DSN.
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE resources (id TEXT)`); err != nil {
+		t.Fatalf("seed table: %v", err)
+	}
+	raw.Close()
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open read-only: %v", err)
+	}
+	defer ro.Close()
+
+	var n int
+	if err := ro.DB().QueryRow(`SELECT count(*) FROM resources`).Scan(&n); err != nil {
+		t.Fatalf("read-only query on delete-mode DB: %v", err)
+	}
+}
+
 // TestSchemaVersion_StampExistingZeroDB verifies the stamp-and-continue
 // rule for existing deployed databases. A DB that predates the gate has
 // user_version = 0; opening it with this binary should stamp the version
