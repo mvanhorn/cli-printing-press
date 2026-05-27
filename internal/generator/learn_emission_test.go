@@ -37,6 +37,8 @@ func TestGenerateLearnPackageEmitsAllFiles(t *testing.T) {
 		"internal/learn/teach_log_test.go",
 		"internal/learn/preseed.go",
 		"internal/learn/preseed_test.go",
+		"internal/learn/playbooks.go",
+		"internal/learn/playbooks_test.go",
 		"internal/learn/entities/config.go",
 		"internal/learn/entities/config_test.go",
 		"internal/learn/entities/extract.go",
