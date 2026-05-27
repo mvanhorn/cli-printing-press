@@ -2083,6 +2083,19 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("teach_test.go.tmpl", filepath.Join("internal", "cli", "teach_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering teach commands test: %w", err)
 		}
+		// teach_playbook.go ships the standalone playbook write surface:
+		// `teach-playbook` (query-family-keyed playbook + notes), `playbook list`
+		// (sentinel-filtered inspection), and `playbook amend` (atomic
+		// AppendPlaybookNotes self-correction). Lives in internal/cli/ alongside
+		// teach.go for the same package-boundary reason — cobra wiring stays
+		// out of the learn package. Registration on the root command is
+		// owned by root.go.tmpl (a later unit wires it).
+		if err := g.renderTemplate("teach_playbook.go.tmpl", filepath.Join("internal", "cli", "teach_playbook.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach-playbook commands: %w", err)
+		}
+		if err := g.renderTemplate("teach_playbook_test.go.tmpl", filepath.Join("internal", "cli", "teach_playbook_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach-playbook commands test: %w", err)
+		}
 		// learn_init.go translates spec.Learn (ticker patterns, stopwords,
 		// entity-lookup seeds) into a runtime *entities.Config and seeds
 		// the entity_lookups table at first start. Owns newLearnConfig()
