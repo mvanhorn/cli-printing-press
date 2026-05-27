@@ -46,7 +46,10 @@ The generator's `go.mod.tmpl` *did* pin `golang.org/x/net v0.55.0`, but only beh
 func ensureSafeXNet(dir string) error {
     out, err := runCommand(dir, qualityGateTimeout, "go", "list", "-m", "-f", "{{.Version}}", "golang.org/x/net")
     if err != nil {
-        return nil // go list -m exits non-zero when x/net isn't in the graph — nothing to pin
+        // go list -m exits non-zero when x/net isn't in the module graph; treat all
+        // non-zero exits as "not present" — the downstream govulncheck gate will surface
+        // any genuine go list failure as a build error.
+        return nil
     }
     current := strings.SplitN(strings.TrimSpace(out), "\n", 2)[0]
     if !semver.IsValid(current) || semver.Compare(current, safeXNetVersion) >= 0 {
