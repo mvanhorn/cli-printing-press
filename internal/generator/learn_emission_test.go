@@ -41,6 +41,10 @@ func TestGenerateLearnPackageEmitsAllFiles(t *testing.T) {
 		"internal/learn/playbooks_test.go",
 		"internal/learn/promote.go",
 		"internal/learn/promote_test.go",
+		// U4: store-layer playbook accessors live in the store package
+		// alongside store.go, gated under the same Store vision flag.
+		"internal/store/playbooks.go",
+		"internal/store/playbooks_test.go",
 		"internal/learn/entities/config.go",
 		"internal/learn/entities/config_test.go",
 		"internal/learn/entities/extract.go",

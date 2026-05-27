@@ -2061,6 +2061,18 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("learnings_test.go.tmpl", filepath.Join("internal", "store", "learnings_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering store learnings engine test: %w", err)
 		}
+		// store/playbooks.go ports the playbook-row CRUD (UpsertPlaybook,
+		// AppendPlaybookNotes, GetPlaybookByFamily, ListPlaybooks) into
+		// the generator's internal/store/ output. Lives next to
+		// learnings.go and shares the LearningSourceTaught constant + the
+		// learning_playbooks table created by store.go.tmpl. Gated under
+		// Learn.Enabled for the same reason as learnings.go.
+		if err := g.renderTemplate("store_playbooks.go.tmpl", filepath.Join("internal", "store", "playbooks.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store playbooks: %w", err)
+		}
+		if err := g.renderTemplate("store_playbooks_test.go.tmpl", filepath.Join("internal", "store", "playbooks_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store playbooks test: %w", err)
+		}
 		// teach.go and teach_test.go are emitted into internal/cli/
 		// (not the learn package) because they wire cobra commands;
 		// the learn package itself stays cobra-free per the boundary
