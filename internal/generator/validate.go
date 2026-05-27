@@ -49,6 +49,12 @@ func (g *Generator) Validate() error {
 			},
 		},
 		{
+			name: "ensure safe golang.org/x/net",
+			run: func() error {
+				return ensureSafeXNet(g.OutputDir)
+			},
+		},
+		{
 			name: "govulncheck ./...",
 			run: func() error {
 				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", govulncheck.GoRunArgs("./...")...)
