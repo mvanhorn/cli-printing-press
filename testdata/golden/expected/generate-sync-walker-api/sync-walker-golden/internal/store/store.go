@@ -74,11 +74,13 @@ func Open(dbPath string) (*Store, error) {
 // The file: URI prefix is load-bearing: modernc.org/sqlite only honors
 // SQLite's URI query parameters (mode, cache, etc.) when the DSN starts
 // with "file:". Without the prefix, "?mode=ro" is silently dropped and
-// the connection opens read-write. Underscore-prefixed driver pragmas
-// (_journal_mode, _busy_timeout, etc.) work either way; they're parsed
-// out of the DSN by the driver before sqlite3_open_v2.
+// the connection opens read-write. Pragmas use the driver's _pragma=
+// name(value) syntax — modernc.org/sqlite does NOT recognize the
+// mattn/go-sqlite3 _journal_mode=WAL / _busy_timeout=5000 form and drops
+// those keys silently, so the busy_timeout below is what keeps a read
+// concurrent with a writer from failing immediately with SQLITE_BUSY.
 func OpenReadOnly(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=ON&_temp_store=MEMORY&_mmap_size=268435456")
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database (read-only): %w", err)
 	}
@@ -95,7 +97,7 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("creating db directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_foreign_keys=ON&_temp_store=MEMORY&_mmap_size=268435456")
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -229,9 +231,23 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("acquiring migration connection: %w", err)
+	// Acquiring the migration connection establishes a physical SQLite
+	// connection, which runs the DSN _pragma directives — including the
+	// journal_mode(WAL) conversion. On a fresh DB opened by several
+	// processes at once, that conversion briefly needs an exclusive lock
+	// and can return SQLITE_BUSY before any statement-level busy handler
+	// applies, so retry the acquisition against the shared deadline.
+	deadline := time.Now().Add(migrationLockTimeout)
+	var conn *sql.Conn
+	if err := retryOnBusy(ctx, deadline, "acquiring migration connection", func() error {
+		c, err := s.db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		conn = c
+		return nil
+	}); err != nil {
+		return err
 	}
 	defer conn.Close()
 
@@ -239,7 +255,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	// opening a newer-schema DB rejects immediately. WAL readers don't
 	// normally block on writers, but the fresh-DB WAL-init race can BUSY
 	// a SELECT — share the lock's deadline so total budget stays bounded.
-	deadline := time.Now().Add(migrationLockTimeout)
 	var current int
 	if err := retryOnBusy(ctx, deadline, "reading schema version", func() error {
 		return conn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&current)
