@@ -36,6 +36,50 @@ func TestSchemaVersion_StampedOnFreshDB(t *testing.T) {
 	}
 }
 
+// TestOpenAppliesPragmas pins the connection-string contract: the store
+// must open in WAL journal mode with a non-zero busy_timeout so a read
+// concurrent with a write waits on the lock instead of failing immediately
+// with SQLITE_BUSY. It fails the instant the DSN regresses to the mattn-
+// style _journal_mode=WAL form, which modernc.org/sqlite silently drops —
+// see the OpenReadOnly comment for the driver-syntax detail.
+func TestOpenAppliesPragmas(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	requirePragma(t, s.DB(), "journal_mode", "wal")
+	requirePragma(t, s.DB(), "busy_timeout", "5000")
+
+	// The read-only handle (MCP sql/search, analytics) must see the same WAL
+	// file mode and carry the busy_timeout so it waits on a concurrent writer
+	// rather than erroring.
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open read-only: %v", err)
+	}
+	defer ro.Close()
+
+	requirePragma(t, ro.DB(), "journal_mode", "wal")
+	requirePragma(t, ro.DB(), "busy_timeout", "5000")
+}
+
+// requirePragma fails the test unless `PRAGMA <name>` reports want. It reads
+// the value as text so one helper covers both string pragmas (journal_mode)
+// and integer pragmas (busy_timeout).
+func requirePragma(t *testing.T, db *sql.DB, name, want string) {
+	t.Helper()
+	var got string
+	if err := db.QueryRow("PRAGMA " + name).Scan(&got); err != nil {
+		t.Fatalf("read pragma %s: %v", name, err)
+	}
+	if got != want {
+		t.Fatalf("PRAGMA %s = %q, want %q", name, got, want)
+	}
+}
+
 // TestSchemaVersion_StampExistingZeroDB verifies the stamp-and-continue
 // rule for existing deployed databases. A DB that predates the gate has
 // user_version = 0; opening it with this binary should stamp the version
@@ -133,7 +177,7 @@ func TestMigrate_ConcurrentFreshDB(t *testing.T) {
 // to construct contention scenarios in the migration tests.
 func holdWriteLock(t *testing.T, dbPath string) (cleanup func()) {
 	t.Helper()
-	holder, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	holder, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatalf("open holder: %v", err)
 	}
