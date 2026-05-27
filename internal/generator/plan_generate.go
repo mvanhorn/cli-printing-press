@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -482,4 +483,109 @@ func resolvePrinterNameForNew() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// copyrightCreatorRe matches the current copyright header
+// `// Copyright YYYY <display name> and contributors.` and captures the
+// display name. It is tried before copyrightOwnerRe (the legacy slug form) so
+// a regen against a current-format tree recovers the prose name, while
+// pre-transition trees still resolve via the slug. The two patterns are
+// mirrored in internal/pipeline/regenmerge/owner.go and must stay aligned.
+var copyrightCreatorRe = regexp.MustCompile(`(?m)^//\s*Copyright\s+\d+\s+(.+?) and contributors\.`)
+
+// resolveCreatorForExisting returns the creator for a regen against an existing
+// tree, preferring persisted attribution over re-derivation so a regen never
+// silently flips the creator to whoever is running the generator:
+//  1. manifest `creator` object
+//  2. manifest legacy fields (printer/printer_name, then owner/owner_name)
+//  3. copyright-header parse (manifest-less legacy trees)
+//  4. resolveCreatorForNew() (git config)
+func resolveCreatorForExisting(outputDir string) spec.Person {
+	if c := readManifestCreator(outputDir); !c.IsZero() {
+		return c
+	}
+	if c := legacyManifestCreator(outputDir); !c.IsZero() {
+		return c
+	}
+	if c := parseCopyrightCreator(outputDir); !c.IsZero() {
+		return c
+	}
+	return resolveCreatorForNew()
+}
+
+// readManifestCreator returns the `creator` object from the manifest, or the
+// zero Person when absent or malformed.
+func readManifestCreator(outputDir string) spec.Person {
+	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
+	if err != nil {
+		return spec.Person{}
+	}
+	var m struct {
+		Creator spec.Person `json:"creator"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return spec.Person{}
+	}
+	return m.Creator
+}
+
+// legacyManifestCreator reconstructs a creator from the pre-transition
+// attribution fields so an un-swept manifest still resolves. Printer (the
+// human who ran the press) is the closest analog to creator; owner is the
+// weaker fallback.
+func legacyManifestCreator(outputDir string) spec.Person {
+	if h := readManifestField(outputDir, "printer"); h != "" {
+		return spec.Person{Handle: h, Name: readManifestField(outputDir, "printer_name")}
+	}
+	if h := readManifestField(outputDir, "owner"); h != "" {
+		return spec.Person{Handle: h, Name: readManifestField(outputDir, "owner_name")}
+	}
+	return spec.Person{}
+}
+
+// parseCopyrightCreator recovers the creator from a generated tree's copyright
+// header when no manifest is present. The current header carries the display
+// name (returned as Name); a legacy header carries the slug (returned as
+// Handle). Returns the zero Person on any failure.
+func parseCopyrightCreator(outputDir string) spec.Person {
+	data, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	if err != nil {
+		return spec.Person{}
+	}
+	if m := copyrightCreatorRe.FindSubmatch(data); m != nil {
+		return spec.Person{Name: string(m[1])}
+	}
+	if m := copyrightOwnerRe.FindSubmatch(data); m != nil {
+		return spec.Person{Handle: string(m[1])}
+	}
+	return spec.Person{}
+}
+
+// resolveCreatorForNew resolves a fresh creator from git config: the handle
+// mirrors printer resolution (github.user, then `gh api user`), the name is
+// the raw git user.name. Empty values are tolerated here and surfaced as a
+// soft warning in Generate().
+func resolveCreatorForNew() spec.Person {
+	return spec.Person{
+		Handle: resolvePrinterForNew(),
+		Name:   resolvePrinterNameForNew(),
+	}
+}
+
+// resolveContributorsForExisting returns the persisted contributors from the
+// manifest. The resolver never derives or appends contributors — accrual is a
+// deliberate contribution-flow action (publish/amend/reprint), and plain regen
+// preserves the existing list.
+func resolveContributorsForExisting(outputDir string) []spec.Person {
+	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
+	if err != nil {
+		return nil
+	}
+	var m struct {
+		Contributors []spec.Person `json:"contributors"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	return m.Contributors
 }

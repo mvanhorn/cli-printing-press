@@ -169,36 +169,37 @@ type Generator struct {
 func New(s *spec.APISpec, outputDir string) *Generator {
 	s.InferEndpointTemplateVarsFromBaseURLs()
 	s.PromoteGlobalPathTemplateVars()
+	// Resolve the creator + contributors (the canonical attribution model),
+	// preserving persisted values across regens so a regen never flips the
+	// creator to whoever is running the generator. The legacy
+	// Owner/OwnerName/Printer/PrinterName fields are derived from the creator
+	// below (dual-write) so older skills and library tooling that still read
+	// them keep working during the transition window.
+	if s.Creator.IsZero() {
+		s.Creator = resolveCreatorForExisting(outputDir)
+	}
+	if s.Contributors == nil {
+		s.Contributors = resolveContributorsForExisting(outputDir)
+	}
+
+	// Owner is the slug form (Go-module-adjacent, copyright-recoverable).
+	// Derive it from the creator handle when not explicitly set (e.g. by a
+	// catalog override), then always sanitize.
 	if s.Owner == "" {
-		s.Owner = resolveOwnerForExisting(outputDir)
+		s.Owner = s.Creator.Handle
 	}
-	// Sanitize owner for Go module path: lowercase, no spaces/special chars
-	s.Owner = strings.ToLower(s.Owner)
-	s.Owner = strings.ReplaceAll(s.Owner, " ", "-")
-	s.Owner = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			return r
-		}
-		return -1
-	}, s.Owner)
-
-	// OwnerName is the prose-shaped display name (e.g. "Trevin Chow") that
-	// flows into Hermes author:, README byline, and other human-facing
-	// surfaces. Distinct from s.Owner (the slug) above. No sanitization —
-	// the value is preserved verbatim and must be YAML-escaped at template
-	// emission time. Empty values are validated in Generate() before any
-	// file writes.
+	s.Owner = sanitizeOwner(s.Owner)
+	// OwnerName / Printer / PrinterName are prose- or handle-shaped legacy
+	// fields, preserved verbatim. Empty creator-derived values are validated
+	// (soft) in Generate() before any file writes.
 	if s.OwnerName == "" {
-		s.OwnerName = resolveOwnerNameForExisting(outputDir)
+		s.OwnerName = s.Creator.Name
 	}
-
-	// Preserve printer attribution from the manifest before consulting git config.
 	if s.Printer == "" {
-		s.Printer = resolvePrinterForExisting(outputDir)
+		s.Printer = s.Creator.Handle
 	}
-	// Preserve the prose-shaped printer display name when regenerating a CLI.
 	if s.PrinterName == "" {
-		s.PrinterName = resolvePrinterNameForExisting(outputDir)
+		s.PrinterName = s.Creator.Name
 	}
 	g := &Generator{
 		Spec:      s,

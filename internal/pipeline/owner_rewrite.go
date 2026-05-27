@@ -22,6 +22,11 @@ import (
 // (anchored on `// Copyright YYYY ` prefix and a trailing literal `.`); other
 // prose mentions of the old owner are intentionally left alone to avoid
 // corrupting hand-written content (issue trackers, attribution lists, etc.).
+//
+// Both header forms are handled: the legacy `Copyright YYYY <slug>.` and the
+// current `Copyright YYYY <name> and contributors.`. The optional
+// " and contributors" suffix is preserved verbatim — only the creator token
+// is swapped.
 func RewriteOwner(dir, oldOwner, newOwner string) error {
 	if oldOwner == "" || newOwner == "" || oldOwner == newOwner {
 		return nil
@@ -29,9 +34,10 @@ func RewriteOwner(dir, oldOwner, newOwner string) error {
 
 	// Bake the literal oldOwner into the pattern so the match itself enforces
 	// the equality guard — no separate capture-and-compare step needed. The
-	// $1/$2 backreferences preserve the prefix and trailing period verbatim.
-	re := regexp.MustCompile(`(?m)^(//\s*Copyright\s+\d+\s+)` + regexp.QuoteMeta(oldOwner) + `(\.)`)
-	replacement := []byte("${1}" + newOwner + "${2}")
+	// $1/$2/$3 backreferences preserve the prefix, the optional
+	// " and contributors" suffix, and the trailing period verbatim.
+	re := regexp.MustCompile(`(?m)^(//\s*Copyright\s+\d+\s+)` + regexp.QuoteMeta(oldOwner) + `( and contributors)?(\.)`)
+	replacement := []byte("${1}" + newOwner + "${2}${3}")
 
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
