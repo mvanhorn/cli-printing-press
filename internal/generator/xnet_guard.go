@@ -33,7 +33,12 @@ func ensureSafeXNet(dir string) error {
 		// module — nothing to pin.
 		return nil
 	}
-	current := strings.TrimSpace(out)
+	// go list -m writes the version to stdout; runCommand joins stdout+stderr,
+	// so take only the first line to ignore any progress/download messages that
+	// the toolchain emits to stderr (e.g. "go: downloading golang.org/x/net …")
+	// in fresh-cache environments.
+	current := strings.SplitN(strings.TrimSpace(out), "\n", 2)[0]
+	current = strings.TrimSpace(current)
 	if !semver.IsValid(current) || semver.Compare(current, safeXNetVersion) >= 0 {
 		return nil
 	}
