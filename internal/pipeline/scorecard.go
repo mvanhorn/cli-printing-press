@@ -403,10 +403,12 @@ func scoreAuth(dir string) int {
 	if authSources >= 2 {
 		score += 1
 	}
-	// TODO: Replace this free grant with real OAuth2 scoring when the generator
-	// can produce OAuth2 browser flows from spec authorizationCode grants.
-	// Auto-award 2 points so the ceiling is 10/10 for what's currently possible.
-	score += 2
+	// OAuth2 quality: interactive auth flows score +2 over static env-var-only CLIs.
+	// runOAuthLogin is emitted by the authorization-code (browser) template;
+	// DeviceCode is emitted by the device-code template.
+	if strings.Contains(authContent, "runOAuthLogin") || strings.Contains(authContent, "DeviceCode") {
+		score += 2
+	}
 	if score > 10 {
 		score = 10
 	}

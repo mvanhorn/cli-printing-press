@@ -103,6 +103,33 @@ func TestInjectAddCommandsFailsWithoutHostFn(t *testing.T) {
 		"missing host function must surface as a clear error")
 }
 
+// TestInjectAddCommandsMalformedCallPropagatesError verifies that a malformed
+// AddCommand source string surfaces as an error rather than being silently
+// dropped. Silently skipping would leave the host file with fewer commands
+// than intended, causing a build-invisible regression in the registered surface.
+func TestInjectAddCommandsMalformedCallPropagatesError(t *testing.T) {
+	t.Parallel()
+
+	// A host file with an existing AddCommand call so the function is found.
+	src := `package cli
+
+import "github.com/spf13/cobra"
+
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "root"}
+	cmd.AddCommand(newExistingCmd())
+	return cmd
+}
+`
+	hostPath := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, os.WriteFile(hostPath, []byte(src), 0o644))
+
+	err := injectAddCommands(hostPath, []string{"this is !!! not valid Go"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inject AddCommand",
+		"malformed source string must surface as a named error")
+}
+
 // TestMergeReportJSONShapeStable pins the JSON contract for the agent surface.
 // This isn't a golden file (the test would need updates with every fixture
 // tweak); it pins the field names that downstream agents branch on.

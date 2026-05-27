@@ -178,6 +178,34 @@ func Execute() error { return rootCmd.Execute() }
 		"must flag missing rootFlags struct")
 }
 
+// TestParseStmt_ReturnsErrorOnInvalidGo verifies that parseStmt propagates a
+// parse error instead of panicking when given syntactically invalid Go source.
+func TestParseStmt_ReturnsErrorOnInvalidGo(t *testing.T) {
+	t.Parallel()
+	_, err := parseStmt(`this is not valid Go !!!`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "patch.parseStmt")
+}
+
+// TestParseStmt_EmptyStringReturnsError verifies that parseStmt returns an
+// error (not a panic) when given an empty string. The wrapper parses as valid
+// Go but yields an empty function body; the bounds-safe loop must catch this.
+func TestParseStmt_EmptyStringReturnsError(t *testing.T) {
+	t.Parallel()
+	_, err := parseStmt("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "patch.parseStmt")
+}
+
+// TestParseStmt_WhitespaceOnlyReturnsError exercises the same empty-body guard
+// for whitespace/newline-only input.
+func TestParseStmt_WhitespaceOnlyReturnsError(t *testing.T) {
+	t.Parallel()
+	_, err := parseStmt("   \n\t  ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "patch.parseStmt")
+}
+
 // TestInjectRootAST_NoPersistentFlagsBlock exercises the "refuse silently"
 // path: if the target root.go doesn't have the expected shape, no mutation.
 func TestInjectRootAST_NoPersistentFlagsBlock(t *testing.T) {

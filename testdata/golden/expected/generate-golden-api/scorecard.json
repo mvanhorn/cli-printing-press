@@ -10,7 +10,7 @@
     "steinberger": {
       "agent_native": 10,
       "agent_workflow_readiness": 9,
-      "auth": 10,
+      "auth": 8,
       "auth_protocol": 0,
       "breadth": 7,
       "cache_freshness": 10,
@@ -29,11 +29,11 @@
       "mcp_tool_design": 0,
       "output_modes": 10,
       "path_validity": 0,
-      "percentage": 89,
+      "percentage": 88,
       "readme": 8,
       "sync_correctness": 10,
       "terminal_ux": 9,
-      "total": 89,
+      "total": 88,
       "type_fidelity": 2,
       "vision": 9,
       "workflows": 10
