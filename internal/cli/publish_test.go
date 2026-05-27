@@ -154,8 +154,10 @@ func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
 		PrinterName:          "Test User",
 	})
 
-	require.Len(t, issues, 1)
-	assert.Contains(t, issues[0], "literal sentinel")
+	// A sentinel printer backfills into a sentinel creator, so both are flagged.
+	require.Len(t, issues, 2)
+	assert.Contains(t, issues[0], "creator.handle must not be the literal sentinel")
+	assert.Contains(t, issues[1], "printer must not be the literal sentinel")
 }
 
 func TestPublishManifestContractBackfillsAttributionFromGh(t *testing.T) {
