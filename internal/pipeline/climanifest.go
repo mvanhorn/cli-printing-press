@@ -714,6 +714,15 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		Printer:              p.Printer,
 		PrinterName:          p.PrinterName,
 	}
+	// Creator is the canonical attribution; Owner/Printer/PrinterName above are
+	// the legacy dual-write derived from it. Stored as a pointer so an empty
+	// creator omits the key (and lets the same-lineage raw merge preserve a
+	// persisted one).
+	if !p.Creator.IsZero() {
+		creator := p.Creator
+		m.Creator = &creator
+	}
+	m.Contributors = p.Contributors
 
 	// Populate spec_url / spec_path from the first spec source.
 	if p.DocsURL != "" {
@@ -826,6 +835,15 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		if p.PrinterName == "" && strings.TrimSpace(existing.PrinterName) != "" {
 			m.PrinterName = existing.PrinterName
 		}
+		// Creator is permanent: preserve the persisted one when this run did
+		// not carry it. Contributors are preserved unless explicitly cleared
+		// (a non-nil empty slice, handled via clearFields below).
+		if p.Creator.IsZero() && existing.Creator != nil && !existing.Creator.IsZero() {
+			m.Creator = existing.Creator
+		}
+		if p.Contributors == nil && len(existing.Contributors) > 0 {
+			m.Contributors = existing.Contributors
+		}
 	} else {
 		existingRaw = nil
 	}
@@ -833,6 +851,12 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	clearFields := map[string]struct{}{}
 	if preserveExisting && p.NovelFeatures != nil && len(p.NovelFeatures) == 0 {
 		clearFields["novel_features"] = struct{}{}
+	}
+	// A non-nil empty contributors slice is the explicit-clear signal: force
+	// the key out of the same-lineage raw merge (an omitempty empty slice
+	// would otherwise leave the persisted list in place).
+	if preserveExisting && p.Contributors != nil && len(p.Contributors) == 0 {
+		clearFields["contributors"] = struct{}{}
 	}
 	if preserveExisting {
 		if m.SpecURL != "" && m.SpecPath == "" {

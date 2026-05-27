@@ -220,6 +220,12 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			if existing.DisplayName != "" {
 				m.DisplayName = existing.DisplayName
 			}
+			if existing.Creator != nil && !existing.Creator.IsZero() {
+				m.Creator = existing.Creator
+			}
+			if len(existing.Contributors) > 0 {
+				m.Contributors = existing.Contributors
+			}
 			if existing.Owner != "" {
 				m.Owner = existing.Owner
 			}
