@@ -2096,6 +2096,22 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("teach_playbook_test.go.tmpl", filepath.Join("internal", "cli", "teach_playbook_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering teach-playbook commands test: %w", err)
 		}
+		// internal/cli/playbooks/ ships the embed.FS scaffold for hand-
+		// authored playbook content (JSON + notes files). U9 emits the
+		// scaffold only — the auto-install path that walks this FS lives
+		// in playbook_init.go (a later unit). MANIFEST.md keeps the
+		// //go:embed *.json *.md directive matching at least one file
+		// when no authored content has shipped yet, so the package
+		// compiles cleanly on a fresh print.
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "cli", "playbooks"), 0o755); err != nil {
+			return fmt.Errorf("creating cli/playbooks dir for embed.FS scaffold: %w", err)
+		}
+		if err := g.renderTemplate("playbooks_embed.go.tmpl", filepath.Join("internal", "cli", "playbooks", "embed.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cli/playbooks embed.go: %w", err)
+		}
+		if err := g.renderTemplate("playbooks_manifest.md.tmpl", filepath.Join("internal", "cli", "playbooks", "MANIFEST.md"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cli/playbooks MANIFEST.md: %w", err)
+		}
 		// learn_init.go translates spec.Learn (ticker patterns, stopwords,
 		// entity-lookup seeds) into a runtime *entities.Config and seeds
 		// the entity_lookups table at first start. Owns newLearnConfig()

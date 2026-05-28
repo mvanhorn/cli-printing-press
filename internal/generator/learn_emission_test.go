@@ -71,6 +71,14 @@ func TestGenerateLearnPackageEmitsAllFiles(t *testing.T) {
 		// registration in a later unit.
 		"internal/cli/teach_playbook.go",
 		"internal/cli/teach_playbook_test.go",
+		// U9: internal/cli/playbooks/ ships the embed.FS scaffold for
+		// hand-authored playbook content (JSON + notes files). MANIFEST.md
+		// keeps the //go:embed *.json *.md directive matching at least
+		// one file when no authored content has shipped yet, so the
+		// package compiles cleanly on a fresh print. The auto-install
+		// path that walks this FS is owned by a later unit.
+		"internal/cli/playbooks/embed.go",
+		"internal/cli/playbooks/MANIFEST.md",
 	}
 	for _, rel := range wantFiles {
 		_, err := os.Stat(filepath.Join(outputDir, rel))
@@ -101,6 +109,10 @@ func TestGenerateLearnPackageGatedOff(t *testing.T) {
 	// U7 (playbook surface): teach_playbook.go is gated off too.
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "teach_playbook.go"))
 	require.True(t, os.IsNotExist(err), "internal/cli/teach_playbook.go must not exist when Learn.Enabled=false")
+
+	// U9: cli/playbooks/ embed.FS scaffold is gated off too.
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "playbooks"))
+	require.True(t, os.IsNotExist(err), "internal/cli/playbooks must not exist when Learn.Enabled=false")
 }
 
 // TestGenerateLearnPackageCompilesAndTests drives the emitted learn
