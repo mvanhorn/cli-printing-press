@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.19.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.18.1...v4.19.0) (2026-05-28)
+
+
+### Features
+
+* **cli:** creator + contributors attribution model ([#2432](https://github.com/mvanhorn/cli-printing-press/issues/2432)) ([d7bf1bf](https://github.com/mvanhorn/cli-printing-press/commit/d7bf1bf2c0df9d497a7c19d0ae6ba34fa25dd5db))
+
+
+### Bug Fixes
+
+* **cli:** drop journal_mode from read-only store DSN ([#2407](https://github.com/mvanhorn/cli-printing-press/issues/2407)) ([4bf1659](https://github.com/mvanhorn/cli-printing-press/commit/4bf16593ef55fb5e11598d9558dbd9b770d91f3e))
+* **cli:** guard empty PROXY_ARGS expansion under bash 3.2 ([#2439](https://github.com/mvanhorn/cli-printing-press/issues/2439)) ([ad28280](https://github.com/mvanhorn/cli-printing-press/commit/ad282805a9523a8f52e2209cec600aa9b03caad9)), closes [#2438](https://github.com/mvanhorn/cli-printing-press/issues/2438)
+* **cli:** pin golang.org/x/net to a patched version after generation ([#2410](https://github.com/mvanhorn/cli-printing-press/issues/2410)) ([470bd19](https://github.com/mvanhorn/cli-printing-press/commit/470bd19d417f8276b0396e334d52dd38576e1285))
+
 ## [4.18.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.18.0...v4.18.1) (2026-05-27)
 
 
