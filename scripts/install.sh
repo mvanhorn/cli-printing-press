@@ -286,12 +286,12 @@ check_network() {
     return 0
   fi
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 5 "${PROXY_ARGS[@]}" https://github.com >/dev/null || {
+    curl -fsSL --connect-timeout 5 ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} https://github.com >/dev/null || {
       err "Network check failed: could not reach github.com."
       exit 1
     }
     if [[ "$INSTALL_SKILLS" -eq 1 ]]; then
-      curl -fsSL --connect-timeout 5 "${PROXY_ARGS[@]}" https://registry.npmjs.org/skills >/dev/null || {
+      curl -fsSL --connect-timeout 5 ${PROXY_ARGS[@]+"${PROXY_ARGS[@]}"} https://registry.npmjs.org/skills >/dev/null || {
         err "Network check failed: could not reach registry.npmjs.org."
         exit 1
       }
