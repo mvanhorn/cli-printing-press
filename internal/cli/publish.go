@@ -20,6 +20,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/modfile"
 )
@@ -797,6 +798,12 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 		issues = append(issues, fmt.Sprintf("schema_version must be %d (found %d)", pipeline.CurrentCLIManifestSchemaVersion, manifest.SchemaVersion))
 	}
 
+	var creatorHandle, creatorName string
+	if manifest.Creator != nil {
+		creatorHandle = strings.TrimSpace(manifest.Creator.Handle)
+		creatorName = strings.TrimSpace(manifest.Creator.Name)
+	}
+
 	var missing []string
 	required := []struct {
 		name  string
@@ -806,6 +813,8 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 		{name: "cli_name", value: manifest.CLIName},
 		{name: "run_id", value: manifest.RunID},
 		{name: "printing_press_version", value: manifest.PrintingPressVersion},
+		{name: "creator.handle", value: creatorHandle},
+		{name: "creator.name", value: creatorName},
 		{name: "printer", value: manifest.Printer},
 		{name: "printer_name", value: manifest.PrinterName},
 	}
@@ -816,6 +825,9 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 	}
 	if len(missing) > 0 {
 		issues = append(issues, "missing required manifest fields: "+strings.Join(missing, ", "))
+	}
+	if isPublishPrinterSentinel(creatorHandle) {
+		issues = append(issues, fmt.Sprintf("creator.handle must not be the literal sentinel %q", creatorHandle))
 	}
 	if isPublishPrinterSentinel(manifest.Printer) {
 		issues = append(issues, fmt.Sprintf("printer must not be the literal sentinel %q", manifest.Printer))
@@ -837,15 +849,34 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 }
 
 func manifestWithPublishAttributionFallbacks(manifest pipeline.CLIManifest) pipeline.CLIManifest {
-	if strings.TrimSpace(manifest.Printer) != "" && strings.TrimSpace(manifest.PrinterName) != "" {
-		return manifest
+	// Fill the legacy printer fields from a present creator first, so a
+	// creator-only manifest (manual edit or future creator-primary state)
+	// validates without needing a git identity (e.g. on CI).
+	if manifest.Creator != nil && !manifest.Creator.IsZero() {
+		if strings.TrimSpace(manifest.Printer) == "" {
+			manifest.Printer = manifest.Creator.Handle
+		}
+		if strings.TrimSpace(manifest.PrinterName) == "" {
+			manifest.PrinterName = manifest.Creator.Name
+		}
 	}
-	fallback := resolvePublishAttributionFallback(manifest)
-	if strings.TrimSpace(manifest.Printer) == "" && fallback.Printer != "" {
-		manifest.Printer = fallback.Printer
+	if strings.TrimSpace(manifest.Printer) == "" || strings.TrimSpace(manifest.PrinterName) == "" {
+		fallback := resolvePublishAttributionFallback(manifest)
+		if strings.TrimSpace(manifest.Printer) == "" && fallback.Printer != "" {
+			manifest.Printer = fallback.Printer
+		}
+		if strings.TrimSpace(manifest.PrinterName) == "" && fallback.PrinterName != "" {
+			manifest.PrinterName = fallback.PrinterName
+		}
 	}
-	if strings.TrimSpace(manifest.PrinterName) == "" && fallback.PrinterName != "" {
-		manifest.PrinterName = fallback.PrinterName
+	// Backfill the creator from the (now-resolved) legacy fields so a manifest
+	// generated before the creator model — or one whose attribution was only
+	// resolved at publish time — still carries a creator for validation and the
+	// public registry.
+	if manifest.Creator == nil || manifest.Creator.IsZero() {
+		if h, n := strings.TrimSpace(manifest.Printer), strings.TrimSpace(manifest.PrinterName); h != "" || n != "" {
+			manifest.Creator = &spec.Person{Handle: h, Name: n}
+		}
 	}
 	return manifest
 }

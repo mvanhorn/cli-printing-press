@@ -72,6 +72,7 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newVerifyInternalSkillCmd())
 	rootCmd.AddCommand(newEmbossCmd())
 	rootCmd.AddCommand(newPatchCmd())
+	rootCmd.AddCommand(newContributorsCmd())
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
@@ -215,6 +216,8 @@ func newGenerateCmd() *cobra.Command {
 					OutputDir:     absOut,
 					Description:   generateResult.CatalogDescription,
 					DisplayName:   generateResult.DisplayName,
+					Creator:       parsed.Creator,
+					Contributors:  parsed.Contributors,
 					Owner:         parsed.Owner,
 					Printer:       parsed.Printer,
 					PrinterName:   parsed.PrinterName,
@@ -434,6 +437,8 @@ func newGenerateCmd() *cobra.Command {
 				OutputDir:     absOut,
 				Description:   generateResult.CatalogDescription,
 				DisplayName:   generateResult.DisplayName,
+				Creator:       apiSpec.Creator,
+				Contributors:  apiSpec.Contributors,
 				Owner:         apiSpec.Owner,
 				Printer:       apiSpec.Printer,
 				PrinterName:   apiSpec.PrinterName,
@@ -2292,6 +2297,9 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	}
 	if entry.APILanguage != "" {
 		apiSpec.APILanguage = entry.APILanguage
+	}
+	if entry.Creator != nil && !entry.Creator.IsZero() && apiSpec.Creator.IsZero() {
+		apiSpec.Creator = *entry.Creator
 	}
 	if entry.Owner != "" && apiSpec.Owner == "" {
 		apiSpec.Owner = entry.Owner

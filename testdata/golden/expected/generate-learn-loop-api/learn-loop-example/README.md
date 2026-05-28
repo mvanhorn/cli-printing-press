@@ -13,7 +13,7 @@ are intentionally neutral (EXAMPLE-* ticker, ALPHA/BRAVO entities) so the
 scripts/verify-learn-purity.sh gate cannot trip on this fixture.
 
 
-Printed by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
+Created by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
 
 ## Install
 

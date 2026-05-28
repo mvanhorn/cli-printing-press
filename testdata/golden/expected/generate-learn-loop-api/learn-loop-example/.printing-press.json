@@ -6,6 +6,10 @@
   ],
   "auth_type": "bearer_token",
   "cli_name": "learn-loop-example-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
   "description": "Golden fixture exercising the spec-declared self-learning loop.",
   "display_name": "Learn Loop Example",
   "generated_at": "<GENERATED_AT>",

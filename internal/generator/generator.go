@@ -169,36 +169,61 @@ type Generator struct {
 func New(s *spec.APISpec, outputDir string) *Generator {
 	s.InferEndpointTemplateVarsFromBaseURLs()
 	s.PromoteGlobalPathTemplateVars()
-	if s.Owner == "" {
-		s.Owner = resolveOwnerForExisting(outputDir)
-	}
-	// Sanitize owner for Go module path: lowercase, no spaces/special chars
-	s.Owner = strings.ToLower(s.Owner)
-	s.Owner = strings.ReplaceAll(s.Owner, " ", "-")
-	s.Owner = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			return r
+	// Resolve the creator + contributors (the canonical attribution model),
+	// preserving persisted values across regens so a regen never flips the
+	// creator to whoever is running the generator. The legacy
+	// Owner/OwnerName/Printer/PrinterName fields are derived from the creator
+	// below (dual-write) so older skills and library tooling that still read
+	// them keep working during the transition window.
+	if s.Creator.IsZero() {
+		switch {
+		case s.Printer != "" || s.PrinterName != "":
+			// Printer names the human — bridge it into the creator in full.
+			s.Creator = spec.Person{Handle: s.Printer, Name: s.PrinterName}
+		case s.OwnerName != "" || s.Owner != "":
+			// An explicitly-set legacy owner drove the copyright header before
+			// the creator model existed; preserve that for backward-compat by
+			// seeding only the creator NAME. Handle is left empty so the owner
+			// slug never leaks into the printer byline (it is the vendor/module
+			// identity, not the human).
+			name := s.OwnerName
+			if name == "" {
+				name = s.Owner
+			}
+			s.Creator = spec.Person{Name: name}
+		default:
+			s.Creator = resolveCreatorForExisting(outputDir, s.Name)
 		}
-		return -1
-	}, s.Owner)
+	}
+	if s.Contributors == nil {
+		s.Contributors = resolveContributorsForExisting(outputDir, s.Name)
+	}
+	// Strip attribution-unsafe characters once at the source so every render
+	// surface (copyright header, README byline, NOTICE) inherits clean values
+	// rather than each escaping independently.
+	s.Creator = s.Creator.Clean()
+	for i := range s.Contributors {
+		s.Contributors[i] = s.Contributors[i].Clean()
+	}
 
-	// OwnerName is the prose-shaped display name (e.g. "Trevin Chow") that
-	// flows into Hermes author:, README byline, and other human-facing
-	// surfaces. Distinct from s.Owner (the slug) above. No sanitization —
-	// the value is preserved verbatim and must be YAML-escaped at template
-	// emission time. Empty values are validated in Generate() before any
-	// file writes.
+	// Owner is the slug form (Go-module-adjacent, copyright-recoverable).
+	// Derive it from the creator handle when not explicitly set (e.g. by a
+	// catalog override), then always sanitize.
+	if s.Owner == "" {
+		s.Owner = s.Creator.Handle
+	}
+	s.Owner = sanitizeOwner(s.Owner)
+	// OwnerName / Printer / PrinterName are prose- or handle-shaped legacy
+	// fields, preserved verbatim. Empty creator-derived values are validated
+	// (soft) in Generate() before any file writes.
 	if s.OwnerName == "" {
-		s.OwnerName = resolveOwnerNameForExisting(outputDir)
+		s.OwnerName = s.Creator.Name
 	}
-
-	// Preserve printer attribution from the manifest before consulting git config.
 	if s.Printer == "" {
-		s.Printer = resolvePrinterForExisting(outputDir)
+		s.Printer = s.Creator.Handle
 	}
-	// Preserve the prose-shaped printer display name when regenerating a CLI.
 	if s.PrinterName == "" {
-		s.PrinterName = resolvePrinterNameForExisting(outputDir)
+		s.PrinterName = s.Creator.Name
 	}
 	g := &Generator{
 		Spec:      s,
@@ -292,6 +317,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"promotedExampleLine": g.promotedExampleLine,
 		"commandExampleArgs":  commandExampleArgs,
 		"currentYear":         func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder": func() string {
+			return copyrightHolderString(g.Spec.Creator, g.Spec.OwnerName, g.Spec.Owner)
+		},
 		"modulePath": func() string {
 			if g.ModulePath != "" {
 				return g.ModulePath

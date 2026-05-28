@@ -75,14 +75,22 @@ type CLIManifest struct {
 	// CLIName is the executable/binary name (for example "espn-pp-cli").
 	// It does not track the slug-keyed library directory.
 	CLIName string `json:"cli_name"`
-	// Owner is the attribution recorded in generated copyright headers
-	// (for example "hiten-shah"). Persisted here so subsequent regens
-	// preserve attribution regardless of who's running the generator.
-	Owner string `json:"owner,omitempty"`
+	// Creator is the permanent original author (handle + display name),
+	// preserved across regens regardless of who runs the generator. Source
+	// of truth for every attribution surface.
+	Creator *spec.Person `json:"creator,omitempty"`
+	// Contributors accrue as others improve the CLI (reprinter first).
+	// Preserved on plain regen/sync; appended only by deliberate
+	// contribution flows (publish/amend/reprint by a non-creator).
+	Contributors []spec.Person `json:"contributors,omitempty"`
+	// Owner/Printer/PrinterName are legacy attribution fields, dual-written
+	// from Creator during the transition window so older skills/tooling that
+	// read them keep working. A future major release removes them.
+	Owner string `json:"owner,omitempty"` // legacy: derived from Creator.Handle
 	// Printer is the original printer's GitHub handle, preserved across regens.
-	Printer string `json:"printer,omitempty"`
+	Printer string `json:"printer,omitempty"` // legacy: derived from Creator.Handle
 	// PrinterName is the optional display name rendered beside the printer handle.
-	PrinterName        string            `json:"printer_name,omitempty"`
+	PrinterName        string            `json:"printer_name,omitempty"` // legacy: derived from Creator.Name
 	SpecURL            string            `json:"spec_url,omitempty"`
 	SpecPath           string            `json:"spec_path,omitempty"`
 	SpecFormat         string            `json:"spec_format,omitempty"`
@@ -234,6 +242,112 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 	return nil
 }
 
+// AppendContributor adds p to the manifest's contributors[] in dir, returning
+// whether a write happened. It is the deliberate-contribution counterpart to
+// the resolver's preserve-on-regen behavior: only the publish/amend/reprint
+// flows call it, never a plain regen.
+//
+// The append is idempotent and skips self-attribution: p is dropped when it is
+// the creator or already a contributor (matched case-insensitively by handle).
+// With front=true the contributor is prepended (used by the reprint flow so
+// the reprinter is listed first); otherwise appended. All other manifest fields
+// — including unknown/future keys — are preserved verbatim via the raw map.
+func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
+	p = p.Clean()
+	if p.IsZero() {
+		return false, nil
+	}
+	path := filepath.Join(dir, CLIManifestFilename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("reading CLI manifest: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+
+	var creator spec.Person
+	if rc, ok := raw["creator"]; ok {
+		if err := json.Unmarshal(rc, &creator); err != nil {
+			return false, fmt.Errorf("parsing creator: %w", err)
+		}
+	}
+	if samePerson(p, creator) {
+		return false, nil
+	}
+
+	var contributors []spec.Person
+	if rc, ok := raw["contributors"]; ok {
+		if err := json.Unmarshal(rc, &contributors); err != nil {
+			return false, fmt.Errorf("parsing contributors: %w", err)
+		}
+	}
+	for _, c := range contributors {
+		if samePerson(p, c) {
+			return false, nil
+		}
+	}
+
+	if front {
+		contributors = append([]spec.Person{p}, contributors...)
+	} else {
+		contributors = append(contributors, p)
+	}
+	enc, err := json.Marshal(contributors)
+	if err != nil {
+		return false, fmt.Errorf("encoding contributors: %w", err)
+	}
+	raw["contributors"] = enc
+
+	out, err := marshalCLIManifestObject(raw)
+	if err != nil {
+		return false, err
+	}
+	if err := writeFileAtomic(path, out, 0o644); err != nil {
+		return false, fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return true, nil
+}
+
+// samePerson reports whether two attribution entries are the same human.
+// Handles are the primary key (case-insensitive); when a handle is absent on
+// both sides — e.g. a contributor recorded with only a display name — it falls
+// back to a name match so a handle-less entry still dedupes instead of
+// re-appending on every call.
+func samePerson(a, b spec.Person) bool {
+	if a.Handle != "" && b.Handle != "" {
+		return strings.EqualFold(strings.TrimSpace(a.Handle), strings.TrimSpace(b.Handle))
+	}
+	if a.Handle == "" && b.Handle == "" && a.Name != "" {
+		return strings.EqualFold(strings.TrimSpace(a.Name), strings.TrimSpace(b.Name))
+	}
+	return false
+}
+
+// writeFileAtomic writes data to a sibling temp file and renames it over path,
+// so an interrupted write can't truncate the manifest (the provenance source of
+// truth) and leave it unparseable for the next regen.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
 // WritePatchesIndex emits .printing-press-patches.json into the generated
 // CLI directory. The library's Verify CI rejects fresh-print publishes
 // without this file; emitting an empty index here removes the friction
@@ -377,6 +491,8 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"api_name",
 		"display_name",
 		"cli_name",
+		"creator",
+		"contributors",
 		"owner",
 		"printer",
 		"printer_name",
@@ -619,9 +735,11 @@ type GenerateManifestParams struct {
 	OutputDir     string
 	Description   string                 // best generated user-facing catalog description
 	DisplayName   string                 // best generated user-facing catalog display name
-	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
-	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > empty)
-	PrinterName   string                 // resolved printer display name (manifest preserve > git config user.name > empty)
+	Creator       spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
+	Contributors  []spec.Person          // resolved contributors, preserved from the existing manifest
+	Owner         string                 // legacy, derived from Creator.Handle (dual-write)
+	Printer       string                 // legacy, derived from Creator.Handle (dual-write)
+	PrinterName   string                 // legacy, derived from Creator.Name (dual-write)
 	RunID         string                 // YYYYMMDD-HHMMSS, derived from --research-dir basename when empty
 	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
 	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)
@@ -704,6 +822,15 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		Printer:              p.Printer,
 		PrinterName:          p.PrinterName,
 	}
+	// Creator is the canonical attribution; Owner/Printer/PrinterName above are
+	// the legacy dual-write derived from it. Stored as a pointer so an empty
+	// creator omits the key (and lets the same-lineage raw merge preserve a
+	// persisted one).
+	if !p.Creator.IsZero() {
+		creator := p.Creator
+		m.Creator = &creator
+	}
+	m.Contributors = p.Contributors
 
 	// Populate spec_url / spec_path from the first spec source.
 	if p.DocsURL != "" {
@@ -816,6 +943,15 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		if p.PrinterName == "" && strings.TrimSpace(existing.PrinterName) != "" {
 			m.PrinterName = existing.PrinterName
 		}
+		// Creator is permanent: preserve the persisted one when this run did
+		// not carry it. Contributors are preserved unless explicitly cleared
+		// (a non-nil empty slice, handled via clearFields below).
+		if p.Creator.IsZero() && existing.Creator != nil && !existing.Creator.IsZero() {
+			m.Creator = existing.Creator
+		}
+		if p.Contributors == nil && len(existing.Contributors) > 0 {
+			m.Contributors = existing.Contributors
+		}
 	} else {
 		existingRaw = nil
 	}
@@ -823,6 +959,12 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	clearFields := map[string]struct{}{}
 	if preserveExisting && p.NovelFeatures != nil && len(p.NovelFeatures) == 0 {
 		clearFields["novel_features"] = struct{}{}
+	}
+	// A non-nil empty contributors slice is the explicit-clear signal: force
+	// the key out of the same-lineage raw merge (an omitempty empty slice
+	// would otherwise leave the persisted list in place).
+	if preserveExisting && p.Contributors != nil && len(p.Contributors) == 0 {
+		clearFields["contributors"] = struct{}{}
 	}
 	if preserveExisting {
 		if m.SpecURL != "" && m.SpecPath == "" {

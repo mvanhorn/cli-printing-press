@@ -3,6 +3,10 @@
   "api_version": "1.0",
   "auth_type": "none",
   "cli_name": "fastapi-operationids-golden-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
   "description": "Fixture for FastAPI default operationId normalization.",
   "display_name": "Fastapi Operationids Golden",
   "generated_at": "<GENERATED_AT>",

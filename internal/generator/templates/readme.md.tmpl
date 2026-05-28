@@ -16,9 +16,12 @@
 
 Learn more at [{{.ProseName}}]({{.WebsiteURL}}).
 {{- end}}
-{{- if .Printer}}
+{{- if .Creator.Handle}}
 
-Printed by [@{{.Printer}}](https://github.com/{{.Printer}}){{if .PrinterName}} ({{.PrinterName}}){{end}}.
+Created by [@{{.Creator.Handle}}](https://github.com/{{.Creator.Handle}}){{if .Creator.Name}} ({{.Creator.Name}}){{end}}.
+{{- if .Contributors}}
+Contributors: {{range $i, $c := .Contributors}}{{if $i}}, {{end}}{{if $c.Handle}}[@{{$c.Handle}}](https://github.com/{{$c.Handle}}){{if $c.Name}} ({{$c.Name}}){{end}}{{else}}{{$c.Name}}{{end}}{{end}}.
+{{- end}}
 {{- end}}
 
 ## Install

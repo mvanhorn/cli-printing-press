@@ -2,7 +2,7 @@
 
 Purpose-built fixture for the OAuth2 device-code auth shape.
 
-Printed by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
+Created by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
 
 ## Install
 
