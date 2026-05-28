@@ -2112,6 +2112,21 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("playbooks_manifest.md.tmpl", filepath.Join("internal", "cli", "playbooks", "MANIFEST.md"), g.Spec); err != nil {
 			return fmt.Errorf("rendering cli/playbooks MANIFEST.md: %w", err)
 		}
+		// playbook_init.go is the embed-FS auto-install path. At first
+		// DB open after schema migration it walks playbooks.FS, parses
+		// each <base>.json + <base>_notes.md pair, derives the query
+		// family via learn.QueryFamily(learn.Normalize(example)), and
+		// upserts a row per family. A sentinel row tracks SeedVersion;
+		// re-seed fires on binary upgrades that bump the constant.
+		// `playbook amend` writes are preserved across upgrades via an
+		// anchored regex check on the `[amend YYYY-...]` marker.
+		// Root.go.tmpl wires runPlaybookInitOnce in a later unit.
+		if err := g.renderTemplate("playbook_init.go.tmpl", filepath.Join("internal", "cli", "playbook_init.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering playbook init: %w", err)
+		}
+		if err := g.renderTemplate("playbook_init_test.go.tmpl", filepath.Join("internal", "cli", "playbook_init_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering playbook init test: %w", err)
+		}
 		// learn_init.go translates spec.Learn (ticker patterns, stopwords,
 		// entity-lookup seeds) into a runtime *entities.Config and seeds
 		// the entity_lookups table at first start. Owns newLearnConfig()
