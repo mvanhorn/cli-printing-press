@@ -54,12 +54,15 @@ func TestGenerateStoreSchemaVersion_EnabledAdvancesToV7WithLearnTables(t *testin
 		"CREATE INDEX IF NOT EXISTS idx_learn_query",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_learn_unique",
 		"CREATE INDEX IF NOT EXISTS idx_entity_lookup_canonical",
-		"CREATE UNIQUE INDEX IF NOT EXISTS idx_playbooks_family",
 		"CREATE INDEX IF NOT EXISTS idx_playbooks_source",
 		"CREATE INDEX IF NOT EXISTS idx_playbooks_last_observed_at",
 	} {
 		require.Contains(t, src, want, "learn-enabled spec must emit %q", want)
 	}
+	// query_family carries a column-level UNIQUE constraint; there must
+	// be NO separate named unique index (that would double write cost).
+	require.NotContains(t, src, "idx_playbooks_family",
+		"learning_playbooks must rely on the column-level UNIQUE, not a redundant named index")
 	// Divergent tables removed in the canonical-restore pass.
 	for _, gone := range []string{"teach_log_metadata", "search_learnings_fts"} {
 		require.NotContains(t, src, gone, "canonical schema must not emit divergent table %s", gone)

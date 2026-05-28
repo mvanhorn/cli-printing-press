@@ -395,7 +395,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			last_observed_at TIMESTAMP
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_playbooks_family ON learning_playbooks(query_family)`,
+		// query_family already carries a column-level UNIQUE constraint
+		// (SQLite auto-creates the backing index), so no separate
+		// CREATE UNIQUE INDEX is needed -- a second named unique index
+		// would just double the write cost on every upsert.
 		`CREATE INDEX IF NOT EXISTS idx_playbooks_source ON learning_playbooks(source)`,
 		`CREATE INDEX IF NOT EXISTS idx_playbooks_last_observed_at ON learning_playbooks(last_observed_at)`,
 		`CREATE TABLE IF NOT EXISTS "leagues" (

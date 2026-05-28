@@ -257,7 +257,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 			// the agent's primary write (resource learning) already
 			// succeeded, so degraded playbook recording is acceptable.
 			if strings.TrimSpace(playbookFile) != "" || strings.TrimSpace(playbookNotesInline) != "" || strings.TrimSpace(playbookNotesFile) != "" {
-				if pbErr := upsertPlaybookFromTeach(s, learnCfg, cmd.Context(), query, playbookFile, playbookNotesInline, playbookNotesFile, normalized); pbErr != nil {
+				if pbErr := upsertPlaybookFromTeach(cmd.Context(), s, learnCfg, query, playbookFile, playbookNotesInline, playbookNotesFile, normalized); pbErr != nil {
 					writeTeachErrLog(fmt.Sprintf("teach: playbook upsert: %v", pbErr))
 				}
 			}
@@ -303,13 +303,14 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 // playbook-side write. Failures bubble up to the caller, which logs
 // them to teach.log without failing the surrounding resource learning.
 //
-// learnCfg, ctx, and query are accepted today for signature parity with
+// ctx is first per Go convention (and to satisfy staticcheck SA1012).
+// ctx, learnCfg, and query are accepted today for signature parity with
 // the standalone teach-playbook flow; the helper does not yet need them
 // directly because normalize+promote runs in the caller. Keeping the
 // parameters reserved here means future refinements (e.g. a per-call
 // resolver reused for slot validation) don't have to ripple back into
 // the cobra surface.
-func upsertPlaybookFromTeach(s *store.Store, learnCfg *entities.Config, ctx context.Context, query, playbookFile, notesInline, notesFile string, normalized learn.NormalizedQuery) error {
+func upsertPlaybookFromTeach(ctx context.Context, s *store.Store, learnCfg *entities.Config, query, playbookFile, notesInline, notesFile string, normalized learn.NormalizedQuery) error {
 	playbookJSON, notes, err := resolvePlaybookInputs(playbookFile, notesInline, notesFile)
 	if err != nil {
 		return err

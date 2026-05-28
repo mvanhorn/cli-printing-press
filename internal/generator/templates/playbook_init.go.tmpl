@@ -185,9 +185,18 @@ func installPlaybooksFromEmbed(ctx context.Context, s *store.Store, embedFS fs.F
 		}
 		var notesText string
 		if notesName, ok := notesBases[base]; ok {
-			if data, nerr := fs.ReadFile(embedFS, notesName); nerr == nil {
-				notesText = string(data)
+			data, nerr := fs.ReadFile(embedFS, notesName)
+			if nerr != nil {
+				// A failed notes read is treated like every other
+				// error in this loop: log it and mark the seed as
+				// failed so the sentinel is NOT advanced and the next
+				// invocation retries. Silently seeding empty notes
+				// here would lock out the retry behind a sentinel.
+				fmt.Fprintf(os.Stderr, "warning: {{.Name}}-pp-cli: playbook init: read %s: %v\n", notesName, nerr)
+				upsertFailed = true
+				continue
 			}
+			notesText = string(data)
 		}
 		jsonStr, merr := learn.MarshalPlaybook(pb)
 		if merr != nil {
