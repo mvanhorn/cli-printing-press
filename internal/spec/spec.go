@@ -124,6 +124,36 @@ type Person struct {
 // the legacy attribution fields.
 func (p Person) IsZero() bool { return p.Handle == "" && p.Name == "" }
 
+// Clean returns p with attribution-unsafe characters removed so the name and
+// handle can render into Go copyright comments, README markdown, and NOTICE
+// without injecting. Name drops control characters (a newline would break out
+// of a `//` comment) and the markdown/HTML metacharacters that could forge a
+// link or code span; Handle is constrained to the GitHub-handle charset so it
+// can't escape the byline's `https://github.com/<handle>` href.
+func (p Person) Clean() Person {
+	return Person{Handle: cleanHandle(p.Handle), Name: cleanName(p.Name)}
+}
+
+func cleanName(s string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || strings.ContainsRune("[]`<>", r) {
+			return -1
+		}
+		return r
+	}, s)
+	return strings.TrimSpace(cleaned)
+}
+
+func cleanHandle(s string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return -1
+	}, s)
+	return strings.TrimSpace(cleaned)
+}
+
 type APISpec struct {
 	Name string `yaml:"name" json:"name"`
 	// DisplayName is the human-readable brand name used in user-facing

@@ -79,3 +79,31 @@ func TestAppendContributor(t *testing.T) {
 		assert.Contains(t, raw, "contributors")
 	})
 }
+
+// A contributor recorded with only a display name (no handle) must still
+// dedupe by name, instead of re-appending on every call.
+func TestAppendContributorNameOnlyDedupes(t *testing.T) {
+	t.Run("repeat name-only add is a no-op", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifestJSON(t, dir, `{"cli_name":"acme-pp-cli","creator":{"handle":"trevin-chow","name":"Trevin Chow"}}`)
+
+		added, err := AppendContributor(dir, spec.Person{Name: "Jane Doe"}, false)
+		require.NoError(t, err)
+		assert.True(t, added)
+
+		added, err = AppendContributor(dir, spec.Person{Name: "jane doe"}, false) // case-insensitive
+		require.NoError(t, err)
+		assert.False(t, added, "a name-only contributor must dedupe by name")
+		assert.Len(t, readManifest(t, dir).Contributors, 1)
+	})
+
+	t.Run("name-only matching the creator name is skipped", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifestJSON(t, dir, `{"cli_name":"acme-pp-cli","creator":{"name":"Solo Dev"}}`)
+
+		added, err := AppendContributor(dir, spec.Person{Name: "Solo Dev"}, false)
+		require.NoError(t, err)
+		assert.False(t, added, "the creator must not be re-added as a name-only contributor")
+		assert.Empty(t, readManifest(t, dir).Contributors)
+	})
+}

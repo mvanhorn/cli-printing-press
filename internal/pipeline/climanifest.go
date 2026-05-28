@@ -253,6 +253,7 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 // the reprinter is listed first); otherwise appended. All other manifest fields
 // — including unknown/future keys — are preserved verbatim via the raw map.
 func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
+	p = p.Clean()
 	if p.IsZero() {
 		return false, nil
 	}
@@ -266,15 +267,13 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 		return false, fmt.Errorf("parsing CLI manifest: %w", err)
 	}
 
-	sameHandle := func(a, b string) bool {
-		return a != "" && strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
-	}
-
 	var creator spec.Person
 	if rc, ok := raw["creator"]; ok {
-		_ = json.Unmarshal(rc, &creator)
+		if err := json.Unmarshal(rc, &creator); err != nil {
+			return false, fmt.Errorf("parsing creator: %w", err)
+		}
 	}
-	if sameHandle(p.Handle, creator.Handle) {
+	if samePerson(p, creator) {
 		return false, nil
 	}
 
@@ -285,7 +284,7 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 		}
 	}
 	for _, c := range contributors {
-		if sameHandle(p.Handle, c.Handle) {
+		if samePerson(p, c) {
 			return false, nil
 		}
 	}
@@ -305,10 +304,48 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := writeFileAtomic(path, out, 0o644); err != nil {
 		return false, fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	return true, nil
+}
+
+// samePerson reports whether two attribution entries are the same human.
+// Handles are the primary key (case-insensitive); when a handle is absent on
+// both sides — e.g. a contributor recorded with only a display name — it falls
+// back to a name match so a handle-less entry still dedupes instead of
+// re-appending on every call.
+func samePerson(a, b spec.Person) bool {
+	if a.Handle != "" && b.Handle != "" {
+		return strings.EqualFold(strings.TrimSpace(a.Handle), strings.TrimSpace(b.Handle))
+	}
+	if a.Handle == "" && b.Handle == "" && a.Name != "" {
+		return strings.EqualFold(strings.TrimSpace(a.Name), strings.TrimSpace(b.Name))
+	}
+	return false
+}
+
+// writeFileAtomic writes data to a sibling temp file and renames it over path,
+// so an interrupted write can't truncate the manifest (the provenance source of
+// truth) and leave it unparseable for the next regen.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once the rename succeeds
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // WritePatchesIndex emits .printing-press-patches.json into the generated
@@ -454,6 +491,8 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"api_name",
 		"display_name",
 		"cli_name",
+		"creator",
+		"contributors",
 		"owner",
 		"printer",
 		"printer_name",

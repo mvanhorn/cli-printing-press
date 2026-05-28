@@ -30,7 +30,7 @@ func TestResolveCreatorForExisting_ManifestCreatorWins(t *testing.T) {
 		"printer": "someone-else",
 		"owner": "yet-another"
 	}`)
-	assert.Equal(t, spec.Person{Handle: "trevin-chow", Name: "Trevin Chow"}, resolveCreatorForExisting(dir))
+	assert.Equal(t, spec.Person{Handle: "trevin-chow", Name: "Trevin Chow"}, resolveCreatorForExisting(dir, ""))
 }
 
 // A pre-transition manifest (no creator) falls back to the legacy printer
@@ -39,12 +39,12 @@ func TestResolveCreatorForExisting_LegacyFallback(t *testing.T) {
 	t.Run("printer", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, `{"printer": "mvanhorn", "printer_name": "Matt Van Horn", "owner": "ignored"}`)
-		assert.Equal(t, spec.Person{Handle: "mvanhorn", Name: "Matt Van Horn"}, resolveCreatorForExisting(dir))
+		assert.Equal(t, spec.Person{Handle: "mvanhorn", Name: "Matt Van Horn"}, resolveCreatorForExisting(dir, ""))
 	})
 	t.Run("owner when no printer", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, `{"owner": "hiten-shah", "owner_name": "Hiten Shah"}`)
-		assert.Equal(t, spec.Person{Handle: "hiten-shah", Name: "Hiten Shah"}, resolveCreatorForExisting(dir))
+		assert.Equal(t, spec.Person{Handle: "hiten-shah", Name: "Hiten Shah"}, resolveCreatorForExisting(dir, ""))
 	})
 }
 
@@ -55,12 +55,12 @@ func TestResolveCreatorForExisting_CopyrightHeaderParse(t *testing.T) {
 	t.Run("current format -> name", func(t *testing.T) {
 		dir := t.TempDir()
 		writeRootGo(t, dir, "// Copyright 2026 Trevin Chow and contributors. Licensed under Apache-2.0. See LICENSE.")
-		assert.Equal(t, spec.Person{Name: "Trevin Chow"}, resolveCreatorForExisting(dir))
+		assert.Equal(t, spec.Person{Name: "Trevin Chow"}, resolveCreatorForExisting(dir, ""))
 	})
 	t.Run("legacy format -> handle", func(t *testing.T) {
 		dir := t.TempDir()
 		writeRootGo(t, dir, "// Copyright 2026 trevin-chow. Licensed under Apache-2.0. See LICENSE.")
-		assert.Equal(t, spec.Person{Handle: "trevin-chow"}, resolveCreatorForExisting(dir))
+		assert.Equal(t, spec.Person{Handle: "trevin-chow"}, resolveCreatorForExisting(dir, ""))
 	})
 }
 
@@ -73,16 +73,37 @@ func TestCopyrightCreatorRe_DoesNotSwallowSuffix(t *testing.T) {
 	assert.Equal(t, "Trevin Chow", m[1])
 }
 
+// A manifest from a different API must not seed this generation's attribution —
+// generating API B into a dir still holding A's manifest can't inherit A's
+// creator or contributors.
+func TestResolveCreatorForExisting_CrossLineageNotInherited(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, `{"api_name":"old-api","creator":{"handle":"old-creator","name":"Old Creator"}}`)
+
+	assert.NotEqual(t, "old-creator", resolveCreatorForExisting(dir, "new-api").Handle,
+		"cross-lineage creator must not be inherited")
+	assert.Equal(t, "old-creator", resolveCreatorForExisting(dir, "old-api").Handle,
+		"same-lineage creator is still preserved")
+}
+
+func TestResolveContributorsForExisting_CrossLineageDropped(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, `{"api_name":"old-api","contributors":[{"handle":"jane-doe","name":"Jane Doe"}]}`)
+
+	assert.Empty(t, resolveContributorsForExisting(dir, "new-api"), "cross-lineage contributors are dropped")
+	assert.Len(t, resolveContributorsForExisting(dir, "old-api"), 1, "same-lineage contributors are preserved")
+}
+
 func TestResolveContributorsForExisting(t *testing.T) {
 	t.Run("reads list", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, `{"contributors": [{"handle": "jane-doe", "name": "Jane Doe"}, {"handle": "mvanhorn", "name": "Matt Van Horn"}]}`)
-		got := resolveContributorsForExisting(dir)
+		got := resolveContributorsForExisting(dir, "")
 		require.Len(t, got, 2)
 		assert.Equal(t, "jane-doe", got[0].Handle)
 		assert.Equal(t, "Matt Van Horn", got[1].Name)
 	})
 	t.Run("empty when absent", func(t *testing.T) {
-		assert.Empty(t, resolveContributorsForExisting(t.TempDir()))
+		assert.Empty(t, resolveContributorsForExisting(t.TempDir(), ""))
 	})
 }

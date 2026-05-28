@@ -16,6 +16,18 @@ func TestPersonIsZero(t *testing.T) {
 	assert.False(t, Person{Handle: "trevin-chow", Name: "Trevin Chow"}.IsZero())
 }
 
+func TestPersonClean(t *testing.T) {
+	// Control chars and markdown/HTML metacharacters are stripped from Name;
+	// the handle is constrained to the GitHub-handle charset.
+	got := Person{Handle: "ev il)x", Name: "Jane]\n<b>`code`"}.Clean()
+	assert.Equal(t, "evilx", got.Handle, "handle keeps only [A-Za-z0-9-_]")
+	assert.Equal(t, "Janebcode", got.Name, "name drops ] newline < > backtick")
+
+	// Benign values — including parentheses, periods, and apostrophes — survive.
+	clean := Person{Handle: "trevin-chow", Name: "Trevin Q. O'Chow (TQC)"}.Clean()
+	assert.Equal(t, Person{Handle: "trevin-chow", Name: "Trevin Q. O'Chow (TQC)"}, clean)
+}
+
 // An empty creator must not serialize as `creator: {}` / `"creator":{}` —
 // otherwise every generated spec and golden fixture gains attribution noise.
 // JSON relies on omitzero (Go 1.24+, honoring IsZero); YAML relies on

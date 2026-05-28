@@ -192,11 +192,18 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			s.Creator = spec.Person{Name: name}
 		default:
-			s.Creator = resolveCreatorForExisting(outputDir)
+			s.Creator = resolveCreatorForExisting(outputDir, s.Name)
 		}
 	}
 	if s.Contributors == nil {
-		s.Contributors = resolveContributorsForExisting(outputDir)
+		s.Contributors = resolveContributorsForExisting(outputDir, s.Name)
+	}
+	// Strip attribution-unsafe characters once at the source so every render
+	// surface (copyright header, README byline, NOTICE) inherits clean values
+	// rather than each escaping independently.
+	s.Creator = s.Creator.Clean()
+	for i := range s.Contributors {
+		s.Contributors[i] = s.Contributors[i].Clean()
 	}
 
 	// Owner is the slug form (Go-module-adjacent, copyright-recoverable).

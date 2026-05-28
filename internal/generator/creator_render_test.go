@@ -75,6 +75,25 @@ func TestGeneratedAttributionSurfaces(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+// A malicious creator name/handle is neutralized at the source: the generated
+// module still compiles (a newline would have broken out of the copyright
+// comment) and the README byline carries no injected markdown link.
+func TestGeneratedAttributionSanitizesMaliciousAttribution(t *testing.T) {
+	s := creatorRenderSpec()
+	s.Creator = spec.Person{Handle: "evil) [x](http://bad", Name: "Bad\n// injected"}
+	s.Contributors = nil
+	outputDir := filepath.Join(t.TempDir(), "acme-pp-cli")
+	gen := New(s, outputDir)
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(readme), "[x](http://bad", "markdown link injection must be neutralized")
+	assert.NotContains(t, string(readme), "https://github.com/evil)", "handle must be charset-constrained")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // A solo CLI (creator, no contributors) still carries the "and contributors"
 // suffix in the header but renders no contributors listing.
 func TestGeneratedAttributionSoloCLI(t *testing.T) {

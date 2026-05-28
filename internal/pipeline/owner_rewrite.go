@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // RewriteOwner replaces oldOwner with newOwner in copyright headers across
@@ -35,9 +36,13 @@ func RewriteOwner(dir, oldOwner, newOwner string) error {
 	// Bake the literal oldOwner into the pattern so the match itself enforces
 	// the equality guard — no separate capture-and-compare step needed. The
 	// $1/$2/$3 backreferences preserve the prefix, the optional
-	// " and contributors" suffix, and the trailing period verbatim.
+	// " and contributors" suffix, and the trailing period verbatim. newOwner is
+	// a display name now (not a sanitized slug), so escape any `$` in it to
+	// `$$` — otherwise ReplaceAll would interpret `$1`/`${...}` inside the name
+	// as backreferences and corrupt every rewritten header.
+	escapedNew := strings.ReplaceAll(newOwner, "$", "$$")
 	re := regexp.MustCompile(`(?m)^(//\s*Copyright\s+\d+\s+)` + regexp.QuoteMeta(oldOwner) + `( and contributors)?(\.)`)
-	replacement := []byte("${1}" + newOwner + "${2}${3}")
+	replacement := []byte("${1}" + escapedNew + "${2}${3}")
 
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {

@@ -76,8 +76,9 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 
 	owner := resolveOwnerForExisting(outputDir)
 	// Creator drives the copyright header (display name + " and contributors");
-	// owner stays the slug for module path / Homebrew tap.
-	creator := resolveCreatorForExisting(outputDir)
+	// owner stays the slug for module path / Homebrew tap. The plan scaffold has
+	// no api_name to lineage-check against, so pass "" (no cross-lineage gate).
+	creator := resolveCreatorForExisting(outputDir, "")
 
 	// Create directory structure
 	dirs := []string{
@@ -501,12 +502,21 @@ var copyrightCreatorRe = regexp.MustCompile(`(?m)^//\s*Copyright\s+\d+\s+(.+?) a
 // read in a single pass so resolveCreatorForExisting + resolveContributorsForExisting
 // open .printing-press.json once each instead of once per field.
 type manifestAttribution struct {
+	APIName      string        `json:"api_name"`
 	Creator      spec.Person   `json:"creator"`
 	Contributors []spec.Person `json:"contributors"`
 	Printer      string        `json:"printer"`
 	PrinterName  string        `json:"printer_name"`
 	Owner        string        `json:"owner"`
 	OwnerName    string        `json:"owner_name"`
+}
+
+// crossLineage reports whether an existing manifest belongs to a different API
+// than the one being generated. When true, the existing tree's attribution
+// must not be inherited — otherwise generating API B into a directory that
+// still holds API A's manifest would silently stamp B with A's creator.
+func crossLineage(existingAPIName, wantAPIName string) bool {
+	return existingAPIName != "" && wantAPIName != "" && existingAPIName != wantAPIName
 }
 
 // readManifestAttribution reads and decodes the attribution fields from
@@ -527,8 +537,13 @@ func readManifestAttribution(outputDir string) manifestAttribution {
 //  2. manifest legacy fields (printer/printer_name, then owner/owner_name)
 //  3. copyright-header parse (manifest-less legacy trees)
 //  4. resolveCreatorForNew() (git config)
-func resolveCreatorForExisting(outputDir string) spec.Person {
+func resolveCreatorForExisting(outputDir, apiName string) spec.Person {
 	a := readManifestAttribution(outputDir)
+	// A manifest (and copyright header) from a different API must not seed this
+	// generation's creator; fall straight through to git resolution.
+	if crossLineage(a.APIName, apiName) {
+		return resolveCreatorForNew()
+	}
 	switch {
 	case !a.Creator.IsZero():
 		return a.Creator
@@ -576,8 +591,12 @@ func resolveCreatorForNew() spec.Person {
 // manifest. The resolver never derives or appends contributors — accrual is a
 // deliberate contribution-flow action (publish/amend/reprint), and plain regen
 // preserves the existing list.
-func resolveContributorsForExisting(outputDir string) []spec.Person {
-	return readManifestAttribution(outputDir).Contributors
+func resolveContributorsForExisting(outputDir, apiName string) []spec.Person {
+	a := readManifestAttribution(outputDir)
+	if crossLineage(a.APIName, apiName) {
+		return nil
+	}
+	return a.Contributors
 }
 
 // copyrightHolderString builds the copyright-header holder: the creator
