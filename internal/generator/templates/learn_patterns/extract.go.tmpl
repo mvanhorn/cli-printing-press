@@ -91,9 +91,6 @@ func Extract(db *sql.DB, additionalKinds []string) (int, error) {
 		if len(ents) == 0 {
 			continue
 		}
-		if len(ents) > 1 {
-			continue
-		}
 		r.queryEntities = ents
 		teaches = append(teaches, r)
 	}
@@ -103,7 +100,7 @@ func Extract(db *sql.DB, additionalKinds []string) (int, error) {
 
 	groups := map[groupKey][]teachRow{}
 	for _, t := range teaches {
-		structural := queryStructural(t.queryPattern, t.queryEntities[0])
+		structural := queryStructural(t.queryPattern, t.queryEntities)
 		if structural == "" {
 			continue
 		}
@@ -135,6 +132,22 @@ func Extract(db *sql.DB, additionalKinds []string) (int, error) {
 		if len(members) < 2 {
 			continue
 		}
+		// Multi-entity members fall through to grouping (so the
+		// structural form generalizes correctly) but skip inference
+		// here — tryExactBinding / tryPrefixBinding both index
+		// queryEntities[0] only. Multi-entity binding is a future
+		// enhancement; emitting a single-slot template against a
+		// multi-entity row would synthesize a wrong pattern.
+		anyMulti := false
+		for _, m := range members {
+			if len(m.queryEntities) > 1 {
+				anyMulti = true
+				break
+			}
+		}
+		if anyMulti {
+			continue
+		}
 		pat, ok := inferPattern(db, key, members, allKinds)
 		if !ok {
 			continue
@@ -157,7 +170,7 @@ func inferPattern(db *sql.DB, key groupKey, members []teachRow, kinds []string) 
 	for _, kind := range kinds {
 		if tmpl, ok := tryExactBinding(db, kind, members); ok {
 			return Pattern{
-				QueryTemplate:    buildQueryTemplate(key.queryPattern, members[0].queryEntities[0]),
+				QueryTemplate:    buildQueryTemplate(key.queryPattern, members[0].queryEntities),
 				ResourceTemplate: tmpl,
 				ResourceType:     key.resourceType,
 				Venue:            key.venue,
@@ -171,7 +184,7 @@ func inferPattern(db *sql.DB, key groupKey, members []teachRow, kinds []string) 
 		}
 		if tmpl, ok := tryPrefixBinding(db, kind, members); ok {
 			return Pattern{
-				QueryTemplate:    buildQueryTemplate(key.queryPattern, members[0].queryEntities[0]),
+				QueryTemplate:    buildQueryTemplate(key.queryPattern, members[0].queryEntities),
 				ResourceTemplate: tmpl,
 				ResourceType:     key.resourceType,
 				Venue:            key.venue,
@@ -287,12 +300,24 @@ func isFullyShared(sharedSuffix, suffixFirst string, members []teachRow, values 
 	return true
 }
 
-func queryStructural(queryPattern, entity string) string {
+// queryStructural strips every stored entity from queryPattern,
+// returning the alphabetized non-entity token form so two queries
+// about different entities ("alpha doing season" and "bravo doing
+// season") collapse to the same structural key. Multi-entity queries
+// have all entities stripped — single-entity-only stripping was
+// blocking pattern emergence whenever queryEntities held more than
+// one element.
+func queryStructural(queryPattern string, entitiesToStrip []string) string {
 	tokens := strings.Fields(queryPattern)
-	ent := strings.ToLower(strings.TrimSpace(entity))
+	skip := make(map[string]struct{}, len(entitiesToStrip))
+	for _, e := range entitiesToStrip {
+		if v := strings.ToLower(strings.TrimSpace(e)); v != "" {
+			skip[v] = struct{}{}
+		}
+	}
 	kept := make([]string, 0, len(tokens))
 	for _, t := range tokens {
-		if strings.ToLower(t) == ent {
+		if _, drop := skip[strings.ToLower(t)]; drop {
 			continue
 		}
 		kept = append(kept, t)
@@ -301,8 +326,11 @@ func queryStructural(queryPattern, entity string) string {
 	return strings.Join(kept, " ")
 }
 
-func buildQueryTemplate(queryPattern, entity string) string {
-	structural := queryStructural(queryPattern, entity)
+// buildQueryTemplate returns the structural form with a single
+// {entity} placeholder appended. inferPattern guards against
+// multi-entity members so this single-slot shape stays correct.
+func buildQueryTemplate(queryPattern string, entitiesToStrip []string) string {
+	structural := queryStructural(queryPattern, entitiesToStrip)
 	tokens := strings.Fields(structural)
 	tokens = append(tokens, "{entity}")
 	sort.Strings(tokens)
