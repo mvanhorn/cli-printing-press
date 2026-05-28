@@ -147,7 +147,7 @@ func WaitForJob(ctx context.Context, c *client.Client, statusPath string, jobID 
 		// GetNoCache: the cache is keyed by (path, params), so a cached
 		// non-terminal status would lock the poll on the initial response
 		// for the cache TTL.
-		resp, err := c.GetNoCache(path, nil)
+		resp, err := c.GetNoCache(ctx, path, nil)
 		if err == nil {
 			var body map[string]any
 			if uerr := json.Unmarshal(resp, &body); uerr == nil {

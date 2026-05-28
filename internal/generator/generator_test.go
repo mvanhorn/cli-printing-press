@@ -14391,7 +14391,7 @@ func TestGenerateWaitForJobBypassesResponseCache(t *testing.T) {
 	require.NoError(t, err)
 	jobsBody := string(jobsData)
 
-	assert.Contains(t, jobsBody, "c.GetNoCache(path, nil)",
+	assert.Contains(t, jobsBody, "c.GetNoCache(ctx, path, nil)",
 		"WaitForJob must poll with GetNoCache to avoid locking on the cached initial response")
 	assert.NotContains(t, jobsBody, "c.Get(ctx, path, nil)",
 		"WaitForJob must not call c.Get(ctx, path, nil); cached non-terminal status would lock the poll")
