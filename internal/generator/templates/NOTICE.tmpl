@@ -5,7 +5,7 @@ Created by {{if .Creator.Name}}{{.Creator.Name}} {{end}}(@{{.Creator.Handle}}).
 {{- if .Contributors}}
 Contributors:
 {{- range .Contributors}}
-  - {{if .Name}}{{.Name}} {{end}}(@{{.Handle}})
+  - {{if .Name}}{{.Name}}{{end}}{{if .Handle}}{{if .Name}} {{end}}(@{{.Handle}}){{end}}
 {{- end}}
 {{- end}}
 {{end}}

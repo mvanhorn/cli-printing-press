@@ -75,6 +75,30 @@ func TestGeneratedAttributionSurfaces(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+// A contributor recorded with only a display name (no handle) renders as the
+// bare name — not a broken `[@](https://github.com/)` link or `(@)`.
+func TestGeneratedAttributionNameOnlyContributor(t *testing.T) {
+	s := creatorRenderSpec()
+	s.Contributors = []spec.Person{
+		{Handle: "jane-doe", Name: "Jane Doe"},
+		{Name: "Nameless Helper"}, // no handle
+	}
+	outputDir := filepath.Join(t.TempDir(), "acme-pp-cli")
+	gen := New(s, outputDir)
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(readme), "Nameless Helper")
+	assert.NotContains(t, string(readme), "[@](https://github.com/)", "name-only contributor must not render a broken link")
+	assert.NotContains(t, string(readme), "https://github.com/) (Nameless", "no empty-handle href")
+
+	notice, err := os.ReadFile(filepath.Join(outputDir, "NOTICE"))
+	require.NoError(t, err)
+	assert.Contains(t, string(notice), "Nameless Helper")
+	assert.NotContains(t, string(notice), "(@)", "name-only contributor must not render an empty (@) handle")
+}
+
 // A malicious creator name/handle is neutralized at the source: the generated
 // module still compiles (a newline would have broken out of the copyright
 // comment) and the README byline carries no injected markdown link.

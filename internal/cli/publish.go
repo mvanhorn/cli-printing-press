@@ -849,6 +849,17 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 }
 
 func manifestWithPublishAttributionFallbacks(manifest pipeline.CLIManifest) pipeline.CLIManifest {
+	// Fill the legacy printer fields from a present creator first, so a
+	// creator-only manifest (manual edit or future creator-primary state)
+	// validates without needing a git identity (e.g. on CI).
+	if manifest.Creator != nil && !manifest.Creator.IsZero() {
+		if strings.TrimSpace(manifest.Printer) == "" {
+			manifest.Printer = manifest.Creator.Handle
+		}
+		if strings.TrimSpace(manifest.PrinterName) == "" {
+			manifest.PrinterName = manifest.Creator.Name
+		}
+	}
 	if strings.TrimSpace(manifest.Printer) == "" || strings.TrimSpace(manifest.PrinterName) == "" {
 		fallback := resolvePublishAttributionFallback(manifest)
 		if strings.TrimSpace(manifest.Printer) == "" && fallback.Printer != "" {
