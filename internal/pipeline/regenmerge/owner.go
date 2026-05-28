@@ -52,12 +52,20 @@ func readManifestOwner(dir string) string {
 		return ""
 	}
 	var m struct {
-		Owner string `json:"owner"`
+		Owner   string `json:"owner"`
+		Creator struct {
+			Handle string `json:"handle"`
+		} `json:"creator"`
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(m.Owner)
+	// Prefer the legacy owner slug (still dual-written today); fall back to the
+	// creator handle for new-model trees where owner may be absent post-sweep.
+	if o := strings.TrimSpace(m.Owner); o != "" {
+		return o
+	}
+	return strings.TrimSpace(m.Creator.Handle)
 }
 
 func parseCopyrightOwner(dir string) string {

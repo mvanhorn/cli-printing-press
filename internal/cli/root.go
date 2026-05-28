@@ -2298,6 +2298,9 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.APILanguage != "" {
 		apiSpec.APILanguage = entry.APILanguage
 	}
+	if entry.Creator != nil && !entry.Creator.IsZero() && apiSpec.Creator.IsZero() {
+		apiSpec.Creator = *entry.Creator
+	}
 	if entry.Owner != "" && apiSpec.Owner == "" {
 		apiSpec.Owner = entry.Owner
 	}

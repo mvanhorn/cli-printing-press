@@ -497,6 +497,29 @@ func resolvePrinterNameForNew() string {
 // mirrored in internal/pipeline/regenmerge/owner.go and must stay aligned.
 var copyrightCreatorRe = regexp.MustCompile(`(?m)^//\s*Copyright\s+\d+\s+(.+?) and contributors\.`)
 
+// manifestAttribution captures every attribution field the resolver consults,
+// read in a single pass so resolveCreatorForExisting + resolveContributorsForExisting
+// open .printing-press.json once each instead of once per field.
+type manifestAttribution struct {
+	Creator      spec.Person   `json:"creator"`
+	Contributors []spec.Person `json:"contributors"`
+	Printer      string        `json:"printer"`
+	PrinterName  string        `json:"printer_name"`
+	Owner        string        `json:"owner"`
+	OwnerName    string        `json:"owner_name"`
+}
+
+// readManifestAttribution reads and decodes the attribution fields from
+// outputDir/.printing-press.json in one pass, returning the zero value when the
+// file is absent or malformed.
+func readManifestAttribution(outputDir string) manifestAttribution {
+	var a manifestAttribution
+	if data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json")); err == nil {
+		_ = json.Unmarshal(data, &a)
+	}
+	return a
+}
+
 // resolveCreatorForExisting returns the creator for a regen against an existing
 // tree, preferring persisted attribution over re-derivation so a regen never
 // silently flips the creator to whoever is running the generator:
@@ -505,46 +528,19 @@ var copyrightCreatorRe = regexp.MustCompile(`(?m)^//\s*Copyright\s+\d+\s+(.+?) a
 //  3. copyright-header parse (manifest-less legacy trees)
 //  4. resolveCreatorForNew() (git config)
 func resolveCreatorForExisting(outputDir string) spec.Person {
-	if c := readManifestCreator(outputDir); !c.IsZero() {
-		return c
-	}
-	if c := legacyManifestCreator(outputDir); !c.IsZero() {
-		return c
+	a := readManifestAttribution(outputDir)
+	switch {
+	case !a.Creator.IsZero():
+		return a.Creator
+	case a.Printer != "":
+		return spec.Person{Handle: a.Printer, Name: a.PrinterName}
+	case a.Owner != "":
+		return spec.Person{Handle: a.Owner, Name: a.OwnerName}
 	}
 	if c := parseCopyrightCreator(outputDir); !c.IsZero() {
 		return c
 	}
 	return resolveCreatorForNew()
-}
-
-// readManifestCreator returns the `creator` object from the manifest, or the
-// zero Person when absent or malformed.
-func readManifestCreator(outputDir string) spec.Person {
-	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
-	if err != nil {
-		return spec.Person{}
-	}
-	var m struct {
-		Creator spec.Person `json:"creator"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return spec.Person{}
-	}
-	return m.Creator
-}
-
-// legacyManifestCreator reconstructs a creator from the pre-transition
-// attribution fields so an un-swept manifest still resolves. Printer (the
-// human who ran the press) is the closest analog to creator; owner is the
-// weaker fallback.
-func legacyManifestCreator(outputDir string) spec.Person {
-	if h := readManifestField(outputDir, "printer"); h != "" {
-		return spec.Person{Handle: h, Name: readManifestField(outputDir, "printer_name")}
-	}
-	if h := readManifestField(outputDir, "owner"); h != "" {
-		return spec.Person{Handle: h, Name: readManifestField(outputDir, "owner_name")}
-	}
-	return spec.Person{}
 }
 
 // parseCopyrightCreator recovers the creator from a generated tree's copyright
@@ -581,17 +577,7 @@ func resolveCreatorForNew() spec.Person {
 // deliberate contribution-flow action (publish/amend/reprint), and plain regen
 // preserves the existing list.
 func resolveContributorsForExisting(outputDir string) []spec.Person {
-	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
-	if err != nil {
-		return nil
-	}
-	var m struct {
-		Contributors []spec.Person `json:"contributors"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil
-	}
-	return m.Contributors
+	return readManifestAttribution(outputDir).Contributors
 }
 
 // copyrightHolderString builds the copyright-header holder: the creator

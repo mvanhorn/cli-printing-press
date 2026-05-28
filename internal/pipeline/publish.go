@@ -235,6 +235,13 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			if existing.PrinterName != "" {
 				m.PrinterName = existing.PrinterName
 			}
+			// Backfill the creator from the carried-forward legacy fields so a
+			// CLI generated before the creator model persists a creator on
+			// republish (the public registry reads the written manifest, not
+			// publish-time transient state).
+			if (m.Creator == nil || m.Creator.IsZero()) && (strings.TrimSpace(m.Printer) != "" || strings.TrimSpace(m.PrinterName) != "") {
+				m.Creator = &spec.Person{Handle: strings.TrimSpace(m.Printer), Name: strings.TrimSpace(m.PrinterName)}
+			}
 			if existing.CatalogEntry != "" {
 				m.CatalogEntry = existing.CatalogEntry
 			}

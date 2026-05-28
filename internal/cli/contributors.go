@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
@@ -66,16 +65,12 @@ the current git identity (github.user / user.name) is used.`,
 	return cmd
 }
 
+// currentGitPerson resolves the running user's identity through the same
+// git-then-gh fallback the publish path uses, so a contributor recorded here
+// matches how publish resolves attribution (and always carries a handle).
 func currentGitPerson() spec.Person {
-	return spec.Person{Handle: gitConfigValue("github.user"), Name: gitConfigValue("user.name")}
-}
-
-func gitConfigValue(key string) string {
-	out, err := exec.Command("git", "config", key).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+	fb := resolveCurrentPublishAttributionFallback()
+	return spec.Person{Handle: strings.TrimSpace(fb.Printer), Name: strings.TrimSpace(fb.PrinterName)}
 }
 
 func contributorLabel(p spec.Person) string {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
@@ -46,10 +47,7 @@ func TestPublishManifestContractRequiresCreator(t *testing.T) {
 		CLIName:              "test-pp-cli",
 		RunID:                "20260509-000000",
 	})
-	joined := ""
-	for _, i := range issues {
-		joined += i + "\n"
-	}
+	joined := strings.Join(issues, "\n")
 	assert.Contains(t, joined, "creator.handle")
 	assert.Contains(t, joined, "creator.name")
 }
