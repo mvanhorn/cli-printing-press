@@ -289,7 +289,11 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			if _, isEntity := storedEntitySet[raw]; isEntity {
 				continue
 			}
-			if cfg.IsStopword(raw) {
+			// cfg may be the zero-value EntityConfig when a caller passes
+			// Opts{} without an EntityConfig; guard the nil receiver to
+			// match the backfill loop above and avoid a runtime panic on
+			// the first scanned row.
+			if cfg != nil && cfg.IsStopword(raw) {
 				continue
 			}
 			storedNonEntityTokens = append(storedNonEntityTokens, raw)

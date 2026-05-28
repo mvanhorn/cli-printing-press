@@ -136,6 +136,23 @@ func seedCanonicalLearning(t *testing.T, db *sql.DB, pattern, entitiesJSON, reso
 	}
 }
 
+// TestRecall_NilEntityConfig_NoPanic guards the storedNonEntityTokens
+// loop's nil-receiver guard: a caller passing Opts{} (zero-value, no
+// EntityConfig) must not panic when the loop reaches cfg.IsStopword on
+// the first scanned row. Regression for the recall stopword-guard fix.
+func TestRecall_NilEntityConfig_NoPanic(t *testing.T) {
+	t.Parallel()
+	db := openRecallCanonicalTestDB(t)
+	seedCanonicalLearning(t, db, "alpha widget today", `["Alpha"]`, "A1-RESOURCE", "widgets")
+
+	// Opts{} leaves EntityConfig nil. Must not panic on the first row.
+	got, err := Recall(context.Background(), db, "alpha widget today", Opts{})
+	if err != nil {
+		t.Fatalf("recall with nil EntityConfig: %v", err)
+	}
+	_ = got // behavior under nil cfg is best-effort; the contract is "no panic"
+}
+
 // TestRecall_CrossAlias_DifferentLiteralSameCanonical confirms that a
 // query taught with one alias hits a stored row taught with a different
 // alias when both resolve to the same canonical via entity_lookups.
