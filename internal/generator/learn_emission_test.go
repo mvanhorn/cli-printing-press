@@ -170,21 +170,15 @@ func TestGenerateLearnCLICommandsCompileAndTest(t *testing.T) {
 	// internal/cli/ test set is the agreed-upon verification path per
 	// the U7 plan.
 	//
-	// The TestTeachPlaybook_* and TestPlaybook* tests in
-	// teach_playbook_test.go.tmpl exercise commands that root.go.tmpl
-	// does not register yet; that wiring is owned by a later unit.
-	// Until then the run filter intentionally excludes them — the
-	// templates still emit and compile (covered by the file-list
-	// assertion in TestGenerateLearnPackageEmitted), so this filter
-	// only suppresses the runtime test failures that would fire from
-	// `unknown command "teach-playbook"`. The filter expands when the
-	// registration wiring lands.
+	// U11 wired runPlaybookInitOnce + newTeachPlaybookCmd + newPlaybookCmd
+	// into root.go.tmpl, so the TestTeachPlaybook_* and TestPlaybook*
+	// tests from teach_playbook_test.go.tmpl now run alongside the rest.
 	//
 	// TestPlaybookInit_* (from playbook_init_test.go.tmpl) tests call
 	// installPlaybooksFromEmbed directly with an injected fstest.MapFS,
 	// so they don't depend on cobra registration and are included in
 	// the filter.
-	runGoCommand(t, outputDir, "test", "-run", "^(TestTeach[^P]|TestRecall|TestLearnings|TestSkipLearnHook|TestNewLearnConfig|TestInitLearn|TestPlaybookInit_)", "./internal/cli/...")
+	runGoCommand(t, outputDir, "test", "-run", "^(TestTeach|TestRecall|TestLearnings|TestSkipLearnHook|TestNewLearnConfig|TestInitLearn|TestPlaybook)", "./internal/cli/...")
 }
 
 // TestGenerateLearnInitWiresSpec verifies that the emitted learn_init.go
