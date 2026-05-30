@@ -2,6 +2,8 @@
 
 Lazy-loaded body for the Phase 3 per-command build checklist. The dispatcher keeps the 12 principle names as an inline skeleton; this file holds the full text, the scan-and-filter pattern, and the Verify-friendly RunE template. Read in full while building Priority 1/2 commands.
 
+> **Maintenance contract:** the 12 principle names are duplicated — the inline skeleton in `SKILL.md` (the "Agent Build Checklist" list under Phase 3) and the full text below. If you rename or re-scope a principle in one copy, mirror the change in the other; `verify-skill` cannot catch prose-level drift between the two.
+
 ### Agent Build Checklist (per command)
 
 After building each command in Priority 1 and Priority 2, verify these 12 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.

@@ -2254,3 +2254,8 @@ Load-bearing invariants (honor these even before loading the menu file):
 ## Fast Guidance
 
 → **Read [references/fast-guidance.md](references/fast-guidance.md)** for the fast-path order, when to stop researching, the "what not to do" list, and what counts as success.
+
+- **Fast path** for `/printing-press <API>`: brief → generate → build → shipcheck. (`cli-printing-press print` is optional — only for a resumable on-disk pipeline.)
+- **Stop researching** once you can answer: what to build first, what data to persist, what incumbent features cannot be missing. If the next step doesn't change those, generate.
+- **Do NOT**: write separate mandatory research docs; defer workflows to "future work"; skip verification because it compiles; treat scorecard as ship proof; generate before the Phase 1.5 absorb gate is approved; build only "top 3-5" when the manifest has 15+ (build them ALL, then transcend).
+- **Success** = a CLI that reaches shipcheck without generator blockers, in one or two fix loops, plausibly shippable today.
