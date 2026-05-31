@@ -371,6 +371,13 @@ func newPublishPackageCmd() *cobra.Command {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping build dir: %w", err)}
 			}
+			// CopyDir preserves the source CLI tree, but publish package owns
+			// the bundled manuscript set. Strip any embedded copy first, then
+			// re-add manuscripts through the publishable filter below.
+			if err := os.RemoveAll(filepath.Join(outCLIDir, ".manuscripts")); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged manuscripts: %w", err)}
+			}
 
 			// Strip root-level binaries that local `go build ./cmd/...` (or
 			// `make build` / `make build-mcp` without `-o bin/...`) drops at
@@ -405,11 +412,18 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 
 			msDir, runID := resolveManuscripts(cliName, vResult.APIName)
+			if runID == "" {
+				embeddedMsDir := filepath.Join(dir, ".manuscripts")
+				if embeddedRunID, err := findMostRecentRun(embeddedMsDir); err == nil && embeddedRunID != "" {
+					msDir = embeddedMsDir
+					runID = embeddedRunID
+				}
+			}
 			if runID != "" {
 				result.RunID = runID
 				srcMsDir := filepath.Join(msDir, runID)
 				dstMsDir := filepath.Join(outCLIDir, ".manuscripts", runID)
-				if err := pipeline.CopyDir(srcMsDir, dstMsDir); err != nil {
+				if err := pipeline.CopyPublishableManuscriptDir(srcMsDir, dstMsDir); err != nil {
 					cleanupOnFailure()
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying manuscripts: %w", err)}
 				} else {
