@@ -95,6 +95,98 @@ type IssueArchivePayload {
 scalar DateTime
 `
 
+const customRootSDL = `
+schema {
+  query: RootQuery
+  mutation: RootMutation
+}
+
+type RootQuery {
+  widgets(first: Int, after: String): WidgetConnection!
+  widget(id: String!): Widget!
+}
+
+type RootMutation {
+  widgetCreate(input: WidgetCreateInput!): WidgetPayload!
+}
+
+type Widget {
+  id: ID!
+  name: String!
+}
+
+type WidgetConnection {
+  nodes: [Widget!]!
+  pageInfo: PageInfo!
+}
+
+type WidgetCreateInput {
+  name: String!
+}
+
+type WidgetPayload {
+  widget: Widget
+}
+
+scalar DateTime
+`
+
+func TestParseSDLCustomRootOperations(t *testing.T) {
+	parsed, err := ParseSDLBytes("widgets-schema.graphql", []byte(customRootSDL))
+	require.NoError(t, err)
+
+	// Roots aliased via `schema { query: RootQuery ... }` must still yield
+	// resources rather than parsing as an empty API.
+	require.NotEmpty(t, parsed.Resources)
+
+	widgets := parsed.Resources["widgets"]
+	require.NotNil(t, widgets.Endpoints)
+
+	list := widgets.Endpoints["list"]
+	assert.Equal(t, "GET", list.Method)
+	require.NotNil(t, list.Pagination)
+
+	get := widgets.Endpoints["get"]
+	assert.Equal(t, "GET", get.Method)
+	require.Len(t, get.Params, 1)
+	assert.Equal(t, "id", get.Params[0].Name)
+
+	// Custom root operation types are not entity types and must not leak into
+	// the generated type catalogue, just as conventional Query/Mutation don't.
+	assert.NotContains(t, parsed.Types, "RootQuery")
+	assert.NotContains(t, parsed.Types, "RootMutation")
+	assert.Contains(t, parsed.Types, "Widget")
+}
+
+func TestIsGraphQLSDLDetectsCustomRootSchema(t *testing.T) {
+	// A custom-root schema with no scalars and no `type Query`/`type Mutation`
+	// is still GraphQL SDL by virtue of its schema-operation mapping.
+	customRoot := []byte("schema {\n  query: RootQuery\n}\n\ntype RootQuery {\n  viewer: User!\n}\n")
+	assert.True(t, IsGraphQLSDL(customRoot), "custom-root schema block should be detected")
+
+	// Conventional and clearly-non-GraphQL inputs are unchanged.
+	assert.True(t, IsGraphQLSDL([]byte("type Query {\n  me: User\n}\n")))
+	assert.False(t, IsGraphQLSDL([]byte(`{"openapi":"3.0.0","paths":{"/x":{"get":{"responses":{}}}}}`)))
+}
+
+func TestParseSDLMissingRootOperations(t *testing.T) {
+	// A schema block that aliases the query root to a type that is never
+	// defined has no discoverable operations; the parser must say so clearly
+	// instead of emitting an empty spec.
+	const sdl = `
+schema {
+  query: RootQuery
+}
+
+type Widget {
+  id: ID!
+}
+`
+	_, err := ParseSDLBytes("broken-schema.graphql", []byte(sdl))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no GraphQL root operation types found")
+}
+
 func TestParseSDLContent(t *testing.T) {
 	parsed, err := ParseSDLBytes("linear-schema.graphql", []byte(testSDL))
 	require.NoError(t, err)
