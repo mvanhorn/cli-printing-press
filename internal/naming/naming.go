@@ -191,7 +191,12 @@ func JoinFlag(prefix, name string) string {
 // CamelIdentifier converts a public or wire name into the CamelCase identifier
 // suffix used by generated Go variables and structs.
 func CamelIdentifier(s string) string {
-	s = strings.TrimLeft(s, "$")
+	// ASCII-fold first, like the other identifier producers here
+	// (SnakeIdentifier, EnvPrefix, Snake): this keeps generated identifiers
+	// ASCII and makes the first-byte slicing below safe, so accented or
+	// non-Latin names ("éclair", "東京") fold to clean identifiers instead of
+	// being sliced mid-codepoint.
+	s = ASCIIFold(strings.TrimLeft(s, "$"))
 	parts := strings.FieldsFunc(s, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
