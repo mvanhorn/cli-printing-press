@@ -95,6 +95,29 @@ func TestEnvPrefix(t *testing.T) {
 	}
 }
 
+func TestCamelIdentifier(t *testing.T) {
+	tests := map[string]string{
+		// ASCII inputs are unaffected by the fold (fast path), so existing
+		// generated identifiers are unchanged.
+		"user_name": "UserName",
+		"user-id":   "UserId",
+		"$ref":      "Ref",
+		"123abc":    "V123abc",
+		"":          "",
+		// Non-ASCII names fold to clean ASCII identifiers instead of being
+		// sliced mid-codepoint (the prior byte-indexed bug corrupted these).
+		"éclair":  "Eclair",
+		"café_id": "CafeId",
+		"東京":      "DongJing",
+		"русский": "Russkii",
+	}
+	for input, want := range tests {
+		if got := CamelIdentifier(input); got != want {
+			t.Fatalf("CamelIdentifier(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestASCIIFold(t *testing.T) {
 	tests := map[string]string{
 		"":              "",
