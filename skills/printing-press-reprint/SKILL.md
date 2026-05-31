@@ -332,14 +332,18 @@ fires whenever prior `research.json` exists.
 The library-preservation contract is owned by `/printing-press` Phase 5.6
 ("Promote to Library"), not by this skill. When the existing library has
 `novel_features > 0` in its manifest (or hand-authored files under
-`internal/cli/`, `internal/syncer/`, or `internal/store/`), Phase 5.6
-routes promotion through `cli-printing-press regen-merge "$LIB_TARGET"
---fresh "$CLI_WORK_DIR" --apply` instead of the bare destructive swap, so
-hand-authored novels survive the reprint. This honors the prefer-`regen-merge`
-guidance under the **Hand-edits must be regen-mergeable.**
-section of `skills/printing-press/SKILL.md` (anchor `hand-edit-durability`).
-If a future edit to that phase changes the routing rule, update this paragraph
-in the same PR — the reprint skill is the dominant entry point that fires it.
+`internal/cli/`, `internal/syncer/`, or `internal/store/`), Phase 5.6 first
+dry-runs `cli-printing-press regen-merge "$LIB_TARGET" --fresh "$CLI_WORK_DIR"
+--json` to decide whether the fresh tree rebuilt the prior novels. If the
+fresh tree contains all prior novel work, Phase 5.6 uses the swap path and
+treats generated-file version drift as expected overwrite. Otherwise it routes
+promotion through `regen-merge --apply` so still-unique hand-authored novels
+survive the reprint and genuine `NOVEL-COLLISION` / missing-referent cases halt
+for review. This honors the prefer-`regen-merge` guidance under the
+**Hand-edits must be regen-mergeable.** section of
+`skills/printing-press/SKILL.md` (anchor `hand-edit-durability`). If a future
+edit to that phase changes the routing rule, update this paragraph in the same
+PR -- the reprint skill is the dominant entry point that fires it.
 
 ## After hand-off
 
