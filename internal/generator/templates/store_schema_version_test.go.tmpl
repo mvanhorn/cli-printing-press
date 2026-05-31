@@ -581,6 +581,14 @@ func TestMigrate_V2ResourcesFTSRowIDUpgrade(t *testing.T) {
 		t.Fatalf("resources_fts rowid = %d, want %d", rowid, want)
 	}
 
+	data, err := s.Get("biz", "shared")
+	if err != nil {
+		t.Fatalf("get preserved v2 resource after rowid migration: %v", err)
+	}
+	if string(data) != `{"kind":"biz","name":"legacy restaurant"}` {
+		t.Fatalf("preserved v2 resource payload = %s, want original", data)
+	}
+
 	if err := s.Upsert("biz", "shared", []byte(`{"kind":"biz","name":"legacy cafe"}`)); err != nil {
 		t.Fatalf("upsert after rowid migration: %v", err)
 	}
