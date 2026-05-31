@@ -2621,3 +2621,77 @@ func TestProfileMixedPlaceholdersNotPromoted(t *testing.T) {
 	assert.NotContains(t, flatNames, "messages",
 		"a path containing {channel_id} alongside the template var must not flatten into SyncableResources")
 }
+
+// TestProfileExcludesScalarArrayAndSamplerEndpoints covers two profiler
+// selection bugs: a scalar-element array (no extractable ID -> empty store) and
+// a non-deterministic sampler (paginating it loops forever) must not become
+// syncable resources, while a sibling object-array list on the same resource
+// still syncs.
+func TestProfileExcludesScalarArrayAndSamplerEndpoints(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "media",
+		Resources: map[string]spec.Resource{
+			"assets": {
+				Endpoints: map[string]spec.Endpoint{
+					// Valid object-array list — must remain syncable.
+					"list": {
+						Method:   "GET",
+						Path:     "/assets",
+						Response: spec.ResponseDef{Type: "array", Item: "Asset"},
+					},
+					// Non-deterministic sampler — must be excluded even though
+					// the response is a valid object array.
+					"random": {
+						Method:   "GET",
+						Path:     "/assets/random",
+						Response: spec.ResponseDef{Type: "array", Item: "Asset"},
+					},
+				},
+			},
+			"view": {
+				Endpoints: map[string]spec.Endpoint{
+					// Array of scalar strings — no extractable ID, must be excluded.
+					"unique-paths": {
+						Method:   "GET",
+						Path:     "/view/folder/unique-paths",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	var names []string
+	for _, r := range profile.SyncableResources {
+		names = append(names, r.Name)
+	}
+
+	assert.Contains(t, names, "assets",
+		"a valid object-array list endpoint must stay syncable")
+	assert.NotContains(t, names, "assets-random",
+		"a /random sampler endpoint must not be selected as a syncable list (it never terminates under pagination)")
+	assert.NotContains(t, names, "view",
+		"an array-of-scalars endpoint must not be selected as a syncable list (no extractable primary key)")
+}
+
+func TestIsScalarItemArray(t *testing.T) {
+	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "string"}))
+	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "int"}))
+	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "bool"}))
+	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "float"}))
+	// Empty Item means an unregistered object array, which still syncs.
+	assert.False(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: ""}))
+	assert.False(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "Asset"}))
+	assert.False(t, isScalarItemArray(spec.ResponseDef{Type: "object", Item: "string"}))
+}
+
+func TestIsSamplerEndpoint(t *testing.T) {
+	assert.True(t, isSamplerEndpoint(spec.Endpoint{Path: "/assets/random"}))
+	assert.True(t, isSamplerEndpoint(spec.Endpoint{Path: "/photos/shuffle"}))
+	assert.True(t, isSamplerEndpoint(spec.Endpoint{Path: "/tracks/sample"}))
+	assert.False(t, isSamplerEndpoint(spec.Endpoint{Path: "/assets"}))
+	// "random" must match as a whole path segment, not a substring of another word.
+	assert.False(t, isSamplerEndpoint(spec.Endpoint{Path: "/randomizer-configs"}))
+}
