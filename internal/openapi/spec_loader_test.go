@@ -85,10 +85,6 @@ func TestLoadSpecBytes_FileMissing(t *testing.T) {
 func TestFetchOrCacheSpec_Timeout(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	orig := specFetchTimeout
-	specFetchTimeout = 50 * time.Millisecond
-	defer func() { specFetchTimeout = orig }()
-
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Send headers, then hang on the body — a server that accepts the
@@ -106,7 +102,8 @@ func TestFetchOrCacheSpec_Timeout(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := LoadSpecBytes(srv.URL, true, true)
+		// Limits are passed as arguments, so no shared package state is mutated.
+		_, err := fetchOrCacheSpec(srv.URL, true, true, 50*time.Millisecond, maxSpecBytes)
 		done <- err
 	}()
 
@@ -116,16 +113,12 @@ func TestFetchOrCacheSpec_Timeout(t *testing.T) {
 			t.Fatal("expected a timeout error for a hanging response body")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("LoadSpecBytes did not return within 5s; fetch timeout not enforced")
+		t.Fatal("fetchOrCacheSpec did not return within 5s; fetch timeout not enforced")
 	}
 }
 
 func TestFetchOrCacheSpec_SizeCap(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-
-	orig := maxSpecBytes
-	maxSpecBytes = 16
-	defer func() { maxSpecBytes = orig }()
 
 	body := strings.Repeat("x", 64) // well over the 16-byte cap
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +127,7 @@ func TestFetchOrCacheSpec_SizeCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := LoadSpecBytes(srv.URL, true, true)
+	_, err := fetchOrCacheSpec(srv.URL, true, true, specFetchTimeout, 16)
 	if err == nil {
 		t.Fatal("expected a size-cap error for an oversized body")
 	}
