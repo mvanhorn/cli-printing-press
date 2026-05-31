@@ -732,6 +732,75 @@ func TestPublishPackageRejectsUnknownCategory(t *testing.T) {
 	assert.Contains(t, err.Error(), "--category must be one of:")
 }
 
+func TestPublishPackageBackfillsPatchesIndexForLegacyCLI(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	require.NoFileExists(t, filepath.Join(cliDir, pipeline.PatchesIndexFilename))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	data, err := os.ReadFile(filepath.Join(result.StagedDir, pipeline.PatchesIndexFilename))
+	require.NoError(t, err)
+
+	var idx pipeline.PatchesIndex
+	require.NoError(t, json.Unmarshal(data, &idx))
+	assert.Equal(t, pipeline.CurrentPatchesIndexSchemaVersion, idx.SchemaVersion)
+	assert.Equal(t, "20260301-000000", idx.BaseRunID)
+	assert.Equal(t, "test-version", idx.BasePrintingPressVersion)
+	assert.NotNil(t, idx.Patches)
+	assert.Empty(t, idx.Patches)
+	assert.Contains(t, string(data), `"patches": []`)
+}
+
+func TestPublishPackageNormalizesManifestCategoryToPublishCategory(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	manifestPath := filepath.Join(cliDir, pipeline.CLIManifestFilename)
+	data, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	var manifest map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	manifest["category"] = json.RawMessage(`"productivity"`)
+	data, err = json.MarshalIndent(manifest, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(manifestPath, append(data, '\n'), 0o644))
+	skillInstall := generator.CanonicalSkillInstallSection("test", "productivity")
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "SKILL.md"), []byte("# Test CLI\n\n"+skillInstall+"\n## Command Reference\n\n- `test-pp-cli insight` — Show test insight\n\n## Usage\n\n```bash\ntest-pp-cli insight --agent\n```\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	data, err = os.ReadFile(filepath.Join(result.StagedDir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var got pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "other", got.Category)
+
+	data, err = os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	var source pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(data, &source))
+	assert.Equal(t, "productivity", source.Category, "publish package should normalize only the staged copy")
+}
+
 func TestPublishPackageFailsWhenSkillReferencesUnknownCommand(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
