@@ -409,7 +409,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 
 		// Enforce page ceiling
 		if maxPages > 0 && pagesFetched >= maxPages {
-			capExitHasMore := conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != ""
+			capExitHasMore := conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != "" && conn.PageInfo.EndCursor != cursor
 			if capExitHasMore && !latestOnly {
 				capExitHit = true
 				capExitCursor = conn.PageInfo.EndCursor

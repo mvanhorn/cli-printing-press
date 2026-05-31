@@ -642,7 +642,7 @@ func syncResource(ctx context.Context, c interface {
 					truncatedByCap = false
 				}
 			}
-			if truncatedByCap {
+			if truncatedByCap && capExitCursor != cursor {
 				if !latestOnly {
 					capExitHit = true
 					if humanFriendly {
