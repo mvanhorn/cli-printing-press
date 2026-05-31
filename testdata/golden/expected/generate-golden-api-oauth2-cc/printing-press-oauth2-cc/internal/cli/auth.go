@@ -68,10 +68,10 @@ Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_
 			}
 
 			if clientID == "" {
-				clientID = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID")
+				clientID = strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID"))
 			}
 			if clientSecret == "" {
-				clientSecret = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET")
+				clientSecret = strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET"))
 			}
 			if clientID == "" || clientSecret == "" {
 				return authErr(fmt.Errorf("client ID and secret required (set --client-id/--client-secret or PRINTING_PRESS_OAUTH2_CLIENT_ID/PRINTING_PRESS_OAUTH2_CLIENT_SECRET)"))
