@@ -357,6 +357,10 @@ func newPublishPackageCmd() *cobra.Command {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("backfilling printer attribution: %w", err)}
 			}
+			if err := normalizePackagedPublishMetadata(outCLIDir, category); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("normalizing publish metadata: %w", err)}
+			}
 
 			// Strip build/ from the staged tree. autoBundleForHost writes
 			// host-platform .mcpb bundles + staged binaries there as a
@@ -1038,6 +1042,44 @@ func backfillPackagedManifestAttribution(dir string) error {
 		return err
 	}
 	return os.WriteFile(manifestPath, updated, info.Mode())
+}
+
+func normalizePackagedPublishMetadata(dir, category string) error {
+	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var manifest pipeline.CLIManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(manifest.Category) != category {
+		encoded, err := json.Marshal(category)
+		if err != nil {
+			return err
+		}
+		raw["category"] = encoded
+		updated, err := json.MarshalIndent(raw, "", "  ")
+		if err != nil {
+			return err
+		}
+		updated = append(updated, '\n')
+		info, err := os.Stat(manifestPath)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(manifestPath, updated, info.Mode()); err != nil {
+			return err
+		}
+	}
+
+	return pipeline.WritePatchesIndex(dir, manifest.RunID, manifest.PrintingPressVersion)
 }
 
 func isPublishPrinterSentinel(printer string) bool {
