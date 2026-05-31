@@ -191,6 +191,37 @@ func TestCopyDirRejectsExternalSymlinks(t *testing.T) {
 	}
 }
 
+func TestCopyPublishableManuscriptDirFiltersSymlinks(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+	require.NoError(t, os.MkdirAll(src, 0o755))
+
+	require.NoError(t, os.WriteFile(filepath.Join(src, "notes.txt"), []byte("notes"), 0o644))
+	require.NoError(t, os.Symlink("notes.txt", filepath.Join(src, "notes-link.txt")))
+	require.NoError(t, os.Symlink("notes.txt", filepath.Join(src, "capture.har")))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "raw-capture.har"), []byte("cookie: secret"), 0o644))
+	require.NoError(t, os.Symlink("raw-capture.har", filepath.Join(src, "raw-capture-link.txt")))
+
+	largeCapture := filepath.Join(src, "large-capture.bin")
+	largeFile, err := os.Create(largeCapture)
+	require.NoError(t, err)
+	require.NoError(t, largeFile.Truncate(publishableManuscriptMaxCaptureBytes))
+	require.NoError(t, largeFile.Close())
+	require.NoError(t, os.Symlink("large-capture.bin", filepath.Join(src, "large-link.bin")))
+
+	require.NoError(t, CopyPublishableManuscriptDir(src, dst))
+
+	linkInfo, err := os.Lstat(filepath.Join(dst, "notes-link.txt"))
+	require.NoError(t, err)
+	assert.NotZero(t, linkInfo.Mode()&os.ModeSymlink, "ordinary internal symlink should be preserved")
+	assert.FileExists(t, filepath.Join(dst, "notes.txt"))
+	assert.NoFileExists(t, filepath.Join(dst, "capture.har"))
+	assert.NoFileExists(t, filepath.Join(dst, "raw-capture.har"))
+	assert.NoFileExists(t, filepath.Join(dst, "raw-capture-link.txt"))
+	assert.NoFileExists(t, filepath.Join(dst, "large-capture.bin"))
+	assert.NoFileExists(t, filepath.Join(dst, "large-link.bin"))
+}
+
 // publishManifestEnvSetup wires PRINTING_PRESS_HOME/SCOPE/REPO_ROOT to a temp dir
 // so RunRoot()/PipelineDir()/PublishedLibraryRoot() resolve under the test sandbox.
 // Returns the temp root and a state seeded with the given run ID.

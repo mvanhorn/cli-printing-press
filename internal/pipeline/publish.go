@@ -161,7 +161,7 @@ func ArchiveRunArtifacts(state *PipelineState) (string, error) {
 		if !info.IsDir() {
 			continue
 		}
-		if err := CopyDir(item.src, item.dst); err != nil {
+		if err := CopyPublishableManuscriptDir(item.src, item.dst); err != nil {
 			return "", fmt.Errorf("archiving %s: %w", item.src, err)
 		}
 	}
@@ -620,6 +620,26 @@ func pickNovelFeaturesForManifest(research *ResearchResult) []NovelFeature {
 }
 
 func CopyDir(src, dst string) error {
+	return copyDirFiltered(src, dst, nil)
+}
+
+const publishableManuscriptMaxCaptureBytes int64 = 100 * 1024 * 1024
+
+// CopyPublishableManuscriptDir copies manuscript artifacts that may be bundled
+// into published CLIs. Raw HAR captures and huge capture files stay in local
+// runstate only because they can carry cookies, session identifiers, and PII.
+func CopyPublishableManuscriptDir(src, dst string) error {
+	return copyDirFiltered(src, dst, shouldSkipPublishableManuscriptFile)
+}
+
+func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo) bool {
+	if strings.EqualFold(filepath.Ext(path), ".har") {
+		return true
+	}
+	return info.Size() >= publishableManuscriptMaxCaptureBytes
+}
+
+func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInfo) bool) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -683,6 +703,22 @@ func CopyDir(src, dst string) error {
 			if !ok {
 				return fmt.Errorf("symlink %s points outside source tree", path)
 			}
+			if skipFile != nil {
+				info, err := d.Info()
+				if err != nil {
+					return err
+				}
+				if skipFile(path, info) {
+					return nil
+				}
+				resolvedTarget := link
+				if !filepath.IsAbs(resolvedTarget) {
+					resolvedTarget = filepath.Join(filepath.Dir(path), resolvedTarget)
+				}
+				if targetInfo, err := os.Stat(path); err == nil && skipFile(resolvedTarget, targetInfo) {
+					return nil
+				}
+			}
 			return os.Symlink(link, target)
 		}
 
@@ -697,6 +733,9 @@ func CopyDir(src, dst string) error {
 		info, err := d.Info()
 		if err != nil {
 			return err
+		}
+		if skipFile != nil && skipFile(path, info) {
+			return nil
 		}
 		return copyFile(path, target, info.Mode())
 	})
