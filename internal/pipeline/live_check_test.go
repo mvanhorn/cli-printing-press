@@ -41,6 +41,13 @@ func writeTestResearchJSON(t *testing.T, cliDir string, features []NovelFeature)
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "research.json"), body, 0o644))
 }
 
+func writeNovelCommandFile(t *testing.T, cliDir, name, body string) {
+	t.Helper()
+	path := filepath.Join(cliDir, "internal", "cli", name)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+}
+
 func writeLiveCheckGoCLI(t *testing.T, cliDir, binaryName, output string) string {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte("module example.com/live-check-test\n\ngo 1.23\n"), 0o644))
@@ -297,6 +304,111 @@ func TestLiveCheck_FailOnExitError(t *testing.T) {
 	require.Contains(t, result.Features[0].Reason, "exit 5")
 }
 
+func TestLiveCheck_LocalDataSourceUnsyncedFailureSkipsAndExcludesPassRate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stderr string
+	}{
+		{
+			name:   "sqlite open failure",
+			stderr: "Error: querying tasks: unable to open database file: out of memory (14)",
+		},
+		{
+			name:   "missing db file",
+			stderr: "Error: querying tasks: open /tmp/tasks.db: no such file or directory",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeNovelCommandFile(t, dir, "tasks.go", `package cli
+
+// pp:data-source local
+func newNovelTasksCmd() *cobra.Command {
+	return &cobra.Command{Use: "tasks"}
+}
+`)
+			writeStubBinary(t, dir, "stub", fmt.Sprintf("echo %q >&2; exit 1", tc.stderr))
+			writeTestResearchJSON(t, dir, []NovelFeature{
+				{Name: "Tasks", Command: "tasks", Example: `stub tasks --json`},
+			})
+
+			result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+
+			require.False(t, result.Unable, "result was Unable: %s", result.Reason)
+			require.Equal(t, 1, result.Checked())
+			require.Zero(t, result.Evaluated(), "skipped local prerequisites must not count in pass-rate denominator")
+			require.Zero(t, result.Failed)
+			require.Equal(t, 1, result.Skipped)
+			require.Equal(t, StatusPrerequisiteUnsynced, result.Features[0].Status)
+			require.Contains(t, result.Features[0].Reason, "prerequisite_unsynced")
+			require.Nil(t, InsightCapFromLiveCheck(result), "all-skipped live-check should not cap scorecard Insight")
+		})
+	}
+}
+
+func TestLiveCheck_LocalDataSourceStrategyDoesNotLeakFromNestedLeaf(t *testing.T) {
+	dir := t.TempDir()
+	writeNovelCommandFile(t, dir, "tasks.go", `package cli
+
+// pp:data-source local
+func newNovelTasksCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "tasks"}
+	cmd.AddCommand(&cobra.Command{Use: "list"})
+	return cmd
+}
+`)
+	writeStubBinary(t, dir, "stub", `echo "Error: querying projects: unable to open database file: out of memory (14)" >&2; exit 1`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Project list", Command: "projects list", Example: `stub projects list --json`},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+
+	require.False(t, result.Unable, "result was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Checked())
+	require.Equal(t, 1, result.Evaluated())
+	require.Equal(t, 1, result.Failed)
+	require.Zero(t, result.Skipped)
+	require.Equal(t, StatusFail, result.Features[0].Status)
+	require.NotContains(t, result.Features[0].Reason, "prerequisite_unsynced")
+}
+
+func TestLiveCheck_LocalDataSourceRealFailureStillFails(t *testing.T) {
+	dir := t.TempDir()
+	writeNovelCommandFile(t, dir, "tasks.go", `package cli
+
+// pp:data-source local
+func newNovelTasksCmd() *cobra.Command {
+	return &cobra.Command{Use: "tasks"}
+}
+`)
+	writeStubBinary(t, dir, "stub", `echo "Error: querying tasks: invalid aggregation column" >&2; exit 1`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Tasks", Command: "tasks", Example: `stub tasks --json`},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+
+	require.Equal(t, 1, result.Checked())
+	require.Equal(t, 1, result.Evaluated())
+	require.Equal(t, 1, result.Failed)
+	require.Zero(t, result.Skipped)
+	require.Equal(t, StatusFail, result.Features[0].Status)
+	require.Contains(t, result.Features[0].Reason, "invalid aggregation column")
+}
+
+func TestLiveCheck_PassRateExcludesSkippedSamples(t *testing.T) {
+	result := &LiveCheckResult{Passed: 1, Failed: 1, Skipped: 8}
+
+	require.Equal(t, 10, result.Checked())
+	require.Equal(t, 2, result.Evaluated())
+
+	if total := result.Evaluated(); total > 0 {
+		result.PassRate = float64(result.Passed) / float64(total)
+	}
+	require.Equal(t, 0.5, result.PassRate)
+}
+
 // TestLiveCheck_FailOnEmptyOutput ensures stdout must be non-empty.
 func TestLiveCheck_FailOnEmptyOutput(t *testing.T) {
 	dir := t.TempDir()
@@ -440,6 +552,7 @@ func TestLiveCheckMarshalJSON(t *testing.T) {
 	body, err := json.Marshal(r)
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"pass_rate_pct":67`)
+	require.Contains(t, string(body), `"evaluated":2`)
 	require.NotContains(t, string(body), "0.6666")
 }
 
@@ -970,6 +1083,22 @@ func TestChecked_DerivedFromCounters(t *testing.T) {
 	// Also: nil receiver must not panic.
 	var nilRes *LiveCheckResult
 	require.Zero(t, nilRes.Checked())
+}
+
+func TestEvaluated_ExcludesSkippedCounters(t *testing.T) {
+	cases := []struct {
+		r    LiveCheckResult
+		want int
+	}{
+		{LiveCheckResult{}, 0},
+		{LiveCheckResult{Passed: 3}, 3},
+		{LiveCheckResult{Passed: 1, Failed: 2, Skipped: 3}, 3},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, tc.r.Evaluated())
+	}
+	var nilRes *LiveCheckResult
+	require.Zero(t, nilRes.Evaluated())
 }
 
 // --- detectRawHTMLEntities (Wave B / R3) ---
