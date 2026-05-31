@@ -4747,6 +4747,15 @@ func mapResponse(op *openapi3.Operation, fallbackName string, out *spec.APISpec)
 				Discriminator: mapResponseDiscriminator(itemRef),
 			}, "data"
 		}
+		if itemRef, path := singleArrayPropertyRef(schema); itemRef != nil {
+			itemFallback := fallbackName + "Item"
+			registerInlineSchemaType(out, itemRef, itemFallback)
+			return spec.ResponseDef{
+				Type:          "array",
+				Item:          schemaTypeName(itemRef, itemFallback),
+				Discriminator: mapResponseDiscriminator(itemRef),
+			}, path
+		}
 	}
 
 	if isArraySchema(schema) {
@@ -5357,34 +5366,41 @@ func unwrapItemSchema(schema *openapi3.Schema) *openapi3.Schema {
 	// wrapper key matches the resource name. Without this, the PK profiler
 	// would walk the wrapper itself and pick a scalar sibling (cursor,
 	// has_more) as the resource ID.
-	if items := singleArrayProperty(schema); items != nil {
-		return items
+	if itemRef, _ := singleArrayPropertyRef(schema); itemRef != nil {
+		return schemaRefValue(itemRef)
 	}
 	return schema
 }
 
-// singleArrayProperty returns the items schema of an object's sole
-// array-typed property, or nil if zero or multiple array properties exist.
+// singleArrayPropertyRef returns the items schema ref and property name of an
+// object's sole array-typed property, or nil if zero or multiple array
+// properties exist.
 // Non-array siblings (scalars, objects) are ignored — they're typically
 // pagination metadata.
-func singleArrayProperty(schema *openapi3.Schema) *openapi3.Schema {
-	var items *openapi3.Schema
+func singleArrayPropertyRef(schema *openapi3.Schema) (*openapi3.SchemaRef, string) {
+	var items *openapi3.SchemaRef
+	var name string
 	count := 0
-	for _, propRef := range schema.Properties {
+	for propName, propRef := range schema.Properties {
 		prop := schemaRefValue(propRef)
 		if !isArraySchema(prop) || prop.Items == nil {
 			continue
 		}
 		count++
 		if count > 1 {
-			return nil
+			return nil, ""
 		}
-		items = schemaRefValue(prop.Items)
+		name = propName
+		items = prop.Items
 	}
 	if count == 1 {
-		return items
+		return items, name
 	}
-	return nil
+	return nil, ""
+}
+
+func hasCollectableTypeFields(schema *openapi3.Schema) bool {
+	return isObjectSchema(schema) || len(schema.OneOf) > 0 || len(schema.AnyOf) > 0
 }
 
 // isScalarSchema reports whether the schema's type is a scalar — string,
@@ -5527,7 +5543,7 @@ func registerInlineSchemaType(out *spec.APISpec, itemRef *openapi3.SchemaRef, fa
 		return
 	}
 	itemSchema := schemaRefValue(itemRef)
-	if itemSchema == nil || !isObjectSchema(itemSchema) {
+	if itemSchema == nil || !hasCollectableTypeFields(itemSchema) {
 		return
 	}
 	typeName := schemaTypeName(itemRef, fallbackName)
@@ -5597,6 +5613,12 @@ func collectTypeProperties(schemaRef *openapi3.SchemaRef, properties map[string]
 		properties[naming.ASCIIFold(name)] = prop
 	}
 	for _, sub := range schema.AllOf {
+		collectTypeProperties(sub, properties, visited)
+	}
+	for _, sub := range schema.OneOf {
+		collectTypeProperties(sub, properties, visited)
+	}
+	for _, sub := range schema.AnyOf {
 		collectTypeProperties(sub, properties, visited)
 	}
 }
