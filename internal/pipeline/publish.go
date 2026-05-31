@@ -703,6 +703,18 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 			if !ok {
 				return fmt.Errorf("symlink %s points outside source tree", path)
 			}
+			if skipFile != nil {
+				info, err := d.Info()
+				if err != nil {
+					return err
+				}
+				if skipFile(path, info) {
+					return nil
+				}
+				if targetInfo, err := os.Stat(path); err == nil && skipFile(path, targetInfo) {
+					return nil
+				}
+			}
 			return os.Symlink(link, target)
 		}
 
