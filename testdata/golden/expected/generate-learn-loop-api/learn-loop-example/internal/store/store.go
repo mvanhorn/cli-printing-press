@@ -42,7 +42,8 @@ func IsUUID(s string) bool {
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
 // checked on every open. Learn-enabled CLIs advance to v6 for the
-// canonical learn-loop tables ported from prediction-goat.
+// canonical learn-loop tables ported from prediction-goat, including the v3
+// resources_fts rowid rehash.
 const StoreSchemaVersion = 6
 
 const resourcesFTSCreateSQL = `CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
@@ -407,6 +408,11 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migrating resources composite key: %w", err)
 			}
 		}
+		if current == 2 {
+			if err := s.migrateResourcesFTSRowIDs(ctx, conn); err != nil {
+				return fmt.Errorf("migrating resources FTS rowids: %w", err)
+			}
+		}
 
 		if err := s.backfillColumns(ctx, conn); err != nil {
 			return fmt.Errorf("backfilling columns: %w", err)
@@ -471,6 +477,27 @@ func (s *Store) migrateResourcesCompositeKey(ctx context.Context, conn *sql.Conn
 	// Always rebuild FTS during the v2 transition. The resources table may
 	// already have the composite key, but v1 FTS rowids were scoped by id
 	// alone and must be replaced with resource_type + id rowids.
+	if _, err := conn.ExecContext(ctx, `DROP TABLE IF EXISTS resources_fts`); err != nil {
+		return fmt.Errorf("dropping resources_fts: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, resourcesFTSCreateSQL); err != nil {
+		return fmt.Errorf("creating resources_fts: %w", err)
+	}
+	if err := rebuildResourcesFTS(ctx, conn); err != nil {
+		return fmt.Errorf("rebuilding resources_fts: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrateResourcesFTSRowIDs(ctx context.Context, conn *sql.Conn) error {
+	exists, err := tableExists(ctx, conn, "resources")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
 	if _, err := conn.ExecContext(ctx, `DROP TABLE IF EXISTS resources_fts`); err != nil {
 		return fmt.Errorf("dropping resources_fts: %w", err)
 	}
@@ -783,6 +810,8 @@ func extractObjectID(obj map[string]any) string {
 }
 
 // ftsRowID derives a deterministic rowid from a string ID for use with FTS5.
+// Any change to this derivation requires a StoreSchemaVersion bump and a
+// resources_fts rebuild migration for already-stamped databases.
 // modernc.org/sqlite's FTS5 implementation may not support DELETE WHERE column=?
 // on virtual tables, so we use explicit rowids and DELETE WHERE rowid=? instead.
 func ftsRowID(scope, id string) int64 {

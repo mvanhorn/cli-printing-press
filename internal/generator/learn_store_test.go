@@ -11,7 +11,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
-func TestGenerateStoreSchemaVersion_DisabledStaysV2(t *testing.T) {
+func TestGenerateStoreSchemaVersion_DisabledAdvancesToV3(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-version-disabled")
@@ -24,7 +24,7 @@ func TestGenerateStoreSchemaVersion_DisabledStaysV2(t *testing.T) {
 	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	src := string(storeGo)
-	require.Contains(t, src, "const StoreSchemaVersion = 2")
+	require.Contains(t, src, "const StoreSchemaVersion = 3")
 	require.NotContains(t, src, "const StoreSchemaVersion = 6")
 	for _, table := range []string{"search_learnings", "search_patterns", "entity_lookups"} {
 		require.NotContains(t, src, table, "learn-disabled spec must not emit %s migration", table)
@@ -135,8 +135,8 @@ func TestGenerateStoreLearnRenamedFromRecipes(t *testing.T) {
 // through `go test -c` to catch any template error that produces valid-shaped
 // but uncompilable Go (mis-placed comma in the migrations slice, malformed
 // string literal, etc.). The -c flag compiles tests without running them, so
-// the new v2->v3 additive-migration assertion in the schema_version_test
-// template is exercised at type-check time without paying the runtime cost.
+// the schema_version_test template is exercised at type-check time without
+// paying the runtime cost.
 func TestGenerateStoreCompilesUnderLearnEnabled(t *testing.T) {
 	t.Parallel()
 

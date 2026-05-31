@@ -513,14 +513,163 @@ func TestMigrate_ResourcesCompositeKeyUpgrade(t *testing.T) {
 	}
 }
 
+func TestMigrate_V2ResourcesFTSRowIDUpgrade(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE resources (
+		id TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		data JSON NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (resource_type, id)
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create v2 resources: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE VIRTUAL TABLE resources_fts USING fts5(
+		id, resource_type, content, tokenize='porter unicode61'
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create stale resources_fts: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('shared', 'biz', '{"kind":"biz","name":"legacy restaurant"}')`); err != nil {
+		raw.Close()
+		t.Fatalf("seed v2 resource: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (1, 'shared', 'biz', '{"kind":"biz","name":"legacy restaurant"}')`); err != nil {
+		raw.Close()
+		t.Fatalf("seed stale resources_fts row: %v", err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 2`); err != nil {
+		raw.Close()
+		t.Fatalf("stamp v2: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open upgraded db: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("upgraded version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	var count int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM resources_fts WHERE id = 'shared' AND resource_type = 'biz'`).Scan(&count); err != nil {
+		t.Fatalf("count rebuilt resources_fts rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("resources_fts row count = %d, want 1", count)
+	}
+
+	var rowid int64
+	if err := s.DB().QueryRow(`SELECT rowid FROM resources_fts WHERE id = 'shared' AND resource_type = 'biz'`).Scan(&rowid); err != nil {
+		t.Fatalf("read rebuilt resources_fts rowid: %v", err)
+	}
+	if want := ftsRowID("biz", "shared"); rowid != want {
+		t.Fatalf("resources_fts rowid = %d, want %d", rowid, want)
+	}
+
+	data, err := s.Get("biz", "shared")
+	if err != nil {
+		t.Fatalf("get preserved v2 resource after rowid migration: %v", err)
+	}
+	if string(data) != `{"kind":"biz","name":"legacy restaurant"}` {
+		t.Fatalf("preserved v2 resource payload = %s, want original", data)
+	}
+
+	if err := s.Upsert("biz", "shared", []byte(`{"kind":"biz","name":"legacy cafe"}`)); err != nil {
+		t.Fatalf("upsert after rowid migration: %v", err)
+	}
+	matches, err := s.Search("legacy", 10)
+	if err != nil {
+		t.Fatalf("search rebuilt fts: %v", err)
+	}
+	if len(matches) != 1 || string(matches[0]) != `{"kind":"biz","name":"legacy cafe"}` {
+		t.Fatalf("legacy search = %q, want exactly one updated payload", matches)
+	}
+}
+
+func TestMigrate_V3ResourcesFTSNoRebuild(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE resources (
+		id TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		data JSON NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (resource_type, id)
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create v3 resources: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE VIRTUAL TABLE resources_fts USING fts5(
+		id, resource_type, content, tokenize='porter unicode61'
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create v3 resources_fts: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('shared', 'biz', '{"kind":"biz","name":"canonical resource"}')`); err != nil {
+		raw.Close()
+		t.Fatalf("seed v3 resource: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, 'shared', 'biz', '{"kind":"biz","name":"sentinel fts"}')`, ftsRowID("biz", "shared")); err != nil {
+		raw.Close()
+		t.Fatalf("seed v3 resources_fts row: %v", err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 3`); err != nil {
+		raw.Close()
+		t.Fatalf("stamp v3: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open v3 db: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	var content string
+	if err := s.DB().QueryRow(`SELECT content FROM resources_fts WHERE id = 'shared' AND resource_type = 'biz'`).Scan(&content); err != nil {
+		t.Fatalf("read resources_fts content: %v", err)
+	}
+	if content != `{"kind":"biz","name":"sentinel fts"}` {
+		t.Fatalf("resources_fts content = %s, want sentinel row preserved", content)
+	}
+}
+
 {{- if .Learn.Enabled}}
-// TestMigrate_V2ToV3IsAdditive verifies that opening a v2-stamped database
-// preserves existing resources rows after the v3 migration runs. The v3
-// migration only adds new tables (learn tables, when the spec enables them)
-// — never drops or rewrites resources. Without this regression coverage, a
-// future refactor that turns the additive step into a destructive one would
-// silently nuke every existing library CLI's local data on first reopen.
-func TestMigrate_V2ToV3IsAdditive(t *testing.T) {
+// TestMigrate_V3ToV6IsAdditive verifies that opening a v3-stamped database
+// preserves existing resources rows after the learn-table migrations run.
+// The learn migrations only add tables when the spec enables them — never
+// drop or rewrite resources. Without this regression coverage, a future
+// refactor that turns the additive step into a destructive one would silently
+// nuke every existing library CLI's local data on first reopen.
+func TestMigrate_V3ToV6IsAdditive(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 
 	raw, err := sql.Open("sqlite", dbPath)
@@ -542,9 +691,9 @@ func TestMigrate_V2ToV3IsAdditive(t *testing.T) {
 		raw.Close()
 		t.Fatalf("seed v2 row: %v", err)
 	}
-	if _, err := raw.Exec(`PRAGMA user_version = 2`); err != nil {
+	if _, err := raw.Exec(`PRAGMA user_version = 3`); err != nil {
 		raw.Close()
-		t.Fatalf("stamp v2: %v", err)
+		t.Fatalf("stamp v3: %v", err)
 	}
 	raw.Close()
 
