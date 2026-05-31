@@ -109,20 +109,16 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 	}
 
 	if report.GoMod != nil {
-		mergedBytes, err := renderMergedGoMod(snapshotDir, freshDir)
+		merged, err := renderMergedGoModWithModulePaths(snapshotDir, freshDir)
 		switch {
 		case err == nil:
-			pubModulePath, freshModulePath, moduleErr := readModulePaths(snapshotDir, freshDir)
-			if moduleErr != nil {
-				return fmt.Errorf("reading module paths: %w", moduleErr)
-			}
-			if pubModulePath != "" && freshModulePath != "" && pubModulePath != freshModulePath {
-				if err := pipeline.RewriteModulePath(freshDir, freshModulePath, pubModulePath); err != nil {
-					return fmt.Errorf("rewriting module path: %w", err)
-				}
-			}
-			if writeErr := writeFileAtomic(filepath.Join(freshDir, "go.mod"), mergedBytes); writeErr != nil {
+			if writeErr := writeFileAtomic(filepath.Join(freshDir, "go.mod"), merged.Bytes); writeErr != nil {
 				return fmt.Errorf("writing merged go.mod: %w", writeErr)
+			}
+			if merged.PublishedModulePath != "" && merged.FreshModulePath != "" && merged.PublishedModulePath != merged.FreshModulePath {
+				if err := pipeline.RewriteModulePathReferences(freshDir, merged.FreshModulePath, merged.PublishedModulePath); err != nil {
+					return fmt.Errorf("rewriting module path references: %w", err)
+				}
 			}
 			report.GoMod.Merged = true
 		case errors.Is(err, fs.ErrNotExist):

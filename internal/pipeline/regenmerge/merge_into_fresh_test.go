@@ -261,6 +261,52 @@ require (
 		"hand-added require must survive merge into fresh's go.mod")
 }
 
+func TestMergeIntoFreshTreeRewritesImportsAfterWritingMergedGoMod(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	pubGoMod := []byte(`module github.com/acme/library/demo-pp-cli
+
+go 1.22
+
+require (
+	github.com/spf13/cobra v1.8.0
+	modernc.org/sqlite v1.30.0
+)
+`)
+	freshGoMod := []byte(`module demo-pp-cli
+
+go 1.22
+
+require github.com/spf13/cobra v1.8.0
+`)
+	const rel = "internal/cli/root.go"
+	freshRoot := []byte(`package cli
+
+import "demo-pp-cli/internal/client"
+
+var _ = client.New
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(snap, "go.mod"), pubGoMod, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, "go.mod"), freshGoMod, 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), freshRoot, 0o644))
+
+	report := &MergeReport{GoMod: &GoModMerge{}}
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true}))
+
+	gotGoMod, err := os.ReadFile(filepath.Join(fresh, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(gotGoMod), "module github.com/acme/library/demo-pp-cli")
+	assert.Contains(t, string(gotGoMod), "modernc.org/sqlite")
+
+	gotRoot, err := os.ReadFile(filepath.Join(fresh, rel))
+	require.NoError(t, err)
+	assert.Contains(t, string(gotRoot), `"github.com/acme/library/demo-pp-cli/internal/client"`)
+	assert.NotContains(t, string(gotRoot), `"demo-pp-cli/internal/client"`)
+	assert.True(t, report.GoMod.Merged)
+}
+
 // TestMergeIntoFreshTreeSweepsNonClassifiedFiles exercises R8: README and
 // other non-Go files survive merge.
 func TestMergeIntoFreshTreeSweepsNonClassifiedFiles(t *testing.T) {
