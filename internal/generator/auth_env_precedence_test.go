@@ -140,8 +140,8 @@ func TestClientCredentialsEnvVarsSkipTenantSetupInput(t *testing.T) {
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
 	authContent := string(authSrc)
-	require.Contains(t, authContent, `clientID = os.Getenv("ENTRA_CC_CLIENT_ID")`)
-	require.Contains(t, authContent, `clientSecret = os.Getenv("ENTRA_CC_CLIENT_SECRET")`)
+	require.Contains(t, authContent, `clientID = strings.TrimSpace(os.Getenv("ENTRA_CC_CLIENT_ID"))`)
+	require.Contains(t, authContent, `clientSecret = strings.TrimSpace(os.Getenv("ENTRA_CC_CLIENT_SECRET"))`)
 	require.NotContains(t, authContent, `clientID = os.Getenv("ENTRA_CC_TENANT_ID")`)
 	require.Contains(t, authContent, `resolveClientCredentialsTokenURL(tokenURL, cfg.`+resolveEnvVarField("ENTRA_CC_TENANT_ID")+`)`)
 	require.Contains(t, authContent, `os.Getenv("ENTRA_CC_OAUTH_SCOPE")`)
@@ -225,6 +225,88 @@ func TestClientCredentialsRuntimeEntraRequiresTenant(t *testing.T) {
 		0o644,
 	))
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestClientCredentialsRuntimeEntra")
+}
+
+func TestClientCredentialsAuthLoginTrimsEnvCredentials(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("trim-cc")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		Header:      "Authorization",
+		Format:      "Bearer {token}",
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://auth.example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "TRIM_CC_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: false},
+			{Name: "TRIM_CC_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "trim-cc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authContent := string(authSrc)
+	require.Contains(t, authContent, `clientID = strings.TrimSpace(os.Getenv("TRIM_CC_CLIENT_ID"))`)
+	require.Contains(t, authContent, `clientSecret = strings.TrimSpace(os.Getenv("TRIM_CC_CLIENT_SECRET"))`)
+
+	const runtimeTest = `package cli
+
+import (
+	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestAuthLoginTrimsClientCredentialEnvVars(t *testing.T) {
+	var gotClientID string
+	var gotClientSecret string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		gotClientID = r.Form.Get("client_id")
+		gotClientSecret = r.Form.Get("client_secret")
+		if gotClientID != "cid.test123" || gotClientSecret != "secret.test456" {
+			http.Error(w, "untrimmed credentials", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, ` + "`" + `{"access_token":"minted-token","expires_in":3600}` + "`" + `)
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("token_url = \""+server.URL+"\"\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	t.Setenv("TRIM_CC_CLIENT_ID", " cid.test123 ")
+	t.Setenv("TRIM_CC_CLIENT_SECRET", "\tsecret.test456\n")
+
+	root := RootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"--config", configPath, "auth", "login"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("auth login error = %v; output:\n%s", err, out.String())
+	}
+	if gotClientID != "cid.test123" {
+		t.Fatalf("client_id = %q, want cid.test123", gotClientID)
+	}
+	if gotClientSecret != "secret.test456" {
+		t.Fatalf("client_secret = %q, want secret.test456", gotClientSecret)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "auth_login_trim_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestAuthLoginTrimsClientCredentialEnvVars")
 }
 
 func TestClientCredentialsStaticTokenURLDoesNotEmitTenantSubstitution(t *testing.T) {
@@ -323,8 +405,8 @@ func TestClientCredentialsLegacyEnvVarsSubstituteTenantTokenURL(t *testing.T) {
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
 	authContent := string(authSrc)
-	require.Contains(t, authContent, `clientID = os.Getenv("LEGACY_ENTRA_CLIENT_ID")`)
-	require.Contains(t, authContent, `clientSecret = os.Getenv("LEGACY_ENTRA_CLIENT_SECRET")`)
+	require.Contains(t, authContent, `clientID = strings.TrimSpace(os.Getenv("LEGACY_ENTRA_CLIENT_ID"))`)
+	require.Contains(t, authContent, `clientSecret = strings.TrimSpace(os.Getenv("LEGACY_ENTRA_CLIENT_SECRET"))`)
 	require.Contains(t, authContent, `resolveClientCredentialsTokenURL(tokenURL, cfg.`+resolveEnvVarField("LEGACY_ENTRA_TENANT_ID")+`)`)
 
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
@@ -358,8 +440,8 @@ func TestClientCredentialsTenantPrefixDoesNotHideClientCredentials(t *testing.T)
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
 	authContent := string(authSrc)
-	require.Contains(t, authContent, `clientID = os.Getenv("MULTITENANT_CLIENT_ID")`)
-	require.Contains(t, authContent, `clientSecret = os.Getenv("MULTITENANT_CLIENT_SECRET")`)
+	require.Contains(t, authContent, `clientID = strings.TrimSpace(os.Getenv("MULTITENANT_CLIENT_ID"))`)
+	require.Contains(t, authContent, `clientSecret = strings.TrimSpace(os.Getenv("MULTITENANT_CLIENT_SECRET"))`)
 
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
@@ -447,8 +529,8 @@ func TestClientCredentialsMixedKindEnvVarsPreserveClientRoles(t *testing.T) {
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
 	authContent := string(authSrc)
-	require.Contains(t, authContent, `clientID = os.Getenv("MIXED_KIND_CLIENT_ID")`)
-	require.Contains(t, authContent, `clientSecret = os.Getenv("MIXED_KIND_CLIENT_SECRET")`)
+	require.Contains(t, authContent, `clientID = strings.TrimSpace(os.Getenv("MIXED_KIND_CLIENT_ID"))`)
+	require.Contains(t, authContent, `clientSecret = strings.TrimSpace(os.Getenv("MIXED_KIND_CLIENT_SECRET"))`)
 
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
