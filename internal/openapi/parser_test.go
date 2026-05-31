@@ -6754,6 +6754,34 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "id",
 		},
 		{
+			name: "tier 2: id inside anyOf still wins",
+			schemaYAML: `                  anyOf:
+                    - type: object
+                      properties:
+                        id: {type: string}
+                        label: {type: string}
+                    - type: object
+                      properties:
+                        id: {type: string}
+                        workspace_id: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "tier 3.5: gid inside oneOf wins over name",
+			schemaYAML: `                  oneOf:
+                    - type: object
+                      properties:
+                        gid: {type: string}
+                        name: {type: string}
+                    - type: object
+                      properties:
+                        gid: {type: string}
+                        email: {type: string}
+`,
+			wantID: "gid",
+		},
+		{
 			name: "tier 3.5: gid wins over name (Asana shape)",
 			schemaYAML: `                  type: object
                   properties:
@@ -6827,6 +6855,22 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
                     market: {type: string}
                     ticker: {type: string}
                     description: {type: string}
+`,
+			wantID: "ticker",
+		},
+		{
+			name: "tier 4: required scalar inside anyOf is considered",
+			schemaYAML: `                  anyOf:
+                    - type: object
+                      required: [ticker]
+                      properties:
+                        ticker: {type: string}
+                        price: {type: number}
+                    - type: object
+                      required: [market]
+                      properties:
+                        market: {type: string}
+                        description: {type: string}
 `,
 			wantID: "ticker",
 		},
@@ -6960,6 +7004,44 @@ paths:
 			assert.False(t, ep.Critical)
 		})
 	}
+}
+
+func TestParseScalarUnionArrayDoesNotRegisterEmptyInlineType(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /things:
+    get:
+      operationId: listThings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      anyOf:
+                        - type: string
+                        - type: number
+                  cursor:
+                    type: string
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	ep := findEndpoint(t, parsed, "/things")
+	assert.Equal(t, "array", ep.Response.Type)
+	assert.Empty(t, parsed.Types, "scalar anyOf list items must not register a zero-field synthetic type")
 }
 
 // TestParseIDFieldEnvelopeUnwrapping covers list responses whose payload is an
