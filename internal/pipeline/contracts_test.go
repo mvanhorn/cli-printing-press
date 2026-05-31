@@ -381,6 +381,34 @@ func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	assert.Contains(t, skill, `$PRESS_LIBRARY/<api>`)
 }
 
+func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	reprint := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-reprint", "SKILL.md"))
+
+	promote := substringBetween(t, skill, "### Promote to Library", "`ship-with-gaps` is promoted")
+
+	assert.Contains(t, promote, "Before choosing Path B for `NOVEL_COUNT > 0`, distinguish preservation")
+	assert.Contains(t, promote, "from-scratch reprint whose fresh tree reimplements all prior novels")
+	assert.Contains(t, promote, "REGEN_DRY_RUN_REPORT=\"$PROOFS_DIR/regen-merge-dry-run-report.json\"")
+	assert.Contains(t, promote, "regen-merge dry-run failed; see $REGEN_DRY_RUN_REPORT")
+	assert.Contains(t, promote, `DRY_RUN_BLOCKERS=$(jq '[.files[]? | select(.verdict == "NOVEL"`)
+	assert.Contains(t, promote, `or .verdict == "NOVEL-COLLISION")] | length' "$REGEN_DRY_RUN_REPORT")`)
+	assert.Contains(t, promote, `MISSING_REFERENTS=$(jq '[.lost_registrations[]?`)
+	assert.Contains(t, promote, `select((.skipped_for_missing_referent // []) | length > 0)] | length'`)
+	assert.Contains(t, promote, "Treat")
+	assert.Contains(t, promote, "generated-file `TEMPLATED-BODY-DRIFT`, `TEMPLATED-VALUE-DRIFT`, and stale")
+	assert.Contains(t, promote, "templated-helper `TEMPLATED-WITH-ADDITIONS` as expected overwrite noise")
+	assert.Contains(t, promote, "any prior novel file still reports `NOVEL`")
+	assert.Contains(t, promote, "any file reports `NOVEL-COLLISION`")
+	assert.Contains(t, promote, "`lost_registrations[].skipped_for_missing_referent` is non-empty")
+	assert.Contains(t, promote, "A false Path A clobbers hand work; a")
+	assert.Contains(t, promote, "false Path B only asks for review")
+
+	assert.Contains(t, reprint, "Phase 5.6 first\ndry-runs `cli-printing-press regen-merge")
+	assert.Contains(t, reprint, "fresh tree contains all prior novel work")
+	assert.Contains(t, reprint, "genuine `NOVEL-COLLISION` / missing-referent cases halt")
+}
+
 func TestPrintingPressSkillSetsNonCatalogCategoryBeforeGenerate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	block := substringBetween(t, skill, "### Pre-Generation Category Enrichment", "### Pre-Generation Auth Enrichment")

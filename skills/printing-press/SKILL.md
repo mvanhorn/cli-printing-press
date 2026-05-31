@@ -4143,7 +4143,63 @@ fi
 
 The presence check (`jq 'has("novel_features")'`) and the manifest existence check are independent. A library can exist with a hand-authored layer but no manifest at all (interrupted run, restored-from-backup state, much older CLI), so gating the file-probe fallback behind `[ -f manifest ]` would leave that case routing through the destructive Path A swap.
 
-**Path A — first print or no hand-authored content (`! -d "$LIB_TARGET"` or `NOVEL_COUNT == 0`).** Use the destructive swap. Fast path; no library content to preserve:
+Before choosing Path B for `NOVEL_COUNT > 0`, distinguish preservation
+from from-scratch replacement. A reprint that rebuilt every prior novel into
+`$CLI_WORK_DIR` has no unique library content left to preserve; routing that
+run through `regen-merge --apply` turns ordinary older-generator drift into a
+manual halt and can preserve stale generated framework code.
+
+Run a dry-run report and inspect it against the prior manifest / research
+novel list:
+
+```bash
+REGEN_DRY_RUN_REPORT="$PROOFS_DIR/regen-merge-dry-run-report.json"
+PATH_A_REBUILT_NOVELS=0
+if [ -d "$LIB_TARGET" ] && [ "$NOVEL_COUNT" -gt 0 ]; then
+  if ! cli-printing-press regen-merge "$LIB_TARGET" \
+      --fresh "$CLI_WORK_DIR" --json > "$REGEN_DRY_RUN_REPORT"; then
+    # Real error (input error, missing fresh tree, unreadable library). Release
+    # the upstream pipeline lock and surface the dry-run failure.
+    cli-printing-press lock release --cli <api>-pp-cli
+    echo "regen-merge dry-run failed; see $REGEN_DRY_RUN_REPORT" >&2
+    exit 1
+  fi
+
+  DRY_RUN_BLOCKERS=$(jq '[.files[]? | select(.verdict == "NOVEL"
+    or .verdict == "NOVEL-COLLISION")] | length' "$REGEN_DRY_RUN_REPORT")
+  MISSING_REFERENTS=$(jq '[.lost_registrations[]?
+    | select((.skipped_for_missing_referent // []) | length > 0)] | length' \
+    "$REGEN_DRY_RUN_REPORT")
+  if [ "$DRY_RUN_BLOCKERS" -eq 0 ] && [ "$MISSING_REFERENTS" -eq 0 ]; then
+    PATH_A_REBUILT_NOVELS=1
+  fi
+fi
+```
+
+For a **from-scratch reprint whose fresh tree reimplements all prior novels**,
+prefer Path A. The dry-run should show the prior novel surfaces represented in
+fresh output, usually as `TEMPLATED-CLEAN` or `NEW-TEMPLATE-EMISSION`, and must
+not show any preservation-only novel surface that the fresh tree lacks. Treat
+generated-file `TEMPLATED-BODY-DRIFT`, `TEMPLATED-VALUE-DRIFT`, and stale
+templated-helper `TEMPLATED-WITH-ADDITIONS` as expected overwrite noise in this
+specific branch; Path A intentionally swaps in the fresh tree.
+
+The override is forbidden unless the fresh tree contains the novels:
+
+- If `DRY_RUN_BLOCKERS > 0` because any prior novel file still reports `NOVEL`,
+  the fresh tree did not rebuild
+  that hand-authored file. Use Path B so the file is preserved.
+- If `DRY_RUN_BLOCKERS > 0` because any file reports `NOVEL-COLLISION`, halt
+  through Path B's normal review gate. A collision is not version drift.
+- If `MISSING_REFERENTS > 0` because
+  `lost_registrations[].skipped_for_missing_referent` is non-empty, use
+  Path B and investigate; the fresh tree is missing a command constructor that
+  published wiring still references.
+- If you cannot prove the fresh tree rebuilt every prior novel feature from the
+  manifest / research record, use Path B. A false Path A clobbers hand work; a
+  false Path B only asks for review.
+
+**Path A — first print, no hand-authored content, or from-scratch reprint with all novels rebuilt (`! -d "$LIB_TARGET"` or `NOVEL_COUNT == 0` or the guarded dry-run override above passed).** Use the destructive swap. Fast path; no library content to preserve:
 
 ```bash
 # Atomic swap: copies working dir, writes manifest, updates run pointer, releases lock.
@@ -4152,7 +4208,7 @@ cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
 
 The `promote` command handles the full sequence: stages the working directory, atomically swaps it into `$PRESS_LIBRARY/<api>` (slug-keyed), writes the `.printing-press.json` manifest, updates the `CurrentRunPointer`, and releases the lock — all in one step. The `--cli` flag accepts the CLI binary name; the Go code translates to the slug-keyed library path internally.
 
-**Path B — reprint over a library with hand-authored content (`-d "$LIB_TARGET"` AND `NOVEL_COUNT > 0`).** Use `regen-merge` to fold the fresh tree into the live library before promotion. `regen-merge` classifies every Go file under `internal/` and `cmd/` against the fresh tree, overwrites safely-templated files, re-injects `AddCommand` calls in `root.go` and resource-parents that the fresh tree lacks, and leaves files with hand-edited additions (`TEMPLATED-WITH-ADDITIONS`) untouched for human review. `--apply` writes via stage-and-swap-with-recovery, so partial failure can never lose data.
+**Path B — reprint over a library with hand-authored content that the fresh tree did not fully rebuild (`-d "$LIB_TARGET"` AND `NOVEL_COUNT > 0` AND the guarded Path A override did not pass).** Use `regen-merge` to fold the fresh tree into the live library before promotion. `regen-merge` classifies every Go file under `internal/` and `cmd/` against the fresh tree, overwrites safely-templated files, re-injects `AddCommand` calls in `root.go` and resource-parents that the fresh tree lacks, and leaves files with hand-edited additions (`TEMPLATED-WITH-ADDITIONS`) untouched for human review. `--apply` writes via stage-and-swap-with-recovery, so partial failure can never lose data.
 
 `regen-merge --apply` exits 0 even when it leaves `TEMPLATED-WITH-ADDITIONS` files (the human-review verdicts are reported, not raised as errors). The halt condition must be checked explicitly against the report — capture `--json` and inspect the verdict counts:
 
