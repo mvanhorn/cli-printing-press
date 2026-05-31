@@ -110,7 +110,14 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 		case VerdictTemplatedBodyDrift, VerdictTemplatedWithAdditions, VerdictTemplatedValueDrift, VerdictNovel, VerdictNovelCollision:
 			continue
 		}
-		var lost, skipped []string
+		// Group lost/skipped calls by the function they came from so each
+		// LostRegistration targets a single registration function. A host with
+		// one such function (the common shape) still produces exactly one
+		// registration here.
+		lostByFunc := map[string][]string{}
+		skippedByFunc := map[string][]string{}
+		var funcOrder []string
+		seenFunc := map[string]bool{}
 		for _, call := range pubCalls[host] {
 			if _, present := freshCallSet[call.normalized]; present {
 				continue
@@ -120,23 +127,31 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 					continue
 				}
 			}
+			if !seenFunc[call.enclosingFunc] {
+				seenFunc[call.enclosingFunc] = true
+				funcOrder = append(funcOrder, call.enclosingFunc)
+			}
 			// Referent check.
 			if call.constructorName != "" {
 				if _, ok := freshDeclNames[call.constructorName]; !ok {
-					skipped = append(skipped, call.source)
+					skippedByFunc[call.enclosingFunc] = append(skippedByFunc[call.enclosingFunc], call.source)
 					continue
 				}
 			}
-			lost = append(lost, call.source)
+			lostByFunc[call.enclosingFunc] = append(lostByFunc[call.enclosingFunc], call.source)
 		}
-		if len(lost) == 0 && len(skipped) == 0 {
-			continue
+		for _, fn := range funcOrder {
+			lost, skipped := lostByFunc[fn], skippedByFunc[fn]
+			if len(lost) == 0 && len(skipped) == 0 {
+				continue
+			}
+			out = append(out, LostRegistration{
+				HostFile:                  relPath,
+				EnclosingFunc:             fn,
+				Calls:                     lost,
+				SkippedForMissingReferent: skipped,
+			})
 		}
-		out = append(out, LostRegistration{
-			HostFile:                  filepath.ToSlash(filepath.Join("internal", "cli", filepath.Base(host))),
-			Calls:                     lost,
-			SkippedForMissingReferent: skipped,
-		})
 	}
 	return out, nil
 }
@@ -149,6 +164,7 @@ type addCommandCall struct {
 	normalized      string // identical-ish form for diffing across files
 	parentName      string // e.g. "rootCmd"; empty when receiver shape is unrecognized
 	constructorName string // e.g. "newCanonicalCmd"; empty when arg shape is unrecognized
+	enclosingFunc   string // name of the FuncDecl the call sits in; "" if not inside one
 }
 
 // collectAddCommandCalls walks all .go files under dir and collects calls of
@@ -185,23 +201,38 @@ func collectAddCommandCalls(dir string) (map[string][]addCommandCall, []string, 
 		}
 		var fileCalls []addCommandCall
 		var inspectErr error
-		ast.Inspect(file, func(n ast.Node) bool {
-			ce, ok := n.(*ast.CallExpr)
-			if !ok {
+		// Walk per-function so each call records its enclosing function name.
+		// Re-injection uses that name to put a lost call back into the function
+		// it came from when a host file has more than one registration
+		// function. Calls outside any FuncDecl can't be re-injected into a
+		// function anyway, so they are not collected.
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if inspectErr != nil {
+					return false
+				}
+				ce, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := ce.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" {
+					return true
+				}
+				call, err := formatCallExpr(fset, ce)
+				if err != nil {
+					inspectErr = err
+					return false
+				}
+				call.enclosingFunc = fn.Name.Name
+				fileCalls = append(fileCalls, call)
 				return true
-			}
-			sel, ok := ce.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" {
-				return true
-			}
-			call, err := formatCallExpr(fset, ce)
-			if err != nil {
-				inspectErr = err
-				return false
-			}
-			fileCalls = append(fileCalls, call)
-			return true
-		})
+			})
+		}
 		if inspectErr != nil {
 			return nil, nil, fmt.Errorf("formatting AddCommand calls in %s: %w", path, inspectErr)
 		}

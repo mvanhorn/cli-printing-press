@@ -136,6 +136,14 @@ type LostRegistration struct {
 	// internal/cli/category.go.
 	HostFile string `json:"host_file"`
 
+	// EnclosingFunc is the name of the function the lost calls were declared
+	// in (e.g., "Execute"). Re-injection targets the same-named function in
+	// the fresh host so calls land where they belong when a host file has
+	// more than one command-registration function. Empty for plans produced
+	// before this field existed; injection then falls back to the first
+	// AddCommand-bearing function.
+	EnclosingFunc string `json:"enclosing_func,omitempty"`
+
 	// Calls are the source-form `parent.AddCommand(newX(args...))` strings
 	// for each lost registration.
 	Calls []string `json:"calls"`

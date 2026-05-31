@@ -176,7 +176,7 @@ func Apply(report *MergeReport, opts Options) error {
 	for i := range report.LostRegistrations {
 		lr := &report.LostRegistrations[i]
 		hostPath := filepath.Join(tempDir, lr.HostFile)
-		if err := injectAddCommands(hostPath, lr.Calls); err != nil {
+		if err := injectAddCommands(hostPath, lr.Calls, lr.EnclosingFunc); err != nil {
 			cleanup()
 			return fmt.Errorf("injecting AddCommand into %s: %w", lr.HostFile, err)
 		}
@@ -257,14 +257,17 @@ func readModulePaths(pubDir, freshDir string) (string, string, error) {
 }
 
 // injectAddCommands appends the given AddCommand call expressions to a
-// host file just before the trailing `return ...` statement of the function
+// host file just before the trailing `return ...` statement of the target
+// function. When enclosingFunc is set, the calls go into the function of that
+// name (so a lost call lands back in the function it came from even when a
+// host has more than one registration function); when it is empty (plans
+// produced before the field existed), it falls back to the first function
 // that already contains AddCommand calls.
 //
 // Uses dave/dst to preserve comments and formatting on the surrounding
-// code. If the host file's structure doesn't match expectations (no
-// `Execute` / cobra-Command-returning function, no existing AddCommand
-// calls), the function returns an error so the caller surfaces a warning.
-func injectAddCommands(hostPath string, calls []string) error {
+// code. If the target function can't be found, the function returns an error
+// so the caller surfaces a warning rather than silently misplacing the calls.
+func injectAddCommands(hostPath string, calls []string, enclosingFunc string) error {
 	if len(calls) == 0 {
 		return nil
 	}
@@ -278,17 +281,19 @@ func injectAddCommands(hostPath string, calls []string) error {
 		return fmt.Errorf("parsing %s: %w", hostPath, err)
 	}
 
-	// Find the function containing AddCommand calls. Inject the new calls
-	// just before that function's trailing return statement (or at the end
-	// of its body if no trailing return).
+	// Find the target function. Inject the new calls just before its trailing
+	// return statement (or at the end of its body if no trailing return).
 	injected := false
 	dst.Inspect(file, func(n dst.Node) bool {
 		fn, ok := n.(*dst.FuncDecl)
 		if !ok || fn.Body == nil {
 			return true
 		}
-		// Does this function have any AddCommand call?
-		if !slices.ContainsFunc(fn.Body.List, isAddCommandStmt) {
+		if enclosingFunc != "" {
+			if fn.Name.Name != enclosingFunc {
+				return true
+			}
+		} else if !slices.ContainsFunc(fn.Body.List, isAddCommandStmt) {
 			return true
 		}
 
@@ -317,6 +322,9 @@ func injectAddCommands(hostPath string, calls []string) error {
 	})
 
 	if !injected {
+		if enclosingFunc != "" {
+			return fmt.Errorf("function %q not found in %s for AddCommand re-injection", enclosingFunc, hostPath)
+		}
 		return fmt.Errorf("no function with AddCommand calls found in %s", hostPath)
 	}
 
