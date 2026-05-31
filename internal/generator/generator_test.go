@@ -15795,6 +15795,139 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 		"UpsertBatch must still call upsertGenericResourceTx so renamed resources land in `resources`")
 }
 
+func TestGenerateStoreKeepsBareResourceTableForPaginatedUnionListWithActionSiblings(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Todoish
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /projects:
+    get:
+      tags: [Projects]
+      operationId: list_projects
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedProjects"
+  /projects/{project_id}/archive:
+    post:
+      tags: [Projects]
+      operationId: archive_project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/PersonalProject"
+                  - $ref: "#/components/schemas/WorkspaceProject"
+                title: Project object
+  /sections:
+    get:
+      tags: [Sections]
+      operationId: list_sections
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Section"
+  /sections/{section_id}/archive:
+    post:
+      tags: [Sections]
+      operationId: archive_section
+      parameters:
+        - name: section_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Section"
+components:
+  schemas:
+    PaginatedProjects:
+      type: object
+      required: [results, next_cursor]
+      properties:
+        results:
+          type: array
+          items:
+            anyOf:
+              - $ref: "#/components/schemas/PersonalProject"
+              - $ref: "#/components/schemas/WorkspaceProject"
+            title: Project object
+        next_cursor:
+          anyOf:
+            - type: string
+            - type: "null"
+    PersonalProject:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        color: {type: string}
+    WorkspaceProject:
+      type: object
+      required: [id, name, workspace_id]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        workspace_id: {type: string}
+    Section:
+      type: object
+      required: [id, name, project_id]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        project_id: {type: string}
+`))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+
+	assert.Contains(t, store, `CREATE TABLE IF NOT EXISTS "projects"`,
+		"bare projects list resource must keep its typed table even when archive action siblings shard")
+	assert.Contains(t, store, `"name" TEXT`,
+		"projects table should derive columns from the paginated union list items, not from the envelope")
+	assert.Contains(t, store, "func (s *Store) UpsertProjects(",
+		"projects rows synced from the list endpoint must have a typed upsert")
+	assert.Contains(t, store, `case "projects":`,
+		"UpsertBatch must dispatch projects rows into the typed projects table")
+	assert.Contains(t, store, `CREATE TABLE IF NOT EXISTS "projects_archive"`,
+		"action sibling sharding should remain distinct from the bare resource table")
+
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "TestUpsertBatch_PopulatesProjectsTable")
+}
+
 func TestGenerateStoreWideResourceFallsBackToJSONOnlyTable(t *testing.T) {
 	t.Parallel()
 
