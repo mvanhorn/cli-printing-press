@@ -845,6 +845,51 @@ func newRestaurantsTopCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+func TestCheckReimplementation_CommentLedStoreHelperHop_Passes(t *testing.T) {
+	files := map[string]string{
+		"analytics_helpers.go": `package cli
+
+import "example.com/mod/internal/store"
+
+func openStoreForRead() (*store.Store, error) {
+	return store.Open("analytics.db")
+}
+`,
+		"analytics.go": `// Copyright 2026 Example and contributors.
+package cli
+
+import "github.com/spf13/cobra"
+
+// pp:data-source local
+func newRevenueCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "revenue",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := openStoreForRead()
+			if err != nil { return err }
+			_ = s
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Revenue", Command: "revenue"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if got.ExemptedViaStore != 1 {
+		t.Fatalf("ExemptedViaStore: want 1 (comment-led handler calls store helper), got %d", got.ExemptedViaStore)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
 func TestCheckReimplementation_HardcodedHelperHop_Flagged(t *testing.T) {
 	files := map[string]string{
 		"novel_helpers.go": `package cli
