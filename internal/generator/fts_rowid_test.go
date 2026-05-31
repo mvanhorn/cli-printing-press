@@ -42,3 +42,28 @@ func TestFTSRowIDContract(t *testing.T) {
 
 	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "TestFTSRowIDContract", "-count=1")
 }
+
+func TestGenerateStoreFTSRowIDMigration(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		learnEnabled bool
+	}{
+		{name: "learn-disabled"},
+		{name: "learn-enabled", learnEnabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("fts-rowid-migration-" + tc.name)
+			apiSpec.Learn.Enabled = tc.learnEnabled
+			outputDir := filepath.Join(t.TempDir(), "fts-rowid-migration-"+tc.name+"-pp-cli")
+			gen := New(apiSpec, outputDir)
+			gen.VisionSet = VisionTemplateSet{Store: true}
+			require.NoError(t, gen.Generate())
+
+			runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^Test(SchemaVersion_StampedOnFreshDB|Migrate_ResourcesCompositeKeyUpgrade|Migrate_V2ResourcesFTSRowIDUpgrade|Migrate_V3ResourcesFTSNoRebuild)$", "-count=1")
+		})
+	}
+}
