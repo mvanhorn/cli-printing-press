@@ -507,6 +507,16 @@ func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	assert.Contains(t, skill, "ship cannot fire while publish validate fails")
 }
 
+func TestPolishSkillPinsGo126CompatibleGosecFallback(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+	fallback := "go run github.com/securego/gosec/v2/cmd/gosec@v2.26.1"
+
+	assert.Equal(t, 3, strings.Count(skill, fallback))
+	assert.Contains(t, skill, fallback+" -fmt=json -out=/tmp/polish-gosec-before.json ./...")
+	assert.Contains(t, skill, fallback+" -fmt=json -out=/tmp/polish-gosec-after.json ./...")
+	assert.NotContains(t, skill, "github.com/securego/gosec/v2/cmd/gosec@v2.21.4")
+}
+
 func TestPublishSkillRerunsLiveGateBeforeManagedClone(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 	validateStart := strings.Index(skill, "## Step 4: Validate")
