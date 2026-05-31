@@ -5204,6 +5204,11 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 	if itemSchema == nil {
 		return ""
 	}
+	itemFields := collectIDSchemaFields(&openapi3.SchemaRef{Value: itemSchema})
+	itemSchema = &openapi3.Schema{
+		Properties: itemFields.properties,
+		Required:   itemFields.required,
+	}
 
 	// Tier 2: explicit `id` (required or optional)
 	if _, ok := itemSchema.Properties["id"]; ok {
@@ -5258,6 +5263,57 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 	}
 
 	return ""
+}
+
+type idSchemaFields struct {
+	properties map[string]*openapi3.SchemaRef
+	required   []string
+}
+
+func collectIDSchemaFields(schemaRef *openapi3.SchemaRef) idSchemaFields {
+	fields := idSchemaFields{properties: map[string]*openapi3.SchemaRef{}}
+	seenRequired := map[string]struct{}{}
+	collectIDSchemaFieldsInto(schemaRef, &fields, seenRequired, map[*openapi3.Schema]struct{}{})
+	return fields
+}
+
+func collectIDSchemaFieldsInto(schemaRef *openapi3.SchemaRef, fields *idSchemaFields, seenRequired map[string]struct{}, visited map[*openapi3.Schema]struct{}) {
+	if schemaRef == nil || fields == nil {
+		return
+	}
+	schema := schemaRefValue(schemaRef)
+	if schema == nil {
+		return
+	}
+	if _, ok := visited[schema]; ok {
+		return
+	}
+	visited[schema] = struct{}{}
+
+	for name, prop := range schema.Properties {
+		if prop == nil {
+			continue
+		}
+		if _, exists := fields.properties[name]; !exists {
+			fields.properties[name] = prop
+		}
+	}
+	for _, name := range schema.Required {
+		if _, exists := seenRequired[name]; exists {
+			continue
+		}
+		seenRequired[name] = struct{}{}
+		fields.required = append(fields.required, name)
+	}
+	for _, sub := range schema.AllOf {
+		collectIDSchemaFieldsInto(sub, fields, seenRequired, visited)
+	}
+	for _, sub := range schema.OneOf {
+		collectIDSchemaFieldsInto(sub, fields, seenRequired, visited)
+	}
+	for _, sub := range schema.AnyOf {
+		collectIDSchemaFieldsInto(sub, fields, seenRequired, visited)
+	}
 }
 
 // resourcePrefixedIDField returns the first property whose snake-cased name
@@ -5397,10 +5453,6 @@ func singleArrayPropertyRef(schema *openapi3.Schema) (*openapi3.SchemaRef, strin
 		return items, name
 	}
 	return nil, ""
-}
-
-func hasCollectableTypeFields(schema *openapi3.Schema) bool {
-	return isObjectSchema(schema) || len(schema.OneOf) > 0 || len(schema.AnyOf) > 0
 }
 
 // isScalarSchema reports whether the schema's type is a scalar — string,
@@ -5543,7 +5595,11 @@ func registerInlineSchemaType(out *spec.APISpec, itemRef *openapi3.SchemaRef, fa
 		return
 	}
 	itemSchema := schemaRefValue(itemRef)
-	if itemSchema == nil || !hasCollectableTypeFields(itemSchema) {
+	if itemSchema == nil {
+		return
+	}
+	fields := buildTypeFields(itemRef)
+	if len(fields) == 0 {
 		return
 	}
 	typeName := schemaTypeName(itemRef, fallbackName)
@@ -5556,7 +5612,7 @@ func registerInlineSchemaType(out *spec.APISpec, itemRef *openapi3.SchemaRef, fa
 	if _, exists := out.Types[typeName]; exists {
 		return
 	}
-	out.Types[typeName] = spec.TypeDef{Fields: buildTypeFields(itemRef)}
+	out.Types[typeName] = spec.TypeDef{Fields: fields}
 }
 
 func mapResponseDiscriminator(schemaRef *openapi3.SchemaRef) *spec.ResponseDiscriminator {
