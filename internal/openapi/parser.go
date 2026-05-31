@@ -3194,7 +3194,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 	}
 
 	assignEndpointAliases(out.Resources)
-	classifyGlobalParams(out.Name, out.Resources)
+	classifyGlobalParams(out.Resources)
 	return nil
 }
 
@@ -3671,7 +3671,7 @@ func computeAlias(method, path, endpointName string) string {
 	}
 }
 
-func classifyGlobalParams(apiName string, resources map[string]spec.Resource) {
+func classifyGlobalParams(resources map[string]spec.Resource) {
 	totalEndpoints := 0
 	paramCounts := map[string]*globalParamCount{}
 
@@ -3761,10 +3761,9 @@ func classifyGlobalParams(apiName string, resources map[string]spec.Resource) {
 		for _, param := range endpoint.Params {
 			key := strings.ToLower(param.Name)
 			if isGlobalFilterCandidate(param) {
-				if scopeParam, ok := scopeParams[key]; ok {
+				if _, ok := scopeParams[key]; ok {
 					param.Required = true
 					param.GlobalScope = true
-					param.EnvVar = globalScopeParamEnvVar(apiName, scopeParam.name)
 				} else if _, ok := filteredParams[key]; ok {
 					droppedCounts[key]++
 					continue
@@ -3783,7 +3782,7 @@ func classifyGlobalParams(apiName string, resources map[string]spec.Resource) {
 
 	for _, name := range scopeNames {
 		key := strings.ToLower(name)
-		warnf("promoted global scope query param %q to required env-backed flag: present on %d/%d endpoints", name, scopeParams[key].count, totalEndpoints)
+		warnf("promoted global scope query param %q to required flag: present on %d/%d endpoints", name, scopeParams[key].count, totalEndpoints)
 	}
 
 	filteredNames := make([]string, 0, len(droppedCounts))
@@ -3829,18 +3828,6 @@ func isGlobalScopeParamName(name string) bool {
 	default:
 		return false
 	}
-}
-
-func globalScopeParamEnvVar(apiName, paramName string) string {
-	prefix := naming.EnvPrefix(apiName)
-	param := strings.ToUpper(naming.Snake(paramName))
-	if prefix == "" {
-		return param
-	}
-	if param == "" {
-		return prefix
-	}
-	return prefix + "_" + param
 }
 
 func walkResourceEndpoints(resources map[string]spec.Resource, fn func(endpoint *spec.Endpoint)) {
