@@ -53,7 +53,6 @@ func TestGenerateStoreFTSRowIDMigration(t *testing.T) {
 		{name: "learn-disabled"},
 		{name: "learn-enabled", learnEnabled: true},
 	} {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
