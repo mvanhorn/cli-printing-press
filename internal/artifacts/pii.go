@@ -118,12 +118,6 @@ var piiDetectors = []piiDetector{
 		pattern: piiplaceholders.OrderIDPattern(),
 	},
 	{
-		kind: PIIKindASIN,
-		// ASIN-shaped product IDs from browser-sniff captures. The
-		// canonical B0EXAMPLE* placeholders are filtered after matching.
-		pattern: piiplaceholders.ASINPattern(),
-	},
-	{
 		kind: PIIKindEmail,
 		// Standard email shape with a TLD of 2+ chars. Word boundaries
 		// guard against capturing surrounding punctuation.
