@@ -1077,7 +1077,6 @@ func normalizePackagedPublishMetadata(dir, category string) error {
 		if err := os.WriteFile(manifestPath, updated, info.Mode()); err != nil {
 			return err
 		}
-		manifest.Category = category
 	}
 
 	return pipeline.WritePatchesIndex(dir, manifest.RunID, manifest.PrintingPressVersion)
