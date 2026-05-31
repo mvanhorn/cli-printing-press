@@ -150,6 +150,23 @@ func TestParseSDLCustomRootOperations(t *testing.T) {
 	assert.Equal(t, "GET", get.Method)
 	require.Len(t, get.Params, 1)
 	assert.Equal(t, "id", get.Params[0].Name)
+
+	// Custom root operation types are not entity types and must not leak into
+	// the generated type catalogue, just as conventional Query/Mutation don't.
+	assert.NotContains(t, parsed.Types, "RootQuery")
+	assert.NotContains(t, parsed.Types, "RootMutation")
+	assert.Contains(t, parsed.Types, "Widget")
+}
+
+func TestIsGraphQLSDLDetectsCustomRootSchema(t *testing.T) {
+	// A custom-root schema with no scalars and no `type Query`/`type Mutation`
+	// is still GraphQL SDL by virtue of its schema-operation mapping.
+	customRoot := []byte("schema {\n  query: RootQuery\n}\n\ntype RootQuery {\n  viewer: User!\n}\n")
+	assert.True(t, IsGraphQLSDL(customRoot), "custom-root schema block should be detected")
+
+	// Conventional and clearly-non-GraphQL inputs are unchanged.
+	assert.True(t, IsGraphQLSDL([]byte("type Query {\n  me: User\n}\n")))
+	assert.False(t, IsGraphQLSDL([]byte(`{"openapi":"3.0.0","paths":{"/x":{"get":{"responses":{}}}}}`)))
 }
 
 func TestParseSDLMissingRootOperations(t *testing.T) {

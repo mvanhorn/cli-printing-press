@@ -64,8 +64,18 @@ func ParseSDLBytes(source string, data []byte) (*spec.APISpec, error) {
 // IsGraphQLSDL checks if the data looks like a GraphQL schema.
 func IsGraphQLSDL(data []byte) bool {
 	s := string(data)
-	return strings.Contains(s, "type Query") || strings.Contains(s, "type Mutation") ||
-		(strings.Contains(s, "type ") && strings.Contains(s, "scalar "))
+	if strings.Contains(s, "type Query") || strings.Contains(s, "type Mutation") {
+		return true
+	}
+	// A `schema { query: ... }` block that maps a root operation is an
+	// unambiguous GraphQL schema definition even when the schema aliases its
+	// roots and defines no scalars. Requiring the operation mapping (not just
+	// the keyword) keeps a literal "schema {" inside an OpenAPI description
+	// from being misclassified.
+	if m := schemaBlockRE.FindStringSubmatch(s); m != nil && schemaOpRE.MatchString(m[1]) {
+		return true
+	}
+	return strings.Contains(s, "type ") && strings.Contains(s, "scalar ")
 }
 
 func parseSDLContent(source, raw string) (*spec.APISpec, error) {
@@ -174,6 +184,13 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 	}
 
 	for _, typ := range types {
+		// Custom root operation types (resolved above) are not entity types;
+		// suppress them the same way shouldExposeType suppresses the
+		// conventional Query/Mutation names so they don't leak into the
+		// generated type catalogue.
+		if typ.Name == queryRootName || typ.Name == mutationRootName {
+			continue
+		}
 		if !shouldExposeType(typ.Name, typ.Kind) {
 			continue
 		}
