@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 )
 
 // regenmergeGeneratorOwnedDirs lists internal/<name>/ subtrees the generator
@@ -107,11 +109,16 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 	}
 
 	if report.GoMod != nil {
-		mergedBytes, err := renderMergedGoMod(snapshotDir, freshDir)
+		merged, err := renderMergedGoModWithModulePaths(snapshotDir, freshDir)
 		switch {
 		case err == nil:
-			if writeErr := writeFileAtomic(filepath.Join(freshDir, "go.mod"), mergedBytes); writeErr != nil {
+			if writeErr := writeFileAtomic(filepath.Join(freshDir, "go.mod"), merged.Bytes); writeErr != nil {
 				return fmt.Errorf("writing merged go.mod: %w", writeErr)
+			}
+			if merged.PublishedModulePath != "" && merged.FreshModulePath != "" && merged.PublishedModulePath != merged.FreshModulePath {
+				if err := pipeline.RewriteModulePathReferences(freshDir, merged.FreshModulePath, merged.PublishedModulePath); err != nil {
+					return fmt.Errorf("rewriting module path references: %w", err)
+				}
 			}
 			report.GoMod.Merged = true
 		case errors.Is(err, fs.ErrNotExist):
