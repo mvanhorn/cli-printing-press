@@ -885,6 +885,12 @@ func TestArchiveRunArtifactsCopiesDiscovery(t *testing.T) {
 	require.NoError(t, os.MkdirAll(state.DiscoveryDir(), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(state.DiscoveryDir(), "browser-sniff-report.md"), []byte("report"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(state.DiscoveryDir(), "browser-sniff-unique-paths.txt"), []byte("/api/v1\n/api/v2"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(state.DiscoveryDir(), "browser-sniff-capture.har"), []byte(`{"request":{"headers":[{"name":"Cookie","value":"session=secret"}]}}`), 0o644))
+	largeCapture := filepath.Join(state.DiscoveryDir(), "browser-sniff-capture.json")
+	largeFile, err := os.Create(largeCapture)
+	require.NoError(t, err)
+	require.NoError(t, largeFile.Truncate(101*1024*1024))
+	require.NoError(t, largeFile.Close())
 
 	archiveDir, err := ArchiveRunArtifacts(state)
 	require.NoError(t, err)
@@ -899,6 +905,8 @@ func TestArchiveRunArtifactsCopiesDiscovery(t *testing.T) {
 	paths, err := os.ReadFile(filepath.Join(archivedDiscovery, "browser-sniff-unique-paths.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "/api/v1\n/api/v2", string(paths))
+	assert.NoFileExists(t, filepath.Join(archivedDiscovery, "browser-sniff-capture.har"))
+	assert.NoFileExists(t, filepath.Join(archivedDiscovery, "browser-sniff-capture.json"))
 
 	// Verify research/ was also copied
 	assert.DirExists(t, ArchivedResearchDir(state.APIName, state.RunID))

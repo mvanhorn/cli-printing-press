@@ -650,6 +650,8 @@ func TestPromoteWorkingCLI_StagesRunstateManuscripts(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(state.ResearchDir(), "notes.md"), []byte("research notes\n"), 0o644))
 	require.NoError(t, os.MkdirAll(state.DiscoveryDir(), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(state.DiscoveryDir(), "endpoints.json"), []byte("{}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(state.DiscoveryDir(), "browser-sniff-capture.har"), []byte("cookie: session=secret\nemail: user@example.com\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(state.DiscoveryDir(), "traffic-analysis.json"), []byte(`{"auth_stripped":true}`+"\n"), 0o644))
 
 	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
 	require.NoError(t, err)
@@ -673,6 +675,11 @@ func TestPromoteWorkingCLI_StagesRunstateManuscripts(t *testing.T) {
 	data, err = os.ReadFile(filepath.Join(manuRoot, "discovery", "endpoints.json"))
 	require.NoError(t, err)
 	assert.Equal(t, "{}\n", string(data))
+
+	assert.NoFileExists(t, filepath.Join(manuRoot, "discovery", "browser-sniff-capture.har"))
+	data, err = os.ReadFile(filepath.Join(manuRoot, "discovery", "traffic-analysis.json"))
+	require.NoError(t, err)
+	assert.Equal(t, "{\"auth_stripped\":true}\n", string(data))
 }
 
 func TestPromoteWorkingCLI_PreservesPreexistingManuscripts(t *testing.T) {
