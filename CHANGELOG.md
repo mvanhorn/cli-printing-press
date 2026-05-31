@@ -1,5 +1,31 @@
 # Changelog
 
+## [4.19.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.19.0...v4.19.1) (2026-05-31)
+
+
+### Bug Fixes
+
+* **cli:** always emit RequestBaseURL() so novel commands keep BasePath ([#2520](https://github.com/mvanhorn/cli-printing-press/issues/2520)) ([6db6972](https://github.com/mvanhorn/cli-printing-press/commit/6db6972089b35c24e7071c7c5ed7c640c4b528a7))
+* **cli:** ASCII-fold in CamelIdentifier so non-ASCII names don't corrupt identifiers ([#2555](https://github.com/mvanhorn/cli-printing-press/issues/2555)) ([0c18120](https://github.com/mvanhorn/cli-printing-press/commit/0c1812055a5e674ffa495485f0b44eba502947ef))
+* **cli:** bound remote spec fetch with a timeout and size cap ([#2558](https://github.com/mvanhorn/cli-printing-press/issues/2558)) ([443d9ae](https://github.com/mvanhorn/cli-printing-press/commit/443d9aed6d6b66a5ec0848fe9784b5337062c0ea))
+* **cli:** filter raw HARs from publishable manuscripts ([#2525](https://github.com/mvanhorn/cli-printing-press/issues/2525)) ([a5f6e70](https://github.com/mvanhorn/cli-printing-press/commit/a5f6e70aff26e583fa23b8e2871356352c808eac))
+* **cli:** ignore scalar siblings in sync envelope fallback ([#2532](https://github.com/mvanhorn/cli-printing-press/issues/2532)) ([2f9fb81](https://github.com/mvanhorn/cli-printing-press/commit/2f9fb81b70a69d77d6778fda4e9c5290b535ec0f))
+* **cli:** normalize publish package metadata ([#2523](https://github.com/mvanhorn/cli-printing-press/issues/2523)) ([79c7c82](https://github.com/mvanhorn/cli-printing-press/commit/79c7c82d249b16487c2742a1937787949573f298))
+* **cli:** parse comment-led helper call files ([#2524](https://github.com/mvanhorn/cli-printing-press/issues/2524)) ([0cfc64b](https://github.com/mvanhorn/cli-printing-press/commit/0cfc64bc11dbfae6cf70e929e18ce231addfd1e3))
+* **cli:** pass context to async job no-cache polling ([#2456](https://github.com/mvanhorn/cli-printing-press/issues/2456)) ([1872817](https://github.com/mvanhorn/cli-printing-press/commit/1872817ad58713d24cd86921892a4b6d08e50995))
+* **cli:** preserve module imports on force regen ([#2531](https://github.com/mvanhorn/cli-printing-press/issues/2531)) ([e3801c7](https://github.com/mvanhorn/cli-printing-press/commit/e3801c7b489936975d15f9e00a9306f2b467fdb1))
+* **cli:** preserve sync cursor on max-pages cap ([#2543](https://github.com/mvanhorn/cli-printing-press/issues/2543)) ([f7037d8](https://github.com/mvanhorn/cli-printing-press/commit/f7037d8a4bef4117b72e29f07d1f4624978f58de))
+* **cli:** preserve typed tables for paginated union resources ([#2540](https://github.com/mvanhorn/cli-printing-press/issues/2540)) ([5b0efb8](https://github.com/mvanhorn/cli-printing-press/commit/5b0efb87bce9f01dc91eb54d123ed0d8362238a9))
+* **cli:** re-inject lost registrations into their source function ([#2559](https://github.com/mvanhorn/cli-printing-press/issues/2559)) ([288b4a5](https://github.com/mvanhorn/cli-printing-press/commit/288b4a5d584ef93fcb35e3e19adf5590486c68be))
+* **cli:** rebuild FTS after rowid migration ([#2542](https://github.com/mvanhorn/cli-printing-press/issues/2542)) ([79c8acf](https://github.com/mvanhorn/cli-printing-press/commit/79c8acf3661a9bee030adfa46fe10c5e27812e52))
+* **cli:** require explicit global scope flags ([#2530](https://github.com/mvanhorn/cli-printing-press/issues/2530)) ([6f5518f](https://github.com/mvanhorn/cli-printing-press/commit/6f5518f963fbdda977b524e1c53d42a1b577dfa9))
+* **cli:** resolve GraphQL custom root operation types ([#2556](https://github.com/mvanhorn/cli-printing-press/issues/2556)) ([b0b4147](https://github.com/mvanhorn/cli-printing-press/commit/b0b41473ed9c4b27a61ee550d4e04ee6cf653d3f))
+* **cli:** skip unsynced local live-check samples ([#2533](https://github.com/mvanhorn/cli-printing-press/issues/2533)) ([50c4504](https://github.com/mvanhorn/cli-printing-press/commit/50c450472491456117ddd89b72b6c5f5865ffbdf))
+* **cli:** stop gating promote on ASIN examples ([#2522](https://github.com/mvanhorn/cli-printing-press/issues/2522)) ([6bfd1be](https://github.com/mvanhorn/cli-printing-press/commit/6bfd1be3f2f770a0cd3c13489cf098e4f4677c0d))
+* **cli:** trim client credential env vars for auth login ([#2537](https://github.com/mvanhorn/cli-printing-press/issues/2537)) ([2742ef7](https://github.com/mvanhorn/cli-printing-press/commit/2742ef7aa36d911c5ec53847ebd29f0fcb53eeb0))
+* **skills:** route rebuilt-novel reprints through swap ([#2527](https://github.com/mvanhorn/cli-printing-press/issues/2527)) ([c7ff7f8](https://github.com/mvanhorn/cli-printing-press/commit/c7ff7f80e79b807dcdd58e50aede3cc7563ebfd6))
+* **skills:** update polish gosec fallback pin ([#2529](https://github.com/mvanhorn/cli-printing-press/issues/2529)) ([9548233](https://github.com/mvanhorn/cli-printing-press/commit/95482338b05ec15a04a01840782075966b11c9dd))
+
 ## [4.19.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.18.1...v4.19.0) (2026-05-28)
 
 
