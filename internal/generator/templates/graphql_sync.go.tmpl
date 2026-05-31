@@ -153,7 +153,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(cmd.Context(), c, db, resource, sinceTS, full, maxPages)
+						res := syncResource(cmd.Context(), c, db, resource, sinceTS, full, maxPages, latestOnly && since == "")
 						results <- res
 					}
 				}()
@@ -269,7 +269,7 @@ func graphqlSyncDefs() map[string]graphqlSyncDef {
 }
 
 // syncResource handles the full paginated sync of a single resource via GraphQL.
-func syncResource(ctx context.Context, c *client.Client, db *store.Store, resource, sinceTS string, full bool, maxPages int) syncResult {
+func syncResource(ctx context.Context, c *client.Client, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -295,6 +295,8 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 	consumedTotal := 0
 	extractFailureTotal := 0
 	anomalyEmitted := false
+	capExitHit := false
+	capExitCursor := ""
 	pageSize := def.PageSize
 	if pageSize <= 0 {
 		pageSize = 50
@@ -407,7 +409,12 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 
 		// Enforce page ceiling
 		if maxPages > 0 && pagesFetched >= maxPages {
-			if humanFriendly {
+			capExitHasMore := conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != "" && conn.PageInfo.EndCursor != cursor
+			if capExitHasMore && !latestOnly {
+				capExitHit = true
+				capExitCursor = conn.PageInfo.EndCursor
+			}
+			if capExitHasMore && !latestOnly && humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items)\n", resource, maxPages, totalCount)
 			}
 			break
@@ -421,8 +428,13 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 		cursor = conn.PageInfo.EndCursor
 	}
 
-	// Final sync state: clear cursor (sync is complete), update count
-	_ = db.SaveSyncState(resource, "", totalCount)
+	// Final sync state: clear cursor on natural completion, but preserve the
+	// resume cursor when an operator intentionally capped the page budget.
+	finalCursor := ""
+	if capExitHit {
+		finalCursor = capExitCursor
+	}
+	_ = db.SaveSyncState(resource, finalCursor, totalCount)
 
 	// F4b symptom probe: rows extracted successfully but none landed.
 	// Likely cause is below the PK-extraction layer (FTS5 trigger,

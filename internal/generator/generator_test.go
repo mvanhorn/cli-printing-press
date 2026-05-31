@@ -11224,6 +11224,14 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	assert.Contains(t, syncContent,
 		"maxPages, effectiveLatestOnly, parentFilter",
 		"syncDependentResources call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
+	assert.Contains(t, syncContent, "capExitHit := false",
+		"syncResource must track whether the loop stopped because --max-pages was reached")
+	assert.Contains(t, syncContent, "finalCursor := \"\"",
+		"syncResource must choose the final saved cursor based on the exit reason")
+	assert.Contains(t, syncContent, "finalCursor = capExitCursor",
+		"syncResource must preserve the resume cursor on --max-pages cap exit")
+	assert.Contains(t, syncContent, "truncatedByCap && capExitCursor != cursor",
+		"syncResource must not preserve a self-referential cursor when the cap fires before sticky-cursor detection")
 
 	// (c) Sticky-cursor detection on the flat path. The check must compare
 	// against a tracked lastNextCursor and emit the structured warning when
@@ -11248,6 +11256,172 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	assert.NotContains(t, syncContent,
 		`"reason":%q,"message"`,
 		"sync_warning must use literal %s interpolation, not %q Go-escaping")
+
+	behaviorTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type resumeCursorClient struct {
+	cursors []string
+	stuck   bool
+}
+
+func (c *resumeCursorClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	cursor := params["after"]
+	c.cursors = append(c.cursors, cursor)
+
+	nextByCursor := map[string]string{
+		"":       "page-2",
+		"page-2": "page-3",
+		"page-3": "page-4",
+		"page-4": "page-5",
+	}
+	next := nextByCursor[cursor]
+	if c.stuck {
+		next = cursor
+	}
+	page := cursor
+	if page == "" {
+		page = "page-1"
+	}
+	items := make([]map[string]string, 100)
+	for i := range items {
+		items[i] = map[string]string{"id": page + "-" + strconv.Itoa(i)}
+	}
+	return json.Marshal(map[string]any{
+		"items":       items,
+		"has_more":    next != "",
+		"next_cursor": next,
+	})
+}
+
+func (c *resumeCursorClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	first := &resumeCursorClient{}
+	res := syncResource(context.Background(), first, db, "channels", "", false, 2, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("first syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(first.cursors, ","); got != ",page-2" {
+		t.Fatalf("first run cursors = %q, want %q", got, ",page-2")
+	}
+	cursor, _, _, err := db.GetSyncState("channels")
+	if err != nil {
+		t.Fatalf("get sync state after first run: %v", err)
+	}
+	if cursor != "page-3" {
+		t.Fatalf("cursor after first capped run = %q, want page-3", cursor)
+	}
+
+	second := &resumeCursorClient{}
+	res = syncResource(context.Background(), second, db, "channels", "", false, 2, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("second syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(second.cursors, ","); got != "page-3,page-4" {
+		t.Fatalf("second run cursors = %q, want %q", got, "page-3,page-4")
+	}
+	cursor, _, _, err = db.GetSyncState("channels")
+	if err != nil {
+		t.Fatalf("get sync state after second run: %v", err)
+	}
+	if cursor != "page-5" {
+		t.Fatalf("cursor after second capped run = %q, want page-5", cursor)
+	}
+
+	final := &resumeCursorClient{}
+	res = syncResource(context.Background(), final, db, "channels", "", false, 0, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("final syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(final.cursors, ","); got != "page-5" {
+		t.Fatalf("final run cursors = %q, want page-5", got)
+	}
+	cursor, _, _, err = db.GetSyncState("channels")
+	if err != nil {
+		t.Fatalf("get sync state after natural completion: %v", err)
+	}
+	if cursor != "" {
+		t.Fatalf("cursor after natural completion = %q, want empty", cursor)
+	}
+}
+
+func TestSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.SaveSyncState("channels", "page-3", 200); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+
+	client := &resumeCursorClient{}
+	res := syncResource(context.Background(), client, db, "channels", "", false, 3, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(client.cursors, ","); got != "page-3,page-4,page-5" {
+		t.Fatalf("run cursors = %q, want %q", got, "page-3,page-4,page-5")
+	}
+	cursor, _, _, err := db.GetSyncState("channels")
+	if err != nil {
+		t.Fatalf("get sync state after exact-boundary capped run: %v", err)
+	}
+	if cursor != "" {
+		t.Fatalf("cursor after exact-boundary capped run = %q, want empty", cursor)
+	}
+}
+
+func TestSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.SaveSyncState("channels", "stuck", 100); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+
+	client := &resumeCursorClient{stuck: true}
+	res := syncResource(context.Background(), client, db, "channels", "", false, 1, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(client.cursors, ","); got != "stuck" {
+		t.Fatalf("run cursors = %q, want %q", got, "stuck")
+	}
+	cursor, _, _, err := db.GetSyncState("channels")
+	if err != nil {
+		t.Fatalf("get sync state after self-referential capped run: %v", err)
+	}
+	if cursor != "" {
+		t.Fatalf("cursor after self-referential capped run = %q, want empty", cursor)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_resume_cursor_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestSyncResource(PreservesCursorOnMaxPagesCap|ClearsCursorWhenCapEqualsFinalPage|ClearsSelfReferentialCursorOnMaxPagesCap)$")
 
 	// Build the generated CLI to catch template-syntax / import errors that
 	// substring assertions miss.
@@ -11371,6 +11545,186 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 		"GraphQL sync.go dogfood cap must still bound generated syncs to 10 pages")
 	assert.NotContains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"GraphQL sync.go must not retain the old 10-page default")
+	assert.Contains(t, string(syncGo), "capExitHit := false",
+		"GraphQL sync.go must track whether --max-pages stopped the loop")
+	assert.Contains(t, string(syncGo), "finalCursor = capExitCursor",
+		"GraphQL sync.go must preserve the resume cursor on --max-pages cap exit")
+	assert.Contains(t, string(syncGo), "conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor != \"\" && conn.PageInfo.EndCursor != cursor",
+		"GraphQL sync.go must only preserve a cap-exit cursor when another page exists")
+
+	behaviorTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"` + naming.CLI(gqlSpec.Name) + `/internal/client"
+	"` + naming.CLI(gqlSpec.Name) + `/internal/config"
+	"` + naming.CLI(gqlSpec.Name) + `/internal/store"
+)
+
+type gqlResumeHandler struct {
+	cursors []string
+	stuck   bool
+}
+
+func (h *gqlResumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Variables map[string]any ` + "`json:\"variables\"`" + `
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	cursor, _ := req.Variables["after"].(string)
+	h.cursors = append(h.cursors, cursor)
+
+	nextByCursor := map[string]string{
+		"":       "page-2",
+		"page-2": "page-3",
+		"page-3": "page-4",
+		"page-4": "page-5",
+	}
+	next := nextByCursor[cursor]
+	if h.stuck {
+		next = cursor
+	}
+	page := cursor
+	if page == "" {
+		page = "page-1"
+	}
+	endCursor := next
+	if endCursor == "" {
+		endCursor = page + "-end"
+	}
+	nodes := make([]map[string]string, 50)
+	for i := range nodes {
+		nodes[i] = map[string]string{
+			"id":    page + "-" + strconv.Itoa(i),
+			"title": page + " issue " + strconv.Itoa(i),
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"data": map[string]any{
+			"issues": map[string]any{
+				"nodes": nodes,
+				"pageInfo": map[string]any{
+					"hasNextPage": next != "",
+					"endCursor":   endCursor,
+				},
+			},
+		},
+	})
+}
+
+func newGraphQLSyncClient(t *testing.T, h *gqlResumeHandler) (*client.Client, *store.Store, func()) {
+	t.Helper()
+	server := httptest.NewServer(h)
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	c := client.New(&config.Config{BaseURL: server.URL}, time.Second, 0)
+	return c, db, func() {
+		db.Close()
+		server.Close()
+	}
+}
+
+func TestGraphQLSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
+	handler := &gqlResumeHandler{}
+	c, db, cleanup := newGraphQLSyncClient(t, handler)
+	defer cleanup()
+
+	res := syncResource(context.Background(), c, db, "issues", "", false, 2, false)
+	if res.Err != nil {
+		t.Fatalf("first syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(handler.cursors, ","); got != ",page-2" {
+		t.Fatalf("first run cursors = %q, want %q", got, ",page-2")
+	}
+	cursor, _, _, err := db.GetSyncState("issues")
+	if err != nil {
+		t.Fatalf("get sync state after first run: %v", err)
+	}
+	if cursor != "page-3" {
+		t.Fatalf("cursor after first capped run = %q, want page-3", cursor)
+	}
+
+	handler.cursors = nil
+	res = syncResource(context.Background(), c, db, "issues", "", false, 2, false)
+	if res.Err != nil {
+		t.Fatalf("second syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(handler.cursors, ","); got != "page-3,page-4" {
+		t.Fatalf("second run cursors = %q, want %q", got, "page-3,page-4")
+	}
+	cursor, _, _, err = db.GetSyncState("issues")
+	if err != nil {
+		t.Fatalf("get sync state after second run: %v", err)
+	}
+	if cursor != "page-5" {
+		t.Fatalf("cursor after second capped run = %q, want page-5", cursor)
+	}
+}
+
+func TestGraphQLSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
+	handler := &gqlResumeHandler{}
+	c, db, cleanup := newGraphQLSyncClient(t, handler)
+	defer cleanup()
+
+	if err := db.SaveSyncState("issues", "page-3", 100); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+	res := syncResource(context.Background(), c, db, "issues", "", false, 3, false)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(handler.cursors, ","); got != "page-3,page-4,page-5" {
+		t.Fatalf("run cursors = %q, want %q", got, "page-3,page-4,page-5")
+	}
+	cursor, _, _, err := db.GetSyncState("issues")
+	if err != nil {
+		t.Fatalf("get sync state after exact-boundary capped run: %v", err)
+	}
+	if cursor != "" {
+		t.Fatalf("cursor after exact-boundary capped run = %q, want empty", cursor)
+	}
+}
+
+func TestGraphQLSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
+	handler := &gqlResumeHandler{stuck: true}
+	c, db, cleanup := newGraphQLSyncClient(t, handler)
+	defer cleanup()
+
+	if err := db.SaveSyncState("issues", "stuck", 100); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+	res := syncResource(context.Background(), c, db, "issues", "", false, 1, false)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if got := strings.Join(handler.cursors, ","); got != "stuck" {
+		t.Fatalf("run cursors = %q, want %q", got, "stuck")
+	}
+	cursor, _, _, err := db.GetSyncState("issues")
+	if err != nil {
+		t.Fatalf("get sync state after self-referential capped run: %v", err)
+	}
+	if cursor != "" {
+		t.Fatalf("cursor after self-referential capped run = %q, want empty", cursor)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "graphql_sync_resume_cursor_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestGraphQLSyncResource(PreservesCursorOnMaxPagesCap|ClearsCursorWhenCapEqualsFinalPage|ClearsSelfReferentialCursorOnMaxPagesCap)$")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
