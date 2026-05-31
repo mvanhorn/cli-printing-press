@@ -199,6 +199,8 @@ func TestCopyPublishableManuscriptDirFiltersSymlinks(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(src, "notes.txt"), []byte("notes"), 0o644))
 	require.NoError(t, os.Symlink("notes.txt", filepath.Join(src, "notes-link.txt")))
 	require.NoError(t, os.Symlink("notes.txt", filepath.Join(src, "capture.har")))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "raw-capture.har"), []byte("cookie: secret"), 0o644))
+	require.NoError(t, os.Symlink("raw-capture.har", filepath.Join(src, "raw-capture-link.txt")))
 
 	largeCapture := filepath.Join(src, "large-capture.bin")
 	largeFile, err := os.Create(largeCapture)
@@ -214,6 +216,8 @@ func TestCopyPublishableManuscriptDirFiltersSymlinks(t *testing.T) {
 	assert.NotZero(t, linkInfo.Mode()&os.ModeSymlink, "ordinary internal symlink should be preserved")
 	assert.FileExists(t, filepath.Join(dst, "notes.txt"))
 	assert.NoFileExists(t, filepath.Join(dst, "capture.har"))
+	assert.NoFileExists(t, filepath.Join(dst, "raw-capture.har"))
+	assert.NoFileExists(t, filepath.Join(dst, "raw-capture-link.txt"))
 	assert.NoFileExists(t, filepath.Join(dst, "large-capture.bin"))
 	assert.NoFileExists(t, filepath.Join(dst, "large-link.bin"))
 }

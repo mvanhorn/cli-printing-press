@@ -711,7 +711,11 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 				if skipFile(path, info) {
 					return nil
 				}
-				if targetInfo, err := os.Stat(path); err == nil && skipFile(path, targetInfo) {
+				resolvedTarget := link
+				if !filepath.IsAbs(resolvedTarget) {
+					resolvedTarget = filepath.Join(filepath.Dir(path), resolvedTarget)
+				}
+				if targetInfo, err := os.Stat(path); err == nil && skipFile(resolvedTarget, targetInfo) {
 					return nil
 				}
 			}
