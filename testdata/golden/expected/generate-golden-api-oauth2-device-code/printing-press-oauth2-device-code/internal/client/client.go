@@ -39,6 +39,13 @@ type Client struct {
 	limiter    *cliutil.AdaptiveLimiter
 }
 
+// RequestBaseURL returns the base URL used for requests.
+// Novel commands that build request URLs by hand should use this instead of
+// concatenating c.BaseURL directly.
+func (c *Client) RequestBaseURL() string {
+	return c.BaseURL
+}
+
 // APIError carries HTTP status information for structured exit codes.
 type APIError struct {
 	Method     string

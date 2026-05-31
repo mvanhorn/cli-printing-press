@@ -46,6 +46,13 @@ func TestClientHonorsSpecBasePath(t *testing.T) {
 	assert.Contains(t, client, "c.BaseURL + c.BasePath + path",
 		"do() should construct request URLs as BaseURL+BasePath+path")
 
+	// RequestBaseURL() must be emitted for every printed CLI (not just HTML-
+	// extraction ones) so novel commands have a safe accessor and cannot drop
+	// BasePath by open-coding c.BaseURL. This spec has no HTML extraction.
+	requestBaseURL := regexp.MustCompile(`func \(c \*Client\) RequestBaseURL\(\) string \{\s*return c\.BaseURL \+ c\.BasePath\s*\}`)
+	assert.Regexp(t, requestBaseURL, client,
+		"RequestBaseURL() should be emitted and return BaseURL+BasePath even without HTML extraction")
+
 	cacheKeyBody := clientCacheKeyBody(t, client)
 	assert.Contains(t, cacheKeyBody, `"|base_path=" + c.BasePath`,
 		"cache key should include BasePath so a config change invalidates correctly")
@@ -82,6 +89,11 @@ func TestClientWithoutBasePathByteIdentical(t *testing.T) {
 		"client.go must not emit BasePath when the spec doesn't declare base_path")
 	assert.NotContains(t, client, "normalizeBasePath",
 		"client.go must not emit the normalizeBasePath helper when unused")
+	// RequestBaseURL() is still emitted (returning just c.BaseURL) so novel
+	// commands have a consistent accessor regardless of BasePath.
+	requestBaseURL := regexp.MustCompile(`func \(c \*Client\) RequestBaseURL\(\) string \{\s*return c\.BaseURL\s*\}`)
+	assert.Regexp(t, requestBaseURL, client,
+		"RequestBaseURL() should be emitted and return c.BaseURL when there is no BasePath")
 
 	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
