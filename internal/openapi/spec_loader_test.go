@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestLoadSpecBytes_URLAndFile verifies the URL-vs-file dispatch.
@@ -78,6 +79,67 @@ func TestLoadSpecBytes_FileMissing(t *testing.T) {
 	_, err := LoadSpecBytes(filepath.Join(t.TempDir(), "does-not-exist.json"), false, false)
 	if err == nil {
 		t.Fatal("LoadSpecBytes for missing file should error")
+	}
+}
+
+func TestFetchOrCacheSpec_Timeout(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	orig := specFetchTimeout
+	specFetchTimeout = 50 * time.Millisecond
+	defer func() { specFetchTimeout = orig }()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Send headers, then hang on the body — a server that accepts the
+		// connection but never finishes the response.
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+	}))
+	// close(release) must run before srv.Close() (LIFO defers) so the blocked
+	// handler is unblocked before Close waits on it.
+	defer srv.Close()
+	defer close(release)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := LoadSpecBytes(srv.URL, true, true)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected a timeout error for a hanging response body")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadSpecBytes did not return within 5s; fetch timeout not enforced")
+	}
+}
+
+func TestFetchOrCacheSpec_SizeCap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	orig := maxSpecBytes
+	maxSpecBytes = 16
+	defer func() { maxSpecBytes = orig }()
+
+	body := strings.Repeat("x", 64) // well over the 16-byte cap
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	_, err := LoadSpecBytes(srv.URL, true, true)
+	if err == nil {
+		t.Fatal("expected a size-cap error for an oversized body")
+	}
+	if !strings.Contains(err.Error(), "size cap") {
+		t.Fatalf("error should mention the size cap, got: %v", err)
 	}
 }
 
