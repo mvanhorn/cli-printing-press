@@ -21,6 +21,12 @@ var (
 	blockRE    = regexp.MustCompile(`(?s)\b(type|input|enum)\s+([A-Za-z_][A-Za-z0-9_]*)[^{=]*\{(.*?)\}`)
 	fieldRE    = regexp.MustCompile(`(?s)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*:\s*([A-Za-z0-9_\[\]!]+)`)
 	scalarRE   = regexp.MustCompile(`(?m)^\s*scalar\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	// schemaBlockRE captures the body of a top-level `schema { ... }` block.
+	// The `[^{:}]*` between the keyword and the brace forbids a colon so a
+	// field literally named `schema` (e.g. `schema: String`) cannot be
+	// mistaken for the schema definition.
+	schemaBlockRE = regexp.MustCompile(`(?s)\bschema\b[^{:}]*\{(.*?)\}`)
+	schemaOpRE    = regexp.MustCompile(`(?m)^\s*(query|mutation|subscription)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
 type gqlType struct {
@@ -58,8 +64,18 @@ func ParseSDLBytes(source string, data []byte) (*spec.APISpec, error) {
 // IsGraphQLSDL checks if the data looks like a GraphQL schema.
 func IsGraphQLSDL(data []byte) bool {
 	s := string(data)
-	return strings.Contains(s, "type Query") || strings.Contains(s, "type Mutation") ||
-		(strings.Contains(s, "type ") && strings.Contains(s, "scalar "))
+	if strings.Contains(s, "type Query") || strings.Contains(s, "type Mutation") {
+		return true
+	}
+	// A `schema { query: ... }` block that maps a root operation is an
+	// unambiguous GraphQL schema definition even when the schema aliases its
+	// roots and defines no scalars. Requiring the operation mapping (not just
+	// the keyword) keeps a literal "schema {" inside an OpenAPI description
+	// from being misclassified.
+	if m := schemaBlockRE.FindStringSubmatch(s); m != nil && schemaOpRE.MatchString(m[1]) {
+		return true
+	}
+	return strings.Contains(s, "type ") && strings.Contains(s, "scalar ")
 }
 
 func parseSDLContent(source, raw string) (*spec.APISpec, error) {
@@ -114,8 +130,12 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 	}
 
 	connectionEntities := detectConnections(types)
-	queryType := types["Query"]
-	mutationType := types["Mutation"]
+	queryRootName, mutationRootName := rootOperationTypes(cleaned)
+	queryType, hasQuery := types[queryRootName]
+	mutationType, hasMutation := types[mutationRootName]
+	if !hasQuery && !hasMutation {
+		return nil, fmt.Errorf("no GraphQL root operation types found: looked for query type %q and mutation type %q; define them or map them with a `schema { query: ... }` block", queryRootName, mutationRootName)
+	}
 	resourceEntities := map[string]struct{}{}
 
 	for _, field := range queryType.Fields {
@@ -164,6 +184,13 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 	}
 
 	for _, typ := range types {
+		// Custom root operation types (resolved above) are not entity types;
+		// suppress them the same way shouldExposeType suppresses the
+		// conventional Query/Mutation names so they don't leak into the
+		// generated type catalogue.
+		if typ.Name == queryRootName || typ.Name == mutationRootName {
+			continue
+		}
 		if !shouldExposeType(typ.Name, typ.Kind) {
 			continue
 		}
@@ -184,6 +211,29 @@ func stripSDLComments(s string) string {
 	s = docBlockRE.ReplaceAllString(s, "")
 	s = commentRE.ReplaceAllString(s, "")
 	return s
+}
+
+// rootOperationTypes resolves the query and mutation root type names. GraphQL
+// lets a `schema { query: X mutation: Y }` block alias the roots to arbitrary
+// type names; absent that block the roots default to the conventional
+// Query/Mutation. Resolving these rather than hard-coding "Query"/"Mutation"
+// is what lets a schema with aliased roots produce resources instead of an
+// empty API.
+func rootOperationTypes(cleaned string) (queryName, mutationName string) {
+	queryName, mutationName = "Query", "Mutation"
+	block := schemaBlockRE.FindStringSubmatch(cleaned)
+	if block == nil {
+		return queryName, mutationName
+	}
+	for _, op := range schemaOpRE.FindAllStringSubmatch(block[1], -1) {
+		switch op[1] {
+		case "query":
+			queryName = op[2]
+		case "mutation":
+			mutationName = op[2]
+		}
+	}
+	return queryName, mutationName
 }
 
 func parseSDLTypes(s string) (map[string]gqlType, map[string]struct{}, error) {
