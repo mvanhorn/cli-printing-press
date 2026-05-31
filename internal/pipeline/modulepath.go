@@ -42,6 +42,17 @@ func RewriteModulePath(dir, oldPath, newPath string) error {
 		return fmt.Errorf("writing go.mod: %w", err)
 	}
 
+	return RewriteModulePathReferences(dir, oldPath, newPath)
+}
+
+// RewriteModulePathReferences rewrites import-style module references without
+// touching the go.mod module declaration. Use this when the caller has already
+// written the final go.mod contents.
+func RewriteModulePathReferences(dir, oldPath, newPath string) error {
+	if oldPath == newPath {
+		return nil
+	}
+
 	// Only replace subpath references: oldPath/internal/... and oldPath/cmd/...
 	// This avoids corrupting command Use strings, User-Agent headers,
 	// config paths, and other runtime literals that contain the CLI name.

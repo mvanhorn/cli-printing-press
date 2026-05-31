@@ -104,6 +104,58 @@ func staleGeneratedCommand() {}
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/regenapp-pp-cli")
 }
 
+func TestGenerateCmdForcePreservesExistingModulePathForImports(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "tenderned")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: tenderned
+description: Tenderned API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/tenderned-pp-cli/config.toml
+resources:
+  tenders:
+    description: Manage tenders
+    endpoints:
+      list:
+        method: GET
+        path: /tenders
+        description: List tenders
+`), 0o644))
+
+	const modulePath = "github.com/mvanhorn/printing-press-library/library/sales-and-crm/tenderned"
+	require.NoError(t, os.MkdirAll(outputDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.26.3\n"), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	mainSrc, err := os.ReadFile(filepath.Join(outputDir, "cmd", "tenderned-pp-cli", "main.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(mainSrc), modulePath+"/internal/cli")
+	assert.NotContains(t, string(mainSrc), `"tenderned-pp-cli/internal/cli"`)
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientSrc), modulePath+"/internal/config")
+	assert.Contains(t, string(clientSrc), `"tenderned-pp-cli/0.1.0"`)
+
+	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
+	runGoCommandForCLITest(t, outputDir, "build", "./cmd/tenderned-pp-cli")
+}
+
 func TestGenerateCmdForcePreservesManuscriptsAndManifestExtras(t *testing.T) {
 	t.Parallel()
 

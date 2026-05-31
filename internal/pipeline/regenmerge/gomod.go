@@ -91,9 +91,23 @@ func planGoModMerge(publishedDir, freshDir string) (*GoModMerge, error) {
 	return plan, nil
 }
 
+type renderedGoMod struct {
+	Bytes               []byte
+	PublishedModulePath string
+	FreshModulePath     string
+}
+
 // renderMergedGoMod produces the actual merged go.mod bytes from the two
 // inputs. Used by U4's Apply step. Caller writes the bytes.
 func renderMergedGoMod(publishedDir, freshDir string) ([]byte, error) {
+	rendered, err := renderMergedGoModWithModulePaths(publishedDir, freshDir)
+	if err != nil {
+		return nil, err
+	}
+	return rendered.Bytes, nil
+}
+
+func renderMergedGoModWithModulePaths(publishedDir, freshDir string) (*renderedGoMod, error) {
 	pubPath := filepath.Join(publishedDir, "go.mod")
 	freshPath := filepath.Join(freshDir, "go.mod")
 	pubData, err := os.ReadFile(pubPath)
@@ -114,6 +128,10 @@ func renderMergedGoMod(publishedDir, freshDir string) ([]byte, error) {
 	}
 	if pubMF.Module == nil {
 		return nil, fmt.Errorf("published go.mod has no module declaration")
+	}
+	freshModulePath := ""
+	if freshMF.Module != nil {
+		freshModulePath = freshMF.Module.Mod.Path
 	}
 
 	// Start with fresh's require/replace/exclude as a base, then graft
@@ -221,7 +239,15 @@ func renderMergedGoMod(publishedDir, freshDir string) ([]byte, error) {
 	}
 
 	merged.Cleanup()
-	return merged.Format()
+	bytes, err := merged.Format()
+	if err != nil {
+		return nil, err
+	}
+	return &renderedGoMod{
+		Bytes:               bytes,
+		PublishedModulePath: pubMF.Module.Mod.Path,
+		FreshModulePath:     freshModulePath,
+	}, nil
 }
 
 // supportsRetract reports whether the merged go directive permits retract
