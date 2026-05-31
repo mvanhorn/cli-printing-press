@@ -27,9 +27,10 @@ import (
 type LiveStatus string
 
 const (
-	StatusPass LiveStatus = "pass"
-	StatusFail LiveStatus = "fail"
-	StatusSkip LiveStatus = "skip"
+	StatusPass                 LiveStatus = "pass"
+	StatusFail                 LiveStatus = "fail"
+	StatusSkip                 LiveStatus = "skip"
+	StatusPrerequisiteUnsynced LiveStatus = "prerequisite_unsynced"
 )
 
 // Default bounds for RunLiveCheck. Exported so callers can override via
@@ -75,6 +76,16 @@ func (r *LiveCheckResult) Checked() int {
 		return 0
 	}
 	return r.Passed + r.Failed + r.Skipped
+}
+
+// Evaluated returns the number of feature samples that reached a pass/fail
+// verdict. Skipped samples are reported, but do not count against pass-rate
+// math because their prerequisites were not available to live-check.
+func (r *LiveCheckResult) Evaluated() int {
+	if r == nil {
+		return 0
+	}
+	return r.Passed + r.Failed
 }
 
 // LiveFeatureResult is one feature's outcome.
@@ -227,7 +238,7 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 		concurrency = len(features)
 	}
 
-	results := runFeaturesConcurrent(opts.CLIDir, binaryPath, features, timeout, concurrency)
+	results := runFeaturesConcurrent(opts.CLIDir, binaryPath, annotateLiveCheckFeatures(opts.CLIDir, features), timeout, concurrency)
 	out.Features = results
 	for _, r := range results {
 		switch r.Status {
@@ -239,7 +250,7 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 			out.Skipped++
 		}
 	}
-	if total := out.Checked(); total > 0 {
+	if total := out.Evaluated(); total > 0 {
 		out.PassRate = float64(out.Passed) / float64(total)
 	}
 	return out
@@ -557,10 +568,61 @@ func liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos string) []stri
 	return deduped
 }
 
+type liveCheckFeature struct {
+	NovelFeature
+	DataSourceStrategy string
+}
+
+func annotateLiveCheckFeatures(cliDir string, features []NovelFeature) []liveCheckFeature {
+	strategies := novelCommandDataSourceStrategies(cliDir)
+	out := make([]liveCheckFeature, 0, len(features))
+	for _, f := range features {
+		leaf := lastPathSegment(commandPath(f.Command))
+		out = append(out, liveCheckFeature{
+			NovelFeature:       f,
+			DataSourceStrategy: strategies[leaf],
+		})
+	}
+	return out
+}
+
+func novelCommandDataSourceStrategies(cliDir string) map[string]string {
+	out := map[string]string{}
+	cliFilesDir := filepath.Join(cliDir, "internal", "cli")
+	entries, err := os.ReadDir(cliFilesDir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(cliFilesDir, name))
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		m := dataSourceDirectiveRe.FindStringSubmatch(content)
+		if len(m) < 2 {
+			continue
+		}
+		strategy := strings.ToLower(strings.TrimSpace(m[1]))
+		if strategy != "auto" && strategy != "local" && strategy != "live" {
+			continue
+		}
+		use := cobraUseLeafRe.FindStringSubmatch(content)
+		if len(use) >= 2 {
+			out[strings.ToLower(strings.TrimSpace(use[1]))] = strategy
+		}
+	}
+	return out
+}
+
 // runFeaturesConcurrent distributes the per-feature checks across a worker
 // pool. Results are collected in-order so LiveCheckResult.Features stays
 // stable across runs.
-func runFeaturesConcurrent(cliDir, binaryPath string, features []NovelFeature, timeout time.Duration, concurrency int) []LiveFeatureResult {
+func runFeaturesConcurrent(cliDir, binaryPath string, features []liveCheckFeature, timeout time.Duration, concurrency int) []LiveFeatureResult {
 	results := make([]LiveFeatureResult, len(features))
 	type job struct{ idx int }
 	jobs := make(chan job, len(features))
@@ -573,7 +635,7 @@ func runFeaturesConcurrent(cliDir, binaryPath string, features []NovelFeature, t
 	for range concurrency {
 		wg.Go(func() {
 			for j := range jobs {
-				results[j.idx] = runOneFeatureCheck(cliDir, binaryPath, features[j.idx], timeout)
+				results[j.idx] = runOneFeatureCheckWithDataSource(cliDir, binaryPath, features[j.idx], timeout)
 			}
 		})
 	}
@@ -637,6 +699,10 @@ func pickGeneratedCommandFeatures(binaryPath string) ([]NovelFeature, error) {
 // messaging) and needs structured access to *exec.ExitError +
 // DeadlineExceeded, so it runs exec inline.
 func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.Duration) LiveFeatureResult {
+	return runOneFeatureCheckWithDataSource(cliDir, binaryPath, liveCheckFeature{NovelFeature: f}, timeout)
+}
+
+func runOneFeatureCheckWithDataSource(cliDir, binaryPath string, f liveCheckFeature, timeout time.Duration) LiveFeatureResult {
 	result := LiveFeatureResult{Name: f.Name, Command: f.Command, Example: f.Example}
 	fail := func(reason string) LiveFeatureResult {
 		result.Status = StatusFail
@@ -672,6 +738,11 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
 			stderr := stderrCap.String()
+			if f.DataSourceStrategy == "local" && isUnsyncedLocalStoreFailure(stderr) {
+				result.Status = StatusPrerequisiteUnsynced
+				result.Reason = "prerequisite_unsynced: local store is not populated; run sync before probing this command"
+				return result
+			}
 			if isGracefulEmptyResponse(stderr, args) {
 				// CLI exited non-zero gracefully on "no record matches this
 				// input" — that's the CORRECT behavior for an unknown slug
@@ -707,6 +778,12 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 		result.Warnings = append(result.Warnings, msg)
 	}
 	return result
+}
+
+func isUnsyncedLocalStoreFailure(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	return strings.Contains(lower, "unable to open database file") ||
+		strings.Contains(lower, "no such file or directory")
 }
 
 // sampleOutput truncates captured output to outputSampleMaxBytes for
@@ -1091,12 +1168,12 @@ func containsAnyOf(s string, needles []string) bool {
 // receive given its live-check pass rate. A CLI whose flagships return
 // broken output shouldn't earn a Grade A scorecard.
 //
-//   - Unable or zero checked: no cap (nil return)
+//   - Unable or zero evaluated samples: no cap (nil return)
 //   - PassRate >= 0.8: no cap
 //   - PassRate >= 0.5: cap at 7
 //   - PassRate <  0.5: cap at 4
 func InsightCapFromLiveCheck(r *LiveCheckResult) *int {
-	if r == nil || r.Unable || r.Checked() == 0 {
+	if r == nil || r.Unable || r.Evaluated() == 0 {
 		return nil
 	}
 	var cap int
@@ -1120,10 +1197,12 @@ func (r *LiveCheckResult) MarshalJSON() ([]byte, error) {
 	return json.Marshal(&struct {
 		*alias
 		Checked     int `json:"checked"`
+		Evaluated   int `json:"evaluated"`
 		PassRatePct int `json:"pass_rate_pct"`
 	}{
 		alias:       (*alias)(r),
 		Checked:     r.Checked(),
+		Evaluated:   r.Evaluated(),
 		PassRatePct: int(r.PassRate*100 + 0.5),
 	})
 }

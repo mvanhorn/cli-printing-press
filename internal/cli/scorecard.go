@@ -86,7 +86,7 @@ func newScorecardCmd() *cobra.Command {
 				if live.Unable {
 					fmt.Printf("  Unable to run: %s\n", live.Reason)
 				} else {
-					fmt.Printf("  Passed: %d/%d  (%d%% pass rate)\n", live.Passed, live.Checked(), int(live.PassRate*100+0.5))
+					fmt.Printf("  Passed: %d/%d  (%d%% pass rate, %d skipped)\n", live.Passed, live.Evaluated(), int(live.PassRate*100+0.5), live.Skipped)
 					if live.Failed > 0 {
 						fmt.Println("  Failures:")
 						for _, f := range live.Features {
