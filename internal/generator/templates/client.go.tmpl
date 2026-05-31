@@ -181,12 +181,14 @@ func (c *Client) baseURLForRequest() string {
 	}
 }
 
-{{- if .HasHTMLExtraction}}
-
-// RequestBaseURL returns the base URL used by the current request tier.
+// RequestBaseURL returns the base URL used for the current request, including
+// any BasePath. Novel commands that build request URLs by hand should use this
+// instead of concatenating c.BaseURL directly, so they cannot drop BasePath.
 func (c *Client) RequestBaseURL() string {
 	return c.baseURLForRequest()
 }
+
+{{- if .HasHTMLExtraction}}
 
 // LastContentType returns the last response Content-Type observed by this client.
 func (c *Client) LastContentType() string {
@@ -259,12 +261,18 @@ func applyTierAuthFormat(format string, replacements map[string]string) string {
 
 {{- end}}
 
-{{- if and (not .HasTierRouting) .HasHTMLExtraction}}
+{{- if not .HasTierRouting}}
 
-// RequestBaseURL returns the base URL used for requests.
+// RequestBaseURL returns the base URL used for requests{{if .BasePath}}, including the
+// configured BasePath. Novel commands that build request URLs by hand should use
+// this instead of concatenating c.BaseURL directly, so they cannot drop BasePath.{{else}}.
+// Novel commands that build request URLs by hand should use this instead of
+// concatenating c.BaseURL directly.{{end}}
 func (c *Client) RequestBaseURL() string {
 	return c.BaseURL{{if .BasePath}} + c.BasePath{{end}}
 }
+
+{{- if .HasHTMLExtraction}}
 
 // LastContentType returns the last response Content-Type observed by this client.
 func (c *Client) LastContentType() string {
@@ -274,6 +282,7 @@ func (c *Client) LastContentType() string {
 	return c.lastContentType
 }
 
+{{- end}}
 {{- end}}
 
 {{if eq .ClientPattern "proxy-envelope"}}

@@ -91,6 +91,13 @@ func (c *Client) baseURLForRequest() string {
 	}
 }
 
+// RequestBaseURL returns the base URL used for the current request, including
+// any BasePath. Novel commands that build request URLs by hand should use this
+// instead of concatenating c.BaseURL directly, so they cannot drop BasePath.
+func (c *Client) RequestBaseURL() string {
+	return c.baseURLForRequest()
+}
+
 func (c *Client) authForRequest(ctx context.Context) (requestAuth, error) {
 	switch c.requestTier {
 	case "enterprise":
