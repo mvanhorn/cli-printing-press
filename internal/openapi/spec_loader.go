@@ -19,6 +19,18 @@ import (
 // rejection at the boundary rather than feeding the body to the parser.
 var smallResponseErrorPrefix = regexp.MustCompile(`^\d{3}:\s`)
 
+const (
+	// specFetchTimeout bounds the entire remote spec fetch (connect + body
+	// read). The prior http.Get used the default client, which has no
+	// timeout, so a server that accepted the connection but never finished
+	// the body hung the generator indefinitely.
+	specFetchTimeout = 60 * time.Second
+	// maxSpecBytes caps the response body so an unbounded or hostile stream
+	// cannot exhaust memory. 64 MiB clears the largest real specs with room
+	// to spare.
+	maxSpecBytes int64 = 64 << 20
+)
+
 // LoadSpecBytes reads OpenAPI spec bytes from either a local filesystem path
 // or an http(s) URL, picking the right transport from the source string.
 // Callers that previously wrapped os.ReadFile gain URL support transparently;
@@ -39,6 +51,14 @@ func LoadSpecBytes(source string, refresh bool, skipCache bool) ([]byte, error) 
 // route URL-sourced specs through the same fetch path the generator uses,
 // keeping scorer subcommands and generate in sync.
 func FetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, error) {
+	return fetchOrCacheSpec(specURL, refresh, skipCache, specFetchTimeout, maxSpecBytes)
+}
+
+// fetchOrCacheSpec is the parameterized core of FetchOrCacheSpec. The fetch
+// timeout and size cap are arguments rather than package state so tests can
+// tighten them without mutating shared globals, keeping the fetch path safe to
+// exercise from parallel tests.
+func fetchOrCacheSpec(specURL string, refresh, skipCache bool, timeout time.Duration, maxBytes int64) ([]byte, error) {
 	sum := sha256.Sum256([]byte(specURL))
 	cacheKey := hex.EncodeToString(sum[:])
 
@@ -66,7 +86,8 @@ func FetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 	}
 
 	fmt.Fprintf(os.Stderr, "Fetching spec from %s...\n", specURL)
-	resp, err := http.Get(specURL) //nolint:gosec // spec URLs are operator-provided
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(specURL) //nolint:gosec // spec URLs are operator-provided
 	if err != nil {
 		return nil, err
 	}
@@ -76,9 +97,14 @@ func FetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 		return nil, fmt.Errorf("unexpected response status: %s", resp.Status)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	// Read one byte past the cap so an exactly-at-cap body is distinguishable
+	// from one that overflows it.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("spec at %s exceeds the %d-byte size cap", specURL, maxBytes)
 	}
 
 	if len(data) < 256 {
