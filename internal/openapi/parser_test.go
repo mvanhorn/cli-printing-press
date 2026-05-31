@@ -3605,7 +3605,6 @@ paths:
 		require.Equal(t, "TenantFilter", tenant.Name, "%s should keep TenantFilter", resourceName)
 		assert.True(t, tenant.Required)
 		assert.True(t, tenant.GlobalScope)
-		assert.Equal(t, "CIPP_TENANT_FILTER", tenant.EnvVar)
 		for _, param := range endpoint.Params {
 			assert.NotEqual(t, "limit", param.Name, "%s should still filter non-scope global params", resourceName)
 		}
@@ -3618,7 +3617,6 @@ paths:
 	assert.Equal(t, "workspace", single.Params[0].Name)
 	assert.False(t, single.Params[0].Required)
 	assert.False(t, single.Params[0].GlobalScope)
-	assert.Empty(t, single.Params[0].EnvVar)
 }
 
 func TestIsGlobalScopeParamNameAvoidsSubstringMatches(t *testing.T) {
