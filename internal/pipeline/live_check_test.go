@@ -305,29 +305,72 @@ func TestLiveCheck_FailOnExitError(t *testing.T) {
 }
 
 func TestLiveCheck_LocalDataSourceUnsyncedFailureSkipsAndExcludesPassRate(t *testing.T) {
-	dir := t.TempDir()
-	writeNovelCommandFile(t, dir, "tasks.go", `package cli
+	for _, tc := range []struct {
+		name   string
+		stderr string
+	}{
+		{
+			name:   "sqlite open failure",
+			stderr: "Error: querying tasks: unable to open database file: out of memory (14)",
+		},
+		{
+			name:   "missing db file",
+			stderr: "Error: querying tasks: open /tmp/tasks.db: no such file or directory",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeNovelCommandFile(t, dir, "tasks.go", `package cli
 
 // pp:data-source local
 func newNovelTasksCmd() *cobra.Command {
 	return &cobra.Command{Use: "tasks"}
 }
 `)
-	writeStubBinary(t, dir, "stub", `echo "Error: querying tasks: unable to open database file: out of memory (14)" >&2; exit 1`)
+			writeStubBinary(t, dir, "stub", fmt.Sprintf("echo %q >&2; exit 1", tc.stderr))
+			writeTestResearchJSON(t, dir, []NovelFeature{
+				{Name: "Tasks", Command: "tasks", Example: `stub tasks --json`},
+			})
+
+			result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+
+			require.False(t, result.Unable, "result was Unable: %s", result.Reason)
+			require.Equal(t, 1, result.Checked())
+			require.Zero(t, result.Evaluated(), "skipped local prerequisites must not count in pass-rate denominator")
+			require.Zero(t, result.Failed)
+			require.Equal(t, 1, result.Skipped)
+			require.Equal(t, StatusPrerequisiteUnsynced, result.Features[0].Status)
+			require.Contains(t, result.Features[0].Reason, "prerequisite_unsynced")
+			require.Nil(t, InsightCapFromLiveCheck(result), "all-skipped live-check should not cap scorecard Insight")
+		})
+	}
+}
+
+func TestLiveCheck_LocalDataSourceStrategyDoesNotLeakFromNestedLeaf(t *testing.T) {
+	dir := t.TempDir()
+	writeNovelCommandFile(t, dir, "tasks.go", `package cli
+
+// pp:data-source local
+func newNovelTasksCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "tasks"}
+	cmd.AddCommand(&cobra.Command{Use: "list"})
+	return cmd
+}
+`)
+	writeStubBinary(t, dir, "stub", `echo "Error: querying projects: unable to open database file: out of memory (14)" >&2; exit 1`)
 	writeTestResearchJSON(t, dir, []NovelFeature{
-		{Name: "Tasks", Command: "tasks", Example: `stub tasks --json`},
+		{Name: "Project list", Command: "projects list", Example: `stub projects list --json`},
 	})
 
 	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
 
 	require.False(t, result.Unable, "result was Unable: %s", result.Reason)
 	require.Equal(t, 1, result.Checked())
-	require.Zero(t, result.Evaluated(), "skipped local prerequisites must not count in pass-rate denominator")
-	require.Zero(t, result.Failed)
-	require.Equal(t, 1, result.Skipped)
-	require.Equal(t, StatusPrerequisiteUnsynced, result.Features[0].Status)
-	require.Contains(t, result.Features[0].Reason, "prerequisite_unsynced")
-	require.Nil(t, InsightCapFromLiveCheck(result), "all-skipped live-check should not cap scorecard Insight")
+	require.Equal(t, 1, result.Evaluated())
+	require.Equal(t, 1, result.Failed)
+	require.Zero(t, result.Skipped)
+	require.Equal(t, StatusFail, result.Features[0].Status)
+	require.NotContains(t, result.Features[0].Reason, "prerequisite_unsynced")
 }
 
 func TestLiveCheck_LocalDataSourceRealFailureStillFails(t *testing.T) {

@@ -611,10 +611,9 @@ func novelCommandDataSourceStrategies(cliDir string) map[string]string {
 		if strategy != "auto" && strategy != "local" && strategy != "live" {
 			continue
 		}
-		for _, use := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
-			if len(use) >= 2 {
-				out[strings.ToLower(strings.TrimSpace(use[1]))] = strategy
-			}
+		use := cobraUseLeafRe.FindStringSubmatch(content)
+		if len(use) >= 2 {
+			out[strings.ToLower(strings.TrimSpace(use[1]))] = strategy
 		}
 	}
 	return out
@@ -783,7 +782,8 @@ func runOneFeatureCheckWithDataSource(cliDir, binaryPath string, f liveCheckFeat
 
 func isUnsyncedLocalStoreFailure(stderr string) bool {
 	lower := strings.ToLower(stderr)
-	return strings.Contains(lower, "unable to open database file")
+	return strings.Contains(lower, "unable to open database file") ||
+		strings.Contains(lower, "no such file or directory")
 }
 
 // sampleOutput truncates captured output to outputSampleMaxBytes for
