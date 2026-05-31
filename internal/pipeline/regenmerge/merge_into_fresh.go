@@ -101,7 +101,7 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 				continue
 			}
 			hostPath := filepath.Join(freshDir, lr.HostFile)
-			if err := injectAddCommands(hostPath, lr.Calls); err != nil {
+			if err := injectAddCommands(hostPath, lr.Calls, lr.EnclosingFunc); err != nil {
 				return fmt.Errorf("re-injecting AddCommand into %s: %w", lr.HostFile, err)
 			}
 			lr.Applied = true

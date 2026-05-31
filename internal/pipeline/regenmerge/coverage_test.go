@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -97,10 +98,109 @@ func TestInjectAddCommandsFailsWithoutHostFn(t *testing.T) {
 	hostPath := filepath.Join(t.TempDir(), "no_host_fn.go")
 	require.NoError(t, os.WriteFile(hostPath, []byte("package cli\n\nfunc unrelated() {}\n"), 0o644))
 
-	err := injectAddCommands(hostPath, []string{"cmd.AddCommand(newFooCmd(flags))"})
+	err := injectAddCommands(hostPath, []string{"cmd.AddCommand(newFooCmd(flags))"}, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no function with AddCommand",
 		"missing host function must surface as a clear error")
+}
+
+// TestInjectAddCommandsTargetsEnclosingFunc verifies a lost call is re-injected
+// into the named function, not the first AddCommand-bearing one, when a host
+// file has more than one registration function.
+func TestInjectAddCommandsTargetsEnclosingFunc(t *testing.T) {
+	t.Parallel()
+
+	host := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newAlphaCmd())
+	registerExtras(rootCmd)
+	_ = rootCmd.Execute()
+}
+
+func registerExtras(rootCmd *cobra.Command) {
+	rootCmd.AddCommand(newBetaCmd())
+}
+`
+	hostPath := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, os.WriteFile(hostPath, []byte(host), 0o644))
+
+	require.NoError(t, injectAddCommands(hostPath, []string{"rootCmd.AddCommand(newGammaCmd())"}, "registerExtras"))
+
+	out, err := os.ReadFile(hostPath)
+	require.NoError(t, err)
+	src := string(out)
+
+	extrasIdx := strings.Index(src, "func registerExtras")
+	require.GreaterOrEqual(t, extrasIdx, 0)
+	execBlock := src[strings.Index(src, "func Execute"):extrasIdx]
+	assert.NotContains(t, execBlock, "newGammaCmd",
+		"new call must not land in the first AddCommand-bearing function")
+	assert.Contains(t, src[extrasIdx:], "newGammaCmd",
+		"new call must land in the named function")
+}
+
+// TestInjectAddCommandsIntoEmptyFunc covers the primary real-world shape: the
+// fresh generator emitted the registration function with an empty body (the
+// lost call was the only thing in it). Injection must still place the call
+// inside that function, exercising the insertAt path for a zero-length body.
+func TestInjectAddCommandsIntoEmptyFunc(t *testing.T) {
+	t.Parallel()
+
+	host := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newAlphaCmd())
+	registerExtras(rootCmd)
+	_ = rootCmd.Execute()
+}
+
+func registerExtras(rootCmd *cobra.Command) {
+}
+`
+	hostPath := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, os.WriteFile(hostPath, []byte(host), 0o644))
+
+	require.NoError(t, injectAddCommands(hostPath, []string{"rootCmd.AddCommand(newGammaCmd())"}, "registerExtras"))
+
+	out, err := os.ReadFile(hostPath)
+	require.NoError(t, err)
+	src := string(out)
+
+	extrasIdx := strings.Index(src, "func registerExtras")
+	require.GreaterOrEqual(t, extrasIdx, 0)
+	execBlock := src[strings.Index(src, "func Execute"):extrasIdx]
+	assert.NotContains(t, execBlock, "newGammaCmd", "call must not land in Execute")
+	assert.Contains(t, src[extrasIdx:], "newGammaCmd", "call must land in the emptied registerExtras")
+}
+
+// TestInjectAddCommandsMissingEnclosingFuncErrors verifies a hard error (rather
+// than silent misplacement) when the recorded function is absent from the host.
+func TestInjectAddCommandsMissingEnclosingFuncErrors(t *testing.T) {
+	t.Parallel()
+
+	host := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newAlphaCmd())
+}
+`
+	hostPath := filepath.Join(t.TempDir(), "root.go")
+	require.NoError(t, os.WriteFile(hostPath, []byte(host), 0o644))
+
+	err := injectAddCommands(hostPath, []string{"rootCmd.AddCommand(newBetaCmd())"}, "registerExtras")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "registerExtras")
+	assert.Contains(t, err.Error(), "not found")
 }
 
 // TestMergeReportJSONShapeStable pins the JSON contract for the agent surface.
