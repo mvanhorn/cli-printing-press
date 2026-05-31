@@ -336,6 +336,104 @@ func TestGenerateSyncDependentErrorNotSilent(t *testing.T) {
 		"dependent-resource sync_error events should use the injected event writer")
 }
 
+// TestGeneratedSyncExtractPageItemsFallbackIgnoresUnknownScalarSiblings
+// executes the emitted fallback extractor. It pins the regression from issue
+// #2416: diagnostic scalar fields such as generated_at and request_id must not
+// cause the only object array in an envelope to be dropped.
+func TestGeneratedSyncExtractPageItemsFallbackIgnoresUnknownScalarSiblings(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("sync-envelope")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	runtimeTest := `package cli
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestExtractPageItemsFallbackIgnoresUnknownScalarSiblings(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		wantCount  int
+		wantOK     bool
+		wantMore   bool
+		wantCursor string
+		wantID     string
+	}{
+		{
+			name:      "unknown diagnostic scalar siblings",
+			body:      ` + "`" + `{"things":[{"id":"t-1"},{"id":"t-2"}],"generated_at":"2024-01-01T00:00:00Z","request_id":"abc-123","api_version":"v2"}` + "`" + `,
+			wantCount: 2,
+			wantOK:    true,
+			wantID:    "t-1",
+		},
+		{
+			name:       "known cursor metadata siblings",
+			body:       ` + "`" + `{"things":[{"id":"t-1"}],"cursor":"next-1","has_more":true}` + "`" + `,
+			wantCount:  1,
+			wantOK:     true,
+			wantMore:   true,
+			wantCursor: "next-1",
+			wantID:     "t-1",
+		},
+		{
+			name:      "ambiguous double object arrays",
+			body:      ` + "`" + `{"primary":[{"id":"p-1"}],"secondary":[{"id":"s-1"}],"request_id":"abc-123"}` + "`" + `,
+			wantOK:    false,
+		},
+		{
+			name:      "no object array",
+			body:      ` + "`" + `{"generated_at":"2024-01-01T00:00:00Z","request_id":"abc-123","count":2}` + "`" + `,
+			wantOK:    false,
+		},
+		{
+			name:      "known item key remains preferred",
+			body:      ` + "`" + `{"items":[{"id":"canonical"}],"alternate":[{"id":"other"}],"request_id":"abc-123"}` + "`" + `,
+			wantCount: 1,
+			wantOK:    true,
+			wantID:    "canonical",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items, cursor, hasMore := extractPageItems(json.RawMessage(tc.body), "cursor")
+			if tc.wantOK {
+				if len(items) != tc.wantCount {
+					t.Fatalf("len(items) = %d, want %d", len(items), tc.wantCount)
+				}
+				if tc.wantID != "" {
+					var item map[string]string
+					if err := json.Unmarshal(items[0], &item); err != nil {
+						t.Fatalf("unmarshal first item: %v", err)
+					}
+					if item["id"] != tc.wantID {
+						t.Fatalf("first item id = %q, want %q", item["id"], tc.wantID)
+					}
+				}
+			} else if len(items) != 0 {
+				t.Fatalf("len(items) = %d, want 0", len(items))
+			}
+			if cursor != tc.wantCursor {
+				t.Fatalf("cursor = %q, want %q", cursor, tc.wantCursor)
+			}
+			if hasMore != tc.wantMore {
+				t.Fatalf("hasMore = %v, want %v", hasMore, tc.wantMore)
+			}
+		})
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_extract_page_items_test.go"), []byte(runtimeTest), 0o644))
+
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestExtractPageItemsFallbackIgnoresUnknownScalarSiblings")
+}
+
 // noBulkListSpec mirrors the Allrecipes shape (issue #1156): a resource whose
 // only GET endpoints are a parameterized detail page and a search with a
 // required query param. Neither qualifies as a syncable list endpoint, so
