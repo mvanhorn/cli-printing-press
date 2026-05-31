@@ -792,17 +792,18 @@ func callsHelper(content string, helpers map[string]bool) bool {
 
 func countHelperCalls(content string, weight func(string) int) int {
 	source := content
-	trimmed := strings.TrimSpace(source)
-	if !strings.HasPrefix(trimmed, "package ") {
+	file, err := parser.ParseFile(token.NewFileSet(), "", source, 0)
+	if err != nil {
+		trimmed := strings.TrimSpace(source)
 		if strings.HasPrefix(trimmed, "{") {
 			source = "package cli\nfunc _() " + trimmed
 		} else {
 			source = "package cli\n" + source
 		}
-	}
-	file, err := parser.ParseFile(token.NewFileSet(), "", source, 0)
-	if err != nil {
-		return 0
+		file, err = parser.ParseFile(token.NewFileSet(), "", source, 0)
+		if err != nil {
+			return 0
+		}
 	}
 	count := 0
 	ast.Inspect(file, func(n ast.Node) bool {
