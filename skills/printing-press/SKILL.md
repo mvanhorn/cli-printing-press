@@ -4154,9 +4154,25 @@ novel list:
 
 ```bash
 REGEN_DRY_RUN_REPORT="$PROOFS_DIR/regen-merge-dry-run-report.json"
+PATH_A_REBUILT_NOVELS=0
 if [ -d "$LIB_TARGET" ] && [ "$NOVEL_COUNT" -gt 0 ]; then
-  cli-printing-press regen-merge "$LIB_TARGET" \
-      --fresh "$CLI_WORK_DIR" --json > "$REGEN_DRY_RUN_REPORT"
+  if ! cli-printing-press regen-merge "$LIB_TARGET" \
+      --fresh "$CLI_WORK_DIR" --json > "$REGEN_DRY_RUN_REPORT"; then
+    # Real error (input error, missing fresh tree, unreadable library). Release
+    # the upstream pipeline lock and surface the dry-run failure.
+    cli-printing-press lock release --cli <api>-pp-cli
+    echo "regen-merge dry-run failed; see $REGEN_DRY_RUN_REPORT" >&2
+    exit 1
+  fi
+
+  DRY_RUN_BLOCKERS=$(jq '[.files[]? | select(.verdict == "NOVEL"
+    or .verdict == "NOVEL-COLLISION")] | length' "$REGEN_DRY_RUN_REPORT")
+  MISSING_REFERENTS=$(jq '[.lost_registrations[]?
+    | select((.skipped_for_missing_referent // []) | length > 0)] | length' \
+    "$REGEN_DRY_RUN_REPORT")
+  if [ "$DRY_RUN_BLOCKERS" -eq 0 ] && [ "$MISSING_REFERENTS" -eq 0 ]; then
+    PATH_A_REBUILT_NOVELS=1
+  fi
 fi
 ```
 
@@ -4170,11 +4186,13 @@ specific branch; Path A intentionally swaps in the fresh tree.
 
 The override is forbidden unless the fresh tree contains the novels:
 
-- If any prior novel file still reports `NOVEL`, the fresh tree did not rebuild
+- If `DRY_RUN_BLOCKERS > 0` because any prior novel file still reports `NOVEL`,
+  the fresh tree did not rebuild
   that hand-authored file. Use Path B so the file is preserved.
-- If any file reports `NOVEL-COLLISION`, halt through Path B's normal review
-  gate. A collision is not version drift.
-- If `lost_registrations[].skipped_for_missing_referent` is non-empty, use
+- If `DRY_RUN_BLOCKERS > 0` because any file reports `NOVEL-COLLISION`, halt
+  through Path B's normal review gate. A collision is not version drift.
+- If `MISSING_REFERENTS > 0` because
+  `lost_registrations[].skipped_for_missing_referent` is non-empty, use
   Path B and investigate; the fresh tree is missing a command constructor that
   published wiring still references.
 - If you cannot prove the fresh tree rebuilt every prior novel feature from the
