@@ -394,7 +394,7 @@ func stageRunstateManuscripts(stagingDir string, state *PipelineState) error {
 		} else if !os.IsNotExist(statErr) {
 			return fmt.Errorf("checking %s in staging: %w", target, statErr)
 		}
-		if err := CopyDir(src, target); err != nil {
+		if err := CopyPublishableManuscriptDir(src, target); err != nil {
 			return fmt.Errorf("copying runstate %s: %w", name, err)
 		}
 	}
