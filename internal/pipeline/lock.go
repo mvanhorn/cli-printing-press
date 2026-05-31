@@ -463,7 +463,7 @@ func validatePIIGateForPromote(workingDir string, state *PipelineState) error {
 		msg += "gate failures:\n" + artifacts.FormatPIIGateFailures(result.Completion) + "\n"
 	}
 	msg += fmt.Sprintf("ledger: %s\n", ledgerPath)
-	msg += "scope: phase-1 detectors (order-id, ASIN, card-last-4, email, phone, ZIP+4, postal-address); standalone names are a future detector class.\n"
+	msg += "scope: phase-1 detectors (order-id, card-last-4, email, phone, ZIP+4, postal-address); ASINs and standalone names are a future detector class.\n"
 	command := "cli-printing-press pii-audit <dir>"
 	if opts.ManuscriptsDir != "" {
 		command += " --manuscripts-dir " + shellQuote(opts.ManuscriptsDir)

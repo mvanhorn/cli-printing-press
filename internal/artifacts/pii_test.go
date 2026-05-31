@@ -131,13 +131,13 @@ func TestFindPII_OrderIDs(t *testing.T) {
 	}
 }
 
-func TestFindPII_ASINs(t *testing.T) {
+func TestFindPII_ASINsAreNotPhase1Findings(t *testing.T) {
 	tests := []struct {
 		name        string
 		line        string
 		expectKinds []string
 	}{
-		{name: "real-asin", line: `"asin": "B012345678"`, expectKinds: []string{PIIKindASIN}},
+		{name: "real-asin", line: `"asin": "B012345678"`, expectKinds: nil},
 		{name: "synthetic-asin", line: `"asin": "B0EXAMPLE1"`, expectKinds: nil},
 		{name: "not-asin", line: `"sku": "A012345678"`, expectKinds: nil},
 	}
@@ -147,6 +147,48 @@ func TestFindPII_ASINs(t *testing.T) {
 			assertKinds(t, got, tt.expectKinds, PIIKindASIN)
 		})
 	}
+}
+
+func TestRunPIIAudit_ASINDocumentationExamplesDoNotBlock(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "README.md"), strings.Join([]string{
+		"```bash",
+		"amazon-product get --asin B09B93ZDG4",
+		"amazon-product get --asin B0BFC7WQ6R",
+		"amazon-product compare --asin B09B93ZDG4",
+		"amazon-product compare --asin B0BFC7WQ6R",
+		"```",
+	}, "\n"))
+	write(t, filepath.Join(dir, "SKILL.md"), strings.Join([]string{
+		"Use B09B93ZDG4 as the sample product identifier.",
+		"Use B0BFC7WQ6R when showing product comparison.",
+		"Run with B09B93ZDG4 for a speaker example.",
+		"Run with B0BFC7WQ6R for a display example.",
+	}, "\n"))
+	write(t, filepath.Join(dir, ".manuscripts", "run1", "research.json"), strings.Join([]string{
+		`{"example_asin":"B09B93ZDG4"}`,
+		`{"example_asin":"B0BFC7WQ6R"}`,
+		`{"example_asin":"B09B93ZDG4"}`,
+		`{"example_asin":"B0BFC7WQ6R"}`,
+	}, "\n"))
+
+	result, err := RunPIIAudit(dir)
+	require.NoError(t, err)
+	assert.Empty(t, result.Findings)
+	assert.Equal(t, 0, PIIPendingCount(result.Findings))
+	assert.False(t, result.Completion.HasGateFailure())
+}
+
+func TestRunPIIAudit_OrderIDStillBlocks(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, ".manuscripts", "run1", "research.json"), `{"order_id":"123-4567890-1234567"}`)
+
+	result, err := RunPIIAudit(dir)
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, PIIKindOrderID, result.Findings[0].Kind)
+	assert.Equal(t, 1, PIIPendingCount(result.Findings))
+	assert.False(t, result.Completion.HasGateFailure())
 }
 
 func TestFindPII_Email(t *testing.T) {

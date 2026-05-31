@@ -2,7 +2,7 @@
 
 **Goal:** clear the PII ledger so promote and publish gates pass. Every pending finding is either real PII (replace with a placeholder in source) or a justified non-PII match (accept in the ledger with pre-decision fields).
 
-**Scope:** Phase 1 detectors are shape-only — card-last-4, email, US phone, ZIP+4, postal-address. Order/transaction IDs, ASINs, and standalone names are a future detector class pending spec-aware detection work. A passing gate is the floor, not "PII-clean."
+**Scope:** Phase 1 detectors are shape-only — order/transaction IDs, card-last-4, email, US phone, ZIP+4, postal-address. ASINs and standalone names are a future detector class pending spec-aware detection work. A passing gate is the floor, not "PII-clean."
 
 ```bash
 cli-printing-press pii-audit <cli-dir>
