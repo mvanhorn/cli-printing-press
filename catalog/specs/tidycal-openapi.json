@@ -25,25 +25,27 @@
         "parameters": [
           {
             "name": "starts_at",
-            "in": "path",
+            "in": "query",
             "description": "Get bookings starting from a specific date.",
             "required": false,
             "schema": {
-              "type": "date"
+              "type": "string",
+              "format": "date-time"
             }
           },
           {
             "name": "ends_at",
-            "in": "path",
+            "in": "query",
             "description": "Get bookings ending before a specific date.",
             "required": false,
             "schema": {
-              "type": "date"
+              "type": "string",
+              "format": "date-time"
             }
           },
           {
             "name": "cancelled",
-            "in": "path",
+            "in": "query",
             "description": "Get only cancelled bookings.",
             "required": false,
             "schema": {
@@ -52,7 +54,7 @@
           },
           {
             "name": "page",
-            "in": "path",
+            "in": "query",
             "description": "Page number.",
             "required": false,
             "schema": {
@@ -61,7 +63,7 @@
           },
           {
             "name": "include_teams",
-            "in": "path",
+            "in": "query",
             "description": "Include team bookings.",
             "required": false,
             "schema": {
@@ -203,7 +205,7 @@
         "parameters": [
           {
             "name": "page",
-            "in": "path",
+            "in": "query",
             "description": "Page number.",
             "required": false,
             "schema": {
@@ -609,7 +611,7 @@
         "parameters": [
           {
             "name": "page",
-            "in": "path",
+            "in": "query",
             "description": "Page number.",
             "required": false,
             "schema": {
@@ -732,7 +734,7 @@
         "parameters": [
           {
             "name": "page",
-            "in": "path",
+            "in": "query",
             "description": "Page number.",
             "required": false,
             "schema": {
@@ -925,7 +927,7 @@
           },
           {
             "name": "page",
-            "in": "path",
+            "in": "query",
             "description": "Page number.",
             "required": false,
             "schema": {
@@ -1528,6 +1530,7 @@
         "type": "object"
       },
       "User": {
+        "type": "object",
         "properties": {
           "name": {
             "type": "string",
