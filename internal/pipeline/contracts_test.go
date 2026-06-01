@@ -191,8 +191,10 @@ func TestPrintingPressSkillUsesRunRootStateFile(t *testing.T) {
 }
 
 func TestPrintingPressSkillWarnsOnMultiSpecDirectories(t *testing.T) {
-	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	block := substringBetween(t, skill, "#### Directory spec-source guard", "2. Check for prior research")
+	// The lazy-load refactor moved this contract block out of SKILL.md into the
+	// phase reference; assert it where the content now lives.
+	ref := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "phase-0-resolve-and-reuse.md"))
+	block := substringBetween(t, ref, "#### Directory spec-source guard", "2. Check for prior research")
 
 	assert.Contains(t, block, "If any resolved spec source is a local directory")
 	assert.Contains(t, block, "do not silently pick the first")
@@ -246,8 +248,9 @@ func TestPrintingPressSkillPreflightSmokeTestsGoStdlib(t *testing.T) {
 }
 
 func TestPrintingPressSkillDistinguishesBearerFromRawAPIKey(t *testing.T) {
-	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	block := substringBetween(t, skill, "### Pre-Generation Auth Enrichment", "**Why enrich before generation")
+	// Auth-enrichment guidance now lives in the phase-2 reference, not SKILL.md.
+	ref := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "phase-2-enrichments.md"))
+	block := substringBetween(t, ref, "### Pre-Generation Auth Enrichment", "**Why enrich before generation")
 
 	assert.Contains(t, block, "choose the security scheme by wire format")
 	assert.Contains(t, block, "Authorization: Bearer <token>")
@@ -265,9 +268,12 @@ func TestPrintingPressSkillDistinguishesBearerFromRawAPIKey(t *testing.T) {
 }
 
 func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
-	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	template := substringBetween(t, skill, "#### Verify-friendly RunE template", "If the command reads a file or directory")
-	starters := substringBetween(t, skill, "**Starter templates for novel commands.**", "For flat-only resources")
+	// The RunE template moved to the phase-3 build checklist; the novel-command
+	// starter templates moved to the phase-3 build guidance reference.
+	checklist := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "phase-3-build-checklist.md"))
+	guidance := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "phase-3-build-guidance.md"))
+	template := substringBetween(t, checklist, "#### Verify-friendly RunE template", "If the command reads a file or directory")
+	starters := substringBetween(t, guidance, "**Starter templates for novel commands.**", "For flat-only resources")
 
 	assert.Contains(t, template, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {")
 	assert.Regexp(t, regexp.MustCompile(`if len\(args\) == 0 && cmd\.Flags\(\)\.NFlag\(\) == 0 \{\s+return cmd\.Help\(\)\s+\}`), template)
@@ -298,8 +304,9 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 }
 
 func TestPrintingPressSkillRequiresScanAndFilterCaps(t *testing.T) {
-	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	block := substringBetween(t, skill, "12. **Scan-and-filter caps**", "#### Verify-friendly RunE template")
+	// Scan-and-filter cap guidance moved into the phase-3 build checklist.
+	ref := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "phase-3-build-checklist.md"))
+	block := substringBetween(t, ref, "12. **Scan-and-filter caps**", "#### Verify-friendly RunE template")
 
 	assert.Contains(t, block, `"list, filter locally, fan out to detail"`)
 	assert.Contains(t, block, "**`--max-scan-pages int`**")
@@ -411,7 +418,10 @@ func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.
 
 func TestPrintingPressSkillSetsNonCatalogCategoryBeforeGenerate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	block := substringBetween(t, skill, "### Pre-Generation Category Enrichment", "### Pre-Generation Auth Enrichment")
+	// Category-enrichment guidance moved to the phase-2 reference; the generate
+	// invocations stay resident in SKILL.md (Lock and Generate).
+	ref := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "phase-2-enrichments.md"))
+	block := substringBetween(t, ref, "### Pre-Generation Category Enrichment", "### Pre-Generation Auth Enrichment")
 	generateBlocks := substringBetween(t, skill, "OpenAPI / internal YAML:", "GraphQL-only APIs:")
 
 	assert.Contains(t, block, "non-catalog CLI")
