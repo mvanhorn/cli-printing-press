@@ -1093,7 +1093,7 @@ func normalizePackagedPublishMetadata(dir, category string) error {
 		}
 	}
 
-	return pipeline.WritePatchesIndex(dir, manifest.RunID, manifest.PrintingPressVersion)
+	return pipeline.EnsurePatchesDir(dir)
 }
 
 func isPublishPrinterSentinel(printer string) bool {
