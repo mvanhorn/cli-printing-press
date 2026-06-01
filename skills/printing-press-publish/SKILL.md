@@ -662,12 +662,21 @@ whichever is present:
 PATCHES_DIR="$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press-patches"
 PATCHES_INDEX="$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press-patches.json"
 if [ -d "$PATCHES_DIR" ]; then
-  # Per-patch directory: every <id>.json must be a JSON object with a numeric
-  # schema_version. _meta.json (CLI-global lists) and .gitkeep are exempt.
+  # Per-patch directory: every <id>.json must be a JSON object carrying the same
+  # provenance the legacy single-array file kept at its top level (now per file),
+  # so validation is at parity with the legacy branch below. _meta.json
+  # (CLI-global lists) and .gitkeep are exempt.
   for f in "$PATCHES_DIR"/*.json; do
     [ -e "$f" ] || continue
     [ "$(basename "$f")" = "_meta.json" ] && continue
-    if ! jq -e '(type == "object") and (.schema_version | type == "number")' "$f" >/dev/null; then
+    if ! jq -e '
+      (type == "object") and
+      (.schema_version | type == "number") and
+      (.id | type == "string" and length > 0) and
+      (.applied_at | type == "string" and length > 0) and
+      (.base_run_id | type == "string" and length > 0) and
+      (.base_printing_press_version | type == "string" and length > 0)
+    ' "$f" >/dev/null; then
       echo "ERROR: packaged CLI has a malformed patch file $f. Reprint with a current cli-printing-press binary before publishing."
       exit 1
     fi
