@@ -1351,6 +1351,7 @@
           "cancelled_at": {
             "type": "string",
             "format": "date-time",
+            "nullable": true,
             "example": "2022-02-01T00:00:00Z"
           },
           "created_at": {
@@ -1369,14 +1370,17 @@
           },
           "meeting_url": {
             "type": "string",
+            "nullable": true,
             "example": "https://zoom.us/j/949494949494"
           },
           "meeting_id": {
             "type": "string",
+            "nullable": true,
             "example": "fw44lkj48fks"
           },
           "questions": {
             "type": "array",
+            "nullable": true,
             "items": {
               "$ref": "#/components/schemas/Question"
             }
@@ -1385,6 +1389,7 @@
             "$ref": "#/components/schemas/Contact"
           },
           "payment": {
+            "nullable": true,
             "$ref": "#/components/schemas/Payment"
           }
         },
@@ -1415,6 +1420,7 @@
           "disabled_at": {
             "type": "string",
             "format": "date-time",
+            "nullable": true,
             "example": "2022-02-01T00:00:00Z"
           },
           "created_at": {
