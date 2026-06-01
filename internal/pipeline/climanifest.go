@@ -942,7 +942,6 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	}
 	if preserveExisting && p.RunID == "" && strings.TrimSpace(existing.RunID) != "" {
 		m.RunID = existing.RunID
-		runID = existing.RunID
 	}
 	if preserveExisting {
 		if p.Owner == "" && strings.TrimSpace(existing.Owner) != "" {
