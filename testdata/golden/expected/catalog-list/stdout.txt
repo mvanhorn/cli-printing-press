@@ -10,6 +10,7 @@ cloud:
 
 developer-tools:
   github               Software development platform API
+  google-colab         Manage Colab notebooks stored in Google Drive (Drive API v3) - list, open, copy, and share .ipynb / colaboratory files
   launchdarkly         Feature flag management - flags, environments, segments, experiments, audit logs
   postman-explore      Public API network directory for discovering community collections, workspaces, and APIs
 

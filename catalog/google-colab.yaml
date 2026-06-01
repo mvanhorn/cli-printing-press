@@ -1,0 +1,35 @@
+name: google-colab
+display_name: Google Colab
+description: Manage Colab notebooks stored in Google Drive (Drive API v3) - list, open, copy, and share .ipynb / colaboratory files
+category: developer-tools
+spec_url: https://api.apis.guru/v2/specs/googleapis.com/drive/v3/openapi.yaml
+spec_format: yaml
+openapi_version: "3.0"
+tier: community
+spec_source: community
+verified_date: "2026-06-01"
+homepage: https://developers.google.com/drive/api/reference/rest/v3
+auth_env_vars:
+  - GOOGLE_COLAB_ACCESS_TOKEN
+auth_key_url: https://console.cloud.google.com/apis/credentials
+auth_instructions: "Use a Drive-scoped OAuth2 token: gcloud auth print-access-token --scopes=https://www.googleapis.com/auth/drive"
+notes: |
+  Consumer Google Colab (colab.research.google.com) has no official public REST
+  API. Colab notebooks are Google Drive files with mimeType
+  application/vnd.google.colaboratory, openable in the browser at
+  https://colab.research.google.com/drive/<fileId>. This entry backs a Colab CLI
+  with the Drive API v3, the official, stable surface for managing those files.
+
+  The OpenAPI 3.0 spec is community-maintained on apis.guru, converted from
+  Google's Drive Discovery document (same provenance as google-cloud-run).
+
+  Auth is OAuth2 and the token must carry the Drive scope
+  (https://www.googleapis.com/auth/drive). A default
+  `gcloud auth print-access-token` (cloud-platform scope only) is rejected by the
+  Drive API; pass --scopes as shown in auth_instructions, or complete the
+  generated `login` OAuth flow.
+
+  Scope note: `generate google-colab` produces the Drive file/permission/comment
+  surface. The Colab-specific convenience commands (`colab list`, `colab open`)
+  are a hand-authored novel-feature layer added to the printed CLI after
+  generation, not generator output.
