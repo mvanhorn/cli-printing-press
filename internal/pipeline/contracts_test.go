@@ -90,6 +90,53 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 	}
 }
 
+func TestSkillsEnforceCurrencyFloor(t *testing.T) {
+	const floorURL = "https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt"
+
+	// The published floor file exists and declares a parseable semver minimum
+	// plus a reason the skills surface to the user.
+	floor := readContractFile(t, filepath.Join("..", "..", "supported-versions.txt"))
+	assert.Regexp(t, regexp.MustCompile(`(?m)^min_supported=\d+\.\d+\.\d+$`), floor,
+		"supported-versions.txt must declare min_supported=<major.minor.patch>")
+	assert.Regexp(t, regexp.MustCompile(`(?m)^reason=\S`), floor,
+		"supported-versions.txt must declare a non-empty reason")
+
+	// printing-press: the floor fetch is throttled by the version-check TTL, but
+	// the installed-vs-floor comparison runs every invocation (outside the
+	// _should_check gate) and only fires for a floor that is itself <= latest, so
+	// a bad floor above the newest release cannot brick every install.
+	pp := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	ppBlock := extractContractBlock(t, pp)
+	assert.Contains(t, ppBlock, floorURL)
+	assert.Contains(t, ppBlock, "[upgrade-required] printing-press")
+	assert.Contains(t, ppBlock, "PRESS_REQUIRED_MIN=")
+	assert.Contains(t, ppBlock, "PRESS_REQUIRED_INSTALLED=")
+	assert.Contains(t, ppBlock, "PRESS_REQUIRED_REASON=")
+	assert.Contains(t, ppBlock, `[ "$_press_repo" != "true" ] && [ -f "$PRESS_VERCHECK_FILE" ]`)
+	assert.Contains(t, ppBlock, `! _semver_lt "$_floor_latest" "$_floor_min"`)
+
+	// setup-checks.md documents the hard gate as upgrade-or-abort, distinct from
+	// the soft [upgrade-available] advisory.
+	checks := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "references", "setup-checks.md"))
+	assert.Contains(t, checks, "[upgrade-required]")
+	assert.Contains(t, checks, "PRESS_REQUIRED_MIN")
+	assert.Contains(t, checks, "Update required")
+	assert.Contains(t, checks, "no skip-and-continue")
+
+	// amend regenerates too, so it carries the same hard floor. Assert the full
+	// signal set inside the contract block (parity with printing-press) so the
+	// two independent copies cannot drift; the prose hard-gate is checked too.
+	amend := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"))
+	amendBlock := extractContractBlock(t, amend)
+	assert.Contains(t, amendBlock, floorURL)
+	assert.Contains(t, amendBlock, "[upgrade-required] printing-press")
+	assert.Contains(t, amendBlock, "PRESS_REQUIRED_MIN=")
+	assert.Contains(t, amendBlock, "PRESS_REQUIRED_INSTALLED=")
+	assert.Contains(t, amendBlock, "PRESS_REQUIRED_REASON=")
+	assert.Contains(t, amendBlock, `! _semver_lt "$_floor_latest" "$_floor_min"`)
+	assert.Contains(t, amend, "no skip-and-continue")
+}
+
 func TestSkillFilesHonorPrintingPressHomeEnv(t *testing.T) {
 	skillPaths, err := filepath.Glob(filepath.Join("..", "..", "skills", "*", "SKILL.md"))
 	require.NoError(t, err)

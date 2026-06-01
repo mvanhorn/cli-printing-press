@@ -98,12 +98,53 @@ PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
 PRESS_CURRENT="$PRESS_RUNSTATE/current"
 
 mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
+
+# --- Currency-floor check (standalone, fail-open) ---
+# Hard-stop on binaries below the published supported floor so amend does not
+# regenerate CLIs with since-fixed bugs. Repo checkouts build from source and
+# are exempt. The floor is clamped to <= latest so a bad value cannot brick
+# every install. Fetched fresh each run rather than reusing the printing-press
+# preflight's TTL cache: amend is low-frequency, so the bounded curl + go-list
+# cost is not worth its own cache here.
+if [ "$_press_repo" != "true" ] && command -v curl >/dev/null 2>&1; then
+  _semver_lt() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+      split(a, x, "."); split(b, y, ".")
+      for (i = 1; i <= 3; i++) {
+        if ((x[i] + 0) < (y[i] + 0)) exit 0
+        if ((x[i] + 0) > (y[i] + 0)) exit 1
+      }
+      exit 1
+    }'
+  }
+  _floor_installed=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
+  _floor_doc=$(curl -fsSL --max-time 5 \
+    https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt 2>/dev/null || true)
+  _floor_min=$(printf '%s\n' "$_floor_doc" | awk -F= '/^min_supported=/{print $2; exit}')
+  _floor_reason=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^reason=//p' | head -n 1)
+  _floor_latest=""
+  if command -v go >/dev/null 2>&1; then
+    _floor_latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | awk '/"Version":/{v=$2; gsub(/[",]/,"",v); sub(/^v/,"",v); print v; exit}')
+  fi
+  if [ -n "$_floor_min" ] && [ -n "$_floor_installed" ] && [ -n "$_floor_latest" ] &&
+     _semver_lt "$_floor_installed" "$_floor_min" &&
+     ! _semver_lt "$_floor_latest" "$_floor_min"; then
+    echo ""
+    echo "[upgrade-required] printing-press v$_floor_min is the minimum supported version (you have v$_floor_installed)"
+    echo "PRESS_REQUIRED_MIN=$_floor_min"
+    echo "PRESS_REQUIRED_INSTALLED=$_floor_installed"
+    echo "PRESS_REQUIRED_REASON=$_floor_reason"
+    echo ""
+  fi
+fi
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
 After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `cli-printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `cli-printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
 
 After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
+
+If the setup contract emitted an `[upgrade-required]` block, the installed binary is below the published **currency floor** (`PRESS_REQUIRED_MIN`) — older releases regenerate CLIs with since-fixed bugs (`PRESS_REQUIRED_REASON`). This is a hard gate distinct from `min-binary-version`: do not amend or regenerate on that binary. Offer a one-click upgrade via `AskUserQuestion` — **Yes — upgrade now** (run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest`, re-capture `PRINTING_PRESS_BIN`, then continue) or **Cancel** (stop the run). There is no skip-and-continue; below the floor the only paths are upgrade or abort. If the upgrade command fails, surface it and stop.
 
 ## Phase 0 — Input Mode Detection
 
