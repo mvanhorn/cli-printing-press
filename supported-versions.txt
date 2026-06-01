@@ -1,0 +1,14 @@
+# Currency floor for the printing-press generation skills.
+#
+# Bump `min_supported` to the lowest release that still produces good CLI
+# output. The generation skills fetch this file from `main` via
+# raw.githubusercontent at preflight, so a one-line change here takes effect for
+# every user within one version-check cycle (24h) — no binary release and no
+# skill release required.
+#
+# `min_supported` must be major.minor.patch. At runtime it is clamped to <= the
+# latest published release, so a typo above the newest version cannot brick
+# every install. Below the skill's frozen `min-binary-version` (the hard
+# compatibility floor) it has no effect — that floor always wins.
+min_supported=4.19.1
+reason=Releases below this version generate CLIs with since-fixed bugs; upgrade to regenerate cleanly.
