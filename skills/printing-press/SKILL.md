@@ -322,6 +322,21 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 PRESS_VERCHECK_FILE="$PRESS_HOME/.version-check"
 PRESS_VERCHECK_TTL=86400
 _now_ts=$(date +%s)
+
+# Strict-older semver compare on the first three components. Pre-release
+# suffixes collapse to their GA counterpart (acceptable: we ship no pre-release
+# tags).
+_semver_lt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, ".")
+    split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if ((x[i] + 0) < (y[i] + 0)) exit 0
+      if ((x[i] + 0) > (y[i] + 0)) exit 1
+    }
+    exit 1
+  }'
+}
 _should_check=true
 if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
   _last_ts=$(awk -F= '/^last_check=/{print $2}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
@@ -371,19 +386,22 @@ elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
     ')
   fi
 
-  if [ -n "$_installed" ] && [ -n "$_latest" ] &&
-     awk -v installed="$_installed" -v latest="$_latest" 'BEGIN {
-       split(installed, a, ".")
-       split(latest, b, ".")
-       # Integer truncation means pre-release suffixes (e.g. "4.0.0-rc.1") are
-       # treated as equal to their GA counterpart. Acceptable while we do not
-       # ship pre-release tags; revisit if that changes.
-       for (i = 1; i <= 3; i++) {
-         if ((a[i] + 0) < (b[i] + 0)) exit 0
-         if ((a[i] + 0) > (b[i] + 0)) exit 1
-       }
-       exit 1
-     }'; then
+  # Currency floor: the lowest release still considered safe to generate with,
+  # published out-of-band so maintainers can raise it without a binary or skill
+  # release. Fetched here (throttled by the TTL above) and cached for the
+  # always-run enforcement gate below.
+  _min_supported=""
+  _min_reason=""
+  if command -v curl >/dev/null 2>&1; then
+    _floor_doc=$(curl -fsSL --max-time 5 \
+      https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt 2>/dev/null || true)
+    if [ -n "$_floor_doc" ]; then
+      _min_supported=$(printf '%s\n' "$_floor_doc" | awk -F= '/^min_supported=/{print $2; exit}')
+      _min_reason=$(printf '%s\n' "$_floor_doc" | sed -nE 's/^reason=//p' | head -n 1)
+    fi
+  fi
+
+  if [ -n "$_installed" ] && [ -n "$_latest" ] && _semver_lt "$_installed" "$_latest"; then
     # Marker for the skill prose below to detect and offer an interactive upgrade.
     # The skill reads PRESS_UPGRADE_AVAILABLE / PRESS_UPGRADE_INSTALLED from this output.
     echo ""
@@ -393,7 +411,32 @@ elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
     echo ""
   fi
 
-  printf "last_check=%s\nlatest=%s\nmode=standalone\n" "$_now_ts" "${_latest:-$_installed}" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
+  printf "last_check=%s\nlatest=%s\nmode=standalone\nmin_supported=%s\nreason=%s\n" \
+    "$_now_ts" "${_latest:-$_installed}" "$_min_supported" "$_min_reason" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
+fi
+
+# --- Currency-floor enforcement (standalone, every run, fail-open) ---
+# The floor *fetch* above is throttled to once per TTL, but enforcement must run
+# every invocation: a fresh cache must never let a stale binary keep generating
+# CLIs with since-fixed bugs. Compare the always-fresh installed version against
+# the cached floor; the network is never touched here. Only enforce a floor that
+# is itself <= latest, so a typo'd or tampered floor above the newest release
+# cannot brick every install.
+if [ "$_press_repo" != "true" ] && [ -f "$PRESS_VERCHECK_FILE" ]; then
+  _floor_min=$(awk -F= '/^min_supported=/{print $2; exit}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  _floor_latest=$(awk -F= '/^latest=/{print $2; exit}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  _floor_reason=$(sed -nE 's/^reason=//p' "$PRESS_VERCHECK_FILE" 2>/dev/null | head -n 1)
+  _floor_installed=$("$PRINTING_PRESS_BIN" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
+  if [ -n "$_floor_min" ] && [ -n "$_floor_installed" ] && [ -n "$_floor_latest" ] &&
+     _semver_lt "$_floor_installed" "$_floor_min" &&
+     ! _semver_lt "$_floor_latest" "$_floor_min"; then
+    echo ""
+    echo "[upgrade-required] printing-press v$_floor_min is the minimum supported version (you have v$_floor_installed)"
+    echo "PRESS_REQUIRED_MIN=$_floor_min"
+    echo "PRESS_REQUIRED_INSTALLED=$_floor_installed"
+    echo "PRESS_REQUIRED_REASON=$_floor_reason"
+    echo ""
+  fi
 fi
 
 # --- Browser-sniff backend advisory (fail-open, every-run) ---
@@ -458,11 +501,11 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
 
 **Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `cli-printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `cli-printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/cli-printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `cli-printing-press generate ...` for readability — replace `cli-printing-press` with the captured absolute path each time you actually run one.
 
-Only after preflight completes successfully (no `[setup-error]`; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the Orientation & Briefing section below.
+Only after preflight completes successfully (no `[setup-error]`; no `[upgrade-required]` left unresolved — the user either upgraded or the run was aborted; no global skill update that requires restart; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the Orientation & Briefing section below.
 
 ## Orientation & Briefing
 
