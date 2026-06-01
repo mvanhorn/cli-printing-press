@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.20.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.19.1...v4.20.0) (2026-06-01)
+
+
+### Features
+
+* **catalog:** add tidycal ([#2565](https://github.com/mvanhorn/cli-printing-press/issues/2565)) ([683d849](https://github.com/mvanhorn/cli-printing-press/commit/683d849c430ae25cd632873e33e88be1cf0a4738))
+* **skills:** add currency-version floor that hard-blocks generation on stale binaries ([#2567](https://github.com/mvanhorn/cli-printing-press/issues/2567)) ([ef0ec66](https://github.com/mvanhorn/cli-printing-press/commit/ef0ec661c1d01618d61c39de72c1c33eb5e56083))
+
+
+### Bug Fixes
+
+* **cli:** exclude scalar-array and sampler endpoints from sync selection ([#2549](https://github.com/mvanhorn/cli-printing-press/issues/2549)) ([54ecd9e](https://github.com/mvanhorn/cli-printing-press/commit/54ecd9e5205012991335fd6096e8f29d2803f465))
+
 ## [4.19.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.19.0...v4.19.1) (2026-05-31)
 
 
