@@ -124,7 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: actions/setup-go@v6
         with:
@@ -136,15 +136,31 @@ jobs:
         run: go build ./...
 
   full-test:
-    name: full-test
+    name: full-test (${{ matrix.shard }})
     runs-on: ubuntu-latest
     needs: classify
     if: needs.classify.outputs.needs_tests == 'true'
     timeout-minutes: 20
+    # Shard the full (non-short) suite across the same package partition
+    # lint.yml uses so the queue's speculative re-run isn't pinned to one
+    # ~12m unsharded job. The union of the four shards is `go test ./...`;
+    # sharding by package is semantically identical because `go test`
+    # already runs each package in its own binary. fail-fast: false so one
+    # shard's failure still reports the others. The aggregate result feeds
+    # `build-and-test` via needs.full-test.result, so the required check
+    # name is unchanged.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: generator
+          - shard: pipeline
+          - shard: cli
+          - shard: rest
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: actions/setup-go@v6
         with:
@@ -153,7 +169,35 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Test
-        run: go test -timeout 15m ./...
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ matrix.shard }}" in
+            generator)
+              packages=(./internal/generator/...)
+              ;;
+            pipeline)
+              packages=(./internal/pipeline/...)
+              ;;
+            cli)
+              packages=(./internal/cli/...)
+              ;;
+            rest)
+              mapfile -t packages < <(go list ./... | grep -Ev '/internal/(generator|pipeline|cli)(/|$)')
+              ;;
+            *)
+              echo "unknown test shard: ${{ matrix.shard }}" >&2
+              exit 1
+              ;;
+          esac
+
+          printf 'Testing packages:\n'
+          printf '  %s\n' "${packages[@]}"
+
+          # No -short: main-ci is the full-coverage gate, unlike lint.yml's
+          # fast -short shards.
+          go test -timeout 15m "${packages[@]}"
 
   full-golden:
     name: full-golden
@@ -164,7 +208,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: actions/setup-go@v6
         with:
@@ -184,7 +228,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: actions/setup-go@v6
         with:
