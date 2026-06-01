@@ -239,6 +239,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"effectiveSubTier":       effectiveSubTier,
 		"add":                    func(a, b int) int { return a + b },
 		"oneline":                naming.OneLine,
+		"commandsummary":         naming.CommandSummary,
 		"composeMCPDesc":         composeMCPDesc,
 		"composeMCPSubDesc":      composeMCPSubDesc,
 		"mcpParamDesc":           g.mcpParamDescription,
@@ -777,11 +778,11 @@ func (g *Generator) compactDescription() string {
 func (g *Generator) skillDescription() string {
 	switch {
 	case g.Narrative != nil && strings.TrimSpace(g.Narrative.Headline) != "":
-		return naming.CompactDescription(g.Narrative.Headline)
+		return naming.SkillDescription(g.Narrative.Headline)
 	case g.Spec != nil && strings.TrimSpace(g.Spec.CLIDescription) != "":
-		return naming.CompactDescription(g.Spec.CLIDescription)
+		return naming.SkillDescription(g.Spec.CLIDescription)
 	case g.Spec != nil && strings.TrimSpace(g.Spec.Description) != "":
-		return fmt.Sprintf("Printing Press CLI for %s. %s", g.proseName(), naming.CompactDescription(g.Spec.Description))
+		return fmt.Sprintf("Printing Press CLI for %s. %s", g.proseName(), naming.SkillDescription(g.Spec.Description))
 	default:
 		return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
 	}

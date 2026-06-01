@@ -183,6 +183,38 @@ func TestCompactDescriptionPreservesHumanText(t *testing.T) {
 	}
 }
 
+func TestSkillDescriptionNoMidSentenceEllipsis(t *testing.T) {
+	// Long source copy is clamped at a word boundary, never cut mid-word with a
+	// trailing ellipsis (the pp-* "...and explore the..." defect).
+	long := "Docker Hub public API. Search container images, browse tags, check sizes, " +
+		"inspect Dockerfiles, and explore the public registry of community and official " +
+		"images across every namespace, including pull statistics, star counts, " +
+		"last-updated timestamps, and full repository metadata for any account worldwide."
+	got := SkillDescription(long)
+	if strings.Contains(got, "...") || strings.Contains(got, "…") {
+		t.Fatalf("SkillDescription appended an ellipsis: %q", got)
+	}
+	if strings.HasSuffix(got, ",") {
+		t.Fatalf("SkillDescription left a dangling comma: %q", got)
+	}
+	// A short, complete sentence is returned verbatim (no 120-char cap).
+	short := "Token-efficient TwinOrg backend access without flooding agent context."
+	if got := SkillDescription(short); got != short {
+		t.Fatalf("SkillDescription(%q) = %q, want unchanged", short, got)
+	}
+}
+
+func TestCommandSummaryFirstSentence(t *testing.T) {
+	in := "Returns information about an aircraft type, given an ICAO aircraft type designator string. Data returned includes the manufacturer and model."
+	want := "Returns information about an aircraft type, given an ICAO aircraft type designator string."
+	if got := CommandSummary(in); got != want {
+		t.Fatalf("CommandSummary(%q) = %q, want %q", in, got, want)
+	}
+	if got := CommandSummary(strings.Repeat("widget ", 60)); strings.Contains(got, "...") || strings.Contains(got, "…") {
+		t.Fatalf("CommandSummary appended an ellipsis: %q", got)
+	}
+}
+
 func TestMCPDescription(t *testing.T) {
 	tests := []struct {
 		name        string

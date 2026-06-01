@@ -135,12 +135,12 @@ This CLI was generated with browser-observed traffic context.
 
 ## Command Reference
 {{range $name, $resource := .Resources}}
-**{{$name}}** — {{$resource.Description}}
+**{{$name}}** — {{commandsummary $resource.Description}}
 {{range $eName, $endpoint := $resource.Endpoints}}
 {{- if index $.PromotedResourceNames $name}}
-- `{{$.Name}}-pp-cli {{$name}}{{positionalArgs $endpoint}}` — {{oneline $endpoint.Description}}
+- `{{$.Name}}-pp-cli {{$name}}{{positionalArgs $endpoint}}` — {{commandsummary $endpoint.Description}}
 {{- else}}
-- `{{$.Name}}-pp-cli {{$name}} {{$eName}}` — {{oneline $endpoint.Description}}
+- `{{$.Name}}-pp-cli {{$name}} {{$eName}}` — {{commandsummary $endpoint.Description}}
 {{- end}}
 {{- end}}
 {{end}}
@@ -148,7 +148,7 @@ This CLI was generated with browser-observed traffic context.
 
 **Hand-written commands**
 {{range .ExtraCommands}}
-- `{{$.Name}}-pp-cli {{.Name}}{{if .Args}} {{.Args}}{{end}}` — {{oneline .Description}}
+- `{{$.Name}}-pp-cli {{.Name}}{{if .Args}} {{.Args}}{{end}}` — {{commandsummary .Description}}
 {{- end}}
 {{end}}
 {{- if and .HasDataLayer .Cache.Enabled}}

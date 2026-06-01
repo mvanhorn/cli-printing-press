@@ -239,6 +239,61 @@ func truncateOneLine(s string) string {
 	return s
 }
 
+// SkillDescription normalizes copy for the SKILL.md frontmatter `description:`
+// field (and the catalog skill description). Unlike CompactDescription it does
+// NOT hard-truncate at 120 chars and never appends an ellipsis: the skill
+// description must read as a complete sentence (the generator appends trigger
+// phrases after it), so a mid-sentence cut produces the truncation defect the
+// pp-* family shipped (e.g. "...and explore the..."). Very long source copy is
+// clamped at a sentence/word boundary within a generous budget instead.
+func SkillDescription(s string) string {
+	s = stripLeadingMarkdownHeading(s)
+	s = collapseWhitespace(s)
+	return clampNoEllipsis(s, 320)
+}
+
+// CommandSummary renders a single Command Reference line: the first complete
+// sentence of an endpoint/resource description, normalized to one line. It
+// never cuts mid-word or appends an ellipsis (the command-reference truncation
+// defect, e.g. "Data returned includes..."). Falls back to a clean word-
+// boundary clamp when there is no early sentence break.
+func CommandSummary(s string) string {
+	return firstSentence(OneLineNormalize(s), 200)
+}
+
+// firstSentence returns the first sentence of s (text through the first '.',
+// '!' or '?' that is followed by a space or end-of-string) when it fits within
+// budget; otherwise it clamps at a word boundary within budget. Never appends
+// an ellipsis.
+func firstSentence(s string, budget int) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c == '.' || c == '!' || c == '?' {
+			if i+1 >= len(s) || s[i+1] == ' ' {
+				sentence := strings.TrimSpace(s[:i+1])
+				if len(sentence) > 0 && len(sentence) <= budget {
+					return sentence
+				}
+				break
+			}
+		}
+	}
+	return clampNoEllipsis(s, budget)
+}
+
+// clampNoEllipsis returns s unchanged when within budget; otherwise it trims to
+// the last word boundary at or before budget and strips trailing punctuation,
+// producing a clean clause with no mid-word cut and no trailing "...".
+func clampNoEllipsis(s string, budget int) string {
+	if len(s) <= budget {
+		return s
+	}
+	cut := s[:budget]
+	if idx := strings.LastIndex(cut, " "); idx > budget/2 {
+		cut = cut[:idx]
+	}
+	return strings.TrimRight(cut, " ,;:")
+}
+
 func stripLeadingMarkdownHeading(s string) string {
 	normalized := strings.ReplaceAll(s, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
