@@ -41,7 +41,7 @@ Turn a dogfood session into a PR for a printed CLI in the public library.
 
 This skill lives in this repo (the machine) and acts on a printed CLI in the public library. It is sibling to `/printing-press-publish` (adds a new CLI), `/printing-press-polish` (improves a CLI pre-publish), and `/printing-press-retro` (reflects on the machine itself). None of those cover post-publish CLI amendments driven by real-session friction.
 
-The artifact this skill produces is semantically a "patch" (in the git/PR sense), tracked by the public library's `.printing-press-patches.json` manifest. Inline `// PATCH(...)` source comments are optional navigation aids when they make a customized site easier to grep. The slash-skill name is `amend` to disambiguate from the existing `cli-printing-press patch` binary subcommand (which AST-injects pre-defined features — different mechanism, different intent).
+The artifact this skill produces is semantically a "patch" (in the git/PR sense), tracked by the public library's `.printing-press-patches/` directory (one file per patch). Inline `// PATCH(...)` source comments are optional navigation aids when they make a customized site easier to grep. The slash-skill name is `amend` to disambiguate from the existing `cli-printing-press patch` binary subcommand (which AST-injects pre-defined features — different mechanism, different intent).
 
 ## Setup
 
@@ -543,11 +543,15 @@ For each finding in dependency order:
    }
    ```
 
-3. Update `$CLI_DIR/.printing-press-patches.json`. Append an entry under `patches[]`:
+3. Create one patch file `$CLI_DIR/.printing-press-patches/<id>.json` (filename = the patch `id`). Each file is a single self-contained patch object — one file per patch, so concurrent amend PRs on the same CLI never conflict on patch metadata:
 
    ```json
    {
+     "schema_version": 2,
      "id": "<api-slug>-refresh-token-expiry",
+     "applied_at": "<YYYY-MM-DD>",
+     "base_run_id": "<copy from .printing-press.json>",
+     "base_printing_press_version": "<copy from .printing-press.json>",
      "summary": "fix(superhuman): surface refresh-token expiry; add drafts new + --type sent",
      "reason": "The generated CLI hid an expired refresh token and omitted a workflow flag needed by the live API.",
      "files": [
@@ -559,6 +563,8 @@ For each finding in dependency order:
      "findings_addressed": ["F1", "F2", "F5", "F7"]
    }
    ```
+
+   If the CLI still ships the legacy single-array `.printing-press-patches.json` (older print, not yet normalized), still write your entry as a new `.printing-press-patches/<id>.json` file — the public library's normalize-patches workflow merges the two post-merge. Do not append to the legacy array.
 
    If you add `// PATCH(...)` comments, you may also include a `patch_count`
    field for reviewer convenience. Do not add `patch_count` when no source
@@ -578,7 +584,7 @@ For each finding in dependency order:
    }
    ```
 
-   The `.printing-press-patches.json` entry is mandatory for code-level customizations. Inline `// PATCH(...)` source comments are optional navigation aids; the public library verifier no longer enforces a marker/comment pairing. See `~/printing-press-library/AGENTS.md` for the authoritative spec.
+   The `.printing-press-patches/<id>.json` patch file is mandatory for code-level customizations. Inline `// PATCH(...)` source comments are optional navigation aids; the public library verifier no longer enforces a marker/comment pairing. See `~/printing-press-library/AGENTS.md` for the authoritative spec.
 
    Use `deferred_to_upstream` only when the patch intentionally leaves a future supersession path: a public API endpoint is missing today, the command relies on an unofficial host or alternate auth source, a live response shape drifted from generator assumptions, or the fix would become unnecessary once the Printing Press learns the pattern. In those cases, search `mvanhorn/cli-printing-press` issues first; reuse a matching issue or open one before the library PR, then set `upstream_issue` to that URL. Do not leave a machine-level or API-publication dependency only in the PR body.
 
@@ -586,7 +592,7 @@ For each finding in dependency order:
 
    > "Finding F5 (`--type sent` missing) looks like a machine-level fix — the generator template `internal/generator/templates/threads.go.tmpl` should emit it for every CLI with this endpoint shape, not just `<slug>-pp-cli`. Defer to a `/printing-press-retro` follow-up, or proceed CLI-specific?"
 
-   When deferred, drop into the deferred-list with classification `machine-level`. When kept because the printed CLI needs a narrow fix now, and the patch still carries a future supersession path, create or reuse the upstream Printing Press issue before opening the library PR, add the issue URL to `.printing-press-patches.json`, and add a `deferred_to_upstream` item naming the machine-level or upstream-API condition that should supersede the local patch.
+   When deferred, drop into the deferred-list with classification `machine-level`. When kept because the printed CLI needs a narrow fix now, and the patch still carries a future supersession path, create or reuse the upstream Printing Press issue before opening the library PR, add the issue URL to the patch's `.printing-press-patches/<id>.json`, and add a `deferred_to_upstream` item naming the machine-level or upstream-API condition that should supersede the local patch.
 
 ### Step 4 — Validate
 
@@ -614,10 +620,21 @@ Surface the final error log to the user, do NOT auto-open the PR, exit. The user
 
 ### Step 6 — Check the patch manifest
 
+This amend run must have recorded at least one patch — a `<id>.json` under
+`.printing-press-patches/` (the directory layout), or, only for a CLI not yet
+normalized, a non-empty `patches[]` in the legacy `.printing-press-patches.json`.
+
 ```bash
-jq -e '(.patches | type == "array") and (.patches | length > 0)' "$CLI_DIR/.printing-press-patches.json" >/dev/null
-if [ $? -ne 0 ]; then
-  echo "ERROR: .printing-press-patches.json must contain at least one patch entry for this amend run."
+dir_count=0
+if [ -d "$CLI_DIR/.printing-press-patches" ]; then
+  dir_count=$(find "$CLI_DIR/.printing-press-patches" -maxdepth 1 -name '*.json' ! -name '_meta.json' | wc -l | tr -d ' ')
+fi
+legacy_count=0
+if [ -f "$CLI_DIR/.printing-press-patches.json" ]; then
+  legacy_count=$(jq '(.patches // []) | length' "$CLI_DIR/.printing-press-patches.json")
+fi
+if [ "$dir_count" -eq 0 ] && [ "$legacy_count" -eq 0 ]; then
+  echo "ERROR: this amend run must record at least one patch under .printing-press-patches/ (or the legacy .printing-press-patches.json)."
   exit 1
 fi
 ```
@@ -680,7 +697,7 @@ PR body sections (per origin R27):
 2. **Findings** — table with ID, category, type (bug/feature), rationale
 3. **Changes** — output of `git diff --stat upstream/main..HEAD`
 4. **Verification** — build/test/dogfood/validate status from Phase 4
-5. **Evidence** — full GitHub URLs to the per-run plan doc and `.printing-press-patches.json` at the PR's HEAD SHA (captured AFTER push so links don't 404)
+5. **Evidence** — full GitHub URLs to the per-run plan doc and the `.printing-press-patches/` directory at the PR's HEAD SHA (captured AFTER push so links don't 404)
 6. **Closes #N** footer when an issue match was found in Step 6 of `library-pr-plumbing.md`
 
 Labels: `comp:<api-slug>` always; `priority:P1` for bugs-only scope, `priority:P2` for bugs+features, `priority:P3` for all-tiers.

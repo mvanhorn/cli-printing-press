@@ -8,7 +8,7 @@
 
 # Provenance manifest: slug, mcp binary name, mcp tool counts.
 learn-loop-example/.printing-press.json
-learn-loop-example/.printing-press-patches.json
+learn-loop-example/.printing-press-patches/.gitkeep
 learn-loop-example/manifest.json
 
 # Spec-derived per-CLI init shim: newLearnConfig() bakes the ticker

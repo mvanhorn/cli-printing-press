@@ -37,25 +37,21 @@ For install, auth, examples, and longer product guidance, read `README.md` and `
 
 ## Local Customizations
 
-If you modify this CLI beyond what the generator produced, record each customization in a `.printing-press-patches.json` at this CLI's root (parallel to `.printing-press.json`) so the change isn't lost on the next regen and is visible to the next reader.
+If you modify this CLI beyond what the generator produced, record each customization as one file per patch under `.printing-press-patches/` at this CLI's root (parallel to `.printing-press.json`) so the change isn't lost on the next regen and is visible to the next reader. One file per patch (`.printing-press-patches/<id>.json`) means two concurrent PRs never conflict on patch metadata.
 
 Minimum shape:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "id": "short-identifier",
   "applied_at": "YYYY-MM-DD",
   "base_run_id": "<copy from .printing-press.json>",
   "base_printing_press_version": "<copy from .printing-press.json>",
-  "patches": [
-    {
-      "id": "short-identifier",
-      "summary": "What changed (one sentence).",
-      "reason": "Why this customization was needed (one or two sentences).",
-      "files": ["internal/cli/foo.go"],
-      "validated_outcome": "Optional: non-obvious test result that confirms the fix."
-    }
-  ]
+  "summary": "What changed (one sentence).",
+  "reason": "Why this customization was needed (one or two sentences).",
+  "files": ["internal/cli/foo.go"],
+  "validated_outcome": "Optional: non-obvious test result that confirms the fix."
 }
 ```
 
@@ -63,6 +59,7 @@ Use `deferred_to_upstream` when a local patch is a temporary bridge for a missin
 
 ```json
 {
+  "schema_version": 2,
   "id": "temporary-bridge",
   "summary": "What changed (one sentence).",
   "reason": "Why this customization was needed (one or two sentences).",
@@ -78,6 +75,6 @@ Use `deferred_to_upstream` when a local patch is a temporary bridge for a missin
 }
 ```
 
-This file is an **index of customizations**, not a second copy of the diff. Diffs live in `git`; the manifest is what tells the next agent (or regeneration tooling) what was customized and why. Keep `summary` and `reason` short -- if you find yourself writing tables of field renames or code transformations, that detail belongs in the commit message, not here.
+These entries are an **index of customizations**, not a second copy of the diff. Diffs live in `git`; the directory is what tells the next agent (or regeneration tooling) what was customized and why. Keep `summary` and `reason` short -- if you find yourself writing tables of field renames or code transformations, that detail belongs in the commit message, not here.
 
 Inline `// PATCH:` source comments are optional. If you find them helpful as a navigation aid (`grep -rn 'PATCH' .` surfaces customized sites), feel free to add them -- but they aren't required and aren't enforced by any CI.

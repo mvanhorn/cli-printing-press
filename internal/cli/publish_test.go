@@ -737,6 +737,7 @@ func TestPublishPackageBackfillsPatchesIndexForLegacyCLI(t *testing.T) {
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
 	writePublishableTestCLI(t, cliDir)
 	require.NoFileExists(t, filepath.Join(cliDir, pipeline.PatchesIndexFilename))
+	require.NoDirExists(t, filepath.Join(cliDir, pipeline.PatchesDirName))
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
@@ -748,17 +749,11 @@ func TestPublishPackageBackfillsPatchesIndexForLegacyCLI(t *testing.T) {
 	var result PackageResult
 	require.NoError(t, json.Unmarshal([]byte(output), &result))
 
-	data, err := os.ReadFile(filepath.Join(result.StagedDir, pipeline.PatchesIndexFilename))
-	require.NoError(t, err)
-
-	var idx pipeline.PatchesIndex
-	require.NoError(t, json.Unmarshal(data, &idx))
-	assert.Equal(t, pipeline.CurrentPatchesIndexSchemaVersion, idx.SchemaVersion)
-	assert.Equal(t, "20260301-000000", idx.BaseRunID)
-	assert.Equal(t, "test-version", idx.BasePrintingPressVersion)
-	assert.NotNil(t, idx.Patches)
-	assert.Empty(t, idx.Patches)
-	assert.Contains(t, string(data), `"patches": []`)
+	// A legacy CLI with no patches index gets the empty per-patch directory
+	// backfilled (kept by .gitkeep), not the legacy single-array file.
+	gitkeep := filepath.Join(result.StagedDir, pipeline.PatchesDirName, pipeline.PatchesGitKeepName)
+	require.FileExists(t, gitkeep)
+	require.NoFileExists(t, filepath.Join(result.StagedDir, pipeline.PatchesIndexFilename))
 }
 
 func TestPublishPackageNormalizesManifestCategoryToPublishCategory(t *testing.T) {

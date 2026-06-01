@@ -154,37 +154,50 @@ func TestWriteCLIManifestNonexistentDir(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestWritePatchesIndex(t *testing.T) {
+func TestEnsurePatchesDir(t *testing.T) {
 	dir := t.TempDir()
 
-	err := WritePatchesIndex(dir, "20260517-091036", "4.8.0")
+	err := EnsurePatchesDir(dir)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(filepath.Join(dir, PatchesIndexFilename))
+	// Fresh print ships the empty per-patch directory kept by a .gitkeep, and
+	// must NOT leave behind the legacy single-array file.
+	info, err := os.Stat(filepath.Join(dir, PatchesDirName))
 	require.NoError(t, err)
+	assert.True(t, info.IsDir(), "%s should be a directory", PatchesDirName)
 
-	var idx PatchesIndex
-	require.NoError(t, json.Unmarshal(data, &idx))
+	_, err = os.Stat(filepath.Join(dir, PatchesDirName, PatchesGitKeepName))
+	assert.NoError(t, err, ".gitkeep should keep the empty dir tracked")
 
-	assert.Equal(t, 1, idx.SchemaVersion)
-	assert.Equal(t, "20260517-091036", idx.BaseRunID)
-	assert.Equal(t, "4.8.0", idx.BasePrintingPressVersion)
-	assert.NotNil(t, idx.Patches, "Patches should be non-nil (empty slice) so JSON serializes as [] not null")
-	assert.Empty(t, idx.Patches)
-	assert.Regexp(t, `^\d{4}-\d{2}-\d{2}$`, idx.AppliedAt, "applied_at should be YYYY-MM-DD")
-
-	// Verify the raw JSON serializes patches as [], not null — empty
-	// arrays are what the library verifier expects, and []json.RawMessage{}
-	// is what produces that shape (vs nil → null).
-	assert.Contains(t, string(data), `"patches": []`)
+	_, err = os.Stat(filepath.Join(dir, PatchesIndexFilename))
+	assert.True(t, os.IsNotExist(err), "legacy single-array file must not be emitted")
 }
 
-func TestWritePatchesIndexPreservesExisting(t *testing.T) {
+func TestEnsurePatchesDirPreservesExistingDir(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, PatchesIndexFilename)
+	patchesDir := filepath.Join(dir, PatchesDirName)
+	require.NoError(t, os.Mkdir(patchesDir, 0o755))
 
-	// Pre-create a populated index (simulating an agent that already
-	// applied an in-session patch to the generated CLI).
+	// Pre-place an agent-authored patch file.
+	patch := []byte(`{"schema_version": 2, "id": "test-patch", "summary": "preserved across regen"}` + "\n")
+	patchPath := filepath.Join(patchesDir, "test-patch.json")
+	require.NoError(t, os.WriteFile(patchPath, patch, 0o644))
+
+	// Regen must not clobber it (no .gitkeep churn either).
+	require.NoError(t, EnsurePatchesDir(dir))
+
+	got, err := os.ReadFile(patchPath)
+	require.NoError(t, err)
+	assert.Equal(t, patch, got, "existing patch file must be preserved byte-for-byte on regen")
+}
+
+func TestEnsurePatchesDirPreservesLegacyFile(t *testing.T) {
+	dir := t.TempDir()
+	legacyPath := filepath.Join(dir, PatchesIndexFilename)
+
+	// A CLI that still ships the legacy single-array file (older Press, or one
+	// not yet normalized) must be left untouched — the public library converts
+	// it post-merge, not the generator.
 	preExisting := []byte(`{
   "schema_version": 1,
   "applied_at": "2026-01-15",
@@ -195,19 +208,19 @@ func TestWritePatchesIndexPreservesExisting(t *testing.T) {
   ]
 }
 `)
-	require.NoError(t, os.WriteFile(path, preExisting, 0o644))
+	require.NoError(t, os.WriteFile(legacyPath, preExisting, 0o644))
 
-	// Call WritePatchesIndex with different values — must NOT overwrite.
-	err := WritePatchesIndex(dir, "20260517-091036", "4.8.0")
-	require.NoError(t, err)
+	require.NoError(t, EnsurePatchesDir(dir))
 
-	got, err := os.ReadFile(path)
+	got, err := os.ReadFile(legacyPath)
 	require.NoError(t, err)
-	assert.Equal(t, preExisting, got, "existing patches index must be preserved byte-for-byte on regen")
+	assert.Equal(t, preExisting, got, "existing legacy patches file must be preserved byte-for-byte on regen")
+	_, err = os.Stat(filepath.Join(dir, PatchesDirName))
+	assert.True(t, os.IsNotExist(err), "must not create the directory alongside a preserved legacy file")
 }
 
-func TestWritePatchesIndexNonexistentDir(t *testing.T) {
-	err := WritePatchesIndex("/nonexistent/path/that/does/not/exist", "run", "version")
+func TestEnsurePatchesDirNonexistentDir(t *testing.T) {
+	err := EnsurePatchesDir("/nonexistent/path/that/does/not/exist")
 	assert.Error(t, err)
 }
 
@@ -226,22 +239,16 @@ func TestWriteManifestForGenerateEmitsPatchesIndex(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Both manifest siblings must land. (MCPB manifest.json is conditional
-	// on populated MCP metadata, which this minimal test doesn't trigger;
-	// the existing TestWriteManifestForGenerateWithSpecURL siblings cover
-	// MCPB-emit cases.)
-	for _, fname := range []string{CLIManifestFilename, PatchesIndexFilename} {
-		_, err := os.Stat(filepath.Join(dir, fname))
-		assert.NoError(t, err, "expected %s to exist after WriteManifestForGenerate", fname)
-	}
-
-	// Patches index has the right shape and the run-ID flows through.
-	data, err := os.ReadFile(filepath.Join(dir, PatchesIndexFilename))
-	require.NoError(t, err)
-	var idx PatchesIndex
-	require.NoError(t, json.Unmarshal(data, &idx))
-	assert.Equal(t, "20260517-091036", idx.BaseRunID)
-	assert.Equal(t, version.Version, idx.BasePrintingPressVersion)
+	// The CLI manifest and the per-patch directory (kept by .gitkeep) must land.
+	// (MCPB manifest.json is conditional on populated MCP metadata, which this
+	// minimal test doesn't trigger; the existing TestWriteManifestForGenerateWithSpecURL
+	// siblings cover MCPB-emit cases.)
+	_, err = os.Stat(filepath.Join(dir, CLIManifestFilename))
+	assert.NoError(t, err, "expected %s to exist after WriteManifestForGenerate", CLIManifestFilename)
+	_, err = os.Stat(filepath.Join(dir, PatchesDirName, PatchesGitKeepName))
+	assert.NoError(t, err, "expected %s/%s to exist after WriteManifestForGenerate", PatchesDirName, PatchesGitKeepName)
+	_, err = os.Stat(filepath.Join(dir, PatchesIndexFilename))
+	assert.True(t, os.IsNotExist(err), "fresh print must not emit the legacy single-array file")
 }
 
 func TestWriteManifestForGeneratePreservesPatchesIndexOnRegen(t *testing.T) {
@@ -249,29 +256,29 @@ func TestWriteManifestForGeneratePreservesPatchesIndexOnRegen(t *testing.T) {
 	specContent := []byte(`{"openapi": "3.0.0", "info": {"title": "Test"}}`)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.json"), specContent, 0o644))
 
-	// First generate.
+	// First generate, then drop an agent-authored patch file into the dir.
 	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
 		APIName:   "test-api",
 		SpecSrcs:  []string{"https://example.com/openapi.json"},
 		OutputDir: dir,
 		RunID:     "20260517-091036",
 	}))
-	patchesPath := filepath.Join(dir, PatchesIndexFilename)
-	firstContent, err := os.ReadFile(patchesPath)
-	require.NoError(t, err)
+	patchPath := filepath.Join(dir, PatchesDirName, "test-patch.json")
+	patch := []byte(`{"schema_version": 2, "id": "test-patch", "summary": "survives regen"}` + "\n")
+	require.NoError(t, os.WriteFile(patchPath, patch, 0o644))
 
-	// Second generate (simulates `generate --force` regen) with different
-	// run-ID — patches index must be preserved byte-for-byte.
+	// Second generate (simulates `generate --force` regen) with a different
+	// run-ID — the agent-authored patch file must be preserved byte-for-byte.
 	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
 		APIName:   "test-api",
 		SpecSrcs:  []string{"https://example.com/openapi.json"},
 		OutputDir: dir,
 		RunID:     "20260601-120000",
 	}))
-	secondContent, err := os.ReadFile(patchesPath)
+	secondContent, err := os.ReadFile(patchPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, firstContent, secondContent, "patches index must survive regen unchanged")
+	assert.Equal(t, patch, secondContent, "agent-authored patch file must survive regen unchanged")
 }
 
 func TestSyncCLIManifestNovelFeaturesPreservesManifestContract(t *testing.T) {

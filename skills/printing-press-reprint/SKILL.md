@@ -112,31 +112,60 @@ hand-off prompt notes that this is a degraded reprint.
 
 ### Patches discovery
 
-Refresh the local patches file from public when reachable, then read
+Refresh the local patches index from public when reachable, then read
 locally so downstream references are durable. Amends may have landed
-against the public copy without triggering a regen, so the local file
-can lag even when `run_id` matches; this step closes that gap. The fetch
-writes to a temp file and atomically renames on success, so a partial
-transfer never replaces a good local copy.
+against the public copy without triggering a regen, so the local copy
+can lag even when `run_id` matches; this step closes that gap.
+
+The index ships in one of two shapes: the per-patch directory
+`.printing-press-patches/` (current) or the legacy single-array
+`.printing-press-patches.json` (older CLIs not yet normalized). Prefer the
+directory; fall back to the legacy file.
 
 ```bash
-PATCHES_SOURCE="$LIB_TARGET/.printing-press-patches.json"
+PATCHES_DIR="$LIB_TARGET/.printing-press-patches"
+PATCHES_LEGACY="$LIB_TARGET/.printing-press-patches.json"
 if [[ -n "$LIB_PATH" ]]; then
-  PATCHES_TMP=$(mktemp)
-  if gh api -H "Accept: application/vnd.github.v3.raw" \
-       "repos/mvanhorn/printing-press-library/contents/$LIB_PATH/.printing-press-patches.json" \
-       > "$PATCHES_TMP" 2>/dev/null; then
-    mv "$PATCHES_TMP" "$PATCHES_SOURCE"
+  listing=$(gh api "repos/mvanhorn/printing-press-library/contents/$LIB_PATH/.printing-press-patches" 2>/dev/null || true)
+  if jq -e 'type == "array"' <<<"$listing" >/dev/null 2>&1; then
+    mkdir -p "$PATCHES_DIR"
+    jq -r '.[] | select(.name | endswith(".json")) | "\(.name)\t\(.download_url)"' <<<"$listing" \
+    | while IFS=$'\t' read -r name url; do
+        tmp=$(mktemp)
+        if curl -fsSL "$url" -o "$tmp" 2>/dev/null; then
+          mv "$tmp" "$PATCHES_DIR/$name"   # atomic: a dropped transfer never leaves corrupt JSON
+        else
+          rm -f "$tmp"
+        fi
+      done
   else
-    rm -f "$PATCHES_TMP"
+    tmp=$(mktemp)
+    if gh api -H "Accept: application/vnd.github.v3.raw" \
+         "repos/mvanhorn/printing-press-library/contents/$LIB_PATH/.printing-press-patches.json" \
+         > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$PATCHES_LEGACY"
+    else
+      rm -f "$tmp"
+    fi
   fi
 fi
-PATCH_COUNT=$(jq '.patches | length' "$PATCHES_SOURCE" 2>/dev/null || echo 0)
+
+# Count from whichever shape is present locally; PATCHES_SOURCE is what Phase D reads.
+if [[ -d "$PATCHES_DIR" ]]; then
+  PATCH_COUNT=$(find "$PATCHES_DIR" -maxdepth 1 -name '*.json' ! -name '_meta.json' | wc -l | tr -d ' ')
+  PATCHES_SOURCE="$PATCHES_DIR"
+elif [[ -f "$PATCHES_LEGACY" ]]; then
+  PATCH_COUNT=$(jq '(.patches // []) | length' "$PATCHES_LEGACY" 2>/dev/null || echo 0)
+  PATCHES_SOURCE="$PATCHES_LEGACY"
+else
+  PATCH_COUNT=0
+  PATCHES_SOURCE="$PATCHES_DIR"
+fi
 ```
 
-If `$PATCH_COUNT == 0` or the file is missing entirely (older CLI
-predating the patches contract), skip the rest of this subsection — no
-patches block in the hand-off.
+If `$PATCH_COUNT == 0` or no index is present (older CLI predating the
+patches contract), skip the rest of this subsection — no patches block in
+the hand-off.
 
 If `$PATCH_COUNT > 0`, surface a one-liner to the user before continuing:
 
@@ -319,8 +348,10 @@ Invoke `/printing-press <api>` and bundle these into the prompt:
    Close the section with a pointer so a downstream agent can drill into
    any specific patch when working in the relevant area:
 
-   > Full patch detail: `$PATCHES_SOURCE`. Schema:
-   > `PatchesIndex` in `internal/pipeline/climanifest.go`.
+   > Full patch detail: the per-patch files under `$PATCHES_SOURCE`
+   > (each `<id>.json` is one self-contained patch; the legacy
+   > single-array `.printing-press-patches.json` carries the same fields
+   > under `patches[]`).
 
 Do **not** pass a separate "this is a reprint" marker. The novel-features
 subagent runs unconditionally on every print and discovers prior research
