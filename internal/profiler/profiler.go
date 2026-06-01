@@ -482,12 +482,15 @@ func Profile(s *spec.APISpec) *APIProfile {
 				} else if standaloneList {
 					addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 				}
-			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s)) && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) {
+			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s)) && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) && !isSamplerEndpoint(endpoint) && !isScalarItemArray(endpoint.Response) {
 				// Catch-all for simple GET collection endpoints that isListEndpoint
 				// didn't recognise (e.g., response is an untyped object with no
 				// wrapper field defined in the spec's types map).
 				// Only include endpoints whose name suggests a collection (list, all,
 				// index, etc.) — exclude singular getters like "get" or "show".
+				// Re-apply the sampler and scalar-array guards here: this branch runs
+				// when isListEndpoint returned false, so without them a collection-named
+				// sampler/scalar-array endpoint would be re-admitted past those gates.
 				addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 			}
 
@@ -857,8 +860,38 @@ func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
 	return false
 }
 
+// samplerPathSegments mark endpoints that return a non-deterministic sample
+// rather than a stable, ordered collection. Each call yields a fresh full set,
+// so page-based pagination never reaches a natural end and a sync loop runs
+// forever. They are excluded from syncable list selection.
+var samplerPathSegments = []string{"random", "shuffle", "sample"}
+
+// isSamplerEndpoint reports whether the endpoint path marks a non-deterministic
+// sampler (e.g. /assets/random) that must not be treated as a paginated list.
+func isSamplerEndpoint(endpoint spec.Endpoint) bool {
+	for _, segment := range staticPathSegments(endpoint.Path) {
+		if slices.Contains(samplerPathSegments, strings.ToLower(segment)) {
+			return true
+		}
+	}
+	return false
+}
+
 func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
 	method := strings.ToUpper(endpoint.Method)
+
+	// A sampler endpoint returns a fresh random page every call; paginating it
+	// never terminates. Exclude it regardless of response shape or pagination.
+	if isSamplerEndpoint(endpoint) {
+		return false
+	}
+
+	// An array of scalars has no extractable primary key, so it can never
+	// populate the store. Exclude it even when paginated, since the
+	// Pagination short-circuit below would otherwise admit it.
+	if isScalarItemArray(endpoint.Response) {
+		return false
+	}
 
 	if method == "POST" {
 		return endpoint.Pagination != nil &&
@@ -879,8 +912,29 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 	return looksLikeBasicGetListEndpoint(strings.ToLower(name))
 }
 
+// scalarItemTypes are the response-array element type names the parser emits
+// for primitive (non-object) items via schemaTypeName. An array of these has no
+// extractable primary key, so syncing it stores zero rows
+// (all_items_failed_id_extraction). The empty string is excluded: an unset Item
+// means an object array whose type was not registered, which still syncs.
+var scalarItemTypes = map[string]bool{
+	"string": true,
+	"int":    true,
+	"bool":   true,
+	"float":  true,
+}
+
+// isScalarItemArray reports whether the response is an array whose declared
+// element type is a primitive. Such arrays carry no object IDs and must not be
+// selected as syncable list resources.
+func isScalarItemArray(response spec.ResponseDef) bool {
+	return response.Type == "array" && scalarItemTypes[response.Item]
+}
+
 func hasListShapedResponse(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
 	if endpoint.Response.Type == "array" {
+		// Scalar-element arrays are rejected upstream in isListEndpoint; a
+		// bare object array is list-shaped.
 		return true
 	}
 
