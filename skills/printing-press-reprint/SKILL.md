@@ -131,7 +131,12 @@ if [[ -n "$LIB_PATH" ]]; then
     mkdir -p "$PATCHES_DIR"
     jq -r '.[] | select(.name | endswith(".json")) | "\(.name)\t\(.download_url)"' <<<"$listing" \
     | while IFS=$'\t' read -r name url; do
-        curl -fsSL "$url" -o "$PATCHES_DIR/$name" 2>/dev/null || true
+        tmp=$(mktemp)
+        if curl -fsSL "$url" -o "$tmp" 2>/dev/null; then
+          mv "$tmp" "$PATCHES_DIR/$name"   # atomic: a dropped transfer never leaves corrupt JSON
+        else
+          rm -f "$tmp"
+        fi
       done
   else
     tmp=$(mktemp)
