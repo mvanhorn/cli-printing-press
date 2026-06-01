@@ -449,9 +449,9 @@ func TestUpsertBatch_Sets{{pascal .Name}}ParentID(t *testing.T) {
 	defer s.Close()
 
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "child-001", "parent_id": "parent-A"}`),
-		json.RawMessage(`{"id": "child-002", "parent_id": "parent-A"}`),
-		json.RawMessage(`{"id": "child-003", "parent_id": "parent-B"}`),
+		json.RawMessage(`{"id": "child-001"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}, "parent_id": "parent-A"}`),
+		json.RawMessage(`{"id": "child-002"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}, "parent_id": "parent-A"}`),
+		json.RawMessage(`{"id": "child-003"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-B"{{end}}, "parent_id": "parent-B"}`),
 	}
 	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)

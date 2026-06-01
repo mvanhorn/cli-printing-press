@@ -38,6 +38,7 @@ payments:
 
 productivity:
   itglue               IT Glue JSON:API surface for organizations, contacts, passwords, configurations, and documents, including the write endpoints needed for MSP automation
+  tidycal              Scheduling and booking API for meetings, contacts, booking types, and team calendars.
 
 project-management:
   asana                Work management and project tracking API

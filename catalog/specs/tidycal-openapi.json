@@ -1,0 +1,1738 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "TidyCal API",
+    "description": "# Introduction\nTidyCal's REST API provides a handful of endpoints which can be used to get information about your account and bookings.  It uses conventional OAuth 2.0 protocol for authentication.\n\n# Authentication\n### Personal Access Token\nCreate a personal access token at https://tidycal.com/integrations/oauth.  Once created, it can be used to authenticate requests by passing it in the `Authorization` header.\n```\nAuthorization: Bearer {TOKEN}\n```\n\n### OAuth 2.0 Client\nIf you're building a custom integration to TidyCal which requires users to authenticate in order to get access tokens to make API requests on their behalf, you'll need to create an OAuth 2.0 client. This is easy to do from the \\\"OAuth Apps\\\" settings page found here https://tidycal.com/integrations/oauth\n\nUsing the `authorization_code` grant type to authenticate users using OAuth 2.0 to retrieve an access token is fairly conventional, more information on that process can be found here: https://www.oauth.com/oauth2-servers/server-side-apps/authorization-code/\n\n\n* Authorization URL: https://tidycal.com/oauth/authorize\n* Access Token URL: https://tidycal.com/oauth/token\n",
+    "version": "0.1",
+    "x-logo": {
+      "url": "/img/logo-blue.svg"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://tidycal.com/api"
+    }
+  ],
+  "paths": {
+    "/bookings": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "List bookings",
+        "description": "Get a list of bookings.",
+        "operationId": "list-bookings",
+        "parameters": [
+          {
+            "name": "starts_at",
+            "in": "query",
+            "description": "Get bookings starting from a specific date.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "ends_at",
+            "in": "query",
+            "description": "Get bookings ending before a specific date.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "cancelled",
+            "in": "query",
+            "description": "Get only cancelled bookings.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number.",
+            "required": false,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "include_teams",
+            "in": "query",
+            "description": "Include team bookings.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Booking"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/bookings/{booking}": {
+      "get": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Get booking",
+        "description": "Get a booking by ID.",
+        "operationId": "get-booking",
+        "parameters": [
+          {
+            "name": "booking",
+            "in": "path",
+            "description": "The ID of the booking.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Booking"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to view this booking"
+          },
+          "404": {
+            "description": "Not Found - Booking not found"
+          },
+          "422": {
+            "description": "Validation Error"
+          }
+        }
+      }
+    },
+    "/bookings/{booking}/cancel": {
+      "patch": {
+        "tags": [
+          "Bookings"
+        ],
+        "summary": "Cancel booking",
+        "description": "Cancel a booking by ID.",
+        "operationId": "cancel-booking",
+        "parameters": [
+          {
+            "name": "booking",
+            "in": "path",
+            "description": "The ID of the booking to cancel.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "description": "Optional reason for cancellation",
+                    "example": "Client requested cancellation"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Booking"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request - Booking is already cancelled"
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to cancel this booking"
+          },
+          "404": {
+            "description": "Not Found - Booking not found"
+          }
+        }
+      }
+    },
+    "/booking-types": {
+      "get": {
+        "tags": [
+          "Booking Types"
+        ],
+        "summary": "List booking types",
+        "description": "Get a list of booking types.",
+        "operationId": "list-booking-types",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number.",
+            "required": false,
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BookingType"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Booking Types"
+        ],
+        "summary": "Create booking type",
+        "description": "Create a new booking type.",
+        "operationId": "create-booking-type",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title",
+                  "description",
+                  "duration_minutes",
+                  "url_slug"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 191,
+                    "example": "30 Minute Meeting"
+                  },
+                  "description": {
+                    "type": "string",
+                    "format": "html",
+                    "example": "Book a 30 minute meeting with me"
+                  },
+                  "duration_minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "example": 30
+                  },
+                  "url_slug": {
+                    "type": "string",
+                    "maxLength": 191,
+                    "example": "30-minute-meeting"
+                  },
+                  "padding_minutes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "example": 15
+                  },
+                  "latest_availability_days": {
+                    "type": "integer",
+                    "maximum": 36500,
+                    "minimum": 0,
+                    "default": 60,
+                    "example": 90
+                  },
+                  "private": {
+                    "type": "boolean",
+                    "default": false,
+                    "example": false
+                  },
+                  "max_bookings": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1,
+                    "example": 1
+                  },
+                  "max_guest_invites_per_booker": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "default": 0,
+                    "example": 0
+                  },
+                  "display_seats_remaining": {
+                    "type": "boolean",
+                    "default": false,
+                    "example": false
+                  },
+                  "booking_availability_interval_minutes": {
+                    "type": "integer",
+                    "minimum": 15,
+                    "maximum": 1440,
+                    "default": 15,
+                    "example": 30
+                  },
+                  "redirect_url": {
+                    "type": "string",
+                    "maxLength": 60000,
+                    "nullable": true,
+                    "example": "https://example.com/thank-you"
+                  },
+                  "approval_required": {
+                    "type": "boolean",
+                    "nullable": true,
+                    "example": false
+                  },
+                  "booking_type_category_id": {
+                    "type": "integer",
+                    "nullable": true,
+                    "example": 1
+                  },
+                  "price": {
+                    "type": "number",
+                    "format": "float",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Price for the booking type. Set to 0 for free booking types.",
+                    "example": 25
+                  },
+                  "payment_platform": {
+                    "type": "string",
+                    "enum": [
+                      "stripe",
+                      "paypal",
+                      "tidycal"
+                    ],
+                    "description": "Payment platform to use. The platform must be connected in your account Integrations settings. Required when price > 0.",
+                    "example": "stripe"
+                  },
+                  "currency_code": {
+                    "type": "string",
+                    "description": "ISO 4217 currency code (e.g. USD, EUR, GBP). Defaults to your account currency.",
+                    "example": "USD"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BookingType"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error"
+          }
+        }
+      }
+    },
+    "/booking-types/{bookingType}/timeslots": {
+      "get": {
+        "tags": [
+          "Booking Types"
+        ],
+        "summary": "List available timeslots",
+        "description": "Get a list of available timeslots for a specific booking type.",
+        "operationId": "list-booking-type-timeslots",
+        "parameters": [
+          {
+            "name": "bookingType",
+            "in": "path",
+            "description": "The ID of the booking type.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "starts_at",
+            "in": "query",
+            "description": "Start date to get timeslots from (UTC).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "ends_at",
+            "in": "query",
+            "description": "End date to get timeslots until (UTC).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Timeslot"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/booking-types/{bookingType}/bookings": {
+      "post": {
+        "tags": [
+          "Booking Types"
+        ],
+        "summary": "Create booking",
+        "description": "Create a new booking for a specific booking type.\n\n**Single vs Package Bookings:**\n- For single bookings, use `starts_at` to specify the booking time\n- For package/multi-session bookings, use the `bookings` array to specify multiple time slots\n\n**Response Format:**\n- Single booking: Returns `{\"data\": {Booking}}`\n- Multiple bookings (package): Returns `{\"data\": [{Booking}, ...]}`\n",
+        "operationId": "create-booking",
+        "parameters": [
+          {
+            "name": "bookingType",
+            "in": "path",
+            "description": "The ID of the booking type.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "email",
+                  "timezone"
+                ],
+                "properties": {
+                  "starts_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "The start time of the booking in UTC. Required for single bookings. Ignored if `bookings` array is provided.",
+                    "example": "2024-03-20T10:00:00Z"
+                  },
+                  "bookings": {
+                    "type": "array",
+                    "description": "Array of booking times for package/multi-session bookings. If provided, `starts_at` is ignored.",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "starts_at"
+                      ],
+                      "properties": {
+                        "starts_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "description": "The start time of this booking session in UTC",
+                          "example": "2024-03-20T10:00:00Z"
+                        }
+                      }
+                    },
+                    "example": [
+                      {
+                        "starts_at": "2024-03-20T10:00:00Z"
+                      },
+                      {
+                        "starts_at": "2024-03-27T10:00:00Z"
+                      }
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 191,
+                    "description": "Name of the person making the booking",
+                    "example": "John Doe"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 191,
+                    "description": "Email of the person making the booking",
+                    "example": "john@example.com"
+                  },
+                  "timezone": {
+                    "type": "string",
+                    "maxLength": 191,
+                    "description": "The timezone of the booking",
+                    "example": "America/Los_Angeles"
+                  },
+                  "booking_questions": {
+                    "type": "array",
+                    "description": "Answers to booking type questions",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "booking_type_question_id": {
+                          "type": "integer",
+                          "description": "ID of the booking type question",
+                          "example": 1
+                        },
+                        "answer": {
+                          "oneOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          ],
+                          "description": "Answer to the question (string or array for checkbox type)",
+                          "example": "My answer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created successfully.\n- Single booking: Returns a single Booking object in `data`\n- Package booking (multiple sessions): Returns an array of Booking objects in `data`\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/Booking",
+                          "description": "Single booking response"
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Booking"
+                          },
+                          "description": "Multiple bookings response (package bookings)"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to create bookings for this booking type"
+          },
+          "409": {
+            "description": "Conflict - The timeslot is not available"
+          },
+          "422": {
+            "description": "Validation Error"
+          }
+        }
+      }
+    },
+    "/contacts": {
+      "get": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "List contacts",
+        "description": "Get a list of contacts.",
+        "operationId": "list-contacts",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number.",
+            "required": false,
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Contact"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Contacts"
+        ],
+        "summary": "Create contact",
+        "description": "Create a new contact.",
+        "operationId": "create-contact",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "email"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "example": "John Doe"
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "john@example.com"
+                  },
+                  "timezone": {
+                    "type": "string",
+                    "example": "America/Los_Angeles"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Contact"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment Required - Lifetime subscription required"
+          },
+          "422": {
+            "description": "Validation Error"
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "summary": "Account information",
+        "description": "Get account details.",
+        "operationId": "get-account",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/teams": {
+      "get": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "List teams",
+        "description": "Get a list of teams the authenticated user has access to.",
+        "operationId": "list-teams",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number.",
+            "required": false,
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Team"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/teams/{team}": {
+      "get": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "Get team",
+        "description": "Get details of a specific team.",
+        "operationId": "get-team",
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "description": "The ID of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Team"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to view this team"
+          },
+          "404": {
+            "description": "Not Found - Team not found"
+          }
+        }
+      }
+    },
+    "/teams/{team}/bookings": {
+      "get": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "List team bookings",
+        "description": "Get a list of bookings for a specific team.",
+        "operationId": "list-team-bookings",
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "description": "The ID of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number.",
+            "required": false,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "start_date",
+            "in": "query",
+            "description": "Get bookings starting from a specific date.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "description": "Get bookings ending before a specific date.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "email",
+            "in": "query",
+            "description": "Get bookings for a specific email address.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "email"
+            }
+          },
+          {
+            "name": "host_id",
+            "in": "query",
+            "description": "Get bookings for a specific user ID.",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "cancelled",
+            "in": "query",
+            "description": "Filter by cancellation status. Use true for cancelled bookings, false for non-cancelled bookings, or omit for all bookings.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Booking"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to view this team"
+          },
+          "404": {
+            "description": "Not Found - Team not found"
+          }
+        }
+      }
+    },
+    "/teams/{team}/users": {
+      "get": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "List team users",
+        "description": "Get a list of users in a specific team.",
+        "operationId": "list-team-users",
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "description": "The ID of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number.",
+            "required": false,
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TeamUser"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to view this team"
+          },
+          "404": {
+            "description": "Not Found - Team not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "Add user to team",
+        "description": "Add a user to a team by sending an invitation email.",
+        "operationId": "add-team-user",
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "description": "The ID of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "Email address of the user to invite",
+                    "example": "user@example.com"
+                  },
+                  "role_name": {
+                    "type": "string",
+                    "description": "Role name for the user in the team",
+                    "enum": [
+                      "admin",
+                      "user"
+                    ],
+                    "example": "user"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Invitation sent successfully"
+                    },
+                    "team_user_id": {
+                      "type": "integer",
+                      "example": 123
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to add users to this team"
+          },
+          "404": {
+            "description": "Not Found - Team not found"
+          },
+          "422": {
+            "description": "Validation Error - User already invited or already a member"
+          }
+        }
+      }
+    },
+    "/teams/{team}/users/{teamUser}": {
+      "delete": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "Remove user from team",
+        "description": "Remove a user from a team.",
+        "operationId": "remove-team-user",
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "description": "The ID of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "teamUser",
+            "in": "path",
+            "description": "The ID of the team user to remove.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "User removed from team"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to remove users from this team"
+          },
+          "404": {
+            "description": "Not Found - Team or team user not found"
+          },
+          "422": {
+            "description": "Validation Error - User not found in team"
+          }
+        }
+      }
+    },
+    "/teams/{team}/booking-types": {
+      "get": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "List team booking types",
+        "description": "Get a list of booking types for a specific team.",
+        "operationId": "list-team-booking-types",
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "description": "The ID of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number.",
+            "required": false,
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BookingType"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to view this team"
+          },
+          "404": {
+            "description": "Not Found - Team not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "Create team booking type",
+        "description": "Create a new booking type for a specific team.",
+        "operationId": "create-team-booking-type",
+        "parameters": [
+          {
+            "name": "team",
+            "in": "path",
+            "description": "The ID of the team.",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title",
+                  "description",
+                  "duration_minutes",
+                  "url_slug"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 191,
+                    "example": "30 Minute Meeting"
+                  },
+                  "description": {
+                    "type": "string",
+                    "format": "html",
+                    "example": "Book a 30 minute meeting with me"
+                  },
+                  "duration_minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "example": 30
+                  },
+                  "url_slug": {
+                    "type": "string",
+                    "maxLength": 191,
+                    "example": "30-minute-meeting"
+                  },
+                  "padding_minutes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "example": 15
+                  },
+                  "latest_availability_days": {
+                    "type": "integer",
+                    "maximum": 36500,
+                    "minimum": 0,
+                    "default": 60,
+                    "example": 90
+                  },
+                  "private": {
+                    "type": "boolean",
+                    "default": false,
+                    "example": false
+                  },
+                  "max_bookings": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1,
+                    "example": 1
+                  },
+                  "max_guest_invites_per_booker": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "default": 0,
+                    "example": 0
+                  },
+                  "display_seats_remaining": {
+                    "type": "boolean",
+                    "default": false,
+                    "example": false
+                  },
+                  "booking_availability_interval_minutes": {
+                    "type": "integer",
+                    "minimum": 15,
+                    "maximum": 1440,
+                    "default": 15,
+                    "example": 30
+                  },
+                  "redirect_url": {
+                    "type": "string",
+                    "maxLength": 60000,
+                    "nullable": true,
+                    "example": "https://example.com/thank-you"
+                  },
+                  "approval_required": {
+                    "type": "boolean",
+                    "nullable": true,
+                    "example": false
+                  },
+                  "booking_type_category_id": {
+                    "type": "integer",
+                    "nullable": true,
+                    "example": 1
+                  },
+                  "price": {
+                    "type": "number",
+                    "format": "float",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Price for the booking type. Set to 0 for free booking types.",
+                    "example": 25
+                  },
+                  "payment_platform": {
+                    "type": "string",
+                    "enum": [
+                      "stripe",
+                      "paypal",
+                      "tidycal"
+                    ],
+                    "description": "Payment platform to use. The platform must be connected in your account Integrations settings. Required when price > 0.",
+                    "example": "stripe"
+                  },
+                  "currency_code": {
+                    "type": "string",
+                    "description": "ISO 4217 currency code (e.g. USD, EUR, GBP). Defaults to your account currency.",
+                    "example": "USD"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BookingType"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden - User does not have permission to create booking types for this team"
+          },
+          "404": {
+            "description": "Not Found - Team not found"
+          },
+          "422": {
+            "description": "Validation Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Booking": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "contact_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "booking_type_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "starts_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-01-01T00:00:00Z"
+          },
+          "ends_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-02-01T00:00:00Z"
+          },
+          "cancelled_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "example": "2022-02-01T00:00:00Z"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-02-01T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-02-01T00:00:00Z"
+          },
+          "timezone": {
+            "type": "string",
+            "example": "America/Los_Angeles"
+          },
+          "meeting_url": {
+            "type": "string",
+            "nullable": true,
+            "example": "https://zoom.us/j/949494949494"
+          },
+          "meeting_id": {
+            "type": "string",
+            "nullable": true,
+            "example": "fw44lkj48fks"
+          },
+          "questions": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            }
+          },
+          "contact": {
+            "$ref": "#/components/schemas/Contact"
+          },
+          "payment": {
+            "nullable": true,
+            "$ref": "#/components/schemas/Payment"
+          }
+        },
+        "type": "object"
+      },
+      "BookingType": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "user_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "title": {
+            "type": "string",
+            "example": "15 Minute Meeting"
+          },
+          "duration_minutes": {
+            "type": "integer",
+            "example": 15
+          },
+          "padding_minutes": {
+            "type": "integer",
+            "example": 10
+          },
+          "disabled_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "example": "2022-02-01T00:00:00Z"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-02-01T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-02-01T00:00:00Z"
+          },
+          "url_slug": {
+            "type": "string",
+            "example": "15-minute-meeting"
+          },
+          "description": {
+            "type": "string",
+            "example": "Book a meeting with me for 15 minutes!"
+          },
+          "price": {
+            "type": "number",
+            "format": "float",
+            "example": 10
+          },
+          "payment_platform": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "paypal",
+              "tidycal"
+            ],
+            "nullable": true,
+            "description": "Human-readable payment platform identifier.",
+            "example": "stripe"
+          },
+          "payment_platform_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Payment platform UUID.",
+            "example": "7df81dc2-beb8-48b4-a467-f171eabeca01"
+          },
+          "currency_code": {
+            "type": "string",
+            "nullable": true,
+            "description": "ISO 4217 currency code.",
+            "example": "USD"
+          },
+          "private": {
+            "type": "boolean",
+            "example": false
+          },
+          "latest_availability_days": {
+            "type": "integer",
+            "example": 60
+          },
+          "redirect_url": {
+            "type": "string",
+            "example": "https://mywebsite.com"
+          },
+          "booking_threshold_minutes": {
+            "type": "integer",
+            "example": 120
+          },
+          "max_bookings": {
+            "type": "integer",
+            "example": 1
+          },
+          "url": {
+            "type": "string",
+            "example": "http://tidycal.com/johndoe/15-minute-meeting"
+          }
+        },
+        "type": "object"
+      },
+      "Contact": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "name": {
+            "type": "string",
+            "example": "John Doe"
+          },
+          "email": {
+            "type": "string",
+            "example": "john@doe.com"
+          },
+          "phone_number": {
+            "type": "string",
+            "example": "+1234567890"
+          },
+          "ip_address": {
+            "type": "string",
+            "example": "127.0.0.1"
+          },
+          "timezone": {
+            "type": "string",
+            "example": "America/New_York"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-01-01T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-01-01T00:00:00Z"
+          }
+        },
+        "type": "object"
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "John Doe"
+          },
+          "email": {
+            "type": "string",
+            "example": "john@doe.com"
+          },
+          "lifetime_pro_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2022-01-01T00:00:00Z"
+          },
+          "vanity_path": {
+            "type": "string",
+            "example": "johndoe"
+          },
+          "language": {
+            "type": "string",
+            "example": "en"
+          },
+          "profile_picture_url": {
+            "type": "string",
+            "example": "https://www.gravatar.com/avatar/202446b468bec26847368d8a214b80c9?d=blank&s=200"
+          },
+          "currency_symbol": {
+            "type": "string",
+            "example": "$"
+          }
+        }
+      },
+      "Timeslot": {
+        "properties": {
+          "starts_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-03-20T10:00:00Z",
+            "description": "The start time of the available slot in UTC"
+          },
+          "ends_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-03-20T10:30:00Z",
+            "description": "The end time of the available slot in UTC"
+          },
+          "available_bookings": {
+            "type": "integer",
+            "example": 1,
+            "description": "Number of available booking slots for this timeslot (for group bookings)"
+          }
+        },
+        "type": "object",
+        "description": "Represents an available time slot for booking"
+      },
+      "Team": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "name": {
+            "type": "string",
+            "example": "Sales Team"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00Z"
+          }
+        },
+        "type": "object"
+      },
+      "TeamUser": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "name": {
+            "type": "string",
+            "example": "John Doe"
+          },
+          "email": {
+            "type": "string",
+            "example": "john@doe.com"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00Z"
+          }
+        },
+        "type": "object"
+      },
+      "Payment": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "payment_id": {
+            "type": "string",
+            "example": "pi_1234567890"
+          },
+          "booking_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "amount": {
+            "type": "number",
+            "format": "float",
+            "example": 1
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00Z"
+          }
+        },
+        "type": "object"
+      },
+      "Question": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1
+          },
+          "booking_id": {
+            "type": "integer",
+            "example": 1
+          },
+          "question": {
+            "type": "string",
+            "example": "What is your favorite color?"
+          },
+          "answer": {
+            "type": "string",
+            "example": "Blue"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2024-01-01T00:00:00Z"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "TidyCal personal access token passed as Authorization: Bearer {TOKEN}."
+      }
+    }
+  },
+  "x-tagGroups": [
+    {
+      "name": "Resources",
+      "tags": [
+        "Account",
+        "Bookings",
+        "Booking Types",
+        "Contacts",
+        "Teams"
+      ]
+    }
+  ],
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ]
+}
