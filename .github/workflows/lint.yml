@@ -159,16 +159,16 @@ jobs:
 
           case "${{ matrix.shard }}" in
             generator)
-              packages=(./internal/generator)
+              packages=(./internal/generator/...)
               ;;
             pipeline)
-              packages=(./internal/pipeline)
+              packages=(./internal/pipeline/...)
               ;;
             cli)
-              packages=(./internal/cli)
+              packages=(./internal/cli/...)
               ;;
             rest)
-              mapfile -t packages < <(go list ./... | grep -Ev '/internal/(generator|pipeline|cli)$')
+              mapfile -t packages < <(go list ./... | grep -Ev '/internal/(generator|pipeline|cli)(/|$)')
               ;;
             *)
               echo "unknown test shard: ${{ matrix.shard }}" >&2
