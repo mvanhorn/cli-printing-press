@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.20.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.20.0...v4.20.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* **patches:** emit per-patch directory layout (generator + skills) ([#2581](https://github.com/mvanhorn/cli-printing-press/issues/2581)) ([a826d31](https://github.com/mvanhorn/cli-printing-press/commit/a826d31617d635c8fd7717e9edf0ebf213797af0))
+
 ## [4.20.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.19.1...v4.20.0) (2026-06-01)
 
 
