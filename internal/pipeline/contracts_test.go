@@ -110,6 +110,8 @@ func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	assert.Contains(t, ppBlock, floorURL)
 	assert.Contains(t, ppBlock, "[upgrade-required] printing-press")
 	assert.Contains(t, ppBlock, "PRESS_REQUIRED_MIN=")
+	assert.Contains(t, ppBlock, "PRESS_REQUIRED_INSTALLED=")
+	assert.Contains(t, ppBlock, "PRESS_REQUIRED_REASON=")
 	assert.Contains(t, ppBlock, `[ "$_press_repo" != "true" ] && [ -f "$PRESS_VERCHECK_FILE" ]`)
 	assert.Contains(t, ppBlock, `! _semver_lt "$_floor_latest" "$_floor_min"`)
 
