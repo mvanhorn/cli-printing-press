@@ -1,6 +1,6 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle the contract output signals: `[setup-error]`, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
+Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle the contract output signals: `[setup-error]`, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
 
 Apply these in order. The preamble below runs unconditionally; each numbered section after it is conditional — do nothing if its trigger isn't present.
 
@@ -119,6 +119,37 @@ If the installed binary is older than the minimum, stop the skill immediately an
 > "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
 
 Do not proceed to research, scoring, publishing, or any other workflow when the binary is below `min-binary-version`. This is the compatibility floor, not a freshness advisory.
+
+## 4.5. Required-minimum (currency floor) hard gate
+
+If the setup contract output contains a line starting with `[upgrade-required]`, the installed binary is below the **currently supported** minimum — older releases generate CLIs with known, since-fixed bugs. This is distinct from section 4: section 4 is the skill's frozen compatibility floor (the skill literally cannot run below it, and it only moves on a major version); the currency floor is a freshness *requirement* that maintainers raise out-of-band (via the published `supported-versions.txt`) as bad-output bugs get fixed, with no skill or binary release. Parse the follow-up lines:
+
+- `PRESS_REQUIRED_MIN=<minimum supported version>`
+- `PRESS_REQUIRED_INSTALLED=<installed version>`
+- `PRESS_REQUIRED_REASON=<one-line reason>`
+
+This is a hard gate. Do not proceed to research, generation, scoring, publishing, or any other workflow on a binary below the floor. Offer a one-click upgrade via `AskUserQuestion` before continuing:
+
+- **question:** `"printing-press v<installed> is below the minimum supported v<minimum>. <reason> Upgrade now? Takes about 10 seconds."`
+- **header:** `"Update required"`
+- **multiSelect:** `false`
+- **options:**
+  1. **Yes — upgrade now** — `"Run go install and continue on the latest released binary."`
+  2. **Cancel** — `"Stop the run; do not generate on a binary below the supported floor."`
+
+If the user picks **Yes**, run:
+
+```bash
+go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest
+```
+
+Then **re-resolve `PRINTING_PRESS_BIN`** exactly as section 5 describes (the new binary may land at a different path than the one the contract captured), confirm with `<PRINTING_PRESS_BIN> version --json`, tell the user `"Upgraded to v<new>."`, and continue this run with the upgraded binary.
+
+If the user picks **Cancel**, stop the skill immediately. Unlike section 5's `[upgrade-available]` advisory, there is **no skip-and-continue** — below the floor the only paths are upgrade or abort.
+
+If the upgrade command fails (network, auth, missing Go toolchain), surface the failure and stop. Do not fall back to generating on the below-floor binary.
+
+If no `[upgrade-required]` line was emitted, skip this section entirely.
 
 ## 5. Interactive standalone binary upgrade prompt
 
