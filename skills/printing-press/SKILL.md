@@ -1254,6 +1254,8 @@ Proceed silently to Phase 2.
 3. **Auth Enrichment** — verify the resolved spec's auth, especially for browser-/crowd-sniffed specs where mechanical detection may have failed. Pick the auth mode (api-key, bearer, basic, cookie, composed, session-handshake, oauth) and emit the correct spec shape. If the spec's auth is wrong, **re-run generation with the corrected spec — do not fix in polish.**
 4. **MCP Enrichment** — choose the MCP surface shape (endpoint-mirror vs intent vs code-orchestration) for the resolved spec.
 
+Resident MCP contract: for large MCP surfaces, keep the **Mandatory >50 endpoint-tools confirmation** in mind. More than 50 endpoint tools should use the generator's default Cloudflare pattern and print `info: applied Cloudflare MCP pattern`; that default does not require a blocking question. Use `mcp.orchestration: endpoint-mirror` for the internal-YAML `mcp:` block or `x-mcp.orchestration: endpoint-mirror` for OpenAPI only when raw endpoint tools are explicitly desired. For OpenAPI input specs, declare these fields under `x-mcp:`.
+
 ### Lock and Generate
 
 Before running any generate command, acquire the build lock:
@@ -1435,6 +1437,8 @@ cli-printing-press validate-narrative --strict --full-examples \
   --binary "$QUICKSTART_BINARY"
 ```
 
+Quick Start safety: Step 1 of `quickstart` should usually be verify-safe. Use `<cli> doctor --dry-run` as step 1 unless the generated CLI has a more specific offline health command.
+
 `--strict` exits non-zero on any missing command, empty subcommand-words entry, or
 empty narrative (both sections omitted). With `--full-examples`, it also fails on full
 examples that cannot dry-run or whose full invocation fails. Side-effectful auth,
@@ -1442,6 +1446,8 @@ launch, and mutating apply examples are reported as `UNSUPPORTED` warnings and d
 fail strict aggregation. Drop `--strict` to get a warn-only report, omit
 `--full-examples` only when you intentionally want the old offline path check, or add
 `--json` for machine-readable output.
+
+Narrative side-effect handling contract: full-example validation reports each as an `UNSUPPORTED` warning instead of executing it. These warnings do not fail strict aggregation. Non-side-effect unsupported examples still fail strict mode.
 
 If any commands are reported missing, fix them in `research.json` before continuing.
 Common causes:
@@ -1558,6 +1564,16 @@ Priority 3 (polish):
 10. **Per-source rate limiting** — sibling clients use `cliutil.AdaptiveLimiter` + surface `*cliutil.RateLimitError`.
 11. **Parallel-fetch partial failures** — preserve per-fetch errors, exclude from denominators, surface `fetch_failures`.
 12. **Scan-and-filter caps** — `--max-scan-pages` (bounds records scanned) separate from `--limit` (bounds matches kept); emit `scanned_<unit>` + zero-match `note`.
+
+Collector slice contract: initialize output slices with `make([]T, 0)` so empty marshals stay `[]`, not `null`. Use:
+
+```go
+results := make([]yourRowType, 0)
+failures := make([]fetchFailure, 0)
+successfulItems := make([]yourEntryType, 0)
+```
+
+For combo-CLI browser captures, if `source-priority.json` has two or more sources, run browser-sniff with `--preserve-hosts` so peer API hosts survive as per-endpoint `base_url` overrides.
 
 ### Phase 3 delegation: require feature-level acceptance
 
