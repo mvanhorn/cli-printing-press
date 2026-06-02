@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -219,6 +220,11 @@ func (a *TinyGoAdapter) connect(ctx context.Context, address string) (tinyble.De
 	if err := a.enable(); err != nil {
 		return tinyble.Device{}, err
 	}
+	if runtime.GOOS == "linux" {
+		if err := a.ensureLinuxDeviceSeen(ctx, address); err != nil {
+			return tinyble.Device{}, err
+		}
+	}
 	var addr tinyble.Address
 	addr.Set(address)
 
@@ -243,6 +249,30 @@ func (a *TinyGoAdapter) connect(ctx context.Context, address string) (tinyble.De
 			return tinyble.Device{}, mapLiveError(result.err)
 		}
 		return result.device, nil
+	}
+}
+
+func (a *TinyGoAdapter) ensureLinuxDeviceSeen(ctx context.Context, address string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	target := strings.ToUpper(strings.TrimSpace(address))
+	done := make(chan error, 1)
+	go func() {
+		done <- a.adapter.Scan(func(adapter *tinyble.Adapter, result tinyble.ScanResult) {
+			if strings.EqualFold(result.Address.String(), target) {
+				_ = adapter.StopScan()
+			}
+		})
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = a.adapter.StopScan()
+		<-done
+		return ctx.Err()
+	case err := <-done:
+		return mapLiveError(err)
 	}
 }
 
