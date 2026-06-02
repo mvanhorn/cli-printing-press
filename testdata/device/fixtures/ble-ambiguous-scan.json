@@ -1,0 +1,61 @@
+{
+  "name": "ble-ambiguous-lamp",
+  "display_name": "BLE Ambiguous Lamp",
+  "identity": {
+    "advertised_names": ["DeskLamp"],
+    "address_policy": "stable",
+    "match_strength": "weak"
+  },
+  "events": [
+    {
+      "id": "adv-a",
+      "type": "advertisement",
+      "at": "2026-06-01T12:00:00Z",
+      "device_address": "AA:BB:CC:DD:EE:10",
+      "device_name": "DeskLamp",
+      "rssi": -41,
+      "service_uuids": ["ff00"]
+    },
+    {
+      "id": "adv-b",
+      "type": "advertisement",
+      "at": "2026-06-01T12:00:00Z",
+      "device_address": "AA:BB:CC:DD:EE:11",
+      "device_name": "DeskLamp",
+      "rssi": -44,
+      "service_uuids": ["ff00"]
+    },
+    {
+      "id": "svc-power",
+      "type": "service_discovery",
+      "at": "2026-06-01T12:00:01Z",
+      "service_uuid": "ff00",
+      "characteristic_uuid": "ff01",
+      "properties": ["write"]
+    },
+    {
+      "id": "write-a",
+      "type": "write",
+      "at": "2026-06-01T12:00:05Z",
+      "service_uuid": "ff00",
+      "characteristic_uuid": "ff01",
+      "value_hex": "01"
+    },
+    {
+      "id": "write-b",
+      "type": "write",
+      "at": "2026-06-01T12:00:05Z",
+      "service_uuid": "ff00",
+      "characteristic_uuid": "ff01",
+      "value_hex": "00"
+    }
+  ],
+  "actions": [
+    {
+      "id": "action-toggle",
+      "label": "toggle",
+      "at": "2026-06-01T12:00:04Z",
+      "safety": "low-risk-write"
+    }
+  ]
+}
