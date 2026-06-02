@@ -12,11 +12,13 @@ import (
 
 type probeOptions struct {
 	inputPath          string
+	live               bool
 	address            string
 	serviceUUID        string
 	characteristicUUID string
 	valueHex           string
 	serviceUUIDs       []string
+	durationMillis     int
 }
 
 func NewRootCommand(name string) *cobra.Command {
@@ -42,11 +44,11 @@ func newScanCmd() *cobra.Command {
 		Use:   "scan",
 		Short: "Emit replayed BLE advertisements as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			input, adapter, err := loadReplay(opts.inputPath)
+			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
-			devices, err := adapter.Scan(cmd.Context(), ble.ScanOptions{ServiceUUIDs: opts.serviceUUIDs})
+			devices, err := adapter.Scan(cmd.Context(), ble.ScanOptions{ServiceUUIDs: opts.serviceUUIDs, DurationMillis: opts.durationMillis})
 			if err != nil {
 				return err
 			}
@@ -64,7 +66,8 @@ func newScanCmd() *cobra.Command {
 			return writeEvidence(cmd, evidenceWithEvents(input, events))
 		},
 	}
-	addInputFlag(cmd, &opts)
+	addBackendFlags(cmd, &opts)
+	addDurationFlag(cmd, &opts)
 	cmd.Flags().StringArrayVar(&opts.serviceUUIDs, "service-uuid", nil, "Filter replayed scan results by advertised service UUID")
 	return cmd
 }
@@ -75,7 +78,7 @@ func newInspectCmd() *cobra.Command {
 		Use:   "inspect",
 		Short: "Emit replayed BLE discovery and traffic for one device",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			input, adapter, err := loadReplay(opts.inputPath)
+			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
@@ -86,7 +89,7 @@ func newInspectCmd() *cobra.Command {
 			return writeEvidence(cmd, evidenceWithEvents(input, events))
 		},
 	}
-	addInputFlag(cmd, &opts)
+	addBackendFlags(cmd, &opts)
 	cmd.Flags().StringVar(&opts.address, "address", "", "BLE device address from scan output; optional when replay evidence has exactly one device")
 	return cmd
 }
@@ -97,7 +100,7 @@ func newReadCmd() *cobra.Command {
 		Use:   "read",
 		Short: "Emit a replayed BLE characteristic read as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			input, adapter, err := loadReplay(opts.inputPath)
+			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
@@ -105,6 +108,7 @@ func newReadCmd() *cobra.Command {
 				Address:            opts.address,
 				ServiceUUID:        opts.serviceUUID,
 				CharacteristicUUID: opts.characteristicUUID,
+				DurationMillis:     opts.durationMillis,
 			})
 			if err != nil {
 				return err
@@ -122,7 +126,7 @@ func newWriteCmd() *cobra.Command {
 		Use:   "write",
 		Short: "Emit a replayed BLE characteristic write as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			input, adapter, err := loadReplay(opts.inputPath)
+			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
@@ -150,7 +154,7 @@ func newSubscribeCmd() *cobra.Command {
 		Use:   "subscribe",
 		Short: "Emit replayed BLE notifications as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			input, adapter, err := loadReplay(opts.inputPath)
+			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
@@ -158,6 +162,7 @@ func newSubscribeCmd() *cobra.Command {
 				Address:            opts.address,
 				ServiceUUID:        opts.serviceUUID,
 				CharacteristicUUID: opts.characteristicUUID,
+				DurationMillis:     opts.durationMillis,
 			})
 			if err != nil {
 				return err
@@ -166,24 +171,39 @@ func newSubscribeCmd() *cobra.Command {
 		},
 	}
 	addCharacteristicFlags(cmd, &opts)
+	addDurationFlag(cmd, &opts)
 	return cmd
 }
 
-func addInputFlag(cmd *cobra.Command, opts *probeOptions) {
+func addBackendFlags(cmd *cobra.Command, opts *probeOptions) {
 	cmd.Flags().StringVar(&opts.inputPath, "input", "", "Path to replay evidence JSON; live BLE support lands behind a later build tag")
-	_ = cmd.MarkFlagRequired("input")
+	cmd.Flags().BoolVar(&opts.live, "live", false, "Use the live BLE adapter compiled with -tags ble_live")
 }
 
 func addCharacteristicFlags(cmd *cobra.Command, opts *probeOptions) {
-	addInputFlag(cmd, opts)
+	addBackendFlags(cmd, opts)
 	cmd.Flags().StringVar(&opts.address, "address", "", "BLE device address from scan output; optional when replay evidence has exactly one device")
 	cmd.Flags().StringVar(&opts.serviceUUID, "service", "", "Service UUID used to disambiguate the characteristic")
 	cmd.Flags().StringVar(&opts.characteristicUUID, "characteristic", "", "Characteristic UUID")
 	_ = cmd.MarkFlagRequired("characteristic")
 }
 
-func loadReplay(path string) (ble.EvidenceInput, *ble.ReplayAdapter, error) {
-	data, err := os.ReadFile(path)
+func addDurationFlag(cmd *cobra.Command, opts *probeOptions) {
+	cmd.Flags().IntVar(&opts.durationMillis, "duration-ms", 10_000, "Live scan or notification duration in milliseconds")
+}
+
+func loadBackend(opts probeOptions) (ble.EvidenceInput, ble.Adapter, error) {
+	if opts.live {
+		adapter, err := ble.NewLiveAdapter()
+		if err != nil {
+			return ble.EvidenceInput{}, nil, err
+		}
+		return ble.EvidenceInput{Name: "ble-live-capture"}, adapter, nil
+	}
+	if opts.inputPath == "" {
+		return ble.EvidenceInput{}, nil, fmt.Errorf("pass --input for replay evidence or --live for live BLE")
+	}
+	data, err := os.ReadFile(opts.inputPath)
 	if err != nil {
 		return ble.EvidenceInput{}, nil, fmt.Errorf("loading replay evidence: %w", err)
 	}

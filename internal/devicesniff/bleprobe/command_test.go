@@ -79,7 +79,7 @@ func TestReadWriteAndSubscribeReplayEmitEvidenceInput(t *testing.T) {
 	assert.Equal(t, "notify-2", notifications.Events[1].ID)
 }
 
-func TestProbeRequiresReplayInputForNow(t *testing.T) {
+func TestProbeRequiresReplayInputUnlessLive(t *testing.T) {
 	t.Parallel()
 
 	cmd := NewRootCommand("ble-probe")
@@ -89,7 +89,20 @@ func TestProbeRequiresReplayInputForNow(t *testing.T) {
 
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `required flag(s) "input" not set`)
+	assert.Contains(t, err.Error(), "pass --input for replay evidence or --live for live BLE")
+}
+
+func TestProbeReportsLiveUnavailableWhenBuildTagIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand("ble-probe")
+	cmd.SetArgs([]string{"scan", "--live"})
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "live BLE support is not compiled in")
 }
 
 func executeProbe(t *testing.T, args ...string) []byte {

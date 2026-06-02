@@ -26,6 +26,7 @@ type CharacteristicRequest struct {
 	Address            string `json:"address"`
 	ServiceUUID        string `json:"service_uuid,omitempty"`
 	CharacteristicUUID string `json:"characteristic_uuid"`
+	DurationMillis     int    `json:"duration_millis,omitempty"`
 }
 
 type WriteRequest struct {
