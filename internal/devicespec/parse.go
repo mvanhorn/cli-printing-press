@@ -31,7 +31,13 @@ func (s *DeviceSpec) applyDefaults() {
 	if s.Protocol == "" {
 		s.Protocol = ProtocolBLE
 	}
+	if s.Session.Mode == SessionModePersistent {
+		s.Session.Mode = SessionModeOptional
+	}
 	if s.Session.Mode == "" {
 		s.Session.Mode = SessionModeOneShot
+	}
+	if s.Session.Mode == SessionModeOptional {
+		s.Session.OneShotFallback = true
 	}
 }

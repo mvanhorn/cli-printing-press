@@ -13,8 +13,19 @@ const (
 )
 
 const (
-	SessionModeOneShot    = "one-shot"
+	SessionModeOneShot  = "one-shot"
+	SessionModeOptional = "optional"
+	SessionModeRequired = "required"
+
 	SessionModePersistent = "persistent"
+)
+
+const (
+	SessionReasonLowLatencyControls = "low_latency_controls"
+	SessionReasonNotificationStream = "notification_stream"
+	SessionReasonTelemetrySampling  = "telemetry_sampling"
+	SessionReasonReconnect          = "reconnect"
+	SessionReasonUnsafeOneShot      = "unsafe_one_shot"
 )
 
 const (
@@ -119,9 +130,11 @@ type TelemetryField struct {
 }
 
 type SessionProfile struct {
-	Mode               string `yaml:"mode,omitempty" json:"mode,omitempty"`
-	Reconnect          bool   `yaml:"reconnect,omitempty" json:"reconnect,omitempty"`
-	NotificationStream bool   `yaml:"notification_stream,omitempty" json:"notification_stream,omitempty"`
+	Mode               string   `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Reasons            []string `yaml:"reasons,omitempty" json:"reasons,omitempty"`
+	OneShotFallback    bool     `yaml:"one_shot_fallback,omitempty" json:"one_shot_fallback,omitempty"`
+	Reconnect          bool     `yaml:"reconnect,omitempty" json:"reconnect,omitempty"`
+	NotificationStream bool     `yaml:"notification_stream,omitempty" json:"notification_stream,omitempty"`
 }
 
 type EvidenceRef struct {

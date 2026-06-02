@@ -52,7 +52,9 @@ func TestParseSessionTelemetryPreservesEvidenceAndSafety(t *testing.T) {
 	ds, err := Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-session-telemetry.yaml"))
 	require.NoError(t, err)
 
-	assert.Equal(t, SessionModePersistent, ds.Session.Mode)
+	assert.Equal(t, SessionModeOptional, ds.Session.Mode)
+	assert.Equal(t, []string{SessionReasonLowLatencyControls, SessionReasonNotificationStream, SessionReasonTelemetrySampling, SessionReasonReconnect}, ds.Session.Reasons)
+	assert.True(t, ds.Session.OneShotFallback)
 	assert.True(t, ds.Session.Reconnect)
 	assert.True(t, ds.Session.NotificationStream)
 	require.Len(t, ds.Capabilities.Commands, 1)
@@ -60,6 +62,47 @@ func TestParseSessionTelemetryPreservesEvidenceAndSafety(t *testing.T) {
 	assert.Equal(t, SafetyPhysicalEffect, ds.Capabilities.Commands[0].Safety)
 	require.Len(t, ds.Capabilities.Telemetry, 1)
 	assert.True(t, ds.Capabilities.Telemetry[0].Store)
+}
+
+func TestParseRequiredSessionDisallowsOneShotFallback(t *testing.T) {
+	t.Parallel()
+
+	ds, err := ParseBytes([]byte(`
+version: 1
+name: session-required-device
+protocol: ble
+ble:
+  services:
+    - uuid: "fd00"
+      characteristics:
+        - uuid: "fd01"
+          properties: [write]
+session:
+  mode: required
+  reasons: [unsafe_one_shot]
+  one_shot_fallback: true
+`))
+	require.Error(t, err)
+	require.Nil(t, ds)
+	assert.Contains(t, err.Error(), `session.one_shot_fallback can only be true when session.mode is "optional"`)
+}
+
+func TestParseLegacyPersistentSessionNormalizesToOptional(t *testing.T) {
+	t.Parallel()
+
+	ds, err := ParseBytes([]byte(`
+version: 1
+name: legacy-session-device
+protocol: ble
+ble:
+  services: []
+session:
+  mode: persistent
+  reasons: [notification_stream]
+`))
+	require.NoError(t, err)
+	assert.Equal(t, SessionModeOptional, ds.Session.Mode)
+	assert.True(t, ds.Session.OneShotFallback)
 }
 
 func TestParseOpaqueBinaryPreservesUnknownPayloadFields(t *testing.T) {

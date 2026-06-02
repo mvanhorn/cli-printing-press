@@ -24,8 +24,16 @@ func (s *DeviceSpec) Validate() error {
 	if err := validateEnum("identity.match_strength", s.Identity.MatchStrength, "", MatchStrengthWeak, MatchStrengthMedium, MatchStrengthStrong); err != nil {
 		return err
 	}
-	if err := validateEnum("session.mode", s.Session.Mode, SessionModeOneShot, SessionModePersistent); err != nil {
+	if err := validateEnum("session.mode", s.Session.Mode, SessionModeOneShot, SessionModeOptional, SessionModeRequired); err != nil {
 		return err
+	}
+	if s.Session.OneShotFallback && s.Session.Mode != SessionModeOptional {
+		return fmt.Errorf("session.one_shot_fallback can only be true when session.mode is %q", SessionModeOptional)
+	}
+	for i, reason := range s.Session.Reasons {
+		if err := validateEnum(fmt.Sprintf("session.reasons[%d]", i), reason, SessionReasonLowLatencyControls, SessionReasonNotificationStream, SessionReasonTelemetrySampling, SessionReasonReconnect, SessionReasonUnsafeOneShot); err != nil {
+			return err
+		}
 	}
 	characteristics := map[string]BLECharacteristic{}
 	for si, service := range s.BLE.Services {

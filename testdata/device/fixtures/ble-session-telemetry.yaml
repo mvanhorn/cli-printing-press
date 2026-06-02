@@ -37,7 +37,9 @@ capabilities:
       sample_cadence: notification
       store: true
 session:
-  mode: persistent
+  mode: optional
+  reasons: [low_latency_controls, notification_stream, telemetry_sampling, reconnect]
+  one_shot_fallback: true
   reconnect: true
   notification_stream: true
 evidence:
