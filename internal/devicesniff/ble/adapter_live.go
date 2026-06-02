@@ -1,5 +1,3 @@
-//go:build !ble_replay_only && (darwin || linux || windows)
-
 package ble
 
 import (
@@ -9,13 +7,10 @@ import (
 	"fmt"
 	"math"
 	"runtime"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	tinyble "tinygo.org/x/bluetooth"
 )
 
 const defaultLiveDuration = 10 * time.Second
@@ -24,52 +19,36 @@ const defaultLiveDuration = 10 * time.Second
 // time.Millisecond without overflowing int64.
 var maxSafeDurationMillis = int(math.MaxInt64 / int64(time.Millisecond))
 
-type TinyGoAdapter struct {
-	adapter *tinyble.Adapter
+// liveAdapter drives a bleDriver through the BLE evidence workflow. It holds no
+// backend-specific types, so its lifecycle and concurrency logic is testable
+// against a stub driver on any platform.
+type liveAdapter struct {
+	driver bleDriver
 }
 
-func LiveSupport() LiveSupportInfo {
-	return LiveSupportInfo{
-		Compiled: true,
-		Backend:  "tinygo.org/x/bluetooth",
-		Platform: "darwin/linux/windows",
-	}
+func newLiveAdapter(driver bleDriver) *liveAdapter {
+	return &liveAdapter{driver: driver}
 }
 
-func NewLiveAdapter() (Adapter, error) {
-	return NewTinyGoAdapter(tinyble.DefaultAdapter), nil
-}
-
-func NewTinyGoAdapter(adapter *tinyble.Adapter) *TinyGoAdapter {
-	return &TinyGoAdapter{adapter: adapter}
-}
-
-func (a *TinyGoAdapter) Scan(ctx context.Context, opts ScanOptions) ([]DeviceCandidate, error) {
+func (a *liveAdapter) Scan(ctx context.Context, opts ScanOptions) ([]DeviceCandidate, error) {
 	if err := a.enable(); err != nil {
 		return nil, err
 	}
 
 	duration := durationFromMillis(opts.DurationMillis)
-	requiredUUIDs, err := parseUUIDs(opts.ServiceUUIDs)
-	if err != nil {
-		return nil, err
-	}
 
 	var mu sync.Mutex
 	candidates := map[string]DeviceCandidate{}
 	done := make(chan error, 1)
 	go func() {
-		done <- a.adapter.Scan(func(adapter *tinyble.Adapter, result tinyble.ScanResult) {
-			if !matchesServiceUUIDs(result, requiredUUIDs) {
-				return
-			}
-			address := result.Address.String()
+		done <- a.driver.Scan(opts.ServiceUUIDs, func(adv bleAdvertisement) {
+			address := adv.Address()
 			mu.Lock()
 			candidates[address] = DeviceCandidate{
 				Address:      address,
-				Name:         result.LocalName(),
-				RSSI:         int(result.RSSI),
-				ServiceUUIDs: uuidStrings(result.ServiceUUIDs()),
+				Name:         adv.LocalName(),
+				RSSI:         adv.RSSI(),
+				ServiceUUIDs: adv.ServiceUUIDs(),
 			}
 			mu.Unlock()
 		})
@@ -77,13 +56,13 @@ func (a *TinyGoAdapter) Scan(ctx context.Context, opts ScanOptions) ([]DeviceCan
 
 	select {
 	case <-ctx.Done():
-		_ = a.adapter.StopScan()
+		_ = a.driver.StopScan()
 		<-done
 		return nil, ctx.Err()
 	case err := <-done:
 		return nil, mapLiveError(err)
 	case <-time.After(duration):
-		_ = a.adapter.StopScan()
+		_ = a.driver.StopScan()
 	}
 
 	select {
@@ -109,27 +88,27 @@ func (a *TinyGoAdapter) Scan(ctx context.Context, opts ScanOptions) ([]DeviceCan
 	return out, nil
 }
 
-func (a *TinyGoAdapter) Inspect(ctx context.Context, req InspectRequest) ([]Event, error) {
+func (a *liveAdapter) Inspect(ctx context.Context, req InspectRequest) ([]Event, error) {
 	device, err := a.connect(ctx, req.Address)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = device.Disconnect() }()
 
-	services, err := runWithContext(ctx, func() ([]tinyble.DeviceService, error) {
+	services, err := runWithContext(ctx, func() ([]bleService, error) {
 		return device.DiscoverServices(nil)
 	})
 	if err != nil {
 		return nil, mapLiveError(err)
 	}
-	// EventServiceDiscovery events carry no Properties: tinygo.org/x/bluetooth
-	// exposes no characteristic property bitmask after discovery, so live
-	// captures cannot flag writable characteristics the way replay evidence
-	// does. Writability is inferred from action markers and community references.
+	// EventServiceDiscovery events carry no Properties: the BLE backend exposes
+	// no characteristic property bitmask after discovery, so live captures cannot
+	// flag writable characteristics the way replay evidence does. Writability is
+	// inferred from action markers and community references.
 	events := make([]Event, 0)
 	for serviceIndex, service := range services {
-		serviceUUID := service.UUID().String()
-		chars, err := runWithContext(ctx, func() ([]tinyble.DeviceCharacteristic, error) {
+		serviceUUID := service.UUID()
+		chars, err := runWithContext(ctx, func() ([]bleCharacteristic, error) {
 			return service.DiscoverCharacteristics(nil)
 		})
 		if err != nil {
@@ -140,14 +119,14 @@ func (a *TinyGoAdapter) Inspect(ctx context.Context, req InspectRequest) ([]Even
 				ID:                 fmt.Sprintf("svc-%02d-char-%02d", serviceIndex+1, charIndex+1),
 				Type:               EventServiceDiscovery,
 				ServiceUUID:        normalizeUUID(serviceUUID),
-				CharacteristicUUID: normalizeUUID(char.UUID().String()),
+				CharacteristicUUID: normalizeUUID(char.UUID()),
 			})
 		}
 	}
 	return events, nil
 }
 
-func (a *TinyGoAdapter) Read(ctx context.Context, req CharacteristicRequest) (Event, error) {
+func (a *liveAdapter) Read(ctx context.Context, req CharacteristicRequest) (Event, error) {
 	char, disconnect, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
 	if err != nil {
 		return Event{}, err
@@ -163,12 +142,12 @@ func (a *TinyGoAdapter) Read(ctx context.Context, req CharacteristicRequest) (Ev
 		ID:                 "live-read",
 		Type:               EventRead,
 		ServiceUUID:        normalizeUUID(req.ServiceUUID),
-		CharacteristicUUID: normalizeUUID(char.UUID().String()),
+		CharacteristicUUID: normalizeUUID(char.UUID()),
 		ValueHex:           hex.EncodeToString(buf[:n]),
 	}, nil
 }
 
-func (a *TinyGoAdapter) Write(ctx context.Context, req WriteRequest) (Event, error) {
+func (a *liveAdapter) Write(ctx context.Context, req WriteRequest) (Event, error) {
 	char, disconnect, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
 	if err != nil {
 		return Event{}, err
@@ -186,12 +165,12 @@ func (a *TinyGoAdapter) Write(ctx context.Context, req WriteRequest) (Event, err
 		ID:                 "live-write",
 		Type:               EventWrite,
 		ServiceUUID:        normalizeUUID(req.ServiceUUID),
-		CharacteristicUUID: normalizeUUID(char.UUID().String()),
+		CharacteristicUUID: normalizeUUID(char.UUID()),
 		ValueHex:           strings.ToLower(strings.TrimSpace(req.ValueHex)),
 	}, nil
 }
 
-func (a *TinyGoAdapter) Subscribe(ctx context.Context, req CharacteristicRequest) ([]Event, error) {
+func (a *liveAdapter) Subscribe(ctx context.Context, req CharacteristicRequest) ([]Event, error) {
 	char, disconnect, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
 	if err != nil {
 		return nil, err
@@ -200,7 +179,7 @@ func (a *TinyGoAdapter) Subscribe(ctx context.Context, req CharacteristicRequest
 
 	duration := durationFromMillis(req.DurationMillis)
 	serviceUUID := normalizeUUID(req.ServiceUUID)
-	characteristicUUID := normalizeUUID(char.UUID().String())
+	characteristicUUID := normalizeUUID(char.UUID())
 	var mu sync.Mutex
 	var events []Event
 	if err := char.EnableNotifications(func(buf []byte) {
@@ -231,62 +210,62 @@ func (a *TinyGoAdapter) Subscribe(ctx context.Context, req CharacteristicRequest
 	return out, nil
 }
 
-func (a *TinyGoAdapter) connect(ctx context.Context, address string) (tinyble.Device, error) {
+type connectResult struct {
+	device bleDevice
+	err    error
+}
+
+func (a *liveAdapter) connect(ctx context.Context, address string) (bleDevice, error) {
 	if strings.TrimSpace(address) == "" {
-		return tinyble.Device{}, adapterError(AdapterErrorDeviceNotFound, "live BLE requires --address")
+		return nil, adapterError(AdapterErrorDeviceNotFound, "live BLE requires --address")
 	}
 	if err := a.enable(); err != nil {
-		return tinyble.Device{}, err
+		return nil, err
 	}
 	if runtime.GOOS == "linux" {
 		if err := a.ensureLinuxDeviceSeen(ctx, address); err != nil {
-			return tinyble.Device{}, err
+			return nil, err
 		}
 	}
-	var addr tinyble.Address
-	addr.Set(address)
 
-	done := make(chan struct {
-		device tinyble.Device
-		err    error
-	}, 1)
+	done := make(chan connectResult, 1)
 	go func() {
-		device, err := a.adapter.Connect(addr, tinyble.ConnectionParams{})
-		done <- struct {
-			device tinyble.Device
-			err    error
-		}{device: device, err: err}
+		device, err := a.driver.Connect(address)
+		done <- connectResult{device: device, err: err}
 	}()
 
 	select {
 	case <-ctx.Done():
 		go disconnectLateConnect(done)
-		return tinyble.Device{}, ctx.Err()
+		return nil, ctx.Err()
 	case result := <-done:
 		if result.err != nil {
-			return tinyble.Device{}, mapLiveError(result.err)
+			return nil, mapLiveError(result.err)
 		}
 		return result.device, nil
 	}
 }
 
-func (a *TinyGoAdapter) ensureLinuxDeviceSeen(ctx context.Context, address string) error {
+// ensureLinuxDeviceSeen works around BlueZ requiring a device to be observed in
+// a scan before Connect succeeds. It scans until the target address appears or
+// the bounded context expires.
+func (a *liveAdapter) ensureLinuxDeviceSeen(ctx context.Context, address string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	target := strings.ToUpper(strings.TrimSpace(address))
 	done := make(chan error, 1)
 	go func() {
-		done <- a.adapter.Scan(func(adapter *tinyble.Adapter, result tinyble.ScanResult) {
-			if strings.EqualFold(result.Address.String(), target) {
-				_ = adapter.StopScan()
+		done <- a.driver.Scan(nil, func(adv bleAdvertisement) {
+			if strings.EqualFold(adv.Address(), target) {
+				_ = a.driver.StopScan()
 			}
 		})
 	}()
 
 	select {
 	case <-ctx.Done():
-		_ = a.adapter.StopScan()
+		_ = a.driver.StopScan()
 		<-done
 		return ctx.Err()
 	case err := <-done:
@@ -294,12 +273,11 @@ func (a *TinyGoAdapter) ensureLinuxDeviceSeen(ctx context.Context, address strin
 	}
 }
 
-func disconnectLateConnect(done <-chan struct {
-	device tinyble.Device
-	err    error
-}) {
+// disconnectLateConnect drains a connect goroutine that finished after its
+// context was cancelled, disconnecting the now-unwanted device.
+func disconnectLateConnect(done <-chan connectResult) {
 	result := <-done
-	if result.err == nil {
+	if result.err == nil && result.device != nil {
 		_ = result.device.Disconnect()
 	}
 }
@@ -326,60 +304,50 @@ func runWithContext[T any](ctx context.Context, fn func() (T, error)) (T, error)
 	}
 }
 
-func (a *TinyGoAdapter) characteristic(ctx context.Context, address string, serviceUUID string, characteristicUUID string) (tinyble.DeviceCharacteristic, func(), error) {
+func (a *liveAdapter) characteristic(ctx context.Context, address string, serviceUUID string, characteristicUUID string) (bleCharacteristic, func(), error) {
 	device, err := a.connect(ctx, address)
 	if err != nil {
-		return tinyble.DeviceCharacteristic{}, func() {}, err
+		return nil, func() {}, err
 	}
 	disconnect := func() { _ = device.Disconnect() }
 
-	serviceFilter, err := parseOptionalUUID(serviceUUID)
-	if err != nil {
+	if strings.TrimSpace(characteristicUUID) == "" {
 		disconnect()
-		return tinyble.DeviceCharacteristic{}, func() {}, err
-	}
-	charFilter, err := parseOptionalUUID(characteristicUUID)
-	if err != nil {
-		disconnect()
-		return tinyble.DeviceCharacteristic{}, func() {}, err
-	}
-	if charFilter == nil {
-		disconnect()
-		return tinyble.DeviceCharacteristic{}, func() {}, adapterError(AdapterErrorCharacteristic, "characteristic UUID is required")
+		return nil, func() {}, adapterError(AdapterErrorCharacteristic, "characteristic UUID is required")
 	}
 
-	var serviceUUIDs []tinyble.UUID
-	if serviceFilter != nil {
-		serviceUUIDs = []tinyble.UUID{*serviceFilter}
+	var serviceFilter []string
+	if trimmed := strings.TrimSpace(serviceUUID); trimmed != "" {
+		serviceFilter = []string{trimmed}
 	}
-	services, err := runWithContext(ctx, func() ([]tinyble.DeviceService, error) {
-		return device.DiscoverServices(serviceUUIDs)
+	services, err := runWithContext(ctx, func() ([]bleService, error) {
+		return device.DiscoverServices(serviceFilter)
 	})
 	if err != nil {
 		disconnect()
-		return tinyble.DeviceCharacteristic{}, func() {}, mapLiveError(err)
+		return nil, func() {}, mapLiveError(err)
 	}
 	for _, service := range services {
-		chars, err := runWithContext(ctx, func() ([]tinyble.DeviceCharacteristic, error) {
-			return service.DiscoverCharacteristics([]tinyble.UUID{*charFilter})
+		chars, err := runWithContext(ctx, func() ([]bleCharacteristic, error) {
+			return service.DiscoverCharacteristics([]string{characteristicUUID})
 		})
 		if err != nil {
 			disconnect()
-			return tinyble.DeviceCharacteristic{}, func() {}, mapLiveError(err)
+			return nil, func() {}, mapLiveError(err)
 		}
 		if len(chars) > 0 {
 			return chars[0], disconnect, nil
 		}
 	}
 	disconnect()
-	return tinyble.DeviceCharacteristic{}, func() {}, adapterError(AdapterErrorCharacteristic, "characteristic %q not found", characteristicUUID)
+	return nil, func() {}, adapterError(AdapterErrorCharacteristic, "characteristic %q not found", characteristicUUID)
 }
 
-func (a *TinyGoAdapter) enable() error {
-	if a == nil || a.adapter == nil {
+func (a *liveAdapter) enable() error {
+	if a == nil || a.driver == nil {
 		return adapterError(AdapterErrorUnsupported, "live BLE adapter is not configured")
 	}
-	if err := a.adapter.Enable(); err != nil {
+	if err := a.driver.Enable(); err != nil {
 		return mapLiveError(err)
 	}
 	return nil
@@ -398,47 +366,9 @@ func durationFromMillis(ms int) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-func parseUUIDs(values []string) ([]tinyble.UUID, error) {
-	out := make([]tinyble.UUID, 0, len(values))
-	for _, value := range values {
-		uuid, err := tinyble.ParseUUID(value)
-		if err != nil {
-			return nil, fmt.Errorf("service UUID %q: %w", value, err)
-		}
-		out = append(out, uuid)
-	}
-	return out, nil
-}
-
-func parseOptionalUUID(value string) (*tinyble.UUID, error) {
-	if strings.TrimSpace(value) == "" {
-		return nil, nil
-	}
-	uuid, err := tinyble.ParseUUID(value)
-	if err != nil {
-		return nil, err
-	}
-	return &uuid, nil
-}
-
-func matchesServiceUUIDs(result tinyble.ScanResult, required []tinyble.UUID) bool {
-	if len(required) == 0 {
-		return true
-	}
-	return slices.ContainsFunc(required, result.HasServiceUUID)
-}
-
-func uuidStrings(uuids []tinyble.UUID) []string {
-	out := make([]string, 0, len(uuids))
-	for _, uuid := range uuids {
-		out = append(out, normalizeUUID(uuid.String()))
-	}
-	sort.Strings(out)
-	return out
-}
-
-// mapLiveError classifies a raw BLE adapter error into a typed AdapterError.
-// String heuristics are applied before falling back to AdapterErrorUnsupported.
+// mapLiveError classifies a raw BLE backend error into a typed AdapterError.
+// Context errors pass through verbatim; string heuristics are applied before
+// falling back to AdapterErrorUnsupported.
 func mapLiveError(err error) error {
 	if err == nil {
 		return nil
