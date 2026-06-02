@@ -1,6 +1,11 @@
 package ble
 
-import "github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
+)
 
 const (
 	EventAdvertisement    = "advertisement"
@@ -73,4 +78,12 @@ type CandidateSummary struct {
 	Name         string   `json:"name"`
 	Summary      string   `json:"summary"`
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
+func ParseEvidence(data []byte) (EvidenceInput, error) {
+	var input EvidenceInput
+	if err := json.Unmarshal(data, &input); err != nil {
+		return EvidenceInput{}, fmt.Errorf("parse evidence JSON: %w", err)
+	}
+	return input, nil
 }
