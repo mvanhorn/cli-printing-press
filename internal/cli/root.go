@@ -78,6 +78,8 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newPrintCmd())
 	rootCmd.AddCommand(newBrowserSniffCmd())
 	rootCmd.AddCommand(newCrowdSniffCmd())
+	rootCmd.AddCommand(newDeviceSniffCmd())
+	rootCmd.AddCommand(newBluetoothSniffCmd())
 	rootCmd.AddCommand(newCatalogCmd())
 	rootCmd.AddCommand(newLibraryCmd())
 	rootCmd.AddCommand(newAuthCmd())
