@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicesniff/ble"
 	"github.com/spf13/cobra"
@@ -21,6 +22,16 @@ type probeOptions struct {
 	durationMillis     int
 }
 
+type DoctorReport struct {
+	Binary           string              `json:"binary"`
+	GOOS             string              `json:"goos"`
+	GOARCH           string              `json:"goarch"`
+	Live             ble.LiveSupportInfo `json:"live"`
+	ReplaySupported  bool                `json:"replay_supported"`
+	SmokeCommands    []string            `json:"smoke_commands"`
+	HardwareCommands []string            `json:"hardware_commands"`
+}
+
 func NewRootCommand(name string) *cobra.Command {
 	if name == "" {
 		name = "ble-probe"
@@ -35,6 +46,40 @@ func NewRootCommand(name string) *cobra.Command {
 	cmd.AddCommand(newReadCmd())
 	cmd.AddCommand(newWriteCmd())
 	cmd.AddCommand(newSubscribeCmd())
+	cmd.AddCommand(newDoctorCmd(name))
+	return cmd
+}
+
+func newDoctorCmd(name string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Report BLE probe build and hardware-test readiness",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			report := DoctorReport{
+				Binary:          name,
+				GOOS:            runtime.GOOS,
+				GOARCH:          runtime.GOARCH,
+				Live:            ble.LiveSupport(),
+				ReplaySupported: true,
+				SmokeCommands: []string{
+					name + " scan --input testdata/device/fixtures/ble-events.json",
+					name + " inspect --input testdata/device/fixtures/ble-events.json",
+				},
+				HardwareCommands: []string{
+					name + " scan --live --duration-ms 10000",
+					name + " inspect --live --address ADDRESS",
+					name + " read --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID",
+					name + " subscribe --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID --duration-ms 10000",
+				},
+			}
+			data, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				return fmt.Errorf("format doctor report: %w", err)
+			}
+			_, err = cmd.OutOrStdout().Write(append(data, '\n'))
+			return err
+		},
+	}
 	return cmd
 }
 
@@ -42,7 +87,7 @@ func newScanCmd() *cobra.Command {
 	opts := probeOptions{}
 	cmd := &cobra.Command{
 		Use:   "scan",
-		Short: "Emit replayed BLE advertisements as normalized evidence",
+		Short: "Emit BLE advertisements as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
@@ -76,7 +121,7 @@ func newInspectCmd() *cobra.Command {
 	opts := probeOptions{}
 	cmd := &cobra.Command{
 		Use:   "inspect",
-		Short: "Emit replayed BLE discovery and traffic for one device",
+		Short: "Emit BLE discovery and traffic for one device",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
@@ -98,7 +143,7 @@ func newReadCmd() *cobra.Command {
 	opts := probeOptions{}
 	cmd := &cobra.Command{
 		Use:   "read",
-		Short: "Emit a replayed BLE characteristic read as normalized evidence",
+		Short: "Emit a BLE characteristic read as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
@@ -124,7 +169,7 @@ func newWriteCmd() *cobra.Command {
 	opts := probeOptions{}
 	cmd := &cobra.Command{
 		Use:   "write",
-		Short: "Emit a replayed BLE characteristic write as normalized evidence",
+		Short: "Emit a BLE characteristic write as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
@@ -152,7 +197,7 @@ func newSubscribeCmd() *cobra.Command {
 	opts := probeOptions{}
 	cmd := &cobra.Command{
 		Use:   "subscribe",
-		Short: "Emit replayed BLE notifications as normalized evidence",
+		Short: "Emit BLE notifications as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
@@ -176,7 +221,7 @@ func newSubscribeCmd() *cobra.Command {
 }
 
 func addBackendFlags(cmd *cobra.Command, opts *probeOptions) {
-	cmd.Flags().StringVar(&opts.inputPath, "input", "", "Path to replay evidence JSON; live BLE support lands behind a later build tag")
+	cmd.Flags().StringVar(&opts.inputPath, "input", "", "Path to replay evidence JSON")
 	cmd.Flags().BoolVar(&opts.live, "live", false, "Use the live BLE adapter compiled with -tags ble_live")
 }
 

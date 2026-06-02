@@ -16,8 +16,23 @@ import (
 
 const defaultLiveDuration = 10 * time.Second
 
+type LiveSupportInfo struct {
+	Compiled bool   `json:"compiled"`
+	Backend  string `json:"backend"`
+	Platform string `json:"platform"`
+	Message  string `json:"message,omitempty"`
+}
+
 type TinyGoAdapter struct {
 	adapter *tinyble.Adapter
+}
+
+func LiveSupport() LiveSupportInfo {
+	return LiveSupportInfo{
+		Compiled: true,
+		Backend:  "tinygo.org/x/bluetooth",
+		Platform: "darwin/linux/windows",
+	}
 }
 
 func NewLiveAdapter() (Adapter, error) {

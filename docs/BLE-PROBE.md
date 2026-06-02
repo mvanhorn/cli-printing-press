@@ -1,0 +1,87 @@
+# BLE Probe Hardware Testing
+
+`ble-probe` is the standalone hardware smoke tool for the BLE device-sniff path. It lets you scan, inspect, read, subscribe, and capture write evidence without generating a full printed CLI.
+
+## Build
+
+Build a live BLE probe for the current machine:
+
+```bash
+scripts/build-ble-probe.sh live
+```
+
+Build a copyable Windows artifact from macOS:
+
+```bash
+scripts/build-ble-probe.sh live --target windows/amd64
+```
+
+The artifacts land under `dist/ble-probe/live/<goos>-<goarch>/ble-probe` with `.exe` on Windows.
+
+Replay-only artifacts do not need Bluetooth permissions and are useful for CI or evidence fixtures:
+
+```bash
+scripts/build-ble-probe.sh replay --target darwin/arm64
+```
+
+## Check The Binary
+
+Run the doctor command before hardware work:
+
+```bash
+dist/ble-probe/live/darwin-arm64/ble-probe doctor
+```
+
+On Windows PowerShell:
+
+```powershell
+.\ble-probe.exe doctor
+```
+
+The `live.compiled` field must be `true` for real device scans. If it is `false`, the binary is replay-only and should be rebuilt with the `live` mode.
+
+## macOS Smoke Test
+
+Give the terminal or host app Bluetooth permission in System Settings if macOS prompts for it.
+
+```bash
+dist/ble-probe/live/darwin-arm64/ble-probe scan --live --duration-ms 10000 > scan.json
+dist/ble-probe/live/darwin-arm64/ble-probe inspect --live --address '<address-from-scan>' > inspect.json
+```
+
+Read and subscribe commands are non-actuating ways to gather characteristic evidence:
+
+```bash
+dist/ble-probe/live/darwin-arm64/ble-probe read --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' > read.json
+dist/ble-probe/live/darwin-arm64/ble-probe subscribe --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' --duration-ms 10000 > notify.json
+```
+
+## Windows Smoke Test
+
+Copy `dist/ble-probe/live/windows-amd64/ble-probe.exe` to the Windows machine, then run:
+
+```powershell
+.\ble-probe.exe doctor
+.\ble-probe.exe scan --live --duration-ms 10000 > scan.json
+.\ble-probe.exe inspect --live --address '<address-from-scan>' > inspect.json
+```
+
+Use a current Windows 11 machine with a working Bluetooth adapter. If Windows blocks access, run from a normal PowerShell session after pairing permissions or Bluetooth adapter setup has been handled by the OS.
+
+## Capturing Control Evidence
+
+`write` is explicit because it can change device state:
+
+```bash
+ble-probe write --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' --value-hex '<payload>' > write.json
+```
+
+For unknown devices, prefer this order:
+
+1. `scan`
+2. `inspect`
+3. `read`
+4. `subscribe`
+5. `write` only when a payload is known from docs, a community library, or prior observed evidence
+
+The JSON files are normalized BLE evidence inputs for the analyzer and generator tests.

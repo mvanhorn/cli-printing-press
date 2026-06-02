@@ -2,6 +2,7 @@ package bleprobe
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -103,6 +104,21 @@ func TestProbeReportsLiveUnavailableWhenBuildTagIsAbsent(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "live BLE support is not compiled in")
+}
+
+func TestDoctorReportsReplayOnlyBuildReadiness(t *testing.T) {
+	t.Parallel()
+
+	output := executeProbe(t, "doctor")
+	var report DoctorReport
+	require.NoError(t, json.Unmarshal(output, &report))
+
+	assert.Equal(t, "ble-probe", report.Binary)
+	assert.True(t, report.ReplaySupported)
+	assert.False(t, report.Live.Compiled)
+	assert.Contains(t, report.Live.Message, "rebuild ble-probe with -tags ble_live")
+	assert.Contains(t, report.SmokeCommands, "ble-probe scan --input testdata/device/fixtures/ble-events.json")
+	assert.Contains(t, report.HardwareCommands, "ble-probe scan --live --duration-ms 10000")
 }
 
 func executeProbe(t *testing.T, args ...string) []byte {
