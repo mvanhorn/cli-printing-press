@@ -2,6 +2,7 @@ package naming
 
 import (
 	"regexp"
+	"runtime"
 	"strings"
 	"unicode"
 
@@ -52,6 +53,25 @@ func LegacyCLI(name string) string {
 
 func ValidationBinary(name string) string {
 	return CLI(name) + "-validation"
+}
+
+// ExeSuffix returns the executable file-name suffix for the given GOOS.
+// Pure and host-independent so it can be unit-tested cross-platform.
+func ExeSuffix(goos string) string {
+	if goos == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
+// HostExeName appends the host OS executable suffix to a base binary name.
+// Use it wherever the press builds a binary with an explicit `go build -o`
+// target and then execs it on the host: `go build -o` does NOT auto-append
+// ".exe" on Windows (only the inferred default name gets it), and Windows
+// os/exec resolves a path through PATHEXT, so an extensionless on-disk binary
+// is reported as "executable file not found in %PATH%". No-op on Linux/macOS.
+func HostExeName(base string) string {
+	return base + ExeSuffix(runtime.GOOS)
 }
 
 // HumanName turns a kebab-case slug into a space-separated title-cased

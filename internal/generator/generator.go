@@ -133,6 +133,11 @@ type Generator struct {
 	Narrative       *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
 	AsyncJobs       map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 
+	// ValidationMode selects how Validate() runs the generated CLI's runtime
+	// checks. Empty defaults to ModeBinary. Set from the `generate
+	// --validation-mode` flag; see validate.go for the AV/WDAC rationale.
+	ValidationMode ValidationMode
+
 	// ModulePath overrides the Go module import path emitted by templates that
 	// reference internal packages (`{{modulePath}}/internal/client`, etc.).
 	// Defaults to `<api>-pp-cli` when empty — matches the standalone-publish

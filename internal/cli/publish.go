@@ -801,7 +801,10 @@ func buildValidationBinary(dir, cliName string) (path string, cleanup func(), er
 		_ = os.RemoveAll(tempDir)
 	}
 
-	outPath := filepath.Join(tempDir, cliName)
+	// go build -o does not append ".exe" on Windows, and os/exec then cannot
+	// resolve the extensionless path; HostExeName makes the build+exec target
+	// match on every OS (no-op on Linux/macOS).
+	outPath := filepath.Join(tempDir, naming.HostExeName(cliName))
 	if err := buildBinaryAtPath(dir, outPath, "./cmd/"+cliName); err == nil {
 		return outPath, cleanup, nil
 	}

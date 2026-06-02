@@ -1127,7 +1127,8 @@ func TestGenerateWithNoAuth(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "noauth-pp-cli")
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
-	require.NoError(t, gen.Validate())
+	_, err := gen.Validate()
+	require.NoError(t, err)
 	assert.NoFileExists(t, filepath.Join(outputDir, naming.ValidationBinary("noauth")))
 }
 

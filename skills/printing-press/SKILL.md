@@ -1824,6 +1824,8 @@ printing-press generate \
   --force --lenient --validate
 ```
 
+On an AV/WDAC-hardened host (e.g. Windows + Trend Micro/AppLocker) the default `binary` validation mode execs a freshly built, unsigned `.exe` that the host may quarantine or policy-block. That is reported as `validation.exec_status: "blocked"` (exit 0, CLI still generated) — not a code failure. To validate without executing a fresh host binary, add `--validation-mode=docker` (builds+runs in a Linux container, bypassing host AV/WDAC) or `--validation-mode=skip-exec` (host build gates only; finish the runtime check with the commands it prints). Treat a `blocked`/`skipped` status as runtime validation NOT yet done.
+
 Browser-browser-sniff-enriched (original spec + browser-sniff-discovered spec):
 
 ```bash

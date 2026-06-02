@@ -108,7 +108,9 @@ Freshness ownership:
 - Freshness metadata belongs in the existing JSON provenance envelope at `meta.freshness`. It describes current-cache freshness for the covered path only; it must not be described as full historical backfill or API-specific enrichment.
 
 Gates:
-- All eight generator quality gates pass: `go mod tidy`, default-mode `govulncheck`, `go vet`, `go build`, binary build, `--help`, version, `doctor`
+- Host build gates always run (toolchain only, no fresh-CLI exec, so AV/WDAC-safe): `go mod tidy`, default-mode `govulncheck`, `go vet`, `go build ./...`.
+- Runtime smoke (`build runnable binary`, `--help`, `version`, `doctor`) runs per `generate --validation-mode`: `binary` (default — build a host binary and exec it), `go-run`, `docker` (build+run in a Linux container, bypassing Windows AV/WDAC), or `skip-exec` (host gates only). On Windows `go build -o` does not append `.exe`, so the validation binary path is built via `naming.HostExeName`.
+- A runtime exec the host's antivirus/WDAC blocks (not a code fault) is reported as `exec_status: blocked`, and `skip-exec` as `skipped` — both keep the generated CLI, print the exact finish-validation commands, and exit 0. A genuine CLI runtime failure stays `exec_status: failed` / exit 3. `generate --json` carries this additively under `validation` (`{mode, exec_status, reason, manual_commands}`); the pre-existing top-level keys are unchanged.
 
 Artifacts:
 - Full CLI source tree in the output directory

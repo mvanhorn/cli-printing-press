@@ -38,10 +38,13 @@ func CleanupGeneratedCLI(dir string, opts CleanupOptions) error {
 				continue
 			}
 			name := entry.Name()
+			// On Windows the built binary carries a ".exe" suffix; strip it
+			// before matching so "<cli>-validation.exe" is still cleaned up.
+			base := strings.TrimSuffix(name, ".exe")
 			switch {
-			case opts.RemoveValidationBinaries && strings.HasSuffix(name, "-validation"):
+			case opts.RemoveValidationBinaries && strings.HasSuffix(base, "-validation"):
 				errs = append(errs, removeFileIfExists(filepath.Join(dir, name)))
-			case opts.RemoveDogfoodBinaries && strings.HasSuffix(name, "-dogfood"):
+			case opts.RemoveDogfoodBinaries && strings.HasSuffix(base, "-dogfood"):
 				errs = append(errs, removeFileIfExists(filepath.Join(dir, name)))
 			}
 		}

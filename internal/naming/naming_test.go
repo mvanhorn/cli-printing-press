@@ -1,6 +1,7 @@
 package naming
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -299,5 +300,30 @@ func TestTrimCLISuffixBareSlug(t *testing.T) {
 	// Lock in that TrimCLISuffix returns bare slugs unchanged.
 	if got := TrimCLISuffix("dub"); got != "dub" {
 		t.Fatalf("TrimCLISuffix(%q) = %q, want %q", "dub", got, "dub")
+	}
+}
+
+func TestExeSuffix(t *testing.T) {
+	cases := map[string]string{
+		"windows": ".exe",
+		"linux":   "",
+		"darwin":  "",
+	}
+	for goos, want := range cases {
+		if got := ExeSuffix(goos); got != want {
+			t.Errorf("ExeSuffix(%q) = %q, want %q", goos, got, want)
+		}
+	}
+}
+
+func TestHostExeName(t *testing.T) {
+	const base = "demo-pp-cli-validation"
+	if got, want := HostExeName(base), base+ExeSuffix(runtime.GOOS); got != want {
+		t.Fatalf("HostExeName(%q) = %q, want %q", base, got, want)
+	}
+	// The whole point of the helper: on Windows the built+exec'd binary must
+	// carry the .exe extension or os/exec cannot resolve it.
+	if runtime.GOOS == "windows" && !strings.HasSuffix(HostExeName(base), ".exe") {
+		t.Fatalf("HostExeName(%q) must end with .exe on Windows; got %q", base, HostExeName(base))
 	}
 }

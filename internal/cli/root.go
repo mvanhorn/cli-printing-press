@@ -97,6 +97,7 @@ func newGenerateCmd() *cobra.Command {
 	var specURL string
 	var planFile string
 	var trafficAnalysisPath string
+	var validationMode string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -115,6 +116,10 @@ func newGenerateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRun && docsURL != "" {
 				return fmt.Errorf("--dry-run cannot be used with --docs (doc scraping has unavoidable side effects)")
+			}
+			valMode, err := parseValidationMode(validationMode)
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
 			}
 			if docsURL != "" {
 				apiName := cliName
@@ -156,7 +161,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				novelFeatures, polished, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
+				novelFeatures, polished, validationReport, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, validationMode: valMode, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
 					return err
 				}
@@ -182,13 +187,17 @@ func newGenerateCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", parsed.Name, absOut)
 				autoBundleForHost(absOut, os.Stderr)
 				if asJSON {
-					if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
+					out := map[string]any{
 						"name":       parsed.Name,
 						"output_dir": absOut,
 						"spec_files": specFiles,
 						"validated":  validate,
 						"polished":   polished,
-					}); err != nil {
+					}
+					if validationReport != nil {
+						out["validation"] = validationReport
+					}
+					if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
 						return fmt.Errorf("encoding JSON: %w", err)
 					}
 				}
@@ -302,7 +311,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
+			novelFeatures, polished, validationReport, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, validationMode: valMode, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
 			}
@@ -360,13 +369,17 @@ func newGenerateCmd() *cobra.Command {
 			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", apiSpec.Name, absOut)
 			autoBundleForHost(absOut, os.Stderr)
 			if asJSON {
-				if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
+				out := map[string]any{
 					"name":       apiSpec.Name,
 					"output_dir": absOut,
 					"spec_files": specFiles,
 					"validated":  validate,
 					"polished":   polished,
-				}); err != nil {
+				}
+				if validationReport != nil {
+					out["validation"] = validationReport
+				}
+				if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
 					return fmt.Errorf("encoding JSON: %w", err)
 				}
 			}
@@ -379,6 +392,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&owner, "owner", "", "Override owner attribution in generated copyright headers (highest priority; otherwise resolved from existing .printing-press.json, copyright header, or git config)")
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ~/printing-press/library/<name>)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
+	cmd.Flags().StringVar(&validationMode, "validation-mode", "", "How to run the generated CLI's runtime checks: binary (default; build+exec a host binary), go-run, docker (validate inside a Linux container, bypassing Windows AV/WDAC), or skip-exec (host build gates only, skip exec)")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-authored internal/cli/*.go files")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
@@ -425,6 +439,7 @@ func runGeneratePolishPass(enabled bool, apiName, outputDir string) bool {
 
 type generateProjectOptions struct {
 	validate                            bool
+	validationMode                      generator.ValidationMode
 	polish                              bool
 	researchDir                         string
 	trafficAnalysisPath                 string
@@ -433,29 +448,50 @@ type generateProjectOptions struct {
 	rejectUnshippablePageContextTraffic bool
 }
 
-func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) ([]pipeline.NovelFeatureManifest, bool, error) {
+// parseValidationMode resolves the --validation-mode flag to a generator mode.
+// Empty defaults to binary.
+func parseValidationMode(s string) (generator.ValidationMode, error) {
+	switch s {
+	case "", string(generator.ModeBinary):
+		return generator.ModeBinary, nil
+	case string(generator.ModeGoRun):
+		return generator.ModeGoRun, nil
+	case string(generator.ModeDocker):
+		return generator.ModeDocker, nil
+	case string(generator.ModeSkipExec):
+		return generator.ModeSkipExec, nil
+	default:
+		return "", fmt.Errorf("invalid --validation-mode %q (want binary, go-run, docker, or skip-exec)", s)
+	}
+}
+
+func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) ([]pipeline.NovelFeatureManifest, bool, *generator.ValidationReport, error) {
 	enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(opts.specFiles, opts.specURL)...)
 	gen := generator.New(apiSpec, absOut)
+	gen.ValidationMode = opts.validationMode
 	novelFeatures := loadResearchSources(gen, opts.researchDir)
 	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
 	if err != nil {
-		return nil, false, &ExitError{Code: ExitInputError, Err: err}
+		return nil, false, nil, &ExitError{Code: ExitInputError, Err: err}
 	}
 	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
-		return nil, false, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
+		return nil, false, nil, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
 	}
 	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
 	browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
 	gen.TrafficAnalysis = trafficAnalysis
 	if err := gen.Generate(); err != nil {
-		return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
+		return nil, false, nil, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 	}
+	var report *generator.ValidationReport
 	if opts.validate {
-		if err := gen.Validate(); err != nil {
-			return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
+		r, err := gen.Validate()
+		if err != nil {
+			return nil, false, nil, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
 		}
+		report = &r
 	}
-	return novelFeatures, runGeneratePolishPass(opts.polish, apiSpec.Name, absOut), nil
+	return novelFeatures, runGeneratePolishPass(opts.polish, apiSpec.Name, absOut), report, nil
 }
 
 func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string) error {

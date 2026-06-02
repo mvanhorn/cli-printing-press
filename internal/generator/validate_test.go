@@ -72,7 +72,7 @@ exit 0
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_GO_CALLS", callsPath)
 
-	err := gen.Validate()
+	_, err := gen.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `gate "govulncheck ./..." failed`)
 
