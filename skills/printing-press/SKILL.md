@@ -734,6 +734,8 @@ Before new research:
 
 1. Resolve the spec source.
 
+   **Local physical device detection.** If the user's target is a local Bluetooth/BLE-controlled physical device (for example an appliance, toy, light, sensor, exercise machine, lock, or other device controlled from a phone app over Bluetooth), do not route it through browser-sniff as the primary discovery path. Read and apply [references/device-sniff-ble.md](references/device-sniff-ble.md). Use `device-sniff ble` for normalized BLE evidence and `bluetooth-sniff` as the discoverable alias. Community libraries, docs, Android logs, Wireshark/nRF captures, and manual action journals are evidence inputs; they are not a reason to hardcode a vendor-specific generator path.
+
    **URL Detection** — If the argument contains `://`, it's a URL. Determine whether it's a spec or a website before proceeding.
 
    **Step 1: Content probe.** Fetch the URL with the raw docs helper from [references/fetch-docs.md](references/fetch-docs.md) and inspect the response status, `Content-Type`, and first few lines of the returned file:

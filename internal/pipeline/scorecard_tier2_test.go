@@ -45,6 +45,57 @@ func TestLoadOpenAPISpec_AcceptsHTTPURL(t *testing.T) {
 	assert.Contains(t, info.SecuritySchemes, "bearer_auth")
 }
 
+func TestScorecardTreatsDeviceBackedCLIAsNonHTTP(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pipelineDir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "device-spec.yaml"), `version: 1
+name: desk-lamp
+display_name: Desk Lamp
+protocol: ble
+identity:
+  advertised_names: ["Desk Lamp"]
+ble:
+  services:
+    - uuid: "180f"
+      characteristics:
+        - uuid: "2a19"
+          properties: ["read"]
+`)
+
+	sc, err := RunScorecard(dir, pipelineDir, "", nil)
+	assert.NoError(t, err)
+	assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+	assert.Contains(t, sc.UnscoredDimensions, DimAuthProtocol)
+}
+
+func TestScorecardAcceptsDeviceSpecPathAsNonHTTP(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pipelineDir := t.TempDir()
+	specPath := filepath.Join(t.TempDir(), "device.yaml")
+	writeFile(t, specPath, `version: 1
+name: desk-lamp
+display_name: Desk Lamp
+protocol: ble
+identity:
+  advertised_names: ["Desk Lamp"]
+ble:
+  services:
+    - uuid: "180f"
+      characteristics:
+        - uuid: "2a19"
+          properties: ["read"]
+`)
+
+	sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+	assert.NoError(t, err)
+	assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+	assert.Contains(t, sc.UnscoredDimensions, DimAuthProtocol)
+}
+
 func TestIsThinMCPDescription(t *testing.T) {
 	tests := []struct {
 		name string
