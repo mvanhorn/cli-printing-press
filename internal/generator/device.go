@@ -28,6 +28,7 @@ type deviceTemplateData struct {
 	StatusFields []deviceStatusField
 	Commands     []deviceCommandField
 	HasCommands  bool
+	HasSession   bool
 }
 
 type deviceStatusField struct {
@@ -66,6 +67,9 @@ func (g *DeviceGenerator) Generate() error {
 		filepath.Join("internal", "device", "transport.go"): deviceTransportTemplate,
 		"README.md": deviceReadmeTemplate,
 		"SKILL.md":  deviceSkillTemplate,
+	}
+	if data.HasSession {
+		files[filepath.Join("internal", "device", "session.go")] = deviceSessionTemplate
 	}
 	for path, tmpl := range files {
 		if err := g.render(path, tmpl, data); err != nil {
@@ -124,6 +128,7 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		StatusFields: statusFields,
 		Commands:     commands,
 		HasCommands:  len(commands) > 0,
+		HasSession:   g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
 	}
 }
 
@@ -220,6 +225,9 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview device writes without dispatching them")
 {{- end}}
 	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
+{{- if .HasSession}}
+	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
+{{- end}}
 {{- range .Commands}}
 	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.NewReplayTransport(), device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}}))
 {{- end}}
@@ -278,6 +286,83 @@ func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definitio
 }
 
 {{ end}}
+{{ if .HasSession}}
+func newSessionCmd(flags *rootFlags, session device.Session) *cobra.Command {
+	sessionCmd := &cobra.Command{
+		Use:   "session",
+		Short: "Inspect the replay-backed BLE session scaffold",
+	}
+	sessionCmd.AddCommand(newSessionStatusCmd(flags, session))
+	sessionCmd.AddCommand(newSessionStartCmd(flags, session))
+	sessionCmd.AddCommand(newSessionStopCmd(flags, session))
+	return sessionCmd
+}
+
+func newSessionStatusCmd(flags *rootFlags, session device.Session) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Show generated BLE session requirements",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			status, err := session.Status(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return writeSessionStatus(cmd, flags, status)
+		},
+	}
+}
+
+func newSessionStartCmd(flags *rootFlags, session device.Session) *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start a replay BLE session placeholder",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			status, err := session.Start(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return writeSessionStatus(cmd, flags, status)
+		},
+	}
+}
+
+func newSessionStopCmd(flags *rootFlags, session device.Session) *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop a replay BLE session placeholder",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			status, err := session.Stop(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return writeSessionStatus(cmd, flags, status)
+		},
+	}
+}
+
+func writeSessionStatus(cmd *cobra.Command, flags *rootFlags, status device.SessionStatus) error {
+	if flags.asJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(status)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s session\n", status.Device)
+	fmt.Fprintf(cmd.OutOrStdout(), "state: %s\n", status.State)
+	fmt.Fprintf(cmd.OutOrStdout(), "mode: %s\n", status.Mode)
+	fmt.Fprintf(cmd.OutOrStdout(), "transport: %s\n", status.Transport)
+	fmt.Fprintf(cmd.OutOrStdout(), "one-shot fallback: %v\n", status.OneShotFallback)
+	fmt.Fprintf(cmd.OutOrStdout(), "reconnect: %v\n", status.Reconnect)
+	fmt.Fprintf(cmd.OutOrStdout(), "notification stream: %v\n", status.NotificationStream)
+	for _, reason := range status.Reasons {
+		fmt.Fprintf(cmd.OutOrStdout(), "reason: %s\n", reason)
+	}
+	if status.Detail != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "detail: %s\n", status.Detail)
+	}
+	return nil
+}
+
+{{ end}}
 func ExecuteWithContext(ctx context.Context) error {
 	cmd := RootCmd()
 	cmd.SetContext(ctx)
@@ -296,7 +381,19 @@ const (
 	Protocol            = "ble"
 	SessionMode         = {{quote .Spec.Session.Mode}}
 	SessionOneShotFallback = {{if .Spec.Session.OneShotFallback}}true{{else}}false{{end}}
+{{- if .HasSession}}
+	SessionReconnect = {{if .Spec.Session.Reconnect}}true{{else}}false{{end}}
+	SessionNotificationStream = {{if .Spec.Session.NotificationStream}}true{{else}}false{{end}}
+{{- end}}
 )
+
+{{- if .HasSession}}
+var SessionReasons = []string{
+{{- range .Spec.Session.Reasons}}
+	{{quote .}},
+{{- end}}
+}
+{{- end}}
 
 type StatusField struct {
 	Name                     string ` + "`json:\"name\"`" + `
@@ -397,6 +494,69 @@ func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDef
 }
 `
 
+const deviceSessionTemplate = `// Copyright {{.CurrentYear}}. Licensed under Apache-2.0. See LICENSE.
+// Generated by CLI Printing Press (https://github.com/mvanhorn/cli-printing-press). DO NOT EDIT.
+
+package device
+
+import (
+	"context"
+	"time"
+)
+
+type SessionStatus struct {
+	Device             string   ` + "`json:\"device\"`" + `
+	Mode               string   ` + "`json:\"mode\"`" + `
+	State              string   ` + "`json:\"state\"`" + `
+	Transport          string   ` + "`json:\"transport\"`" + `
+	ObservedAt         string   ` + "`json:\"observed_at\"`" + `
+	Reasons            []string ` + "`json:\"reasons,omitempty\"`" + `
+	OneShotFallback    bool     ` + "`json:\"one_shot_fallback\"`" + `
+	Reconnect          bool     ` + "`json:\"reconnect\"`" + `
+	NotificationStream bool     ` + "`json:\"notification_stream\"`" + `
+	Detail             string   ` + "`json:\"detail,omitempty\"`" + `
+}
+
+type Session interface {
+	Start(context.Context) (SessionStatus, error)
+	Status(context.Context) (SessionStatus, error)
+	Stop(context.Context) (SessionStatus, error)
+}
+
+type ReplaySession struct{}
+
+func NewReplaySession() *ReplaySession {
+	return &ReplaySession{}
+}
+
+func (s *ReplaySession) Start(ctx context.Context) (SessionStatus, error) {
+	return sessionStatus("started"), nil
+}
+
+func (s *ReplaySession) Status(ctx context.Context) (SessionStatus, error) {
+	return sessionStatus("not-running"), nil
+}
+
+func (s *ReplaySession) Stop(ctx context.Context) (SessionStatus, error) {
+	return sessionStatus("stopped"), nil
+}
+
+func sessionStatus(state string) SessionStatus {
+	return SessionStatus{
+		Device:             DisplayName,
+		Mode:               SessionMode,
+		State:              state,
+		Transport:          "replay",
+		ObservedAt:         time.Now().UTC().Format(time.RFC3339),
+		Reasons:            append([]string(nil), SessionReasons...),
+		OneShotFallback:    SessionOneShotFallback,
+		Reconnect:          SessionReconnect,
+		NotificationStream: SessionNotificationStream,
+		Detail:             "replay session scaffold only; live BLE IPC is not enabled in this generated CLI yet",
+	}
+}
+`
+
 const deviceReadmeTemplate = `# {{.DisplayName}} CLI
 
 Generated by the Printing Press from a BLE device spec.
@@ -409,6 +569,9 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 {{- range .Commands}}
 - ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` previews the {{.Name}} BLE write.
 {{- end}}
+{{- if .HasSession}}
+- ` + "`{{.CLIName}} session status --json`" + ` prints the generated session requirements and replay scaffold state.
+{{- end}}
 `
 
 const deviceSkillTemplate = `---
@@ -416,5 +579,5 @@ name: {{.Name}}
 description: Control {{.DisplayName}} through the generated BLE device CLI.
 ---
 
-Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}} Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.
+Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session status --json`" + ` to inspect the generated session requirements before building live BLE IPC.{{else}} Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.{{end}}
 `
