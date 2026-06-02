@@ -75,6 +75,16 @@ const (
 )
 
 const (
+	// CookieModeNamedToken (the default) sends authHeader as a single named
+	// cookie via req.AddCookie — correct for api_key-in-cookie auth.
+	// CookieModeSessionHeader sends authHeader verbatim as the Cookie header
+	// via req.Header.Set — correct for captured browser/native sessions
+	// whose Cookie header is a `name=value; name2=value2` string.
+	CookieModeNamedToken    = "named_token"
+	CookieModeSessionHeader = "session_header"
+)
+
+const (
 	TierAuthTypeNone        = "none"
 	TierAuthTypeAPIKey      = "api_key"
 	TierAuthTypeBearerToken = "bearer_token"
@@ -985,6 +995,15 @@ type AuthConfig struct {
 	DefaultClientID        string       `yaml:"default_client_id,omitempty" json:"default_client_id,omitempty"`
 	CookieDomain           string       `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
 	Cookies                []string     `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
+	// CookieMode disambiguates the two shapes of `in: cookie` auth. "named_token"
+	// (the default, preserves prior behavior) means authHeader carries a single
+	// token sent as a named cookie via req.AddCookie. "session_header" means
+	// authHeader is a full `name=value; name2=value2` Cookie header captured from
+	// a browser/native session; net/http's AddCookie rejects semicolons in
+	// Cookie.Value, so the template emits req.Header.Set("Cookie", authHeader)
+	// instead. Browser-sniffed specs whose captured Cookie header carries
+	// multiple name=value pairs are emitted as session_header.
+	CookieMode             string       `yaml:"cookie_mode,omitempty" json:"cookie_mode,omitempty"`
 	Inferred               bool         `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
 
 	// press-auth companion hints. When present, the generated CLI's

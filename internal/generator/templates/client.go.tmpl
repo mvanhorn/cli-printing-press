@@ -486,6 +486,14 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// Auth lives on URL query; Go preserves the query on relative
 		// redirects, so nothing to re-derive.
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+{{- if eq .Auth.CookieMode "session_header"}}
+		// Session-cookie auth: the full Cookie header is the credential.
+		// Drop it on cross-host hops so the session does not leak to a
+		// redirect target; same-host hops keep Go's natural carry.
+		if req.URL.Host != via[0].URL.Host {
+			req.Header.Del("Cookie")
+		}
+{{- else}}
 		// The auth cookie set on the initial request is carried verbatim by Go
 		// on same-host redirects, so re-adding it here would double the Cookie
 		// header (the same hazard the cookie-jar branch below avoids). Only the
@@ -502,6 +510,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 				}
 			}
 		}
+{{- end}}
 {{- else if eq .Auth.Type "cookie"}}
 		// Cookie-auth redirects: Go's http.Client + http.CookieJar handle
 		// cookie carriage on 3xx hops natively. Setting the Cookie header
@@ -1346,7 +1355,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
 			req.URL.RawQuery = q.Encode()
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+{{- if eq .Auth.CookieMode "session_header"}}
+			// Full Cookie header captured from a browser/native session.
+			// net/http.AddCookie rejects semicolons in Cookie.Value, so the
+			// multi-pair `name=value; name2=value2` string must go through
+			// the header API directly.
+			req.Header.Set("Cookie", authHeader)
+{{- else}}
 			req.AddCookie(&http.Cookie{Name: "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", Value: authHeader})
+{{- end}}
 {{- else if eq .Auth.Type "cookie"}}
 			// Cookie-auth: LoadCookieJar is the sole source of outbound
 			// cookies. net/http's Client.send calls jar.Cookies + AddCookie
@@ -1654,9 +1671,14 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
 	if authHeader != "" {
+{{- if eq .Auth.CookieMode "session_header"}}
+		// Session-cookie auth: authHeader already is the full Cookie header.
+		fmt.Fprintf(os.Stderr, "  Cookie: %s\n", maskToken(authHeader))
+{{- else}}
 		// in:cookie auth ships on the Cookie header; preview it as such so the
 		// dry run matches the live wire format.
 		fmt.Fprintf(os.Stderr, "  Cookie: %s=%s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
+{{- end}}
 	}
 {{- else if not (and .Auth .Auth.In (eq .Auth.In "query"))}}
 	if authHeader != "" {

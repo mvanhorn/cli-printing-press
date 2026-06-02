@@ -1208,7 +1208,7 @@ func detectAuthWithWarnings(capture *EnrichedCapture, entries []EnrichedEntry, n
 	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 	auth0SPA := detectAuth0SPAInMemory(entries)
 	if capture != nil && capture.Auth != nil {
-		auth := detectCapturedAuth(capture.Auth, envPrefix)
+		auth := detectCapturedAuth(capture.Auth, entries, envPrefix)
 		if auth.Type != "" {
 			// Capture-derived bearer auth with an Auth0-SPA-in-memory signature
 			// gets the subtype annotation so the generator routes to the CDP
@@ -1430,7 +1430,7 @@ func isObservedAuthHeaderName(lowerName string) bool {
 	return false
 }
 
-func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig {
+func detectCapturedAuth(capture *AuthCapture, entries []EnrichedEntry, envPrefix string) spec.AuthConfig {
 	if capture == nil {
 		return spec.AuthConfig{}
 	}
@@ -1461,6 +1461,7 @@ func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig 
 				Type:         "cookie",
 				Header:       "Cookie",
 				In:           "cookie",
+				CookieMode:   detectCookieMode(entries),
 				CookieDomain: capture.BoundDomain,
 				EnvVars:      envVarsOrNil(envPrefix, "COOKIES"),
 			}
@@ -1482,12 +1483,46 @@ func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig 
 			Type:         "cookie",
 			Header:       "Cookie",
 			In:           "cookie",
+			CookieMode:   detectCookieMode(entries),
 			CookieDomain: capture.BoundDomain,
 			EnvVars:      envVarsOrNil(envPrefix, "COOKIES"),
 		}
 	}
 
 	return spec.AuthConfig{}
+}
+
+// detectCookieMode inspects captured Cookie request headers and returns
+// spec.CookieModeSessionHeader when any entry's Cookie header carries
+// >= 2 distinct name=value pairs — the signature of a browser/native
+// session capture. Returns "" (the omitempty default, equivalent to
+// named_token) when no such header is observed.
+func detectCookieMode(entries []EnrichedEntry) string {
+	for _, entry := range entries {
+		for name, value := range entry.RequestHeaders {
+			if !strings.EqualFold(strings.TrimSpace(name), "Cookie") {
+				continue
+			}
+			if countCookiePairs(value) >= 2 {
+				return spec.CookieModeSessionHeader
+			}
+		}
+	}
+	return ""
+}
+
+func countCookiePairs(value string) int {
+	n := 0
+	for _, part := range strings.Split(value, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if eq := strings.IndexByte(part, '='); eq > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 func firstAuthHeader(headers map[string]string) string {
