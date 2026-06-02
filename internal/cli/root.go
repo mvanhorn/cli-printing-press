@@ -21,6 +21,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
@@ -307,6 +308,69 @@ func newGenerateCmd() *cobra.Command {
 
 			if len(specFiles) == 0 {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec is required (or use --plan for plan-driven generation)")}
+			}
+
+			if len(specFiles) == 1 {
+				data, err := readSpec(specFiles[0], refresh, dryRun)
+				if err != nil {
+					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFiles[0], err)}
+				}
+				if devicespec.LooksLikeDeviceSpec(data) {
+					deviceSpec, err := devicespec.ParseBytes(data)
+					if err != nil {
+						return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing device spec %s: %w", specFiles[0], err)}
+					}
+					if cliName != "" {
+						deviceSpec.Name = cliName
+					}
+					absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, deviceSpec.Name, force, !dryRun)
+					if err != nil {
+						return err
+					}
+					if dryRun {
+						fmt.Fprintf(os.Stdout, "Would generate %s at %s from BLE device spec %s\n", naming.CLI(deviceSpec.Name), absOut, specFiles[0])
+						return nil
+					}
+					generateResult, err := runGenerateDeviceProject(deviceSpec, absOut, generateProjectOptions{validate: validate, polish: polish})
+					if err != nil {
+						return err
+					}
+					if snapshotDir != "" {
+						if err := finalizeForceMerge(snapshotDir, absOut, data); err != nil {
+							return err
+						}
+					}
+					if !explicitOutput {
+						derivedDir := deviceSpec.Name
+						currentBase := filepath.Base(absOut)
+						if currentBase != derivedDir {
+							finalPath := filepath.Join(filepath.Dir(absOut), derivedDir)
+							if err := os.Rename(absOut, finalPath); err != nil {
+								fmt.Fprintf(os.Stderr, "warning: could not rename output dir from %s to %s: %v\n", currentBase, derivedDir, err)
+							} else {
+								absOut = finalPath
+							}
+						}
+					}
+					if err := os.WriteFile(filepath.Join(absOut, "device-spec.yaml"), artifacts.RedactArchivedSpecSecrets(data), 0o644); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: could not archive device spec: %v\n", err)
+					}
+					fmt.Fprintf(os.Stderr, "Generated %s at %s (from BLE device spec)\n", deviceSpec.Name, absOut)
+					autoBundleForHost(absOut, os.Stderr)
+					if asJSON {
+						if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
+							"name":       deviceSpec.Name,
+							"output_dir": absOut,
+							"spec_files": specFiles,
+							"validated":  validate,
+							"polished":   generateResult.Polished,
+							"protocol":   deviceSpec.Protocol,
+						}); err != nil {
+							return fmt.Errorf("encoding JSON: %w", err)
+						}
+					}
+					return nil
+				}
 			}
 
 			if maxResources > 0 {
@@ -611,6 +675,22 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 		CatalogDescription: gen.CatalogDescription(),
 		DisplayName:        gen.CatalogDisplayName(),
 		Polished:           runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
+	}, nil
+}
+
+func runGenerateDeviceProject(deviceSpec *devicespec.DeviceSpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
+	gen := generator.NewDevice(deviceSpec, absOut)
+	if err := gen.Generate(); err != nil {
+		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating device project: %w", err)}
+	}
+	if opts.validate {
+		if err := gen.Validate(); err != nil {
+			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated device project: %w", err)}
+		}
+	}
+	return generateProjectResult{
+		DisplayName: deviceSpec.DisplayName,
+		Polished:    runGeneratePolishPass(opts.polish, deviceSpec.Name, absOut),
 	}, nil
 }
 

@@ -30,6 +30,29 @@ func TestParseMinimalBLESpecDefaultsOneShot(t *testing.T) {
 	assert.Equal(t, "2a6e", ds.Capabilities.Telemetry[0].SourceCharacteristicUUID)
 }
 
+func TestLooksLikeDeviceSpecRequiresBLEProtocolAndSurface(t *testing.T) {
+	t.Parallel()
+
+	deviceData, err := os.ReadFile(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+	assert.True(t, LooksLikeDeviceSpec(deviceData))
+
+	assert.False(t, LooksLikeDeviceSpec([]byte(`
+name: http-api
+base_url: https://api.example.com
+resources:
+  things:
+    endpoints: []
+`)))
+	assert.False(t, LooksLikeDeviceSpec([]byte(`
+version: 1
+name: empty-device
+protocol: ble
+ble:
+  services: []
+`)))
+}
+
 func TestParseSimpleActuatorNoSessionRequirement(t *testing.T) {
 	t.Parallel()
 

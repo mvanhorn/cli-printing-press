@@ -1,0 +1,8 @@
+ble-temperature-sensor/go.mod
+ble-temperature-sensor/cmd/ble-temperature-sensor-pp-cli/main.go
+ble-temperature-sensor/internal/cli/root.go
+ble-temperature-sensor/internal/device/spec.go
+ble-temperature-sensor/internal/device/transport.go
+ble-temperature-sensor/README.md
+ble-temperature-sensor/SKILL.md
+ble-temperature-sensor/device-spec.yaml

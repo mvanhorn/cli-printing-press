@@ -27,6 +27,17 @@ func ParseBytes(data []byte) (*DeviceSpec, error) {
 	return &ds, nil
 }
 
+func LooksLikeDeviceSpec(data []byte) bool {
+	var raw struct {
+		Protocol string     `yaml:"protocol"`
+		BLE      BLESurface `yaml:"ble"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return raw.Protocol == ProtocolBLE && len(raw.BLE.Services) > 0
+}
+
 func (s *DeviceSpec) applyDefaults() {
 	if s.Protocol == "" {
 		s.Protocol = ProtocolBLE

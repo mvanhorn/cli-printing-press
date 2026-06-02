@@ -1,0 +1,1 @@
+Generated ble-temperature-sensor at <ARTIFACT_DIR>/generate-device-ble/ble-temperature-sensor (from BLE device spec)
