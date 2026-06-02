@@ -1059,12 +1059,20 @@ func syncDependentResource(c interface {
 				break
 			}
 
-			// Inject parent_id into each item before upserting
+			// Inject the parent linkage into each item before upserting. Two
+			// columns carry it: the generic nullable parent_id, and the typed
+			// sub-resource scope column <parent_table>_id, which buildSubResourceTable
+			// declares NOT NULL and the typed upsert reads by that name. The API
+			// item itself never carries <parent_table>_id (e.g. Plane returns
+			// "project", not "projects_id"), so without this injection every
+			// dependent upsert violates the NOT NULL constraint and the resource
+			// silently syncs zero rows.
 			for i, item := range items {
 				var obj map[string]json.RawMessage
 				if err := json.Unmarshal(item, &obj); err == nil {
 					parentIDJSON, _ := json.Marshal(parentID)
 					obj["parent_id"] = parentIDJSON
+					obj[dep.ParentTable+"_id"] = parentIDJSON
 					if modified, err := json.Marshal(obj); err == nil {
 						items[i] = modified
 					}

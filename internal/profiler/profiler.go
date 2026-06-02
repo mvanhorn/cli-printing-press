@@ -357,8 +357,15 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// annotations on a child path-item flow into the override
 						// and critical-resource maps. Store raw names so
 						// detectDependentResources can snake-case downstream.
+						// Multiple parameterized list endpoints can share one
+						// resource key (e.g. /projects/{project_id}/cycles/ and the
+						// nested /projects/{project_id}/cycles/{cycle_id}/cycle-issues/).
+						// Keep the most canonical collection deterministically so a
+						// deeper sub-collection — which needs an id unavailable during
+						// per-parent fan-out, and would sync zero records — never
+						// hijacks the slot via Go map iteration order.
 						key := parentName + "/" + name
-						if _, ok := parameterized[key]; !ok {
+						if existing, ok := parameterized[key]; !ok || moreCanonicalListPath(endpoint.Path, existing.meta.Path) {
 							parameterized[key] = parameterizedEntry{
 								name:       name,
 								parentName: parentName,
@@ -998,6 +1005,22 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 		return deps[i].Name < deps[j].Name
 	})
 	return deps
+}
+
+// moreCanonicalListPath reports whether candidate is a better canonical list
+// path than existing for the same resource key. The most canonical collection
+// has the fewest path parameters (shallowest); ties break by shorter then
+// lexical path so the choice is deterministic regardless of Go map iteration
+// order.
+func moreCanonicalListPath(candidate, existing string) bool {
+	cp, ep := strings.Count(candidate, "{"), strings.Count(existing, "{")
+	if cp != ep {
+		return cp < ep
+	}
+	if len(candidate) != len(existing) {
+		return len(candidate) < len(existing)
+	}
+	return candidate < existing
 }
 
 // firstPathParam returns the name of the first {param} in a path template.

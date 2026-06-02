@@ -350,6 +350,62 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli/...", "./internal/cliutil/...")
 }
 
+// TestGenerateDependentResourceInjectsParentScopeColumn reproduces the Plane
+// "fan-out stores zero rows" bug. A project-scoped child (cycles under projects)
+// yields a sub-resource table whose parent scope column (<parent>_id, here
+// projects_id) is NOT NULL, and the typed upsert reads that column from a
+// same-named item field. Plane API items carry "project", never "projects_id",
+// so unless the dependent-sync fan-out injects the scope column, every upsert
+// fails the NOT NULL constraint and the resource silently syncs zero rows.
+func TestGenerateDependentResourceInjectsParentScopeColumn(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name: "plane-fanout",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/projects/",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"cycles": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/projects/{project_id}/cycles/",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// The cycles sub-resource table requires a non-null projects_id scope column.
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(storeSrc), "projects_id TEXT NOT NULL",
+		"sub-resource table must declare the NOT NULL parent scope column")
+
+	// The dependent-sync fan-out must inject that scope column, or every upsert
+	// violates the NOT NULL constraint and the resource silently syncs zero rows.
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(syncSrc), `obj[dep.ParentTable+"_id"] = parentIDJSON`,
+		"fan-out must inject the parent scope column (<parent>_id) so the NOT NULL typed-upsert column is populated, not just parent_id")
+}
+
 func TestGenerateFreshnessOptOutUsesASCIIPrefix(t *testing.T) {
 	t.Parallel()
 

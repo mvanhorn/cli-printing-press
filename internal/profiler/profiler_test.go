@@ -175,6 +175,70 @@ func TestProfileSiblingListEndpoints(t *testing.T) {
 	assert.Equal(t, "/portfolio/settlements", syncPaths["portfolio-settlements"])
 }
 
+// TestProfileNestedSubCollectionDoesNotHijackParentList reproduces the Plane
+// "cycles" sync bug. A resource exposes both a shallow collection list
+// (/projects/{project_id}/cycles/) and a deeper nested sub-collection
+// (/projects/{project_id}/cycles/{cycle_id}/cycle-issues/). Both are parameterized
+// list endpoints under the same resource, so they collide on one parameterized
+// key. The resource's canonical dependent-resource list MUST always be the shallow
+// collection: the deep sub-collection needs a {cycle_id} that is unavailable during
+// per-parent fan-out, so if it hijacks the slot the resource syncs zero records.
+//
+// The selection must be deterministic. Go randomizes map iteration order, so a
+// first-wins selection picks the deep path on a fraction of runs; loop to expose it.
+func TestProfileNestedSubCollectionDoesNotHijackParentList(t *testing.T) {
+	makeSpec := func() *spec.APISpec {
+		return &spec.APISpec{
+			Name: "plane",
+			Resources: map[string]spec.Resource{
+				"projects": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/projects/",
+							Response:   spec.ResponseDef{Type: "array"},
+							Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "per_page"},
+						},
+					},
+				},
+				"cycles": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/projects/{project_id}/cycles/",
+							Response:   spec.ResponseDef{Type: "array"},
+							Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "per_page"},
+						},
+						"cycle-issues": {
+							Method:     "GET",
+							Path:       "/projects/{project_id}/cycles/{cycle_id}/cycle-issues/",
+							Response:   spec.ResponseDef{Type: "array"},
+							Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "per_page"},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	for i := 0; i < 50; i++ {
+		profile := Profile(makeSpec())
+
+		var cyclesPath string
+		found := false
+		for _, dr := range profile.DependentSyncResources {
+			if dr.Name == "cycles" {
+				cyclesPath = dr.Path
+				found = true
+			}
+		}
+
+		require.True(t, found, "run %d: expected a 'cycles' dependent resource", i)
+		assert.Equal(t, "/projects/{project_id}/cycles/", cyclesPath,
+			"run %d: 'cycles' must adopt the shallow collection, not the nested sub-collection", i)
+	}
+}
+
 func TestProfileDiscriminatorDispatchFromResponseTypeEnum(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "mixed-network",
