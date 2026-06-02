@@ -1,0 +1,31 @@
+version: 1
+name: ble-temperature-sensor
+display_name: BLE Temperature Sensor
+protocol: ble
+identity:
+  advertised_names: ["EnviroSense"]
+  address_policy: randomized
+  manufacturer_data_hints: ["acme:0102"]
+  gatt_fingerprint:
+    - service:1809
+    - char:2a6e:read,notify
+  match_strength: medium
+ble:
+  services:
+    - uuid: "1809"
+      name: Health Thermometer
+      characteristics:
+        - uuid: "2a6e"
+          name: Temperature
+          properties: [read, notify]
+capabilities:
+  telemetry:
+    - name: temperature
+      source_characteristic_uuid: "2a6e"
+      unit: celsius
+      sample_cadence: notification
+      store: false
+evidence:
+  - id: scan-temp
+    source: imported-log
+    summary: Device advertised Health Thermometer and emitted temperature notifications.
