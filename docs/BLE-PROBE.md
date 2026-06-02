@@ -56,6 +56,15 @@ dist/ble-probe/live/darwin-arm64/ble-probe read --live --address '<address>' --s
 dist/ble-probe/live/darwin-arm64/ble-probe subscribe --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' --duration-ms 10000 > notify.json
 ```
 
+Merge the capture pieces before analysis:
+
+```bash
+dist/ble-probe/live/darwin-arm64/ble-probe merge --redact-term '<personal-name-or-room-name>' scan.json inspect.json read.json notify.json > evidence.json
+./cli-printing-press device-sniff ble --input evidence.json --output device.yaml --redact-term '<personal-name-or-room-name>' --json
+```
+
+Use `--redact-term` for owner names, room names, or other personal strings that appear in advertised device names. Redaction terms are used for the archived evidence artifact and are not written back into that redacted artifact.
+
 ## Windows Smoke Test
 
 Copy `dist/ble-probe/live/windows-amd64/ble-probe.exe` to the Windows machine, then run:
@@ -84,4 +93,4 @@ For unknown devices, prefer this order:
 4. `subscribe`
 5. `write` only when a payload is known from docs, a community library, or prior observed evidence
 
-The JSON files are normalized BLE evidence inputs for the analyzer and generator tests.
+The JSON files are normalized BLE evidence inputs. Use `ble-probe merge` to combine multiple capture files into one analyzer input before running `device-sniff ble`.

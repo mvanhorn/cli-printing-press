@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicesniff/ble"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +21,7 @@ type probeOptions struct {
 	valueHex           string
 	serviceUUIDs       []string
 	durationMillis     int
+	redactionTerms     []string
 }
 
 type DoctorReport struct {
@@ -46,6 +48,7 @@ func NewRootCommand(name string) *cobra.Command {
 	cmd.AddCommand(newReadCmd())
 	cmd.AddCommand(newWriteCmd())
 	cmd.AddCommand(newSubscribeCmd())
+	cmd.AddCommand(newMergeCmd())
 	cmd.AddCommand(newDoctorCmd(name))
 	return cmd
 }
@@ -64,6 +67,7 @@ func newDoctorCmd(name string) *cobra.Command {
 				SmokeCommands: []string{
 					name + " scan --input testdata/device/fixtures/ble-events.json",
 					name + " inspect --input testdata/device/fixtures/ble-events.json",
+					name + " merge scan.json inspect.json read.json notify.json > evidence.json",
 				},
 				HardwareCommands: []string{
 					name + " scan --live --duration-ms 10000",
@@ -72,12 +76,13 @@ func newDoctorCmd(name string) *cobra.Command {
 					name + " subscribe --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID --duration-ms 10000",
 				},
 			}
-			data, err := json.MarshalIndent(report, "", "  ")
-			if err != nil {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetEscapeHTML(false)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(report); err != nil {
 				return fmt.Errorf("format doctor report: %w", err)
 			}
-			_, err = cmd.OutOrStdout().Write(append(data, '\n'))
-			return err
+			return nil
 		},
 	}
 	return cmd
@@ -220,6 +225,32 @@ func newSubscribeCmd() *cobra.Command {
 	return cmd
 }
 
+func newMergeCmd() *cobra.Command {
+	opts := probeOptions{}
+	cmd := &cobra.Command{
+		Use:   "merge EVIDENCE_JSON...",
+		Short: "Merge normalized BLE evidence files for device-sniff",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			inputs := make([]ble.EvidenceInput, 0, len(args))
+			for _, path := range args {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return fmt.Errorf("loading %s: %w", path, err)
+				}
+				input, err := ble.ParseEvidence(data)
+				if err != nil {
+					return fmt.Errorf("%s: %w", path, err)
+				}
+				inputs = append(inputs, input)
+			}
+			return writeEvidence(cmd, MergeEvidence(inputs, opts.redactionTerms...))
+		},
+	}
+	cmd.Flags().StringArrayVar(&opts.redactionTerms, "redact-term", nil, "Sensitive device-name term to carry into device-sniff redaction; repeat as needed")
+	return cmd
+}
+
 func addBackendFlags(cmd *cobra.Command, opts *probeOptions) {
 	cmd.Flags().StringVar(&opts.inputPath, "input", "", "Path to replay evidence JSON")
 	cmd.Flags().BoolVar(&opts.live, "live", false, "Use the live BLE adapter compiled with -tags ble_live")
@@ -285,6 +316,87 @@ func FormatEvidence(evidence ble.EvidenceInput) ([]byte, error) {
 		return nil, fmt.Errorf("format evidence JSON: %w", err)
 	}
 	return append(data, '\n'), nil
+}
+
+func MergeEvidence(inputs []ble.EvidenceInput, extraRedactionTerms ...string) ble.EvidenceInput {
+	var merged ble.EvidenceInput
+	eventIDs := map[string]bool{}
+	actionIDs := map[string]bool{}
+	referenceIDs := map[string]bool{}
+	redactionTerms := map[string]bool{}
+
+	for _, input := range inputs {
+		if merged.Name == "" {
+			merged.Name = input.Name
+		}
+		if merged.DisplayName == "" {
+			merged.DisplayName = input.DisplayName
+		}
+		mergeIdentity(&merged.Identity, input.Identity)
+		for _, term := range input.RedactionTerms {
+			if term == "" || redactionTerms[term] {
+				continue
+			}
+			redactionTerms[term] = true
+			merged.RedactionTerms = append(merged.RedactionTerms, term)
+		}
+		for _, event := range input.Events {
+			if skipSeen(event.ID, eventIDs) {
+				continue
+			}
+			merged.Events = append(merged.Events, event)
+		}
+		for _, action := range input.Actions {
+			if skipSeen(action.ID, actionIDs) {
+				continue
+			}
+			merged.Actions = append(merged.Actions, action)
+		}
+		for _, ref := range input.CommunityReferences {
+			if skipSeen(ref.ID, referenceIDs) {
+				continue
+			}
+			merged.CommunityReferences = append(merged.CommunityReferences, ref)
+		}
+	}
+	for _, term := range extraRedactionTerms {
+		if term == "" || redactionTerms[term] {
+			continue
+		}
+		redactionTerms[term] = true
+		merged.RedactionTerms = append(merged.RedactionTerms, term)
+	}
+
+	return merged
+}
+
+func mergeIdentity(dst *devicespec.DeviceIdentity, src devicespec.DeviceIdentity) {
+	if len(dst.AdvertisedNames) == 0 {
+		dst.AdvertisedNames = append([]string(nil), src.AdvertisedNames...)
+	}
+	if dst.AddressPolicy == "" {
+		dst.AddressPolicy = src.AddressPolicy
+	}
+	if len(dst.ManufacturerDataHints) == 0 {
+		dst.ManufacturerDataHints = append([]string(nil), src.ManufacturerDataHints...)
+	}
+	if len(dst.GATTFingerprint) == 0 {
+		dst.GATTFingerprint = append([]string(nil), src.GATTFingerprint...)
+	}
+	if dst.MatchStrength == "" {
+		dst.MatchStrength = src.MatchStrength
+	}
+}
+
+func skipSeen(id string, seen map[string]bool) bool {
+	if id == "" {
+		return false
+	}
+	if seen[id] {
+		return true
+	}
+	seen[id] = true
+	return false
 }
 
 func Execute(ctx context.Context, name string) error {

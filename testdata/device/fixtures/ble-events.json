@@ -1,6 +1,7 @@
 {
   "name": "ble-session-appliance",
   "display_name": "BLE Session Appliance",
+  "redaction_terms": ["Trevin"],
   "identity": {
     "advertised_names": ["Trevin SessionThing"],
     "address_policy": "stable",

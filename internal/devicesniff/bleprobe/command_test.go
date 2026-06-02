@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicesniff/ble"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,6 +81,52 @@ func TestReadWriteAndSubscribeReplayEmitEvidenceInput(t *testing.T) {
 	assert.Equal(t, "notify-2", notifications.Events[1].ID)
 }
 
+func TestMergeEvidenceCombinesProbeOutputsForAnalyzer(t *testing.T) {
+	t.Parallel()
+
+	firstPath := writeEvidenceFixture(t, ble.EvidenceInput{
+		Name:           "merged-device",
+		DisplayName:    "Merged Device",
+		RedactionTerms: []string{"Owner"},
+		Identity: devicespec.DeviceIdentity{
+			AdvertisedNames: []string{"Owner Device"},
+			AddressPolicy:   "stable",
+			MatchStrength:   "strong",
+		},
+		Events: []ble.Event{
+			{ID: "adv", Type: ble.EventAdvertisement, DeviceAddress: "device-1", DeviceName: "Owner Device"},
+			{ID: "svc", Type: ble.EventServiceDiscovery, ServiceUUID: "ff00", CharacteristicUUID: "ff01", Properties: []string{"write"}},
+		},
+		Actions: []ble.ActionMarker{
+			{ID: "action-toggle", Label: "toggle", At: "2026-06-01T12:00:00Z", Safety: "low-risk-write"},
+		},
+	})
+	secondPath := writeEvidenceFixture(t, ble.EvidenceInput{
+		Name:           "ignored-name",
+		RedactionTerms: []string{"Owner"},
+		Events: []ble.Event{
+			{ID: "svc", Type: ble.EventServiceDiscovery, ServiceUUID: "ff00", CharacteristicUUID: "ff01", Properties: []string{"write"}},
+			{ID: "write-toggle", Type: ble.EventWrite, At: "2026-06-01T12:00:01Z", ServiceUUID: "ff00", CharacteristicUUID: "ff01", ValueHex: "01"},
+		},
+	})
+
+	output := executeProbe(t, "merge", "--redact-term", "Desk", firstPath, secondPath)
+	evidence, err := ble.ParseEvidence(output)
+	require.NoError(t, err)
+
+	assert.Equal(t, "merged-device", evidence.Name)
+	assert.Equal(t, "Merged Device", evidence.DisplayName)
+	assert.Equal(t, []string{"Owner", "Desk"}, evidence.RedactionTerms)
+	assert.Equal(t, []string{"Owner Device"}, evidence.Identity.AdvertisedNames)
+	require.Len(t, evidence.Events, 3)
+	assert.Equal(t, "write-toggle", evidence.Events[2].ID)
+
+	analysis, err := ble.AnalyzeEvidence(evidence)
+	require.NoError(t, err)
+	require.Len(t, analysis.Spec.Capabilities.Commands, 1)
+	assert.Equal(t, "toggle", analysis.Spec.Capabilities.Commands[0].Name)
+}
+
 func TestProbeRequiresReplayInputUnlessLive(t *testing.T) {
 	t.Parallel()
 
@@ -95,6 +142,9 @@ func TestProbeRequiresReplayInputUnlessLive(t *testing.T) {
 
 func TestProbeReportsLiveUnavailableWhenBuildTagIsAbsent(t *testing.T) {
 	t.Parallel()
+	if ble.LiveSupport().Compiled {
+		t.Skip("replay-only assertion does not apply to ble_live builds")
+	}
 
 	cmd := NewRootCommand("ble-probe")
 	cmd.SetArgs([]string{"scan", "--live"})
@@ -108,6 +158,9 @@ func TestProbeReportsLiveUnavailableWhenBuildTagIsAbsent(t *testing.T) {
 
 func TestDoctorReportsReplayOnlyBuildReadiness(t *testing.T) {
 	t.Parallel()
+	if ble.LiveSupport().Compiled {
+		t.Skip("replay-only assertion does not apply to ble_live builds")
+	}
 
 	output := executeProbe(t, "doctor")
 	var report DoctorReport
@@ -118,6 +171,7 @@ func TestDoctorReportsReplayOnlyBuildReadiness(t *testing.T) {
 	assert.False(t, report.Live.Compiled)
 	assert.Contains(t, report.Live.Message, "rebuild ble-probe with -tags ble_live")
 	assert.Contains(t, report.SmokeCommands, "ble-probe scan --input testdata/device/fixtures/ble-events.json")
+	assert.Contains(t, report.SmokeCommands, "ble-probe merge scan.json inspect.json read.json notify.json > evidence.json")
 	assert.Contains(t, report.HardwareCommands, "ble-probe scan --live --duration-ms 10000")
 }
 

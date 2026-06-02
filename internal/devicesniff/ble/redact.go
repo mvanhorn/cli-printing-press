@@ -6,6 +6,8 @@ import (
 )
 
 func RedactEvidence(input EvidenceInput) EvidenceInput {
+	redactionTerms := append([]string(nil), input.RedactionTerms...)
+	input.RedactionTerms = nil
 	input.Identity.AdvertisedNames = append([]string(nil), input.Identity.AdvertisedNames...)
 	input.Events = append([]Event(nil), input.Events...)
 	input.Actions = append([]ActionMarker(nil), input.Actions...)
@@ -14,7 +16,7 @@ func RedactEvidence(input EvidenceInput) EvidenceInput {
 	nextAddress := 1
 	for i := range input.Events {
 		event := &input.Events[i]
-		event.DeviceName = redactHumanNames(event.DeviceName)
+		event.DeviceName = redactSensitiveTerms(event.DeviceName, redactionTerms)
 		if event.DeviceAddress == "" {
 			continue
 		}
@@ -25,13 +27,19 @@ func RedactEvidence(input EvidenceInput) EvidenceInput {
 		event.DeviceAddress = addresses[event.DeviceAddress]
 	}
 	for i, name := range input.Identity.AdvertisedNames {
-		input.Identity.AdvertisedNames[i] = redactHumanNames(name)
+		input.Identity.AdvertisedNames[i] = redactSensitiveTerms(name, redactionTerms)
 	}
 	return input
 }
 
-func redactHumanNames(value string) string {
-	value = strings.ReplaceAll(value, "Trevin", "redacted")
-	value = strings.ReplaceAll(value, "Trevin's", "redacted")
+func redactSensitiveTerms(value string, terms []string) string {
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		value = strings.ReplaceAll(value, term, "redacted")
+		value = strings.ReplaceAll(value, strings.TrimSuffix(term, "'s")+"'s", "redacted")
+	}
 	return value
 }

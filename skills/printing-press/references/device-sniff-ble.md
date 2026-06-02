@@ -48,6 +48,12 @@ Use `write` only when a payload is known from observed evidence, docs, or a comm
 ble-probe write --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID --value-hex PAYLOAD_HEX > write.json
 ```
 
+Merge capture pieces before analysis:
+
+```bash
+ble-probe merge --redact-term PERSONAL_TERM scan.json inspect.json read.json notify.json write.json > evidence.json
+```
+
 See `docs/BLE-PROBE.md` for macOS and Windows copy/run details.
 
 ## Device Sniff Command
@@ -60,6 +66,7 @@ cli-printing-press device-sniff ble \
   --output "$RESEARCH_DIR/<device>-device.yaml" \
   --analysis-output "$DISCOVERY_DIR/ble-analysis.json" \
   --evidence-output "$DISCOVERY_DIR/ble-evidence-redacted.json" \
+  --redact-term PERSONAL_TERM \
   --json
 ```
 

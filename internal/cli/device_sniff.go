@@ -17,6 +17,7 @@ type bleSniffCLIOptions struct {
 	outputPath         string
 	analysisOutputPath string
 	evidenceOutputPath string
+	redactionTerms     []string
 	asJSON             bool
 }
 
@@ -57,6 +58,7 @@ func newDeviceSniffBLECmd(use string) *cobra.Command {
 	cmd.Flags().StringVar(&opts.outputPath, "output", "", "Output path for generated DeviceSpec YAML")
 	cmd.Flags().StringVar(&opts.analysisOutputPath, "analysis-output", "", "Output path for BLE analysis report JSON (defaults beside the spec)")
 	cmd.Flags().StringVar(&opts.evidenceOutputPath, "evidence-output", "", "Output path for redacted evidence JSON (defaults beside the spec)")
+	cmd.Flags().StringArrayVar(&opts.redactionTerms, "redact-term", nil, "Sensitive device-name term to redact from archived BLE evidence; repeat as needed")
 	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "Output as JSON")
 	_ = cmd.MarkFlagRequired("input")
 
@@ -68,6 +70,7 @@ func runDeviceSniffBLE(cmd *cobra.Command, opts bleSniffCLIOptions) error {
 	if err != nil {
 		return fmt.Errorf("loading BLE evidence: %w", err)
 	}
+	input.RedactionTerms = append(input.RedactionTerms, opts.redactionTerms...)
 	input = blesniff.RedactEvidence(input)
 
 	analysis, err := blesniff.AnalyzeEvidence(input)

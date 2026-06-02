@@ -32,6 +32,7 @@ const (
 type EvidenceInput struct {
 	Name                string                    `json:"name"`
 	DisplayName         string                    `json:"display_name,omitempty"`
+	RedactionTerms      []string                  `json:"redaction_terms,omitempty"`
 	Identity            devicespec.DeviceIdentity `json:"identity,omitempty"`
 	Events              []Event                   `json:"events,omitempty"`
 	Actions             []ActionMarker            `json:"actions,omitempty"`

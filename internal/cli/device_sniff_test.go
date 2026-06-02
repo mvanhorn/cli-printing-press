@@ -87,6 +87,40 @@ func TestBluetoothSniffAliasUsesBLEBackend(t *testing.T) {
 	assert.Equal(t, "vendor-action", parsed.Capabilities.Commands[0].Name)
 }
 
+func TestDeviceSniffBLERedactTermFlagIsNotArchived(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "input.json")
+	require.NoError(t, os.WriteFile(inputPath, []byte(`{
+  "name": "owner-device",
+  "identity": {"advertised_names": ["Owner Device"]},
+  "events": [
+    {"id": "adv", "type": "advertisement", "device_address": "AA:BB:CC:DD:EE:01", "device_name": "Owner Device"},
+    {"id": "svc", "type": "service_discovery", "service_uuid": "ff00", "characteristic_uuid": "ff01", "properties": ["read"]}
+  ]
+}`), 0o600))
+	evidencePath := filepath.Join(dir, "evidence.json")
+
+	cmd := newDeviceSniffCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetArgs([]string{
+		"ble",
+		"--input", inputPath,
+		"--output", filepath.Join(dir, "device.yaml"),
+		"--evidence-output", evidencePath,
+		"--redact-term", "Owner",
+	})
+
+	require.NoError(t, cmd.Execute())
+	data, err := os.ReadFile(evidencePath)
+	require.NoError(t, err)
+	text := string(data)
+	assert.NotContains(t, text, "Owner")
+	assert.NotContains(t, text, "redaction_terms")
+	assert.Contains(t, text, "redacted Device")
+}
+
 func TestDeviceSniffBLECmdRequiresCapturedEvidenceInput(t *testing.T) {
 	t.Parallel()
 
