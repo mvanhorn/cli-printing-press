@@ -4,6 +4,7 @@ ble-session-appliance/internal/cli/root.go
 ble-session-appliance/internal/device/spec.go
 ble-session-appliance/internal/device/transport.go
 ble-session-appliance/internal/device/session.go
+ble-session-appliance/internal/device/store.go
 ble-session-appliance/README.md
 ble-session-appliance/SKILL.md
 ble-session-appliance/device-spec.yaml

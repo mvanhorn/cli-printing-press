@@ -23,6 +23,7 @@ func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
 	assert.FileExists(t, filepath.Join(outputDir, "cmd", "ble-temperature-sensor-pp-cli", "main.go"))
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "device", "transport.go"))
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "device", "session.go"))
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "device", "store.go"))
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "root.go"))
 
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
@@ -42,11 +43,13 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	require.NoError(t, NewDevice(ds, outputDir).Generate())
 
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "device", "session.go"))
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "device", "store.go"))
 
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
 	root := string(rootSrc)
 	assert.Contains(t, root, "rootCmd.AddCommand(newSessionCmd")
+	assert.Contains(t, root, "rootCmd.AddCommand(newTelemetryCmd")
 	assert.Contains(t, root, "device.NewReplaySession()")
 	assert.NotContains(t, root, `PayloadHex: "a001"`)
 	assert.NotContains(t, root, `device.CommandDefinition{Name: "start"`)
@@ -56,6 +59,13 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	session := string(sessionSrc)
 	assert.Contains(t, session, `State:              state`)
 	assert.Contains(t, session, `Detail:             "replay session scaffold only; live BLE IPC is not enabled in this generated CLI yet"`)
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+	assert.Contains(t, store, `type TelemetrySample struct`)
+	assert.Contains(t, store, `func (s *TelemetryStore) CaptureStatus(snapshot StatusSnapshot)`)
+	assert.Contains(t, store, `func (s *TelemetryStore) Latest()`)
 
 	specSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "spec.go"))
 	require.NoError(t, err)

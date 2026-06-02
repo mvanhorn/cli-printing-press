@@ -13,7 +13,8 @@ import (
 )
 
 type rootFlags struct {
-	asJSON bool
+	asJSON    bool
+	storePath string
 }
 
 func RootCmd() *cobra.Command {
@@ -41,8 +42,10 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	}
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "agent", false, "Output agent-friendly JSON")
+	rootCmd.PersistentFlags().StringVar(&flags.storePath, "store", "", "Telemetry store path (default: user cache)")
 	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
 	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
+	rootCmd.AddCommand(newTelemetryCmd(flags, device.NewReplayTransport()))
 	return rootCmd
 }
 
@@ -70,6 +73,89 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newTelemetryCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
+	telemetryCmd := &cobra.Command{
+		Use:   "telemetry",
+		Short: "Capture and read replay-backed telemetry samples",
+	}
+	telemetryCmd.AddCommand(newTelemetryCaptureCmd(flags, transport))
+	telemetryCmd.AddCommand(newTelemetryLatestCmd(flags))
+	return telemetryCmd
+}
+
+func newTelemetryCaptureCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
+	return &cobra.Command{
+		Use:   "capture",
+		Short: "Capture a replay-backed telemetry sample into the local store",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snapshot, err := transport.Status(cmd.Context())
+			if err != nil {
+				return err
+			}
+			store, err := openTelemetryStore(flags)
+			if err != nil {
+				return err
+			}
+			samples, err := store.CaptureStatus(snapshot)
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(samples)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "captured %d telemetry sample(s)\n", len(samples))
+			fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.Path())
+			return nil
+		},
+	}
+}
+
+func newTelemetryLatestCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "latest",
+		Short: "Read the latest locally stored telemetry samples",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := openTelemetryStore(flags)
+			if err != nil {
+				return err
+			}
+			samples, err := store.Latest()
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(samples)
+			}
+			if len(samples) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no stored telemetry samples")
+				fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.Path())
+				return nil
+			}
+			for _, sample := range samples {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: %v\n", sample.Field, sample.Value)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.Path())
+			return nil
+		},
+	}
+}
+
+func openTelemetryStore(flags *rootFlags) (*device.TelemetryStore, error) {
+	storePath := flags.storePath
+	if storePath == "" {
+		var err error
+		storePath, err = device.DefaultTelemetryStorePath("ble-session-appliance-pp-cli")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return device.OpenTelemetryStore(storePath)
 }
 
 func newSessionCmd(flags *rootFlags, session device.Session) *cobra.Command {

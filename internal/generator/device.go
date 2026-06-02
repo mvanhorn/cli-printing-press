@@ -29,6 +29,7 @@ type deviceTemplateData struct {
 	Commands     []deviceCommandField
 	HasCommands  bool
 	HasSession   bool
+	HasStore     bool
 }
 
 type deviceStatusField struct {
@@ -71,6 +72,9 @@ func (g *DeviceGenerator) Generate() error {
 	if data.HasSession {
 		files[filepath.Join("internal", "device", "session.go")] = deviceSessionTemplate
 	}
+	if data.HasStore {
+		files[filepath.Join("internal", "device", "store.go")] = deviceStoreTemplate
+	}
 	for path, tmpl := range files {
 		if err := g.render(path, tmpl, data); err != nil {
 			return err
@@ -96,7 +100,11 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		displayName = naming.HumanName(name)
 	}
 	statusFields := make([]deviceStatusField, 0, len(g.Spec.Capabilities.Telemetry))
+	hasStore := false
 	for _, field := range g.Spec.Capabilities.Telemetry {
+		if field.Store {
+			hasStore = true
+		}
 		statusFields = append(statusFields, deviceStatusField{
 			Name:               field.Name,
 			CharacteristicUUID: field.SourceCharacteristicUUID,
@@ -129,6 +137,7 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		Commands:     commands,
 		HasCommands:  len(commands) > 0,
 		HasSession:   g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
+		HasStore:     hasStore,
 	}
 }
 
@@ -194,6 +203,9 @@ type rootFlags struct {
 {{- if .HasCommands}}
 	dryRun bool
 {{- end}}
+{{- if .HasStore}}
+	storePath string
+{{- end}}
 }
 
 func RootCmd() *cobra.Command {
@@ -224,9 +236,15 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 {{- if .HasCommands}}
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview device writes without dispatching them")
 {{- end}}
+{{- if .HasStore}}
+	rootCmd.PersistentFlags().StringVar(&flags.storePath, "store", "", "Telemetry store path (default: user cache)")
+{{- end}}
 	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
 {{- if .HasSession}}
 	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
+{{- end}}
+{{- if .HasStore}}
+	rootCmd.AddCommand(newTelemetryCmd(flags, device.NewReplayTransport()))
 {{- end}}
 {{- range .Commands}}
 	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.NewReplayTransport(), device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}}))
@@ -283,6 +301,91 @@ func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definitio
 			return nil
 		},
 	}
+}
+
+{{ end}}
+{{ if .HasStore}}
+func newTelemetryCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
+	telemetryCmd := &cobra.Command{
+		Use:   "telemetry",
+		Short: "Capture and read replay-backed telemetry samples",
+	}
+	telemetryCmd.AddCommand(newTelemetryCaptureCmd(flags, transport))
+	telemetryCmd.AddCommand(newTelemetryLatestCmd(flags))
+	return telemetryCmd
+}
+
+func newTelemetryCaptureCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
+	return &cobra.Command{
+		Use:   "capture",
+		Short: "Capture a replay-backed telemetry sample into the local store",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snapshot, err := transport.Status(cmd.Context())
+			if err != nil {
+				return err
+			}
+			store, err := openTelemetryStore(flags)
+			if err != nil {
+				return err
+			}
+			samples, err := store.CaptureStatus(snapshot)
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(samples)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "captured %d telemetry sample(s)\n", len(samples))
+			fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.Path())
+			return nil
+		},
+	}
+}
+
+func newTelemetryLatestCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "latest",
+		Short: "Read the latest locally stored telemetry samples",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := openTelemetryStore(flags)
+			if err != nil {
+				return err
+			}
+			samples, err := store.Latest()
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(samples)
+			}
+			if len(samples) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no stored telemetry samples")
+				fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.Path())
+				return nil
+			}
+			for _, sample := range samples {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: %v\n", sample.Field, sample.Value)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.Path())
+			return nil
+		},
+	}
+}
+
+func openTelemetryStore(flags *rootFlags) (*device.TelemetryStore, error) {
+	storePath := flags.storePath
+	if storePath == "" {
+		var err error
+		storePath, err = device.DefaultTelemetryStorePath("{{.CLIName}}")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return device.OpenTelemetryStore(storePath)
 }
 
 {{ end}}
@@ -557,6 +660,132 @@ func sessionStatus(state string) SessionStatus {
 }
 `
 
+const deviceStoreTemplate = `// Copyright {{.CurrentYear}}. Licensed under Apache-2.0. See LICENSE.
+// Generated by CLI Printing Press (https://github.com/mvanhorn/cli-printing-press). DO NOT EDIT.
+
+package device
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+)
+
+type TelemetrySample struct {
+	Device                   string ` + "`json:\"device\"`" + `
+	Field                    string ` + "`json:\"field\"`" + `
+	ObservedAt               string ` + "`json:\"observed_at\"`" + `
+	SourceCharacteristicUUID string ` + "`json:\"source_characteristic_uuid\"`" + `
+	SampleCadence            string ` + "`json:\"sample_cadence,omitempty\"`" + `
+	Unit                     string ` + "`json:\"unit,omitempty\"`" + `
+	Value                    any    ` + "`json:\"value\"`" + `
+}
+
+type TelemetryStore struct {
+	path string
+}
+
+func DefaultTelemetryStorePath(cliName string) (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user cache dir: %w", err)
+	}
+	return filepath.Join(cacheDir, cliName, "telemetry.jsonl"), nil
+}
+
+func OpenTelemetryStore(path string) (*TelemetryStore, error) {
+	if path == "" {
+		return nil, fmt.Errorf("telemetry store path is required")
+	}
+	return &TelemetryStore{path: path}, nil
+}
+
+func (s *TelemetryStore) Path() string {
+	return s.path
+}
+
+func (s *TelemetryStore) CaptureStatus(snapshot StatusSnapshot) ([]TelemetrySample, error) {
+	observedAt := snapshot.ObservedAt
+	if observedAt == "" {
+		observedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	samples := []TelemetrySample{}
+	for _, field := range StatusFields {
+		if !field.Store {
+			continue
+		}
+		value := snapshot.Telemetry[field.Name]
+		if wrapped, ok := value.(map[string]any); ok {
+			if inner, ok := wrapped["value"]; ok {
+				value = inner
+			}
+		}
+		samples = append(samples, TelemetrySample{
+			Device:                   snapshot.Device,
+			Field:                    field.Name,
+			ObservedAt:               observedAt,
+			SourceCharacteristicUUID: field.SourceCharacteristicUUID,
+			SampleCadence:            field.SampleCadence,
+			Unit:                     field.Unit,
+			Value:                    value,
+		})
+	}
+	if len(samples) == 0 {
+		return samples, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return nil, fmt.Errorf("create telemetry store dir: %w", err)
+	}
+	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open telemetry store: %w", err)
+	}
+	defer file.Close()
+	enc := json.NewEncoder(file)
+	for _, sample := range samples {
+		if err := enc.Encode(sample); err != nil {
+			return nil, fmt.Errorf("write telemetry sample: %w", err)
+		}
+	}
+	return samples, nil
+}
+
+func (s *TelemetryStore) Latest() ([]TelemetrySample, error) {
+	file, err := os.Open(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open telemetry store: %w", err)
+	}
+	defer file.Close()
+	latestByField := map[string]TelemetrySample{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var sample TelemetrySample
+		if err := json.Unmarshal(scanner.Bytes(), &sample); err != nil {
+			return nil, fmt.Errorf("decode telemetry sample: %w", err)
+		}
+		latestByField[sample.Field] = sample
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read telemetry store: %w", err)
+	}
+	samples := make([]TelemetrySample, 0, len(latestByField))
+	for _, sample := range latestByField {
+		samples = append(samples, sample)
+	}
+	sort.Slice(samples, func(i, j int) bool {
+		return samples[i].Field < samples[j].Field
+	})
+	return samples, nil
+}
+`
+
 const deviceReadmeTemplate = `# {{.DisplayName}} CLI
 
 Generated by the Printing Press from a BLE device spec.
@@ -572,6 +801,10 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 {{- if .HasSession}}
 - ` + "`{{.CLIName}} session status --json`" + ` prints the generated session requirements and replay scaffold state.
 {{- end}}
+{{- if .HasStore}}
+- ` + "`{{.CLIName}} telemetry capture --json`" + ` stores replay-backed telemetry samples locally.
+- ` + "`{{.CLIName}} telemetry latest --json`" + ` reads the latest locally stored telemetry samples.
+{{- end}}
 `
 
 const deviceSkillTemplate = `---
@@ -579,5 +812,5 @@ name: {{.Name}}
 description: Control {{.DisplayName}} through the generated BLE device CLI.
 ---
 
-Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session status --json`" + ` to inspect the generated session requirements before building live BLE IPC.{{else}} Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.{{end}}
+Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session status --json`" + ` to inspect the generated session requirements before building live BLE IPC.{{else}} Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{end}}
 `
