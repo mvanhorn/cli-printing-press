@@ -1,4 +1,4 @@
-//go:build !ble_live || !(darwin || linux || windows)
+//go:build ble_replay_only || !(darwin || linux || windows)
 
 package ble
 
@@ -7,10 +7,10 @@ func LiveSupport() LiveSupportInfo {
 		Compiled: false,
 		Backend:  "unavailable",
 		Platform: "darwin/linux/windows",
-		Message:  "live BLE support is not compiled in; rebuild ble-probe with -tags ble_live",
+		Message:  "live BLE support is not compiled in for this binary or platform",
 	}
 }
 
 func NewLiveAdapter() (Adapter, error) {
-	return nil, adapterError(AdapterErrorUnsupported, "live BLE support is not compiled in; rebuild ble-probe with -tags ble_live")
+	return nil, adapterError(AdapterErrorUnsupported, "live BLE support is not compiled in for this binary or platform")
 }

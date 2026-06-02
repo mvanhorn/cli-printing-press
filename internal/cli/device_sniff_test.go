@@ -87,6 +87,41 @@ func TestBluetoothSniffAliasUsesBLEBackend(t *testing.T) {
 	assert.Equal(t, "vendor-action", parsed.Capabilities.Commands[0].Name)
 }
 
+func TestDeviceSniffBLEExposesProbeSubcommands(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDeviceSniffCmd()
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetArgs([]string{
+		"ble",
+		"scan",
+		"--input", filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-events.json"),
+	})
+
+	require.NoError(t, cmd.Execute())
+	var evidence ble.EvidenceInput
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &evidence))
+	require.Len(t, evidence.Events, 1)
+	assert.Equal(t, ble.EventAdvertisement, evidence.Events[0].Type)
+}
+
+func TestDeviceSniffBLEDoctorReportsNestedCommands(t *testing.T) {
+	t.Parallel()
+
+	cmd := newDeviceSniffCmd()
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetArgs([]string{"ble", "doctor"})
+
+	require.NoError(t, cmd.Execute())
+	var report struct {
+		SmokeCommands []string `json:"smoke_commands"`
+	}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &report))
+	assert.Contains(t, report.SmokeCommands, "cli-printing-press device-sniff ble scan --input testdata/device/fixtures/ble-events.json")
+}
+
 func TestDeviceSniffBLERedactTermFlagIsNotArchived(t *testing.T) {
 	t.Parallel()
 

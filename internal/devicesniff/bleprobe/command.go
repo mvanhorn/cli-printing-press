@@ -43,14 +43,21 @@ func NewRootCommand(name string) *cobra.Command {
 		Short:        "Probe BLE devices and emit normalized Printing Press evidence",
 		SilenceUsage: true,
 	}
+	AddProbeCommands(cmd, name)
+	return cmd
+}
+
+func AddProbeCommands(cmd *cobra.Command, commandPrefix string) {
+	if commandPrefix == "" {
+		commandPrefix = cmd.CommandPath()
+	}
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newInspectCmd())
 	cmd.AddCommand(newReadCmd())
 	cmd.AddCommand(newWriteCmd())
 	cmd.AddCommand(newSubscribeCmd())
 	cmd.AddCommand(newMergeCmd())
-	cmd.AddCommand(newDoctorCmd(name))
-	return cmd
+	cmd.AddCommand(newDoctorCmd(commandPrefix))
 }
 
 func newDoctorCmd(name string) *cobra.Command {
@@ -253,7 +260,7 @@ func newMergeCmd() *cobra.Command {
 
 func addBackendFlags(cmd *cobra.Command, opts *probeOptions) {
 	cmd.Flags().StringVar(&opts.inputPath, "input", "", "Path to replay evidence JSON")
-	cmd.Flags().BoolVar(&opts.live, "live", false, "Use the live BLE adapter compiled with -tags ble_live")
+	cmd.Flags().BoolVar(&opts.live, "live", false, "Use the live BLE adapter when this binary supports it")
 }
 
 func addCharacteristicFlags(cmd *cobra.Command, opts *probeOptions) {

@@ -143,7 +143,7 @@ func TestProbeRequiresReplayInputUnlessLive(t *testing.T) {
 func TestProbeReportsLiveUnavailableWhenBuildTagIsAbsent(t *testing.T) {
 	t.Parallel()
 	if ble.LiveSupport().Compiled {
-		t.Skip("replay-only assertion does not apply to ble_live builds")
+		t.Skip("replay-only assertion does not apply to live-capable builds")
 	}
 
 	cmd := NewRootCommand("ble-probe")
@@ -159,7 +159,7 @@ func TestProbeReportsLiveUnavailableWhenBuildTagIsAbsent(t *testing.T) {
 func TestDoctorReportsReplayOnlyBuildReadiness(t *testing.T) {
 	t.Parallel()
 	if ble.LiveSupport().Compiled {
-		t.Skip("replay-only assertion does not apply to ble_live builds")
+		t.Skip("replay-only assertion does not apply to live-capable builds")
 	}
 
 	output := executeProbe(t, "doctor")
@@ -169,7 +169,7 @@ func TestDoctorReportsReplayOnlyBuildReadiness(t *testing.T) {
 	assert.Equal(t, "ble-probe", report.Binary)
 	assert.True(t, report.ReplaySupported)
 	assert.False(t, report.Live.Compiled)
-	assert.Contains(t, report.Live.Message, "rebuild ble-probe with -tags ble_live")
+	assert.Contains(t, report.Live.Message, "live BLE support is not compiled in")
 	assert.Contains(t, report.SmokeCommands, "ble-probe scan --input testdata/device/fixtures/ble-events.json")
 	assert.Contains(t, report.SmokeCommands, "ble-probe merge scan.json inspect.json read.json notify.json > evidence.json")
 	assert.Contains(t, report.HardwareCommands, "ble-probe scan --live --duration-ms 10000")

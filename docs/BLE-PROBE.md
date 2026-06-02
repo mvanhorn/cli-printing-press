@@ -1,6 +1,8 @@
 # BLE Probe Hardware Testing
 
-`ble-probe` is the standalone hardware smoke tool for the BLE device-sniff path. It lets you scan, inspect, read, subscribe, and capture write evidence without generating a full printed CLI.
+`cli-printing-press device-sniff ble` includes hardware smoke commands for the BLE device-sniff path. It lets you scan, inspect, read, subscribe, and capture write evidence without generating a full printed CLI.
+
+`ble-probe` is the same probe surface packaged as a standalone binary. Use it when you need a copyable diagnostic artifact for Windows or Linux machines that do not have the full Printing Press checkout or binary.
 
 ## Build
 
@@ -29,6 +31,12 @@ scripts/build-ble-probe.sh replay --target darwin/arm64
 Run the doctor command before hardware work:
 
 ```bash
+cli-printing-press device-sniff ble doctor
+```
+
+For the standalone binary:
+
+```bash
 dist/ble-probe/live/darwin-arm64/ble-probe doctor
 ```
 
@@ -45,22 +53,22 @@ The `live.compiled` field must be `true` for real device scans. If it is `false`
 Give the terminal or host app Bluetooth permission in System Settings if macOS prompts for it.
 
 ```bash
-dist/ble-probe/live/darwin-arm64/ble-probe scan --live --duration-ms 10000 > scan.json
-dist/ble-probe/live/darwin-arm64/ble-probe inspect --live --address '<address-from-scan>' > inspect.json
+cli-printing-press device-sniff ble scan --live --duration-ms 10000 > scan.json
+cli-printing-press device-sniff ble inspect --live --address '<address-from-scan>' > inspect.json
 ```
 
 Read and subscribe commands are non-actuating ways to gather characteristic evidence:
 
 ```bash
-dist/ble-probe/live/darwin-arm64/ble-probe read --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' > read.json
-dist/ble-probe/live/darwin-arm64/ble-probe subscribe --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' --duration-ms 10000 > notify.json
+cli-printing-press device-sniff ble read --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' > read.json
+cli-printing-press device-sniff ble subscribe --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' --duration-ms 10000 > notify.json
 ```
 
 Merge the capture pieces before analysis:
 
 ```bash
-dist/ble-probe/live/darwin-arm64/ble-probe merge --redact-term '<personal-name-or-room-name>' scan.json inspect.json read.json notify.json > evidence.json
-./cli-printing-press device-sniff ble --input evidence.json --output device.yaml --redact-term '<personal-name-or-room-name>' --json
+cli-printing-press device-sniff ble merge --redact-term '<personal-name-or-room-name>' scan.json inspect.json read.json notify.json > evidence.json
+cli-printing-press device-sniff ble --input evidence.json --output device.yaml --redact-term '<personal-name-or-room-name>' --json
 ```
 
 Use `--redact-term` for owner names, room names, or other personal strings that appear in advertised device names. Redaction terms are used for the archived evidence artifact and are not written back into that redacted artifact.
@@ -82,7 +90,7 @@ Use a current Windows 11 machine with a working Bluetooth adapter. If Windows bl
 `write` is explicit because it can change device state:
 
 ```bash
-ble-probe write --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' --value-hex '<payload>' > write.json
+cli-printing-press device-sniff ble write --live --address '<address>' --service '<uuid>' --characteristic '<uuid>' --value-hex '<payload>' > write.json
 ```
 
 For unknown devices, prefer this order:

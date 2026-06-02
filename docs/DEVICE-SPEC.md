@@ -50,4 +50,4 @@ Normal verification must prove wiring through replay or no-op behavior and must 
 
 ## Real Hardware Probe
 
-Use `ble-probe` to gather real-device evidence without printing a full CLI. See `docs/BLE-PROBE.md` for macOS and Windows build/run commands.
+Use `cli-printing-press device-sniff ble scan|inspect|read|subscribe|merge` to gather real-device evidence without printing a full CLI. Use the standalone `ble-probe` binary only when you need a copyable diagnostic artifact for another machine. See `docs/BLE-PROBE.md` for macOS, Linux, and Windows build/run commands.

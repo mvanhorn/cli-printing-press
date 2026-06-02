@@ -1,4 +1,4 @@
-//go:build ble_live && (darwin || linux || windows)
+//go:build !ble_replay_only && (darwin || linux || windows)
 
 package ble
 

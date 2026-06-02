@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	blesniff "github.com/mvanhorn/cli-printing-press/v4/internal/devicesniff/ble"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicesniff/bleprobe"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -61,6 +62,7 @@ func newDeviceSniffBLECmd(use string) *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.redactionTerms, "redact-term", nil, "Sensitive device-name term to redact from archived BLE evidence; repeat as needed")
 	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "Output as JSON")
 	_ = cmd.MarkFlagRequired("input")
+	bleprobe.AddProbeCommands(cmd, "cli-printing-press device-sniff ble")
 
 	return cmd
 }

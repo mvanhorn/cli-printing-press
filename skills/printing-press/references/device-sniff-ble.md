@@ -13,7 +13,9 @@ Device Sniff is evidence-first. Community libraries, official docs, Android logs
 
 ## Standalone Hardware Probe
 
-Use `ble-probe` when you need real-device evidence without printing a full CLI.
+Use `cli-printing-press device-sniff ble` when you need real-device evidence without printing a full CLI.
+
+Use the standalone `ble-probe` binary only as a portable diagnostic fallback for machines that do not have the full Printing Press binary.
 
 Build a live probe:
 
@@ -30,28 +32,34 @@ scripts/build-ble-probe.sh live --target windows/amd64
 Check the artifact before hardware work:
 
 ```bash
+cli-printing-press device-sniff ble doctor
+```
+
+For a copied standalone artifact:
+
+```bash
 dist/ble-probe/live/$(go env GOOS)-$(go env GOARCH)/ble-probe doctor
 ```
 
 Run non-actuating evidence capture first:
 
 ```bash
-ble-probe scan --live --duration-ms 10000 > scan.json
-ble-probe inspect --live --address ADDRESS > inspect.json
-ble-probe read --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID > read.json
-ble-probe subscribe --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID --duration-ms 10000 > notify.json
+cli-printing-press device-sniff ble scan --live --duration-ms 10000 > scan.json
+cli-printing-press device-sniff ble inspect --live --address ADDRESS > inspect.json
+cli-printing-press device-sniff ble read --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID > read.json
+cli-printing-press device-sniff ble subscribe --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID --duration-ms 10000 > notify.json
 ```
 
 Use `write` only when a payload is known from observed evidence, docs, or a community protocol reference:
 
 ```bash
-ble-probe write --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID --value-hex PAYLOAD_HEX > write.json
+cli-printing-press device-sniff ble write --live --address ADDRESS --service SERVICE_UUID --characteristic CHARACTERISTIC_UUID --value-hex PAYLOAD_HEX > write.json
 ```
 
 Merge capture pieces before analysis:
 
 ```bash
-ble-probe merge --redact-term PERSONAL_TERM scan.json inspect.json read.json notify.json write.json > evidence.json
+cli-printing-press device-sniff ble merge --redact-term PERSONAL_TERM scan.json inspect.json read.json notify.json write.json > evidence.json
 ```
 
 See `docs/BLE-PROBE.md` for macOS and Windows copy/run details.
