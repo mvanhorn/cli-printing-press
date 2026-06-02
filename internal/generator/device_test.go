@@ -24,6 +24,7 @@ func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
 	assert.FileExists(t, filepath.Join(outputDir, "go.mod"))
 	assert.FileExists(t, filepath.Join(outputDir, "cmd", "ble-temperature-sensor-pp-cli", "main.go"))
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "device", "transport.go"))
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cliutil", "verifyenv.go"))
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "device", "session.go"))
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "device", "store.go"))
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "root.go"))
@@ -31,6 +32,11 @@ func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(rootSrc), "device.Transport")
+
+	transportSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "transport.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(transportSrc), "cliutil.IsVerifyEnv()")
+	assert.NotContains(t, string(transportSrc), `os.Getenv("PRINTING_PRESS_VERIFY")`)
 
 	requireGeneratedCompiles(t, outputDir)
 }

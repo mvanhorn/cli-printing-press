@@ -5,8 +5,9 @@ package device
 
 import (
 	"context"
-	"os"
 	"time"
+
+	"ble-desk-lamp-pp-cli/internal/cliutil"
 )
 
 type StatusSnapshot struct {
@@ -59,7 +60,7 @@ func (t *ReplayTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 }
 
 func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
-	verifyNoop := isVerifyEnv()
+	verifyNoop := cliutil.IsVerifyEnv()
 	return CommandResult{
 		Command:            command.Name,
 		Transport:          commandTransportName(verifyNoop),
@@ -71,10 +72,6 @@ func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDef
 		VerifyNoop:         verifyNoop,
 		Reason:             commandNoopReason(verifyNoop),
 	}, nil
-}
-
-func isVerifyEnv() bool {
-	return os.Getenv("PRINTING_PRESS_VERIFY") == "1"
 }
 
 func commandTransportName(verifyNoop bool) string {

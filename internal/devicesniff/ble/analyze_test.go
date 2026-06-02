@@ -135,6 +135,20 @@ func TestRedactEvidencePseudonymizesStableIdentifiers(t *testing.T) {
 	assert.Contains(t, text, "a001")
 }
 
+func TestRedactEvidenceDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	input := readFixture(t, "ble-events.json")
+	originalAddress := input.Events[0].DeviceAddress
+	originalName := input.Events[0].DeviceName
+
+	redacted := RedactEvidence(input)
+
+	assert.NotEqual(t, originalAddress, redacted.Events[0].DeviceAddress)
+	assert.Equal(t, originalAddress, input.Events[0].DeviceAddress)
+	assert.Equal(t, originalName, input.Events[0].DeviceName)
+}
+
 func readFixture(t *testing.T, name string) EvidenceInput {
 	t.Helper()
 

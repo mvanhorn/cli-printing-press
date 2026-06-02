@@ -36,6 +36,13 @@ type WriteRequest struct {
 	ValueHex           string `json:"value_hex"`
 }
 
+type LiveSupportInfo struct {
+	Compiled bool   `json:"compiled"`
+	Backend  string `json:"backend"`
+	Platform string `json:"platform"`
+	Message  string `json:"message,omitempty"`
+}
+
 type AdapterErrorKind string
 
 const (

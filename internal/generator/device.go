@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -66,10 +69,11 @@ func (g *DeviceGenerator) Generate() error {
 	data := g.templateData()
 	files := map[string]string{
 		"go.mod": deviceGoModTemplate,
-		filepath.Join("cmd", data.CLIName, "main.go"):       deviceMainTemplate,
-		filepath.Join("internal", "cli", "root.go"):         deviceRootTemplate,
-		filepath.Join("internal", "device", "spec.go"):      deviceSpecTemplate,
-		filepath.Join("internal", "device", "transport.go"): deviceTransportTemplate,
+		filepath.Join("cmd", data.CLIName, "main.go"):        deviceMainTemplate,
+		filepath.Join("internal", "cli", "root.go"):          deviceRootTemplate,
+		filepath.Join("internal", "cliutil", "verifyenv.go"): "cliutil_verifyenv.go.tmpl",
+		filepath.Join("internal", "device", "spec.go"):       deviceSpecTemplate,
+		filepath.Join("internal", "device", "transport.go"):  deviceTransportTemplate,
 		"README.md": deviceReadmeTemplate,
 		"SKILL.md":  deviceSkillTemplate,
 	}
@@ -80,8 +84,14 @@ func (g *DeviceGenerator) Generate() error {
 		files[filepath.Join("internal", "device", "store.go")] = deviceStoreTemplate
 	}
 	for path, tmpl := range files {
-		if err := g.render(path, tmpl, data); err != nil {
-			return err
+		if strings.HasSuffix(tmpl, ".tmpl") {
+			if err := g.renderEmbedded(path, tmpl, data); err != nil {
+				return err
+			}
+		} else {
+			if err := g.render(path, tmpl, data); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -191,6 +201,29 @@ func (g *DeviceGenerator) render(relPath, tmplText string, data deviceTemplateDa
 	return os.WriteFile(path, normalizeRendered(buf.Bytes(), relPath, relPath), 0o644)
 }
 
+func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTemplateData) error {
+	content, err := templateFS.ReadFile(path.Join("templates", tmplName))
+	if err != nil {
+		return fmt.Errorf("read %s template: %w", tmplName, err)
+	}
+	tmpl, err := template.New(tmplName).Funcs(template.FuncMap{
+		"currentYear":     func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder": func() string { return "contributors" },
+	}).Parse(string(content))
+	if err != nil {
+		return fmt.Errorf("parse %s template: %w", tmplName, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return fmt.Errorf("render %s: %w", relPath, err)
+	}
+	outPath := filepath.Join(g.OutputDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(outPath, normalizeRendered(buf.Bytes(), tmplName, relPath), 0o644)
+}
+
 const deviceGoModTemplate = `module {{.ModulePath}}
 
 go 1.26.3
@@ -285,6 +318,12 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	return rootCmd
 }
 
+func writeJSON(cmd *cobra.Command, value any) error {
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
+}
+
 func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "capabilities",
@@ -292,9 +331,7 @@ func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			summary := device.Capabilities()
 			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(summary)
+				return writeJSON(cmd, summary)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s capabilities\n", summary.Device)
 			fmt.Fprintf(cmd.OutOrStdout(), "protocol: %s\n", summary.Protocol)
@@ -324,9 +361,7 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 				return err
 			}
 			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(snapshot)
+				return writeJSON(cmd, snapshot)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s status\n", snapshot.Device)
 			fmt.Fprintf(cmd.OutOrStdout(), "transport: %s\n", snapshot.Transport)
@@ -351,9 +386,7 @@ func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definitio
 				return err
 			}
 			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(result)
+				return writeJSON(cmd, result)
 			}
 			if result.DryRun {
 				fmt.Fprintf(cmd.OutOrStdout(), "would write %s to %s for %s\n", result.PayloadHex, result.CharacteristicUUID, result.Command)
@@ -395,9 +428,7 @@ func newTelemetryCaptureCmd(flags *rootFlags, transport device.Transport) *cobra
 				return err
 			}
 			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(samples)
+				return writeJSON(cmd, samples)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "captured %d telemetry sample(s)\n", len(samples))
 			fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.Path())
@@ -420,9 +451,7 @@ func newTelemetryLatestCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(samples)
+				return writeJSON(cmd, samples)
 			}
 			if len(samples) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "no stored telemetry samples")
@@ -507,9 +536,7 @@ func newSessionStopCmd(flags *rootFlags, session device.Session) *cobra.Command 
 
 func writeSessionStatus(cmd *cobra.Command, flags *rootFlags, status device.SessionStatus) error {
 	if flags.asJSON {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(status)
+		return writeJSON(cmd, status)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%s session\n", status.Device)
 	fmt.Fprintf(cmd.OutOrStdout(), "state: %s\n", status.State)
@@ -631,8 +658,9 @@ package device
 
 import (
 	"context"
-	"os"
 	"time"
+
+	"{{.ModulePath}}/internal/cliutil"
 )
 
 type StatusSnapshot struct {
@@ -685,7 +713,7 @@ func (t *ReplayTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 }
 
 func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
-	verifyNoop := isVerifyEnv()
+	verifyNoop := cliutil.IsVerifyEnv()
 	return CommandResult{
 		Command:            command.Name,
 		Transport:          commandTransportName(verifyNoop),
@@ -697,10 +725,6 @@ func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDef
 		VerifyNoop:         verifyNoop,
 		Reason:             commandNoopReason(verifyNoop),
 	}, nil
-}
-
-func isVerifyEnv() bool {
-	return os.Getenv("PRINTING_PRESS_VERIFY") == "1"
 }
 
 func commandTransportName(verifyNoop bool) string {

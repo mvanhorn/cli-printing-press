@@ -16,13 +16,6 @@ import (
 
 const defaultLiveDuration = 10 * time.Second
 
-type LiveSupportInfo struct {
-	Compiled bool   `json:"compiled"`
-	Backend  string `json:"backend"`
-	Platform string `json:"platform"`
-	Message  string `json:"message,omitempty"`
-}
-
 type TinyGoAdapter struct {
 	adapter *tinyble.Adapter
 }
@@ -200,11 +193,12 @@ func (a *TinyGoAdapter) Subscribe(ctx context.Context, req CharacteristicRequest
 			Type:               EventNotification,
 			ServiceUUID:        normalizeUUID(req.ServiceUUID),
 			CharacteristicUUID: normalizeUUID(char.UUID().String()),
-			ValueHex:           hex.EncodeToString(append([]byte(nil), buf...)),
+			ValueHex:           hex.EncodeToString(buf),
 		})
 	}); err != nil {
 		return nil, mapLiveError(err)
 	}
+	defer func() { _ = char.EnableNotifications(nil) }()
 
 	select {
 	case <-ctx.Done():
@@ -242,12 +236,23 @@ func (a *TinyGoAdapter) connect(ctx context.Context, address string) (tinyble.De
 
 	select {
 	case <-ctx.Done():
+		go disconnectLateConnect(done)
 		return tinyble.Device{}, ctx.Err()
 	case result := <-done:
 		if result.err != nil {
 			return tinyble.Device{}, mapLiveError(result.err)
 		}
 		return result.device, nil
+	}
+}
+
+func disconnectLateConnect(done <-chan struct {
+	device tinyble.Device
+	err    error
+}) {
+	result := <-done
+	if result.err == nil {
+		_ = result.device.Disconnect()
 	}
 }
 

@@ -2,11 +2,10 @@ package devicespec
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
-)
 
-var deviceSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+)
 
 func (s *DeviceSpec) Validate() error {
 	if s.Version != SupportedVersion {
@@ -15,7 +14,7 @@ func (s *DeviceSpec) Validate() error {
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
-	if !deviceSlugPattern.MatchString(s.Name) {
+	if !naming.IsSlug(s.Name) {
 		return fmt.Errorf("name must be a kebab-case slug")
 	}
 	if s.Protocol != ProtocolBLE {

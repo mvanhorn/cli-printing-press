@@ -310,11 +310,13 @@ func newGenerateCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec is required (or use --plan for plan-driven generation)")}
 			}
 
+			var singleSpecData []byte
 			if len(specFiles) == 1 {
 				data, err := readSpec(specFiles[0], refresh, dryRun)
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFiles[0], err)}
 				}
+				singleSpecData = data
 				if devicespec.LooksLikeDeviceSpec(data) {
 					deviceSpec, err := devicespec.ParseBytes(data)
 					if err != nil {
@@ -384,10 +386,16 @@ func newGenerateCmd() *cobra.Command {
 
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
-			for _, specFile := range specFiles {
-				data, err := readSpec(specFile, refresh, dryRun)
-				if err != nil {
-					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFile, err)}
+			for i, specFile := range specFiles {
+				var data []byte
+				var err error
+				if i == 0 && len(specFiles) == 1 && singleSpecData != nil {
+					data = singleSpecData
+				} else {
+					data, err = readSpec(specFile, refresh, dryRun)
+					if err != nil {
+						return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFile, err)}
+					}
 				}
 				specRawBytes = append(specRawBytes, data)
 

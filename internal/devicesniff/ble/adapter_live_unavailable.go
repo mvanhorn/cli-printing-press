@@ -2,13 +2,6 @@
 
 package ble
 
-type LiveSupportInfo struct {
-	Compiled bool   `json:"compiled"`
-	Backend  string `json:"backend"`
-	Platform string `json:"platform"`
-	Message  string `json:"message,omitempty"`
-}
-
 func LiveSupport() LiveSupportInfo {
 	return LiveSupportInfo{
 		Compiled: false,

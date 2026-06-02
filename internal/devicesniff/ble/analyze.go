@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
 const actionCorrelationWindow = 2 * time.Second
@@ -142,7 +143,7 @@ func inferCommands(input EvidenceInput) ([]devicespec.DeviceCommand, []Candidate
 		if notify := firstNotificationAfter(input.Events, write); notify.ID != "" {
 			evidenceRefs = append(evidenceRefs, notify.ID)
 		}
-		name := slug(action.Label)
+		name := naming.Slug(action.Label)
 		commands = append(commands, devicespec.DeviceCommand{
 			Name:               name,
 			CharacteristicUUID: normalizeUUID(write.CharacteristicUUID),
@@ -171,7 +172,7 @@ func commandsFromCommunityReferences(refs []CommunityReference) ([]devicespec.De
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s payload_hex: %w", ref.ID, err)
 		}
-		name := slug(ref.CommandName)
+		name := naming.Slug(ref.CommandName)
 		commands = append(commands, devicespec.DeviceCommand{
 			Name:               name,
 			CharacteristicUUID: normalizeUUID(ref.CharacteristicUUID),
@@ -423,22 +424,4 @@ func decodeHex(value string) ([]byte, error) {
 
 func normalizeUUID(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
-}
-
-func slug(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash && b.Len() > 0 {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }

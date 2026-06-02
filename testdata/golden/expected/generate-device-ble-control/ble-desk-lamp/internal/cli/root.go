@@ -49,6 +49,12 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	return rootCmd
 }
 
+func writeJSON(cmd *cobra.Command, value any) error {
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
+}
+
 func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "capabilities",
@@ -56,9 +62,7 @@ func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			summary := device.Capabilities()
 			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(summary)
+				return writeJSON(cmd, summary)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s capabilities\n", summary.Device)
 			fmt.Fprintf(cmd.OutOrStdout(), "protocol: %s\n", summary.Protocol)
@@ -88,9 +92,7 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 				return err
 			}
 			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(snapshot)
+				return writeJSON(cmd, snapshot)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s status\n", snapshot.Device)
 			fmt.Fprintf(cmd.OutOrStdout(), "transport: %s\n", snapshot.Transport)
@@ -114,9 +116,7 @@ func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definitio
 				return err
 			}
 			if flags.asJSON {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(result)
+				return writeJSON(cmd, result)
 			}
 			if result.DryRun {
 				fmt.Fprintf(cmd.OutOrStdout(), "would write %s to %s for %s\n", result.PayloadHex, result.CharacteristicUUID, result.Command)

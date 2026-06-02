@@ -68,6 +68,7 @@ func runDeviceSniffBLE(cmd *cobra.Command, opts bleSniffCLIOptions) error {
 	if err != nil {
 		return fmt.Errorf("loading BLE evidence: %w", err)
 	}
+	input = blesniff.RedactEvidence(input)
 
 	analysis, err := blesniff.AnalyzeEvidence(input)
 	if err != nil {
@@ -90,8 +91,7 @@ func runDeviceSniffBLE(cmd *cobra.Command, opts bleSniffCLIOptions) error {
 		return err
 	}
 
-	redactedEvidence := blesniff.RedactEvidence(input)
-	if err := writeDeviceSniffBLEOutputs(analysis.Spec, analysis.Report, redactedEvidence, outputPath, analysisPath, evidencePath); err != nil {
+	if err := writeDeviceSniffBLEOutputs(analysis.Spec, analysis.Report, input, outputPath, analysisPath, evidencePath); err != nil {
 		return err
 	}
 
@@ -122,11 +122,7 @@ func loadBLESniffEvidence(path string) (blesniff.EvidenceInput, error) {
 	if err != nil {
 		return blesniff.EvidenceInput{}, err
 	}
-	var input blesniff.EvidenceInput
-	if err := json.Unmarshal(data, &input); err != nil {
-		return blesniff.EvidenceInput{}, fmt.Errorf("parse JSON: %w", err)
-	}
-	return input, nil
+	return blesniff.ParseEvidence(data)
 }
 
 func writeDeviceSniffBLEOutputs(spec *devicespec.DeviceSpec, report blesniff.Report, evidence blesniff.EvidenceInput, specPath string, analysisPath string, evidencePath string) error {
@@ -173,11 +169,7 @@ func writeDeviceSniffBLEOutputs(spec *devicespec.DeviceSpec, report blesniff.Rep
 		writes[i].hadBackup = hadBackup
 	}
 
-	cleanupBackups := true
 	defer func() {
-		if !cleanupBackups {
-			return
-		}
 		for _, write := range writes {
 			_ = os.Remove(write.backupPath)
 		}
