@@ -2,6 +2,7 @@ package generator
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,8 @@ type deviceTemplateData struct {
 	DisplayName  string
 	CurrentYear  int
 	StatusFields []deviceStatusField
+	Commands     []deviceCommandField
+	HasCommands  bool
 }
 
 type deviceStatusField struct {
@@ -33,6 +36,14 @@ type deviceStatusField struct {
 	Unit               string
 	SampleCadence      string
 	Store              bool
+}
+
+type deviceCommandField struct {
+	Name               string
+	CharacteristicUUID string
+	Safety             string
+	ValidationStatus   string
+	PayloadHex         string
 }
 
 func NewDevice(spec *devicespec.DeviceSpec, outputDir string) *DeviceGenerator {
@@ -90,6 +101,19 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 			Store:              field.Store,
 		})
 	}
+	commands := make([]deviceCommandField, 0, len(g.Spec.Capabilities.Commands))
+	for _, command := range g.Spec.Capabilities.Commands {
+		if command.Safety != devicespec.SafetyLowRiskWrite {
+			continue
+		}
+		commands = append(commands, deviceCommandField{
+			Name:               naming.FlagName(command.Name),
+			CharacteristicUUID: command.CharacteristicUUID,
+			Safety:             command.Safety,
+			ValidationStatus:   command.ValidationStatus,
+			PayloadHex:         hex.EncodeToString(command.Payload.Bytes),
+		})
+	}
 	return deviceTemplateData{
 		Spec:         g.Spec,
 		Name:         name,
@@ -98,6 +122,8 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		DisplayName:  displayName,
 		CurrentYear:  time.Now().Year(),
 		StatusFields: statusFields,
+		Commands:     commands,
+		HasCommands:  len(commands) > 0,
 	}
 }
 
@@ -160,6 +186,9 @@ import (
 
 type rootFlags struct {
 	asJSON bool
+{{- if .HasCommands}}
+	dryRun bool
+{{- end}}
 }
 
 func RootCmd() *cobra.Command {
@@ -187,7 +216,13 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	}
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "agent", false, "Output agent-friendly JSON")
+{{- if .HasCommands}}
+	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview device writes without dispatching them")
+{{- end}}
 	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
+{{- range .Commands}}
+	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.NewReplayTransport(), device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}}))
+{{- end}}
 	return rootCmd
 }
 
@@ -217,6 +252,32 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 	}
 }
 
+{{ if .HasCommands}}
+func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definition device.CommandDefinition) *cobra.Command {
+	return &cobra.Command{
+		Use:   definition.Name,
+		Short: fmt.Sprintf("Replay %s against the device transport", definition.Name),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := transport.ExecuteCommand(cmd.Context(), definition, flags.dryRun)
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(result)
+			}
+			if result.DryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "would write %s to %s for %s\n", result.PayloadHex, result.CharacteristicUUID, result.Command)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "replayed %s via %s\n", result.Command, result.Transport)
+			return nil
+		},
+	}
+}
+
+{{ end}}
 func ExecuteWithContext(ctx context.Context) error {
 	cmd := RootCmd()
 	cmd.SetContext(ctx)
@@ -250,6 +311,20 @@ var StatusFields = []StatusField{
 	{Name: {{quote .Name}}, SourceCharacteristicUUID: {{quote .CharacteristicUUID}}, Unit: {{quote .Unit}}, SampleCadence: {{quote .SampleCadence}}, Store: {{if .Store}}true{{else}}false{{end}}},
 {{- end}}
 }
+
+type CommandDefinition struct {
+	Name               string ` + "`json:\"name\"`" + `
+	CharacteristicUUID string ` + "`json:\"characteristic_uuid\"`" + `
+	Safety             string ` + "`json:\"safety\"`" + `
+	ValidationStatus   string ` + "`json:\"validation_status,omitempty\"`" + `
+	PayloadHex         string ` + "`json:\"payload_hex\"`" + `
+}
+
+var CommandDefinitions = []CommandDefinition{
+{{- range .Commands}}
+	{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}},
+{{- end}}
+}
 `
 
 const deviceTransportTemplate = `// Copyright {{.CurrentYear}}. Licensed under Apache-2.0. See LICENSE.
@@ -270,8 +345,19 @@ type StatusSnapshot struct {
 	Telemetry   map[string]any ` + "`json:\"telemetry\"`" + `
 }
 
+type CommandResult struct {
+	Command            string ` + "`json:\"command\"`" + `
+	Transport          string ` + "`json:\"transport\"`" + `
+	CharacteristicUUID string ` + "`json:\"characteristic_uuid\"`" + `
+	PayloadHex         string ` + "`json:\"payload_hex\"`" + `
+	Safety             string ` + "`json:\"safety\"`" + `
+	ValidationStatus   string ` + "`json:\"validation_status,omitempty\"`" + `
+	DryRun             bool   ` + "`json:\"dry_run\"`" + `
+}
+
 type Transport interface {
 	Status(context.Context) (StatusSnapshot, error)
+	ExecuteCommand(context.Context, CommandDefinition, bool) (CommandResult, error)
 }
 
 type ReplayTransport struct{}
@@ -297,6 +383,18 @@ func (t *ReplayTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 		Telemetry:   telemetry,
 	}, nil
 }
+
+func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
+	return CommandResult{
+		Command:            command.Name,
+		Transport:          "replay",
+		CharacteristicUUID: command.CharacteristicUUID,
+		PayloadHex:         command.PayloadHex,
+		Safety:             command.Safety,
+		ValidationStatus:   command.ValidationStatus,
+		DryRun:             dryRun,
+	}, nil
+}
 `
 
 const deviceReadmeTemplate = `# {{.DisplayName}} CLI
@@ -308,6 +406,9 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 ## Commands
 
 - ` + "`{{.CLIName}} status --json`" + ` prints replay-backed status fields.
+{{- range .Commands}}
+- ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` previews the {{.Name}} BLE write.
+{{- end}}
 `
 
 const deviceSkillTemplate = `---
@@ -315,5 +416,5 @@ name: {{.Name}}
 description: Control {{.DisplayName}} through the generated BLE device CLI.
 ---
 
-Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output. Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.
+Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}} Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.
 `

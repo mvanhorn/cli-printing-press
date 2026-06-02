@@ -4,8 +4,8 @@
 package device
 
 const (
-	Name                   = "ble-temperature-sensor"
-	DisplayName            = "BLE Temperature Sensor"
+	Name                   = "ble-desk-lamp"
+	DisplayName            = "BLE Desk Lamp"
 	Protocol               = "ble"
 	SessionMode            = "one-shot"
 	SessionOneShotFallback = false
@@ -19,9 +19,7 @@ type StatusField struct {
 	Store                    bool   `json:"store,omitempty"`
 }
 
-var StatusFields = []StatusField{
-	{Name: "temperature", SourceCharacteristicUUID: "2a6e", Unit: "celsius", SampleCadence: "notification", Store: false},
-}
+var StatusFields = []StatusField{}
 
 type CommandDefinition struct {
 	Name               string `json:"name"`
@@ -31,4 +29,6 @@ type CommandDefinition struct {
 	PayloadHex         string `json:"payload_hex"`
 }
 
-var CommandDefinitions = []CommandDefinition{}
+var CommandDefinitions = []CommandDefinition{
+	{Name: "toggle", CharacteristicUUID: "ff01", Safety: "low-risk-write", ValidationStatus: "observed", PayloadHex: "01"},
+}
