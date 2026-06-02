@@ -1,0 +1,3 @@
+Device spec written to <ARTIFACT_DIR>/device-sniff-ble-sample/device.yaml (1 command, 1 telemetry field)
+BLE analysis written to <ARTIFACT_DIR>/device-sniff-ble-sample/analysis.json
+Redacted evidence written to <ARTIFACT_DIR>/device-sniff-ble-sample/evidence.json
