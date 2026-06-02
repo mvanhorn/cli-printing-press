@@ -14,6 +14,7 @@ import (
 
 type rootFlags struct {
 	asJSON    bool
+	dryRun    bool
 	storePath string
 }
 
@@ -42,11 +43,43 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	}
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "agent", false, "Output agent-friendly JSON")
+	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview device writes without dispatching them")
 	rootCmd.PersistentFlags().StringVar(&flags.storePath, "store", "", "Telemetry store path (default: user cache)")
+	rootCmd.AddCommand(newCapabilitiesCmd(flags))
 	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
 	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
 	rootCmd.AddCommand(newTelemetryCmd(flags, device.NewReplayTransport()))
+	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.NewReplayTransport(), device.CommandDefinition{Name: "start", CharacteristicUUID: "fd01", Safety: "physical-effect", ValidationStatus: "replay-validated", PayloadHex: "a001"}))
 	return rootCmd
+}
+
+func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "capabilities",
+		Short: "Show generated BLE capability and safety metadata",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			summary := device.Capabilities()
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(summary)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s capabilities\n", summary.Device)
+			fmt.Fprintf(cmd.OutOrStdout(), "protocol: %s\n", summary.Protocol)
+			fmt.Fprintf(cmd.OutOrStdout(), "session: %s\n", summary.SessionMode)
+			for _, field := range summary.Telemetry {
+				fmt.Fprintf(cmd.OutOrStdout(), "telemetry: %s via %s store=%v\n", field.Name, field.SourceCharacteristicUUID, field.Store)
+			}
+			for _, command := range summary.Commands {
+				if command.Callable {
+					fmt.Fprintf(cmd.OutOrStdout(), "callable command: %s safety=%s characteristic=%s\n", command.Name, command.Safety, command.CharacteristicUUID)
+					continue
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "withheld command: %s safety=%s characteristic=%s reason=%s\n", command.Name, command.Safety, command.CharacteristicUUID, command.WithheldReason)
+			}
+			return nil
+		},
+	}
 }
 
 func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
@@ -70,6 +103,30 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 				value := snapshot.Telemetry[field.Name]
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: %v\n", field.Name, value)
 			}
+			return nil
+		},
+	}
+}
+
+func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definition device.CommandDefinition) *cobra.Command {
+	return &cobra.Command{
+		Use:   definition.Name,
+		Short: fmt.Sprintf("Replay %s against the device transport", definition.Name),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := transport.ExecuteCommand(cmd.Context(), definition, flags.dryRun)
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(result)
+			}
+			if result.DryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "would write %s to %s for %s\n", result.PayloadHex, result.CharacteristicUUID, result.Command)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "replayed %s via %s\n", result.Command, result.Transport)
 			return nil
 		},
 	}

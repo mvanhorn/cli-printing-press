@@ -7,3 +7,4 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 ## Commands
 
 - `ble-temperature-sensor-pp-cli status --json` prints replay-backed status fields.
+- `ble-temperature-sensor-pp-cli capabilities --json` prints callable and withheld BLE capabilities with safety metadata.

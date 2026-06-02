@@ -41,8 +41,38 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	}
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "agent", false, "Output agent-friendly JSON")
+	rootCmd.AddCommand(newCapabilitiesCmd(flags))
 	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
 	return rootCmd
+}
+
+func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "capabilities",
+		Short: "Show generated BLE capability and safety metadata",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			summary := device.Capabilities()
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(summary)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s capabilities\n", summary.Device)
+			fmt.Fprintf(cmd.OutOrStdout(), "protocol: %s\n", summary.Protocol)
+			fmt.Fprintf(cmd.OutOrStdout(), "session: %s\n", summary.SessionMode)
+			for _, field := range summary.Telemetry {
+				fmt.Fprintf(cmd.OutOrStdout(), "telemetry: %s via %s store=%v\n", field.Name, field.SourceCharacteristicUUID, field.Store)
+			}
+			for _, command := range summary.Commands {
+				if command.Callable {
+					fmt.Fprintf(cmd.OutOrStdout(), "callable command: %s safety=%s characteristic=%s\n", command.Name, command.Safety, command.CharacteristicUUID)
+					continue
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "withheld command: %s safety=%s characteristic=%s reason=%s\n", command.Name, command.Safety, command.CharacteristicUUID, command.WithheldReason)
+			}
+			return nil
+		},
+	}
 }
 
 func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {

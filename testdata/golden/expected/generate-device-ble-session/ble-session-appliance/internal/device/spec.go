@@ -33,11 +33,46 @@ var StatusFields = []StatusField{
 }
 
 type CommandDefinition struct {
-	Name               string `json:"name"`
-	CharacteristicUUID string `json:"characteristic_uuid"`
-	Safety             string `json:"safety"`
-	ValidationStatus   string `json:"validation_status,omitempty"`
-	PayloadHex         string `json:"payload_hex"`
+	Name               string   `json:"name"`
+	CharacteristicUUID string   `json:"characteristic_uuid"`
+	Safety             string   `json:"safety"`
+	ValidationStatus   string   `json:"validation_status,omitempty"`
+	PayloadHex         string   `json:"payload_hex"`
+	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 }
 
-var CommandDefinitions = []CommandDefinition{}
+var CommandDefinitions = []CommandDefinition{
+	{Name: "start", CharacteristicUUID: "fd01", Safety: "physical-effect", ValidationStatus: "replay-validated", PayloadHex: "a001", EvidenceRefs: []string{"write-start", "notify-running"}},
+}
+
+type CommandCapability struct {
+	Name               string   `json:"name"`
+	CharacteristicUUID string   `json:"characteristic_uuid"`
+	Safety             string   `json:"safety"`
+	ValidationStatus   string   `json:"validation_status,omitempty"`
+	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
+	Callable           bool     `json:"callable"`
+	WithheldReason     string   `json:"withheld_reason,omitempty"`
+}
+
+var CommandCapabilities = []CommandCapability{
+	{Name: "start", CharacteristicUUID: "fd01", Safety: "physical-effect", ValidationStatus: "replay-validated", EvidenceRefs: []string{"write-start", "notify-running"}, Callable: true, WithheldReason: ""},
+}
+
+type CapabilitySummary struct {
+	Device      string              `json:"device"`
+	Protocol    string              `json:"protocol"`
+	SessionMode string              `json:"session_mode"`
+	Telemetry   []StatusField       `json:"telemetry"`
+	Commands    []CommandCapability `json:"commands"`
+}
+
+func Capabilities() CapabilitySummary {
+	return CapabilitySummary{
+		Device:      DisplayName,
+		Protocol:    Protocol,
+		SessionMode: SessionMode,
+		Telemetry:   append([]StatusField(nil), StatusFields...),
+		Commands:    append([]CommandCapability(nil), CommandCapabilities...),
+	}
+}

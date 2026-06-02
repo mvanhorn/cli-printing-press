@@ -7,4 +7,5 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 ## Commands
 
 - `ble-desk-lamp-pp-cli status --json` prints replay-backed status fields.
+- `ble-desk-lamp-pp-cli capabilities --json` prints callable and withheld BLE capabilities with safety metadata.
 - `ble-desk-lamp-pp-cli toggle --dry-run --json` previews the toggle BLE write.

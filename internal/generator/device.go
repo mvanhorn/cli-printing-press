@@ -27,6 +27,7 @@ type deviceTemplateData struct {
 	CurrentYear  int
 	StatusFields []deviceStatusField
 	Commands     []deviceCommandField
+	AllCommands  []deviceCommandField
 	HasCommands  bool
 	HasSession   bool
 	HasStore     bool
@@ -46,6 +47,9 @@ type deviceCommandField struct {
 	Safety             string
 	ValidationStatus   string
 	PayloadHex         string
+	EvidenceRefs       []string
+	Callable           bool
+	WithheldReason     string
 }
 
 func NewDevice(spec *devicespec.DeviceSpec, outputDir string) *DeviceGenerator {
@@ -114,17 +118,22 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		})
 	}
 	commands := make([]deviceCommandField, 0, len(g.Spec.Capabilities.Commands))
+	allCommands := make([]deviceCommandField, 0, len(g.Spec.Capabilities.Commands))
 	for _, command := range g.Spec.Capabilities.Commands {
-		if command.Safety != devicespec.SafetyLowRiskWrite {
-			continue
-		}
-		commands = append(commands, deviceCommandField{
+		field := deviceCommandField{
 			Name:               naming.FlagName(command.Name),
 			CharacteristicUUID: command.CharacteristicUUID,
 			Safety:             command.Safety,
 			ValidationStatus:   command.ValidationStatus,
 			PayloadHex:         hex.EncodeToString(command.Payload.Bytes),
-		})
+			EvidenceRefs:       command.EvidenceRefs,
+			Callable:           deviceCommandCallable(command),
+			WithheldReason:     deviceCommandWithheldReason(command),
+		}
+		allCommands = append(allCommands, field)
+		if field.Callable {
+			commands = append(commands, field)
+		}
 	}
 	return deviceTemplateData{
 		Spec:         g.Spec,
@@ -135,10 +144,33 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		CurrentYear:  time.Now().Year(),
 		StatusFields: statusFields,
 		Commands:     commands,
+		AllCommands:  allCommands,
 		HasCommands:  len(commands) > 0,
 		HasSession:   g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
 		HasStore:     hasStore,
 	}
+}
+
+func deviceCommandWithheldReason(command devicespec.DeviceCommand) string {
+	if deviceCommandCallable(command) {
+		return ""
+	}
+	if command.ValidationStatus != devicespec.ValidationStatusObserved && command.ValidationStatus != devicespec.ValidationStatusReplayValidated {
+		return "withheld: command is not observed or replay-validated"
+	}
+	switch command.Safety {
+	case devicespec.SafetyUnknown, "":
+		return "withheld: command safety is unknown"
+	default:
+		return "withheld: command is not callable in the generated replay runtime"
+	}
+}
+
+func deviceCommandCallable(command devicespec.DeviceCommand) bool {
+	if command.Safety == devicespec.SafetyUnknown || command.Safety == "" {
+		return false
+	}
+	return command.ValidationStatus == devicespec.ValidationStatusObserved || command.ValidationStatus == devicespec.ValidationStatusReplayValidated
 }
 
 func (g *DeviceGenerator) render(relPath, tmplText string, data deviceTemplateData) error {
@@ -239,6 +271,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 {{- if .HasStore}}
 	rootCmd.PersistentFlags().StringVar(&flags.storePath, "store", "", "Telemetry store path (default: user cache)")
 {{- end}}
+	rootCmd.AddCommand(newCapabilitiesCmd(flags))
 	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
 {{- if .HasSession}}
 	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
@@ -250,6 +283,35 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.NewReplayTransport(), device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}}))
 {{- end}}
 	return rootCmd
+}
+
+func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "capabilities",
+		Short: "Show generated BLE capability and safety metadata",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			summary := device.Capabilities()
+			if flags.asJSON {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(summary)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s capabilities\n", summary.Device)
+			fmt.Fprintf(cmd.OutOrStdout(), "protocol: %s\n", summary.Protocol)
+			fmt.Fprintf(cmd.OutOrStdout(), "session: %s\n", summary.SessionMode)
+			for _, field := range summary.Telemetry {
+				fmt.Fprintf(cmd.OutOrStdout(), "telemetry: %s via %s store=%v\n", field.Name, field.SourceCharacteristicUUID, field.Store)
+			}
+			for _, command := range summary.Commands {
+				if command.Callable {
+					fmt.Fprintf(cmd.OutOrStdout(), "callable command: %s safety=%s characteristic=%s\n", command.Name, command.Safety, command.CharacteristicUUID)
+					continue
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "withheld command: %s safety=%s characteristic=%s reason=%s\n", command.Name, command.Safety, command.CharacteristicUUID, command.WithheldReason)
+			}
+			return nil
+		},
+	}
 }
 
 func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
@@ -518,12 +580,47 @@ type CommandDefinition struct {
 	Safety             string ` + "`json:\"safety\"`" + `
 	ValidationStatus   string ` + "`json:\"validation_status,omitempty\"`" + `
 	PayloadHex         string ` + "`json:\"payload_hex\"`" + `
+	EvidenceRefs       []string ` + "`json:\"evidence_refs,omitempty\"`" + `
 }
 
 var CommandDefinitions = []CommandDefinition{
 {{- range .Commands}}
-	{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}},
+	{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}, EvidenceRefs: []string{ {{- range .EvidenceRefs}}{{quote .}}, {{- end}} }},
 {{- end}}
+}
+
+type CommandCapability struct {
+	Name               string   ` + "`json:\"name\"`" + `
+	CharacteristicUUID string   ` + "`json:\"characteristic_uuid\"`" + `
+	Safety             string   ` + "`json:\"safety\"`" + `
+	ValidationStatus   string   ` + "`json:\"validation_status,omitempty\"`" + `
+	EvidenceRefs       []string ` + "`json:\"evidence_refs,omitempty\"`" + `
+	Callable           bool     ` + "`json:\"callable\"`" + `
+	WithheldReason     string   ` + "`json:\"withheld_reason,omitempty\"`" + `
+}
+
+var CommandCapabilities = []CommandCapability{
+{{- range .AllCommands}}
+	{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, EvidenceRefs: []string{ {{- range .EvidenceRefs}}{{quote .}}, {{- end}} }, Callable: {{if .Callable}}true{{else}}false{{end}}, WithheldReason: {{quote .WithheldReason}}},
+{{- end}}
+}
+
+type CapabilitySummary struct {
+	Device      string              ` + "`json:\"device\"`" + `
+	Protocol    string              ` + "`json:\"protocol\"`" + `
+	SessionMode string              ` + "`json:\"session_mode\"`" + `
+	Telemetry   []StatusField       ` + "`json:\"telemetry\"`" + `
+	Commands    []CommandCapability ` + "`json:\"commands\"`" + `
+}
+
+func Capabilities() CapabilitySummary {
+	return CapabilitySummary{
+		Device:      DisplayName,
+		Protocol:    Protocol,
+		SessionMode: SessionMode,
+		Telemetry:   append([]StatusField(nil), StatusFields...),
+		Commands:    append([]CommandCapability(nil), CommandCapabilities...),
+	}
 }
 `
 
@@ -795,6 +892,7 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 ## Commands
 
 - ` + "`{{.CLIName}} status --json`" + ` prints replay-backed status fields.
+- ` + "`{{.CLIName}} capabilities --json`" + ` prints callable and withheld BLE capabilities with safety metadata.
 {{- range .Commands}}
 - ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` previews the {{.Name}} BLE write.
 {{- end}}
@@ -812,5 +910,5 @@ name: {{.Name}}
 description: Control {{.DisplayName}} through the generated BLE device CLI.
 ---
 
-Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session status --json`" + ` to inspect the generated session requirements before building live BLE IPC.{{else}} Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{end}}
+Use ` + "`{{.CLIName}} capabilities --json`" + ` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session status --json`" + ` to inspect the generated session requirements before building live BLE IPC.{{else}} Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{end}}
 `

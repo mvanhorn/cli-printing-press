@@ -48,11 +48,12 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
 	root := string(rootSrc)
+	assert.Contains(t, root, "rootCmd.AddCommand(newCapabilitiesCmd")
 	assert.Contains(t, root, "rootCmd.AddCommand(newSessionCmd")
 	assert.Contains(t, root, "rootCmd.AddCommand(newTelemetryCmd")
 	assert.Contains(t, root, "device.NewReplaySession()")
-	assert.NotContains(t, root, `PayloadHex: "a001"`)
-	assert.NotContains(t, root, `device.CommandDefinition{Name: "start"`)
+	assert.Contains(t, root, `PayloadHex: "a001"`)
+	assert.Contains(t, root, `device.CommandDefinition{Name: "start"`)
 
 	sessionSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "session.go"))
 	require.NoError(t, err)
@@ -75,6 +76,11 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	assert.Contains(t, spec, `SessionOneShotFallback`)
 	assert.Contains(t, spec, `= true`)
 	assert.Contains(t, spec, `"notification_stream"`)
+	assert.Contains(t, spec, `Name: "start"`)
+	assert.Contains(t, spec, `Safety: "physical-effect"`)
+	assert.Contains(t, spec, `EvidenceRefs: []string{"write-start", "notify-running"`)
+	assert.Contains(t, spec, `Callable: true`)
+	assert.Contains(t, spec, `WithheldReason: ""`)
 
 	requireGeneratedCompiles(t, outputDir)
 }
@@ -91,12 +97,42 @@ func TestGenerateLowRiskBLEDeviceCommandCompiles(t *testing.T) {
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(rootSrc), `Use:   definition.Name`)
+	assert.Contains(t, string(rootSrc), "newCapabilitiesCmd")
 	assert.Contains(t, string(rootSrc), `PayloadHex: "01"`)
 
 	specSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "spec.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(specSrc), `Name: "toggle"`)
 	assert.Contains(t, string(specSrc), `Safety: "low-risk-write"`)
+	assert.Contains(t, string(specSrc), `Callable: true`)
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGenerateUnknownBLECommandAsMetadataOnly(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-opaque-binary.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-opaque-binary")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	root := string(rootSrc)
+	assert.Contains(t, root, "newCapabilitiesCmd")
+	assert.NotContains(t, root, `device.CommandDefinition{Name: "vendor-action"`)
+	assert.NotContains(t, root, `PayloadHex: "f7a50100fd"`)
+
+	specSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "spec.go"))
+	require.NoError(t, err)
+	spec := string(specSrc)
+	assert.Contains(t, spec, `Name: "vendor-action"`)
+	assert.Contains(t, spec, `Safety: "unknown"`)
+	assert.Contains(t, spec, `ValidationStatus: "inferred"`)
+	assert.Contains(t, spec, `Callable: false`)
+	assert.Contains(t, spec, `WithheldReason: "withheld: command is not observed or replay-validated"`)
 
 	requireGeneratedCompiles(t, outputDir)
 }

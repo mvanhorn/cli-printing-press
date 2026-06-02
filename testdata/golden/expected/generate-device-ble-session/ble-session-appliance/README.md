@@ -7,6 +7,8 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 ## Commands
 
 - `ble-session-appliance-pp-cli status --json` prints replay-backed status fields.
+- `ble-session-appliance-pp-cli capabilities --json` prints callable and withheld BLE capabilities with safety metadata.
+- `ble-session-appliance-pp-cli start --dry-run --json` previews the start BLE write.
 - `ble-session-appliance-pp-cli session status --json` prints the generated session requirements and replay scaffold state.
 - `ble-session-appliance-pp-cli telemetry capture --json` stores replay-backed telemetry samples locally.
 - `ble-session-appliance-pp-cli telemetry latest --json` reads the latest locally stored telemetry samples.
