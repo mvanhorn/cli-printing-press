@@ -29,11 +29,17 @@ const (
 	GuidanceSourceReplayValidation   = "replay_validation"
 )
 
+const (
+	EvidenceSourceActionJournal      = "action-journal"
+	EvidenceSourceBLEEvent           = "ble-event"
+	EvidenceSourceCommunityReference = "community-reference"
+)
+
 type EvidenceInput struct {
 	Name                string                    `json:"name"`
 	DisplayName         string                    `json:"display_name,omitempty"`
 	RedactionTerms      []string                  `json:"redaction_terms,omitempty"`
-	Identity            devicespec.DeviceIdentity `json:"identity,omitempty"`
+	Identity            devicespec.DeviceIdentity `json:"identity"`
 	Events              []Event                   `json:"events,omitempty"`
 	Actions             []ActionMarker            `json:"actions,omitempty"`
 	CommunityReferences []CommunityReference      `json:"community_references,omitempty"`
@@ -76,7 +82,7 @@ type Analysis struct {
 type Report struct {
 	DeviceCandidates          []DeviceCandidate  `json:"device_candidates,omitempty"`
 	RequiresOperatorSelection bool               `json:"requires_operator_selection,omitempty"`
-	CommandDiscovery          CommandDiscovery   `json:"command_discovery,omitempty"`
+	CommandDiscovery          CommandDiscovery   `json:"command_discovery"`
 	CommandCandidates         []CandidateSummary `json:"command_candidates,omitempty"`
 	TelemetryCandidates       []CandidateSummary `json:"telemetry_candidates,omitempty"`
 	Ambiguities               []string           `json:"ambiguities,omitempty"`

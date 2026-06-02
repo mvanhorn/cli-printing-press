@@ -6,18 +6,22 @@ import (
 )
 
 type ReplayAdapter struct {
-	input EvidenceInput
+	input      EvidenceInput
+	candidates []DeviceCandidate
 }
 
 func NewReplayAdapter(input EvidenceInput) *ReplayAdapter {
-	return &ReplayAdapter{input: input}
+	return &ReplayAdapter{
+		input:      input,
+		candidates: deviceCandidates(input.Events),
+	}
 }
 
 func (a *ReplayAdapter) Scan(ctx context.Context, opts ScanOptions) ([]DeviceCandidate, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	candidates := deviceCandidates(a.input.Events)
+	candidates := a.candidates
 	if len(opts.ServiceUUIDs) == 0 {
 		return candidates, nil
 	}
@@ -109,9 +113,9 @@ func (a *ReplayAdapter) Subscribe(ctx context.Context, req CharacteristicRequest
 
 func (a *ReplayAdapter) hasDevice(address string) bool {
 	if strings.TrimSpace(address) == "" {
-		return len(deviceCandidates(a.input.Events)) == 1
+		return len(a.candidates) == 1
 	}
-	for _, candidate := range deviceCandidates(a.input.Events) {
+	for _, candidate := range a.candidates {
 		if sameAddress(candidate.Address, address) {
 			return true
 		}

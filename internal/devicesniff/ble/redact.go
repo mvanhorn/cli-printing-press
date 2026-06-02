@@ -8,6 +8,10 @@ import (
 func RedactEvidence(input EvidenceInput) EvidenceInput {
 	redactionTerms := append([]string(nil), input.RedactionTerms...)
 	input.RedactionTerms = nil
+
+	input.Name = redactSensitiveTerms(input.Name, redactionTerms)
+	input.DisplayName = redactSensitiveTerms(input.DisplayName, redactionTerms)
+
 	input.Identity.AdvertisedNames = append([]string(nil), input.Identity.AdvertisedNames...)
 	input.Events = append([]Event(nil), input.Events...)
 	input.Actions = append([]ActionMarker(nil), input.Actions...)
@@ -38,8 +42,8 @@ func redactSensitiveTerms(value string, terms []string) string {
 		if term == "" {
 			continue
 		}
-		value = strings.ReplaceAll(value, term, "redacted")
 		value = strings.ReplaceAll(value, strings.TrimSuffix(term, "'s")+"'s", "redacted")
+		value = strings.ReplaceAll(value, term, "redacted")
 	}
 	return value
 }

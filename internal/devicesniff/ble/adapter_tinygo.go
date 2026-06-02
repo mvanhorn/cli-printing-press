@@ -5,8 +5,11 @@ package ble
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"math"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +19,10 @@ import (
 )
 
 const defaultLiveDuration = 10 * time.Second
+
+// maxSafeDurationMillis is the largest ms value that can be multiplied by
+// time.Millisecond without overflowing int64.
+var maxSafeDurationMillis = int(math.MaxInt64 / int64(time.Millisecond))
 
 type TinyGoAdapter struct {
 	adapter *tinyble.Adapter
@@ -109,14 +116,22 @@ func (a *TinyGoAdapter) Inspect(ctx context.Context, req InspectRequest) ([]Even
 	}
 	defer func() { _ = device.Disconnect() }()
 
-	services, err := device.DiscoverServices(nil)
+	services, err := runWithContext(ctx, func() ([]tinyble.DeviceService, error) {
+		return device.DiscoverServices(nil)
+	})
 	if err != nil {
 		return nil, mapLiveError(err)
 	}
+	// EventServiceDiscovery events carry no Properties: tinygo.org/x/bluetooth
+	// exposes no characteristic property bitmask after discovery, so live
+	// captures cannot flag writable characteristics the way replay evidence
+	// does. Writability is inferred from action markers and community references.
 	events := make([]Event, 0)
 	for serviceIndex, service := range services {
 		serviceUUID := service.UUID().String()
-		chars, err := service.DiscoverCharacteristics(nil)
+		chars, err := runWithContext(ctx, func() ([]tinyble.DeviceCharacteristic, error) {
+			return service.DiscoverCharacteristics(nil)
+		})
 		if err != nil {
 			return nil, mapLiveError(err)
 		}
@@ -184,18 +199,21 @@ func (a *TinyGoAdapter) Subscribe(ctx context.Context, req CharacteristicRequest
 	defer disconnect()
 
 	duration := durationFromMillis(req.DurationMillis)
+	serviceUUID := normalizeUUID(req.ServiceUUID)
+	characteristicUUID := normalizeUUID(char.UUID().String())
 	var mu sync.Mutex
 	var events []Event
 	if err := char.EnableNotifications(func(buf []byte) {
+		valueHex := hex.EncodeToString(buf)
 		mu.Lock()
-		defer mu.Unlock()
 		events = append(events, Event{
 			ID:                 fmt.Sprintf("live-notify-%d", len(events)+1),
 			Type:               EventNotification,
-			ServiceUUID:        normalizeUUID(req.ServiceUUID),
-			CharacteristicUUID: normalizeUUID(char.UUID().String()),
-			ValueHex:           hex.EncodeToString(buf),
+			ServiceUUID:        serviceUUID,
+			CharacteristicUUID: characteristicUUID,
+			ValueHex:           valueHex,
 		})
+		mu.Unlock()
 	}); err != nil {
 		return nil, mapLiveError(err)
 	}
@@ -286,6 +304,28 @@ func disconnectLateConnect(done <-chan struct {
 	}
 }
 
+// runWithContext runs fn on a goroutine and returns its result, or ctx.Err() if
+// the context is cancelled first. A cancelled call's goroutine unblocks once the
+// caller disconnects the device; the buffered channel keeps it from leaking.
+func runWithContext[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	type outcome struct {
+		value T
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		value, err := fn()
+		done <- outcome{value: value, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	case res := <-done:
+		return res.value, res.err
+	}
+}
+
 func (a *TinyGoAdapter) characteristic(ctx context.Context, address string, serviceUUID string, characteristicUUID string) (tinyble.DeviceCharacteristic, func(), error) {
 	device, err := a.connect(ctx, address)
 	if err != nil {
@@ -312,13 +352,17 @@ func (a *TinyGoAdapter) characteristic(ctx context.Context, address string, serv
 	if serviceFilter != nil {
 		serviceUUIDs = []tinyble.UUID{*serviceFilter}
 	}
-	services, err := device.DiscoverServices(serviceUUIDs)
+	services, err := runWithContext(ctx, func() ([]tinyble.DeviceService, error) {
+		return device.DiscoverServices(serviceUUIDs)
+	})
 	if err != nil {
 		disconnect()
 		return tinyble.DeviceCharacteristic{}, func() {}, mapLiveError(err)
 	}
 	for _, service := range services {
-		chars, err := service.DiscoverCharacteristics([]tinyble.UUID{*charFilter})
+		chars, err := runWithContext(ctx, func() ([]tinyble.DeviceCharacteristic, error) {
+			return service.DiscoverCharacteristics([]tinyble.UUID{*charFilter})
+		})
 		if err != nil {
 			disconnect()
 			return tinyble.DeviceCharacteristic{}, func() {}, mapLiveError(err)
@@ -341,9 +385,15 @@ func (a *TinyGoAdapter) enable() error {
 	return nil
 }
 
+// durationFromMillis converts a millisecond count to a time.Duration.
+// Non-positive values return the default scan duration.
+// Values large enough to overflow int64 are clamped to 24 hours.
 func durationFromMillis(ms int) time.Duration {
 	if ms <= 0 {
 		return defaultLiveDuration
+	}
+	if ms > maxSafeDurationMillis {
+		return 24 * time.Hour
 	}
 	return time.Duration(ms) * time.Millisecond
 }
@@ -375,12 +425,7 @@ func matchesServiceUUIDs(result tinyble.ScanResult, required []tinyble.UUID) boo
 	if len(required) == 0 {
 		return true
 	}
-	for _, uuid := range required {
-		if result.HasServiceUUID(uuid) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(required, result.HasServiceUUID)
 }
 
 func uuidStrings(uuids []tinyble.UUID) []string {
@@ -392,9 +437,30 @@ func uuidStrings(uuids []tinyble.UUID) []string {
 	return out
 }
 
+// mapLiveError classifies a raw BLE adapter error into a typed AdapterError.
+// String heuristics are applied before falling back to AdapterErrorUnsupported.
 func mapLiveError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return adapterError(AdapterErrorUnsupported, "%v", err)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "operation not permitted") ||
+		strings.Contains(msg, "not authorized"):
+		return adapterError(AdapterErrorPermissionDenied, "%v", err)
+	case strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "no such device") ||
+		strings.Contains(msg, "unknown device"):
+		return adapterError(AdapterErrorDeviceNotFound, "%v", err)
+	case strings.Contains(msg, "disconnected") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused"):
+		return adapterError(AdapterErrorDisconnected, "%v", err)
+	default:
+		return adapterError(AdapterErrorUnsupported, "%v", err)
+	}
 }

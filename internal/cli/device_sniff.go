@@ -58,7 +58,7 @@ func newDeviceSniffBLECmd(use string) *cobra.Command {
 	cmd.Flags().StringVar(&opts.inputPath, "input", "", "Path to captured BLE evidence JSON")
 	cmd.Flags().StringVar(&opts.outputPath, "output", "", "Output path for generated DeviceSpec YAML")
 	cmd.Flags().StringVar(&opts.analysisOutputPath, "analysis-output", "", "Output path for BLE analysis report JSON (defaults beside the spec)")
-	cmd.Flags().StringVar(&opts.evidenceOutputPath, "evidence-output", "", "Output path for redacted evidence JSON (defaults beside the spec)")
+	cmd.Flags().StringVar(&opts.evidenceOutputPath, "evidence-output", "", "Output path for archived BLE evidence JSON; device names are redacted but captured values are preserved (defaults beside the spec)")
 	cmd.Flags().StringArrayVar(&opts.redactionTerms, "redact-term", nil, "Sensitive device-name term to redact from archived BLE evidence; repeat as needed")
 	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "Output as JSON")
 	_ = cmd.MarkFlagRequired("input")
@@ -115,7 +115,7 @@ func runDeviceSniffBLE(cmd *cobra.Command, opts bleSniffCLIOptions) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Device spec written to %s (%d command%s, %d telemetry field%s)\n", outputPath, summary.Commands, plural(summary.Commands), summary.Telemetry, plural(summary.Telemetry))
 	fmt.Fprintf(cmd.OutOrStdout(), "BLE analysis written to %s\n", analysisPath)
-	fmt.Fprintf(cmd.OutOrStdout(), "Redacted evidence written to %s\n", evidencePath)
+	fmt.Fprintf(cmd.OutOrStdout(), "Archived evidence written to %s (device names redacted; captured values preserved)\n", evidencePath)
 	if summary.RequiresOperatorSelection {
 		fmt.Fprintln(cmd.OutOrStdout(), "Operator selection required before replay: multiple BLE devices matched the capture")
 	}

@@ -152,6 +152,92 @@ func TestRedactEvidenceDoesNotMutateInput(t *testing.T) {
 	assert.Equal(t, originalTerms, input.RedactionTerms)
 }
 
+func TestAnalyzeEvidenceDefaultsSafetyUnknownWhenOmitted(t *testing.T) {
+	t.Parallel()
+
+	result, err := AnalyzeEvidence(EvidenceInput{
+		Name: "test-device",
+		Events: []Event{
+			{ID: "svc", Type: EventServiceDiscovery, ServiceUUID: "aa00", CharacteristicUUID: "aa01", Properties: []string{"write"}},
+			{ID: "write-1", Type: EventWrite, At: "2026-06-01T12:00:06Z", CharacteristicUUID: "aa01", ValueHex: "0101"},
+		},
+		Actions: []ActionMarker{
+			// Safety intentionally omitted.
+			{ID: "action-1", Label: "power-on", At: "2026-06-01T12:00:05Z"},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Spec.Capabilities.Commands, 1)
+	assert.Equal(t, devicespec.SafetyUnknown, result.Spec.Capabilities.Commands[0].Safety)
+}
+
+func TestAnalyzeEvidenceFallsBackToIDSlugWhenLabelUnusable(t *testing.T) {
+	t.Parallel()
+
+	result, err := AnalyzeEvidence(EvidenceInput{
+		Name: "test-device",
+		Events: []Event{
+			{ID: "svc", Type: EventServiceDiscovery, ServiceUUID: "aa00", CharacteristicUUID: "aa01", Properties: []string{"write"}},
+			{ID: "write-1", Type: EventWrite, At: "2026-06-01T12:00:06Z", CharacteristicUUID: "aa01", ValueHex: "0101"},
+		},
+		Actions: []ActionMarker{
+			// Label is all punctuation — Slug("!!!") == "".
+			// ID "action-press" has a usable slug.
+			{ID: "action-press", Label: "!!!", At: "2026-06-01T12:00:05Z", Safety: devicespec.SafetyLowRiskWrite},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Spec.Capabilities.Commands, 1)
+	assert.Equal(t, "action-press", result.Spec.Capabilities.Commands[0].Name)
+}
+
+func TestAnalyzeEvidenceSkipsCommandWhenBothLabelAndIDUnusable(t *testing.T) {
+	t.Parallel()
+
+	result, err := AnalyzeEvidence(EvidenceInput{
+		Name: "test-device",
+		Events: []Event{
+			{ID: "svc", Type: EventServiceDiscovery, ServiceUUID: "aa00", CharacteristicUUID: "aa01", Properties: []string{"write"}},
+			{ID: "write-1", Type: EventWrite, At: "2026-06-01T12:00:06Z", CharacteristicUUID: "aa01", ValueHex: "0101"},
+		},
+		Actions: []ActionMarker{
+			// Both label and ID produce empty slugs.
+			{ID: "!!!", Label: "🔥", At: "2026-06-01T12:00:05Z", Safety: devicespec.SafetyLowRiskWrite},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Spec.Capabilities.Commands)
+	require.NotEmpty(t, result.Report.Ambiguities)
+	assert.Contains(t, result.Report.Ambiguities[0], "no usable command name")
+}
+
+func TestAnalyzeEvidenceDropsCommandWithUndiscoveredCharacteristic(t *testing.T) {
+	t.Parallel()
+
+	// The community reference points to "ee01" which has no corresponding
+	// service_discovery event, so the characteristic is not in the BLE surface.
+	result, err := AnalyzeEvidence(EvidenceInput{
+		Name: "test-device",
+		Events: []Event{
+			// Only "aa01" is service-discovered, not "ee01".
+			{ID: "svc", Type: EventServiceDiscovery, ServiceUUID: "aa00", CharacteristicUUID: "aa01", Properties: []string{"write"}},
+		},
+		CommunityReferences: []CommunityReference{
+			{
+				ID:                 "ref-1",
+				CommandName:        "ghost-cmd",
+				CharacteristicUUID: "ee01", // undiscovered
+				PayloadHex:         "aabb",
+				Safety:             devicespec.SafetyLowRiskWrite,
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Spec.Capabilities.Commands)
+	require.NotEmpty(t, result.Report.Ambiguities)
+	assert.Contains(t, result.Report.Ambiguities[0], "ee01")
+}
+
 func readFixture(t *testing.T, name string) EvidenceInput {
 	t.Helper()
 

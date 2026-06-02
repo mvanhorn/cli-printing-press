@@ -305,6 +305,7 @@ func evidenceWithEvents(input ble.EvidenceInput, events []ble.Event) ble.Evidenc
 		Events:              events,
 		Actions:             input.Actions,
 		CommunityReferences: input.CommunityReferences,
+		RedactionTerms:      append([]string(nil), input.RedactionTerms...),
 	}
 }
 

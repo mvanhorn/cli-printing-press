@@ -43,16 +43,24 @@ func AnalyzeEvidence(input EvidenceInput) (*Analysis, error) {
 	report.CommandCandidates = append(report.CommandCandidates, summaries...)
 	report.Ambiguities = append(report.Ambiguities, ambiguities...)
 
-	communityCommands, communitySummaries, err := commandsFromCommunityReferences(input.CommunityReferences)
+	communityCommands, communitySummaries, communityAmbiguities, err := commandsFromCommunityReferences(input.CommunityReferences)
 	if err != nil {
 		return nil, err
 	}
 	spec.Capabilities.Commands = append(spec.Capabilities.Commands, communityCommands...)
 	report.CommandCandidates = append(report.CommandCandidates, communitySummaries...)
+	report.Ambiguities = append(report.Ambiguities, communityAmbiguities...)
 
 	telemetry, telemetrySummaries := inferTelemetry(input.Events)
 	spec.Capabilities.Telemetry = telemetry
 	report.TelemetryCandidates = telemetrySummaries
+
+	// Build the set of discovered characteristics and drop any
+	// commands/telemetry that reference an undiscovered characteristic.
+	discoveredChars := discoveredCharacteristicSet(spec.BLE.Services)
+	spec.Capabilities.Commands, report.Ambiguities = dropUndiscoveredCommands(spec.Capabilities.Commands, discoveredChars, report.Ambiguities)
+	spec.Capabilities.Telemetry, report.Ambiguities = dropUndiscoveredTelemetry(spec.Capabilities.Telemetry, discoveredChars, report.Ambiguities)
+
 	report.CommandDiscovery = buildCommandDiscovery(input, spec.Capabilities.Commands, report.Ambiguities)
 	if report.CommandDiscovery.Status == CommandDiscoveryInsufficientGuidance && len(report.CommandDiscovery.WritableTargets) > 0 {
 		report.Warnings = append(report.Warnings, "writable BLE characteristics found, but no commands emitted without guidance or replay validation")
@@ -62,6 +70,47 @@ func AnalyzeEvidence(input EvidenceInput) (*Analysis, error) {
 		return nil, err
 	}
 	return &Analysis{Spec: spec, Report: report}, nil
+}
+
+// discoveredCharacteristicSet returns the normalized UUIDs of every
+// characteristic present in the BLE service surface.
+func discoveredCharacteristicSet(services []devicespec.BLEService) map[string]bool {
+	set := map[string]bool{}
+	for _, svc := range services {
+		for _, ch := range svc.Characteristics {
+			set[normalizeUUID(ch.UUID)] = true
+		}
+	}
+	return set
+}
+
+// dropUndiscoveredCommands removes commands whose CharacteristicUUID is not in
+// the discovered set, appending an ambiguity for each dropped command.
+func dropUndiscoveredCommands(commands []devicespec.DeviceCommand, discovered map[string]bool, ambiguities []string) ([]devicespec.DeviceCommand, []string) {
+	kept := commands[:0]
+	for _, cmd := range commands {
+		if discovered[normalizeUUID(cmd.CharacteristicUUID)] {
+			kept = append(kept, cmd)
+		} else {
+			ambiguities = append(ambiguities, fmt.Sprintf("command %q references characteristic %q which was not service-discovered; dropped", cmd.Name, cmd.CharacteristicUUID))
+		}
+	}
+	return kept, ambiguities
+}
+
+// dropUndiscoveredTelemetry removes telemetry fields whose
+// SourceCharacteristicUUID is not in the discovered set, appending an
+// ambiguity for each dropped field.
+func dropUndiscoveredTelemetry(telemetry []devicespec.TelemetryField, discovered map[string]bool, ambiguities []string) ([]devicespec.TelemetryField, []string) {
+	kept := telemetry[:0]
+	for _, field := range telemetry {
+		if discovered[normalizeUUID(field.SourceCharacteristicUUID)] {
+			kept = append(kept, field)
+		} else {
+			ambiguities = append(ambiguities, fmt.Sprintf("telemetry field %q references characteristic %q which was not service-discovered; dropped", field.Name, field.SourceCharacteristicUUID))
+		}
+	}
+	return kept, ambiguities
 }
 
 func buildBLESurface(events []Event) devicespec.BLESurface {
@@ -104,18 +153,42 @@ func buildBLESurface(events []Event) devicespec.BLESurface {
 func buildEvidence(input EvidenceInput) []devicespec.EvidenceRef {
 	out := make([]devicespec.EvidenceRef, 0, len(input.Actions)+len(input.Events)+len(input.CommunityReferences))
 	for _, action := range input.Actions {
-		out = append(out, devicespec.EvidenceRef{ID: action.ID, Source: "action-journal", Summary: action.Label})
+		out = append(out, devicespec.EvidenceRef{ID: action.ID, Source: EvidenceSourceActionJournal, Summary: action.Label})
 	}
 	for _, event := range input.Events {
 		if event.ID == "" {
 			continue
 		}
-		out = append(out, devicespec.EvidenceRef{ID: event.ID, Source: "ble-event", Summary: event.Type})
+		out = append(out, devicespec.EvidenceRef{ID: event.ID, Source: EvidenceSourceBLEEvent, Summary: event.Type})
 	}
 	for _, ref := range input.CommunityReferences {
-		out = append(out, devicespec.EvidenceRef{ID: ref.ID, Source: "community-reference", Summary: ref.CommandName})
+		out = append(out, devicespec.EvidenceRef{ID: ref.ID, Source: EvidenceSourceCommunityReference, Summary: ref.CommandName})
 	}
 	return out
+}
+
+// safetyOrUnknown returns the safety string, defaulting to SafetyUnknown when
+// the value is empty or whitespace-only.
+func safetyOrUnknown(safety string) string {
+	if strings.TrimSpace(safety) == "" {
+		return devicespec.SafetyUnknown
+	}
+	return safety
+}
+
+// commandNameFromLabel attempts to derive a slug from label, falling back to
+// fallbackID. Returns ("", true) when both produce an empty slug, signalling
+// the caller should skip the command.
+func commandNameFromLabel(label, fallbackID string) (name string, skip bool) {
+	name = naming.Slug(label)
+	if name != "" {
+		return name, false
+	}
+	name = naming.Slug(fallbackID)
+	if name != "" {
+		return name, false
+	}
+	return "", true
 }
 
 func inferCommands(input EvidenceInput) ([]devicespec.DeviceCommand, []CandidateSummary, []string, error) {
@@ -139,15 +212,19 @@ func inferCommands(input EvidenceInput) ([]devicespec.DeviceCommand, []Candidate
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("%s value_hex: %w", write.ID, err)
 		}
+		name, skip := commandNameFromLabel(action.Label, action.ID)
+		if skip {
+			ambiguities = append(ambiguities, fmt.Sprintf("%s produced no usable command name; skipped", action.ID))
+			continue
+		}
 		evidenceRefs := []string{action.ID, write.ID}
 		if notify := firstNotificationAfter(input.Events, write); notify.ID != "" {
 			evidenceRefs = append(evidenceRefs, notify.ID)
 		}
-		name := naming.Slug(action.Label)
 		commands = append(commands, devicespec.DeviceCommand{
 			Name:               name,
 			CharacteristicUUID: normalizeUUID(write.CharacteristicUUID),
-			Safety:             action.Safety,
+			Safety:             safetyOrUnknown(action.Safety),
 			ValidationStatus:   devicespec.ValidationStatusObserved,
 			EvidenceRefs:       evidenceRefs,
 			Payload: devicespec.DevicePayload{
@@ -164,19 +241,24 @@ func inferCommands(input EvidenceInput) ([]devicespec.DeviceCommand, []Candidate
 	return commands, summaries, ambiguities, nil
 }
 
-func commandsFromCommunityReferences(refs []CommunityReference) ([]devicespec.DeviceCommand, []CandidateSummary, error) {
+func commandsFromCommunityReferences(refs []CommunityReference) ([]devicespec.DeviceCommand, []CandidateSummary, []string, error) {
 	commands := make([]devicespec.DeviceCommand, 0, len(refs))
 	summaries := make([]CandidateSummary, 0, len(refs))
+	var ambiguities []string
 	for _, ref := range refs {
 		payload, err := decodeHex(ref.PayloadHex)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s payload_hex: %w", ref.ID, err)
+			return nil, nil, nil, fmt.Errorf("%s payload_hex: %w", ref.ID, err)
 		}
-		name := naming.Slug(ref.CommandName)
+		name, skip := commandNameFromLabel(ref.CommandName, ref.ID)
+		if skip {
+			ambiguities = append(ambiguities, fmt.Sprintf("%s produced no usable command name; skipped", ref.ID))
+			continue
+		}
 		commands = append(commands, devicespec.DeviceCommand{
 			Name:               name,
 			CharacteristicUUID: normalizeUUID(ref.CharacteristicUUID),
-			Safety:             ref.Safety,
+			Safety:             safetyOrUnknown(ref.Safety),
 			ValidationStatus:   devicespec.ValidationStatusInferred,
 			EvidenceRefs:       []string{ref.ID},
 			Payload: devicespec.DevicePayload{
@@ -190,7 +272,7 @@ func commandsFromCommunityReferences(refs []CommunityReference) ([]devicespec.De
 			EvidenceRefs: []string{ref.ID},
 		})
 	}
-	return commands, summaries, nil
+	return commands, summaries, ambiguities, nil
 }
 
 func inferTelemetry(events []Event) ([]devicespec.TelemetryField, []CandidateSummary) {

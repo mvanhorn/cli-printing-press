@@ -101,4 +101,6 @@ For unknown devices, prefer this order:
 4. `subscribe`
 5. `write` only when a payload is known from docs, a community library, or prior observed evidence
 
+Live `inspect` records the discovered service and characteristic UUIDs but not their read/write/notify property flags — the underlying `tinygo.org/x/bluetooth` backend does not expose a characteristic property bitmask after discovery. Writability is therefore inferred from action markers and community references (the same signals the replay path uses), not auto-detected from a live GATT scan. Annotate control characteristics through those evidence fields rather than relying on `inspect` alone.
+
 The JSON files are normalized BLE evidence inputs. Use `ble-probe merge` to combine multiple capture files into one analyzer input before running `device-sniff ble`.
