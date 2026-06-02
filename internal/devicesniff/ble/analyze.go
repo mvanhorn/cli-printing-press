@@ -52,6 +52,10 @@ func AnalyzeEvidence(input EvidenceInput) (*Analysis, error) {
 	telemetry, telemetrySummaries := inferTelemetry(input.Events)
 	spec.Capabilities.Telemetry = telemetry
 	report.TelemetryCandidates = telemetrySummaries
+	report.CommandDiscovery = buildCommandDiscovery(input, spec.Capabilities.Commands, report.Ambiguities)
+	if report.CommandDiscovery.Status == CommandDiscoveryInsufficientGuidance && len(report.CommandDiscovery.WritableTargets) > 0 {
+		report.Warnings = append(report.Warnings, "writable BLE characteristics found, but no commands emitted without guidance or replay validation")
+	}
 
 	if err := spec.Validate(); err != nil {
 		return nil, err
@@ -223,6 +227,111 @@ func inferTelemetry(events []Event) ([]devicespec.TelemetryField, []CandidateSum
 		})
 	}
 	return fields, summaries
+}
+
+func buildCommandDiscovery(input EvidenceInput, commands []devicespec.DeviceCommand, ambiguities []string) CommandDiscovery {
+	sources := commandGuidanceSources(input, commands)
+	targets := writableTargets(input.Events)
+	status := CommandDiscoveryNoSurface
+	replayValidated := hasReplayValidatedCommand(commands)
+	switch {
+	case replayValidated:
+		status = CommandDiscoveryReplayValidated
+	case len(commands) > 0:
+		status = CommandDiscoveryGuidedCandidates
+	case len(ambiguities) > 0 && len(sources) > 0:
+		status = CommandDiscoveryAmbiguousGuidance
+	case len(targets) > 0:
+		status = CommandDiscoveryInsufficientGuidance
+	}
+	return CommandDiscovery{
+		Status:               status,
+		GuidanceSources:      sources,
+		WritableTargets:      targets,
+		Message:              commandDiscoveryMessage(status),
+		ReplayValidationNext: status == CommandDiscoveryGuidedCandidates && !replayValidated,
+	}
+}
+
+func commandGuidanceSources(input EvidenceInput, commands []devicespec.DeviceCommand) []string {
+	seen := map[string]bool{}
+	var sources []string
+	add := func(source string) {
+		if seen[source] {
+			return
+		}
+		seen[source] = true
+		sources = append(sources, source)
+	}
+	if len(input.Actions) > 0 {
+		add(GuidanceSourceActionJournal)
+	}
+	if len(input.CommunityReferences) > 0 {
+		add(GuidanceSourceCommunityReference)
+	}
+	if hasReplayValidatedCommand(commands) {
+		add(GuidanceSourceReplayValidation)
+	}
+	return sources
+}
+
+func hasReplayValidatedCommand(commands []devicespec.DeviceCommand) bool {
+	for _, command := range commands {
+		if command.ValidationStatus == devicespec.ValidationStatusReplayValidated {
+			return true
+		}
+	}
+	return false
+}
+
+func writableTargets(events []Event) []string {
+	seen := map[string]bool{}
+	for _, event := range events {
+		if event.CharacteristicUUID == "" {
+			continue
+		}
+		switch event.Type {
+		case EventServiceDiscovery:
+			if !hasWriteProperty(event.Properties) {
+				continue
+			}
+		case EventWrite:
+		default:
+			continue
+		}
+		seen[normalizeUUID(event.CharacteristicUUID)] = true
+	}
+	targets := make([]string, 0, len(seen))
+	for target := range seen {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	return targets
+}
+
+func hasWriteProperty(properties []string) bool {
+	for _, property := range properties {
+		switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(property), "_", "-")) {
+		case "write", "write-without-response", "writewithoutresponse":
+			return true
+		}
+	}
+	return false
+}
+
+func commandDiscoveryMessage(status string) string {
+	switch status {
+	case CommandDiscoveryReplayValidated:
+		return "Replay validation confirmed at least one command payload."
+	case CommandDiscoveryGuidedCandidates:
+		return "Command candidates came from guidance evidence and should be replay-validated before printing a control CLI."
+	case CommandDiscoveryAmbiguousGuidance:
+		return "Guidance was present, but the BLE write evidence is ambiguous; collect a narrower action journal or replay validation."
+	case CommandDiscoveryInsufficientGuidance:
+		return "GATT surface does not advertise command semantics; provide a library, docs, action journal, imported capture, or replay validation before emitting commands."
+	default:
+		return "No writable BLE command surface was discovered."
+	}
 }
 
 func writesNearAction(events []Event, action ActionMarker) ([]Event, error) {

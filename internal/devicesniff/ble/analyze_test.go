@@ -28,7 +28,34 @@ func TestAnalyzeEvidenceCorrelatesActionWriteAndNotification(t *testing.T) {
 	assert.Equal(t, []string{"action-start", "write-start", "notify-running"}, cmd.EvidenceRefs)
 
 	assert.Contains(t, result.Report.CommandCandidates[0].Summary, "action-start")
+	assert.Equal(t, CommandDiscoveryGuidedCandidates, result.Report.CommandDiscovery.Status)
+	assert.Equal(t, []string{GuidanceSourceActionJournal}, result.Report.CommandDiscovery.GuidanceSources)
+	assert.True(t, result.Report.CommandDiscovery.ReplayValidationNext)
 	assert.Empty(t, result.Report.Ambiguities)
+}
+
+func TestAnalyzeEvidenceDoesNotInferCommandsFromSurfaceOnlyDiscovery(t *testing.T) {
+	t.Parallel()
+
+	result, err := AnalyzeEvidence(EvidenceInput{
+		Name: "unguided-device",
+		Events: []Event{
+			{ID: "adv", Type: EventAdvertisement, DeviceAddress: "device-1", DeviceName: "Unguided Device"},
+			{ID: "svc-control", Type: EventServiceDiscovery, ServiceUUID: "fd00", CharacteristicUUID: "fd01", Properties: []string{"write"}},
+			{ID: "svc-status", Type: EventServiceDiscovery, ServiceUUID: "fd00", CharacteristicUUID: "fd02", Properties: []string{"notify"}},
+			{ID: "notify-1", Type: EventNotification, ServiceUUID: "fd00", CharacteristicUUID: "fd02", ValueHex: "01"},
+			{ID: "notify-2", Type: EventNotification, ServiceUUID: "fd00", CharacteristicUUID: "fd02", ValueHex: "02"},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Spec.Capabilities.Commands)
+	require.Len(t, result.Spec.Capabilities.Telemetry, 1)
+	assert.Equal(t, CommandDiscoveryInsufficientGuidance, result.Report.CommandDiscovery.Status)
+	assert.Equal(t, []string{"fd01"}, result.Report.CommandDiscovery.WritableTargets)
+	assert.Empty(t, result.Report.CommandDiscovery.GuidanceSources)
+	assert.Contains(t, result.Report.CommandDiscovery.Message, "does not advertise command semantics")
+	assert.Contains(t, result.Report.Warnings, "writable BLE characteristics found, but no commands emitted without guidance or replay validation")
 }
 
 func TestAnalyzeEvidenceInfersTelemetryFromRepeatedNotifications(t *testing.T) {
@@ -55,6 +82,8 @@ func TestAnalyzeEvidencePreservesAmbiguousWrites(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Empty(t, result.Spec.Capabilities.Commands)
+	assert.Equal(t, CommandDiscoveryAmbiguousGuidance, result.Report.CommandDiscovery.Status)
+	assert.Equal(t, []string{GuidanceSourceActionJournal}, result.Report.CommandDiscovery.GuidanceSources)
 	require.Len(t, result.Report.Ambiguities, 1)
 	assert.Contains(t, result.Report.Ambiguities[0], "action-toggle")
 	assert.Contains(t, result.Report.Ambiguities[0], "write-a")
@@ -74,6 +103,8 @@ func TestAnalyzeEvidenceUsesCommunityReferenceAsEvidence(t *testing.T) {
 	assert.Equal(t, devicespec.ValidationStatusInferred, cmd.ValidationStatus)
 	assert.Equal(t, []string{"community-vendor-action"}, cmd.EvidenceRefs)
 	assert.Equal(t, []byte{0xf7, 0xa5, 0x01, 0x00, 0xfd}, cmd.Payload.Bytes)
+	assert.Equal(t, CommandDiscoveryGuidedCandidates, result.Report.CommandDiscovery.Status)
+	assert.Equal(t, []string{GuidanceSourceCommunityReference}, result.Report.CommandDiscovery.GuidanceSources)
 }
 
 func TestAnalyzeEvidenceReportsAmbiguousDeviceDiscovery(t *testing.T) {

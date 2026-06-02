@@ -15,6 +15,20 @@ const (
 	EventRead             = "read"
 )
 
+const (
+	CommandDiscoveryNoSurface            = "no_surface"
+	CommandDiscoveryInsufficientGuidance = "insufficient_guidance"
+	CommandDiscoveryAmbiguousGuidance    = "ambiguous_guidance"
+	CommandDiscoveryGuidedCandidates     = "guided_candidates"
+	CommandDiscoveryReplayValidated      = "replay_validated"
+)
+
+const (
+	GuidanceSourceActionJournal      = "action_journal"
+	GuidanceSourceCommunityReference = "community_reference"
+	GuidanceSourceReplayValidation   = "replay_validation"
+)
+
 type EvidenceInput struct {
 	Name                string                    `json:"name"`
 	DisplayName         string                    `json:"display_name,omitempty"`
@@ -61,10 +75,19 @@ type Analysis struct {
 type Report struct {
 	DeviceCandidates          []DeviceCandidate  `json:"device_candidates,omitempty"`
 	RequiresOperatorSelection bool               `json:"requires_operator_selection,omitempty"`
+	CommandDiscovery          CommandDiscovery   `json:"command_discovery,omitempty"`
 	CommandCandidates         []CandidateSummary `json:"command_candidates,omitempty"`
 	TelemetryCandidates       []CandidateSummary `json:"telemetry_candidates,omitempty"`
 	Ambiguities               []string           `json:"ambiguities,omitempty"`
 	Warnings                  []string           `json:"warnings,omitempty"`
+}
+
+type CommandDiscovery struct {
+	Status               string   `json:"status"`
+	GuidanceSources      []string `json:"guidance_sources,omitempty"`
+	WritableTargets      []string `json:"writable_targets,omitempty"`
+	Message              string   `json:"message"`
+	ReplayValidationNext bool     `json:"replay_validation_next,omitempty"`
 }
 
 type DeviceCandidate struct {
