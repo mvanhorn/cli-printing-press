@@ -5,6 +5,7 @@ package device
 
 import (
 	"context"
+	"os"
 	"time"
 )
 
@@ -24,6 +25,8 @@ type CommandResult struct {
 	Safety             string `json:"safety"`
 	ValidationStatus   string `json:"validation_status,omitempty"`
 	DryRun             bool   `json:"dry_run"`
+	VerifyNoop         bool   `json:"verify_noop,omitempty"`
+	Reason             string `json:"reason,omitempty"`
 }
 
 type Transport interface {
@@ -56,13 +59,34 @@ func (t *ReplayTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 }
 
 func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
+	verifyNoop := isVerifyEnv()
 	return CommandResult{
 		Command:            command.Name,
-		Transport:          "replay",
+		Transport:          commandTransportName(verifyNoop),
 		CharacteristicUUID: command.CharacteristicUUID,
 		PayloadHex:         command.PayloadHex,
 		Safety:             command.Safety,
 		ValidationStatus:   command.ValidationStatus,
-		DryRun:             dryRun,
+		DryRun:             dryRun || verifyNoop,
+		VerifyNoop:         verifyNoop,
+		Reason:             commandNoopReason(verifyNoop),
 	}, nil
+}
+
+func isVerifyEnv() bool {
+	return os.Getenv("PRINTING_PRESS_VERIFY") == "1"
+}
+
+func commandTransportName(verifyNoop bool) string {
+	if verifyNoop {
+		return "verify-replay"
+	}
+	return "replay"
+}
+
+func commandNoopReason(verifyNoop bool) string {
+	if verifyNoop {
+		return "verify_short_circuit"
+	}
+	return ""
 }

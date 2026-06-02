@@ -1,7 +1,9 @@
 package generator
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -31,6 +33,32 @@ func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
 	assert.Contains(t, string(rootSrc), "device.Transport")
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-session-telemetry.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-session-appliance")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	cmd := exec.Command("go", "run", "-mod=mod", "./cmd/ble-session-appliance-pp-cli", "start", "--json")
+	cmd.Dir = outputDir
+	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(output, &result))
+	assert.Equal(t, "start", result["command"])
+	assert.Equal(t, "physical-effect", result["safety"])
+	assert.Equal(t, true, result["dry_run"])
+	assert.Equal(t, true, result["verify_noop"])
+	assert.Equal(t, "verify_short_circuit", result["reason"])
+	assert.Equal(t, "verify-replay", result["transport"])
 }
 
 func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
