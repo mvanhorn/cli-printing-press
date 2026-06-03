@@ -667,7 +667,7 @@ func hasLocalDatastoreReachability(content string) bool {
 // It reads the whole cli package directly because the doctor command may sit in
 // a file the HTTP-shaped reachability surface does not include.
 func scoreDoctorDevice(dir string) int {
-	joined := readAllGoFiles(filepath.Join(dir, "internal", "cli"))
+	joined := deviceCLIContent(dir)
 	if !strings.Contains(joined, `"doctor"`) {
 		return 0
 	}
@@ -860,16 +860,20 @@ func scoreTypeFidelityDevice(dir string) int {
 	spec := readFileContent(filepath.Join(dir, "internal", "device", "spec.go"))
 	transport := readFileContent(filepath.Join(dir, "internal", "device", "transport.go"))
 	score := 0
-	for _, present := range []bool{
-		strings.Contains(spec, "type CommandDefinition struct"),
-		strings.Contains(spec, "type StatusField struct"),
-		strings.Contains(spec, "type CapabilitySummary struct"),
-		strings.Contains(transport, "type CommandResult struct"),
-		strings.Contains(spec, `Parameters: []string{"`), // a command declares typed parameters
-	} {
-		if present {
-			score++
-		}
+	if strings.Contains(spec, "type CommandDefinition struct") {
+		score++ // typed command model
+	}
+	if strings.Contains(spec, "type StatusField struct") {
+		score++ // typed telemetry model
+	}
+	if strings.Contains(spec, "type CapabilitySummary struct") {
+		score++ // typed capability summary
+	}
+	if strings.Contains(transport, "type CommandResult struct") {
+		score++ // typed command result
+	}
+	if strings.Contains(spec, `Parameters: []string{"`) {
+		score++ // a command declares typed parameters
 	}
 	return score
 }
