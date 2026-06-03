@@ -60,9 +60,11 @@ func TestDeviceSniffBLECmdWritesArtifactsAndJSONSummary(t *testing.T) {
 	assert.NotContains(t, string(evidenceData), "AA:BB:CC:DD:EE:01")
 	assert.NotContains(t, string(evidenceData), "Trevin")
 
-	info, err := os.Stat(evidencePath)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "redacted evidence should not be world-readable")
+	for _, p := range []string{specPath, analysisPath, evidencePath} {
+		info, err := os.Stat(p)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "%s should not be world-readable: it embeds control payloads and device identity", p)
+	}
 }
 
 func TestBluetoothSniffAliasUsesBLEBackend(t *testing.T) {

@@ -105,7 +105,7 @@ func newScanCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			devices, err := adapter.Scan(cmd.Context(), ble.ScanOptions{ServiceUUIDs: opts.serviceUUIDs, DurationMillis: opts.durationMillis})
+			devices, err := adapter.Scan(cmd.Context(), ble.ScanOptions{ServiceUUIDs: opts.serviceUUIDs, DurationMillis: liveDurationMillis(opts)})
 			if err != nil {
 				return err
 			}
@@ -219,7 +219,7 @@ func newSubscribeCmd() *cobra.Command {
 				Address:            opts.address,
 				ServiceUUID:        opts.serviceUUID,
 				CharacteristicUUID: opts.characteristicUUID,
-				DurationMillis:     opts.durationMillis,
+				DurationMillis:     liveDurationMillis(opts),
 			})
 			if err != nil {
 				return err
@@ -275,8 +275,29 @@ func addDurationFlag(cmd *cobra.Command, opts *probeOptions) {
 	cmd.Flags().IntVar(&opts.durationMillis, "duration-ms", 10_000, "Live scan or notification duration in milliseconds")
 }
 
+// dogfoodMaxDurationMillis caps the live scan/subscribe window under the dogfood
+// matrix so a long default cannot trip the per-command timeout.
+const dogfoodMaxDurationMillis = 3000
+
+func isVerifyEnv() bool  { return os.Getenv("PRINTING_PRESS_VERIFY") == "1" }
+func isDogfoodEnv() bool { return os.Getenv("PRINTING_PRESS_DOGFOOD") == "1" }
+
+// liveDurationMillis curtails the live scan/subscribe window under the dogfood
+// matrix; replay backends ignore the duration, so the cap is a no-op there.
+func liveDurationMillis(opts probeOptions) int {
+	if opts.live && isDogfoodEnv() && opts.durationMillis > dogfoodMaxDurationMillis {
+		return dogfoodMaxDurationMillis
+	}
+	return opts.durationMillis
+}
+
 func loadBackend(opts probeOptions) (ble.EvidenceInput, ble.Adapter, error) {
 	if opts.live {
+		// Side-effect floor: never actuate real BLE hardware inside a verify
+		// subprocess, regardless of which command invoked us.
+		if isVerifyEnv() {
+			return ble.EvidenceInput{}, nil, fmt.Errorf("live BLE is disabled under PRINTING_PRESS_VERIFY; pass --input replay evidence instead")
+		}
 		adapter, err := ble.NewLiveAdapter()
 		if err != nil {
 			return ble.EvidenceInput{}, nil, err

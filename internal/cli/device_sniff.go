@@ -147,8 +147,8 @@ func writeDeviceSniffBLEOutputs(spec *devicespec.DeviceSpec, report blesniff.Rep
 	evidenceBytes = append(evidenceBytes, '\n')
 
 	writes := []deviceSniffWrite{
-		{path: specPath, tempSuffix: "device-spec", data: specBytes, perm: 0o644, label: "device spec"},
-		{path: analysisPath, tempSuffix: "ble-analysis", data: reportBytes, perm: 0o644, label: "BLE analysis"},
+		{path: specPath, tempSuffix: "device-spec", data: specBytes, perm: 0o600, label: "device spec"},
+		{path: analysisPath, tempSuffix: "ble-analysis", data: reportBytes, perm: 0o600, label: "BLE analysis"},
 		{path: evidencePath, tempSuffix: "redacted-evidence", data: evidenceBytes, perm: 0o600, label: "redacted evidence"},
 	}
 	for i := range writes {

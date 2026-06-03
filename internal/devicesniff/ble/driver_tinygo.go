@@ -4,11 +4,17 @@ package ble
 
 import (
 	"fmt"
+	"runtime"
 	"slices"
 	"sort"
+	"time"
 
 	tinyble "tinygo.org/x/bluetooth"
 )
+
+// bleConnectTimeout bounds the backend connection attempt so a wedged peripheral
+// cannot hang a caller whose context carries no deadline.
+const bleConnectTimeout = 30 * time.Second
 
 func LiveSupport() LiveSupportInfo {
 	return LiveSupportInfo{
@@ -52,11 +58,17 @@ func (d *tinybleDriver) StopScan() error {
 func (d *tinybleDriver) Connect(address string) (bleDevice, error) {
 	var addr tinyble.Address
 	addr.Set(address)
-	device, err := d.adapter.Connect(addr, tinyble.ConnectionParams{})
+	device, err := d.adapter.Connect(addr, tinyble.ConnectionParams{
+		ConnectionTimeout: tinyble.NewDuration(bleConnectTimeout),
+	})
 	if err != nil {
 		return nil, err
 	}
 	return tinybleDevice{device: device}, nil
+}
+
+func (d *tinybleDriver) NeedsPreScan() bool {
+	return runtime.GOOS == "linux"
 }
 
 type tinybleAdvertisement struct {
@@ -110,14 +122,17 @@ func (s tinybleService) DiscoverCharacteristics(characteristicUUIDs []string) ([
 		return nil, err
 	}
 	out := make([]bleCharacteristic, 0, len(chars))
-	for _, char := range chars {
-		out = append(out, tinybleCharacteristic{characteristic: char})
+	for i := range chars {
+		// Store a pointer to the backend characteristic: its EnableNotifications
+		// is a pointer receiver that mutates internal state, so a value copy
+		// would lose the enable's bookkeeping and make the disable a no-op.
+		out = append(out, tinybleCharacteristic{characteristic: &chars[i]})
 	}
 	return out, nil
 }
 
 type tinybleCharacteristic struct {
-	characteristic tinyble.DeviceCharacteristic
+	characteristic *tinyble.DeviceCharacteristic
 }
 
 func (c tinybleCharacteristic) UUID() string {

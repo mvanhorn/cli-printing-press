@@ -13,14 +13,15 @@ import (
 // --- in-memory stub driver ------------------------------------------------
 
 type stubDriver struct {
-	enableErr   error
-	scanResults []bleAdvertisement
-	scanErr     error
-	scanBlocks  bool
-	stopped     chan struct{}
-	scanFilter  []string
-	device      bleDevice
-	connectFunc func(address string) (bleDevice, error)
+	enableErr    error
+	scanResults  []bleAdvertisement
+	scanErr      error
+	scanBlocks   bool
+	stopped      chan struct{}
+	scanFilter   []string
+	device       bleDevice
+	connectFunc  func(address string) (bleDevice, error)
+	needsPreScan bool
 }
 
 func newStubDriver() *stubDriver {
@@ -58,6 +59,8 @@ func (d *stubDriver) Connect(address string) (bleDevice, error) {
 	}
 	return d.device, nil
 }
+
+func (d *stubDriver) NeedsPreScan() bool { return d.needsPreScan }
 
 type stubAdv struct {
 	address      string
@@ -125,7 +128,10 @@ func (c *stubCharacteristic) Read(buf []byte) (int, error) {
 	if c.readErr != nil {
 		return 0, c.readErr
 	}
-	return copy(buf, c.readData), nil
+	// Backends may report the attribute length rather than the bytes copied into
+	// the caller's buffer; honoring that contract exercises the adapter's clamp.
+	copy(buf, c.readData)
+	return len(c.readData), nil
 }
 
 func (c *stubCharacteristic) Write(payload []byte) (int, error) {
@@ -211,7 +217,7 @@ func TestDurationFromMillis(t *testing.T) {
 	assert.Equal(t, defaultLiveDuration, durationFromMillis(0))
 	assert.Equal(t, defaultLiveDuration, durationFromMillis(-5))
 	assert.Equal(t, 250*time.Millisecond, durationFromMillis(250))
-	assert.Equal(t, 24*time.Hour, durationFromMillis(maxSafeDurationMillis+1))
+	assert.Equal(t, 24*time.Hour, durationFromMillis(int(maxSafeDurationMillis+1)))
 }
 
 // --- lifecycle tests ------------------------------------------------------
@@ -284,13 +290,60 @@ func TestLiveAdapterReadAndWrite(t *testing.T) {
 	assert.Equal(t, "live-read", readEvent.ID)
 	assert.Equal(t, "dead", readEvent.ValueHex)
 	assert.Equal(t, "2a29", readEvent.CharacteristicUUID)
+	assert.Equal(t, "180a", readEvent.ServiceUUID, "discovered service UUID is recorded")
 
 	writeEvent, err := adapter.Write(context.Background(), WriteRequest{Address: "AA", ServiceUUID: "180A", CharacteristicUUID: "2A29", ValueHex: "BEEF"})
 	require.NoError(t, err)
 	assert.Equal(t, "live-write", writeEvent.ID)
 	assert.Equal(t, "beef", writeEvent.ValueHex)
+	assert.Equal(t, "180a", writeEvent.ServiceUUID)
 	require.Len(t, char.written, 1)
 	assert.Equal(t, []byte{0xbe, 0xef}, char.written[0])
+	assert.Equal(t, 2, device.disconnectCount, "device is disconnected after each successful op")
+}
+
+func TestLiveAdapterReadInfersServiceUUIDWhenOmitted(t *testing.T) {
+	t.Parallel()
+	char := &stubCharacteristic{uuid: "2A29", readData: []byte{0x01}}
+	device := &stubDevice{services: []bleService{stubService{uuid: "180A", chars: []bleCharacteristic{char}}}}
+	driver := newStubDriver()
+	driver.device = device
+	adapter := newLiveAdapter(driver)
+
+	// No ServiceUUID in the request: the event must still carry the service the
+	// characteristic was discovered under, not an empty string.
+	readEvent, err := adapter.Read(context.Background(), CharacteristicRequest{Address: "AA", CharacteristicUUID: "2A29"})
+	require.NoError(t, err)
+	assert.Equal(t, "180a", readEvent.ServiceUUID)
+}
+
+func TestLiveAdapterReadClampsOversizedValue(t *testing.T) {
+	t.Parallel()
+	oversized := make([]byte, bleCharacteristicMaxValueBytes+64) // backend over-reports length
+	char := &stubCharacteristic{uuid: "2A29", readData: oversized}
+	device := &stubDevice{services: []bleService{stubService{uuid: "180A", chars: []bleCharacteristic{char}}}}
+	driver := newStubDriver()
+	driver.device = device
+	adapter := newLiveAdapter(driver)
+
+	readEvent, err := adapter.Read(context.Background(), CharacteristicRequest{Address: "AA", CharacteristicUUID: "2A29"})
+	require.NoError(t, err)
+	// Value is clamped to the buffer length; no panic on the oversized read.
+	assert.Equal(t, bleCharacteristicMaxValueBytes*2, len(readEvent.ValueHex))
+}
+
+func TestLiveAdapterWriteRejectsInvalidHex(t *testing.T) {
+	t.Parallel()
+	char := &stubCharacteristic{uuid: "2A29"}
+	device := &stubDevice{services: []bleService{stubService{uuid: "180A", chars: []bleCharacteristic{char}}}}
+	driver := newStubDriver()
+	driver.device = device
+	adapter := newLiveAdapter(driver)
+
+	_, err := adapter.Write(context.Background(), WriteRequest{Address: "AA", CharacteristicUUID: "2A29", ValueHex: "zz"})
+	require.Error(t, err)
+	assert.Empty(t, char.written, "no payload is written when the hex is invalid")
+	assert.Equal(t, 1, device.disconnectCount, "device is disconnected on the invalid-hex path")
 }
 
 func TestLiveAdapterCharacteristicUUIDRequired(t *testing.T) {
@@ -372,4 +425,52 @@ func TestLiveAdapterEnableNotConfigured(t *testing.T) {
 	var ae *AdapterError
 	require.True(t, errors.As(err, &ae))
 	assert.Equal(t, AdapterErrorUnsupported, ae.Kind)
+}
+
+func TestLiveAdapterScanReturnsCandidatesWhenBackendCompletes(t *testing.T) {
+	t.Parallel()
+	driver := newStubDriver()
+	// scanBlocks is false: the backend delivers its advertisements and returns
+	// on its own before the duration window elapses.
+	driver.scanResults = []bleAdvertisement{
+		stubAdv{address: "AA", rssi: -50},
+		stubAdv{address: "BB", rssi: -40},
+	}
+	adapter := newLiveAdapter(driver)
+
+	out, err := adapter.Scan(context.Background(), ScanOptions{DurationMillis: 10_000})
+	require.NoError(t, err)
+	require.Len(t, out, 2, "candidates collected before the backend returned are not discarded")
+	assert.Equal(t, "BB", out[0].Address)
+}
+
+func TestLiveAdapterPreScanDeviceNotSeen(t *testing.T) {
+	t.Parallel()
+	driver := newStubDriver()
+	driver.needsPreScan = true
+	driver.device = &stubDevice{}
+	// The pre-scan never advertises the target, so connect must report
+	// device-not-found rather than proceeding or leaking a context deadline.
+	driver.scanResults = []bleAdvertisement{stubAdv{address: "BB"}}
+	adapter := newLiveAdapter(driver)
+
+	_, err := adapter.Inspect(context.Background(), InspectRequest{Address: "AA"})
+	var ae *AdapterError
+	require.True(t, errors.As(err, &ae))
+	assert.Equal(t, AdapterErrorDeviceNotFound, ae.Kind)
+}
+
+func TestLiveAdapterPreScanDeviceSeenProceeds(t *testing.T) {
+	t.Parallel()
+	driver := newStubDriver()
+	driver.needsPreScan = true
+	driver.device = &stubDevice{services: []bleService{stubService{uuid: "180A", chars: []bleCharacteristic{
+		&stubCharacteristic{uuid: "2A29"},
+	}}}}
+	driver.scanResults = []bleAdvertisement{stubAdv{address: "AA"}}
+	adapter := newLiveAdapter(driver)
+
+	events, err := adapter.Inspect(context.Background(), InspectRequest{Address: "AA"})
+	require.NoError(t, err)
+	require.Len(t, events, 1, "connect proceeds once the target is seen in the pre-scan")
 }

@@ -6,18 +6,34 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-const defaultLiveDuration = 10 * time.Second
+const (
+	defaultLiveDuration = 10 * time.Second
+	// scanStopDrainTimeout bounds how long Scan waits for the backend scan
+	// goroutine to unwind after StopScan before returning the collected results.
+	scanStopDrainTimeout = 500 * time.Millisecond
+	// scanSeenTimeout bounds the pre-connect scan that proves a device is in
+	// range before Connect on backends that require it.
+	scanSeenTimeout = 5 * time.Second
+	// bleCharacteristicMaxValueBytes is the ATT protocol maximum characteristic
+	// value length, so a single Read never needs a larger buffer.
+	bleCharacteristicMaxValueBytes = 512
+	// maxSafeDurationMillis caps the millisecond count durationFromMillis scales
+	// to a time.Duration; beyond it the nanosecond product overflows int64, so
+	// larger requests clamp to 24 hours. Typed int64 so the bound holds on
+	// 32-bit builds where int would truncate.
+	maxSafeDurationMillis = math.MaxInt64 / int64(time.Millisecond)
 
-// maxSafeDurationMillis is the largest ms value that can be multiplied by
-// time.Millisecond without overflowing int64.
-var maxSafeDurationMillis = int(math.MaxInt64 / int64(time.Millisecond))
+	liveReadID         = "live-read"
+	liveWriteID        = "live-write"
+	liveNotifyIDPrefix = "live-notify-"
+)
 
 // liveAdapter drives a bleDriver through the BLE evidence workflow. It holds no
 // backend-specific types, so its lifecycle and concurrency logic is testable
@@ -54,38 +70,52 @@ func (a *liveAdapter) Scan(ctx context.Context, opts ScanOptions) ([]DeviceCandi
 		})
 	}()
 
+	collect := func() []DeviceCandidate {
+		mu.Lock()
+		out := make([]DeviceCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			out = append(out, candidate)
+		}
+		mu.Unlock()
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].RSSI == out[j].RSSI {
+				return out[i].Address < out[j].Address
+			}
+			return out[i].RSSI > out[j].RSSI
+		})
+		return out
+	}
+
 	select {
 	case <-ctx.Done():
 		_ = a.driver.StopScan()
-		<-done
+		// Bound the unwind wait: a backend whose scan callback hangs after
+		// StopScan must not pin the cancelled command open forever. Mirrors the
+		// window-elapsed drain below.
+		select {
+		case <-done:
+		case <-time.After(scanStopDrainTimeout):
+		}
 		return nil, ctx.Err()
 	case err := <-done:
-		return nil, mapLiveError(err)
+		// Backend finished before the window elapsed: surface a real failure,
+		// but keep the advertisements collected when it stopped cleanly.
+		if err != nil {
+			return nil, mapLiveError(err)
+		}
+		return collect(), nil
 	case <-time.After(duration):
 		_ = a.driver.StopScan()
 	}
 
+	// The window elapsed and we asked the backend to stop; wait briefly for the
+	// scan goroutine to unwind. A stop-time error is expected noise, not a data
+	// failure, so the collected candidates stand regardless.
 	select {
-	case err := <-done:
-		if err != nil {
-			return nil, mapLiveError(err)
-		}
-	case <-time.After(500 * time.Millisecond):
+	case <-done:
+	case <-time.After(scanStopDrainTimeout):
 	}
-
-	mu.Lock()
-	out := make([]DeviceCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		out = append(out, candidate)
-	}
-	mu.Unlock()
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].RSSI == out[j].RSSI {
-			return out[i].Address < out[j].Address
-		}
-		return out[i].RSSI > out[j].RSSI
-	})
-	return out, nil
+	return collect(), nil
 }
 
 func (a *liveAdapter) Inspect(ctx context.Context, req InspectRequest) ([]Event, error) {
@@ -127,66 +157,71 @@ func (a *liveAdapter) Inspect(ctx context.Context, req InspectRequest) ([]Event,
 }
 
 func (a *liveAdapter) Read(ctx context.Context, req CharacteristicRequest) (Event, error) {
-	char, disconnect, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
+	found, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
 	if err != nil {
 		return Event{}, err
 	}
-	defer disconnect()
+	defer found.disconnect()
 
-	buf := make([]byte, 512)
-	n, err := char.Read(buf)
+	buf := make([]byte, bleCharacteristicMaxValueBytes)
+	n, err := found.char.Read(buf)
 	if err != nil {
 		return Event{}, mapLiveError(err)
 	}
+	if n > len(buf) {
+		// Some backends report the full attribute length rather than the bytes
+		// copied; clamp so a longer-than-buffer value cannot slice out of range.
+		n = len(buf)
+	}
 	return Event{
-		ID:                 "live-read",
+		ID:                 liveReadID,
 		Type:               EventRead,
-		ServiceUUID:        normalizeUUID(req.ServiceUUID),
-		CharacteristicUUID: normalizeUUID(char.UUID()),
+		ServiceUUID:        found.serviceUUID,
+		CharacteristicUUID: normalizeUUID(found.char.UUID()),
 		ValueHex:           hex.EncodeToString(buf[:n]),
 	}, nil
 }
 
 func (a *liveAdapter) Write(ctx context.Context, req WriteRequest) (Event, error) {
-	char, disconnect, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
+	found, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
 	if err != nil {
 		return Event{}, err
 	}
-	defer disconnect()
+	defer found.disconnect()
 
 	payload, err := hex.DecodeString(strings.TrimSpace(req.ValueHex))
 	if err != nil {
 		return Event{}, fmt.Errorf("value_hex: %w", err)
 	}
-	if _, err := char.Write(payload); err != nil {
+	if _, err := found.char.Write(payload); err != nil {
 		return Event{}, mapLiveError(err)
 	}
 	return Event{
-		ID:                 "live-write",
+		ID:                 liveWriteID,
 		Type:               EventWrite,
-		ServiceUUID:        normalizeUUID(req.ServiceUUID),
-		CharacteristicUUID: normalizeUUID(char.UUID()),
+		ServiceUUID:        found.serviceUUID,
+		CharacteristicUUID: normalizeUUID(found.char.UUID()),
 		ValueHex:           strings.ToLower(strings.TrimSpace(req.ValueHex)),
 	}, nil
 }
 
 func (a *liveAdapter) Subscribe(ctx context.Context, req CharacteristicRequest) ([]Event, error) {
-	char, disconnect, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
+	found, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
 	if err != nil {
 		return nil, err
 	}
-	defer disconnect()
+	defer found.disconnect()
 
 	duration := durationFromMillis(req.DurationMillis)
-	serviceUUID := normalizeUUID(req.ServiceUUID)
-	characteristicUUID := normalizeUUID(char.UUID())
+	serviceUUID := found.serviceUUID
+	characteristicUUID := normalizeUUID(found.char.UUID())
 	var mu sync.Mutex
 	var events []Event
-	if err := char.EnableNotifications(func(buf []byte) {
+	if err := found.char.EnableNotifications(func(buf []byte) {
 		valueHex := hex.EncodeToString(buf)
 		mu.Lock()
 		events = append(events, Event{
-			ID:                 fmt.Sprintf("live-notify-%d", len(events)+1),
+			ID:                 fmt.Sprintf("%s%d", liveNotifyIDPrefix, len(events)+1),
 			Type:               EventNotification,
 			ServiceUUID:        serviceUUID,
 			CharacteristicUUID: characteristicUUID,
@@ -196,7 +231,7 @@ func (a *liveAdapter) Subscribe(ctx context.Context, req CharacteristicRequest) 
 	}); err != nil {
 		return nil, mapLiveError(err)
 	}
-	defer func() { _ = char.EnableNotifications(nil) }()
+	defer func() { _ = found.char.EnableNotifications(nil) }()
 
 	select {
 	case <-ctx.Done():
@@ -222,8 +257,8 @@ func (a *liveAdapter) connect(ctx context.Context, address string) (bleDevice, e
 	if err := a.enable(); err != nil {
 		return nil, err
 	}
-	if runtime.GOOS == "linux" {
-		if err := a.ensureLinuxDeviceSeen(ctx, address); err != nil {
+	if a.driver.NeedsPreScan() {
+		if err := a.ensureDeviceSeen(ctx, address); err != nil {
 			return nil, err
 		}
 	}
@@ -246,18 +281,25 @@ func (a *liveAdapter) connect(ctx context.Context, address string) (bleDevice, e
 	}
 }
 
-// ensureLinuxDeviceSeen works around BlueZ requiring a device to be observed in
-// a scan before Connect succeeds. It scans until the target address appears or
-// the bounded context expires.
-func (a *liveAdapter) ensureLinuxDeviceSeen(ctx context.Context, address string) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+// ensureDeviceSeen works around backends (BlueZ) that require a device to be
+// observed in a scan before Connect succeeds. It scans until the target address
+// appears or the bounded window expires, reporting device-not-found when the
+// scan ends without the target rather than leaking a raw context deadline or
+// letting connect proceed against a device that was never in range.
+func (a *liveAdapter) ensureDeviceSeen(parent context.Context, address string) error {
+	ctx, cancel := context.WithTimeout(parent, scanSeenTimeout)
 	defer cancel()
 
+	notSeen := func() error {
+		return adapterError(AdapterErrorDeviceNotFound, "device %q not seen during scan", address)
+	}
 	target := strings.ToUpper(strings.TrimSpace(address))
+	var seen atomic.Bool
 	done := make(chan error, 1)
 	go func() {
 		done <- a.driver.Scan(nil, func(adv bleAdvertisement) {
 			if strings.EqualFold(adv.Address(), target) {
+				seen.Store(true)
 				_ = a.driver.StopScan()
 			}
 		})
@@ -266,10 +308,24 @@ func (a *liveAdapter) ensureLinuxDeviceSeen(ctx context.Context, address string)
 	select {
 	case <-ctx.Done():
 		_ = a.driver.StopScan()
-		<-done
-		return ctx.Err()
+		// Bound the wait for the scan goroutine to unwind; the buffered channel
+		// keeps it from leaking if the backend is slow to honor StopScan.
+		select {
+		case <-done:
+		case <-time.After(scanStopDrainTimeout):
+		}
+		if parent.Err() != nil {
+			return parent.Err()
+		}
+		return notSeen()
 	case err := <-done:
-		return mapLiveError(err)
+		if err != nil {
+			return mapLiveError(err)
+		}
+		if !seen.Load() {
+			return notSeen()
+		}
+		return nil
 	}
 }
 
@@ -304,16 +360,27 @@ func runWithContext[T any](ctx context.Context, fn func() (T, error)) (T, error)
 	}
 }
 
-func (a *liveAdapter) characteristic(ctx context.Context, address string, serviceUUID string, characteristicUUID string) (bleCharacteristic, func(), error) {
+// discoveredCharacteristic carries a resolved characteristic, the normalized
+// UUID of the service it was found under, and the device disconnect handle.
+type discoveredCharacteristic struct {
+	char        bleCharacteristic
+	serviceUUID string
+	disconnect  func()
+}
+
+// characteristic connects and resolves the requested characteristic, recording
+// the owning service so callers can report it even when the request omitted
+// --service. The disconnect handle is valid only on the nil-error return.
+func (a *liveAdapter) characteristic(ctx context.Context, address, serviceUUID, characteristicUUID string) (discoveredCharacteristic, error) {
 	device, err := a.connect(ctx, address)
 	if err != nil {
-		return nil, func() {}, err
+		return discoveredCharacteristic{}, err
 	}
 	disconnect := func() { _ = device.Disconnect() }
 
 	if strings.TrimSpace(characteristicUUID) == "" {
 		disconnect()
-		return nil, func() {}, adapterError(AdapterErrorCharacteristic, "characteristic UUID is required")
+		return discoveredCharacteristic{}, adapterError(AdapterErrorCharacteristic, "characteristic UUID is required")
 	}
 
 	var serviceFilter []string
@@ -325,7 +392,7 @@ func (a *liveAdapter) characteristic(ctx context.Context, address string, servic
 	})
 	if err != nil {
 		disconnect()
-		return nil, func() {}, mapLiveError(err)
+		return discoveredCharacteristic{}, mapLiveError(err)
 	}
 	for _, service := range services {
 		chars, err := runWithContext(ctx, func() ([]bleCharacteristic, error) {
@@ -333,14 +400,14 @@ func (a *liveAdapter) characteristic(ctx context.Context, address string, servic
 		})
 		if err != nil {
 			disconnect()
-			return nil, func() {}, mapLiveError(err)
+			return discoveredCharacteristic{}, mapLiveError(err)
 		}
 		if len(chars) > 0 {
-			return chars[0], disconnect, nil
+			return discoveredCharacteristic{char: chars[0], serviceUUID: normalizeUUID(service.UUID()), disconnect: disconnect}, nil
 		}
 	}
 	disconnect()
-	return nil, func() {}, adapterError(AdapterErrorCharacteristic, "characteristic %q not found", characteristicUUID)
+	return discoveredCharacteristic{}, adapterError(AdapterErrorCharacteristic, "characteristic %q not found", characteristicUUID)
 }
 
 func (a *liveAdapter) enable() error {
@@ -353,14 +420,14 @@ func (a *liveAdapter) enable() error {
 	return nil
 }
 
-// durationFromMillis converts a millisecond count to a time.Duration.
-// Non-positive values return the default scan duration.
-// Values large enough to overflow int64 are clamped to 24 hours.
+// durationFromMillis maps a request's millisecond count onto a scan/subscribe
+// window. Non-positive values fall back to the default; values that would
+// overflow int64 nanoseconds clamp to 24 hours.
 func durationFromMillis(ms int) time.Duration {
 	if ms <= 0 {
 		return defaultLiveDuration
 	}
-	if ms > maxSafeDurationMillis {
+	if int64(ms) > maxSafeDurationMillis {
 		return 24 * time.Hour
 	}
 	return time.Duration(ms) * time.Millisecond
@@ -390,6 +457,8 @@ func mapLiveError(err error) error {
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "connection refused"):
 		return adapterError(AdapterErrorDisconnected, "%v", err)
+	case strings.Contains(msg, "invalid uuid"):
+		return adapterError(AdapterErrorCharacteristic, "%v", err)
 	default:
 		return adapterError(AdapterErrorUnsupported, "%v", err)
 	}

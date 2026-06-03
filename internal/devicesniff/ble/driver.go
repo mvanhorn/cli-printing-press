@@ -13,6 +13,11 @@ type bleDriver interface {
 	Scan(filterServiceUUIDs []string, onResult func(bleAdvertisement)) error
 	StopScan() error
 	Connect(address string) (bleDevice, error)
+	// NeedsPreScan reports whether the backend requires a device to be observed
+	// in a scan before Connect succeeds (BlueZ does; CoreBluetooth does not).
+	// Keeping the platform decision behind the seam keeps the pre-scan path
+	// exercisable against the test stub.
+	NeedsPreScan() bool
 }
 
 type bleAdvertisement interface {

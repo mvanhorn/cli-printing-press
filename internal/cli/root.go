@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,11 +10,13 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
@@ -47,8 +50,13 @@ func Execute() error {
 }
 
 func ExecuteWithName(commandName string) error {
+	// Cancel the command context on interrupt so long-running and hardware-backed
+	// subcommands (device-sniff --live, generate, dogfood) shut down gracefully
+	// rather than relying on the runtime's default kill.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	rootCmd := NewRootCommand(commandName)
-	return rootCmd.Execute()
+	return rootCmd.ExecuteContext(ctx)
 }
 
 func NewRootCommand(commandName string) *cobra.Command {
