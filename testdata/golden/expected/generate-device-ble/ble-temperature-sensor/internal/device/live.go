@@ -92,7 +92,7 @@ func (t *LiveTransport) Scan(ctx context.Context) ([]Advert, error) {
 	if cliutil.IsVerifyEnv() {
 		return nil, nil
 	}
-	be, err := newBLEBackend()
+	be, err := bleBackendFactory()
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +109,7 @@ func (t *LiveTransport) Scan(ctx context.Context) ([]Advert, error) {
 // withLink scans for the device by its service UUIDs (unless an explicit address
 // was given), connects, runs fn against the link, then disconnects.
 func (t *LiveTransport) withLink(ctx context.Context, fn func(bleLink) error) error {
-	be, err := newBLEBackend()
+	be, err := bleBackendFactory()
 	if err != nil {
 		return err
 	}

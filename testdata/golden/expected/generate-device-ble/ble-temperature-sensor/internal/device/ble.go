@@ -44,3 +44,8 @@ type bleLink interface {
 // LiveAvailable reports whether a live BLE backend is compiled into this binary
 // (true only when built with -tags ble_live).
 func LiveAvailable() bool { return liveCompiled }
+
+// bleBackendFactory opens the BLE backend. It is a var so tests can inject a
+// fake backend and exercise LiveTransport without real hardware; production code
+// leaves it pointing at the build-tag-selected newBLEBackend.
+var bleBackendFactory = newBLEBackend

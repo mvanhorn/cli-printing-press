@@ -76,6 +76,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.AddCommand(newCapabilitiesCmd(flags))
 	rootCmd.AddCommand(newStatusCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
+	rootCmd.AddCommand(newScanCmd(flags))
 	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: "toggle", CharacteristicUUID: "ff01", Safety: "low-risk-write", ValidationStatus: "observed", PayloadHex: "01"}))
 	if novelCommands != nil {
 		novelCommands(rootCmd, flags)
@@ -136,6 +137,45 @@ func newStatusCmd(flags *rootFlags) *cobra.Command {
 			for _, field := range device.StatusFields {
 				value := snapshot.Telemetry[field.Name]
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: %v\n", field.Name, value)
+			}
+			return nil
+		},
+	}
+}
+
+func newScanCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "scan",
+		Short: "Discover nearby devices by their BLE service (requires --live)",
+		Long:  "Scan for devices that expose this device's BLE service UUID(s). Requires --live and a binary built with -tags ble_live.",
+		// Inherently live (no replay equivalent) and non-functional through the
+		// MCP server, which execs the default, replay-only build. Hidden from MCP.
+		Annotations: map[string]string{"mcp:hidden": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !flags.live {
+				if flags.asJSON {
+					return writeJSON(cmd, map[string]any{"live": false, "message": "pass --live to scan"})
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "not contacting any device; pass --live to scan")
+				return nil
+			}
+			adverts, err := device.NewLiveTransport(flags.address, flags.timeout).Scan(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				return writeJSON(cmd, map[string]any{"count": len(adverts), "devices": adverts})
+			}
+			if len(adverts) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no devices found (is the device on and any official app closed?)")
+				return nil
+			}
+			for _, advert := range adverts {
+				name := advert.Name
+				if name == "" {
+					name = "(unnamed)"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s  %-16s  rssi %d\n", advert.Address, name, advert.RSSI)
 			}
 			return nil
 		},

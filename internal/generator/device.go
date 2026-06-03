@@ -95,10 +95,11 @@ func (g *DeviceGenerator) Generate() error {
 		// BLE adapter seam: device-neutral interfaces (always compiled) plus the
 		// tinygo live driver (build tag ble_live) and the pure-Go stub. The
 		// default build links no BLE stack; -tags ble_live enables real control.
-		filepath.Join("internal", "device", "ble.go"):      deviceBLETemplate,
-		filepath.Join("internal", "device", "ble_live.go"): deviceBLELiveTemplate,
-		filepath.Join("internal", "device", "ble_stub.go"): deviceBLEStubTemplate,
-		filepath.Join("internal", "device", "live.go"):     deviceLiveTemplate,
+		filepath.Join("internal", "device", "ble.go"):       deviceBLETemplate,
+		filepath.Join("internal", "device", "ble_live.go"):  deviceBLELiveTemplate,
+		filepath.Join("internal", "device", "ble_stub.go"):  deviceBLEStubTemplate,
+		filepath.Join("internal", "device", "live.go"):      deviceLiveTemplate,
+		filepath.Join("internal", "device", "live_test.go"): deviceLiveTestTemplate,
 		"README.md": deviceReadmeTemplate,
 		"SKILL.md":  deviceSkillTemplate,
 		// MCP surface: a stdio MCP server that mirrors the Cobra tree via the
@@ -395,6 +396,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.AddCommand(newCapabilitiesCmd(flags))
 	rootCmd.AddCommand(newStatusCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
+	rootCmd.AddCommand(newScanCmd(flags))
 {{- if .HasSession}}
 	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
 {{- end}}
@@ -463,6 +465,45 @@ func newStatusCmd(flags *rootFlags) *cobra.Command {
 			for _, field := range device.StatusFields {
 				value := snapshot.Telemetry[field.Name]
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: %v\n", field.Name, value)
+			}
+			return nil
+		},
+	}
+}
+
+func newScanCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "scan",
+		Short: "Discover nearby devices by their BLE service (requires --live)",
+		Long:  "Scan for devices that expose this device's BLE service UUID(s). Requires --live and a binary built with -tags ble_live.",
+		// Inherently live (no replay equivalent) and non-functional through the
+		// MCP server, which execs the default, replay-only build. Hidden from MCP.
+		Annotations: map[string]string{"mcp:hidden": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !flags.live {
+				if flags.asJSON {
+					return writeJSON(cmd, map[string]any{"live": false, "message": "pass --live to scan"})
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "not contacting any device; pass --live to scan")
+				return nil
+			}
+			adverts, err := device.NewLiveTransport(flags.address, flags.timeout).Scan(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				return writeJSON(cmd, map[string]any{"count": len(adverts), "devices": adverts})
+			}
+			if len(adverts) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no devices found (is the device on and any official app closed?)")
+				return nil
+			}
+			for _, advert := range adverts {
+				name := advert.Name
+				if name == "" {
+					name = "(unnamed)"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s  %-16s  rssi %d\n", advert.Address, name, advert.RSSI)
 			}
 			return nil
 		},
@@ -1027,6 +1068,11 @@ type bleLink interface {
 // LiveAvailable reports whether a live BLE backend is compiled into this binary
 // (true only when built with -tags ble_live).
 func LiveAvailable() bool { return liveCompiled }
+
+// bleBackendFactory opens the BLE backend. It is a var so tests can inject a
+// fake backend and exercise LiveTransport without real hardware; production code
+// leaves it pointing at the build-tag-selected newBLEBackend.
+var bleBackendFactory = newBLEBackend
 `
 
 const deviceBLELiveTemplate = `//go:build ble_live
@@ -1368,7 +1414,7 @@ func (t *LiveTransport) Scan(ctx context.Context) ([]Advert, error) {
 	if cliutil.IsVerifyEnv() {
 		return nil, nil
 	}
-	be, err := newBLEBackend()
+	be, err := bleBackendFactory()
 	if err != nil {
 		return nil, err
 	}
@@ -1385,7 +1431,7 @@ func (t *LiveTransport) Scan(ctx context.Context) ([]Advert, error) {
 // withLink scans for the device by its service UUIDs (unless an explicit address
 // was given), connects, runs fn against the link, then disconnects.
 func (t *LiveTransport) withLink(ctx context.Context, fn func(bleLink) error) error {
-	be, err := newBLEBackend()
+	be, err := bleBackendFactory()
 	if err != nil {
 		return err
 	}
@@ -1418,6 +1464,118 @@ func sortByRSSI(adverts []Advert) {
 		for j := i; j > 0 && adverts[j].RSSI > adverts[j-1].RSSI; j-- {
 			adverts[j], adverts[j-1] = adverts[j-1], adverts[j]
 		}
+	}
+}
+`
+
+// deviceLiveTestTemplate emits a pure-Go test that exercises the Tier-1 live
+// path (write a command payload, dry-run, scan) against an injected fake
+// backend. It needs no hardware and no build tag, so the printed CLI's own
+// go test proves its generic live transport works.
+const deviceLiveTestTemplate = `// Copyright {{.CurrentYear}}. Licensed under Apache-2.0. See LICENSE.
+// Generated by CLI Printing Press (https://github.com/mvanhorn/cli-printing-press). DO NOT EDIT.
+
+package device
+
+import (
+	"context"
+	"encoding/hex"
+	"testing"
+	"time"
+)
+
+// fakeLink / fakeBackend exercise LiveTransport without real BLE hardware by
+// injecting bleBackendFactory.
+type fakeLink struct {
+	writes map[string][]byte
+	reads  map[string][]byte
+	closed bool
+}
+
+func (l *fakeLink) Write(uuid string, payload []byte) error {
+	if l.writes == nil {
+		l.writes = map[string][]byte{}
+	}
+	l.writes[uuid] = payload
+	return nil
+}
+func (l *fakeLink) Read(uuid string) ([]byte, error)                  { return l.reads[uuid], nil }
+func (l *fakeLink) Subscribe(uuid string, handler func([]byte)) error { return nil }
+func (l *fakeLink) Close() error                                      { l.closed = true; return nil }
+
+type fakeBackend struct {
+	link    *fakeLink
+	adverts []Advert
+}
+
+func (b *fakeBackend) Scan(ctx context.Context, serviceUUIDs []string) ([]Advert, error) {
+	return b.adverts, nil
+}
+func (b *fakeBackend) Connect(ctx context.Context, address string, serviceUUIDs []string) (bleLink, error) {
+	return b.link, nil
+}
+
+func withFakeBackend(t *testing.T, be *fakeBackend) {
+	t.Helper()
+	t.Setenv("PRINTING_PRESS_VERIFY", "") // keep the live path from short-circuiting
+	prev := bleBackendFactory
+	bleBackendFactory = func() (bleBackend, error) { return be, nil }
+	t.Cleanup(func() { bleBackendFactory = prev })
+}
+
+func TestLiveTransportExecuteCommandWritesPayload(t *testing.T) {
+	link := &fakeLink{}
+	withFakeBackend(t, &fakeBackend{link: link, adverts: []Advert{ {Address: "AA:BB:CC:DD:EE:FF", RSSI: -40} }})
+
+	result, err := NewLiveTransport("", 2*time.Second).ExecuteCommand(
+		context.Background(),
+		CommandDefinition{Name: "probe", CharacteristicUUID: "ff01", PayloadHex: "01ff"},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("ExecuteCommand: %v", err)
+	}
+	if result.Transport != "live" {
+		t.Errorf("transport = %q, want live", result.Transport)
+	}
+	want, _ := hex.DecodeString("01ff")
+	if got := link.writes["ff01"]; string(got) != string(want) {
+		t.Errorf("wrote %x to ff01, want %x", got, want)
+	}
+	if !link.closed {
+		t.Error("link was not closed")
+	}
+}
+
+func TestLiveTransportDryRunDoesNotWrite(t *testing.T) {
+	link := &fakeLink{}
+	withFakeBackend(t, &fakeBackend{link: link})
+
+	result, err := NewLiveTransport("AA:BB:CC:DD:EE:FF", 2*time.Second).ExecuteCommand(
+		context.Background(),
+		CommandDefinition{Name: "probe", CharacteristicUUID: "ff01", PayloadHex: "01ff"},
+		true,
+	)
+	if err != nil {
+		t.Fatalf("ExecuteCommand: %v", err)
+	}
+	if !result.DryRun {
+		t.Error("expected a dry-run result")
+	}
+	if len(link.writes) != 0 {
+		t.Errorf("dry-run wrote to the device: %v", link.writes)
+	}
+}
+
+func TestLiveTransportScanSortsByRSSI(t *testing.T) {
+	withFakeBackend(t, &fakeBackend{adverts: []Advert{ {Address: "weak", RSSI: -80}, {Address: "strong", RSSI: -30} }})
+
+	adverts, err := NewLiveTransport("", 2*time.Second).Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(adverts) != 2 || adverts[0].Address != "strong" {
+		t.Errorf("scan not sorted strongest-first: %+v", adverts)
 	}
 }
 `

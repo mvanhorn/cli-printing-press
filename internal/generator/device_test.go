@@ -207,18 +207,33 @@ func TestGeneratedBLEDeviceEmitsLiveTransportAndDoctor(t *testing.T) {
 	assert.Contains(t, root, "func deviceTransport(flags *rootFlags) device.Transport")
 	assert.Contains(t, root, "device.NewLiveTransport(flags.address, flags.timeout)")
 	assert.Contains(t, root, "func newDoctorCmd(")
+	assert.Contains(t, root, "func newScanCmd(")
 
 	// LiveTransport implements the Transport interface over the BLE seam.
 	live := read(filepath.Join("internal", "device", "live.go"))
 	assert.Contains(t, live, "type LiveTransport struct")
 	assert.Contains(t, live, "func (t *LiveTransport) Status(")
 	assert.Contains(t, live, "func (t *LiveTransport) ExecuteCommand(")
-	assert.Contains(t, live, "newBLEBackend()")
+	assert.Contains(t, live, "bleBackendFactory()")
 
 	// Service UUIDs surfaced for discovery/connect.
 	assert.Contains(t, read(filepath.Join("internal", "device", "spec.go")), "var ServiceUUIDs = []string{")
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedBLEDeviceLiveTransportTestsPass(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	// Run the emitted device-package tests: the Tier-1 live path (write payload,
+	// dry-run, scan) against the injected fake backend — no hardware, no tag.
+	runGoCommandRequired(t, outputDir, "test", "./internal/device/")
 }
 
 func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
