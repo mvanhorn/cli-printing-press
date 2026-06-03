@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,6 +68,38 @@ func TestGeneratedBLESkillEmitsCanonicalInstallSection(t *testing.T) {
 	got, ok := ExtractSkillInstallSection(string(skillSrc))
 	require.True(t, ok, "device SKILL.md must contain the canonical install section")
 	assert.Equal(t, want, got, "device SKILL install section must match the canonical generator output")
+}
+
+func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	// MCP entrypoint + the API-agnostic cobratree walker that mirrors the Cobra
+	// tree (honoring mcp:read-only / mcp:hidden per command).
+	assert.FileExists(t, filepath.Join(outputDir, "cmd", naming.MCP(ds.Name), "main.go"))
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "mcp", "cobratree", "walker.go"))
+
+	toolsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	tools := string(toolsSrc)
+	assert.Contains(t, tools, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)")
+	assert.Contains(t, tools, `mcplib.NewTool("context"`)
+	assert.Contains(t, tools, "device.Capabilities()")
+	// The device MCP binary has no typed HTTP endpoint tools — it must not import
+	// an HTTP client/config/store the device CLI does not have.
+	assert.NotContains(t, tools, "internal/client")
+	assert.NotContains(t, tools, "internal/store")
+
+	goMod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(goMod), "github.com/mark3labs/mcp-go")
+
+	requireGeneratedCompiles(t, outputDir) // builds ./... including the MCP binary
 }
 
 func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {

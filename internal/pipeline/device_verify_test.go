@@ -56,6 +56,54 @@ func TestIsDeviceCLIDir(t *testing.T) {
 	})
 }
 
+func TestScorecardDeviceMarksHTTPDimsUnscored(t *testing.T) {
+	dir := t.TempDir()
+	writeStubFile(t, filepath.Join(dir, "internal", "device", "spec.go"), "package device\n\nconst Protocol = \"ble\"\n")
+	writeStubFile(t, filepath.Join(dir, "internal", "cli", "root.go"), "package cli\n")
+
+	sc := &Scorecard{}
+	scoreInfrastructureDimensions(sc, dir, true)
+	scoreDomainDimensions(sc, dir, nil, nil, true)
+
+	for _, dim := range []string{
+		DimLocalCache, DimVision, DimWorkflows, DimInsight, DimAgentWorkflow,
+		DimDataPipelineIntegrity, DimSyncCorrectness,
+	} {
+		if !sc.IsDimensionUnscored(dim) {
+			t.Errorf("device CLI should mark %q N/A (unscored), got scored", dim)
+		}
+	}
+}
+
+func TestScoreDoctorDeviceCreditsBLEReachability(t *testing.T) {
+	dir := t.TempDir()
+	writeStubFile(t, filepath.Join(dir, "internal", "cli", "live_read.go"), `package cli
+// newDoctorCmd builds the "doctor" command.
+// It calls wpble.New(addr).Scan(ctx) and sets info["reachable"].
+// Reports verify_env, dogfood_env, live_compiled; uses flags.address and wpble.ServiceUUID.
+`)
+	if got := scoreDoctorDevice(dir); got < 8 {
+		t.Errorf("scoreDoctorDevice = %d, want >= 8 for a full device doctor", got)
+	}
+	if got := scoreDoctorDevice(t.TempDir()); got != 0 {
+		t.Errorf("scoreDoctorDevice(no doctor) = %d, want 0", got)
+	}
+}
+
+func TestScoreErrorHandlingDeviceCreditsActionableErrors(t *testing.T) {
+	content := []string{
+		`return fmt.Errorf("speed %.1f out of range: %w", kmh, err)`,
+		`"not contacting the belt; pass --live to scan"`,
+		`weight must be greater than 0`,
+	}
+	if got := scoreErrorHandlingDevice(content); got < 5 {
+		t.Errorf("scoreErrorHandlingDevice = %d, want >= 5 for actionable device errors", got)
+	}
+	if got := scoreErrorHandlingDevice([]string{"package cli"}); got != 0 {
+		t.Errorf("scoreErrorHandlingDevice(no signals) = %d, want 0", got)
+	}
+}
+
 // TestDeviceDogfoodVerdictSuppression proves the HTTP-API-only checks
 // (client.go auth protocol, sync data pipeline, agent-context example
 // discovery) do not fail a device CLI's dogfood verdict, while the same

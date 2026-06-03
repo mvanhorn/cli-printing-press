@@ -14,3 +14,7 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 - `ble-session-appliance-pp-cli telemetry capture --json` stores replay-backed telemetry samples locally.
 - `ble-session-appliance-pp-cli telemetry latest --json` reads the latest locally stored telemetry samples.
 - `ble-session-appliance-pp-cli telemetry sessions --json` reads locally stored BLE session summaries.
+
+## MCP server
+
+`ble-session-appliance-pp-mcp` is a stdio MCP server that mirrors this CLI's commands as agent tools. It execs `ble-session-appliance-pp-cli` (no BLE dependency of its own), so it builds anywhere. Read commands are exposed with `readOnlyHint`; commands a device cannot safely expose to an agent are hidden via the `mcp:hidden` annotation. Point an MCP host at the `ble-session-appliance-pp-mcp` binary.

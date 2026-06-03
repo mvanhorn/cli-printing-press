@@ -8,3 +8,7 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 
 - `ble-temperature-sensor-pp-cli status --json` prints replay-backed status fields.
 - `ble-temperature-sensor-pp-cli capabilities --json` prints callable and withheld BLE capabilities with safety metadata.
+
+## MCP server
+
+`ble-temperature-sensor-pp-mcp` is a stdio MCP server that mirrors this CLI's commands as agent tools. It execs `ble-temperature-sensor-pp-cli` (no BLE dependency of its own), so it builds anywhere. Read commands are exposed with `readOnlyHint`; commands a device cannot safely expose to an agent are hidden via the `mcp:hidden` annotation. Point an MCP host at the `ble-temperature-sensor-pp-mcp` binary.

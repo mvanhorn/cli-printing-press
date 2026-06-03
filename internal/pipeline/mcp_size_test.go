@@ -350,7 +350,7 @@ func TestScoreMCPTokenEfficiency_UnscoredForLargeCodeOrchCatalog(t *testing.T) {
 	assert.Equal(t, 0, score)
 
 	sc := &Scorecard{}
-	scoreInfrastructureDimensions(sc, dir)
+	scoreInfrastructureDimensions(sc, dir, false)
 	assert.Contains(t, sc.UnscoredDimensions, DimMCPTokenEfficiency)
 }
 
