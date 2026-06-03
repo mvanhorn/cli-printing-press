@@ -73,6 +73,35 @@ func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
 	assert.Equal(t, "verify-replay", result["transport"])
 }
 
+func TestGeneratedBLEPhysicalCommandRequiresConfirmation(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-session-telemetry.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-session-appliance")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	blocked := exec.Command("go", "run", "-mod=mod", "./cmd/ble-session-appliance-pp-cli", "start", "--json")
+	blocked.Dir = outputDir
+	blockedOutput, err := blocked.CombinedOutput()
+	require.Error(t, err)
+	assert.Contains(t, string(blockedOutput), "has safety class physical-effect")
+	assert.Contains(t, string(blockedOutput), "--confirm-physical-effect")
+
+	confirmed := exec.Command("go", "run", "-mod=mod", "./cmd/ble-session-appliance-pp-cli", "start", "--json", "--confirm-physical-effect")
+	confirmed.Dir = outputDir
+	confirmedOutput, err := confirmed.CombinedOutput()
+	require.NoError(t, err, string(confirmedOutput))
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(confirmedOutput, &result))
+	assert.Equal(t, "start", result["command"])
+	assert.Equal(t, "physical-effect", result["safety"])
+	assert.Equal(t, false, result["dry_run"])
+	assert.Equal(t, "replay", result["transport"])
+}
+
 func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	t.Parallel()
 
@@ -94,6 +123,8 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	assert.Contains(t, root, "device.NewReplaySession()")
 	assert.Contains(t, root, `PayloadHex: "a001"`)
 	assert.Contains(t, root, `device.CommandDefinition{Name: "start"`)
+	assert.Contains(t, root, `"confirm-physical-effect"`)
+	assert.Contains(t, root, `func requiresPhysicalConfirmation(definition device.CommandDefinition) bool`)
 	assert.Contains(t, generatedFunction(t, root, "newCapabilitiesCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assert.Contains(t, generatedFunction(t, root, "newStatusCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assert.Contains(t, generatedFunction(t, root, "newTelemetryLatestCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)

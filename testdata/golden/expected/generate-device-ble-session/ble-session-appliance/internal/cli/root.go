@@ -4,11 +4,11 @@
 package cli
 
 import (
+	"ble-session-appliance-pp-cli/internal/cliutil"
+	"ble-session-appliance-pp-cli/internal/device"
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"ble-session-appliance-pp-cli/internal/device"
 	"github.com/spf13/cobra"
 )
 
@@ -113,10 +113,14 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 }
 
 func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definition device.CommandDefinition) *cobra.Command {
-	return &cobra.Command{
+	var confirmPhysicalEffect bool
+	command := &cobra.Command{
 		Use:   definition.Name,
 		Short: fmt.Sprintf("Replay %s against the device transport", definition.Name),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if requiresPhysicalConfirmation(definition) && !flags.dryRun && !confirmPhysicalEffect && !cliutil.IsVerifyEnv() {
+				return fmt.Errorf("%s has safety class %s; pass --dry-run to preview or --confirm-physical-effect to replay it", definition.Name, definition.Safety)
+			}
 			result, err := transport.ExecuteCommand(cmd.Context(), definition, flags.dryRun)
 			if err != nil {
 				return err
@@ -131,6 +135,19 @@ func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definitio
 			fmt.Fprintf(cmd.OutOrStdout(), "replayed %s via %s\n", result.Command, result.Transport)
 			return nil
 		},
+	}
+	if requiresPhysicalConfirmation(definition) {
+		command.Flags().BoolVar(&confirmPhysicalEffect, "confirm-physical-effect", false, "Confirm replay of a physical-effect or configuration-risk device command")
+	}
+	return command
+}
+
+func requiresPhysicalConfirmation(definition device.CommandDefinition) bool {
+	switch definition.Safety {
+	case "physical-effect", "configuration-risk":
+		return true
+	default:
+		return false
 	}
 }
 

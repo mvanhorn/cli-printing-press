@@ -4,11 +4,10 @@
 package cli
 
 import (
+	"ble-temperature-sensor-pp-cli/internal/device"
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"ble-temperature-sensor-pp-cli/internal/device"
 	"github.com/spf13/cobra"
 )
 
