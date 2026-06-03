@@ -184,13 +184,16 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		}
 	}
 	serviceUUIDs := make([]string, 0, len(g.Spec.BLE.Services))
-	seenService := make(map[string]bool)
+	seenService := make(map[string]struct{})
 	for _, service := range g.Spec.BLE.Services {
 		uuid := strings.TrimSpace(service.UUID)
-		if uuid == "" || seenService[uuid] {
+		if uuid == "" {
 			continue
 		}
-		seenService[uuid] = true
+		if _, ok := seenService[uuid]; ok {
+			continue
+		}
+		seenService[uuid] = struct{}{}
 		serviceUUIDs = append(serviceUUIDs, uuid)
 	}
 	return deviceTemplateData{
@@ -1413,12 +1416,29 @@ func (t *LiveTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 	return StatusSnapshot{Device: DisplayName, Transport: "live", SessionMode: SessionMode, ObservedAt: nowUTC(), Telemetry: telemetry}, nil
 }
 
+// liveResult builds the CommandResult fields common to every live outcome,
+// leaving the caller to set the distinguishing dry-run/verify fields.
+func liveResult(command CommandDefinition, transport string) CommandResult {
+	return CommandResult{
+		Command:            command.Name,
+		Transport:          transport,
+		CharacteristicUUID: command.CharacteristicUUID,
+		PayloadHex:         command.PayloadHex,
+		Safety:             command.Safety,
+		ValidationStatus:   command.ValidationStatus,
+	}
+}
+
 func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
 	if cliutil.IsVerifyEnv() {
-		return CommandResult{Command: command.Name, Transport: "verify-live-noop", CharacteristicUUID: command.CharacteristicUUID, PayloadHex: command.PayloadHex, Safety: command.Safety, ValidationStatus: command.ValidationStatus, DryRun: true, VerifyNoop: true, Reason: "verify_short_circuit"}, nil
+		result := liveResult(command, "verify-live-noop")
+		result.DryRun, result.VerifyNoop, result.Reason = true, true, "verify_short_circuit"
+		return result, nil
 	}
 	if dryRun {
-		return CommandResult{Command: command.Name, Transport: "live", CharacteristicUUID: command.CharacteristicUUID, PayloadHex: command.PayloadHex, Safety: command.Safety, ValidationStatus: command.ValidationStatus, DryRun: true}, nil
+		result := liveResult(command, "live")
+		result.DryRun = true
+		return result, nil
 	}
 	payload, err := hex.DecodeString(command.PayloadHex)
 	if err != nil {
@@ -1431,7 +1451,7 @@ func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefin
 	}); err != nil {
 		return CommandResult{}, err
 	}
-	return CommandResult{Command: command.Name, Transport: "live", CharacteristicUUID: command.CharacteristicUUID, PayloadHex: command.PayloadHex, Safety: command.Safety, ValidationStatus: command.ValidationStatus}, nil
+	return liveResult(command, "live"), nil
 }
 
 // Scan discovers nearby devices that expose the device's BLE service(s).
