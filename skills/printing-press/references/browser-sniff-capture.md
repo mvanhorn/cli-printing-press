@@ -1011,7 +1011,7 @@ If using agent-browser's enriched capture format instead:
 cli-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.json" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
 ```
 
-If `$API_RUN_DIR/source-priority.json` exists with two or more sources, add `--preserve-hosts` to the browser-sniff command so combo-CLI captures retain peer API hosts with per-endpoint `base_url` overrides instead of selecting only the dominant host.
+`--preserve-hosts` defaults to true so combo-CLI captures (e.g. `$API_RUN_DIR/source-priority.json` with two or more sources) retain peer API hosts with per-endpoint `base_url` overrides instead of selecting only the dominant host. Pass `--preserve-hosts=false` to opt back into the legacy collapse-to-primary behavior.
 
 If hand-writing or repairing `$DISCOVERY_DIR/traffic-analysis.json`, inspect the canonical schema first:
 

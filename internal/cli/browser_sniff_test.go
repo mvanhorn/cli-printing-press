@@ -69,13 +69,13 @@ func TestBrowserSniffCmdDerivesTrafficAnalysisPath(t *testing.T) {
 	require.FileExists(t, filepath.Join(dir, "sample-spec-traffic-analysis.json"))
 }
 
-func TestBrowserSniffCmdPreserveHostsWritesBaseURLOverrides(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	capturePath := filepath.Join(dir, "capture.json")
-	outputPath := filepath.Join(dir, "spec.yaml")
-	capture := browsersniff.EnrichedCapture{
+// twoHostCapture returns a synthetic two-host capture (api.example.com plus
+// partner.example.net) along with a datadog telemetry entry that previously
+// triggered selectPrimaryAPIEntries to discard the partner host. Shared by
+// the default-on and opt-out tests so both branches verify against the same
+// shape.
+func twoHostCapture() browsersniff.EnrichedCapture {
+	return browsersniff.EnrichedCapture{
 		TargetURL: "https://app.example.com",
 		Entries: []browsersniff.EnrichedEntry{
 			{
@@ -90,7 +90,21 @@ func TestBrowserSniffCmdPreserveHostsWritesBaseURLOverrides(t *testing.T) {
 			{Method: "GET", URL: "https://partner.example.net/v1/profiles", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"profiles":[]}`},
 		},
 	}
-	data, err := json.Marshal(capture)
+}
+
+// TestBrowserSniffCmdPreservesHostsByDefault pins that the browser-sniff
+// command keeps secondary-host endpoints in the emitted spec without the
+// operator passing --preserve-hosts. The capture is the only authoritative
+// record of which host each endpoint lives on; collapsing onto a single
+// primary silently misroutes secondary endpoints (the experiment's top wire
+// bug, surfaced as 10/15 endpoint failures against Slack).
+func TestBrowserSniffCmdPreservesHostsByDefault(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "capture.json")
+	outputPath := filepath.Join(dir, "spec.yaml")
+	data, err := json.Marshal(twoHostCapture())
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(capturePath, data, 0o600))
 
@@ -98,7 +112,6 @@ func TestBrowserSniffCmdPreserveHostsWritesBaseURLOverrides(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--har", capturePath,
 		"--output", outputPath,
-		"--preserve-hosts",
 	})
 
 	require.NoError(t, cmd.Execute())
@@ -110,7 +123,39 @@ func TestBrowserSniffCmdPreserveHostsWritesBaseURLOverrides(t *testing.T) {
 	assert.Equal(t, "https://api.example.com", parsed.BaseURL)
 	require.Contains(t, parsed.Resources, "profiles")
 	profiles := parsed.Resources["profiles"].Endpoints["list_profiles"]
-	assert.Equal(t, "https://partner.example.net", profiles.BaseURL)
+	assert.Equal(t, "https://partner.example.net", profiles.BaseURL,
+		"secondary-host endpoint must keep its observed base_url without --preserve-hosts")
+}
+
+// TestBrowserSniffCmdPreserveHostsOptOut pins that --preserve-hosts=false
+// restores the legacy collapse-to-primary behavior so operators who depend
+// on the old shape can opt out without code changes.
+func TestBrowserSniffCmdPreserveHostsOptOut(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "capture.json")
+	outputPath := filepath.Join(dir, "spec.yaml")
+	data, err := json.Marshal(twoHostCapture())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(capturePath, data, 0o600))
+
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", capturePath,
+		"--output", outputPath,
+		"--preserve-hosts=false",
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	specData, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	parsed, err := spec.ParseBytes(specData)
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.example.com", parsed.BaseURL)
+	assert.NotContains(t, parsed.Resources, "profiles",
+		"--preserve-hosts=false must collapse onto the primary host (partner.example.net dropped)")
 }
 
 func TestPrintingPressSkillDocumentsPreserveHostsForComboHAR(t *testing.T) {
