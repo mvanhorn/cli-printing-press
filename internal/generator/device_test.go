@@ -34,7 +34,10 @@ func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
 
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(rootSrc), "device.Transport")
+	root := string(rootSrc)
+	assert.Contains(t, root, "device.Transport")
+	assert.Contains(t, generatedFunction(t, root, "newCapabilitiesCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assert.Contains(t, generatedFunction(t, root, "newStatusCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
 
 	transportSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "transport.go"))
 	require.NoError(t, err)
@@ -91,6 +94,14 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	assert.Contains(t, root, "device.NewReplaySession()")
 	assert.Contains(t, root, `PayloadHex: "a001"`)
 	assert.Contains(t, root, `device.CommandDefinition{Name: "start"`)
+	assert.Contains(t, generatedFunction(t, root, "newCapabilitiesCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assert.Contains(t, generatedFunction(t, root, "newStatusCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assert.Contains(t, generatedFunction(t, root, "newTelemetryLatestCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assert.Contains(t, generatedFunction(t, root, "newSessionStatusCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assert.NotContains(t, generatedFunction(t, root, "newDeviceCommandCmd"), `"mcp:read-only"`)
+	assert.NotContains(t, generatedFunction(t, root, "newTelemetryCaptureCmd"), `"mcp:read-only"`)
+	assert.NotContains(t, generatedFunction(t, root, "newSessionStartCmd"), `"mcp:read-only"`)
+	assert.NotContains(t, generatedFunction(t, root, "newSessionStopCmd"), `"mcp:read-only"`)
 
 	sessionSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "session.go"))
 	require.NoError(t, err)
@@ -226,6 +237,7 @@ func TestGenerateLowRiskBLEDeviceCommandCompiles(t *testing.T) {
 	assert.Contains(t, string(rootSrc), `Use:   definition.Name`)
 	assert.Contains(t, string(rootSrc), "newCapabilitiesCmd")
 	assert.Contains(t, string(rootSrc), `PayloadHex: "01"`)
+	assert.NotContains(t, generatedFunction(t, string(rootSrc), "newDeviceCommandCmd"), `"mcp:read-only"`)
 
 	specSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "spec.go"))
 	require.NoError(t, err)
@@ -234,6 +246,19 @@ func TestGenerateLowRiskBLEDeviceCommandCompiles(t *testing.T) {
 	assert.Contains(t, string(specSrc), `Callable: true`)
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func generatedFunction(t *testing.T, src, name string) string {
+	t.Helper()
+
+	start := strings.Index(src, "func "+name+"(")
+	require.NotEqual(t, -1, start, "function %s not found", name)
+	rest := src[start:]
+	next := strings.Index(rest[len("func "):], "\nfunc ")
+	if next == -1 {
+		return rest
+	}
+	return rest[:len("func ")+next]
 }
 
 func TestGenerateUnknownBLECommandAsMetadataOnly(t *testing.T) {

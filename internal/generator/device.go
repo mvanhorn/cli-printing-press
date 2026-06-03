@@ -328,6 +328,7 @@ func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "capabilities",
 		Short: "Show generated BLE capability and safety metadata",
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			summary := device.Capabilities()
 			if flags.asJSON {
@@ -355,6 +356,7 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Read replay-backed device status",
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			snapshot, err := transport.Status(cmd.Context())
 			if err != nil {
@@ -441,6 +443,7 @@ func newTelemetryLatestCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "latest",
 		Short: "Read the latest locally stored telemetry samples",
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := openTelemetryStore(flags)
 			if err != nil {
@@ -496,6 +499,7 @@ func newSessionStatusCmd(flags *rootFlags, session device.Session) *cobra.Comman
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show generated BLE session requirements",
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			status, err := session.Status(cmd.Context())
 			if err != nil {
