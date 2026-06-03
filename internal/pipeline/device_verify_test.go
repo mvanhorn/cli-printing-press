@@ -131,3 +131,58 @@ func TestDeviceDogfoodVerdictSuppression(t *testing.T) {
 		}
 	}
 }
+
+func TestDeviceScorersCreditDeviceSurface(t *testing.T) {
+	dir := t.TempDir()
+	writeStubFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+// flags "json" "agent" "dry-run"; per-command writeJSON( and cmd.OutOrStdout()
+// Short: a  Short: b  Short: c  Short: d   command "capabilities"
+// rootCmd.AddCommand( x4
+func wire() {
+	rootCmd.AddCommand(newCapabilitiesCmd())
+	rootCmd.AddCommand(newStatusCmd())
+	rootCmd.AddCommand(newDoctorCmd())
+	rootCmd.AddCommand(newScanCmd())
+}
+`)
+	writeStubFile(t, filepath.Join(dir, "internal", "mcp", "tools.go"), "package mcp\n")
+	writeStubFile(t, filepath.Join(dir, "internal", "device", "spec.go"), `package device
+type CommandDefinition struct{ Parameters []string }
+type StatusField struct{ SourceCharacteristicUUID string }
+type CapabilitySummary struct{}
+var cmds = []CommandDefinition{{Parameters: []string{"kmh"}}}
+var fields = []StatusField{{SourceCharacteristicUUID: "1809"}}
+`)
+	writeStubFile(t, filepath.Join(dir, "internal", "device", "transport.go"), "package device\ntype CommandResult struct{}\n")
+	writeStubFile(t, filepath.Join(dir, "README.md"), `# Device CLI
+
+This CLI is device-native, generated from a BLE device spec.
+
+## Commands
+- status, capabilities, doctor, scan
+
+## Live control
+Build with -tags ble_live and pass --live to control the device. Use capabilities to inspect the surface.
+
+## MCP server
+A stdio MCP server mirrors the commands as agent tools, with extra prose so the README clears the length floor comfortably.
+`)
+
+	checks := []struct {
+		name string
+		got  int
+		min  int
+	}{
+		{"output_modes", scoreOutputModesDevice(dir), 8},
+		{"terminal_ux", scoreTerminalUXDevice(dir), 5},
+		{"readme", scoreREADMEDevice(dir), 8},
+		{"agent_native", scoreAgentNativeDevice(dir), 8},
+		{"breadth", scoreBreadthDevice(dir), 4},
+		{"type_fidelity", scoreTypeFidelityDevice(dir), 5},
+	}
+	for _, c := range checks {
+		if c.got < c.min {
+			t.Errorf("%s device score = %d, want >= %d", c.name, c.got, c.min)
+		}
+	}
+}
