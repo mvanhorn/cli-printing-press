@@ -11,8 +11,9 @@ this after generator or template changes to catch emit/call mismatches that
 source-level tests and byte-level goldens can miss.
 
 When no case is supplied, a focused default set covers endpoint templates,
-MCP/code-orchestration, rich auth, GraphQL shared endpoints, and learn-loop
-emission. Pass extra case names when a fix touches another generated variant.
+MCP/code-orchestration, rich auth, GraphQL shared endpoints, learn-loop
+emission, and generated BLE device variants. Pass extra case names when a fix
+touches another generated variant.
 USAGE
 }
 
@@ -40,6 +41,10 @@ default_cases=(
   generate-mcp-api
   generate-graphql-shared-endpoint
   generate-learn-loop-api
+  generate-device-ble
+  generate-device-ble-control
+  generate-device-ble-session
+  generate-device-ble-opaque
 )
 
 cases=()

@@ -1,0 +1,1 @@
+Generated ble-opaque-binary at <ARTIFACT_DIR>/generate-device-ble-opaque/ble-opaque-binary (from BLE device spec)

@@ -26,7 +26,7 @@ Keep golden artifacts contract-shaped. Snapshot the specific files or output fie
 
 Maintain `testdata/golden/fixtures/golden-api.yaml` as the purpose-built generated-CLI fixture for the Printing Press. When the machine gains deterministic generation capabilities that should survive major refactors, extend this fixture and add the smallest useful artifact comparison that proves the capability. Do not mutate this fixture for one printed CLI's edge case unless it represents a general machine behavior.
 
-Device Sniff uses separate deterministic fixtures because device specs are protocol-native rather than OpenAPI-shaped. Use `device-sniff-ble-sample` for BLE discovery output and `generate-device-ble` for generated device CLI artifacts.
+Device Sniff uses separate deterministic fixtures because device specs are protocol-native rather than OpenAPI-shaped. Use `device-sniff-ble-sample` and `device-sniff-ble-ambiguous` for BLE discovery output. Use `generate-device-ble`, `generate-device-ble-control`, `generate-device-ble-session`, and `generate-device-ble-opaque` for generated device CLI artifacts.
 
 ## Failure handling
 

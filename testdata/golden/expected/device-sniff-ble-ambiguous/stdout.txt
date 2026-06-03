@@ -1,0 +1,4 @@
+Device spec written to <ARTIFACT_DIR>/device-sniff-ble-ambiguous/device.yaml (0 commands, 0 telemetry fields)
+BLE analysis written to <ARTIFACT_DIR>/device-sniff-ble-ambiguous/analysis.json
+Archived evidence written to <ARTIFACT_DIR>/device-sniff-ble-ambiguous/evidence.json (device addresses pseudonymized; captured values preserved)
+Operator selection required before replay: multiple BLE devices matched the capture

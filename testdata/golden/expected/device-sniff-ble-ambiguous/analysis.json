@@ -1,0 +1,37 @@
+{
+  "ambiguities": [
+    "action-toggle matched multiple writes: write-a, write-b"
+  ],
+  "command_discovery": {
+    "guidance_sources": [
+      "action_journal"
+    ],
+    "message": "Guidance was present, but the BLE write evidence is ambiguous; collect a narrower action journal or replay validation.",
+    "status": "ambiguous_guidance",
+    "writable_targets": [
+      "ff01"
+    ]
+  },
+  "device_candidates": [
+    {
+      "address": "device-1",
+      "name": "DeskLamp",
+      "rssi": -41,
+      "service_uuids": [
+        "ff00"
+      ]
+    },
+    {
+      "address": "device-2",
+      "name": "DeskLamp",
+      "rssi": -44,
+      "service_uuids": [
+        "ff00"
+      ]
+    }
+  ],
+  "requires_operator_selection": true,
+  "warnings": [
+    "multiple matching BLE devices; require explicit operator selection"
+  ]
+}
