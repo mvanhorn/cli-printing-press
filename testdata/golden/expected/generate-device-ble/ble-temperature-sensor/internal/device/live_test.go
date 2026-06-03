@@ -37,7 +37,7 @@ type fakeBackend struct {
 func (b *fakeBackend) Scan(ctx context.Context, serviceUUIDs []string) ([]Advert, error) {
 	return b.adverts, nil
 }
-func (b *fakeBackend) Connect(ctx context.Context, address string, serviceUUIDs []string) (bleLink, error) {
+func (b *fakeBackend) Connect(ctx context.Context, address string, serviceUUIDs []string) (Link, error) {
 	return b.link, nil
 }
 
@@ -102,5 +102,42 @@ func TestLiveTransportScanSortsByRSSI(t *testing.T) {
 	}
 	if len(adverts) != 2 || adverts[0].Address != "strong" {
 		t.Errorf("scan not sorted strongest-first: %+v", adverts)
+	}
+}
+
+func TestDialRefusesUnderVerify(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	if _, err := Dial(context.Background(), "AA:BB:CC:DD:EE:FF", 2*time.Second); err != ErrVerifyMode {
+		t.Errorf("Dial under verify = %v, want ErrVerifyMode", err)
+	}
+}
+
+type decodeFirstByteCodec struct{}
+
+func (decodeFirstByteCodec) DecodeTelemetry(field StatusField, raw []byte) (any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	return int(raw[0]), nil
+}
+
+func TestLiveTransportStatusDecodesWithCodec(t *testing.T) {
+	if len(StatusFields) == 0 {
+		t.Skip("device has no telemetry fields")
+	}
+	uuid := StatusFields[0].SourceCharacteristicUUID
+	link := &fakeLink{reads: map[string][]byte{uuid: {0x2a}}}
+	withFakeBackend(t, &fakeBackend{link: link, adverts: []Advert{{Address: "AA:BB:CC:DD:EE:FF", RSSI: -30}}})
+	prev := codec
+	codec = decodeFirstByteCodec{}
+	t.Cleanup(func() { codec = prev })
+
+	snap, err := NewLiveTransport("", 2*time.Second).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	entry, _ := snap.Telemetry[StatusFields[0].Name].(map[string]any)
+	if entry["value"] != 42 {
+		t.Errorf("decoded telemetry value = %v, want 42", entry["value"])
 	}
 }

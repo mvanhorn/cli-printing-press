@@ -159,7 +159,7 @@ func TestGeneratedBLEDeviceEmitsLiveBackendSeam(t *testing.T) {
 	// Device-neutral seam, always compiled.
 	seam := read(filepath.Join("internal", "device", "ble.go"))
 	assert.Contains(t, seam, "type bleBackend interface")
-	assert.Contains(t, seam, "type bleLink interface")
+	assert.Contains(t, seam, "type Link interface")
 	assert.Contains(t, seam, "func LiveAvailable() bool")
 	assert.Contains(t, seam, "Write(characteristicUUID string, payload []byte) error")
 	assert.NotContains(t, seam, "tinygo.org/x/bluetooth") // the seam itself stays BLE-library-free
@@ -215,6 +215,12 @@ func TestGeneratedBLEDeviceEmitsLiveTransportAndDoctor(t *testing.T) {
 	assert.Contains(t, live, "func (t *LiveTransport) Status(")
 	assert.Contains(t, live, "func (t *LiveTransport) ExecuteCommand(")
 	assert.Contains(t, live, "bleBackendFactory()")
+	// Exported connection API for hand-authored Tier-2 commands, plus the codec
+	// decode hook for the generated status command.
+	assert.Contains(t, live, "func Dial(ctx context.Context, address string, timeout time.Duration) (Link, error)")
+	seam := read(filepath.Join("internal", "device", "ble.go"))
+	assert.Contains(t, seam, "type DeviceCodec interface")
+	assert.Contains(t, seam, "type Link interface")
 
 	// Service UUIDs surfaced for discovery/connect.
 	assert.Contains(t, read(filepath.Join("internal", "device", "spec.go")), "var ServiceUUIDs = []string{")

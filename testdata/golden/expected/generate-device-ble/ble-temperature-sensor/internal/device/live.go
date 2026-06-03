@@ -45,7 +45,7 @@ func (t *LiveTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 	ctx, cancel := t.opContext(ctx)
 	defer cancel()
 	telemetry := map[string]any{}
-	err := t.withLink(ctx, func(l bleLink) error {
+	err := t.withLink(ctx, func(l Link) error {
 		for _, field := range StatusFields {
 			entry := map[string]any{"source_characteristic_uuid": field.SourceCharacteristicUUID}
 			raw, readErr := l.Read(field.SourceCharacteristicUUID)
@@ -55,6 +55,13 @@ func (t *LiveTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 				entry["error"] = readErr.Error()
 			} else {
 				entry["raw_hex"] = hex.EncodeToString(raw)
+				if codec != nil {
+					if value, decErr := codec.DecodeTelemetry(field, raw); decErr != nil {
+						entry["decode_error"] = decErr.Error()
+					} else {
+						entry["value"] = value
+					}
+				}
 			}
 			telemetry[field.Name] = entry
 		}
@@ -79,7 +86,7 @@ func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefin
 	}
 	ctx, cancel := t.opContext(ctx)
 	defer cancel()
-	if err := t.withLink(ctx, func(l bleLink) error {
+	if err := t.withLink(ctx, func(l Link) error {
 		return l.Write(command.CharacteristicUUID, payload)
 	}); err != nil {
 		return CommandResult{}, err
@@ -106,31 +113,47 @@ func (t *LiveTransport) Scan(ctx context.Context) ([]Advert, error) {
 	return adverts, nil
 }
 
-// withLink scans for the device by its service UUIDs (unless an explicit address
-// was given), connects, runs fn against the link, then disconnects.
-func (t *LiveTransport) withLink(ctx context.Context, fn func(bleLink) error) error {
-	be, err := bleBackendFactory()
-	if err != nil {
-		return err
-	}
-	address := t.address
-	if address == "" {
-		adverts, err := be.Scan(ctx, ServiceUUIDs)
-		if err != nil {
-			return err
-		}
-		sortByRSSI(adverts)
-		if len(adverts) == 0 {
-			return ErrDeviceNotFound
-		}
-		address = adverts[0].Address
-	}
-	l, err := be.Connect(ctx, address, ServiceUUIDs)
+// withLink dials the device and runs fn against the connection, then closes it.
+func (t *LiveTransport) withLink(ctx context.Context, fn func(Link) error) error {
+	l, err := Dial(ctx, t.address, t.timeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = l.Close() }()
 	return fn(l)
+}
+
+// Dial opens a live BLE connection to the device, scanning by ServiceUUIDs when
+// address is empty. The caller owns the returned Link and must Close it. Needs a
+// binary built with -tags ble_live. Hand-authored commands use Dial + Link for
+// parameterized or stateful control beyond the generated command surface; gate
+// them on cliutil.IsVerifyEnv()/IsDogfoodEnv() as the skill describes (Dial
+// itself refuses under verify as a backstop).
+func Dial(ctx context.Context, address string, timeout time.Duration) (Link, error) {
+	if cliutil.IsVerifyEnv() {
+		return nil, ErrVerifyMode
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline && timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel() // scopes scan+connect; the established link does not use ctx
+	}
+	be, err := bleBackendFactory()
+	if err != nil {
+		return nil, err
+	}
+	if address == "" {
+		adverts, err := be.Scan(ctx, ServiceUUIDs)
+		if err != nil {
+			return nil, err
+		}
+		sortByRSSI(adverts)
+		if len(adverts) == 0 {
+			return nil, ErrDeviceNotFound
+		}
+		address = adverts[0].Address
+	}
+	return be.Connect(ctx, address, ServiceUUIDs)
 }
 
 func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }

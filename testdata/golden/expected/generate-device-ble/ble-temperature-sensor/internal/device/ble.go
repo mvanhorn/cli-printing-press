@@ -23,18 +23,23 @@ var ErrLiveUnavailable = errors.New("live BLE is not compiled into this binary; 
 // ErrDeviceNotFound is returned when a scan finds no matching device.
 var ErrDeviceNotFound = errors.New("no matching device found; power it on and close any official app (only one BLE client can connect at a time)")
 
+// ErrVerifyMode is returned by Dial under PRINTING_PRESS_VERIFY: verify must
+// never actuate hardware. Hand-authored commands should gate on
+// cliutil.IsVerifyEnv() before dialing; this is the backstop.
+var ErrVerifyMode = errors.New("live BLE is disabled under verify mode")
+
 // bleBackend is the device-neutral BLE central surface. The live implementation
 // (tinygo bluetooth, build tag ble_live) and the pure-Go stub live in separate
 // build-tagged files; both provide newBLEBackend and the liveCompiled constant.
 type bleBackend interface {
 	Scan(ctx context.Context, serviceUUIDs []string) ([]Advert, error)
-	Connect(ctx context.Context, address string, serviceUUIDs []string) (bleLink, error)
+	Connect(ctx context.Context, address string, serviceUUIDs []string) (Link, error)
 }
 
-// bleLink is a connected device. Write/Read/Subscribe address GATT
-// characteristics by UUID, so one connection serves every command and telemetry
-// stream the device spec declares.
-type bleLink interface {
+// Link is a connected device. Write/Read/Subscribe address GATT characteristics
+// by UUID, so one connection serves every command and telemetry stream the
+// device spec declares. Hand-authored commands obtain a Link via Dial.
+type Link interface {
 	Write(characteristicUUID string, payload []byte) error
 	Read(characteristicUUID string) ([]byte, error)
 	Subscribe(characteristicUUID string, handler func([]byte)) error
@@ -49,3 +54,16 @@ func LiveAvailable() bool { return liveCompiled }
 // fake backend and exercise LiveTransport without real hardware; production code
 // leaves it pointing at the build-tag-selected newBLEBackend.
 var bleBackendFactory = newBLEBackend
+
+// DeviceCodec adapts a device whose telemetry frames are not directly usable as
+// values (vendor framing, scaling, checksums). Implement it in an operator-owned
+// file and register it from an init function (codec = myCodec{}) so the
+// generated status command surfaces decoded values; the default (nil codec)
+// reports raw hex. Parameterized or stateful control (set a value, hold a
+// connection and poll) belongs in hand-authored commands that use Dial + Link.
+type DeviceCodec interface {
+	DecodeTelemetry(field StatusField, raw []byte) (any, error)
+}
+
+// codec is the optional telemetry decoder. nil by default (Tier-1: raw hex).
+var codec DeviceCodec
