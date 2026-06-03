@@ -14,6 +14,8 @@ description: >
   CLI", "rename this command", "add these feeds to <cli>", "sniff for new APIs
   in <cli>", "amend with these ideas", "use printing-press-amend",
   "run printing-press-amend".
+author: "Matt Van Horn"
+license: "Apache-2.0"
 version: 0.2.0
 min-binary-version: "4.0.0"
 context: fork
@@ -26,6 +28,9 @@ allowed-tools:
   - Glob
   - Grep
   - AskUserQuestion
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, amend]
 ---
 
 # /printing-press-amend

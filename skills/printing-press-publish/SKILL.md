@@ -1,6 +1,8 @@
 ---
 name: printing-press-publish
 description: Publish a generated CLI to the printing-press-library repo
+author: "Trevin Chow"
+license: "Apache-2.0"
 version: 0.1.0
 min-binary-version: "4.0.0"
 allowed-tools:
@@ -11,6 +13,9 @@ allowed-tools:
   - Glob
   - Grep
   - AskUserQuestion
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, publish]
 ---
 
 # /printing-press publish

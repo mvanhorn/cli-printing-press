@@ -11,11 +11,16 @@ description: >
   more than manual polish.
   Trigger phrases: "reprint <api>", "regenerate <api>", "redo the <api> CLI",
   "rebuild <api> from scratch", "this CLI would benefit from a reprint".
+author: "Trevin Chow"
+license: "Apache-2.0"
 allowed-tools:
   - Bash
   - Read
   - AskUserQuestion
   - Skill
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, reprint]
 ---
 
 # /printing-press-reprint

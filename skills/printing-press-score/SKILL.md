@@ -1,6 +1,8 @@
 ---
 name: printing-press-score
 description: Score a generated CLI against the Steinberger bar, compare two CLIs side-by-side
+author: "Trevin Chow"
+license: "Apache-2.0"
 version: 0.1.0
 min-binary-version: "4.0.0"
 allowed-tools:
@@ -9,6 +11,9 @@ allowed-tools:
   - Glob
   - Grep
   - AskUserQuestion
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, score]
 ---
 
 # /printing-press-score

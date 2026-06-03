@@ -8,6 +8,8 @@ description: >
   offers to publish. Use after any /printing-press run, or on any CLI in
   $PRESS_LIBRARY/. Trigger phrases: "polish", "improve the CLI", "fix verify",
   "make it publish-ready", "clean up the CLI", "get this ready to ship".
+author: "Matt Van Horn"
+license: "Apache-2.0"
 context: fork
 min-binary-version: "4.0.0"
 allowed-tools:
@@ -18,6 +20,9 @@ allowed-tools:
   - Write
   - Edit
   - AskUserQuestion
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, polish]
 ---
 
 # /printing-press-polish

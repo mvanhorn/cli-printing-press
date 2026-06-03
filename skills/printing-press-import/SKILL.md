@@ -8,12 +8,17 @@ description: >
   don't have locally, or to recover from a broken/lost internal copy.
   Trigger phrases: "import the CLI", "bring it into my library",
   "fetch from public library", "I don't have it locally yet".
+author: "Trevin Chow"
+license: "Apache-2.0"
 allowed-tools:
   - Bash
   - Read
   - Glob
   - Grep
   - AskUserQuestion
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, import]
 ---
 
 # /printing-press-import

@@ -61,3 +61,47 @@ In this family, every printing-press skill is user-invocable except `printing-pr
 When a workflow step has multiple parents and no standalone user meaning, extract it into a `user-invocable: false` skill that both parents invoke via the Skill tool. Single source of truth for the prompt, gate logic, and any reference docs. The framework dispatches it; nobody has to find and read sibling SKILL.md prose at runtime.
 
 The two fields compose. `context: fork` + `user-invocable: false` is the combo for self-contained internal sub-skills. `context: fork` alone (default user-invocable) is for user-facing skills with their own multi-step workflow that don't need parent context. Default frontmatter is for terse helper skills, or any skill that genuinely needs to see the parent's conversation.
+
+## Frontmatter: `author`, `license`, and `metadata.hermes`
+
+Three top-level frontmatter fields are required for every skill under `skills/` so alternative agent hosts (e.g. Hermes) can discover and install the skill from `mvanhorn/cli-printing-press`. The fields are additive — Claude Code ignores keys it doesn't recognize per its own contract, and Hermes ignores the Claude-Code-specific fields (`context`, `user-invocable`, `min-binary-version`, `allowed-tools`, `deprecated`) the same way.
+
+### Required fields
+
+- **`author: "<display name>"`** — the prose-shaped display name of the person who originally created the skill, double-quoted. Curate this from `git log --format=%an --reverse --follow skills/<name>/SKILL.md | head -1` (the first commit's author) per the `preserve-original-authorship` convention in [`docs/solutions/conventions/preserve-original-authorship-in-multi-author-retrofits-2026-05-06.md`](solutions/conventions/preserve-original-authorship-in-multi-author-retrofits-2026-05-06.md). **Do NOT** use `git config user.name` at install or sweep time — that flips attribution silently to whoever runs the sweep. The displayed author should match the prose form (`Matt Van Horn`, `Trevin Chow`), not the slug form (`matt-van-horn`, `trevin-chow`).
+- **`license: "Apache-2.0"`** — the project's standard SPDX identifier, double-quoted. Mirrors the printed-CLI template at `internal/generator/templates/skill.md.tmpl:5` and the LICENSE in the repo root.
+- **`metadata.hermes.tags`** — a YAML list of lowercase tag strings for Hermes search discoverability. The shared base set is `[printing-press, codegen, openapi, go, api]`; add a per-skill function tag (`amend`, `publish`, `import`, `polish`, `retro`, `score`, `reprint`, `review`, `catalog`) for disambiguation. Tag matching is substring-based and case-insensitive, so avoid duplicates across skills and keep the list short.
+
+### Example
+
+```yaml
+---
+name: printing-press-publish
+description: Publish a generated CLI to the printing-press-library repo
+author: "Trevin Chow"
+license: "Apache-2.0"
+version: 0.1.0
+min-binary-version: "4.0.0"
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - AskUserQuestion
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, publish]
+---
+```
+
+### What is intentionally omitted
+
+- **`version`** — not added where it's currently absent (`printing-press-import`, `printing-press-reprint`, `printing-press-output-review`). Per `internal/generator/skill_test.go:634-642` the Press version would mislead consumers about what changed; the same logic applies to internal skills. A future CI-time stamp (analogous to the library's `manifest.version`) could backfill this; for now, mirror the existing presence/absence per skill.
+- **`required_environment_variables`** — not declared. The classifier has asymmetric failure cost (see [`docs/solutions/design-patterns/avoid-classification-when-failure-is-asymmetric-2026-05-06.md`](solutions/design-patterns/avoid-classification-when-failure-is-asymmetric-2026-05-06.md)); internal skills shell out to the Press binary which handles its own auth at run time.
+- **`regions` / `api_language`** — not applicable. The Press skills are not region- or language-specific.
+
+### Lock-in
+
+`internal/skills/skills_test.go` parses every `skills/<name>/SKILL.md` frontmatter as YAML and asserts the three required fields are present and well-formed, plus a per-skill curated `internalSkillAuthorByName` map sourced from git first-commit. Any new skill added without populating these fields will fail the test with a clear message naming the missing file.

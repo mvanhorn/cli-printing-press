@@ -1,6 +1,8 @@
 ---
 name: printing-press
 description: Generate a ship-ready CLI for an API with a lean research -> generate -> build -> shipcheck loop.
+author: "Matt Van Horn"
+license: "Apache-2.0"
 version: 2.0.0
 min-binary-version: "4.0.0"
 allowed-tools:
@@ -14,6 +16,9 @@ allowed-tools:
   - WebSearch
   - AskUserQuestion
   - Agent
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api]
 ---
 
 # /printing-press

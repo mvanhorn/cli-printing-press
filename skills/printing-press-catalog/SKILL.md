@@ -1,6 +1,8 @@
 ---
 name: printing-press-catalog
 description: Browse and install pre-built Go CLIs for popular APIs from the catalog
+author: "Matt Van Horn"
+license: "Apache-2.0"
 version: 0.4.0
 min-binary-version: "4.0.0"
 deprecated: true
@@ -12,6 +14,9 @@ allowed-tools:
   - Grep
   - WebFetch
   - AskUserQuestion
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, catalog]
 ---
 
 # /printing-press-catalog

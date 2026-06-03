@@ -7,11 +7,16 @@ description: >
   Skill tool by main printing-press SKILL.md (Phase 4.85) and printing-press-polish
   SKILL.md during the diagnostic loop. Not for direct user invocation — its
   actionable wrappers are /printing-press and /printing-press-polish.
+author: "Trevin Chow"
+license: "Apache-2.0"
 context: fork
 user-invocable: false
 allowed-tools:
   - Bash
   - Agent
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, review]
 ---
 
 # printing-press-output-review (internal)

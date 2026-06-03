@@ -9,6 +9,8 @@ description: >
   Trigger phrases: "retro", "retrospective", "what went wrong", "improve
   the press", "post-mortem", "lessons learned", "what can we improve",
   "file a retro", "submit findings".
+author: "Trevin Chow"
+license: "Apache-2.0"
 version: 0.1.0
 allowed-tools:
   - Bash
@@ -18,6 +20,9 @@ allowed-tools:
   - Write
   - Agent
   - AskUserQuestion
+metadata:
+  hermes:
+    tags: [printing-press, codegen, openapi, go, api, retro]
 ---
 
 # /printing-press-retro
