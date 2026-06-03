@@ -8,7 +8,7 @@ When a target is a local physical device, keep the discovery artifact protocol-n
 
 Use Device Sniff as the umbrella for local-device backends. BLE is the first backend, but future LAN, Wi-Fi, MQTT, UDP, or cloud-adjacent IoT discovery should share the same identity, evidence, safety, telemetry, and session concepts while preserving their own protocol details.
 
-Safety labels in device specs are classification and provenance. They should drive conservative MCP annotations and verify/dogfood no-ops, but they should not become blanket human-facing blocks when a command is evidence-backed and the operator intentionally runs it.
+Safety labels in device specs are classification and provenance. They should drive conservative MCP annotations, verify/dogfood no-ops, and explicit CLI confirmation for `physical-effect` or `configuration-risk` writes. They should not become blanket human-facing blocks when a command is evidence-backed, the operator has previewed it, and the operator intentionally passes the confirmation flag.
 
 Device backends are wrapped behind a testability seam (the `bleDriver` interface, implemented against the real stack and against an in-memory stub for tests). The seam only adds confidence if the production wrapper preserves the backend's pointer-receiver mutation semantics and the stub honors the backend's real return/teardown contracts — see [`solutions/design-patterns/ble-seam-stub-fidelity-pointer-receiver.md`](solutions/design-patterns/ble-seam-stub-fidelity-pointer-receiver.md).
 

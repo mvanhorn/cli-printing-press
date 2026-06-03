@@ -44,7 +44,7 @@ Safety labels classify command behavior:
 - `configuration-risk`
 - `unknown`
 
-These labels inform generated metadata, MCP annotations, and verification behavior. They are not automatic user-facing blocks. If the evidence is uncertain, use `unknown`; the generator withholds insufficiently validated commands from the callable surface while keeping them visible in capability metadata.
+These labels inform generated metadata, MCP annotations, CLI confirmation flags, and verification behavior. `physical-effect` and `configuration-risk` commands require `--confirm-physical-effect` for non-dry-run replay outside verify mode. If the evidence is uncertain, use `unknown`; the generator withholds insufficiently validated commands from the callable surface while keeping them visible in capability metadata.
 
 Normal verification must prove wiring through replay or no-op behavior and must not actuate real hardware.
 

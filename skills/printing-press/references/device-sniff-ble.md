@@ -100,6 +100,7 @@ Safety labels are classification and provenance, not moral policing.
 - If unsure, use `unknown`.
 - Observed or replay-validated commands can be generated even when labeled `physical-effect`.
 - Unknown or insufficiently validated commands should stay metadata-only until stronger evidence exists.
+- Physical-effect and configuration-risk writes should require dry-run preview or an explicit confirmation flag before non-verify replay.
 - Normal verify/dogfood must not actuate real hardware. Verify-mode no-ops are expected for physical-effect writes.
 - MCP read-only annotations must be conservative. False read-only is a bug; missing read-only is just a permission prompt.
 

@@ -172,6 +172,11 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	assert.Contains(t, spec, `Callable: true`)
 	assert.Contains(t, spec, `WithheldReason: ""`)
 
+	skillSrc, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skillSrc), "ble-session-appliance-pp-cli start --dry-run --json")
+	assert.Contains(t, string(skillSrc), "--confirm-physical-effect")
+
 	requireGeneratedCompiles(t, outputDir)
 }
 
