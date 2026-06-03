@@ -55,13 +55,21 @@ func LiveAvailable() bool { return liveCompiled }
 // leaves it pointing at the build-tag-selected newBLEBackend.
 var bleBackendFactory = newBLEBackend
 
-// DeviceCodec adapts a device whose telemetry frames are not directly usable as
-// values (vendor framing, scaling, checksums). Implement it in an operator-owned
-// file and register it from an init function (codec = myCodec{}) so the
-// generated status command surfaces decoded values; the default (nil codec)
-// reports raw hex. Parameterized or stateful control (set a value, hold a
-// connection and poll) belongs in hand-authored commands that use Dial + Link.
+// DeviceCodec adapts a device whose protocol cannot be driven from static
+// captured evidence (vendor framing, scaling, checksums, parameterized values).
+// Implement it in an operator-owned file and register it from an init function
+// (codec = myCodec{}). With a codec, the generated command surface gains:
+//   - EncodeCommand: build the payload for a command, using its positional CLI
+//     args for parameterized commands (e.g. set-speed <kmh>). Return the
+//     captured command.PayloadHex unchanged for commands you don't transform.
+//   - DecodeTelemetry: turn a raw telemetry frame into a typed value for the
+//     generated status command.
+//
+// The default (nil codec) is Tier-1: write captured payloads, surface raw-hex
+// telemetry. Stateful choreography (hold a connection and poll) still belongs in
+// hand-authored commands built on Dial + Link.
 type DeviceCodec interface {
+	EncodeCommand(command CommandDefinition, args []string) ([]byte, error)
 	DecodeTelemetry(field StatusField, raw []byte) (any, error)
 }
 

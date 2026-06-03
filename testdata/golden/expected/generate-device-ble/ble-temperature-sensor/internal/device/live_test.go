@@ -6,6 +6,7 @@ package device
 import (
 	"context"
 	"encoding/hex"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -56,6 +57,7 @@ func TestLiveTransportExecuteCommandWritesPayload(t *testing.T) {
 	result, err := NewLiveTransport("", 2*time.Second).ExecuteCommand(
 		context.Background(),
 		CommandDefinition{Name: "probe", CharacteristicUUID: "ff01", PayloadHex: "01ff"},
+		nil,
 		false,
 	)
 	if err != nil {
@@ -80,6 +82,7 @@ func TestLiveTransportDryRunDoesNotWrite(t *testing.T) {
 	result, err := NewLiveTransport("AA:BB:CC:DD:EE:FF", 2*time.Second).ExecuteCommand(
 		context.Background(),
 		CommandDefinition{Name: "probe", CharacteristicUUID: "ff01", PayloadHex: "01ff"},
+		nil,
 		true,
 	)
 	if err != nil {
@@ -112,9 +115,23 @@ func TestDialRefusesUnderVerify(t *testing.T) {
 	}
 }
 
-type decodeFirstByteCodec struct{}
+// testCodec is a minimal DeviceCodec: EncodeCommand turns the first arg into a
+// one-byte payload (or returns the static payload when there are no args), and
+// DecodeTelemetry returns the first raw byte as an int.
+type testCodec struct{}
 
-func (decodeFirstByteCodec) DecodeTelemetry(field StatusField, raw []byte) (any, error) {
+func (testCodec) EncodeCommand(command CommandDefinition, args []string) ([]byte, error) {
+	if len(args) == 0 {
+		return hex.DecodeString(command.PayloadHex)
+	}
+	n, err := strconv.Atoi(args[0])
+	if err != nil {
+		return nil, err
+	}
+	return []byte{byte(n)}, nil
+}
+
+func (testCodec) DecodeTelemetry(field StatusField, raw []byte) (any, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -129,7 +146,7 @@ func TestLiveTransportStatusDecodesWithCodec(t *testing.T) {
 	link := &fakeLink{reads: map[string][]byte{uuid: {0x2a}}}
 	withFakeBackend(t, &fakeBackend{link: link, adverts: []Advert{{Address: "AA:BB:CC:DD:EE:FF", RSSI: -30}}})
 	prev := codec
-	codec = decodeFirstByteCodec{}
+	codec = testCodec{}
 	t.Cleanup(func() { codec = prev })
 
 	snap, err := NewLiveTransport("", 2*time.Second).Status(context.Background())
@@ -139,5 +156,46 @@ func TestLiveTransportStatusDecodesWithCodec(t *testing.T) {
 	entry, _ := snap.Telemetry[StatusFields[0].Name].(map[string]any)
 	if entry["value"] != 42 {
 		t.Errorf("decoded telemetry value = %v, want 42", entry["value"])
+	}
+}
+
+func TestLiveTransportEncodesParameterizedCommandWithCodec(t *testing.T) {
+	link := &fakeLink{}
+	withFakeBackend(t, &fakeBackend{link: link, adverts: []Advert{{Address: "AA:BB:CC:DD:EE:FF", RSSI: -30}}})
+	prev := codec
+	codec = testCodec{}
+	t.Cleanup(func() { codec = prev })
+
+	result, err := NewLiveTransport("", 2*time.Second).ExecuteCommand(
+		context.Background(),
+		CommandDefinition{Name: "set-level", CharacteristicUUID: "ff01", Parameters: []string{"level"}},
+		[]string{"7"},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("ExecuteCommand: %v", err)
+	}
+	if got := link.writes["ff01"]; len(got) != 1 || got[0] != 7 {
+		t.Errorf("codec-encoded write = %x, want 07", got)
+	}
+	if result.PayloadHex != "07" {
+		t.Errorf("result payload = %q, want 07", result.PayloadHex)
+	}
+}
+
+func TestLiveTransportParameterizedCommandRequiresCodec(t *testing.T) {
+	withFakeBackend(t, &fakeBackend{link: &fakeLink{}, adverts: []Advert{{Address: "AA:BB:CC:DD:EE:FF", RSSI: -30}}})
+	prev := codec
+	codec = nil
+	t.Cleanup(func() { codec = prev })
+
+	_, err := NewLiveTransport("", 2*time.Second).ExecuteCommand(
+		context.Background(),
+		CommandDefinition{Name: "set-level", CharacteristicUUID: "ff01", Parameters: []string{"level"}},
+		[]string{"7"},
+		false,
+	)
+	if err == nil {
+		t.Error("parameterized command with no codec should error, not write a static payload")
 	}
 }

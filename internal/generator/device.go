@@ -54,6 +54,7 @@ type deviceCommandField struct {
 	ValidationStatus   string
 	PayloadHex         string
 	EvidenceRefs       []string
+	Parameters         []string
 	Callable           bool
 	WithheldReason     string
 }
@@ -168,6 +169,10 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 	commands := make([]deviceCommandField, 0, len(g.Spec.Capabilities.Commands))
 	allCommands := make([]deviceCommandField, 0, len(g.Spec.Capabilities.Commands))
 	for _, command := range g.Spec.Capabilities.Commands {
+		paramNames := make([]string, 0, len(command.Parameters))
+		for _, param := range command.Parameters {
+			paramNames = append(paramNames, naming.FlagName(param.Name))
+		}
 		field := deviceCommandField{
 			Name:               naming.FlagName(command.Name),
 			CharacteristicUUID: command.CharacteristicUUID,
@@ -175,6 +180,7 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 			ValidationStatus:   command.ValidationStatus,
 			PayloadHex:         hex.EncodeToString(command.Payload.Bytes),
 			EvidenceRefs:       command.EvidenceRefs,
+			Parameters:         paramNames,
 			Callable:           deviceCommandCallable(command),
 			WithheldReason:     deviceCommandWithheldReason(command),
 		}
@@ -570,14 +576,19 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{ if .HasCommands}}
 func newDeviceCommandCmd(flags *rootFlags, definition device.CommandDefinition) *cobra.Command {
 	var confirmPhysicalEffect bool
+	use := definition.Name
+	for _, param := range definition.Parameters {
+		use += " <" + param + ">"
+	}
 	command := &cobra.Command{
-		Use:   definition.Name,
+		Use:   use,
 		Short: fmt.Sprintf("Run %s (replay-backed by default; sends to the device with --live)", definition.Name),
+		Args:  cobra.ExactArgs(len(definition.Parameters)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if requiresPhysicalConfirmation(definition) && !flags.dryRun && !confirmPhysicalEffect && !cliutil.IsVerifyEnv() {
 				return fmt.Errorf("%s has safety class %s; pass --dry-run to preview or --confirm-physical-effect to run it", definition.Name, definition.Safety)
 			}
-			result, err := deviceTransport(flags).ExecuteCommand(cmd.Context(), definition, flags.dryRun)
+			result, err := deviceTransport(flags).ExecuteCommand(cmd.Context(), definition, args, flags.dryRun)
 			if err != nil {
 				return err
 			}
@@ -887,11 +898,12 @@ type CommandDefinition struct {
 	ValidationStatus   string ` + "`json:\"validation_status,omitempty\"`" + `
 	PayloadHex         string ` + "`json:\"payload_hex\"`" + `
 	EvidenceRefs       []string ` + "`json:\"evidence_refs,omitempty\"`" + `
+	Parameters         []string ` + "`json:\"parameters,omitempty\"`" + `
 }
 
 var CommandDefinitions = []CommandDefinition{
 {{- range .Commands}}
-	{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}, EvidenceRefs: []string{ {{- range .EvidenceRefs}}{{quote .}}, {{- end}} }},
+	{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}, EvidenceRefs: []string{ {{- range .EvidenceRefs}}{{quote .}}, {{- end}} }, Parameters: []string{ {{- range .Parameters}}{{quote .}}, {{- end}} }},
 {{- end}}
 }
 
@@ -964,7 +976,9 @@ type CommandResult struct {
 
 type Transport interface {
 	Status(context.Context) (StatusSnapshot, error)
-	ExecuteCommand(context.Context, CommandDefinition, bool) (CommandResult, error)
+	// ExecuteCommand runs a command. args are the command's positional CLI
+	// arguments for parameterized commands; the replay transport ignores them.
+	ExecuteCommand(ctx context.Context, command CommandDefinition, args []string, dryRun bool) (CommandResult, error)
 }
 
 type ReplayTransport struct{}
@@ -991,7 +1005,8 @@ func (t *ReplayTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 	}, nil
 }
 
-func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
+func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, args []string, dryRun bool) (CommandResult, error) {
+	_ = args // replay describes the captured payload; parameterized encoding is a live-codec concern
 	verifyNoop := cliutil.IsVerifyEnv()
 	return CommandResult{
 		Command:            command.Name,
@@ -1082,13 +1097,20 @@ func LiveAvailable() bool { return liveCompiled }
 // leaves it pointing at the build-tag-selected newBLEBackend.
 var bleBackendFactory = newBLEBackend
 
-// DeviceCodec adapts a device whose telemetry frames are not directly usable as
-// values (vendor framing, scaling, checksums). Implement it in an operator-owned
-// file and register it from an init function (codec = myCodec{}) so the
-// generated status command surfaces decoded values; the default (nil codec)
-// reports raw hex. Parameterized or stateful control (set a value, hold a
-// connection and poll) belongs in hand-authored commands that use Dial + Link.
+// DeviceCodec adapts a device whose protocol cannot be driven from static
+// captured evidence (vendor framing, scaling, checksums, parameterized values).
+// Implement it in an operator-owned file and register it from an init function
+// (codec = myCodec{}). With a codec, the generated command surface gains:
+//   - EncodeCommand: build the payload for a command, using its positional CLI
+//     args for parameterized commands (e.g. set-speed <kmh>). Return the
+//     captured command.PayloadHex unchanged for commands you don't transform.
+//   - DecodeTelemetry: turn a raw telemetry frame into a typed value for the
+//     generated status command.
+// The default (nil codec) is Tier-1: write captured payloads, surface raw-hex
+// telemetry. Stateful choreography (hold a connection and poll) still belongs in
+// hand-authored commands built on Dial + Link.
 type DeviceCodec interface {
+	EncodeCommand(command CommandDefinition, args []string) ([]byte, error)
 	DecodeTelemetry(field StatusField, raw []byte) (any, error)
 }
 
@@ -1429,20 +1451,21 @@ func liveResult(command CommandDefinition, transport string) CommandResult {
 	}
 }
 
-func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
+func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, args []string, dryRun bool) (CommandResult, error) {
 	if cliutil.IsVerifyEnv() {
 		result := liveResult(command, "verify-live-noop")
 		result.DryRun, result.VerifyNoop, result.Reason = true, true, "verify_short_circuit"
 		return result, nil
 	}
+	payload, err := encodeCommandPayload(command, args)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	result := liveResult(command, "live")
+	result.PayloadHex = hex.EncodeToString(payload) // the bytes actually sent (may be codec-encoded)
 	if dryRun {
-		result := liveResult(command, "live")
 		result.DryRun = true
 		return result, nil
-	}
-	payload, err := hex.DecodeString(command.PayloadHex)
-	if err != nil {
-		return CommandResult{}, fmt.Errorf("decode payload %q: %w", command.PayloadHex, err)
 	}
 	ctx, cancel := t.opContext(ctx)
 	defer cancel()
@@ -1451,7 +1474,25 @@ func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefin
 	}); err != nil {
 		return CommandResult{}, err
 	}
-	return liveResult(command, "live"), nil
+	return result, nil
+}
+
+// encodeCommandPayload builds the bytes to write: the codec (when registered)
+// owns encoding and may use args for parameterized commands; otherwise the
+// captured static payload is used. A parameterized command with no codec is a
+// configuration error.
+func encodeCommandPayload(command CommandDefinition, args []string) ([]byte, error) {
+	if codec != nil {
+		return codec.EncodeCommand(command, args)
+	}
+	if len(args) > 0 {
+		return nil, fmt.Errorf("command %q takes arguments but no DeviceCodec is registered to encode them", command.Name)
+	}
+	payload, err := hex.DecodeString(command.PayloadHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode payload %q: %w", command.PayloadHex, err)
+	}
+	return payload, nil
 }
 
 // Scan discovers nearby devices that expose the device's BLE service(s).
@@ -1541,6 +1582,7 @@ package device
 import (
 	"context"
 	"encoding/hex"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -1591,6 +1633,7 @@ func TestLiveTransportExecuteCommandWritesPayload(t *testing.T) {
 	result, err := NewLiveTransport("", 2*time.Second).ExecuteCommand(
 		context.Background(),
 		CommandDefinition{Name: "probe", CharacteristicUUID: "ff01", PayloadHex: "01ff"},
+		nil,
 		false,
 	)
 	if err != nil {
@@ -1615,6 +1658,7 @@ func TestLiveTransportDryRunDoesNotWrite(t *testing.T) {
 	result, err := NewLiveTransport("AA:BB:CC:DD:EE:FF", 2*time.Second).ExecuteCommand(
 		context.Background(),
 		CommandDefinition{Name: "probe", CharacteristicUUID: "ff01", PayloadHex: "01ff"},
+		nil,
 		true,
 	)
 	if err != nil {
@@ -1647,9 +1691,23 @@ func TestDialRefusesUnderVerify(t *testing.T) {
 	}
 }
 
-type decodeFirstByteCodec struct{}
+// testCodec is a minimal DeviceCodec: EncodeCommand turns the first arg into a
+// one-byte payload (or returns the static payload when there are no args), and
+// DecodeTelemetry returns the first raw byte as an int.
+type testCodec struct{}
 
-func (decodeFirstByteCodec) DecodeTelemetry(field StatusField, raw []byte) (any, error) {
+func (testCodec) EncodeCommand(command CommandDefinition, args []string) ([]byte, error) {
+	if len(args) == 0 {
+		return hex.DecodeString(command.PayloadHex)
+	}
+	n, err := strconv.Atoi(args[0])
+	if err != nil {
+		return nil, err
+	}
+	return []byte{byte(n)}, nil
+}
+
+func (testCodec) DecodeTelemetry(field StatusField, raw []byte) (any, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -1664,7 +1722,7 @@ func TestLiveTransportStatusDecodesWithCodec(t *testing.T) {
 	link := &fakeLink{reads: map[string][]byte{uuid: {0x2a}}}
 	withFakeBackend(t, &fakeBackend{link: link, adverts: []Advert{ {Address: "AA:BB:CC:DD:EE:FF", RSSI: -30} }})
 	prev := codec
-	codec = decodeFirstByteCodec{}
+	codec = testCodec{}
 	t.Cleanup(func() { codec = prev })
 
 	snap, err := NewLiveTransport("", 2*time.Second).Status(context.Background())
@@ -1674,6 +1732,47 @@ func TestLiveTransportStatusDecodesWithCodec(t *testing.T) {
 	entry, _ := snap.Telemetry[StatusFields[0].Name].(map[string]any)
 	if entry["value"] != 42 {
 		t.Errorf("decoded telemetry value = %v, want 42", entry["value"])
+	}
+}
+
+func TestLiveTransportEncodesParameterizedCommandWithCodec(t *testing.T) {
+	link := &fakeLink{}
+	withFakeBackend(t, &fakeBackend{link: link, adverts: []Advert{ {Address: "AA:BB:CC:DD:EE:FF", RSSI: -30} }})
+	prev := codec
+	codec = testCodec{}
+	t.Cleanup(func() { codec = prev })
+
+	result, err := NewLiveTransport("", 2*time.Second).ExecuteCommand(
+		context.Background(),
+		CommandDefinition{Name: "set-level", CharacteristicUUID: "ff01", Parameters: []string{"level"}},
+		[]string{"7"},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("ExecuteCommand: %v", err)
+	}
+	if got := link.writes["ff01"]; len(got) != 1 || got[0] != 7 {
+		t.Errorf("codec-encoded write = %x, want 07", got)
+	}
+	if result.PayloadHex != "07" {
+		t.Errorf("result payload = %q, want 07", result.PayloadHex)
+	}
+}
+
+func TestLiveTransportParameterizedCommandRequiresCodec(t *testing.T) {
+	withFakeBackend(t, &fakeBackend{link: &fakeLink{}, adverts: []Advert{ {Address: "AA:BB:CC:DD:EE:FF", RSSI: -30} }})
+	prev := codec
+	codec = nil
+	t.Cleanup(func() { codec = prev })
+
+	_, err := NewLiveTransport("", 2*time.Second).ExecuteCommand(
+		context.Background(),
+		CommandDefinition{Name: "set-level", CharacteristicUUID: "ff01", Parameters: []string{"level"}},
+		[]string{"7"},
+		false,
+	)
+	if err == nil {
+		t.Error("parameterized command with no codec should error, not write a static payload")
 	}
 }
 `
@@ -2165,7 +2264,7 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 - ` + "`{{.CLIName}} status --json`" + ` prints replay-backed status fields.
 - ` + "`{{.CLIName}} capabilities --json`" + ` prints callable and withheld BLE capabilities with safety metadata.
 {{- range .Commands}}
-- ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` previews the {{.Name}} BLE write.
+- ` + "`{{$.CLIName}} {{.Name}}{{range .Parameters}} <{{.}}>{{end}} --dry-run --json`" + ` previews the {{.Name}} BLE write.
 {{- end}}
 {{- if .HasSession}}
 - ` + "`{{.CLIName}} session start --json`" + ` creates the local replay session runtime lock, token, and endpoint metadata.
@@ -2199,7 +2298,7 @@ description: Control {{.DisplayName}} through the generated BLE device CLI.
 ---
 
 {{.InstallSection}}
-Use ` + "`{{.CLIName}} capabilities --json`" + ` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output. By default the CLI is replay-backed; build with ` + "`-tags ble_live`" + ` and pass ` + "`--live`" + ` to control a real device, ` + "`{{.CLIName}} doctor`" + ` to check live readiness, and ` + "`{{.CLIName}} scan --live`" + ` to discover devices.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{if .RequiresPhysicalConfirmation}} To run it outside verify mode, pass ` + "`--confirm-physical-effect`" + ` after checking the dry-run output.{{end}}{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session start --json`" + ` and ` + "`{{.CLIName}} session status --json`" + ` to inspect the local replay session runtime, including lock, capability-token, and endpoint metadata.{{else}} Session IPC scaffolding is generated only when the device spec enables device-session support.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{if .HasSession}} Use ` + "`{{.CLIName}} telemetry sessions --json`" + ` to inspect stored BLE session summaries.{{end}}{{end}}
+Use ` + "`{{.CLIName}} capabilities --json`" + ` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output. By default the CLI is replay-backed; build with ` + "`-tags ble_live`" + ` and pass ` + "`--live`" + ` to control a real device, ` + "`{{.CLIName}} doctor`" + ` to check live readiness, and ` + "`{{.CLIName}} scan --live`" + ` to discover devices.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}}{{range .Parameters}} <{{.}}>{{end}} --dry-run --json`" + ` to preview the {{.Name}} write.{{if .RequiresPhysicalConfirmation}} To run it outside verify mode, pass ` + "`--confirm-physical-effect`" + ` after checking the dry-run output.{{end}}{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session start --json`" + ` and ` + "`{{.CLIName}} session status --json`" + ` to inspect the local replay session runtime, including lock, capability-token, and endpoint metadata.{{else}} Session IPC scaffolding is generated only when the device spec enables device-session support.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{if .HasSession}} Use ` + "`{{.CLIName}} telemetry sessions --json`" + ` to inspect stored BLE session summaries.{{end}}{{end}}
 `
 
 const deviceMCPMainTemplate = `// Copyright {{.CurrentYear}}. Licensed under Apache-2.0. See LICENSE.

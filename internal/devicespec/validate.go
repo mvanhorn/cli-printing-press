@@ -80,6 +80,14 @@ func (s *DeviceSpec) Validate() error {
 				return err
 			}
 		}
+		for j, param := range cmd.Parameters {
+			if strings.TrimSpace(param.Name) == "" {
+				return fmt.Errorf("commands[%d].parameters[%d].name is required", i, j)
+			}
+			if err := validateEnum(fmt.Sprintf("commands[%d].parameters[%d].type", i, j), param.Type, "", ParamTypeString, ParamTypeInt, ParamTypeFloat, ParamTypeHex, ParamTypeBool); err != nil {
+				return err
+			}
+		}
 	}
 	for i, field := range s.Capabilities.Telemetry {
 		if strings.TrimSpace(field.Name) == "" {

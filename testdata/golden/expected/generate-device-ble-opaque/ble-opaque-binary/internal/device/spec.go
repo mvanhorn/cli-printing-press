@@ -34,6 +34,7 @@ type CommandDefinition struct {
 	ValidationStatus   string   `json:"validation_status,omitempty"`
 	PayloadHex         string   `json:"payload_hex"`
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
+	Parameters         []string `json:"parameters,omitempty"`
 }
 
 var CommandDefinitions = []CommandDefinition{}

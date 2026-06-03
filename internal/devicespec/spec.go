@@ -50,6 +50,17 @@ const (
 	PayloadEncodingHex = "hex"
 )
 
+// Command parameter types. Informational: the generated CLI passes argument
+// strings through to the device codec's EncodeCommand, which parses and encodes
+// them. The type guides help text and the codec, not generated parsing.
+const (
+	ParamTypeString = "string"
+	ParamTypeInt    = "int"
+	ParamTypeFloat  = "float"
+	ParamTypeHex    = "hex"
+	ParamTypeBool   = "bool"
+)
+
 const (
 	ConfidenceLow    = "low"
 	ConfidenceMedium = "medium"
@@ -98,12 +109,23 @@ type DeviceCapabilities struct {
 }
 
 type DeviceCommand struct {
-	Name               string        `yaml:"name" json:"name"`
-	CharacteristicUUID string        `yaml:"characteristic_uuid" json:"characteristic_uuid"`
-	Safety             string        `yaml:"safety,omitempty" json:"safety,omitempty"`
-	ValidationStatus   string        `yaml:"validation_status,omitempty" json:"validation_status,omitempty"`
-	EvidenceRefs       []string      `yaml:"evidence_refs,omitempty" json:"evidence_refs,omitempty"`
-	Payload            DevicePayload `yaml:"payload,omitempty" json:"payload"`
+	Name               string             `yaml:"name" json:"name"`
+	CharacteristicUUID string             `yaml:"characteristic_uuid" json:"characteristic_uuid"`
+	Safety             string             `yaml:"safety,omitempty" json:"safety,omitempty"`
+	ValidationStatus   string             `yaml:"validation_status,omitempty" json:"validation_status,omitempty"`
+	EvidenceRefs       []string           `yaml:"evidence_refs,omitempty" json:"evidence_refs,omitempty"`
+	Payload            DevicePayload      `yaml:"payload,omitempty" json:"payload"`
+	Parameters         []CommandParameter `yaml:"parameters,omitempty" json:"parameters,omitempty"`
+}
+
+// CommandParameter declares a typed positional argument for a parameterized
+// command (e.g. set-speed <kmh>). The generated command parses no types itself:
+// it forwards argument strings to the device codec's EncodeCommand, which builds
+// the payload. Parameterized commands therefore require a registered DeviceCodec.
+type CommandParameter struct {
+	Name        string `yaml:"name" json:"name"`
+	Type        string `yaml:"type,omitempty" json:"type,omitempty"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 }
 
 type DevicePayload struct {

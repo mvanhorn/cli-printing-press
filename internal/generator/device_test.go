@@ -263,6 +263,49 @@ func TestGeneratedBLEDeviceLiveBuildCompiles(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "build", "-tags", "ble_live", "./...")
 }
 
+func TestGeneratedBLEDeviceEmitsParameterizedCommand(t *testing.T) {
+	t.Parallel()
+
+	ds := &devicespec.DeviceSpec{
+		Version:  1,
+		Name:     "ble-param-device",
+		Protocol: "ble",
+		Session:  devicespec.SessionProfile{Mode: devicespec.SessionModeOneShot},
+		BLE: devicespec.BLESurface{Services: []devicespec.BLEService{{
+			UUID:            "0000fe00-0000-1000-8000-00805f9b34fb",
+			Characteristics: []devicespec.BLECharacteristic{{UUID: "0000fe01-0000-1000-8000-00805f9b34fb", Properties: []string{"write"}}},
+		}}},
+		Capabilities: devicespec.DeviceCapabilities{Commands: []devicespec.DeviceCommand{{
+			Name:               "set-level",
+			CharacteristicUUID: "0000fe01-0000-1000-8000-00805f9b34fb",
+			Safety:             devicespec.SafetyPhysicalEffect,
+			ValidationStatus:   devicespec.ValidationStatusObserved,
+			Payload:            devicespec.DevicePayload{Encoding: devicespec.PayloadEncodingHex, Bytes: []byte{0x01}},
+			Parameters:         []devicespec.CommandParameter{{Name: "level", Type: devicespec.ParamTypeInt}},
+		}}},
+	}
+	require.NoError(t, ds.Validate())
+
+	outputDir := filepath.Join(t.TempDir(), "ble-param-device")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	// Parameter names flow into the emitted CommandDefinition; the generated
+	// command builds its Use string and ExactArgs from them.
+	assert.Contains(t, readFileString(t, filepath.Join(outputDir, "internal", "device", "spec.go")), `Parameters: []string{"level"}`)
+	root := readFileString(t, filepath.Join(outputDir, "internal", "cli", "root.go"))
+	assert.Contains(t, root, `use += " <" + param + ">"`)
+	assert.Contains(t, root, "cobra.ExactArgs(len(definition.Parameters))")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(b)
+}
+
 func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
 	t.Parallel()
 
@@ -554,7 +597,8 @@ func TestGenerateLowRiskBLEDeviceCommandCompiles(t *testing.T) {
 
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(rootSrc), `Use:   definition.Name`)
+	// The command's Use string is built from its name plus any parameters.
+	assert.Contains(t, string(rootSrc), `use := definition.Name`)
 	assert.Contains(t, string(rootSrc), "newCapabilitiesCmd")
 	assert.Contains(t, string(rootSrc), `PayloadHex: "01"`)
 	assert.NotContains(t, generatedFunction(t, string(rootSrc), "newDeviceCommandCmd"), `"mcp:read-only"`)

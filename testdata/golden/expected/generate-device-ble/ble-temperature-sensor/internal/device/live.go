@@ -86,20 +86,21 @@ func liveResult(command CommandDefinition, transport string) CommandResult {
 	}
 }
 
-func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
+func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, args []string, dryRun bool) (CommandResult, error) {
 	if cliutil.IsVerifyEnv() {
 		result := liveResult(command, "verify-live-noop")
 		result.DryRun, result.VerifyNoop, result.Reason = true, true, "verify_short_circuit"
 		return result, nil
 	}
+	payload, err := encodeCommandPayload(command, args)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	result := liveResult(command, "live")
+	result.PayloadHex = hex.EncodeToString(payload) // the bytes actually sent (may be codec-encoded)
 	if dryRun {
-		result := liveResult(command, "live")
 		result.DryRun = true
 		return result, nil
-	}
-	payload, err := hex.DecodeString(command.PayloadHex)
-	if err != nil {
-		return CommandResult{}, fmt.Errorf("decode payload %q: %w", command.PayloadHex, err)
 	}
 	ctx, cancel := t.opContext(ctx)
 	defer cancel()
@@ -108,7 +109,25 @@ func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefin
 	}); err != nil {
 		return CommandResult{}, err
 	}
-	return liveResult(command, "live"), nil
+	return result, nil
+}
+
+// encodeCommandPayload builds the bytes to write: the codec (when registered)
+// owns encoding and may use args for parameterized commands; otherwise the
+// captured static payload is used. A parameterized command with no codec is a
+// configuration error.
+func encodeCommandPayload(command CommandDefinition, args []string) ([]byte, error) {
+	if codec != nil {
+		return codec.EncodeCommand(command, args)
+	}
+	if len(args) > 0 {
+		return nil, fmt.Errorf("command %q takes arguments but no DeviceCodec is registered to encode them", command.Name)
+	}
+	payload, err := hex.DecodeString(command.PayloadHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode payload %q: %w", command.PayloadHex, err)
+	}
+	return payload, nil
 }
 
 // Scan discovers nearby devices that expose the device's BLE service(s).

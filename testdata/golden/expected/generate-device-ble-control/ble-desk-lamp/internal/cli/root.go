@@ -238,14 +238,19 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 
 func newDeviceCommandCmd(flags *rootFlags, definition device.CommandDefinition) *cobra.Command {
 	var confirmPhysicalEffect bool
+	use := definition.Name
+	for _, param := range definition.Parameters {
+		use += " <" + param + ">"
+	}
 	command := &cobra.Command{
-		Use:   definition.Name,
+		Use:   use,
 		Short: fmt.Sprintf("Run %s (replay-backed by default; sends to the device with --live)", definition.Name),
+		Args:  cobra.ExactArgs(len(definition.Parameters)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if requiresPhysicalConfirmation(definition) && !flags.dryRun && !confirmPhysicalEffect && !cliutil.IsVerifyEnv() {
 				return fmt.Errorf("%s has safety class %s; pass --dry-run to preview or --confirm-physical-effect to run it", definition.Name, definition.Safety)
 			}
-			result, err := deviceTransport(flags).ExecuteCommand(cmd.Context(), definition, flags.dryRun)
+			result, err := deviceTransport(flags).ExecuteCommand(cmd.Context(), definition, args, flags.dryRun)
 			if err != nil {
 				return err
 			}

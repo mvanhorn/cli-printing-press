@@ -34,10 +34,11 @@ type CommandDefinition struct {
 	ValidationStatus   string   `json:"validation_status,omitempty"`
 	PayloadHex         string   `json:"payload_hex"`
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
+	Parameters         []string `json:"parameters,omitempty"`
 }
 
 var CommandDefinitions = []CommandDefinition{
-	{Name: "toggle", CharacteristicUUID: "ff01", Safety: "low-risk-write", ValidationStatus: "observed", PayloadHex: "01", EvidenceRefs: []string{"toggle-write"}},
+	{Name: "toggle", CharacteristicUUID: "ff01", Safety: "low-risk-write", ValidationStatus: "observed", PayloadHex: "01", EvidenceRefs: []string{"toggle-write"}, Parameters: []string{}},
 }
 
 type CommandCapability struct {

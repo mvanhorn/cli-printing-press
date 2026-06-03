@@ -32,7 +32,9 @@ type CommandResult struct {
 
 type Transport interface {
 	Status(context.Context) (StatusSnapshot, error)
-	ExecuteCommand(context.Context, CommandDefinition, bool) (CommandResult, error)
+	// ExecuteCommand runs a command. args are the command's positional CLI
+	// arguments for parameterized commands; the replay transport ignores them.
+	ExecuteCommand(ctx context.Context, command CommandDefinition, args []string, dryRun bool) (CommandResult, error)
 }
 
 type ReplayTransport struct{}
@@ -59,7 +61,8 @@ func (t *ReplayTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 	}, nil
 }
 
-func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
+func (t *ReplayTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, args []string, dryRun bool) (CommandResult, error) {
+	_ = args // replay describes the captured payload; parameterized encoding is a live-codec concern
 	verifyNoop := cliutil.IsVerifyEnv()
 	return CommandResult{
 		Command:            command.Name,
