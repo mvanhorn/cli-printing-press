@@ -242,6 +242,27 @@ func TestGeneratedBLEDeviceLiveTransportTestsPass(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/device/")
 }
 
+func TestGeneratedBLEDeviceLiveBuildCompiles(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("skipping ble_live compile in -short")
+	}
+	// The default build never compiles ble_live.go (the tinygo driver), so prove
+	// it separately. On Linux the live backend is pure-Go (D-Bus) and compiles
+	// toolchain-free in CI; macOS needs CGO/CoreBluetooth and Windows WinRT, so
+	// gate the automated proof to Linux. Other platforms are covered manually.
+	if runtime.GOOS != "linux" {
+		t.Skipf("ble_live compile-proof runs on linux (pure-Go BLE backend); GOOS=%s", runtime.GOOS)
+	}
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir) // tidy + default (stub) build
+	runGoCommandRequired(t, outputDir, "build", "-tags", "ble_live", "./...")
+}
+
 func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
 	t.Parallel()
 
