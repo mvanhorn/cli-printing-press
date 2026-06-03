@@ -47,6 +47,28 @@ func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedBLESkillEmitsCanonicalInstallSection(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	skillSrc, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+
+	// Device CLIs carry no catalog category, so the canonical install block uses
+	// the category-agnostic installer path. verify-skill's canonical-sections
+	// check requires this exact block once the printed CLI has a manifest, so the
+	// device SKILL template must emit it just like the HTTP skill.md.tmpl does.
+	want := CanonicalSkillInstallSection(ds.Name, "")
+	got, ok := ExtractSkillInstallSection(string(skillSrc))
+	require.True(t, ok, "device SKILL.md must contain the canonical install section")
+	assert.Equal(t, want, got, "device SKILL install section must match the canonical generator output")
+}
+
 func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
 	t.Parallel()
 

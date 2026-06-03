@@ -22,18 +22,19 @@ type DeviceGenerator struct {
 }
 
 type deviceTemplateData struct {
-	Spec         *devicespec.DeviceSpec
-	Name         string
-	CLIName      string
-	ModulePath   string
-	DisplayName  string
-	CurrentYear  int
-	StatusFields []deviceStatusField
-	Commands     []deviceCommandField
-	AllCommands  []deviceCommandField
-	HasCommands  bool
-	HasSession   bool
-	HasStore     bool
+	Spec           *devicespec.DeviceSpec
+	Name           string
+	CLIName        string
+	ModulePath     string
+	DisplayName    string
+	CurrentYear    int
+	StatusFields   []deviceStatusField
+	Commands       []deviceCommandField
+	AllCommands    []deviceCommandField
+	HasCommands    bool
+	HasSession     bool
+	HasStore       bool
+	InstallSection string
 }
 
 type deviceStatusField struct {
@@ -173,6 +174,10 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		HasCommands:  len(commands) > 0,
 		HasSession:   g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
 		HasStore:     hasStore,
+		// Device specs carry no catalog category, so the canonical install block
+		// uses the category-agnostic installer path — matching what the verify-skill
+		// canonical-sections check expects (CanonicalSkillInstallSection(name, "")).
+		InstallSection: CanonicalSkillInstallSection(name, ""),
 	}
 }
 
@@ -1348,5 +1353,6 @@ name: {{.Name}}
 description: Control {{.DisplayName}} through the generated BLE device CLI.
 ---
 
+{{.InstallSection}}
 Use ` + "`{{.CLIName}} capabilities --json`" + ` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{if .RequiresPhysicalConfirmation}} To replay it outside verify mode, pass ` + "`--confirm-physical-effect`" + ` after checking the dry-run output.{{end}}{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session start --json`" + ` and ` + "`{{.CLIName}} session status --json`" + ` to inspect the local replay session runtime, including lock, capability-token, and endpoint metadata.{{else}} Live BLE control and optional session IPC are generated only when device-session support is enabled by the device spec.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{if .HasSession}} Use ` + "`{{.CLIName}} telemetry sessions --json`" + ` to inspect stored BLE session summaries.{{end}}{{end}}
 `

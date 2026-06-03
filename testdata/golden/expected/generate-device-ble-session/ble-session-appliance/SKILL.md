@@ -3,4 +3,19 @@ name: ble-session-appliance
 description: Control BLE Session Appliance through the generated BLE device CLI.
 ---
 
+## Prerequisites: Install the CLI
+
+This skill drives the `ble-session-appliance-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:
+
+1. Install via the Printing Press installer:
+   ```bash
+   npx -y @mvanhorn/printing-press-library install ble-session-appliance --cli-only
+   ```
+2. Verify: `ble-session-appliance-pp-cli --version`
+3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
+
+If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.
+
+If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
+
 Use `ble-session-appliance-pp-cli capabilities --json` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use `ble-session-appliance-pp-cli status --json` to inspect replay-backed status output. Use `ble-session-appliance-pp-cli start --dry-run --json` to preview the start write. To replay it outside verify mode, pass `--confirm-physical-effect` after checking the dry-run output. Use `ble-session-appliance-pp-cli session start --json` and `ble-session-appliance-pp-cli session status --json` to inspect the local replay session runtime, including lock, capability-token, and endpoint metadata. Use `ble-session-appliance-pp-cli telemetry capture --json` and `ble-session-appliance-pp-cli telemetry latest --json` for the local telemetry store scaffold. Use `ble-session-appliance-pp-cli telemetry sessions --json` to inspect stored BLE session summaries.

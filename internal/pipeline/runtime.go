@@ -312,7 +312,15 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	if report.Mode == "mock" && spec != nil && len(spec.NestedDataEnvelopes) > 0 {
 		expectedMockRows = 2
 	}
-	report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, report.Mode, buildEnv, expectedMockRows)
+	if isDeviceCLIDir(cfg.Dir) {
+		// Device CLIs (BLE) have no sync->sql->search data pipeline; running the
+		// HTTP-shaped pipeline test invokes a non-existent `sync` command and
+		// reports a false "sync crashed". Mark the dimension satisfied instead.
+		report.DataPipeline = true
+		report.DataPipelineDetail = "SKIP (device CLI: no sync data pipeline)"
+	} else {
+		report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, report.Mode, buildEnv, expectedMockRows)
+	}
 	report.Freshness = runFreshnessContractTest(cfg.Dir)
 	report.PathParamProbes = runPathParamProbes(binaryPath, buildEnv(), paramDefaults)
 

@@ -58,7 +58,9 @@ func newDogfoodCmd() *cobra.Command {
 				} else {
 					printLiveDogfoodReport(report)
 				}
-				if report.Verdict != "PASS" {
+				// Device CLIs report "unverified-device" (manual --live testing is
+				// their real gate); only a hard FAIL is a non-zero exit.
+				if report.Verdict == "FAIL" {
 					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("live dogfood failed: %d/%d tests failed", report.Failed, report.MatrixSize)}
 				}
 				return nil

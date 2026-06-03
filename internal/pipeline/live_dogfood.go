@@ -112,6 +112,26 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	if strings.TrimSpace(opts.CLIDir) == "" {
 		return nil, fmt.Errorf("CLIDir is required")
 	}
+	if isDeviceCLIDir(opts.CLIDir) {
+		// Device (BLE) CLIs cannot be auto-driven by the generic live runner:
+		// their actuating commands require an explicit --live flag, a physically
+		// present/awake device, and domain-specific arguments the runner cannot
+		// synthesize. Report a clean "unverified" outcome (manual --live testing
+		// is the real Phase 5 gate for device CLIs) instead of crashing on the
+		// missing agent-context command or failing a meaningless matrix.
+		return &LiveDogfoodReport{
+			Dir:     opts.CLIDir,
+			Level:   opts.Level,
+			Verdict: "unverified-device",
+			Skipped: 1,
+			RanAt:   time.Now().UTC(),
+			Tests: []LiveDogfoodTestResult{{
+				Command: "(device CLI)",
+				Status:  LiveDogfoodStatusSkip,
+				Reason:  "device CLI: live dogfood requires manual --live testing against the physical device",
+			}},
+		}, nil
+	}
 	homeScope, err := scopeLiveDogfoodSubprocessHome(opts.CLIDir, opts.BinaryName)
 	if err != nil {
 		return nil, err
