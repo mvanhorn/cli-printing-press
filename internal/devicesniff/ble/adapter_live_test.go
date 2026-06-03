@@ -118,6 +118,7 @@ type stubCharacteristic struct {
 	uuid         string
 	readData     []byte
 	readErr      error
+	readN        *int
 	written      [][]byte
 	notifyValues [][]byte
 }
@@ -131,6 +132,9 @@ func (c *stubCharacteristic) Read(buf []byte) (int, error) {
 	// Backends may report the attribute length rather than the bytes copied into
 	// the caller's buffer; honoring that contract exercises the adapter's clamp.
 	copy(buf, c.readData)
+	if c.readN != nil {
+		return *c.readN, nil
+	}
 	return len(c.readData), nil
 }
 
@@ -330,6 +334,21 @@ func TestLiveAdapterReadClampsOversizedValue(t *testing.T) {
 	require.NoError(t, err)
 	// Value is clamped to the buffer length; no panic on the oversized read.
 	assert.Equal(t, bleCharacteristicMaxValueBytes*2, len(readEvent.ValueHex))
+}
+
+func TestLiveAdapterReadClampsNegativeCount(t *testing.T) {
+	t.Parallel()
+	negative := -1
+	char := &stubCharacteristic{uuid: "2A29", readData: []byte{0x01}, readN: &negative} // backend reports a bogus negative count
+	device := &stubDevice{services: []bleService{stubService{uuid: "180A", chars: []bleCharacteristic{char}}}}
+	driver := newStubDriver()
+	driver.device = device
+	adapter := newLiveAdapter(driver)
+
+	readEvent, err := adapter.Read(context.Background(), CharacteristicRequest{Address: "AA", CharacteristicUUID: "2A29"})
+	require.NoError(t, err)
+	// Negative count is clamped to zero; no panic slicing buf[:n].
+	assert.Equal(t, "", readEvent.ValueHex)
 }
 
 func TestLiveAdapterWriteRejectsInvalidHex(t *testing.T) {

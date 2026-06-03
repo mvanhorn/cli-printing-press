@@ -89,6 +89,26 @@ func TestBluetoothSniffAliasUsesBLEBackend(t *testing.T) {
 	assert.Equal(t, "vendor-action", parsed.Capabilities.Commands[0].Name)
 }
 
+func TestBluetoothSniffDoctorReportsAliasBinary(t *testing.T) {
+	t.Parallel()
+
+	cmd := newBluetoothSniffCmd()
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
+	cmd.SetArgs([]string{"doctor"})
+
+	require.NoError(t, cmd.Execute())
+	var report struct {
+		Binary        string   `json:"binary"`
+		SmokeCommands []string `json:"smoke_commands"`
+	}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &report))
+	assert.Equal(t, "cli-printing-press bluetooth-sniff", report.Binary)
+	for _, c := range report.SmokeCommands {
+		assert.NotContains(t, c, "device-sniff ble", "alias smoke commands must use the bluetooth-sniff path, not the nested device-sniff path")
+	}
+}
+
 func TestDeviceSniffBLEExposesProbeSubcommands(t *testing.T) {
 	t.Parallel()
 

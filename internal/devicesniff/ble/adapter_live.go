@@ -168,7 +168,11 @@ func (a *liveAdapter) Read(ctx context.Context, req CharacteristicRequest) (Even
 	if err != nil {
 		return Event{}, mapLiveError(err)
 	}
-	if n > len(buf) {
+	if n < 0 {
+		// A misbehaving backend may report a negative count; treat it as no data
+		// rather than slicing buf[:n] out of range.
+		n = 0
+	} else if n > len(buf) {
 		// Some backends report the full attribute length rather than the bytes
 		// copied; clamp so a longer-than-buffer value cannot slice out of range.
 		n = len(buf)

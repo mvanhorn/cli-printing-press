@@ -76,7 +76,6 @@ func TestRedactEvidenceRedactsDeviceNameAndAnonymizesAddress(t *testing.T) {
 	assert.Equal(t, "device-1", result.Events[1].DeviceAddress)
 }
 
-// FIX B: redaction terms present in DisplayName are replaced.
 func TestRedactEvidenceRedactsDisplayName(t *testing.T) {
 	t.Parallel()
 
