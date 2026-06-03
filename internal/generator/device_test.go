@@ -141,6 +141,49 @@ func init() {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedBLEDeviceEmitsLiveBackendSeam(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(outputDir, rel))
+		require.NoError(t, err)
+		return string(b)
+	}
+
+	// Device-neutral seam, always compiled.
+	seam := read(filepath.Join("internal", "device", "ble.go"))
+	assert.Contains(t, seam, "type bleBackend interface")
+	assert.Contains(t, seam, "type bleLink interface")
+	assert.Contains(t, seam, "func LiveAvailable() bool")
+	assert.Contains(t, seam, "Write(characteristicUUID string, payload []byte) error")
+	assert.NotContains(t, seam, "tinygo.org/x/bluetooth") // the seam itself stays BLE-library-free
+
+	// tinygo live driver behind the ble_live build tag (CGO).
+	live := read(filepath.Join("internal", "device", "ble_live.go"))
+	assert.Contains(t, live, "//go:build ble_live")
+	assert.Contains(t, live, "tinygo.org/x/bluetooth")
+	assert.Contains(t, live, "const liveCompiled = true")
+
+	// Pure-Go stub for the default build (no BLE stack, no CGO).
+	stub := read(filepath.Join("internal", "device", "ble_stub.go"))
+	assert.Contains(t, stub, "//go:build !ble_live")
+	assert.Contains(t, stub, "const liveCompiled = false")
+	assert.Contains(t, stub, "return nil, ErrLiveUnavailable")
+
+	// tinygo is required in go.mod (retained by go mod tidy via the tag-gated
+	// import) so -tags ble_live resolves.
+	assert.Contains(t, read("go.mod"), "tinygo.org/x/bluetooth")
+
+	// Default build (no tag) compiles with no BLE stack linked.
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
 	t.Parallel()
 
