@@ -11,6 +11,25 @@ Use this reference when the requested CLI target is a local physical device cont
 
 Device Sniff is evidence-first. Community libraries, official docs, Android logs, Wireshark/nRF captures, and human action journals can guide discovery, but generated commands should remain tied to observed, replay-validated, or reference-backed BLE evidence.
 
+## Mapping Research Gate
+
+BLE device discovery has a hard mapping gate. A scan or service inspection can tell you that a device exposes characteristics, but it cannot tell you what command payloads mean. Before generating callable control commands or running a live write, establish the action-to-payload mapping from a concrete source.
+
+Accepted mapping sources:
+
+- A user-provided device spec, payload table, or action journal.
+- Official docs, protocol notes, SDKs, or vendor examples.
+- Community libraries, reverse-engineering notes, GitHub issues, forum posts, or examples that map command names to services, characteristics, and payload bytes.
+- Android/iOS Bluetooth logs, btsnoop captures, Wireshark/nRF captures, or other external captures.
+- A human action journal correlated with observed writes, where one action maps cleanly to one payload/characteristic candidate.
+
+Required behavior:
+
+- Research mappings before relying on live probing for controls. Search by product name/model, advertised BLE name, service UUIDs, app package name, and known library names.
+- Treat scan/inspect/read/subscribe evidence as identity and telemetry discovery unless it is paired with mapping evidence.
+- If no mapping source is found, generate a read/status/capabilities-only CLI or stop and ask the user for mapping evidence. Do not create callable write commands from raw GATT shape alone.
+- Do not brute-force, fuzz, or actively probe mutating payloads on a physical device.
+
 ## Standalone Hardware Probe
 
 Use `cli-printing-press device-sniff ble` when you need real-device evidence without printing a full CLI.
@@ -117,10 +136,11 @@ Session scaffolding is optional and device-driven.
 
 Prefer this sequence for unknown devices:
 
-1. Scan and inspect.
-2. Read and subscribe.
-3. Import docs, community protocol references, or external captures.
-4. Correlate writes with an action journal.
-5. Replay known payloads under operator-visible control.
+1. Identify the exact product, app, advertised BLE name, and service UUIDs.
+2. Search for protocol mappings in docs, community code, issues, forums, app logs, or captures.
+3. Scan and inspect to confirm identity and available characteristics.
+4. Read and subscribe for non-mutating telemetry evidence.
+5. Correlate observed writes with an action journal or imported capture.
+6. Replay known payloads under operator-visible control.
 
 Do not actively probe mutating payloads without guidance.
