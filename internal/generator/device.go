@@ -32,6 +32,7 @@ type deviceTemplateData struct {
 	StatusFields   []deviceStatusField
 	Commands       []deviceCommandField
 	AllCommands    []deviceCommandField
+	ServiceUUIDs   []string
 	HasCommands    bool
 	HasSession     bool
 	HasStore       bool
@@ -97,6 +98,7 @@ func (g *DeviceGenerator) Generate() error {
 		filepath.Join("internal", "device", "ble.go"):      deviceBLETemplate,
 		filepath.Join("internal", "device", "ble_live.go"): deviceBLELiveTemplate,
 		filepath.Join("internal", "device", "ble_stub.go"): deviceBLEStubTemplate,
+		filepath.Join("internal", "device", "live.go"):     deviceLiveTemplate,
 		"README.md": deviceReadmeTemplate,
 		"SKILL.md":  deviceSkillTemplate,
 		// MCP surface: a stdio MCP server that mirrors the Cobra tree via the
@@ -180,6 +182,16 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 			commands = append(commands, field)
 		}
 	}
+	serviceUUIDs := make([]string, 0, len(g.Spec.BLE.Services))
+	seenService := make(map[string]bool)
+	for _, service := range g.Spec.BLE.Services {
+		uuid := strings.TrimSpace(service.UUID)
+		if uuid == "" || seenService[uuid] {
+			continue
+		}
+		seenService[uuid] = true
+		serviceUUIDs = append(serviceUUIDs, uuid)
+	}
 	return deviceTemplateData{
 		Spec:         g.Spec,
 		Name:         name,
@@ -191,6 +203,7 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		StatusFields: statusFields,
 		Commands:     commands,
 		AllCommands:  allCommands,
+		ServiceUUIDs: serviceUUIDs,
 		HasCommands:  len(commands) > 0,
 		HasSession:   g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
 		HasStore:     hasStore,
@@ -303,22 +316,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
-{{- if .HasCommands}}
 	"{{.ModulePath}}/internal/cliutil"
-{{- end}}
 	"{{.ModulePath}}/internal/device"
 	"github.com/spf13/cobra"
 )
 
 type rootFlags struct {
-	asJSON bool
+	asJSON  bool
+	live    bool
+	address string
+	timeout time.Duration
 {{- if .HasCommands}}
 	dryRun bool
 {{- end}}
 {{- if .HasStore}}
 	storePath string
 {{- end}}
+}
+
+// deviceTransport resolves the transport at run time (after flags parse):
+// LiveTransport under --live, the replay transport otherwise. Selection cannot
+// happen at command-construction time because persistent flags are unparsed then.
+func deviceTransport(flags *rootFlags) device.Transport {
+	if flags.live {
+		return device.NewLiveTransport(flags.address, flags.timeout)
+	}
+	return device.NewReplayTransport()
 }
 
 // novelCommands is an optional hook for hand-authored commands. It is nil by
@@ -358,6 +383,9 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	}
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "agent", false, "Output agent-friendly JSON")
+	rootCmd.PersistentFlags().BoolVar(&flags.live, "live", false, "Contact the physical device over BLE (needs a binary built with -tags ble_live)")
+	rootCmd.PersistentFlags().StringVar(&flags.address, "address", "", "BLE device address (default: auto-discover by service UUID)")
+	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 20*time.Second, "Per-operation BLE timeout")
 {{- if .HasCommands}}
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview device writes without dispatching them")
 {{- end}}
@@ -365,7 +393,8 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.PersistentFlags().StringVar(&flags.storePath, "store", "", "Telemetry store path (default: user cache)")
 {{- end}}
 	rootCmd.AddCommand(newCapabilitiesCmd(flags))
-	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
+	rootCmd.AddCommand(newStatusCmd(flags))
+	rootCmd.AddCommand(newDoctorCmd(flags))
 {{- if .HasSession}}
 	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
 {{- end}}
@@ -373,7 +402,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.AddCommand(newTelemetryCmd(flags, device.NewReplayTransport()))
 {{- end}}
 {{- range .Commands}}
-	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.NewReplayTransport(), device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}}))
+	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}}))
 {{- end}}
 	if novelCommands != nil {
 		novelCommands(rootCmd, flags)
@@ -415,13 +444,13 @@ func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
-func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
+func newStatusCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Read replay-backed device status",
+		Short: "Read device status (replay-backed by default; live with --live)",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			snapshot, err := transport.Status(cmd.Context())
+			snapshot, err := deviceTransport(flags).Status(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -440,17 +469,71 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 	}
 }
 
+func newDoctorCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Check BLE readiness, build, and (with --live) device reachability",
+		Long:  "Report whether live BLE is compiled in, the active verify/dogfood state, the device's service UUIDs, and — with --live — whether the device is reachable. Safe to run anywhere; never actuates the device.",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			info := map[string]any{
+				"live_compiled": device.LiveAvailable(),
+				"verify_env":    cliutil.IsVerifyEnv(),
+				"dogfood_env":   cliutil.IsDogfoodEnv(),
+				"service_uuids": device.ServiceUUIDs,
+				"address":       flags.address,
+			}
+			// Probe hardware only when explicitly live, the BLE backend is
+			// compiled in, and not under verify.
+			probe := flags.live && device.LiveAvailable() && !cliutil.IsVerifyEnv()
+			info["hardware_probe"] = probe
+			if probe {
+				adverts, err := device.NewLiveTransport(flags.address, flags.timeout).Scan(cmd.Context())
+				if err != nil {
+					info["scan_error"] = err.Error()
+					info["reachable"] = false
+				} else {
+					info["found"] = len(adverts)
+					info["reachable"] = len(adverts) > 0
+					info["devices"] = adverts
+				}
+			}
+			if flags.asJSON {
+				return writeJSON(cmd, info)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "live BLE compiled: %v\n", info["live_compiled"])
+			fmt.Fprintf(cmd.OutOrStdout(), "verify env: %v\n", info["verify_env"])
+			fmt.Fprintf(cmd.OutOrStdout(), "dogfood env: %v\n", info["dogfood_env"])
+			fmt.Fprintf(cmd.OutOrStdout(), "service uuids: %v\n", info["service_uuids"])
+			if !probe {
+				if !device.LiveAvailable() {
+					fmt.Fprintln(cmd.OutOrStdout(), "hardware probe: skipped (rebuild with -tags ble_live to enable live BLE)")
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "hardware probe: skipped (pass --live to probe the device)")
+				}
+				return nil
+			}
+			if errStr, ok := info["scan_error"].(string); ok {
+				fmt.Fprintf(cmd.OutOrStdout(), "reachable: false (%s)\n", errStr)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "reachable: %v (found %v device(s))\n", info["reachable"], info["found"])
+			return nil
+		},
+	}
+}
+
 {{ if .HasCommands}}
-func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definition device.CommandDefinition) *cobra.Command {
+func newDeviceCommandCmd(flags *rootFlags, definition device.CommandDefinition) *cobra.Command {
 	var confirmPhysicalEffect bool
 	command := &cobra.Command{
 		Use:   definition.Name,
-		Short: fmt.Sprintf("Replay %s against the device transport", definition.Name),
+		Short: fmt.Sprintf("Run %s (replay-backed by default; sends to the device with --live)", definition.Name),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if requiresPhysicalConfirmation(definition) && !flags.dryRun && !confirmPhysicalEffect && !cliutil.IsVerifyEnv() {
-				return fmt.Errorf("%s has safety class %s; pass --dry-run to preview or --confirm-physical-effect to replay it", definition.Name, definition.Safety)
+				return fmt.Errorf("%s has safety class %s; pass --dry-run to preview or --confirm-physical-effect to run it", definition.Name, definition.Safety)
 			}
-			result, err := transport.ExecuteCommand(cmd.Context(), definition, flags.dryRun)
+			result, err := deviceTransport(flags).ExecuteCommand(cmd.Context(), definition, flags.dryRun)
 			if err != nil {
 				return err
 			}
@@ -461,12 +544,12 @@ func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definitio
 				fmt.Fprintf(cmd.OutOrStdout(), "would write %s to %s for %s\n", result.PayloadHex, result.CharacteristicUUID, result.Command)
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "replayed %s via %s\n", result.Command, result.Transport)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s via %s\n", result.Command, result.Transport)
 			return nil
 		},
 	}
 	if requiresPhysicalConfirmation(definition) {
-		command.Flags().BoolVar(&confirmPhysicalEffect, "confirm-physical-effect", false, "Confirm replay of a physical-effect or configuration-risk device command")
+		command.Flags().BoolVar(&confirmPhysicalEffect, "confirm-physical-effect", false, "Confirm a physical-effect or configuration-risk device command")
 	}
 	return command
 }
@@ -730,6 +813,14 @@ var SessionReasons = []string{
 {{- end}}
 }
 {{- end}}
+
+// ServiceUUIDs are the device's BLE GATT service UUIDs, used to discover and
+// connect to the device (matching by service rather than advertised name).
+var ServiceUUIDs = []string{
+{{- range .ServiceUUIDs}}
+	{{quote .}},
+{{- end}}
+}
 
 type StatusField struct {
 	Name                     string ` + "`json:\"name\"`" + `
@@ -1174,6 +1265,160 @@ const liveCompiled = false
 
 func newBLEBackend() (bleBackend, error) {
 	return nil, ErrLiveUnavailable
+}
+`
+
+// deviceLiveTemplate emits LiveTransport, which implements the Transport
+// interface over a real BLE connection. It is always compiled (it calls
+// newBLEBackend, present in both the stub and live builds), so under the default
+// build --live cleanly reports ErrLiveUnavailable. Status reads each telemetry
+// source characteristic and surfaces raw hex (Tier-1); structured decode and
+// notify-based telemetry are the codec's job (see DeviceCodec).
+const deviceLiveTemplate = `// Copyright {{.CurrentYear}}. Licensed under Apache-2.0. See LICENSE.
+// Generated by CLI Printing Press (https://github.com/mvanhorn/cli-printing-press). DO NOT EDIT.
+
+package device
+
+import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"time"
+
+	"{{.ModulePath}}/internal/cliutil"
+)
+
+// LiveTransport drives the device over a real BLE connection (when the binary is
+// built with -tags ble_live). It implements Transport, so the same commands that
+// replay evidence by default actuate hardware under --live. Without the build
+// tag, every operation returns ErrLiveUnavailable.
+type LiveTransport struct {
+	address string
+	timeout time.Duration
+}
+
+func NewLiveTransport(address string, timeout time.Duration) *LiveTransport {
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	return &LiveTransport{address: address, timeout: timeout}
+}
+
+// opContext bounds an operation by the configured timeout, curtailed under the
+// live-dogfood matrix so a single connect+op fits the runner's per-command cap.
+func (t *LiveTransport) opContext(parent context.Context) (context.Context, context.CancelFunc) {
+	timeout := t.timeout
+	if cliutil.IsDogfoodEnv() && timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+func (t *LiveTransport) Status(ctx context.Context) (StatusSnapshot, error) {
+	if cliutil.IsVerifyEnv() {
+		return StatusSnapshot{Device: DisplayName, Transport: "verify-live-noop", SessionMode: SessionMode, ObservedAt: nowUTC(), Telemetry: map[string]any{}}, nil
+	}
+	ctx, cancel := t.opContext(ctx)
+	defer cancel()
+	telemetry := map[string]any{}
+	err := t.withLink(ctx, func(l bleLink) error {
+		for _, field := range StatusFields {
+			entry := map[string]any{"source_characteristic_uuid": field.SourceCharacteristicUUID}
+			raw, readErr := l.Read(field.SourceCharacteristicUUID)
+			if readErr != nil {
+				// Readable characteristics surface a value directly; notify-only
+				// vendor telemetry needs a codec, so report why it is empty.
+				entry["error"] = readErr.Error()
+			} else {
+				entry["raw_hex"] = hex.EncodeToString(raw)
+			}
+			telemetry[field.Name] = entry
+		}
+		return nil
+	})
+	if err != nil {
+		return StatusSnapshot{}, err
+	}
+	return StatusSnapshot{Device: DisplayName, Transport: "live", SessionMode: SessionMode, ObservedAt: nowUTC(), Telemetry: telemetry}, nil
+}
+
+func (t *LiveTransport) ExecuteCommand(ctx context.Context, command CommandDefinition, dryRun bool) (CommandResult, error) {
+	if cliutil.IsVerifyEnv() {
+		return CommandResult{Command: command.Name, Transport: "verify-live-noop", CharacteristicUUID: command.CharacteristicUUID, PayloadHex: command.PayloadHex, Safety: command.Safety, ValidationStatus: command.ValidationStatus, DryRun: true, VerifyNoop: true, Reason: "verify_short_circuit"}, nil
+	}
+	if dryRun {
+		return CommandResult{Command: command.Name, Transport: "live", CharacteristicUUID: command.CharacteristicUUID, PayloadHex: command.PayloadHex, Safety: command.Safety, ValidationStatus: command.ValidationStatus, DryRun: true}, nil
+	}
+	payload, err := hex.DecodeString(command.PayloadHex)
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("decode payload %q: %w", command.PayloadHex, err)
+	}
+	ctx, cancel := t.opContext(ctx)
+	defer cancel()
+	if err := t.withLink(ctx, func(l bleLink) error {
+		return l.Write(command.CharacteristicUUID, payload)
+	}); err != nil {
+		return CommandResult{}, err
+	}
+	return CommandResult{Command: command.Name, Transport: "live", CharacteristicUUID: command.CharacteristicUUID, PayloadHex: command.PayloadHex, Safety: command.Safety, ValidationStatus: command.ValidationStatus}, nil
+}
+
+// Scan discovers nearby devices that expose the device's BLE service(s).
+func (t *LiveTransport) Scan(ctx context.Context) ([]Advert, error) {
+	if cliutil.IsVerifyEnv() {
+		return nil, nil
+	}
+	be, err := newBLEBackend()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := t.opContext(ctx)
+	defer cancel()
+	adverts, err := be.Scan(ctx, ServiceUUIDs)
+	if err != nil {
+		return nil, err
+	}
+	sortByRSSI(adverts)
+	return adverts, nil
+}
+
+// withLink scans for the device by its service UUIDs (unless an explicit address
+// was given), connects, runs fn against the link, then disconnects.
+func (t *LiveTransport) withLink(ctx context.Context, fn func(bleLink) error) error {
+	be, err := newBLEBackend()
+	if err != nil {
+		return err
+	}
+	address := t.address
+	if address == "" {
+		adverts, err := be.Scan(ctx, ServiceUUIDs)
+		if err != nil {
+			return err
+		}
+		sortByRSSI(adverts)
+		if len(adverts) == 0 {
+			return ErrDeviceNotFound
+		}
+		address = adverts[0].Address
+	}
+	l, err := be.Connect(ctx, address, ServiceUUIDs)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = l.Close() }()
+	return fn(l)
+}
+
+func nowUTC() string { return time.Now().UTC().Format(time.RFC3339) }
+
+func sortByRSSI(adverts []Advert) {
+	// Strongest (highest, closest to 0) RSSI first. Small slices; insertion sort
+	// avoids importing sort for one call.
+	for i := 1; i < len(adverts); i++ {
+		for j := i; j > 0 && adverts[j].RSSI > adverts[j-1].RSSI; j-- {
+			adverts[j], adverts[j-1] = adverts[j-1], adverts[j]
+		}
+	}
 }
 `
 

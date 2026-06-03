@@ -20,6 +20,12 @@ var SessionReasons = []string{
 	"reconnect",
 }
 
+// ServiceUUIDs are the device's BLE GATT service UUIDs, used to discover and
+// connect to the device (matching by service rather than advertised name).
+var ServiceUUIDs = []string{
+	"fd00",
+}
+
 type StatusField struct {
 	Name                     string `json:"name"`
 	SourceCharacteristicUUID string `json:"source_characteristic_uuid"`

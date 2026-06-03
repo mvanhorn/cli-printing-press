@@ -7,6 +7,7 @@ ble-temperature-sensor/internal/device/transport.go
 ble-temperature-sensor/internal/device/ble.go
 ble-temperature-sensor/internal/device/ble_live.go
 ble-temperature-sensor/internal/device/ble_stub.go
+ble-temperature-sensor/internal/device/live.go
 ble-temperature-sensor/cmd/ble-temperature-sensor-pp-mcp/main.go
 ble-temperature-sensor/internal/mcp/tools.go
 ble-temperature-sensor/internal/mcp/cobratree/walker.go

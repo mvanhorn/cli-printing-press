@@ -184,6 +184,43 @@ func TestGeneratedBLEDeviceEmitsLiveBackendSeam(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedBLEDeviceEmitsLiveTransportAndDoctor(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(outputDir, rel))
+		require.NoError(t, err)
+		return string(b)
+	}
+
+	// --live/--address/--timeout flags + run-time transport selection (selection
+	// can't happen at construction time because persistent flags are unparsed).
+	root := read(filepath.Join("internal", "cli", "root.go"))
+	assert.Contains(t, root, `"live"`)
+	assert.Contains(t, root, `"address"`)
+	assert.Contains(t, root, `"timeout"`)
+	assert.Contains(t, root, "func deviceTransport(flags *rootFlags) device.Transport")
+	assert.Contains(t, root, "device.NewLiveTransport(flags.address, flags.timeout)")
+	assert.Contains(t, root, "func newDoctorCmd(")
+
+	// LiveTransport implements the Transport interface over the BLE seam.
+	live := read(filepath.Join("internal", "device", "live.go"))
+	assert.Contains(t, live, "type LiveTransport struct")
+	assert.Contains(t, live, "func (t *LiveTransport) Status(")
+	assert.Contains(t, live, "func (t *LiveTransport) ExecuteCommand(")
+	assert.Contains(t, live, "newBLEBackend()")
+
+	// Service UUIDs surfaced for discovery/connect.
+	assert.Contains(t, read(filepath.Join("internal", "device", "spec.go")), "var ServiceUUIDs = []string{")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
 	t.Parallel()
 
@@ -208,6 +245,31 @@ func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
 	assert.Equal(t, true, result["verify_noop"])
 	assert.Equal(t, "verify_short_circuit", result["reason"])
 	assert.Equal(t, "verify-replay", result["transport"])
+}
+
+func TestGeneratedBLELiveCommandShortCircuitsUnderVerifyEnv(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-session-telemetry.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-session-appliance")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	// --live under verify must NOT dial: LiveTransport short-circuits before it
+	// touches the BLE backend (not even compiled in the default build), so the
+	// floor catches an actuation the verifier's classifier might miss.
+	cmd := exec.Command("go", "run", "-mod=mod", "./cmd/ble-session-appliance-pp-cli", "start", "--live", "--json")
+	cmd.Dir = outputDir
+	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(output, &result))
+	assert.Equal(t, true, result["verify_noop"])
+	assert.Equal(t, "verify-live-noop", result["transport"])
 }
 
 func TestGeneratedBLEPhysicalCommandRequiresConfirmation(t *testing.T) {

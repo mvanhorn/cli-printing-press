@@ -4,18 +4,33 @@
 package cli
 
 import (
-	"ble-session-appliance-pp-cli/internal/cliutil"
-	"ble-session-appliance-pp-cli/internal/device"
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
+
+	"ble-session-appliance-pp-cli/internal/cliutil"
+	"ble-session-appliance-pp-cli/internal/device"
 	"github.com/spf13/cobra"
 )
 
 type rootFlags struct {
 	asJSON    bool
+	live      bool
+	address   string
+	timeout   time.Duration
 	dryRun    bool
 	storePath string
+}
+
+// deviceTransport resolves the transport at run time (after flags parse):
+// LiveTransport under --live, the replay transport otherwise. Selection cannot
+// happen at command-construction time because persistent flags are unparsed then.
+func deviceTransport(flags *rootFlags) device.Transport {
+	if flags.live {
+		return device.NewLiveTransport(flags.address, flags.timeout)
+	}
+	return device.NewReplayTransport()
 }
 
 // novelCommands is an optional hook for hand-authored commands. It is nil by
@@ -55,13 +70,17 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	}
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "agent", false, "Output agent-friendly JSON")
+	rootCmd.PersistentFlags().BoolVar(&flags.live, "live", false, "Contact the physical device over BLE (needs a binary built with -tags ble_live)")
+	rootCmd.PersistentFlags().StringVar(&flags.address, "address", "", "BLE device address (default: auto-discover by service UUID)")
+	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 20*time.Second, "Per-operation BLE timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview device writes without dispatching them")
 	rootCmd.PersistentFlags().StringVar(&flags.storePath, "store", "", "Telemetry store path (default: user cache)")
 	rootCmd.AddCommand(newCapabilitiesCmd(flags))
-	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
+	rootCmd.AddCommand(newStatusCmd(flags))
+	rootCmd.AddCommand(newDoctorCmd(flags))
 	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
 	rootCmd.AddCommand(newTelemetryCmd(flags, device.NewReplayTransport()))
-	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.NewReplayTransport(), device.CommandDefinition{Name: "start", CharacteristicUUID: "fd01", Safety: "physical-effect", ValidationStatus: "replay-validated", PayloadHex: "a001"}))
+	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: "start", CharacteristicUUID: "fd01", Safety: "physical-effect", ValidationStatus: "replay-validated", PayloadHex: "a001"}))
 	if novelCommands != nil {
 		novelCommands(rootCmd, flags)
 	}
@@ -102,13 +121,13 @@ func newCapabilitiesCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
-func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
+func newStatusCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:         "status",
-		Short:       "Read replay-backed device status",
+		Short:       "Read device status (replay-backed by default; live with --live)",
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			snapshot, err := transport.Status(cmd.Context())
+			snapshot, err := deviceTransport(flags).Status(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -127,16 +146,70 @@ func newStatusCmd(flags *rootFlags, transport device.Transport) *cobra.Command {
 	}
 }
 
-func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definition device.CommandDefinition) *cobra.Command {
+func newDoctorCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:         "doctor",
+		Short:       "Check BLE readiness, build, and (with --live) device reachability",
+		Long:        "Report whether live BLE is compiled in, the active verify/dogfood state, the device's service UUIDs, and — with --live — whether the device is reachable. Safe to run anywhere; never actuates the device.",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			info := map[string]any{
+				"live_compiled": device.LiveAvailable(),
+				"verify_env":    cliutil.IsVerifyEnv(),
+				"dogfood_env":   cliutil.IsDogfoodEnv(),
+				"service_uuids": device.ServiceUUIDs,
+				"address":       flags.address,
+			}
+			// Probe hardware only when explicitly live, the BLE backend is
+			// compiled in, and not under verify.
+			probe := flags.live && device.LiveAvailable() && !cliutil.IsVerifyEnv()
+			info["hardware_probe"] = probe
+			if probe {
+				adverts, err := device.NewLiveTransport(flags.address, flags.timeout).Scan(cmd.Context())
+				if err != nil {
+					info["scan_error"] = err.Error()
+					info["reachable"] = false
+				} else {
+					info["found"] = len(adverts)
+					info["reachable"] = len(adverts) > 0
+					info["devices"] = adverts
+				}
+			}
+			if flags.asJSON {
+				return writeJSON(cmd, info)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "live BLE compiled: %v\n", info["live_compiled"])
+			fmt.Fprintf(cmd.OutOrStdout(), "verify env: %v\n", info["verify_env"])
+			fmt.Fprintf(cmd.OutOrStdout(), "dogfood env: %v\n", info["dogfood_env"])
+			fmt.Fprintf(cmd.OutOrStdout(), "service uuids: %v\n", info["service_uuids"])
+			if !probe {
+				if !device.LiveAvailable() {
+					fmt.Fprintln(cmd.OutOrStdout(), "hardware probe: skipped (rebuild with -tags ble_live to enable live BLE)")
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "hardware probe: skipped (pass --live to probe the device)")
+				}
+				return nil
+			}
+			if errStr, ok := info["scan_error"].(string); ok {
+				fmt.Fprintf(cmd.OutOrStdout(), "reachable: false (%s)\n", errStr)
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "reachable: %v (found %v device(s))\n", info["reachable"], info["found"])
+			return nil
+		},
+	}
+}
+
+func newDeviceCommandCmd(flags *rootFlags, definition device.CommandDefinition) *cobra.Command {
 	var confirmPhysicalEffect bool
 	command := &cobra.Command{
 		Use:   definition.Name,
-		Short: fmt.Sprintf("Replay %s against the device transport", definition.Name),
+		Short: fmt.Sprintf("Run %s (replay-backed by default; sends to the device with --live)", definition.Name),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if requiresPhysicalConfirmation(definition) && !flags.dryRun && !confirmPhysicalEffect && !cliutil.IsVerifyEnv() {
-				return fmt.Errorf("%s has safety class %s; pass --dry-run to preview or --confirm-physical-effect to replay it", definition.Name, definition.Safety)
+				return fmt.Errorf("%s has safety class %s; pass --dry-run to preview or --confirm-physical-effect to run it", definition.Name, definition.Safety)
 			}
-			result, err := transport.ExecuteCommand(cmd.Context(), definition, flags.dryRun)
+			result, err := deviceTransport(flags).ExecuteCommand(cmd.Context(), definition, flags.dryRun)
 			if err != nil {
 				return err
 			}
@@ -147,12 +220,12 @@ func newDeviceCommandCmd(flags *rootFlags, transport device.Transport, definitio
 				fmt.Fprintf(cmd.OutOrStdout(), "would write %s to %s for %s\n", result.PayloadHex, result.CharacteristicUUID, result.Command)
 				return nil
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "replayed %s via %s\n", result.Command, result.Transport)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s via %s\n", result.Command, result.Transport)
 			return nil
 		},
 	}
 	if requiresPhysicalConfirmation(definition) {
-		command.Flags().BoolVar(&confirmPhysicalEffect, "confirm-physical-effect", false, "Confirm replay of a physical-effect or configuration-risk device command")
+		command.Flags().BoolVar(&confirmPhysicalEffect, "confirm-physical-effect", false, "Confirm a physical-effect or configuration-risk device command")
 	}
 	return command
 }
