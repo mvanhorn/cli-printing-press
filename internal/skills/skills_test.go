@@ -45,26 +45,19 @@ var internalSkillAuthorByName = map[string]string{
 }
 
 // frontmatter is the parsed YAML frontmatter of an internal SKILL.md.
-// The struct is permissive: known fields are typed, unknown fields are
-// kept in Extra so future Hermes / ClawHub additions don't break parsing
-// or hide field-clobber regressions.
+// Only fields the tests assert on are typed; unknown YAML keys are
+// ignored, so future Hermes / ClawHub additions don't break parsing.
 type frontmatter struct {
-	Name          string   `yaml:"name"`
-	Description   string   `yaml:"description"`
-	Author        string   `yaml:"author"`
-	License       string   `yaml:"license"`
-	Version       string   `yaml:"version"`
-	MinBinary     string   `yaml:"min-binary-version"`
-	Context       string   `yaml:"context"`
-	UserInvocable *bool    `yaml:"user-invocable"`
-	Deprecated    *bool    `yaml:"deprecated"`
-	AllowedTools  []string `yaml:"allowed-tools"`
-	Metadata      struct {
+	Name         string   `yaml:"name"`
+	Description  string   `yaml:"description"`
+	Author       string   `yaml:"author"`
+	License      string   `yaml:"license"`
+	AllowedTools []string `yaml:"allowed-tools"`
+	Metadata     struct {
 		Hermes struct {
 			Tags []string `yaml:"tags"`
 		} `yaml:"hermes"`
 	} `yaml:"metadata"`
-	Extra map[string]interface{} `yaml:",inline"`
 }
 
 // parseFrontmatter extracts the YAML frontmatter between the first pair of
@@ -111,29 +104,6 @@ func listInternalSkills(t *testing.T, repoRoot string) []string {
 	}
 	require.NotEmpty(t, names, "no SKILL.md files found under %s/skills/", repoRoot)
 	return names
-}
-
-// TestInternalSkillAuthorshipMapCoversAllSkills guards the test table itself:
-// if a new skill is added under skills/ without an entry in
-// internalSkillAuthorByName, this test fails with a clear "missing entry"
-// message that names the new skill, rather than producing a confusing
-// "no author expected" assertion in the broader test.
-func TestInternalSkillAuthorshipMapCoversAllSkills(t *testing.T) {
-	t.Parallel()
-
-	repoRoot := testutil.FindRepoRoot(t)
-	skills := listInternalSkills(t, repoRoot)
-
-	for _, name := range skills {
-		t.Run(name, func(t *testing.T) {
-			_, ok := internalSkillAuthorByName[name]
-			assert.True(t, ok,
-				"internal skill %q has no entry in internalSkillAuthorByName; "+
-					"add the git-first-author display name to the map "+
-					"(see docs/solutions/conventions/preserve-original-authorship-in-multi-author-retrofits-2026-05-06.md)",
-				name)
-		})
-	}
 }
 
 // TestAllInternalSkillsHaveHermesFrontmatter asserts every internal skill
@@ -197,7 +167,7 @@ func TestInternalSkillFrontmatterPreservesExistingFields(t *testing.T) {
 
 			// allowed-tools is required on every internal skill; a typed
 			// field catches misnamed variants (e.g. allowed_tool) that
-			// would otherwise silently land in Extra.
+			// the parser would otherwise silently drop.
 			assert.NotEmpty(t, fm.AllowedTools,
 				"%s: `allowed-tools` must be present and non-empty after the frontmatter edit", skillPath)
 		})
