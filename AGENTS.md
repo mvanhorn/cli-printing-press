@@ -279,7 +279,7 @@ This copies the skills to `~/.claude/skills/`.
 
 ## Skill Authoring
 When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` in the same change; do not leave the skill as a stale manual workaround for behavior the machine now owns.
-Detail in [`docs/SKILLS.md`](docs/SKILLS.md): workflow parity, the reference-file pattern, and the `context: fork` / `user-invocable` frontmatter fields.
+Detail in [`docs/SKILLS.md`](docs/SKILLS.md): workflow parity, the reference-file pattern, the `context: fork` / `user-invocable` frontmatter fields, and the `author` / `license` / `metadata.hermes` frontmatter fields required for Hermes compatibility.
 
 ## Code & Comment Hygiene
 ### Write-time defaults

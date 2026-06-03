@@ -70,7 +70,16 @@ Three top-level frontmatter fields are required for every skill under `skills/` 
 
 - **`author: "<display name>"`** — the prose-shaped display name of the person who originally created the skill, double-quoted. Curate this from `git log --format=%an --reverse --follow skills/<name>/SKILL.md | head -1` (the first commit's author) per the `preserve-original-authorship` convention in [`docs/solutions/conventions/preserve-original-authorship-in-multi-author-retrofits-2026-05-06.md`](solutions/conventions/preserve-original-authorship-in-multi-author-retrofits-2026-05-06.md). **Do NOT** use `git config user.name` at install or sweep time — that flips attribution silently to whoever runs the sweep. The displayed author should match the prose form (`Matt Van Horn`, `Trevin Chow`), not the slug form (`matt-van-horn`, `trevin-chow`).
 - **`license: "Apache-2.0"`** — the project's standard SPDX identifier, double-quoted. Mirrors the printed-CLI template at `internal/generator/templates/skill.md.tmpl:5` and the LICENSE in the repo root.
-- **`metadata.hermes.tags`** — a YAML list of lowercase tag strings for Hermes search discoverability. The shared base set is `[printing-press, codegen, openapi, go, api]`; add a per-skill function tag (`amend`, `publish`, `import`, `polish`, `retro`, `score`, `reprint`, `review`, `catalog`) for disambiguation. Tag matching is substring-based and case-insensitive, so avoid duplicates across skills and keep the list short.
+- **`metadata.hermes.tags`** — a YAML list of lowercase tag strings for Hermes search discoverability. The shared base set is `[printing-press, codegen, openapi, go, api]`; add a per-skill function tag (`amend`, `publish`, `import`, `polish`, `retro`, `score`, `reprint`, `review`, `catalog`) for disambiguation. Tag matching is substring-based and case-insensitive, so avoid duplicates across skills and keep the list short. **Exception:** the umbrella `printing-press` skill (the main entry point) is exempt from the function-tag rule — its 5-tag base set is its full tag list, since the umbrella does not need to disambiguate from a sibling. All other skills must add exactly one function tag.
+
+### Style: `description:` scalar
+
+The `description:` field is a string scalar; YAML supports two shapes for prose that fits on one line vs. multiple:
+
+- **Plain scalar** (one line, no quoting needed for safe characters) — use when the description fits in roughly 80 columns and reads naturally as a single sentence. Example: `printing-press/SKILL.md`, `printing-press-catalog/SKILL.md`, `printing-press-publish/SKILL.md`, `printing-press-score/SKILL.md`.
+- **Folded scalar (`>`)** — use when the description is multi-line, lists phases, or is intentionally long-form (Phase 0..N walkthrough, multi-step workflow, enumerated triggers). The folded style preserves readability in source while still rendering as a single string. Example: `printing-press-amend/SKILL.md`, `printing-press-import/SKILL.md`, `printing-press-output-review/SKILL.md`, `printing-press-polish/SKILL.md`, `printing-press-reprint/SKILL.md`, `printing-press-retro/SKILL.md`.
+
+Both shapes parse identically; pick the one that reads cleanest in the source file. The shape is **not** part of the lock-in contract (`internal/skills/skills_test.go` asserts only that the field is non-empty), so do not bend a long description into a plain scalar just to match a sibling skill's style.
 
 ### Example
 

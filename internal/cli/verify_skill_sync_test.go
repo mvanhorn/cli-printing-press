@@ -7,10 +7,10 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/testutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,7 +34,7 @@ import (
 func TestVerifySkillScriptInSync(t *testing.T) {
 	t.Parallel()
 
-	repoRoot := findRepoRoot(t)
+	repoRoot := testutil.FindRepoRoot(t)
 	canonical := filepath.Join(repoRoot, "scripts", "verify-skill", "verify_skill.py")
 	bundled := filepath.Join(repoRoot, "internal", "cli", "verify_skill_bundled.py")
 
@@ -70,7 +70,7 @@ func TestVerifySkillScriptInSync(t *testing.T) {
 func TestVerifySkillDriftWorkflowGuardsLibraryCopy(t *testing.T) {
 	t.Parallel()
 
-	repoRoot := findRepoRoot(t)
+	repoRoot := testutil.FindRepoRoot(t)
 	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "verify-skill-drift-check.yml")
 	data, err := os.ReadFile(workflowPath)
 	if err != nil {
@@ -105,27 +105,5 @@ func TestVerifySkillDriftWorkflowGuardsLibraryCopy(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("verify-skill drift workflow should contain %q", want)
 		}
-	}
-}
-
-// findRepoRoot walks up from the test file's location until it finds go.mod.
-// This is more robust than relying on PWD or runtime.Caller alone, because
-// `go test ./...` runs each package from its own directory.
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not determine test file location")
-	}
-	dir := filepath.Dir(thisFile)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("could not find repo root (no go.mod) starting from %s", filepath.Dir(thisFile))
-		}
-		dir = parent
 	}
 }

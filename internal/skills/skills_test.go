@@ -13,10 +13,10 @@ package skills
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -49,44 +49,22 @@ var internalSkillAuthorByName = map[string]string{
 // kept in Extra so future Hermes / ClawHub additions don't break parsing
 // or hide field-clobber regressions.
 type frontmatter struct {
-	Name          string `yaml:"name"`
-	Description   string `yaml:"description"`
-	Author        string `yaml:"author"`
-	License       string `yaml:"license"`
-	Version       string `yaml:"version"`
-	MinBinary     string `yaml:"min-binary-version"`
-	Context       string `yaml:"context"`
-	UserInvocable *bool  `yaml:"user-invocable"`
-	Deprecated    *bool  `yaml:"deprecated"`
+	Name          string   `yaml:"name"`
+	Description   string   `yaml:"description"`
+	Author        string   `yaml:"author"`
+	License       string   `yaml:"license"`
+	Version       string   `yaml:"version"`
+	MinBinary     string   `yaml:"min-binary-version"`
+	Context       string   `yaml:"context"`
+	UserInvocable *bool    `yaml:"user-invocable"`
+	Deprecated    *bool    `yaml:"deprecated"`
+	AllowedTools  []string `yaml:"allowed-tools"`
 	Metadata      struct {
 		Hermes struct {
 			Tags []string `yaml:"tags"`
 		} `yaml:"hermes"`
 	} `yaml:"metadata"`
 	Extra map[string]interface{} `yaml:",inline"`
-}
-
-// findRepoRoot walks up from the test file's location until it finds go.mod.
-// Mirrors internal/cli/verify_skill_sync_test.go::findRepoRoot so the test
-// works correctly under `go test ./...` regardless of the working directory
-// the test runner is launched from.
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not determine test file location")
-	}
-	dir := filepath.Dir(thisFile)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("could not find repo root (no go.mod) starting from %s", filepath.Dir(thisFile))
-		}
-		dir = parent
-	}
 }
 
 // parseFrontmatter extracts the YAML frontmatter between the first pair of
@@ -99,7 +77,12 @@ func parseFrontmatter(t *testing.T, path string) frontmatter {
 
 	require.True(t, strings.HasPrefix(string(content), "---\n"),
 		"%s must start with `---` frontmatter delimiter", path)
-	end := strings.Index(string(content[4:]), "\n---\n")
+	// Accept either `\n---\n` (body follows) or `\n---` (end of file) as the
+	// closing fence. Editor-saved files always have the trailing newline;
+	// the shorter pattern tolerates tools that strip trailing newlines so
+	// the failure message points at the real cause instead of "no closing
+	// delimiter" when the delimiter is in fact present.
+	end := strings.Index(string(content[4:]), "\n---")
 	require.NotEqual(t, -1, end, "%s must have a closing `---` frontmatter delimiter", path)
 	body := string(content[4 : 4+end+1])
 
@@ -138,7 +121,7 @@ func listInternalSkills(t *testing.T, repoRoot string) []string {
 func TestInternalSkillAuthorshipMapCoversAllSkills(t *testing.T) {
 	t.Parallel()
 
-	repoRoot := findRepoRoot(t)
+	repoRoot := testutil.FindRepoRoot(t)
 	skills := listInternalSkills(t, repoRoot)
 
 	for _, name := range skills {
@@ -165,7 +148,7 @@ func TestInternalSkillAuthorshipMapCoversAllSkills(t *testing.T) {
 func TestAllInternalSkillsHaveHermesFrontmatter(t *testing.T) {
 	t.Parallel()
 
-	repoRoot := findRepoRoot(t)
+	repoRoot := testutil.FindRepoRoot(t)
 	skills := listInternalSkills(t, repoRoot)
 
 	for _, name := range skills {
@@ -199,7 +182,7 @@ func TestAllInternalSkillsHaveHermesFrontmatter(t *testing.T) {
 func TestInternalSkillFrontmatterPreservesExistingFields(t *testing.T) {
 	t.Parallel()
 
-	repoRoot := findRepoRoot(t)
+	repoRoot := testutil.FindRepoRoot(t)
 	skills := listInternalSkills(t, repoRoot)
 
 	for _, name := range skills {
@@ -212,11 +195,11 @@ func TestInternalSkillFrontmatterPreservesExistingFields(t *testing.T) {
 			assert.NotEmpty(t, fm.Description,
 				"%s: required `description` field missing (clobbered by new fields?)", skillPath)
 
-			// allowed-tools is required on every internal skill; render it back
-			// out via Extra (the yaml inline tag keeps it in the map).
-			at, ok := fm.Extra["allowed-tools"]
-			assert.True(t, ok && at != nil,
-				"%s: `allowed-tools` must be present after the frontmatter edit", skillPath)
+			// allowed-tools is required on every internal skill; a typed
+			// field catches misnamed variants (e.g. allowed_tool) that
+			// would otherwise silently land in Extra.
+			assert.NotEmpty(t, fm.AllowedTools,
+				"%s: `allowed-tools` must be present and non-empty after the frontmatter edit", skillPath)
 		})
 	}
 }
@@ -229,7 +212,7 @@ func TestInternalSkillFrontmatterPreservesExistingFields(t *testing.T) {
 func TestInternalSkillHermesTagsAreNonEmpty(t *testing.T) {
 	t.Parallel()
 
-	repoRoot := findRepoRoot(t)
+	repoRoot := testutil.FindRepoRoot(t)
 	skills := listInternalSkills(t, repoRoot)
 
 	for _, name := range skills {
