@@ -43,6 +43,7 @@ productivity:
 project-management:
   asana                Work management and project tracking API
   jira                 Issue tracking and project management API for Jira Cloud
+  plane                Open-source project management — issues, cycles, modules, sub-issues, and workspaces. A self-hostable Jira/Linear/ClickUp alternative.
 
 sales-and-crm:
   hubspot              CRM contacts API
