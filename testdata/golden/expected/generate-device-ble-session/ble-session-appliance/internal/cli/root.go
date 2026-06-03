@@ -214,7 +214,7 @@ func openTelemetryStore(flags *rootFlags) (*device.TelemetryStore, error) {
 func newSessionCmd(flags *rootFlags, session device.Session) *cobra.Command {
 	sessionCmd := &cobra.Command{
 		Use:   "session",
-		Short: "Inspect the replay-backed BLE session scaffold",
+		Short: "Manage the replay-backed local BLE session runtime",
 	}
 	sessionCmd.AddCommand(newSessionStatusCmd(flags, session))
 	sessionCmd.AddCommand(newSessionStartCmd(flags, session))
@@ -239,7 +239,7 @@ func newSessionStatusCmd(flags *rootFlags, session device.Session) *cobra.Comman
 func newSessionStartCmd(flags *rootFlags, session device.Session) *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: "Start a replay BLE session placeholder",
+		Short: "Start the replay-backed local BLE session runtime",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			status, err := session.Start(cmd.Context())
 			if err != nil {
@@ -253,7 +253,7 @@ func newSessionStartCmd(flags *rootFlags, session device.Session) *cobra.Command
 func newSessionStopCmd(flags *rootFlags, session device.Session) *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
-		Short: "Stop a replay BLE session placeholder",
+		Short: "Stop the replay-backed local BLE session runtime",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			status, err := session.Stop(cmd.Context())
 			if err != nil {
@@ -272,6 +272,9 @@ func writeSessionStatus(cmd *cobra.Command, flags *rootFlags, status device.Sess
 	fmt.Fprintf(cmd.OutOrStdout(), "state: %s\n", status.State)
 	fmt.Fprintf(cmd.OutOrStdout(), "mode: %s\n", status.Mode)
 	fmt.Fprintf(cmd.OutOrStdout(), "transport: %s\n", status.Transport)
+	fmt.Fprintf(cmd.OutOrStdout(), "endpoint: %s %s\n", status.Endpoint.Kind, status.Endpoint.Path)
+	fmt.Fprintf(cmd.OutOrStdout(), "runtime: %s\n", status.RuntimeDir)
+	fmt.Fprintf(cmd.OutOrStdout(), "token: %v\n", status.TokenPresent)
 	fmt.Fprintf(cmd.OutOrStdout(), "one-shot fallback: %v\n", status.OneShotFallback)
 	fmt.Fprintf(cmd.OutOrStdout(), "reconnect: %v\n", status.Reconnect)
 	fmt.Fprintf(cmd.OutOrStdout(), "notification stream: %v\n", status.NotificationStream)

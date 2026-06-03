@@ -484,7 +484,7 @@ func openTelemetryStore(flags *rootFlags) (*device.TelemetryStore, error) {
 func newSessionCmd(flags *rootFlags, session device.Session) *cobra.Command {
 	sessionCmd := &cobra.Command{
 		Use:   "session",
-		Short: "Inspect the replay-backed BLE session scaffold",
+		Short: "Manage the replay-backed local BLE session runtime",
 	}
 	sessionCmd.AddCommand(newSessionStatusCmd(flags, session))
 	sessionCmd.AddCommand(newSessionStartCmd(flags, session))
@@ -509,7 +509,7 @@ func newSessionStatusCmd(flags *rootFlags, session device.Session) *cobra.Comman
 func newSessionStartCmd(flags *rootFlags, session device.Session) *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
-		Short: "Start a replay BLE session placeholder",
+		Short: "Start the replay-backed local BLE session runtime",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			status, err := session.Start(cmd.Context())
 			if err != nil {
@@ -523,7 +523,7 @@ func newSessionStartCmd(flags *rootFlags, session device.Session) *cobra.Command
 func newSessionStopCmd(flags *rootFlags, session device.Session) *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
-		Short: "Stop a replay BLE session placeholder",
+		Short: "Stop the replay-backed local BLE session runtime",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			status, err := session.Stop(cmd.Context())
 			if err != nil {
@@ -542,6 +542,9 @@ func writeSessionStatus(cmd *cobra.Command, flags *rootFlags, status device.Sess
 	fmt.Fprintf(cmd.OutOrStdout(), "state: %s\n", status.State)
 	fmt.Fprintf(cmd.OutOrStdout(), "mode: %s\n", status.Mode)
 	fmt.Fprintf(cmd.OutOrStdout(), "transport: %s\n", status.Transport)
+	fmt.Fprintf(cmd.OutOrStdout(), "endpoint: %s %s\n", status.Endpoint.Kind, status.Endpoint.Path)
+	fmt.Fprintf(cmd.OutOrStdout(), "runtime: %s\n", status.RuntimeDir)
+	fmt.Fprintf(cmd.OutOrStdout(), "token: %v\n", status.TokenPresent)
 	fmt.Fprintf(cmd.OutOrStdout(), "one-shot fallback: %v\n", status.OneShotFallback)
 	fmt.Fprintf(cmd.OutOrStdout(), "reconnect: %v\n", status.Reconnect)
 	fmt.Fprintf(cmd.OutOrStdout(), "notification stream: %v\n", status.NotificationStream)
@@ -749,20 +752,39 @@ package device
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
+const sessionCLIName = "{{.CLIName}}"
+
+type SessionEndpoint struct {
+	Kind string ` + "`json:\"kind\"`" + `
+	Path string ` + "`json:\"path\"`" + `
+}
+
 type SessionStatus struct {
-	Device             string   ` + "`json:\"device\"`" + `
-	Mode               string   ` + "`json:\"mode\"`" + `
-	State              string   ` + "`json:\"state\"`" + `
-	Transport          string   ` + "`json:\"transport\"`" + `
-	ObservedAt         string   ` + "`json:\"observed_at\"`" + `
-	Reasons            []string ` + "`json:\"reasons,omitempty\"`" + `
-	OneShotFallback    bool     ` + "`json:\"one_shot_fallback\"`" + `
-	Reconnect          bool     ` + "`json:\"reconnect\"`" + `
-	NotificationStream bool     ` + "`json:\"notification_stream\"`" + `
-	Detail             string   ` + "`json:\"detail,omitempty\"`" + `
+	Device             string          ` + "`json:\"device\"`" + `
+	Mode               string          ` + "`json:\"mode\"`" + `
+	State              string          ` + "`json:\"state\"`" + `
+	Transport          string          ` + "`json:\"transport\"`" + `
+	Endpoint           SessionEndpoint ` + "`json:\"endpoint\"`" + `
+	RuntimeDir         string          ` + "`json:\"runtime_dir\"`" + `
+	TokenPresent       bool            ` + "`json:\"token_present\"`" + `
+	ObservedAt         string          ` + "`json:\"observed_at\"`" + `
+	Reasons            []string        ` + "`json:\"reasons,omitempty\"`" + `
+	OneShotFallback    bool            ` + "`json:\"one_shot_fallback\"`" + `
+	Reconnect          bool            ` + "`json:\"reconnect\"`" + `
+	NotificationStream bool            ` + "`json:\"notification_stream\"`" + `
+	Detail             string          ` + "`json:\"detail,omitempty\"`" + `
 }
 
 type Session interface {
@@ -771,37 +793,219 @@ type Session interface {
 	Stop(context.Context) (SessionStatus, error)
 }
 
-type ReplaySession struct{}
+type ReplaySession struct {
+	cliName string
+}
 
 func NewReplaySession() *ReplaySession {
-	return &ReplaySession{}
+	return &ReplaySession{cliName: sessionCLIName}
 }
 
 func (s *ReplaySession) Start(ctx context.Context) (SessionStatus, error) {
-	return sessionStatus("started"), nil
+	runtimeDir, err := s.runtimeDir()
+	if err != nil {
+		return SessionStatus{}, err
+	}
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		return SessionStatus{}, fmt.Errorf("create session runtime dir: %w", err)
+	}
+
+	lockPath := s.lockPath(runtimeDir)
+	lockFile, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return s.statusFromDisk("running", "existing replay session lock is active")
+		}
+		return SessionStatus{}, fmt.Errorf("create session lock: %w", err)
+	}
+	defer lockFile.Close()
+
+	token, err := generateSessionToken()
+	if err != nil {
+		_ = os.Remove(lockPath)
+		return SessionStatus{}, err
+	}
+	if err := os.WriteFile(s.tokenPath(runtimeDir), []byte(token+"\n"), 0o600); err != nil {
+		_ = os.Remove(lockPath)
+		return SessionStatus{}, fmt.Errorf("write session token: %w", err)
+	}
+
+	now := time.Now().UTC()
+	record := sessionRecord{
+		PID:       os.Getpid(),
+		StartedAt: now.Format(time.RFC3339),
+		Endpoint:  s.endpoint(runtimeDir),
+	}
+	if err := json.NewEncoder(lockFile).Encode(record); err != nil {
+		_ = os.Remove(lockPath)
+		_ = os.Remove(s.tokenPath(runtimeDir))
+		return SessionStatus{}, fmt.Errorf("write session lock: %w", err)
+	}
+	if err := s.writeState(runtimeDir, "running", "replay session runtime started; local IPC endpoint reserved for generated clients"); err != nil {
+		_ = os.Remove(lockPath)
+		_ = os.Remove(s.tokenPath(runtimeDir))
+		return SessionStatus{}, err
+	}
+	return s.status(runtimeDir, "running", "replay session runtime started; local IPC endpoint reserved for generated clients"), nil
 }
 
 func (s *ReplaySession) Status(ctx context.Context) (SessionStatus, error) {
-	return sessionStatus("not-running"), nil
+	runtimeDir, err := s.runtimeDir()
+	if err != nil {
+		return SessionStatus{}, err
+	}
+	if _, err := os.Stat(s.lockPath(runtimeDir)); err == nil {
+		return s.statusFromDisk("running", "replay session runtime is running")
+	} else if !os.IsNotExist(err) {
+		return SessionStatus{}, fmt.Errorf("stat session lock: %w", err)
+	}
+	return s.status(runtimeDir, "not-running", "no replay session lock is active"), nil
 }
 
 func (s *ReplaySession) Stop(ctx context.Context) (SessionStatus, error) {
-	return sessionStatus("stopped"), nil
+	runtimeDir, err := s.runtimeDir()
+	if err != nil {
+		return SessionStatus{}, err
+	}
+	if err := os.Remove(s.lockPath(runtimeDir)); err != nil && !os.IsNotExist(err) {
+		return SessionStatus{}, fmt.Errorf("remove session lock: %w", err)
+	}
+	if err := os.Remove(s.tokenPath(runtimeDir)); err != nil && !os.IsNotExist(err) {
+		return SessionStatus{}, fmt.Errorf("remove session token: %w", err)
+	}
+	if err := os.Remove(s.statePath(runtimeDir)); err != nil && !os.IsNotExist(err) {
+		return SessionStatus{}, fmt.Errorf("remove session state: %w", err)
+	}
+	return s.status(runtimeDir, "stopped", "replay session runtime stopped"), nil
 }
 
-func sessionStatus(state string) SessionStatus {
+type sessionRecord struct {
+	PID       int             ` + "`json:\"pid\"`" + `
+	StartedAt string          ` + "`json:\"started_at\"`" + `
+	Endpoint  SessionEndpoint ` + "`json:\"endpoint\"`" + `
+}
+
+type sessionStateRecord struct {
+	State      string ` + "`json:\"state\"`" + `
+	Detail     string ` + "`json:\"detail\"`" + `
+	ObservedAt string ` + "`json:\"observed_at\"`" + `
+}
+
+func (s *ReplaySession) runtimeDir() (string, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user cache dir: %w", err)
+	}
+	return filepath.Join(cacheDir, s.cliName, "session"), nil
+}
+
+func (s *ReplaySession) endpoint(runtimeDir string) SessionEndpoint {
+	if runtime.GOOS == "windows" {
+		return SessionEndpoint{Kind: "windows-named-pipe", Path: ` + "`\\\\.\\pipe\\`" + ` + sanitizePipeName(s.cliName) + "-session"}
+	}
+	return SessionEndpoint{Kind: "unix-socket", Path: filepath.Join(runtimeDir, "session.sock")}
+}
+
+func (s *ReplaySession) lockPath(runtimeDir string) string {
+	return filepath.Join(runtimeDir, "session.lock")
+}
+
+func (s *ReplaySession) tokenPath(runtimeDir string) string {
+	return filepath.Join(runtimeDir, "capability.token")
+}
+
+func (s *ReplaySession) statePath(runtimeDir string) string {
+	return filepath.Join(runtimeDir, "state.json")
+}
+
+func (s *ReplaySession) writeState(runtimeDir, state, detail string) error {
+	record := sessionStateRecord{
+		State:      state,
+		Detail:     detail,
+		ObservedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode session state: %w", err)
+	}
+	if err := os.WriteFile(s.statePath(runtimeDir), append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write session state: %w", err)
+	}
+	return nil
+}
+
+func (s *ReplaySession) statusFromDisk(fallbackState, fallbackDetail string) (SessionStatus, error) {
+	runtimeDir, err := s.runtimeDir()
+	if err != nil {
+		return SessionStatus{}, err
+	}
+	state := fallbackState
+	detail := fallbackDetail
+	if data, err := os.ReadFile(s.statePath(runtimeDir)); err == nil {
+		var record sessionStateRecord
+		if err := json.Unmarshal(data, &record); err == nil {
+			if record.State != "" {
+				state = record.State
+			}
+			if record.Detail != "" {
+				detail = record.Detail
+			}
+		}
+	}
+	return s.status(runtimeDir, state, detail), nil
+}
+
+func (s *ReplaySession) status(runtimeDir, state, detail string) SessionStatus {
 	return SessionStatus{
 		Device:             DisplayName,
 		Mode:               SessionMode,
 		State:              state,
 		Transport:          "replay",
+		Endpoint:           s.endpoint(runtimeDir),
+		RuntimeDir:         runtimeDir,
+		TokenPresent:       fileExists(s.tokenPath(runtimeDir)),
 		ObservedAt:         time.Now().UTC().Format(time.RFC3339),
 		Reasons:            append([]string(nil), SessionReasons...),
 		OneShotFallback:    SessionOneShotFallback,
 		Reconnect:          SessionReconnect,
 		NotificationStream: SessionNotificationStream,
-		Detail:             "replay session scaffold only; live BLE IPC is not enabled in this generated CLI yet",
+		Detail:             detail,
 	}
+}
+
+func generateSessionToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate session token: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func sanitizePipeName(value string) string {
+	value = strings.ToLower(value)
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-_")
+	if out == "" {
+		return "device-session-" + strconv.Itoa(os.Getpid())
+	}
+	return out
 }
 `
 
@@ -945,7 +1149,8 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 - ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` previews the {{.Name}} BLE write.
 {{- end}}
 {{- if .HasSession}}
-- ` + "`{{.CLIName}} session status --json`" + ` prints the generated session requirements and replay scaffold state.
+- ` + "`{{.CLIName}} session start --json`" + ` creates the local replay session runtime lock, token, and endpoint metadata.
+- ` + "`{{.CLIName}} session status --json`" + ` prints the local replay session runtime state.
 {{- end}}
 {{- if .HasStore}}
 - ` + "`{{.CLIName}} telemetry capture --json`" + ` stores replay-backed telemetry samples locally.
@@ -958,5 +1163,5 @@ name: {{.Name}}
 description: Control {{.DisplayName}} through the generated BLE device CLI.
 ---
 
-Use ` + "`{{.CLIName}} capabilities --json`" + ` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session status --json`" + ` to inspect the generated session requirements before building live BLE IPC.{{else}} Live BLE control and optional session IPC are generated only when later device-session support is enabled by the device spec.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{end}}
+Use ` + "`{{.CLIName}} capabilities --json`" + ` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session start --json`" + ` and ` + "`{{.CLIName}} session status --json`" + ` to inspect the local replay session runtime, including lock, capability-token, and endpoint metadata.{{else}} Live BLE control and optional session IPC are generated only when device-session support is enabled by the device spec.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{end}}
 `

@@ -1,10 +1,13 @@
 package generator
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
@@ -92,8 +95,13 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	sessionSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "session.go"))
 	require.NoError(t, err)
 	session := string(sessionSrc)
-	assert.Contains(t, session, `State:              state`)
-	assert.Contains(t, session, `Detail:             "replay session scaffold only; live BLE IPC is not enabled in this generated CLI yet"`)
+	assert.Contains(t, session, `type SessionEndpoint struct`)
+	assert.Contains(t, session, `session.lock`)
+	assert.Contains(t, session, `capability.token`)
+	assert.Contains(t, session, `state.json`)
+	assert.Contains(t, session, `windows-named-pipe`)
+	assert.Contains(t, session, `unix-socket`)
+	assert.Contains(t, session, `existing replay session lock is active`)
 
 	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "store.go"))
 	require.NoError(t, err)
@@ -117,6 +125,91 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	assert.Contains(t, spec, `WithheldReason: ""`)
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedBLESessionRuntimeTracksLockAndToken(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-session-telemetry.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-session-appliance")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
+
+	homeDir := t.TempDir()
+	status := runGeneratedSessionCommand(t, outputDir, homeDir, "status")
+	assert.Equal(t, "not-running", status["state"])
+	assert.Equal(t, false, status["token_present"])
+
+	started := runGeneratedSessionCommand(t, outputDir, homeDir, "start")
+	assert.Equal(t, "running", started["state"])
+	assert.Equal(t, true, started["token_present"])
+	assert.NotEmpty(t, started["runtime_dir"])
+	endpoint, ok := started["endpoint"].(map[string]any)
+	require.True(t, ok)
+	assert.NotEmpty(t, endpoint["kind"])
+	assert.NotEmpty(t, endpoint["path"])
+
+	runtimeDir, ok := started["runtime_dir"].(string)
+	require.True(t, ok)
+	assert.FileExists(t, filepath.Join(runtimeDir, "session.lock"))
+	assert.FileExists(t, filepath.Join(runtimeDir, "capability.token"))
+	assert.FileExists(t, filepath.Join(runtimeDir, "state.json"))
+	assertSessionFileMode(t, runtimeDir, 0o700)
+	assertSessionFileMode(t, filepath.Join(runtimeDir, "session.lock"), 0o600)
+	assertSessionFileMode(t, filepath.Join(runtimeDir, "capability.token"), 0o600)
+	assertSessionFileMode(t, filepath.Join(runtimeDir, "state.json"), 0o600)
+
+	secondStart := runGeneratedSessionCommand(t, outputDir, homeDir, "start")
+	assert.Equal(t, "running", secondStart["state"])
+	assert.Equal(t, true, secondStart["token_present"])
+
+	stopped := runGeneratedSessionCommand(t, outputDir, homeDir, "stop")
+	assert.Equal(t, "stopped", stopped["state"])
+	assert.Equal(t, false, stopped["token_present"])
+	assert.NoFileExists(t, filepath.Join(runtimeDir, "session.lock"))
+	assert.NoFileExists(t, filepath.Join(runtimeDir, "capability.token"))
+	assert.NoFileExists(t, filepath.Join(runtimeDir, "state.json"))
+}
+
+func runGeneratedSessionCommand(t *testing.T, outputDir, homeDir, action string) map[string]any {
+	t.Helper()
+
+	cmd := exec.Command("go", "run", "-mod=mod", "./cmd/ble-session-appliance-pp-cli", "--json", "session", action)
+	cmd.Dir = outputDir
+	cacheDir, err := goBuildCacheDir(outputDir)
+	require.NoError(t, err)
+	modCacheDir := os.Getenv("GOMODCACHE")
+	if modCacheDir == "" {
+		output, err := exec.Command("go", "env", "GOMODCACHE").Output()
+		require.NoError(t, err)
+		modCacheDir = strings.TrimSpace(string(output))
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.Env = append(os.Environ(),
+		"GOCACHE="+cacheDir,
+		"GOMODCACHE="+modCacheDir,
+		"HOME="+homeDir,
+		"XDG_CACHE_HOME="+filepath.Join(homeDir, ".cache"),
+	)
+	output, err := cmd.Output()
+	require.NoError(t, err, stderr.String())
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(output, &result))
+	return result
+}
+
+func assertSessionFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, want, info.Mode().Perm())
 }
 
 func TestGenerateLowRiskBLEDeviceCommandCompiles(t *testing.T) {
