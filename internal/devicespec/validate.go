@@ -2,6 +2,7 @@ package devicespec
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -95,10 +96,8 @@ func (s *DeviceSpec) Validate() error {
 }
 
 func validateEnum(field, got string, allowed ...string) error {
-	for _, value := range allowed {
-		if got == value {
-			return nil
-		}
+	if slices.Contains(allowed, got) {
+		return nil
 	}
 	return fmt.Errorf("%s must be one of %s", field, strings.Join(quoteValues(allowed), ", "))
 }

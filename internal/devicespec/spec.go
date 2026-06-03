@@ -63,10 +63,10 @@ type DeviceSpec struct {
 	Name         string             `yaml:"name" json:"name"`
 	DisplayName  string             `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	Protocol     string             `yaml:"protocol" json:"protocol"`
-	Identity     DeviceIdentity     `yaml:"identity,omitempty" json:"identity,omitempty"`
+	Identity     DeviceIdentity     `yaml:"identity,omitempty" json:"identity"`
 	BLE          BLESurface         `yaml:"ble" json:"ble"`
-	Capabilities DeviceCapabilities `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Session      SessionProfile     `yaml:"session,omitempty" json:"session,omitempty"`
+	Capabilities DeviceCapabilities `yaml:"capabilities,omitempty" json:"capabilities"`
+	Session      SessionProfile     `yaml:"session,omitempty" json:"session"`
 	Evidence     []EvidenceRef      `yaml:"evidence,omitempty" json:"evidence,omitempty"`
 }
 
@@ -105,7 +105,7 @@ type DeviceCommand struct {
 	Safety             string        `yaml:"safety,omitempty" json:"safety,omitempty"`
 	ValidationStatus   string        `yaml:"validation_status,omitempty" json:"validation_status,omitempty"`
 	EvidenceRefs       []string      `yaml:"evidence_refs,omitempty" json:"evidence_refs,omitempty"`
-	Payload            DevicePayload `yaml:"payload,omitempty" json:"payload,omitempty"`
+	Payload            DevicePayload `yaml:"payload,omitempty" json:"payload"`
 }
 
 type DevicePayload struct {
