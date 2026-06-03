@@ -226,7 +226,7 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 
 const deviceGoModTemplate = `module {{.ModulePath}}
 
-go 1.26.3
+go 1.26.4
 
 require github.com/spf13/cobra v1.9.1
 `
