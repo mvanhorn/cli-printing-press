@@ -73,6 +73,7 @@ func runDeviceSniffBLE(cmd *cobra.Command, opts bleSniffCLIOptions) error {
 		return fmt.Errorf("loading BLE evidence: %w", err)
 	}
 	input.RedactionTerms = append(input.RedactionTerms, opts.redactionTerms...)
+	redactedNameTerms := blesniff.HasEffectiveRedactionTerms(input.RedactionTerms)
 	input = blesniff.RedactEvidence(input)
 
 	analysis, err := blesniff.AnalyzeEvidence(input)
@@ -116,7 +117,7 @@ func runDeviceSniffBLE(cmd *cobra.Command, opts bleSniffCLIOptions) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Device spec written to %s (%d command%s, %d telemetry field%s)\n", outputPath, summary.Commands, plural(summary.Commands), summary.Telemetry, plural(summary.Telemetry))
 	fmt.Fprintf(cmd.OutOrStdout(), "BLE analysis written to %s\n", analysisPath)
 	redactionNote := "device addresses pseudonymized"
-	if len(opts.redactionTerms) > 0 {
+	if redactedNameTerms {
 		redactionNote = "device addresses pseudonymized, supplied name terms redacted"
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Archived evidence written to %s (%s; captured values preserved)\n", evidencePath, redactionNote)

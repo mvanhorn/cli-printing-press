@@ -365,5 +365,12 @@ func TestGenerateUnknownBLECommandAsMetadataOnly(t *testing.T) {
 	assert.Contains(t, spec, `Callable: false`)
 	assert.Contains(t, spec, `WithheldReason: "withheld: command is not observed or replay-validated"`)
 
+	skillSrc, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	skill := string(skillSrc)
+	assert.Contains(t, skill, "capabilities --json")
+	assert.NotContains(t, skill, "--dry-run --json", "withheld commands must not advertise a replay preview in SKILL.md")
+	assert.NotContains(t, skill, "--confirm-physical-effect", "withheld commands must not advertise the confirmation flag in SKILL.md")
+
 	requireGeneratedCompiles(t, outputDir)
 }

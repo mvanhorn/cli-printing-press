@@ -55,6 +55,12 @@ type deviceCommandField struct {
 	WithheldReason     string
 }
 
+// This drives the SKILL.md confirmation clause and must stay in lockstep with
+// the emitted runtime gate `requiresPhysicalConfirmation`, which repeats the same
+// safety set as raw string literals because the generated module cannot import
+// devicespec. Adding a safety class here without updating that template branch
+// would make the generated CLI gate a write the SKILL never documents (or vice
+// versa).
 func (f deviceCommandField) RequiresPhysicalConfirmation() bool {
 	switch f.Safety {
 	case devicespec.SafetyPhysicalEffect, devicespec.SafetyConfigurationRisk:

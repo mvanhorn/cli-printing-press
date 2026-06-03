@@ -48,12 +48,9 @@ func RedactEvidence(input EvidenceInput) EvidenceInput {
 }
 
 func buildRedactionPatterns(terms []string) []*regexp.Regexp {
-	patterns := make([]*regexp.Regexp, 0, len(terms)*2)
-	for _, term := range terms {
-		term = strings.TrimSpace(term)
-		if term == "" {
-			continue
-		}
+	effective := effectiveRedactionTerms(terms)
+	patterns := make([]*regexp.Regexp, 0, len(effective)*2)
+	for _, term := range effective {
 		// Case-insensitive: a term the operator asked to redact must not survive
 		// just because the advertised name used different casing. Match the
 		// possessive form first so "Owner's" collapses before "Owner".
@@ -61,6 +58,27 @@ func buildRedactionPatterns(terms []string) []*regexp.Regexp {
 		patterns = append(patterns, regexp.MustCompile("(?i)"+regexp.QuoteMeta(term)))
 	}
 	return patterns
+}
+
+// effectiveRedactionTerms returns the normalized, non-empty terms that drive a
+// redaction. The CLI archive note keys off these so it never claims name terms
+// were redacted when every supplied term was blank, and never stays silent when
+// terms arrive from the evidence file rather than --redact-term.
+func effectiveRedactionTerms(terms []string) []string {
+	effective := make([]string, 0, len(terms))
+	for _, term := range terms {
+		if term = strings.TrimSpace(term); term != "" {
+			effective = append(effective, term)
+		}
+	}
+	return effective
+}
+
+// HasEffectiveRedactionTerms reports whether terms contains at least one term
+// that survives normalization and will drive a name redaction. Callers use it
+// to describe redaction accurately without duplicating the normalization rule.
+func HasEffectiveRedactionTerms(terms []string) bool {
+	return len(effectiveRedactionTerms(terms)) > 0
 }
 
 func redactSensitiveTerms(value string, patterns []*regexp.Regexp) string {

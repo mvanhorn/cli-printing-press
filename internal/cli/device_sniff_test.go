@@ -160,7 +160,8 @@ func TestDeviceSniffBLERedactTermFlagIsNotArchived(t *testing.T) {
 	evidencePath := filepath.Join(dir, "evidence.json")
 
 	cmd := newDeviceSniffCmd()
-	cmd.SetOut(new(bytes.Buffer))
+	stdout := new(bytes.Buffer)
+	cmd.SetOut(stdout)
 	cmd.SetArgs([]string{
 		"ble",
 		"--input", inputPath,
@@ -176,6 +177,68 @@ func TestDeviceSniffBLERedactTermFlagIsNotArchived(t *testing.T) {
 	assert.NotContains(t, text, "Owner")
 	assert.NotContains(t, text, "redaction_terms")
 	assert.Contains(t, text, "redacted Device")
+	assert.Contains(t, stdout.String(), "supplied name terms redacted",
+		"the archive note must report name redaction when --redact-term actually applied")
+}
+
+// TestDeviceSniffBLERedactionNoteReflectsEffectiveTerms guards the archive note
+// against both ways it can lie: claiming name redaction when every supplied term
+// was blank (over-claim), and staying silent when terms arrive from the evidence
+// file rather than --redact-term (under-claim).
+func TestDeviceSniffBLERedactionNoteReflectsEffectiveTerms(t *testing.T) {
+	t.Parallel()
+
+	const claim = "supplied name terms redacted"
+	cases := []struct {
+		name      string
+		fileTerms string
+		redactArg []string
+		wantClaim bool
+	}{
+		{name: "no terms", fileTerms: "", redactArg: nil, wantClaim: false},
+		{name: "blank flag term only", fileTerms: "", redactArg: []string{"   "}, wantClaim: false},
+		{name: "file term, no flag", fileTerms: `"redaction_terms": ["Owner"],`, redactArg: nil, wantClaim: true},
+		{name: "flag term", fileTerms: "", redactArg: []string{"Owner"}, wantClaim: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			inputPath := filepath.Join(dir, "input.json")
+			require.NoError(t, os.WriteFile(inputPath, []byte(`{
+  "name": "owner-device",
+  `+tc.fileTerms+`
+  "identity": {"advertised_names": ["Owner Device"]},
+  "events": [
+    {"id": "adv", "type": "advertisement", "device_address": "AA:BB:CC:DD:EE:01", "device_name": "Owner Device"},
+    {"id": "svc", "type": "service_discovery", "service_uuid": "ff00", "characteristic_uuid": "ff01", "properties": ["read"]}
+  ]
+}`), 0o600))
+
+			args := []string{
+				"ble",
+				"--input", inputPath,
+				"--output", filepath.Join(dir, "device.yaml"),
+				"--evidence-output", filepath.Join(dir, "evidence.json"),
+			}
+			for _, term := range tc.redactArg {
+				args = append(args, "--redact-term", term)
+			}
+
+			cmd := newDeviceSniffCmd()
+			stdout := new(bytes.Buffer)
+			cmd.SetOut(stdout)
+			cmd.SetArgs(args)
+
+			require.NoError(t, cmd.Execute())
+			if tc.wantClaim {
+				assert.Contains(t, stdout.String(), claim)
+			} else {
+				assert.NotContains(t, stdout.String(), claim)
+			}
+		})
+	}
 }
 
 func TestDeviceSniffBLECmdRequiresCapturedEvidenceInput(t *testing.T) {
