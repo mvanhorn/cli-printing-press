@@ -17,6 +17,18 @@ type rootFlags struct {
 	dryRun bool
 }
 
+// novelCommands is an optional hook for hand-authored commands. It is nil by
+// default (no extra commands). To extend this CLI WITHOUT editing generated
+// files, add a file in package cli — it is preserved across regeneration — that
+// sets this var from an init function:
+//
+//	func init() {
+//		novelCommands = func(root *cobra.Command, flags *rootFlags) {
+//			root.AddCommand(newMyCmd(flags))
+//		}
+//	}
+var novelCommands func(root *cobra.Command, flags *rootFlags)
+
 func RootCmd() *cobra.Command {
 	var flags rootFlags
 	return newRootCmd(&flags)
@@ -46,6 +58,9 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.AddCommand(newCapabilitiesCmd(flags))
 	rootCmd.AddCommand(newStatusCmd(flags, device.NewReplayTransport()))
 	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.NewReplayTransport(), device.CommandDefinition{Name: "toggle", CharacteristicUUID: "ff01", Safety: "low-risk-write", ValidationStatus: "observed", PayloadHex: "01"}))
+	if novelCommands != nil {
+		novelCommands(rootCmd, flags)
+	}
 	return rootCmd
 }
 

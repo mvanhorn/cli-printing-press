@@ -102,6 +102,45 @@ func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir) // builds ./... including the MCP binary
 }
 
+func TestGeneratedBLEEmitsNovelCommandHook(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	root := string(rootSrc)
+	// A nil-guarded function-variable hook: hand-authored commands attach via an
+	// operator-owned file that sets novelCommands, with no edit to generated
+	// files. The default build is a no-op (nil hook).
+	assert.Contains(t, root, "var novelCommands func(root *cobra.Command, flags *rootFlags)")
+	assert.Contains(t, root, "if novelCommands != nil {")
+	assert.Contains(t, root, "novelCommands(rootCmd, flags)")
+
+	// The generated CLI compiles with the hook unset (no operator file present).
+	requireGeneratedCompiles(t, outputDir)
+
+	// An operator file that wires the hook builds and adds a command. This mirrors
+	// how regenmerge preserves snapshot-only (NOVEL) files verbatim across regen.
+	operatorFile := filepath.Join(outputDir, "internal", "cli", "novel_ops.go")
+	require.NoError(t, os.WriteFile(operatorFile, []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func init() {
+	novelCommands = func(root *cobra.Command, flags *rootFlags) {
+		_ = flags
+		root.AddCommand(&cobra.Command{Use: "ping", RunE: func(c *cobra.Command, a []string) error { return nil }})
+	}
+}
+`), 0o644))
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedBLECommandShortCircuitsUnderVerifyEnv(t *testing.T) {
 	t.Parallel()
 
