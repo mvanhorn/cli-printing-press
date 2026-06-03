@@ -17,8 +17,10 @@ func AnalyzeEvidence(input EvidenceInput) (*Analysis, error) {
 	input = RedactEvidence(input)
 
 	spec := &devicespec.DeviceSpec{
-		Version:      devicespec.SupportedVersion,
-		Name:         input.Name,
+		Version: devicespec.SupportedVersion,
+		// Slug the (already-redacted) name so an arbitrary advertised device
+		// name never aborts Validate's IsSlug check; DisplayName keeps the prose.
+		Name:         naming.Slug(input.Name),
 		DisplayName:  input.DisplayName,
 		Protocol:     devicespec.ProtocolBLE,
 		Identity:     input.Identity,
@@ -505,5 +507,5 @@ func decodeHex(value string) ([]byte, error) {
 }
 
 func normalizeUUID(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
+	return devicespec.NormalizeUUID(value)
 }

@@ -20,7 +20,7 @@ func ParseBytes(data []byte) (*DeviceSpec, error) {
 	if err := yaml.Unmarshal(data, &ds); err != nil {
 		return nil, fmt.Errorf("parse device spec: %w", err)
 	}
-	ds.applyDefaults()
+	ds.applyDefaults(oneShotFallbackPresent(data))
 	if err := ds.Validate(); err != nil {
 		return nil, err
 	}
@@ -38,7 +38,22 @@ func LooksLikeDeviceSpec(data []byte) bool {
 	return raw.Protocol == ProtocolBLE && len(raw.BLE.Services) > 0
 }
 
-func (s *DeviceSpec) applyDefaults() {
+// oneShotFallbackPresent reports whether session.one_shot_fallback was set
+// explicitly in the source YAML, so applyDefaults can default it without
+// clobbering an explicit false (which Validate permits for optional mode).
+func oneShotFallbackPresent(data []byte) bool {
+	var raw struct {
+		Session struct {
+			OneShotFallback *bool `yaml:"one_shot_fallback"`
+		} `yaml:"session"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return raw.Session.OneShotFallback != nil
+}
+
+func (s *DeviceSpec) applyDefaults(oneShotFallbackExplicit bool) {
 	if s.Protocol == "" {
 		s.Protocol = ProtocolBLE
 	}
@@ -48,7 +63,7 @@ func (s *DeviceSpec) applyDefaults() {
 	if s.Session.Mode == "" {
 		s.Session.Mode = SessionModeOneShot
 	}
-	if s.Session.Mode == SessionModeOptional {
+	if s.Session.Mode == SessionModeOptional && !oneShotFallbackExplicit {
 		s.Session.OneShotFallback = true
 	}
 }

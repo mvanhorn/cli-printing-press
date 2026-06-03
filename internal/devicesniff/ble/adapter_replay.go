@@ -30,7 +30,7 @@ func (a *ReplayAdapter) Scan(ctx context.Context, opts ScanOptions) ([]DeviceCan
 	for _, uuid := range opts.ServiceUUIDs {
 		required[normalizeUUID(uuid)] = true
 	}
-	filtered := candidates[:0]
+	filtered := make([]DeviceCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		for _, uuid := range candidate.ServiceUUIDs {
 			if required[normalizeUUID(uuid)] {

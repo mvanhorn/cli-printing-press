@@ -2,6 +2,7 @@ package ble
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -33,6 +34,15 @@ func RedactEvidence(input EvidenceInput) EvidenceInput {
 	for i, name := range input.Identity.AdvertisedNames {
 		input.Identity.AdvertisedNames[i] = redactSensitiveTerms(name, redactionTerms)
 	}
+	// Action labels and community command names are slugged into device-spec
+	// command names and evidence summaries, so an unredacted term here would
+	// leak into the very artifact redaction is meant to make shareable.
+	for i := range input.Actions {
+		input.Actions[i].Label = redactSensitiveTerms(input.Actions[i].Label, redactionTerms)
+	}
+	for i := range input.CommunityReferences {
+		input.CommunityReferences[i].CommandName = redactSensitiveTerms(input.CommunityReferences[i].CommandName, redactionTerms)
+	}
 	return input
 }
 
@@ -42,8 +52,20 @@ func redactSensitiveTerms(value string, terms []string) string {
 		if term == "" {
 			continue
 		}
-		value = strings.ReplaceAll(value, strings.TrimSuffix(term, "'s")+"'s", "redacted")
-		value = strings.ReplaceAll(value, term, "redacted")
+		// Case-insensitive: a term the operator asked to redact must not survive
+		// just because the advertised name used different casing. Match the
+		// possessive form first so "Owner's" collapses before "Owner".
+		value = replaceAllFold(value, strings.TrimSuffix(term, "'s")+"'s", "redacted")
+		value = replaceAllFold(value, term, "redacted")
 	}
 	return value
+}
+
+// replaceAllFold replaces every case-insensitive occurrence of term in value
+// with replacement. term is matched literally (regex metacharacters escaped).
+func replaceAllFold(value, term, replacement string) string {
+	if term == "" {
+		return value
+	}
+	return regexp.MustCompile("(?i)"+regexp.QuoteMeta(term)).ReplaceAllString(value, replacement)
 }

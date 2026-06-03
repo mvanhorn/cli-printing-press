@@ -43,7 +43,7 @@ func (s *DeviceSpec) Validate() error {
 			if strings.TrimSpace(ch.UUID) == "" {
 				return fmt.Errorf("ble.services[%d].characteristics[%d].uuid is required", si, ci)
 			}
-			characteristics[normalizeUUID(ch.UUID)] = ch
+			characteristics[NormalizeUUID(ch.UUID)] = ch
 		}
 	}
 	for i, cmd := range s.Capabilities.Commands {
@@ -53,7 +53,7 @@ func (s *DeviceSpec) Validate() error {
 		if strings.TrimSpace(cmd.CharacteristicUUID) == "" {
 			return fmt.Errorf("commands[%d].characteristic_uuid is required", i)
 		}
-		if _, ok := characteristics[normalizeUUID(cmd.CharacteristicUUID)]; !ok {
+		if _, ok := characteristics[NormalizeUUID(cmd.CharacteristicUUID)]; !ok {
 			return fmt.Errorf("commands[%d] references missing characteristic %q", i, cmd.CharacteristicUUID)
 		}
 		if strings.TrimSpace(cmd.Safety) == "" {
@@ -87,7 +87,7 @@ func (s *DeviceSpec) Validate() error {
 		if strings.TrimSpace(field.SourceCharacteristicUUID) == "" {
 			return fmt.Errorf("telemetry[%d].source_characteristic_uuid is required", i)
 		}
-		if _, ok := characteristics[normalizeUUID(field.SourceCharacteristicUUID)]; !ok {
+		if _, ok := characteristics[NormalizeUUID(field.SourceCharacteristicUUID)]; !ok {
 			return fmt.Errorf("telemetry[%d] references missing characteristic %q", i, field.SourceCharacteristicUUID)
 		}
 	}
@@ -115,6 +115,9 @@ func quoteValues(values []string) []string {
 	return out
 }
 
-func normalizeUUID(value string) string {
+// NormalizeUUID lower-cases and trims a UUID so service/characteristic lookups
+// compare equal regardless of source casing or surrounding whitespace. Exported
+// as the single source of truth shared by the devicesniff packages.
+func NormalizeUUID(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
