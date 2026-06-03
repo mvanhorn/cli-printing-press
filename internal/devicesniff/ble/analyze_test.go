@@ -113,6 +113,29 @@ func TestAnalyzeEvidenceSkipsMalformedCorrelationTimestamps(t *testing.T) {
 	assert.Contains(t, result.Report.Ambiguities[1], `write-bad-time has invalid write timestamp "not-a-time"; skipped`)
 }
 
+func TestAnalyzeEvidenceSkipsMalformedWriteHex(t *testing.T) {
+	t.Parallel()
+
+	result, err := AnalyzeEvidence(EvidenceInput{
+		Name: "test-device",
+		Events: []Event{
+			{ID: "svc", Type: EventServiceDiscovery, ServiceUUID: "aa00", CharacteristicUUID: "aa01", Properties: []string{"write"}},
+			{ID: "write-good", Type: EventWrite, At: "2026-06-01T12:00:06Z", CharacteristicUUID: "aa01", ValueHex: "0101"},
+			{ID: "write-bad-hex", Type: EventWrite, At: "2026-06-01T12:01:06Z", CharacteristicUUID: "aa01", ValueHex: "not-hex"},
+		},
+		Actions: []ActionMarker{
+			{ID: "action-good", Label: "power-on", At: "2026-06-01T12:00:05Z", Safety: devicespec.SafetyLowRiskWrite},
+			{ID: "action-bad-hex", Label: "power-off", At: "2026-06-01T12:01:05Z", Safety: devicespec.SafetyLowRiskWrite},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Spec.Capabilities.Commands, 1)
+	assert.Equal(t, "power-on", result.Spec.Capabilities.Commands[0].Name)
+	assert.Equal(t, []byte{0x01, 0x01}, result.Spec.Capabilities.Commands[0].Payload.Bytes)
+	require.NotEmpty(t, result.Report.Ambiguities)
+	assert.Contains(t, result.Report.Ambiguities[0], `write-bad-hex has invalid value_hex "not-hex"; skipped`)
+}
+
 func TestAnalyzeEvidenceUsesCommunityReferenceAsEvidence(t *testing.T) {
 	t.Parallel()
 
@@ -128,6 +151,39 @@ func TestAnalyzeEvidenceUsesCommunityReferenceAsEvidence(t *testing.T) {
 	assert.Equal(t, []byte{0xf7, 0xa5, 0x01, 0x00, 0xfd}, cmd.Payload.Bytes)
 	assert.Equal(t, CommandDiscoveryGuidedCandidates, result.Report.CommandDiscovery.Status)
 	assert.Equal(t, []string{GuidanceSourceCommunityReference}, result.Report.CommandDiscovery.GuidanceSources)
+}
+
+func TestAnalyzeEvidenceSkipsMalformedCommunityPayloadHex(t *testing.T) {
+	t.Parallel()
+
+	result, err := AnalyzeEvidence(EvidenceInput{
+		Name: "test-device",
+		Events: []Event{
+			{ID: "svc", Type: EventServiceDiscovery, ServiceUUID: "aa00", CharacteristicUUID: "aa01", Properties: []string{"write"}},
+		},
+		CommunityReferences: []CommunityReference{
+			{
+				ID:                 "ref-good",
+				CommandName:        "good-command",
+				CharacteristicUUID: "aa01",
+				PayloadHex:         "aabb",
+				Safety:             devicespec.SafetyLowRiskWrite,
+			},
+			{
+				ID:                 "ref-bad",
+				CommandName:        "bad-command",
+				CharacteristicUUID: "aa01",
+				PayloadHex:         "not-hex",
+				Safety:             devicespec.SafetyLowRiskWrite,
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Spec.Capabilities.Commands, 1)
+	assert.Equal(t, "good-command", result.Spec.Capabilities.Commands[0].Name)
+	assert.Equal(t, []byte{0xaa, 0xbb}, result.Spec.Capabilities.Commands[0].Payload.Bytes)
+	require.NotEmpty(t, result.Report.Ambiguities)
+	assert.Contains(t, result.Report.Ambiguities[0], `ref-bad has invalid payload_hex "not-hex"; skipped`)
 }
 
 func TestAnalyzeEvidenceReportsAmbiguousDeviceDiscovery(t *testing.T) {

@@ -217,7 +217,8 @@ func inferCommands(input EvidenceInput) ([]devicespec.DeviceCommand, []Candidate
 		write := writes[0]
 		payload, err := decodeHex(write.ValueHex)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("%s value_hex: %w", write.ID, err)
+			ambiguities = append(ambiguities, fmt.Sprintf("%s has invalid value_hex %q; skipped: %v", write.ID, write.ValueHex, err))
+			continue
 		}
 		name, skip := commandNameFromLabel(action.Label, action.ID)
 		if skip {
@@ -255,7 +256,8 @@ func commandsFromCommunityReferences(refs []CommunityReference) ([]devicespec.De
 	for _, ref := range refs {
 		payload, err := decodeHex(ref.PayloadHex)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("%s payload_hex: %w", ref.ID, err)
+			ambiguities = append(ambiguities, fmt.Sprintf("%s has invalid payload_hex %q; skipped: %v", ref.ID, ref.PayloadHex, err))
+			continue
 		}
 		name, skip := commandNameFromLabel(ref.CommandName, ref.ID)
 		if skip {
