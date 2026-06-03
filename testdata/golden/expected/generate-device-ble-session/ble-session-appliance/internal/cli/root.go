@@ -81,7 +81,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.AddCommand(newScanCmd(flags))
 	rootCmd.AddCommand(newSessionCmd(flags, device.NewReplaySession()))
 	rootCmd.AddCommand(newTelemetryCmd(flags, device.NewReplayTransport()))
-	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: "start", CharacteristicUUID: "fd01", Safety: "physical-effect", ValidationStatus: "replay-validated", PayloadHex: "a001"}))
+	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: "start", CharacteristicUUID: "fd01", Safety: "physical-effect", ValidationStatus: "replay-validated", PayloadHex: "a001", Parameters: []string{}}))
 	if novelCommands != nil {
 		novelCommands(rootCmd, flags)
 	}

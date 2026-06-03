@@ -295,8 +295,18 @@ func TestGeneratedBLEDeviceEmitsParameterizedCommand(t *testing.T) {
 	root := readFileString(t, filepath.Join(outputDir, "internal", "cli", "root.go"))
 	assert.Contains(t, root, `use += " <" + param + ">"`)
 	assert.Contains(t, root, "cobra.ExactArgs(len(definition.Parameters))")
+	// The parameter names must reach the command at construction time: the
+	// AddCommand call must pass Parameters, not just the CommandDefinitions var.
+	assert.Contains(t, root, `Parameters: []string{"level"}`)
 
 	requireGeneratedCompiles(t, outputDir)
+
+	// End-to-end: the built command must accept its positional arg (replay mode),
+	// not reject it with "accepts 0 arg(s)".
+	bin := filepath.Join(outputDir, "ble-param-device-pp-cli")
+	runGoCommandRequired(t, outputDir, "build", "-o", bin, "./cmd/ble-param-device-pp-cli")
+	stdout, _ := runGeneratedBinary(t, bin, "set-level", "5", "--dry-run", "--json")
+	assert.Contains(t, stdout, "set-level")
 }
 
 func readFileString(t *testing.T, path string) string {

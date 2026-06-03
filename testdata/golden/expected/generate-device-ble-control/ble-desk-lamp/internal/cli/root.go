@@ -77,7 +77,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.AddCommand(newStatusCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))
 	rootCmd.AddCommand(newScanCmd(flags))
-	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: "toggle", CharacteristicUUID: "ff01", Safety: "low-risk-write", ValidationStatus: "observed", PayloadHex: "01"}))
+	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: "toggle", CharacteristicUUID: "ff01", Safety: "low-risk-write", ValidationStatus: "observed", PayloadHex: "01", Parameters: []string{}}))
 	if novelCommands != nil {
 		novelCommands(rootCmd, flags)
 	}

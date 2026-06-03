@@ -413,7 +413,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.AddCommand(newTelemetryCmd(flags, device.NewReplayTransport()))
 {{- end}}
 {{- range .Commands}}
-	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}}))
+	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}, Parameters: []string{ {{- range .Parameters}}{{quote .}}, {{- end}} }}))
 {{- end}}
 	if novelCommands != nil {
 		novelCommands(rootCmd, flags)
