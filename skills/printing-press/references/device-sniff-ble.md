@@ -123,6 +123,27 @@ Safety labels are classification and provenance, not moral policing.
 - Normal verify/dogfood must not actuate real hardware. Verify-mode no-ops are expected for physical-effect writes.
 - MCP read-only annotations must be conservative. False read-only is a bug; missing read-only is just a permission prompt.
 
+## Generated Live Control (Tier-1 vs Tier-2)
+
+The generated CLI is **replay-backed by default**: commands echo the captured payload they would send and `status` reports the telemetry shape, without opening a connection. This default build is pure-Go, CGO-free, and never touches hardware (verify/dogfood/`go test` stay safe). Real control is opt-in on two axes:
+
+- **Build tag** `-tags ble_live` links the real BLE adapter (`go build -tags ble_live ./...`; CGO/CoreBluetooth on macOS, pure-Go D-Bus on Linux, WinRT on Windows).
+- **Runtime flag** `--live` (with optional `--address`, `--timeout`) actuates the device. Physical-effect/configuration-risk commands still require `--confirm-physical-effect`; verify mode short-circuits before dialing.
+
+Before shipping, classify the device and act accordingly:
+
+**Tier-1 — fixed-payload commands + readable telemetry.** Works end to end with **zero hand-authoring**. The generated `LiveTransport` scans by service UUID, connects, writes each command's captured payload to its characteristic, and reads readable telemetry characteristics. Nothing to implement — verify `go build -tags ble_live ./...` compiles and (if you have hardware) `--live` actuates.
+
+**Tier-2 — stateful or parameterized protocols.** A device whose commands need computed framing (checksums, sequence counters), value scaling (e.g. km/h → protocol units), notify-based telemetry frames, or a held-connection poll loop **cannot be driven from static captured evidence**. The generic transport will write the raw captured bytes, which is usually wrong for these devices. You MUST, in operator-owned files preserved across regeneration:
+
+1. Write a **codec** (pure Go, no BLE) that builds command frames and parses telemetry frames — the single source of truth for the wire format, grounded in the mapping evidence and cited protocol references. Add a `codec_test.go` that tests it with no hardware.
+2. Add **hand-authored commands** via the `novelCommands` hook (set it from an `init` in your own file in `internal/cli`; it is preserved as a NOVEL file across regen). Use the generated, exported `device.Dial(ctx, address, timeout) (device.Link, error)` to open a connection and `device.Link` (`Write`/`Read`/`Subscribe`/`Close`) to drive it with your codec — do not reimplement the BLE backend.
+3. Optionally register a `device.DeviceCodec` (`codec = myCodec{}`) so the generated `status` surfaces decoded telemetry values.
+4. **Gate every live command** on `cliutil.IsVerifyEnv()` (no-op under verify; `device.Dial` also refuses with `ErrVerifyMode` as a backstop) and `cliutil.IsDogfoodEnv()` (bound long-running work). Keep the print-by-default / `--live`-to-actuate stance and conservative MCP annotations.
+5. Verify before ship: `go test ./...` (covers the codec and the generated Tier-1 path), `go build -tags ble_live ./...` compiles, and the live commands actuate on hardware when available.
+
+A printed Tier-2 CLI whose live commands silently no-op or write wrong bytes is a failure, not an acceptable outcome — detect the stateful protocol and implement the codec + novel commands. The reverse-engineered protocol logic is irreducible per-device work; the BLE plumbing, connection management, build tags, flags, and safety gating are already generated.
+
 ## Session And UI Considerations
 
 Session scaffolding is optional and device-driven.
