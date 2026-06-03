@@ -90,6 +90,29 @@ func TestAnalyzeEvidencePreservesAmbiguousWrites(t *testing.T) {
 	assert.Contains(t, result.Report.Ambiguities[0], "write-b")
 }
 
+func TestAnalyzeEvidenceSkipsMalformedCorrelationTimestamps(t *testing.T) {
+	t.Parallel()
+
+	result, err := AnalyzeEvidence(EvidenceInput{
+		Name: "test-device",
+		Events: []Event{
+			{ID: "svc", Type: EventServiceDiscovery, ServiceUUID: "aa00", CharacteristicUUID: "aa01", Properties: []string{"write"}},
+			{ID: "write-bad-time", Type: EventWrite, At: "not-a-time", CharacteristicUUID: "aa01", ValueHex: "0101"},
+			{ID: "write-good", Type: EventWrite, At: "2026-06-01T12:00:06Z", CharacteristicUUID: "aa01", ValueHex: "0202"},
+		},
+		Actions: []ActionMarker{
+			{ID: "action-bad-time", Label: "bad time", At: "not-a-time", Safety: devicespec.SafetyLowRiskWrite},
+			{ID: "action-good", Label: "power-on", At: "2026-06-01T12:00:05Z", Safety: devicespec.SafetyLowRiskWrite},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Spec.Capabilities.Commands, 1)
+	assert.Equal(t, "power-on", result.Spec.Capabilities.Commands[0].Name)
+	require.Len(t, result.Report.Ambiguities, 2)
+	assert.Contains(t, result.Report.Ambiguities[0], `action-bad-time has invalid action timestamp "not-a-time"; skipped`)
+	assert.Contains(t, result.Report.Ambiguities[1], `write-bad-time has invalid write timestamp "not-a-time"; skipped`)
+}
+
 func TestAnalyzeEvidenceUsesCommunityReferenceAsEvidence(t *testing.T) {
 	t.Parallel()
 

@@ -197,10 +197,15 @@ func inferCommands(input EvidenceInput) ([]devicespec.DeviceCommand, []Candidate
 	var commands []devicespec.DeviceCommand
 	var summaries []CandidateSummary
 	var ambiguities []string
+	seenTimestampAmbiguity := map[string]bool{}
 	for _, action := range input.Actions {
-		writes, err := writesNearAction(input.Events, action)
-		if err != nil {
-			return nil, nil, nil, err
+		writes, timestampAmbiguities := writesNearAction(input.Events, action)
+		for _, ambiguity := range timestampAmbiguities {
+			if seenTimestampAmbiguity[ambiguity] {
+				continue
+			}
+			seenTimestampAmbiguity[ambiguity] = true
+			ambiguities = append(ambiguities, ambiguity)
 		}
 		if len(writes) == 0 {
 			continue
@@ -419,19 +424,21 @@ func commandDiscoveryMessage(status string) string {
 	}
 }
 
-func writesNearAction(events []Event, action ActionMarker) ([]Event, error) {
+func writesNearAction(events []Event, action ActionMarker) ([]Event, []string) {
 	actionTime, err := time.Parse(time.RFC3339, action.At)
 	if err != nil {
-		return nil, fmt.Errorf("%s at: %w", action.ID, err)
+		return nil, []string{fmt.Sprintf("%s has invalid action timestamp %q; skipped: %v", action.ID, action.At, err)}
 	}
 	var writes []Event
+	var ambiguities []string
 	for _, event := range events {
 		if event.Type != EventWrite {
 			continue
 		}
 		eventTime, err := time.Parse(time.RFC3339, event.At)
 		if err != nil {
-			return nil, fmt.Errorf("%s at: %w", event.ID, err)
+			ambiguities = append(ambiguities, fmt.Sprintf("%s has invalid write timestamp %q; skipped: %v", event.ID, event.At, err))
+			continue
 		}
 		if eventTime.Before(actionTime) || eventTime.Sub(actionTime) > actionCorrelationWindow {
 			continue
@@ -439,7 +446,7 @@ func writesNearAction(events []Event, action ActionMarker) ([]Event, error) {
 		writes = append(writes, event)
 	}
 	sort.Slice(writes, func(i, j int) bool { return writes[i].ID < writes[j].ID })
-	return writes, nil
+	return writes, ambiguities
 }
 
 func firstNotificationAfter(events []Event, write Event) Event {

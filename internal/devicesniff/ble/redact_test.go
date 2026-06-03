@@ -50,7 +50,7 @@ func TestRedactSensitiveTerms(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := redactSensitiveTerms(tc.value, tc.terms)
+			got := redactSensitiveTerms(tc.value, buildRedactionPatterns(tc.terms))
 			assert.Equal(t, tc.want, got)
 		})
 	}

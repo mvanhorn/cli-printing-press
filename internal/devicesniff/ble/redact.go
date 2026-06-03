@@ -9,9 +9,10 @@ import (
 func RedactEvidence(input EvidenceInput) EvidenceInput {
 	redactionTerms := append([]string(nil), input.RedactionTerms...)
 	input.RedactionTerms = nil
+	redactionPatterns := buildRedactionPatterns(redactionTerms)
 
-	input.Name = redactSensitiveTerms(input.Name, redactionTerms)
-	input.DisplayName = redactSensitiveTerms(input.DisplayName, redactionTerms)
+	input.Name = redactSensitiveTerms(input.Name, redactionPatterns)
+	input.DisplayName = redactSensitiveTerms(input.DisplayName, redactionPatterns)
 
 	input.Identity.AdvertisedNames = append([]string(nil), input.Identity.AdvertisedNames...)
 	input.Events = append([]Event(nil), input.Events...)
@@ -21,7 +22,7 @@ func RedactEvidence(input EvidenceInput) EvidenceInput {
 	nextAddress := 1
 	for i := range input.Events {
 		event := &input.Events[i]
-		event.DeviceName = redactSensitiveTerms(event.DeviceName, redactionTerms)
+		event.DeviceName = redactSensitiveTerms(event.DeviceName, redactionPatterns)
 		if event.DeviceAddress == "" {
 			continue
 		}
@@ -32,21 +33,22 @@ func RedactEvidence(input EvidenceInput) EvidenceInput {
 		event.DeviceAddress = addresses[event.DeviceAddress]
 	}
 	for i, name := range input.Identity.AdvertisedNames {
-		input.Identity.AdvertisedNames[i] = redactSensitiveTerms(name, redactionTerms)
+		input.Identity.AdvertisedNames[i] = redactSensitiveTerms(name, redactionPatterns)
 	}
 	// Action labels and community command names are slugged into device-spec
 	// command names and evidence summaries, so an unredacted term here would
 	// leak into the very artifact redaction is meant to make shareable.
 	for i := range input.Actions {
-		input.Actions[i].Label = redactSensitiveTerms(input.Actions[i].Label, redactionTerms)
+		input.Actions[i].Label = redactSensitiveTerms(input.Actions[i].Label, redactionPatterns)
 	}
 	for i := range input.CommunityReferences {
-		input.CommunityReferences[i].CommandName = redactSensitiveTerms(input.CommunityReferences[i].CommandName, redactionTerms)
+		input.CommunityReferences[i].CommandName = redactSensitiveTerms(input.CommunityReferences[i].CommandName, redactionPatterns)
 	}
 	return input
 }
 
-func redactSensitiveTerms(value string, terms []string) string {
+func buildRedactionPatterns(terms []string) []*regexp.Regexp {
+	patterns := make([]*regexp.Regexp, 0, len(terms)*2)
 	for _, term := range terms {
 		term = strings.TrimSpace(term)
 		if term == "" {
@@ -55,17 +57,15 @@ func redactSensitiveTerms(value string, terms []string) string {
 		// Case-insensitive: a term the operator asked to redact must not survive
 		// just because the advertised name used different casing. Match the
 		// possessive form first so "Owner's" collapses before "Owner".
-		value = replaceAllFold(value, strings.TrimSuffix(term, "'s")+"'s", "redacted")
-		value = replaceAllFold(value, term, "redacted")
+		patterns = append(patterns, regexp.MustCompile("(?i)"+regexp.QuoteMeta(strings.TrimSuffix(term, "'s")+"'s")))
+		patterns = append(patterns, regexp.MustCompile("(?i)"+regexp.QuoteMeta(term)))
 	}
-	return value
+	return patterns
 }
 
-// replaceAllFold replaces every case-insensitive occurrence of term in value
-// with replacement. term is matched literally (regex metacharacters escaped).
-func replaceAllFold(value, term, replacement string) string {
-	if term == "" {
-		return value
+func redactSensitiveTerms(value string, patterns []*regexp.Regexp) string {
+	for _, pattern := range patterns {
+		value = pattern.ReplaceAllString(value, "redacted")
 	}
-	return regexp.MustCompile("(?i)"+regexp.QuoteMeta(term)).ReplaceAllString(value, replacement)
+	return value
 }

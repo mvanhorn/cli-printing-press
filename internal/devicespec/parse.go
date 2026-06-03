@@ -7,6 +7,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const legacySessionModePersistent = "persistent"
+
 func Parse(path string) (*DeviceSpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -57,7 +59,7 @@ func (s *DeviceSpec) applyDefaults(oneShotFallbackExplicit bool) {
 	if s.Protocol == "" {
 		s.Protocol = ProtocolBLE
 	}
-	if s.Session.Mode == SessionModePersistent {
+	if s.Session.Mode == legacySessionModePersistent {
 		s.Session.Mode = SessionModeOptional
 	}
 	if s.Session.Mode == "" {

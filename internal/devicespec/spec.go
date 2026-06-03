@@ -16,8 +16,6 @@ const (
 	SessionModeOneShot  = "one-shot"
 	SessionModeOptional = "optional"
 	SessionModeRequired = "required"
-
-	SessionModePersistent = "persistent"
 )
 
 const (
