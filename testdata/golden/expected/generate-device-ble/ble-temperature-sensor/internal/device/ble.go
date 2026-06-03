@@ -75,3 +75,13 @@ type DeviceCodec interface {
 
 // codec is the optional telemetry decoder. nil by default (Tier-1: raw hex).
 var codec DeviceCodec
+
+// telemetrySnapshot, when set, captures one raw telemetry frame from a
+// notify-only device: it subscribes, elicits a frame (for example by sending a
+// poll command), and returns the first usable notification. Status decodes every
+// field from that single frame instead of GATT-reading each characteristic,
+// which push-only telemetry does not support (a read returns stale or echoed
+// bytes). nil keeps the GATT-read path for readable telemetry. Register it from
+// an operator file alongside the codec; the operator owns the subscription, so
+// unlike a connect-time hook it runs at the right point in the read flow.
+var telemetrySnapshot func(ctx context.Context, link Link) ([]byte, error)

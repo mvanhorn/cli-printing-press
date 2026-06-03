@@ -22,21 +22,22 @@ type DeviceGenerator struct {
 }
 
 type deviceTemplateData struct {
-	Spec           *devicespec.DeviceSpec
-	Name           string
-	CLIName        string
-	MCPName        string
-	ModulePath     string
-	DisplayName    string
-	CurrentYear    int
-	StatusFields   []deviceStatusField
-	Commands       []deviceCommandField
-	AllCommands    []deviceCommandField
-	ServiceUUIDs   []string
-	HasCommands    bool
-	HasSession     bool
-	HasStore       bool
-	InstallSection string
+	Spec            *devicespec.DeviceSpec
+	Name            string
+	CLIName         string
+	MCPName         string
+	ModulePath      string
+	DisplayName     string
+	CurrentYear     int
+	StatusFields    []deviceStatusField
+	Commands        []deviceCommandField
+	AllCommands     []deviceCommandField
+	ServiceUUIDs    []string
+	HasCommands     bool
+	HasSession      bool
+	SessionRequired bool
+	HasStore        bool
+	InstallSection  string
 }
 
 type deviceStatusField struct {
@@ -203,20 +204,21 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		serviceUUIDs = append(serviceUUIDs, uuid)
 	}
 	return deviceTemplateData{
-		Spec:         g.Spec,
-		Name:         name,
-		CLIName:      naming.CLI(name),
-		MCPName:      naming.MCP(name),
-		ModulePath:   naming.CLI(name),
-		DisplayName:  displayName,
-		CurrentYear:  time.Now().Year(),
-		StatusFields: statusFields,
-		Commands:     commands,
-		AllCommands:  allCommands,
-		ServiceUUIDs: serviceUUIDs,
-		HasCommands:  len(commands) > 0,
-		HasSession:   g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
-		HasStore:     hasStore,
+		Spec:            g.Spec,
+		Name:            name,
+		CLIName:         naming.CLI(name),
+		MCPName:         naming.MCP(name),
+		ModulePath:      naming.CLI(name),
+		DisplayName:     displayName,
+		CurrentYear:     time.Now().Year(),
+		StatusFields:    statusFields,
+		Commands:        commands,
+		AllCommands:     allCommands,
+		ServiceUUIDs:    serviceUUIDs,
+		HasCommands:     len(commands) > 0,
+		HasSession:      g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
+		SessionRequired: g.Spec.Session.Mode == devicespec.SessionModeRequired,
+		HasStore:        hasStore,
 		// Device specs carry no catalog category, so the canonical install block
 		// uses the category-agnostic installer path — matching what the verify-skill
 		// canonical-sections check expects (CanonicalSkillInstallSection(name, "")).
@@ -603,6 +605,16 @@ func newDeviceCommandCmd(flags *rootFlags, definition device.CommandDefinition) 
 			return nil
 		},
 	}
+	{{- if .SessionRequired}}
+	// A held-connection device cannot be driven by a one-shot MCP tool: reliable
+	// control needs a sustained connection (handshake, ordering, keep-alive) that
+	// an operator command holds open. Hide mutating control from MCP so an agent
+	// is not handed a write tool that cannot actuate; the human CLI keeps it, and
+	// the agent path is the operator's held-connection command plus reads.
+	if requiresPhysicalConfirmation(definition) {
+		command.Annotations = map[string]string{"mcp:hidden": "true"}
+	}
+	{{- end}}
 	if requiresPhysicalConfirmation(definition) {
 		command.Flags().BoolVar(&confirmPhysicalEffect, "confirm-physical-effect", false, "Confirm a physical-effect or configuration-risk device command")
 	}
@@ -1116,6 +1128,16 @@ type DeviceCodec interface {
 
 // codec is the optional telemetry decoder. nil by default (Tier-1: raw hex).
 var codec DeviceCodec
+
+// telemetrySnapshot, when set, captures one raw telemetry frame from a
+// notify-only device: it subscribes, elicits a frame (for example by sending a
+// poll command), and returns the first usable notification. Status decodes every
+// field from that single frame instead of GATT-reading each characteristic,
+// which push-only telemetry does not support (a read returns stale or echoed
+// bytes). nil keeps the GATT-read path for readable telemetry. Register it from
+// an operator file alongside the codec; the operator owns the subscription, so
+// unlike a connect-time hook it runs at the right point in the read flow.
+var telemetrySnapshot func(ctx context.Context, link Link) ([]byte, error)
 `
 
 const deviceBLELiveTemplate = `//go:build ble_live
@@ -1163,9 +1185,11 @@ func (b *liveBackend) Scan(ctx context.Context, serviceUUIDs []string) ([]Advert
 	if err := ctx.Err(); err != nil {
 		return nil, err // don't start a scan with an already-expired context
 	}
+	// Cap the scan window so it never consumes a long caller deadline (e.g. a
+	// stream's whole duration) and starve the connect that follows discovery.
 	dur := 8 * time.Second
 	if dl, ok := ctx.Deadline(); ok {
-		if d := time.Until(dl); d > 0 {
+		if d := time.Until(dl); d > 0 && d < dur {
 			dur = d
 		}
 	}
@@ -1202,6 +1226,7 @@ func (b *liveBackend) Scan(ctx context.Context, serviceUUIDs []string) ([]Advert
 			ServiceUUIDs: serviceUUIDs,
 		}
 		mu.Unlock()
+		finish() // Scan locates one device to connect to next; stop on first match so the connect is not delayed
 	})
 	finish()
 	<-done
@@ -1275,12 +1300,15 @@ func (l *liveLink) Write(characteristicUUID string, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	// Prefer write-without-response; fall back to write-with-response for
+	// Prefer an acknowledged write so the command is confirmed by the device
+	// before we return: an unacknowledged write can be dropped if the caller
+	// closes the link or issues the next command immediately (a control command
+	// like stop is then silently lost). Fall back to write-without-response for
 	// characteristics that only permit the latter.
-	if _, err := c.WriteWithoutResponse(payload); err == nil {
+	if _, err := c.Write(payload); err == nil {
 		return nil
 	}
-	_, err = c.Write(payload)
+	_, err = c.WriteWithoutResponse(payload)
 	return err
 }
 
@@ -1411,21 +1439,38 @@ func (t *LiveTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 	defer cancel()
 	telemetry := map[string]any{}
 	err := t.withLink(ctx, func(l Link) error {
+		// Notify-only telemetry cannot be GATT-read; an operator snapshot captures
+		// one notification frame that carries every field. When set, decode all
+		// fields from that frame instead of reading each characteristic.
+		var snapshot []byte
+		var snapshotHex string
+		if telemetrySnapshot != nil {
+			s, snapErr := telemetrySnapshot(ctx, l)
+			if snapErr != nil {
+				return snapErr
+			}
+			snapshot, snapshotHex = s, hex.EncodeToString(s)
+		}
 		for _, field := range StatusFields {
 			entry := map[string]any{"source_characteristic_uuid": field.SourceCharacteristicUUID}
-			raw, readErr := l.Read(field.SourceCharacteristicUUID)
-			if readErr != nil {
-				// Readable characteristics surface a value directly; notify-only
-				// vendor telemetry needs a codec, so report why it is empty.
-				entry["error"] = readErr.Error()
-			} else {
-				entry["raw_hex"] = hex.EncodeToString(raw)
-				if codec != nil {
-					if value, decErr := codec.DecodeTelemetry(field, raw); decErr != nil {
-						entry["decode_error"] = decErr.Error()
-					} else {
-						entry["value"] = value
-					}
+			raw, rawHex := snapshot, snapshotHex
+			if telemetrySnapshot == nil {
+				r, readErr := l.Read(field.SourceCharacteristicUUID)
+				if readErr != nil {
+					// Readable characteristics surface a value directly; notify-only
+					// vendor telemetry needs a snapshot, so report why it is empty.
+					entry["error"] = readErr.Error()
+					telemetry[field.Name] = entry
+					continue
+				}
+				raw, rawHex = r, hex.EncodeToString(r)
+			}
+			entry["raw_hex"] = rawHex
+			if codec != nil {
+				if value, decErr := codec.DecodeTelemetry(field, raw); decErr != nil {
+					entry["decode_error"] = decErr.Error()
+				} else {
+					entry["value"] = value
 				}
 			}
 			telemetry[field.Name] = entry
@@ -1623,7 +1668,15 @@ func withFakeBackend(t *testing.T, be *fakeBackend) {
 	t.Setenv("PRINTING_PRESS_VERIFY", "") // keep the live path from short-circuiting
 	prev := bleBackendFactory
 	bleBackendFactory = func() (bleBackend, error) { return be, nil }
-	t.Cleanup(func() { bleBackendFactory = prev })
+	// A fake device has no notify ceremony; suppress any operator-registered
+	// telemetrySnapshot so its real-time polling can't stall the transport tests.
+	// Snapshot-path tests re-register it after this helper runs.
+	prevSnapshot := telemetrySnapshot
+	telemetrySnapshot = nil
+	t.Cleanup(func() {
+		bleBackendFactory = prev
+		telemetrySnapshot = prevSnapshot
+	})
 }
 
 func TestLiveTransportExecuteCommandWritesPayload(t *testing.T) {
@@ -1732,6 +1785,44 @@ func TestLiveTransportStatusDecodesWithCodec(t *testing.T) {
 	entry, _ := snap.Telemetry[StatusFields[0].Name].(map[string]any)
 	if entry["value"] != 42 {
 		t.Errorf("decoded telemetry value = %v, want 42", entry["value"])
+	}
+}
+
+func TestStatusUsesTelemetrySnapshotForNotifyOnly(t *testing.T) {
+	if len(StatusFields) == 0 {
+		t.Skip("device has no telemetry fields")
+	}
+	uuid := StatusFields[0].SourceCharacteristicUUID
+	// A GATT read would yield 0x2a (42); the snapshot yields 0x07 (7). Asserting 7
+	// proves Status decoded the snapshot frame, not a characteristic read.
+	link := &fakeLink{reads: map[string][]byte{uuid: {0x2a}}}
+	withFakeBackend(t, &fakeBackend{link: link, adverts: []Advert{ {Address: "AA:BB:CC:DD:EE:FF", RSSI: -30} }})
+	prevCodec := codec
+	codec = testCodec{}
+	t.Cleanup(func() { codec = prevCodec })
+	// withFakeBackend nulled telemetrySnapshot and restores it on cleanup; install ours.
+	telemetrySnapshot = func(ctx context.Context, l Link) ([]byte, error) { return []byte{0x07}, nil }
+
+	snap, err := NewLiveTransport("", 2*time.Second).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	entry, _ := snap.Telemetry[StatusFields[0].Name].(map[string]any)
+	if entry["value"] != 7 {
+		t.Errorf("decoded value = %v, want 7 (from snapshot frame, not the GATT read)", entry["value"])
+	}
+	if entry["raw_hex"] != "07" {
+		t.Errorf("raw_hex = %v, want 07 (snapshot frame)", entry["raw_hex"])
+	}
+}
+
+func TestStatusSnapshotErrorPropagates(t *testing.T) {
+	withFakeBackend(t, &fakeBackend{link: &fakeLink{}, adverts: []Advert{ {Address: "AA:BB:CC:DD:EE:FF", RSSI: -30} }})
+	// withFakeBackend nulled telemetrySnapshot and restores it on cleanup; install ours.
+	telemetrySnapshot = func(ctx context.Context, l Link) ([]byte, error) { return nil, context.DeadlineExceeded }
+
+	if _, err := NewLiveTransport("", 2*time.Second).Status(context.Background()); err == nil {
+		t.Error("Status should surface a telemetrySnapshot error")
 	}
 }
 

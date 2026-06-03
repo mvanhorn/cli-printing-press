@@ -43,9 +43,11 @@ func (b *liveBackend) Scan(ctx context.Context, serviceUUIDs []string) ([]Advert
 	if err := ctx.Err(); err != nil {
 		return nil, err // don't start a scan with an already-expired context
 	}
+	// Cap the scan window so it never consumes a long caller deadline (e.g. a
+	// stream's whole duration) and starve the connect that follows discovery.
 	dur := 8 * time.Second
 	if dl, ok := ctx.Deadline(); ok {
-		if d := time.Until(dl); d > 0 {
+		if d := time.Until(dl); d > 0 && d < dur {
 			dur = d
 		}
 	}
@@ -82,6 +84,7 @@ func (b *liveBackend) Scan(ctx context.Context, serviceUUIDs []string) ([]Advert
 			ServiceUUIDs: serviceUUIDs,
 		}
 		mu.Unlock()
+		finish() // Scan locates one device to connect to next; stop on first match so the connect is not delayed
 	})
 	finish()
 	<-done
@@ -155,12 +158,15 @@ func (l *liveLink) Write(characteristicUUID string, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	// Prefer write-without-response; fall back to write-with-response for
+	// Prefer an acknowledged write so the command is confirmed by the device
+	// before we return: an unacknowledged write can be dropped if the caller
+	// closes the link or issues the next command immediately (a control command
+	// like stop is then silently lost). Fall back to write-without-response for
 	// characteristics that only permit the latter.
-	if _, err := c.WriteWithoutResponse(payload); err == nil {
+	if _, err := c.Write(payload); err == nil {
 		return nil
 	}
-	_, err = c.Write(payload)
+	_, err = c.WriteWithoutResponse(payload)
 	return err
 }
 

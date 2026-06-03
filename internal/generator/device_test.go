@@ -474,6 +474,40 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+// TestGeneratedBLEHidesControlFromMCPWhenSessionRequired verifies that a
+// held-connection device (session.mode == required) hides its mutating one-shot
+// control commands from MCP — a one-shot tool cannot drive such a device — while
+// a one-shot device keeps them exposed.
+func TestGeneratedBLEHidesControlFromMCPWhenSessionRequired(t *testing.T) {
+	t.Parallel()
+
+	const hide = `command.Annotations = map[string]string{"mcp:hidden": "true"}`
+
+	// session.mode == required: mutating control is held-connection-only.
+	required, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-session-telemetry.yaml"))
+	require.NoError(t, err)
+	required.Session.Mode = devicespec.SessionModeRequired
+	required.Session.OneShotFallback = false // only valid in "optional" mode
+	reqDir := filepath.Join(t.TempDir(), "ble-required")
+	require.NoError(t, NewDevice(required, reqDir).Generate())
+	reqRoot, err := os.ReadFile(filepath.Join(reqDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	deviceCmd := generatedFunction(t, string(reqRoot), "newDeviceCommandCmd")
+	assert.Contains(t, deviceCmd, hide, "required-session device should hide mutating control from MCP")
+	assert.Contains(t, deviceCmd, "requiresPhysicalConfirmation(definition)", "hiding must be gated on the mutating-command predicate")
+	requireGeneratedCompiles(t, reqDir)
+
+	// session.mode == one-shot: control stays on MCP.
+	oneShot, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-simple-actuator.yaml"))
+	require.NoError(t, err)
+	osDir := filepath.Join(t.TempDir(), "ble-oneshot")
+	require.NoError(t, NewDevice(oneShot, osDir).Generate())
+	osRoot, err := os.ReadFile(filepath.Join(osDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, generatedFunction(t, string(osRoot), "newDeviceCommandCmd"), hide,
+		"one-shot device should keep control commands on MCP")
+}
+
 func TestGeneratedBLESessionRuntimeTracksLockAndToken(t *testing.T) {
 	t.Parallel()
 

@@ -46,21 +46,38 @@ func (t *LiveTransport) Status(ctx context.Context) (StatusSnapshot, error) {
 	defer cancel()
 	telemetry := map[string]any{}
 	err := t.withLink(ctx, func(l Link) error {
+		// Notify-only telemetry cannot be GATT-read; an operator snapshot captures
+		// one notification frame that carries every field. When set, decode all
+		// fields from that frame instead of reading each characteristic.
+		var snapshot []byte
+		var snapshotHex string
+		if telemetrySnapshot != nil {
+			s, snapErr := telemetrySnapshot(ctx, l)
+			if snapErr != nil {
+				return snapErr
+			}
+			snapshot, snapshotHex = s, hex.EncodeToString(s)
+		}
 		for _, field := range StatusFields {
 			entry := map[string]any{"source_characteristic_uuid": field.SourceCharacteristicUUID}
-			raw, readErr := l.Read(field.SourceCharacteristicUUID)
-			if readErr != nil {
-				// Readable characteristics surface a value directly; notify-only
-				// vendor telemetry needs a codec, so report why it is empty.
-				entry["error"] = readErr.Error()
-			} else {
-				entry["raw_hex"] = hex.EncodeToString(raw)
-				if codec != nil {
-					if value, decErr := codec.DecodeTelemetry(field, raw); decErr != nil {
-						entry["decode_error"] = decErr.Error()
-					} else {
-						entry["value"] = value
-					}
+			raw, rawHex := snapshot, snapshotHex
+			if telemetrySnapshot == nil {
+				r, readErr := l.Read(field.SourceCharacteristicUUID)
+				if readErr != nil {
+					// Readable characteristics surface a value directly; notify-only
+					// vendor telemetry needs a snapshot, so report why it is empty.
+					entry["error"] = readErr.Error()
+					telemetry[field.Name] = entry
+					continue
+				}
+				raw, rawHex = r, hex.EncodeToString(r)
+			}
+			entry["raw_hex"] = rawHex
+			if codec != nil {
+				if value, decErr := codec.DecodeTelemetry(field, raw); decErr != nil {
+					entry["decode_error"] = decErr.Error()
+				} else {
+					entry["value"] = value
 				}
 			}
 			telemetry[field.Name] = entry

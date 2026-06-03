@@ -47,7 +47,15 @@ func withFakeBackend(t *testing.T, be *fakeBackend) {
 	t.Setenv("PRINTING_PRESS_VERIFY", "") // keep the live path from short-circuiting
 	prev := bleBackendFactory
 	bleBackendFactory = func() (bleBackend, error) { return be, nil }
-	t.Cleanup(func() { bleBackendFactory = prev })
+	// A fake device has no notify ceremony; suppress any operator-registered
+	// telemetrySnapshot so its real-time polling can't stall the transport tests.
+	// Snapshot-path tests re-register it after this helper runs.
+	prevSnapshot := telemetrySnapshot
+	telemetrySnapshot = nil
+	t.Cleanup(func() {
+		bleBackendFactory = prev
+		telemetrySnapshot = prevSnapshot
+	})
 }
 
 func TestLiveTransportExecuteCommandWritesPayload(t *testing.T) {
@@ -156,6 +164,44 @@ func TestLiveTransportStatusDecodesWithCodec(t *testing.T) {
 	entry, _ := snap.Telemetry[StatusFields[0].Name].(map[string]any)
 	if entry["value"] != 42 {
 		t.Errorf("decoded telemetry value = %v, want 42", entry["value"])
+	}
+}
+
+func TestStatusUsesTelemetrySnapshotForNotifyOnly(t *testing.T) {
+	if len(StatusFields) == 0 {
+		t.Skip("device has no telemetry fields")
+	}
+	uuid := StatusFields[0].SourceCharacteristicUUID
+	// A GATT read would yield 0x2a (42); the snapshot yields 0x07 (7). Asserting 7
+	// proves Status decoded the snapshot frame, not a characteristic read.
+	link := &fakeLink{reads: map[string][]byte{uuid: {0x2a}}}
+	withFakeBackend(t, &fakeBackend{link: link, adverts: []Advert{{Address: "AA:BB:CC:DD:EE:FF", RSSI: -30}}})
+	prevCodec := codec
+	codec = testCodec{}
+	t.Cleanup(func() { codec = prevCodec })
+	// withFakeBackend nulled telemetrySnapshot and restores it on cleanup; install ours.
+	telemetrySnapshot = func(ctx context.Context, l Link) ([]byte, error) { return []byte{0x07}, nil }
+
+	snap, err := NewLiveTransport("", 2*time.Second).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	entry, _ := snap.Telemetry[StatusFields[0].Name].(map[string]any)
+	if entry["value"] != 7 {
+		t.Errorf("decoded value = %v, want 7 (from snapshot frame, not the GATT read)", entry["value"])
+	}
+	if entry["raw_hex"] != "07" {
+		t.Errorf("raw_hex = %v, want 07 (snapshot frame)", entry["raw_hex"])
+	}
+}
+
+func TestStatusSnapshotErrorPropagates(t *testing.T) {
+	withFakeBackend(t, &fakeBackend{link: &fakeLink{}, adverts: []Advert{{Address: "AA:BB:CC:DD:EE:FF", RSSI: -30}}})
+	// withFakeBackend nulled telemetrySnapshot and restores it on cleanup; install ours.
+	telemetrySnapshot = func(ctx context.Context, l Link) ([]byte, error) { return nil, context.DeadlineExceeded }
+
+	if _, err := NewLiveTransport("", 2*time.Second).Status(context.Background()); err == nil {
+		t.Error("Status should surface a telemetrySnapshot error")
 	}
 }
 
