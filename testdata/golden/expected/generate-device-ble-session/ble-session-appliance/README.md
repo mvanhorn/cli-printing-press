@@ -13,3 +13,4 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 - `ble-session-appliance-pp-cli session status --json` prints the local replay session runtime state.
 - `ble-session-appliance-pp-cli telemetry capture --json` stores replay-backed telemetry samples locally.
 - `ble-session-appliance-pp-cli telemetry latest --json` reads the latest locally stored telemetry samples.
+- `ble-session-appliance-pp-cli telemetry sessions --json` reads locally stored BLE session summaries.

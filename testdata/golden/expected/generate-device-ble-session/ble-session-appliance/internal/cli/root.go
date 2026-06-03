@@ -158,6 +158,7 @@ func newTelemetryCmd(flags *rootFlags, transport device.Transport) *cobra.Comman
 	}
 	telemetryCmd.AddCommand(newTelemetryCaptureCmd(flags, transport))
 	telemetryCmd.AddCommand(newTelemetryLatestCmd(flags))
+	telemetryCmd.AddCommand(newTelemetrySessionsCmd(flags))
 	return telemetryCmd
 }
 
@@ -219,6 +220,37 @@ func newTelemetryLatestCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+func newTelemetrySessionsCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:         "sessions",
+		Short:       "Read locally stored BLE session summaries",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := openTelemetryStore(flags)
+			if err != nil {
+				return err
+			}
+			summaries, err := store.SessionSummaries()
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				return writeJSON(cmd, summaries)
+			}
+			if len(summaries) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no stored session summaries")
+				fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.SessionPath())
+				return nil
+			}
+			for _, summary := range summaries {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: %s via %s\n", summary.ObservedAt, summary.State, summary.Transport)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.SessionPath())
+			return nil
+		},
+	}
+}
+
 func openTelemetryStore(flags *rootFlags) (*device.TelemetryStore, error) {
 	storePath := flags.storePath
 	if storePath == "" {
@@ -266,6 +298,9 @@ func newSessionStartCmd(flags *rootFlags, session device.Session) *cobra.Command
 			if err != nil {
 				return err
 			}
+			if err := captureSessionSummary(flags, status); err != nil {
+				return err
+			}
 			return writeSessionStatus(cmd, flags, status)
 		},
 	}
@@ -280,9 +315,21 @@ func newSessionStopCmd(flags *rootFlags, session device.Session) *cobra.Command 
 			if err != nil {
 				return err
 			}
+			if err := captureSessionSummary(flags, status); err != nil {
+				return err
+			}
 			return writeSessionStatus(cmd, flags, status)
 		},
 	}
+}
+
+func captureSessionSummary(flags *rootFlags, status device.SessionStatus) error {
+	store, err := openTelemetryStore(flags)
+	if err != nil {
+		return err
+	}
+	_, err = store.CaptureSession(status)
+	return err
 }
 
 func writeSessionStatus(cmd *cobra.Command, flags *rootFlags, status device.SessionStatus) error {

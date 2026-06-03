@@ -429,6 +429,9 @@ func newTelemetryCmd(flags *rootFlags, transport device.Transport) *cobra.Comman
 	}
 	telemetryCmd.AddCommand(newTelemetryCaptureCmd(flags, transport))
 	telemetryCmd.AddCommand(newTelemetryLatestCmd(flags))
+{{- if .HasSession}}
+	telemetryCmd.AddCommand(newTelemetrySessionsCmd(flags))
+{{- end}}
 	return telemetryCmd
 }
 
@@ -490,6 +493,39 @@ func newTelemetryLatestCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+{{ if .HasSession}}
+func newTelemetrySessionsCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "sessions",
+		Short: "Read locally stored BLE session summaries",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, err := openTelemetryStore(flags)
+			if err != nil {
+				return err
+			}
+			summaries, err := store.SessionSummaries()
+			if err != nil {
+				return err
+			}
+			if flags.asJSON {
+				return writeJSON(cmd, summaries)
+			}
+			if len(summaries) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no stored session summaries")
+				fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.SessionPath())
+				return nil
+			}
+			for _, summary := range summaries {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: %s via %s\n", summary.ObservedAt, summary.State, summary.Transport)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "store: %s\n", store.SessionPath())
+			return nil
+		},
+	}
+}
+
+{{ end}}
 func openTelemetryStore(flags *rootFlags) (*device.TelemetryStore, error) {
 	storePath := flags.storePath
 	if storePath == "" {
@@ -539,6 +575,11 @@ func newSessionStartCmd(flags *rootFlags, session device.Session) *cobra.Command
 			if err != nil {
 				return err
 			}
+{{- if .HasStore}}
+			if err := captureSessionSummary(flags, status); err != nil {
+				return err
+			}
+{{- end}}
 			return writeSessionStatus(cmd, flags, status)
 		},
 	}
@@ -553,11 +594,27 @@ func newSessionStopCmd(flags *rootFlags, session device.Session) *cobra.Command 
 			if err != nil {
 				return err
 			}
+{{- if .HasStore}}
+			if err := captureSessionSummary(flags, status); err != nil {
+				return err
+			}
+{{- end}}
 			return writeSessionStatus(cmd, flags, status)
 		},
 	}
 }
 
+{{ if .HasStore}}
+func captureSessionSummary(flags *rootFlags, status device.SessionStatus) error {
+	store, err := openTelemetryStore(flags)
+	if err != nil {
+		return err
+	}
+	_, err = store.CaptureSession(status)
+	return err
+}
+
+{{ end}}
 func writeSessionStatus(cmd *cobra.Command, flags *rootFlags, status device.SessionStatus) error {
 	if flags.asJSON {
 		return writeJSON(cmd, status)
@@ -1058,6 +1115,25 @@ type TelemetrySample struct {
 	Value                    any    ` + "`json:\"value\"`" + `
 }
 
+{{- if .HasSession}}
+type SessionSummary struct {
+	Device             string   ` + "`json:\"device\"`" + `
+	State              string   ` + "`json:\"state\"`" + `
+	Mode               string   ` + "`json:\"mode\"`" + `
+	Transport          string   ` + "`json:\"transport\"`" + `
+	RuntimeDir         string   ` + "`json:\"runtime_dir,omitempty\"`" + `
+	EndpointKind       string   ` + "`json:\"endpoint_kind,omitempty\"`" + `
+	EndpointPath       string   ` + "`json:\"endpoint_path,omitempty\"`" + `
+	TokenPresent       bool     ` + "`json:\"token_present\"`" + `
+	ObservedAt         string   ` + "`json:\"observed_at\"`" + `
+	Reasons            []string ` + "`json:\"reasons,omitempty\"`" + `
+	OneShotFallback    bool     ` + "`json:\"one_shot_fallback\"`" + `
+	Reconnect          bool     ` + "`json:\"reconnect\"`" + `
+	NotificationStream bool     ` + "`json:\"notification_stream\"`" + `
+	Detail             string   ` + "`json:\"detail,omitempty\"`" + `
+}
+
+{{- end}}
 type TelemetryStore struct {
 	path string
 }
@@ -1081,6 +1157,12 @@ func (s *TelemetryStore) Path() string {
 	return s.path
 }
 
+{{- if .HasSession}}
+func (s *TelemetryStore) SessionPath() string {
+	return filepath.Join(filepath.Dir(s.path), "session-summaries.jsonl")
+}
+
+{{- end}}
 func (s *TelemetryStore) CaptureStatus(snapshot StatusSnapshot) ([]TelemetrySample, error) {
 	observedAt := snapshot.ObservedAt
 	if observedAt == "" {
@@ -1127,6 +1209,67 @@ func (s *TelemetryStore) CaptureStatus(snapshot StatusSnapshot) ([]TelemetrySamp
 	return samples, nil
 }
 
+{{ if .HasSession}}
+func (s *TelemetryStore) CaptureSession(status SessionStatus) (SessionSummary, error) {
+	summary := SessionSummary{
+		Device:             status.Device,
+		State:              status.State,
+		Mode:               status.Mode,
+		Transport:          status.Transport,
+		RuntimeDir:         status.RuntimeDir,
+		EndpointKind:       status.Endpoint.Kind,
+		EndpointPath:       status.Endpoint.Path,
+		TokenPresent:       status.TokenPresent,
+		ObservedAt:         status.ObservedAt,
+		Reasons:            append([]string(nil), status.Reasons...),
+		OneShotFallback:    status.OneShotFallback,
+		Reconnect:          status.Reconnect,
+		NotificationStream: status.NotificationStream,
+		Detail:             status.Detail,
+	}
+	if summary.ObservedAt == "" {
+		summary.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	path := s.SessionPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return SessionSummary{}, fmt.Errorf("create session summary dir: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return SessionSummary{}, fmt.Errorf("open session summary store: %w", err)
+	}
+	defer file.Close()
+	if err := json.NewEncoder(file).Encode(summary); err != nil {
+		return SessionSummary{}, fmt.Errorf("write session summary: %w", err)
+	}
+	return summary, nil
+}
+
+func (s *TelemetryStore) SessionSummaries() ([]SessionSummary, error) {
+	file, err := os.Open(s.SessionPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open session summary store: %w", err)
+	}
+	defer file.Close()
+	var summaries []SessionSummary
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var summary SessionSummary
+		if err := json.Unmarshal(scanner.Bytes(), &summary); err != nil {
+			return nil, fmt.Errorf("decode session summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read session summary store: %w", err)
+	}
+	return summaries, nil
+}
+
+{{ end}}
 func (s *TelemetryStore) Latest() ([]TelemetrySample, error) {
 	file, err := os.Open(s.path)
 	if err != nil {
@@ -1179,6 +1322,9 @@ This CLI is device-native: commands refer to BLE device capabilities rather than
 {{- if .HasStore}}
 - ` + "`{{.CLIName}} telemetry capture --json`" + ` stores replay-backed telemetry samples locally.
 - ` + "`{{.CLIName}} telemetry latest --json`" + ` reads the latest locally stored telemetry samples.
+{{- if .HasSession}}
+- ` + "`{{.CLIName}} telemetry sessions --json`" + ` reads locally stored BLE session summaries.
+{{- end}}
 {{- end}}
 `
 
@@ -1187,5 +1333,5 @@ name: {{.Name}}
 description: Control {{.DisplayName}} through the generated BLE device CLI.
 ---
 
-Use ` + "`{{.CLIName}} capabilities --json`" + ` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session start --json`" + ` and ` + "`{{.CLIName}} session status --json`" + ` to inspect the local replay session runtime, including lock, capability-token, and endpoint metadata.{{else}} Live BLE control and optional session IPC are generated only when device-session support is enabled by the device spec.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{end}}
+Use ` + "`{{.CLIName}} capabilities --json`" + ` to inspect callable and withheld BLE capabilities, including safety classes and evidence refs. Use ` + "`{{.CLIName}} status --json`" + ` to inspect replay-backed status output.{{range .Commands}} Use ` + "`{{$.CLIName}} {{.Name}} --dry-run --json`" + ` to preview the {{.Name}} write.{{end}}{{if .HasSession}} Use ` + "`{{.CLIName}} session start --json`" + ` and ` + "`{{.CLIName}} session status --json`" + ` to inspect the local replay session runtime, including lock, capability-token, and endpoint metadata.{{else}} Live BLE control and optional session IPC are generated only when device-session support is enabled by the device spec.{{end}}{{if .HasStore}} Use ` + "`{{.CLIName}} telemetry capture --json`" + ` and ` + "`{{.CLIName}} telemetry latest --json`" + ` for the local telemetry store scaffold.{{if .HasSession}} Use ` + "`{{.CLIName}} telemetry sessions --json`" + ` to inspect stored BLE session summaries.{{end}}{{end}}
 `

@@ -22,7 +22,22 @@ type TelemetrySample struct {
 	Unit                     string `json:"unit,omitempty"`
 	Value                    any    `json:"value"`
 }
-
+type SessionSummary struct {
+	Device             string   `json:"device"`
+	State              string   `json:"state"`
+	Mode               string   `json:"mode"`
+	Transport          string   `json:"transport"`
+	RuntimeDir         string   `json:"runtime_dir,omitempty"`
+	EndpointKind       string   `json:"endpoint_kind,omitempty"`
+	EndpointPath       string   `json:"endpoint_path,omitempty"`
+	TokenPresent       bool     `json:"token_present"`
+	ObservedAt         string   `json:"observed_at"`
+	Reasons            []string `json:"reasons,omitempty"`
+	OneShotFallback    bool     `json:"one_shot_fallback"`
+	Reconnect          bool     `json:"reconnect"`
+	NotificationStream bool     `json:"notification_stream"`
+	Detail             string   `json:"detail,omitempty"`
+}
 type TelemetryStore struct {
 	path string
 }
@@ -45,7 +60,9 @@ func OpenTelemetryStore(path string) (*TelemetryStore, error) {
 func (s *TelemetryStore) Path() string {
 	return s.path
 }
-
+func (s *TelemetryStore) SessionPath() string {
+	return filepath.Join(filepath.Dir(s.path), "session-summaries.jsonl")
+}
 func (s *TelemetryStore) CaptureStatus(snapshot StatusSnapshot) ([]TelemetrySample, error) {
 	observedAt := snapshot.ObservedAt
 	if observedAt == "" {
@@ -90,6 +107,65 @@ func (s *TelemetryStore) CaptureStatus(snapshot StatusSnapshot) ([]TelemetrySamp
 		}
 	}
 	return samples, nil
+}
+
+func (s *TelemetryStore) CaptureSession(status SessionStatus) (SessionSummary, error) {
+	summary := SessionSummary{
+		Device:             status.Device,
+		State:              status.State,
+		Mode:               status.Mode,
+		Transport:          status.Transport,
+		RuntimeDir:         status.RuntimeDir,
+		EndpointKind:       status.Endpoint.Kind,
+		EndpointPath:       status.Endpoint.Path,
+		TokenPresent:       status.TokenPresent,
+		ObservedAt:         status.ObservedAt,
+		Reasons:            append([]string(nil), status.Reasons...),
+		OneShotFallback:    status.OneShotFallback,
+		Reconnect:          status.Reconnect,
+		NotificationStream: status.NotificationStream,
+		Detail:             status.Detail,
+	}
+	if summary.ObservedAt == "" {
+		summary.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	path := s.SessionPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return SessionSummary{}, fmt.Errorf("create session summary dir: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return SessionSummary{}, fmt.Errorf("open session summary store: %w", err)
+	}
+	defer file.Close()
+	if err := json.NewEncoder(file).Encode(summary); err != nil {
+		return SessionSummary{}, fmt.Errorf("write session summary: %w", err)
+	}
+	return summary, nil
+}
+
+func (s *TelemetryStore) SessionSummaries() ([]SessionSummary, error) {
+	file, err := os.Open(s.SessionPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open session summary store: %w", err)
+	}
+	defer file.Close()
+	var summaries []SessionSummary
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var summary SessionSummary
+		if err := json.Unmarshal(scanner.Bytes(), &summary); err != nil {
+			return nil, fmt.Errorf("decode session summary: %w", err)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read session summary store: %w", err)
+	}
+	return summaries, nil
 }
 
 func (s *TelemetryStore) Latest() ([]TelemetrySample, error) {

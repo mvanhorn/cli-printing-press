@@ -121,6 +121,8 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	assert.Contains(t, root, "rootCmd.AddCommand(newSessionCmd")
 	assert.Contains(t, root, "rootCmd.AddCommand(newTelemetryCmd")
 	assert.Contains(t, root, "device.NewReplaySession()")
+	assert.Contains(t, root, "telemetryCmd.AddCommand(newTelemetrySessionsCmd")
+	assert.Contains(t, root, "captureSessionSummary(flags, status)")
 	assert.Contains(t, root, `PayloadHex: "a001"`)
 	assert.Contains(t, root, `device.CommandDefinition{Name: "start"`)
 	assert.Contains(t, root, `"confirm-physical-effect"`)
@@ -128,6 +130,7 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	assert.Contains(t, generatedFunction(t, root, "newCapabilitiesCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assert.Contains(t, generatedFunction(t, root, "newStatusCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assert.Contains(t, generatedFunction(t, root, "newTelemetryLatestCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
+	assert.Contains(t, generatedFunction(t, root, "newTelemetrySessionsCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assert.Contains(t, generatedFunction(t, root, "newSessionStatusCmd"), `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assert.NotContains(t, generatedFunction(t, root, "newDeviceCommandCmd"), `"mcp:read-only"`)
 	assert.NotContains(t, generatedFunction(t, root, "newTelemetryCaptureCmd"), `"mcp:read-only"`)
@@ -149,7 +152,10 @@ func TestGenerateOptionalBLESessionScaffoldCompiles(t *testing.T) {
 	require.NoError(t, err)
 	store := string(storeSrc)
 	assert.Contains(t, store, `type TelemetrySample struct`)
+	assert.Contains(t, store, `type SessionSummary struct`)
 	assert.Contains(t, store, `func (s *TelemetryStore) CaptureStatus(snapshot StatusSnapshot)`)
+	assert.Contains(t, store, `func (s *TelemetryStore) CaptureSession(status SessionStatus)`)
+	assert.Contains(t, store, `func (s *TelemetryStore) SessionSummaries()`)
 	assert.Contains(t, store, `func (s *TelemetryStore) Latest()`)
 
 	specSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "device", "spec.go"))
@@ -198,10 +204,13 @@ func TestGeneratedBLESessionRuntimeTracksLockAndToken(t *testing.T) {
 	assert.FileExists(t, filepath.Join(runtimeDir, "session.lock"))
 	assert.FileExists(t, filepath.Join(runtimeDir, "capability.token"))
 	assert.FileExists(t, filepath.Join(runtimeDir, "state.json"))
+	sessionSummaryPath := filepath.Join(filepath.Dir(runtimeDir), "session-summaries.jsonl")
+	assert.FileExists(t, sessionSummaryPath)
 	assertSessionFileMode(t, runtimeDir, 0o700)
 	assertSessionFileMode(t, filepath.Join(runtimeDir, "session.lock"), 0o600)
 	assertSessionFileMode(t, filepath.Join(runtimeDir, "capability.token"), 0o600)
 	assertSessionFileMode(t, filepath.Join(runtimeDir, "state.json"), 0o600)
+	assertSessionFileMode(t, sessionSummaryPath, 0o600)
 
 	secondStart := runGeneratedSessionCommand(t, outputDir, homeDir, "start")
 	assert.Equal(t, "running", secondStart["state"])
@@ -213,12 +222,46 @@ func TestGeneratedBLESessionRuntimeTracksLockAndToken(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(runtimeDir, "session.lock"))
 	assert.NoFileExists(t, filepath.Join(runtimeDir, "capability.token"))
 	assert.NoFileExists(t, filepath.Join(runtimeDir, "state.json"))
+
+	summaries := runGeneratedTelemetrySessionsCommand(t, outputDir, homeDir)
+	require.Len(t, summaries, 3)
+	assert.Equal(t, "running", summaries[0]["state"])
+	assert.Equal(t, "running", summaries[1]["state"])
+	assert.Equal(t, "stopped", summaries[2]["state"])
+	wantEndpointKind := "unix-socket"
+	if runtime.GOOS == "windows" {
+		wantEndpointKind = "windows-named-pipe"
+	}
+	assert.Equal(t, wantEndpointKind, summaries[0]["endpoint_kind"])
 }
 
 func runGeneratedSessionCommand(t *testing.T, outputDir, homeDir, action string) map[string]any {
 	t.Helper()
 
-	cmd := exec.Command("go", "run", "-mod=mod", "./cmd/ble-session-appliance-pp-cli", "--json", "session", action)
+	result, ok := runGeneratedJSONCommand(t, outputDir, homeDir, "session", action).(map[string]any)
+	require.True(t, ok)
+	return result
+}
+
+func runGeneratedTelemetrySessionsCommand(t *testing.T, outputDir, homeDir string) []map[string]any {
+	t.Helper()
+
+	raw, ok := runGeneratedJSONCommand(t, outputDir, homeDir, "telemetry", "sessions").([]any)
+	require.True(t, ok)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		summary, ok := item.(map[string]any)
+		require.True(t, ok)
+		out = append(out, summary)
+	}
+	return out
+}
+
+func runGeneratedJSONCommand(t *testing.T, outputDir, homeDir string, args ...string) any {
+	t.Helper()
+
+	cmdArgs := append([]string{"run", "-mod=mod", "./cmd/ble-session-appliance-pp-cli", "--json"}, args...)
+	cmd := exec.Command("go", cmdArgs...)
 	cmd.Dir = outputDir
 	cacheDir, err := goBuildCacheDir(outputDir)
 	require.NoError(t, err)
@@ -238,7 +281,7 @@ func runGeneratedSessionCommand(t *testing.T, outputDir, homeDir, action string)
 	)
 	output, err := cmd.Output()
 	require.NoError(t, err, stderr.String())
-	var result map[string]any
+	var result any
 	require.NoError(t, json.Unmarshal(output, &result))
 	return result
 }
