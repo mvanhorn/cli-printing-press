@@ -11,6 +11,8 @@ verified_date: "2026-05-11"
 homepage: https://developers.plane.so/api-reference/introduction
 auth_key_url: https://app.plane.so/profile/api-tokens
 auth_instructions: "Plane Cloud: Profile → API tokens. Self-hosted: Workspace settings → API tokens. Send as header `X-API-Key: <token>` (NOT `Authorization: Bearer`)."
+auth_env_vars:
+  - PLANE_API_KEY
 notes: >
   Vendored spec captured from Plane v1.3.0 CE (drf-spectacular at /api/schema/),
   which open-source Plane serves dynamically on every instance — upstream
