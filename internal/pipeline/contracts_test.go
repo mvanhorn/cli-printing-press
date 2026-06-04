@@ -561,15 +561,24 @@ func TestAmendSkillRequiresUpstreamBreadcrumbsForTemporaryPatches(t *testing.T) 
 	assert.NotContains(t, skill, "workflow rejects PRs where one is present without the other")
 }
 
-func TestGeneratedAgentsTemplateDocumentsUpstreamPatchHandoff(t *testing.T) {
+func TestGeneratedAgentsTemplatePointsToCatalogForPatchMechanics(t *testing.T) {
 	template := readContractFile(t, filepath.Join("..", "generator", "templates", "agents.md.tmpl"))
-	minimumShape := substringBetween(t, template, "Minimum shape:", "Use `deferred_to_upstream`")
 
-	assert.Contains(t, template, `"deferred_to_upstream": [`)
-	assert.Contains(t, template, `"upstream_issue": "https://github.com/mvanhorn/cli-printing-press/issues/<n>"`)
-	assert.Contains(t, template, "Use `deferred_to_upstream` when a local patch is a temporary bridge")
-	assert.NotContains(t, minimumShape, "deferred_to_upstream")
-	assert.NotContains(t, minimumShape, "upstream_issue")
+	// The per-CLI guide keeps CLI-local orientation plus a pointer to where
+	// customizations are recorded, but must NOT duplicate the patch-entry
+	// mechanics (schema, deferred_to_upstream, upstream_issue) -- those live once
+	// in the source catalog's AGENTS.md, the single source of truth. Duplicating
+	// ecosystem schema into every generated CLI is what let published AGENTS.md
+	// drift to the legacy patch form; a stable pointer cannot rot.
+	assert.Contains(t, template, "## Local Customizations")
+	assert.Contains(t, template, ".printing-press-patches/")
+	assert.Contains(t, template, "source catalog's `AGENTS.md`")
+
+	// Mechanics must not be re-inlined into the per-CLI template.
+	assert.NotContains(t, template, "deferred_to_upstream")
+	assert.NotContains(t, template, "upstream_issue")
+	assert.NotContains(t, template, "schema_version")
+	assert.NotContains(t, template, "Minimum shape:")
 }
 
 func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
