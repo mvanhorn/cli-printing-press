@@ -240,11 +240,13 @@ func TestGeneratedBLETransportContractDrivesCodegen(t *testing.T) {
 			Name:  "start-walk",
 			Goal:  "Hold the belt running at a set speed.",
 			Steps: []string{"Subscribe to notify.", "Run the handshake.", "Wait for running, then set speed once."},
+			Notes: "A speed sent before the running state is ignored.",
 		}}
 	})
 	assert.Contains(t, wfRoot, `info["workflows"]`)
 	assert.Contains(t, wfRoot, "start-walk")
 	assert.Contains(t, wfRoot, "Wait for running, then set speed once.")
+	assert.Contains(t, wfRoot, "A speed sent before the running state is ignored.")
 	assert.Contains(t, wfRoot, "proven workflows:")
 }
 

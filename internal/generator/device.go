@@ -561,6 +561,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				{
 					"name":  {{printf "%q" .Name}},
 					"goal":  {{printf "%q" .Goal}},
+					"notes": {{printf "%q" .Notes}},
 					"steps": []string{
 {{- range .Steps}}
 						{{printf "%q" .}},
@@ -604,7 +605,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- if .Spec.Workflows}}
 			fmt.Fprintln(cmd.OutOrStdout(), "proven workflows:")
 			for _, w := range info["workflows"].([]map[string]any) {
-				fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %s (%d steps)\n", w["name"], w["goal"], len(w["steps"].([]string)))
+				steps := len(w["steps"].([]string))
+				if goal, _ := w["goal"].(string); goal != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %s (%d steps)\n", w["name"], goal, steps)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s (%d steps)\n", w["name"], steps)
+				}
 			}
 {{- end}}
 			if !probe {

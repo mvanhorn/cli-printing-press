@@ -322,7 +322,9 @@ workflows:
 	require.Len(t, ds.Workflows[0].Steps, 5)
 	assert.Contains(t, ds.Workflows[0].Steps[4], "set speed once")
 	assert.Equal(t, []string{"ref-start-belt"}, ds.Workflows[0].EvidenceRefs)
+	assert.Equal(t, "A speed sent before the running state is ignored.", ds.Workflows[0].Notes)
 	assert.Equal(t, "stop-walk", ds.Workflows[1].Name)
+	assert.Equal(t, "Idle the belt.", ds.Workflows[1].Goal)
 }
 
 func TestValidateRejectsBadWorkflows(t *testing.T) {

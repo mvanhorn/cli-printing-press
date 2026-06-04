@@ -218,8 +218,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// match the sequence rather than rediscovering it on hardware.
 			info["workflows"] = []map[string]any{
 				{
-					"name": "start-appliance",
-					"goal": "Bring the appliance up and hold it running over a sustained connection.",
+					"name":  "start-appliance",
+					"goal":  "Bring the appliance up and hold it running over a sustained connection.",
+					"notes": "A one-shot write does not sustain the appliance; the session holds the connection open.",
 					"steps": []string{
 						"Subscribe to the status characteristic (fd02).",
 						"Run the connect ceremony (enable-notify), then let it settle.",
@@ -257,7 +258,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "proven workflows:")
 			for _, w := range info["workflows"].([]map[string]any) {
-				fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %s (%d steps)\n", w["name"], w["goal"], len(w["steps"].([]string)))
+				steps := len(w["steps"].([]string))
+				if goal, _ := w["goal"].(string); goal != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %s (%d steps)\n", w["name"], goal, steps)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "  - %s (%d steps)\n", w["name"], steps)
+				}
 			}
 			if !probe {
 				if !device.LiveAvailable() {
