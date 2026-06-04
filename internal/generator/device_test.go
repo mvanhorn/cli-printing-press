@@ -48,6 +48,67 @@ func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+// TestGeneratedBLEDeviceEmitsPublishArtifacts verifies the device generator
+// emits the four standard publish artifacts the public library's
+// completeness verifier expects (AGENTS.md, LICENSE, NOTICE, .goreleaser.yaml).
+// A device generate previously dropped all four — the "fork-and-drop" gap the
+// shared version.go template fixed for the version command.
+func TestGeneratedBLEDeviceEmitsPublishArtifacts(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	for _, name := range []string{"AGENTS.md", "LICENSE", "NOTICE", ".goreleaser.yaml"} {
+		assert.FileExists(t, filepath.Join(outputDir, name))
+	}
+
+	// None of the four may contain an unrendered Go-template directive. The
+	// goreleaser file legitimately carries goreleaser's own `{{ .Version }}`
+	// (note the leading space), so assert specifically on the Go-template form
+	// `{{.` / `{{range`-style openers that would mean a field went unrendered.
+	for _, name := range []string{"AGENTS.md", "LICENSE", "NOTICE", ".goreleaser.yaml"} {
+		body := readFileString(t, filepath.Join(outputDir, name))
+		assert.NotContains(t, body, "{{.", "%s contains an unrendered Go template directive", name)
+		assert.NotEmpty(t, strings.TrimSpace(body), "%s is empty", name)
+	}
+
+	// LICENSE is the Apache-2.0 text with the device "and contributors" holder.
+	license := readFileString(t, filepath.Join(outputDir, "LICENSE"))
+	assert.Contains(t, license, "Apache License")
+	assert.Contains(t, license, "contributors")
+
+	// NOTICE attributes the printed CLI; the creator block is skipped (device
+	// specs carry no creator handle), leaving the Press generation credit.
+	notice := readFileString(t, filepath.Join(outputDir, "NOTICE"))
+	assert.Contains(t, notice, naming.CLI(ds.Name))
+	assert.Contains(t, notice, "CLI Printing Press")
+	assert.NotContains(t, notice, "Created by", "device NOTICE has no creator handle, so the byline block is skipped")
+
+	// .goreleaser.yaml builds both the CLI and the companion MCP binary, wires
+	// the version ldflag to the module's internal/cli package, and carries a
+	// non-empty homebrew description.
+	goreleaser := readFileString(t, filepath.Join(outputDir, ".goreleaser.yaml"))
+	assert.Contains(t, goreleaser, "project_name: "+naming.CLI(ds.Name))
+	assert.Contains(t, goreleaser, "main: ./cmd/"+naming.CLI(ds.Name))
+	assert.Contains(t, goreleaser, "main: ./cmd/"+naming.MCP(ds.Name))
+	assert.Contains(t, goreleaser, naming.CLI(ds.Name)+"/internal/cli.version=")
+	assert.Contains(t, goreleaser, `description: "`)
+
+	// AGENTS.md is the device-aware variant: it uses BLE/replay concepts and the
+	// codec/novelCommands customization model, never HTTP auth/sync/SQL.
+	agents := readFileString(t, filepath.Join(outputDir, "AGENTS.md"))
+	assert.Contains(t, agents, naming.CLI(ds.Name))
+	assert.Contains(t, agents, "ble_live")
+	assert.Contains(t, agents, "replay-backed by default")
+	assert.Contains(t, agents, "DeviceCodec")
+	assert.NotContains(t, agents, "agent-context", "device AGENTS.md must not reference the HTTP agent-context command")
+	assert.NotContains(t, agents, "Self-Learning Loop", "device AGENTS.md must not reference the HTTP learn loop")
+}
+
 func TestGeneratedBLESkillEmitsCanonicalInstallSection(t *testing.T) {
 	t.Parallel()
 

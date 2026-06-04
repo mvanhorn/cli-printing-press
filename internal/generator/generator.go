@@ -553,19 +553,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return string(runes[:max-1]) + "…"
 		},
-		// yamlDoubleQuoted escapes a string for safe embedding inside a YAML
-		// double-quoted scalar. Handles the three failure modes we've seen
-		// from LLM-authored narrative fields: unescaped " (breaks parser),
-		// unescaped \ (swallows next char), and raw newlines (terminates
-		// scalar). Leaves single quotes alone — valid in double-quoted YAML.
-		"yamlDoubleQuoted": func(s string) string {
-			s = strings.ReplaceAll(s, `\`, `\\`)
-			s = strings.ReplaceAll(s, `"`, `\"`)
-			s = strings.ReplaceAll(s, "\n", `\n`)
-			s = strings.ReplaceAll(s, "\r", `\r`)
-			s = strings.ReplaceAll(s, "\t", `\t`)
-			return s
-		},
+		"yamlDoubleQuoted": yamlDoubleQuoted,
 		// groupNovelFeatures clusters features by their Group field, preserving
 		// first-seen order of group names. Features with empty Group land in a
 		// trailing "More" bucket so nothing gets dropped. Returns nil when no

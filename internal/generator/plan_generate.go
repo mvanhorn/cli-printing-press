@@ -604,6 +604,22 @@ func resolveContributorsForExisting(outputDir, apiName string) []spec.Person {
 // always followed by " and contributors" so the header is a constant shape
 // regardless of contributor count. Shared by the full generator and the
 // plan-scaffold func maps.
+// yamlDoubleQuoted escapes a string for safe embedding inside a YAML
+// double-quoted scalar. Handles the three failure modes we've seen from
+// LLM-authored narrative fields: unescaped " (breaks parser), unescaped \
+// (swallows next char), and raw newlines (terminates scalar). Leaves single
+// quotes alone — valid in double-quoted YAML. Shared by the HTTP and device
+// generator func maps so the .goreleaser.yaml homebrew description renders
+// identically from both.
+func yamlDoubleQuoted(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
+}
+
 func copyrightHolderString(creator spec.Person, ownerName, ownerSlug string) string {
 	holder := creator.Name
 	if holder == "" {

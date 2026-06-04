@@ -14,6 +14,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 type DeviceGenerator struct {
@@ -22,12 +23,22 @@ type DeviceGenerator struct {
 }
 
 type deviceTemplateData struct {
-	Spec            *devicespec.DeviceSpec
-	Name            string
-	CLIName         string
-	MCPName         string
-	ModulePath      string
-	DisplayName     string
+	Spec               *devicespec.DeviceSpec
+	Name               string
+	CLIName            string
+	MCPName            string
+	ModulePath         string
+	DisplayName        string
+	ProseName          string
+	CompactDescription string
+	Owner              string
+	VisionSet          VisionTemplateSet
+	// Creator/Contributors drive the NOTICE attribution block. Device specs
+	// carry no creator handle, so the "Created by"/"Contributors" block in
+	// NOTICE.tmpl is skipped (gated on .Creator.Handle); the copyright line
+	// falls back to the "and contributors" holder.
+	Creator         spec.Person
+	Contributors    []spec.Person
 	CurrentYear     int
 	StatusFields    []deviceStatusField
 	Commands        []deviceCommandField
@@ -105,6 +116,13 @@ func (g *DeviceGenerator) Generate() error {
 		filepath.Join("internal", "device", "live_test.go"): deviceLiveTestTemplate,
 		"README.md": deviceReadmeTemplate,
 		"SKILL.md":  deviceSkillTemplate,
+		// Standard publish artifacts the public library's completeness verifier
+		// expects. LICENSE/NOTICE/.goreleaser.yaml are shared with the HTTP
+		// generator; AGENTS.md uses a device-aware variant (no auth/sync/SQL).
+		"LICENSE":          "LICENSE.tmpl",
+		"NOTICE":           "NOTICE.tmpl",
+		".goreleaser.yaml": "goreleaser.yaml.tmpl",
+		"AGENTS.md":        "agents_device.md.tmpl",
 		// MCP surface: a stdio MCP server that mirrors the Cobra tree via the
 		// API-agnostic cobratree walker. The walker respects mcp:read-only and
 		// mcp:hidden annotations, so each device CLI's own commands decide what an
@@ -205,12 +223,25 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		serviceUUIDs = append(serviceUUIDs, uuid)
 	}
 	return deviceTemplateData{
-		Spec:            g.Spec,
-		Name:            name,
-		CLIName:         naming.CLI(name),
-		MCPName:         naming.MCP(name),
-		ModulePath:      naming.CLI(name),
-		DisplayName:     displayName,
+		Spec:        g.Spec,
+		Name:        name,
+		CLIName:     naming.CLI(name),
+		MCPName:     naming.MCP(name),
+		ModulePath:  naming.CLI(name),
+		DisplayName: displayName,
+		ProseName:   displayName,
+		// One-line, YAML-safe blurb for the goreleaser homebrew description. Device
+		// specs carry no narrative headline, so derive a stable line from the
+		// display name.
+		CompactDescription: naming.CompactDescription(displayName + " device CLI"),
+		// Device specs carry no creator handle/owner slug; the attribution model is
+		// "and contributors" (matching the copyrightHolder func). "contributors" is
+		// the placeholder owner for the goreleaser homebrew-tap/homepage fields,
+		// consistent with the NOTICE/LICENSE copyright holder.
+		Owner: "contributors",
+		// Device CLIs always emit the companion MCP binary; the shared
+		// goreleaser template gates its build on VisionSet.MCP.
+		VisionSet:       VisionTemplateSet{MCP: true},
 		CurrentYear:     time.Now().Year(),
 		StatusFields:    statusFields,
 		Commands:        commands,
@@ -273,9 +304,11 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 		return fmt.Errorf("read %s template: %w", tmplName, err)
 	}
 	tmpl, err := template.New(tmplName).Funcs(template.FuncMap{
-		"currentYear":     func() string { return strconv.Itoa(time.Now().Year()) },
-		"copyrightHolder": func() string { return "contributors" },
-		"envPrefix":       naming.EnvPrefix,
+		"currentYear":      func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder":  func() string { return "contributors" },
+		"envPrefix":        naming.EnvPrefix,
+		"modulePath":       func() string { return naming.CLI(g.Spec.Name) },
+		"yamlDoubleQuoted": yamlDoubleQuoted,
 	}).Parse(string(content))
 	if err != nil {
 		return fmt.Errorf("parse %s template: %w", tmplName, err)

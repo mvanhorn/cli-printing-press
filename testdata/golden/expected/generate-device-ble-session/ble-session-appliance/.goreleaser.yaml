@@ -1,0 +1,51 @@
+version: 2
+project_name: ble-session-appliance-pp-cli
+changelog:
+  disable: true
+builds:
+  - id: ble-session-appliance-pp-cli
+    main: ./cmd/ble-session-appliance-pp-cli
+    binary: ble-session-appliance-pp-cli
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X ble-session-appliance-pp-cli/internal/cli.version={{ .Version }}
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+      - windows_arm64
+  - id: ble-session-appliance-pp-mcp
+    main: ./cmd/ble-session-appliance-pp-mcp
+    binary: ble-session-appliance-pp-mcp
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+    targets:
+      - darwin_amd64
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+      - windows_amd64
+      - windows_arm64
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+checksum:
+  name_template: checksums.txt
+brews:
+  - name: ble-session-appliance-pp-cli
+    repository:
+      owner: contributors
+      name: homebrew-tap
+    homepage: "https://github.com/contributors/ble-session-appliance-pp-cli"
+    description: "BLE Session Appliance device CLI"
+    install: |
+      bin.install "ble-session-appliance-pp-cli"
+      bin.install "ble-session-appliance-pp-mcp"
