@@ -38,6 +38,13 @@ func TestGeneratedGraphQLImportIsNotREST(t *testing.T) {
 		"GraphQL import.go must not fire REST POST requests")
 	assert.NotContains(t, importGo, `path := "/" + resource`,
 		"GraphQL import.go must not build a REST resource path")
+	// Surface-compat claim in graphql_import.go.tmpl: the same flags the REST
+	// import command registers must exist here so scripts/SKILL references that
+	// pass them don't hit "unknown flag" on a GraphQL CLI.
+	for _, flag := range []string{`"input"`, `"dry-run"`, `"batch-size"`} {
+		assert.Contains(t, importGo, flag,
+			"GraphQL import.go must register %s for surface compatibility with the REST import command", flag)
+	}
 
 	requireGeneratedCompiles(t, outputDir)
 }

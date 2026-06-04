@@ -18,6 +18,7 @@ import (
 // command package when its create path exists.
 func newImportCmd(flags *rootFlags) *cobra.Command {
 	var inputFile string
+	var dryRun bool
 	var batchSize int
 
 	cmd := &cobra.Command{
@@ -43,6 +44,7 @@ create commands instead.`,
 	// (help, scripts, SKILL references), but the command always returns the
 	// unsupported-on-GraphQL error above.
 	cmd.Flags().StringVarP(&inputFile, "input", "i", "", "Input JSONL file path (unsupported on GraphQL APIs)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview import without sending requests (unsupported on GraphQL APIs)")
 	cmd.Flags().IntVar(&batchSize, "batch-size", 1, "Records per batch (unsupported on GraphQL APIs)")
 
 	return cmd
