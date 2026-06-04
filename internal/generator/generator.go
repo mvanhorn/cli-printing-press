@@ -3359,6 +3359,11 @@ func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
 			actualTmpl = "graphql_sync.go.tmpl"
 		} else if tmplName == "sync.go.tmpl" && visionData.HTMLSyncStub {
 			actualTmpl = "sync_stub.go.tmpl"
+		} else if tmplName == "import.go.tmpl" && gqlSpec {
+			// GraphQL APIs have no generic REST create endpoint, so the REST
+			// import template's POST /<resource> per record always 400s. Emit
+			// a GraphQL-aware import that errors clearly instead.
+			actualTmpl = "graphql_import.go.tmpl"
 		}
 		var tmplData any = g.Spec
 		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" {
