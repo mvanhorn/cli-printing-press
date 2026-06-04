@@ -283,6 +283,81 @@ transport:
 	}
 }
 
+func TestParseWorkflowsCapturesProvenSpine(t *testing.T) {
+	t.Parallel()
+
+	ds, err := ParseBytes([]byte(`
+version: 1
+name: workflow-device
+protocol: ble
+ble:
+  services:
+    - uuid: "fe00"
+      characteristics:
+        - uuid: "fe01"
+          properties: [notify]
+        - uuid: "fe02"
+          properties: [write]
+workflows:
+  - name: start-walk
+    goal: Start the belt and hold it running at a set speed.
+    steps:
+      - Subscribe to the notify characteristic.
+      - Run the connect handshake (profile query + beep).
+      - Switch to manual mode, then settle.
+      - Start the belt.
+      - Wait for the running state, then set speed once.
+    evidence_refs: [ref-start-belt]
+    notes: A speed sent before the running state is ignored.
+  - name: stop-walk
+    goal: Idle the belt.
+    steps:
+      - Set speed to zero.
+      - Settle, then switch to standby.
+    evidence_refs: [ref-stop-belt]
+`))
+	require.NoError(t, err)
+	require.Len(t, ds.Workflows, 2)
+	assert.Equal(t, "start-walk", ds.Workflows[0].Name)
+	require.Len(t, ds.Workflows[0].Steps, 5)
+	assert.Contains(t, ds.Workflows[0].Steps[4], "set speed once")
+	assert.Equal(t, []string{"ref-start-belt"}, ds.Workflows[0].EvidenceRefs)
+	assert.Equal(t, "stop-walk", ds.Workflows[1].Name)
+}
+
+func TestValidateRejectsBadWorkflows(t *testing.T) {
+	t.Parallel()
+
+	base := `
+version: 1
+name: bad-workflow
+protocol: ble
+ble:
+  services:
+    - uuid: "fe00"
+      characteristics:
+        - uuid: "fe02"
+          properties: [write]
+workflows:
+`
+	cases := []struct {
+		name    string
+		block   string
+		wantErr string
+	}{
+		{"missing-name", "  - steps: [do a thing]\n", "workflows[0].name is required"},
+		{"no-steps", "  - name: armed\n", `workflows[0] ("armed") must list at least one step`},
+		{"empty-step", "  - name: armed\n    steps:\n      - \"\"\n", "workflows[0].steps[0] must not be empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseBytes([]byte(base + tc.block))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestParseRejectsUnsupportedVersionWithMigrationError(t *testing.T) {
 	t.Parallel()
 

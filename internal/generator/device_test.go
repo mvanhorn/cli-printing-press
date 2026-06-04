@@ -186,8 +186,9 @@ func TestGeneratedBLEDeviceEmitsLiveBackendSeam(t *testing.T) {
 
 // TestGeneratedBLETransportContractDrivesCodegen verifies the transport contract
 // fields drive emitted code: command_spacing_ms emits a paced writer, write_mode
-// flips the write preference, and the contract + quirks surface in doctor. A
-// device with no transport block is unaffected (acknowledged-first, no pacing).
+// flips the write preference, and the contract + quirks + workflows surface in
+// doctor. A device with no transport block is unaffected (acknowledged-first, no
+// pacing) and surfaces neither quirks nor workflows.
 func TestGeneratedBLETransportContractDrivesCodegen(t *testing.T) {
 	t.Parallel()
 
@@ -214,6 +215,7 @@ func TestGeneratedBLETransportContractDrivesCodegen(t *testing.T) {
 	assert.Contains(t, plainLive, "if _, err := c.Write(payload); err == nil")
 	assert.Contains(t, plainRoot, `"write_mode"`)
 	assert.NotContains(t, plainRoot, `info["quirks"]`)
+	assert.NotContains(t, plainRoot, `info["workflows"]`)
 
 	// command_spacing_ms -> paced writer.
 	pacedLive, _ := gen(func(ds *devicespec.DeviceSpec) { ds.Transport.CommandSpacingMS = 690 })
@@ -230,6 +232,20 @@ func TestGeneratedBLETransportContractDrivesCodegen(t *testing.T) {
 	})
 	assert.Contains(t, quirkRoot, `info["quirks"]`)
 	assert.Contains(t, quirkRoot, "Dummy read before first write.")
+
+	// workflows -> doctor surfaces the proven spine (name, goal, ordered steps) so
+	// the implemented control flow can be checked against it.
+	_, wfRoot := gen(func(ds *devicespec.DeviceSpec) {
+		ds.Workflows = []devicespec.DeviceWorkflow{{
+			Name:  "start-walk",
+			Goal:  "Hold the belt running at a set speed.",
+			Steps: []string{"Subscribe to notify.", "Run the handshake.", "Wait for running, then set speed once."},
+		}}
+	})
+	assert.Contains(t, wfRoot, `info["workflows"]`)
+	assert.Contains(t, wfRoot, "start-walk")
+	assert.Contains(t, wfRoot, "Wait for running, then set speed once.")
+	assert.Contains(t, wfRoot, "proven workflows:")
 }
 
 func TestGeneratedBLEDeviceEmitsLiveTransportAndDoctor(t *testing.T) {

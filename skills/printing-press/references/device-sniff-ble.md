@@ -13,7 +13,7 @@ Device Sniff is evidence-first. Community libraries, official docs, Android logs
 
 ## Protocol Contract Synthesis Gate
 
-BLE device discovery has a hard gate. A scan or service inspection tells you a device exposes characteristics, but not what its command payloads mean, nor how to *operate* the device. Before generating callable control commands or running a live write, synthesize the device's protocol contract from concrete sources — in one deliberate research pass, not command-by-command on hardware. The gate has two halves; satisfy both.
+BLE device discovery has a hard gate. A scan or service inspection tells you a device exposes characteristics, but not what its command payloads mean, nor how to *operate* the device. Before generating callable control commands or running a live write, synthesize the device's protocol contract from concrete sources — in one deliberate research pass, not command-by-command on hardware. The gate has three parts; satisfy all three.
 
 **1. The action map — what the bytes mean.** Establish action -> service/characteristic/payload from a concrete source.
 
@@ -27,10 +27,13 @@ Accepted sources:
 
 **2. The operational contract — how to talk to the device.** The same sources that give you payloads almost always document the *operating* contract too, and it is exactly the part that gets silently rediscovered on hardware if you skip it. Extract it into the spec's `transport:` block and `quirks:` list (see "Protocol Contract" below): write semantics, command spacing, connect ceremony and ordering, settle delays, poll cadence, teardown behavior, single-client constraints, and qualitative quirks (init tricks, stale-session gotchas, firmware-variant opcode shifts, notify-enable dances).
 
+**3. The workflow spine — how the device is *operated* end to end.** Commands and the operating contract are the parts; the **workflows** are how a working client assembles them into a sequence that actually achieves each user goal (start a walk, stop the belt, pair-then-arm). The reference encodes these sequences directly — the order of mode → settle → start, the wait-for-running before setting speed, the stop ceremony. Understanding individual commands is not enough; the *spine* is where a from-scratch implementation goes wrong. Extract each primary goal's proven sequence into the spec's `workflows:` list (`{name, goal, steps, evidence_refs}`) — ordered and cited — so the QA fidelity pass and the dogfood checklist have a contract to check the implementation against. This is the part that, when left unwritten, gets rediscovered by guessing on hardware. Capture it once.
+
 Required behavior:
 
-- **Expand from your seeds; do not stop at the first source.** A user-provided repo or doc is a starting point, not the finish line. Search GitHub code, Home Assistant / ESPHome integrations, vendor docs, issues, and forums by product name/model, advertised BLE name, service UUIDs, app package name, and known library names. Find the most complete reference and cross-check the contract across at least two independent sources when they exist.
-- **Synthesize once, then build.** Capture the action map into `capabilities` and the operational contract into `transport:` + `quirks:`, each with `evidence_refs`, before writing the codec or touching hardware.
+- **Run an explicit external web-research pass; do not stop at the seeds.** A user-provided repo or doc is seed #1, not the finish line — go wider before you build. Web-search and GitHub-code-search by product name/model, advertised BLE name, service UUIDs, app package name, and known library names; pull Home Assistant / ESPHome integrations, vendor docs and protocol notes, issues, and forum threads. Find the most complete reference, and cross-check the contract across **at least two independent sources** when they exist — a wrapper that merely imports another library is not an independent source.
+- **Record what you consulted (a research ledger).** In the discovery output, list the sources you actually examined — URL, what each contributed, how independent it is — so breadth is an artifact, not an assumption. `evidence_refs` that all trace back to the single repo the user handed you is a red flag: state plainly whether ≥2 independent sources corroborate the contract, or why only one credibly exists.
+- **Synthesize once, then build.** Capture the action map into `capabilities`, the operational contract into `transport:` + `quirks:`, and the proven sequences into `workflows:`, each with `evidence_refs`, before writing the codec or touching hardware.
 - **Don't relearn cited facts.** If a source states a timing, ordering, or write-semantics fact (a command-spacing minimum, a subscribe-before-handshake order, an acknowledged-write requirement, an init quirk), record it in the contract and implement it from the citation. Hardware trial-and-error is for genuinely undocumented gaps only — never to re-derive a fact a reference already states.
 - Treat scan/inspect/read/subscribe evidence as identity and telemetry discovery unless it is paired with mapping evidence.
 - If no mapping source is found, generate a read/status/capabilities-only CLI or stop and ask the user for mapping evidence. Do not create callable write commands from raw GATT shape alone.
@@ -38,7 +41,7 @@ Required behavior:
 
 ## Protocol Contract
 
-The device spec carries two complementary halves of "how this device works", alongside the action map in `capabilities`:
+The device spec carries three views of "how this device works", alongside the action map in `capabilities`:
 
 **`transport:` — the quantitative contract.** Fields the generator consumes or the codec needs:
 
@@ -52,7 +55,9 @@ The device spec carries two complementary halves of "how this device works", alo
 
 **`quirks:` — the qualitative contract.** Behavioral facts that do not reduce to a field but must be factored in: an init trick, a stale-session gotcha, a firmware-variant opcode shift, a notify-enable dance. Each is `{category, summary, handling, evidence_refs}`. They cannot drive codegen, so the generated CLI surfaces them in `doctor` (text + JSON); they are required reading for the codec author and a line on the dogfood checklist.
 
-Capture every field and quirk you have evidence for, and cite it. The contract is the synthesis output — and it is your dogfood checklist: each entry is something to **confirm** on hardware, not rediscover. A divergence between the contract and observed behavior is a spec correction, not a fresh discovery.
+**`workflows:` — the proven spine.** The ordered, end-to-end sequences that operate the device for each user goal — start a walk, stop the belt, pair-then-arm — composing the `transport:` facts and the `capabilities` action map into the steps a working reference is known to use. Each is `{name, goal, steps, evidence_refs, notes}` with ordered, human-readable `steps`. It does not drive codegen; the generated CLI surfaces it in `doctor` (text + JSON), and it is the contract the implemented control flow (codec + held-connection choreography) is checked against in the QA workflow-fidelity pass (see below) and a line on the dogfood checklist. Capturing the spine is what keeps a from-scratch implementation from rediscovering a documented sequence by guessing.
+
+Capture every transport field, quirk, and workflow you have evidence for, and cite each. The contract and the spine are the synthesis output — and they are your dogfood checklist: each entry is something to **confirm** on hardware, not rediscover. A divergence between the recorded contract/spine and observed behavior is a spec correction, not a fresh discovery.
 
 ## Standalone Hardware Probe
 
@@ -168,6 +173,12 @@ Before shipping, classify the device and act accordingly:
 
 A printed Tier-2 CLI whose live commands silently no-op or write wrong bytes is a failure, not an acceptable outcome — detect the stateful protocol and implement the codec. The reverse-engineered protocol logic is irreducible per-device work; the command surface, BLE plumbing, connection management, build tags, flags, and safety gating are generated.
 
+## QA: Workflow Fidelity
+
+Before ship — once the codec and any held-connection choreography exist, and again during dogfood — diff the implemented control flow against each `workflows:` spine. `<cli> doctor --json` surfaces the recorded workflows as the deterministic inventory; for each one, walk the implementation (the codec's `EncodeCommand`, the novel choreography command, the ordering, settle delays, and waits) and confirm every step is present, in order, with nothing invented. Resolve any missing, reordered, or fabricated step before ship.
+
+Assuming the cited source is credible (which it is when corroborated by the research pass above), a divergence from the proven spine is the prime suspect — caught here rather than through haphazard hardware trial-and-error. This is judgment, not a mechanical gate, and it is not definitive: the source can be wrong or the device variant can differ, which is exactly what hardware dogfood is for. But "does this follow the proven sequence?" beats guessing. A divergence the agent can justify (a documented better path, a known variant difference) is a spec note, not a silent deviation.
+
 ## Session And UI Considerations
 
 Session scaffolding is optional and device-driven.
@@ -182,12 +193,12 @@ Session scaffolding is optional and device-driven.
 Prefer this sequence for unknown devices:
 
 1. Identify the exact product, app, advertised BLE name, and service UUIDs.
-2. Search for protocol sources in docs, community code, issues, forums, app logs, or captures — expanding from any user-provided seeds, not stopping at them.
-3. Synthesize the action map (`capabilities`) and the operational contract (`transport:` + `quirks:`) from the best sources, cross-checked and cited.
+2. Run an external web-research pass for protocol sources (docs, community code, HA / ESPHome, issues, forums, app logs, captures), expanding from any user-provided seeds rather than stopping at them; record the sources consulted and whether ≥2 are independent.
+3. Synthesize the action map (`capabilities`), the operational contract (`transport:` + `quirks:`), and the proven workflows (`workflows:`) from the best sources, cross-checked and cited.
 4. Scan and inspect to confirm identity and available characteristics.
 5. Read and subscribe for non-mutating telemetry evidence.
 6. Correlate observed writes with an action journal or imported capture.
 7. Replay known payloads under operator-visible control.
-8. Dogfood to **verify** the contract on hardware — confirm each `transport:` field and `quirk:` holds; a divergence is a spec correction, not a fresh discovery.
+8. Dogfood to **verify** the contract and spine on hardware — confirm each `transport:` field and `quirk:` holds, and that the implemented control flow follows each `workflow:` (the QA workflow-fidelity pass); a divergence is a spec correction, not a fresh discovery.
 
 Do not actively probe mutating payloads without guidance.

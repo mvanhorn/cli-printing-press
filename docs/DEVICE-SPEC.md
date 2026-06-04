@@ -11,7 +11,7 @@ A device spec preserves device-native evidence so generation can emit a CLI with
 - commands with payload encoding, evidence refs, validation status, and safety class
 - telemetry fields with source characteristics and optional store hints
 - session requirements for one-shot, optional, or required maintained connections
-- the operational protocol contract (`transport:`) and qualitative behavioral quirks (`quirks:`)
+- the operational protocol contract (`transport:`), qualitative behavioral quirks (`quirks:`), and the proven operating sequences (`workflows:`)
 
 ## Discovery Flow
 
@@ -45,7 +45,9 @@ The action map in `capabilities` says what the bytes mean; the **protocol contra
 
 `quirks:` is the qualitative contract — behavioral facts that do not reduce to a field (an init trick, a stale-session gotcha, a firmware-variant opcode shift, a notify-enable dance). Each is `{category, summary, handling, evidence_refs}`. They cannot drive codegen, so the generated CLI surfaces them in `doctor` (text + JSON), and they are required reading for the codec author and a line on the dogfood checklist.
 
-The contract is the synthesis output and the dogfood checklist. Authoring detail and the don't-relearn-cited-facts rule live in the `device-sniff-ble` skill reference.
+`workflows:` is the proven **spine** — the ordered, end-to-end sequences that actually operate the device for each user goal (start a walk, stop the belt, pair-then-arm), composing the `transport:` facts and the `capabilities` action map into the steps the reference implementation is known to use. Each is `{name, goal, steps, evidence_refs, notes}` with ordered, human-readable `steps`. Like quirks it does not drive codegen; the generated CLI surfaces it in `doctor` (text + JSON), and it is the contract the implemented control flow (codec + held-connection choreography) is checked against in the QA **workflow-fidelity** pass — a missing, reordered, or invented step is a divergence to resolve before ship. Capturing the spine here is what stops an agent from rediscovering a documented sequence by guessing on hardware.
+
+The contract and the workflow spine are the synthesis output and the dogfood checklist: each `transport:` field, `quirk:`, and `workflow:` is something to **confirm** on hardware, and the implementation is diffed against each workflow before ship. Authoring detail, the research-breadth rule, and the don't-relearn-cited-facts rule live in the `device-sniff-ble` skill reference.
 
 ## Evidence And Uncertainty
 

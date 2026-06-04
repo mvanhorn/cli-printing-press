@@ -96,6 +96,7 @@ type DeviceSpec struct {
 	Session      SessionProfile     `yaml:"session,omitempty" json:"session"`
 	Transport    TransportContract  `yaml:"transport,omitempty" json:"transport"`
 	Quirks       []DeviceQuirk      `yaml:"quirks,omitempty" json:"quirks,omitempty"`
+	Workflows    []DeviceWorkflow   `yaml:"workflows,omitempty" json:"workflows,omitempty"`
 	Evidence     []EvidenceRef      `yaml:"evidence,omitempty" json:"evidence,omitempty"`
 }
 
@@ -125,6 +126,26 @@ type DeviceQuirk struct {
 	Summary      string   `yaml:"summary" json:"summary"`
 	Handling     string   `yaml:"handling,omitempty" json:"handling,omitempty"`
 	EvidenceRefs []string `yaml:"evidence_refs,omitempty" json:"evidence_refs,omitempty"`
+}
+
+// DeviceWorkflow is a proven end-to-end operating sequence for one user goal —
+// the "spine" of how the reference implementation actually drives the device
+// (start a walk, stop the belt, pair-then-arm). It composes the atomic facts in
+// Transport (ceremony, settle delays, write mode, spacing) and the action map in
+// Capabilities into the ordered sequence that is known to work, synthesized from
+// reference code during the research gate and cited in EvidenceRefs. It does not
+// drive codegen: it is the contract the implemented control flow (codec plus
+// held-connection choreography) is checked against in the QA workflow-fidelity
+// pass and confirmed on hardware during dogfood. Capturing the spine here is what
+// stops an agent from rediscovering a documented sequence by guessing on
+// hardware. Steps are ordered and human-readable, each naming the command or
+// transport fact it invokes.
+type DeviceWorkflow struct {
+	Name         string   `yaml:"name" json:"name"`
+	Goal         string   `yaml:"goal,omitempty" json:"goal,omitempty"`
+	Steps        []string `yaml:"steps" json:"steps"`
+	EvidenceRefs []string `yaml:"evidence_refs,omitempty" json:"evidence_refs,omitempty"`
+	Notes        string   `yaml:"notes,omitempty" json:"notes,omitempty"`
 }
 
 // TransportContract is the operational protocol contract: how to *talk to* the

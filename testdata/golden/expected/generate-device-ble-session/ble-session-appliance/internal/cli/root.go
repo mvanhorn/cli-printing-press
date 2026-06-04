@@ -212,6 +212,22 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			info["quirks"] = []map[string]string{
 				{"category": "concurrency", "summary": "The vendor app holds the single BLE slot; disconnect it before laptop control.", "handling": "doctor surfaces this; suggest closing the app on a connect failure."},
 			}
+			// Proven operating workflows: the cited reference spine the implemented
+			// control flow is expected to follow. Surfaced (not codegen) so an
+			// operator/agent can confirm the codec and held-connection choreography
+			// match the sequence rather than rediscovering it on hardware.
+			info["workflows"] = []map[string]any{
+				{
+					"name": "start-appliance",
+					"goal": "Bring the appliance up and hold it running over a sustained connection.",
+					"steps": []string{
+						"Subscribe to the status characteristic (fd02).",
+						"Run the connect ceremony (enable-notify), then let it settle.",
+						"Send start (a001) on the control characteristic (fd01).",
+						"Poll status at the transport poll cadence and hold the connection.",
+					},
+				},
+			}
 			// Probe hardware only when explicitly live, the BLE backend is
 			// compiled in, and not under verify.
 			probe := flags.live && device.LiveAvailable() && !cliutil.IsVerifyEnv()
@@ -238,6 +254,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			fmt.Fprintln(cmd.OutOrStdout(), "operating notes:")
 			for _, q := range info["quirks"].([]map[string]string) {
 				fmt.Fprintf(cmd.OutOrStdout(), "  - [%s] %s\n", q["category"], q["summary"])
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "proven workflows:")
+			for _, w := range info["workflows"].([]map[string]any) {
+				fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %s (%d steps)\n", w["name"], w["goal"], len(w["steps"].([]string)))
 			}
 			if !probe {
 				if !device.LiveAvailable() {

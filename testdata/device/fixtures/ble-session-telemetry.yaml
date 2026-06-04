@@ -61,6 +61,16 @@ quirks:
     summary: The vendor app holds the single BLE slot; disconnect it before laptop control.
     handling: doctor surfaces this; suggest closing the app on a connect failure.
     evidence_refs: [proto-single-client]
+workflows:
+  - name: start-appliance
+    goal: Bring the appliance up and hold it running over a sustained connection.
+    steps:
+      - Subscribe to the status characteristic (fd02).
+      - Run the connect ceremony (enable-notify), then let it settle.
+      - Send start (a001) on the control characteristic (fd01).
+      - Poll status at the transport poll cadence and hold the connection.
+    evidence_refs: [write-start, notify-running]
+    notes: A one-shot write does not sustain the appliance; the session holds the connection open.
 evidence:
   - id: write-start
     source: action-journal

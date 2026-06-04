@@ -109,6 +109,19 @@ func (s *DeviceSpec) Validate() error {
 			return fmt.Errorf("quirks[%d].summary is required", i)
 		}
 	}
+	for i, w := range s.Workflows {
+		if strings.TrimSpace(w.Name) == "" {
+			return fmt.Errorf("workflows[%d].name is required", i)
+		}
+		if len(w.Steps) == 0 {
+			return fmt.Errorf("workflows[%d] (%q) must list at least one step", i, w.Name)
+		}
+		for j, step := range w.Steps {
+			if strings.TrimSpace(step) == "" {
+				return fmt.Errorf("workflows[%d].steps[%d] must not be empty", i, j)
+			}
+		}
+	}
 	return nil
 }
 

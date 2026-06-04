@@ -551,6 +551,25 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 			}
 {{- end}}
+{{- if .Spec.Workflows}}
+			// Proven operating workflows: the cited reference spine the implemented
+			// control flow is expected to follow. Surfaced (not codegen) so an
+			// operator/agent can confirm the codec and held-connection choreography
+			// match the sequence rather than rediscovering it on hardware.
+			info["workflows"] = []map[string]any{
+{{- range .Spec.Workflows}}
+				{
+					"name":  {{printf "%q" .Name}},
+					"goal":  {{printf "%q" .Goal}},
+					"steps": []string{
+{{- range .Steps}}
+						{{printf "%q" .}},
+{{- end}}
+					},
+				},
+{{- end}}
+			}
+{{- end}}
 			// Probe hardware only when explicitly live, the BLE backend is
 			// compiled in, and not under verify.
 			probe := flags.live && device.LiveAvailable() && !cliutil.IsVerifyEnv()
@@ -580,6 +599,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			fmt.Fprintln(cmd.OutOrStdout(), "operating notes:")
 			for _, q := range info["quirks"].([]map[string]string) {
 				fmt.Fprintf(cmd.OutOrStdout(), "  - [%s] %s\n", q["category"], q["summary"])
+			}
+{{- end}}
+{{- if .Spec.Workflows}}
+			fmt.Fprintln(cmd.OutOrStdout(), "proven workflows:")
+			for _, w := range info["workflows"].([]map[string]any) {
+				fmt.Fprintf(cmd.OutOrStdout(), "  - %s: %s (%d steps)\n", w["name"], w["goal"], len(w["steps"].([]string)))
 			}
 {{- end}}
 			if !probe {
