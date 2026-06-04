@@ -55,12 +55,13 @@ Inside a Hermes chat session:
 ```
 
 ## Install for OpenClaw
+Install both the CLI binary and the focused OpenClaw skill into runtime-visible locations:
 
-Tell your OpenClaw agent (copy this):
+```bash
+npx -y @mvanhorn/printing-press-library install printing-press-rich --agent openclaw --bin-dir ~/.local/bin
+```
 
-```
-Install the pp-printing-press-rich skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-printing-press-rich. The skill defines how its required CLI can be installed.
-```
+Restart the OpenClaw session or gateway if the newly installed skill is not visible immediately.
 
 ## Use with Claude Desktop
 

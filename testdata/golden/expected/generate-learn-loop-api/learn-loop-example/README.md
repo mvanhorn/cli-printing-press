@@ -66,12 +66,13 @@ Inside a Hermes chat session:
 ```
 
 ## Install for OpenClaw
+Install both the CLI binary and the focused OpenClaw skill into runtime-visible locations:
 
-Tell your OpenClaw agent (copy this):
+```bash
+npx -y @mvanhorn/printing-press-library install learn-loop-example --agent openclaw --bin-dir ~/.local/bin
+```
 
-```
-Install the pp-learn-loop-example skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-learn-loop-example. The skill defines how its required CLI can be installed.
-```
+Restart the OpenClaw session or gateway if the newly installed skill is not visible immediately.
 
 ## Use with Claude Desktop
 

@@ -18,16 +18,16 @@ metadata:
 
 This skill drives the `public-param-golden-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:
 
-1. Install via the Printing Press installer:
+1. Install via the Printing Press installer into a user bin directory:
    ```bash
-   npx -y @mvanhorn/printing-press-library install public-param-golden --cli-only
+   npx -y @mvanhorn/printing-press-library install public-param-golden --cli-only --bin-dir ~/.local/bin
    ```
 2. Verify: `public-param-golden-pp-cli --version`
-3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
+3. Ensure `~/.local/bin` is on `$PATH` for the agent/runtime that will invoke this skill.
 
 If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.
 
-If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
+If `--version` reports "command not found" after install, the runtime cannot see the binary directory on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
 Public parameter name golden fixture
 

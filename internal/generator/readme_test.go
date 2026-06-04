@@ -308,8 +308,8 @@ func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
 
 	// OpenClaw section: copyable code-fenced agent instruction.
 	assert.Contains(t, content, "## Install for OpenClaw")
-	assert.Contains(t, content, "https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-hermes-install",
-		"OpenClaw URL must point at the cli-skills directory")
+	assert.Contains(t, content, "npx -y @mvanhorn/printing-press-library install hermes-install --agent openclaw --bin-dir ~/.local/bin",
+		"OpenClaw form must install both the focused skill and binary into runtime-visible locations")
 }
 
 // TestReadmeFallsBackWhenNarrativeAbsent asserts the generic description

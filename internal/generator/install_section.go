@@ -27,18 +27,18 @@ const canonicalSkillInstallSectionStartFormat = "## Prerequisites: Install the C
 	"\n" +
 	"This skill drives the `%[1]s-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:\n" +
 	"\n" +
-	"1. Install via the Printing Press installer:\n" +
+	"1. Install via the Printing Press installer into a user bin directory:\n" +
 	"   ```bash\n" +
-	"   npx -y @mvanhorn/printing-press-library install %[1]s --cli-only\n" +
+	"   npx -y @mvanhorn/printing-press-library install %[1]s --cli-only --bin-dir ~/.local/bin\n" +
 	"   ```\n" +
 	"2. Verify: `%[1]s-pp-cli --version`\n" +
-	"3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.\n" +
+	"3. Ensure `~/.local/bin` is on `$PATH` for the agent/runtime that will invoke this skill.\n" +
 	"\n"
 
 // canonicalSkillInstallSectionGoFallbackFormat is appended only once the
 // catalog category is known. Before publish, the category-agnostic installer is
 // the only canonical path; emitting library/other/<slug> creates drift.
-const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):\n" +
+const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:\n" +
 	"\n" +
 	"```bash\n" +
 	"go install github.com/mvanhorn/printing-press-library/library/%[2]s/%[1]s/cmd/%[1]s-pp-cli@latest\n" +
@@ -48,7 +48,7 @@ const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails
 const canonicalSkillInstallSectionPrepublishFallback = "If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.\n" +
 	"\n"
 
-const canonicalSkillInstallSectionEnd = "If `--version` reports \"command not found\" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.\n"
+const canonicalSkillInstallSectionEnd = "If `--version` reports \"command not found\" after install, the runtime cannot see the binary directory on `$PATH`. Do not proceed with skill commands until verification succeeds.\n"
 
 // CanonicalSkillInstallSection returns the exact text of the install/
 // prerequisites section that the generator emits into a printed CLI's

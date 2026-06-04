@@ -505,8 +505,8 @@ func Execute() error {
 
 // TestVerifySkill_IgnoresExternalToolFlags is the regression guard for
 // the trigger-dev / linear SKILL.md slip: the install instructions contain
-// `npx -y @mvanhorn/printing-press-library install <api> --cli-only`. --cli-only
-// belongs to the outer Printing Press installer, not to <api>-pp-cli, so
+// `npx -y @mvanhorn/printing-press-library install <api> --cli-only --bin-dir ~/.local/bin`.
+// --cli-only and --bin-dir belong to the outer Printing Press installer, not to <api>-pp-cli, so
 // it must not be reported as an undeclared flag-names finding. Before the
 // scoping fix, flag-names regex-scanned the whole SKILL.md and fired on
 // every external-tool flag, which led an automation loop to strip the
@@ -518,10 +518,10 @@ func TestVerifySkill_IgnoresExternalToolFlags(t *testing.T) {
 	bin := buildPrintingPressBinary(t)
 	dir := t.TempDir()
 
-	// SKILL.md uses --cli-only on an npx invocation (not on fixture-pp-cli)
+	// SKILL.md uses installer flags on an npx invocation (not on fixture-pp-cli)
 	// and uses only declared flags on its own binary's recipes.
 	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n## Prerequisites\n\n" +
-		"```bash\nnpx -y @mvanhorn/printing-press-library install fixture --cli-only\n```\n\n" +
+		"```bash\nnpx -y @mvanhorn/printing-press-library install fixture --cli-only --bin-dir ~/.local/bin\n```\n\n" +
 		"## Usage\n\n```bash\nfixture-pp-cli search --limit 5\n```\n"
 	writeVerifySkillFixture(t, dir, map[string]string{
 		"search.go": `package cli
@@ -546,6 +546,7 @@ func Execute() error {
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
 	require.NoError(t, err, "external-tool flags must not produce a flag-names finding: %s", string(out))
 	require.NotContains(t, string(out), "--cli-only", "verifier must not mention an external-tool flag")
+	require.NotContains(t, string(out), "--bin-dir", "verifier must not mention an external-tool flag")
 }
 
 // TestVerifySkill_DetectsUnquotedShellVariable is the regression guard for
