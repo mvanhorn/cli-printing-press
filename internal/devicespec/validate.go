@@ -1,6 +1,7 @@
 package devicespec
 
 import (
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strings"
@@ -99,6 +100,63 @@ func (s *DeviceSpec) Validate() error {
 		if _, ok := characteristics[NormalizeUUID(field.SourceCharacteristicUUID)]; !ok {
 			return fmt.Errorf("telemetry[%d] references missing characteristic %q", i, field.SourceCharacteristicUUID)
 		}
+	}
+	if err := validateTransport(s.Transport, characteristics); err != nil {
+		return err
+	}
+	for i, q := range s.Quirks {
+		if strings.TrimSpace(q.Summary) == "" {
+			return fmt.Errorf("quirks[%d].summary is required", i)
+		}
+	}
+	return nil
+}
+
+func validateTransport(t TransportContract, characteristics map[string]BLECharacteristic) error {
+	if err := validateEnum("transport.write_mode", t.WriteMode, "", WriteModeAcknowledged, WriteModeWithoutResponse); err != nil {
+		return err
+	}
+	if err := validateNonNegative("transport.command_spacing_ms", t.CommandSpacingMS); err != nil {
+		return err
+	}
+	if err := validateNonNegative("transport.poll_cadence_ms", t.PollCadenceMS); err != nil {
+		return err
+	}
+	if err := validateEnum("transport.teardown", t.Teardown, "", TeardownKeepRunning, TeardownStopOnDisconnect); err != nil {
+		return err
+	}
+	for i, step := range t.ConnectCeremony {
+		if err := validateNonNegative(fmt.Sprintf("transport.connect_ceremony[%d].wait_ms", i), step.WaitMS); err != nil {
+			return err
+		}
+		if step.ValueHex != "" {
+			if _, err := hex.DecodeString(step.ValueHex); err != nil {
+				return fmt.Errorf("transport.connect_ceremony[%d].value_hex must be valid hex: %w", i, err)
+			}
+			if strings.TrimSpace(step.CharacteristicUUID) == "" {
+				return fmt.Errorf("transport.connect_ceremony[%d] has value_hex but no characteristic_uuid", i)
+			}
+		}
+		if step.CharacteristicUUID != "" {
+			if _, ok := characteristics[NormalizeUUID(step.CharacteristicUUID)]; !ok {
+				return fmt.Errorf("transport.connect_ceremony[%d] references missing characteristic %q", i, step.CharacteristicUUID)
+			}
+		}
+	}
+	for i, d := range t.SettleDelays {
+		if strings.TrimSpace(d.Name) == "" {
+			return fmt.Errorf("transport.settle_delays[%d].name is required", i)
+		}
+		if err := validateNonNegative(fmt.Sprintf("transport.settle_delays[%d].ms", i), d.MS); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateNonNegative(field string, v int) error {
+	if v < 0 {
+		return fmt.Errorf("%s must be >= 0", field)
 	}
 	return nil
 }

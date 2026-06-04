@@ -534,7 +534,23 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				"dogfood_env":   cliutil.IsDogfoodEnv(),
 				"service_uuids": device.ServiceUUIDs,
 				"address":       flags.address,
+				"transport": map[string]any{
+					"write_mode":         {{printf "%q" (or .Spec.Transport.WriteMode "acknowledged")}},
+					"command_spacing_ms": {{.Spec.Transport.CommandSpacingMS}},
+					"poll_cadence_ms":    {{.Spec.Transport.PollCadenceMS}},
+					"teardown":           {{printf "%q" .Spec.Transport.Teardown}},
+					"single_client":      {{.Spec.Transport.SingleClient}},
+				},
 			}
+{{- if .Spec.Quirks}}
+			// Operating quirks synthesized from the device's protocol sources: these
+			// cannot be auto-handled, so doctor surfaces them for the operator/agent.
+			info["quirks"] = []map[string]string{
+{{- range .Spec.Quirks}}
+				{"category": {{printf "%q" .Category}}, "summary": {{printf "%q" .Summary}}, "handling": {{printf "%q" .Handling}}},
+{{- end}}
+			}
+{{- end}}
 			// Probe hardware only when explicitly live, the BLE backend is
 			// compiled in, and not under verify.
 			probe := flags.live && device.LiveAvailable() && !cliutil.IsVerifyEnv()
@@ -557,6 +573,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "verify env: %v\n", info["verify_env"])
 			fmt.Fprintf(cmd.OutOrStdout(), "dogfood env: %v\n", info["dogfood_env"])
 			fmt.Fprintf(cmd.OutOrStdout(), "service uuids: %v\n", info["service_uuids"])
+{{- if gt .Spec.Transport.CommandSpacingMS 0}}
+			fmt.Fprintf(cmd.OutOrStdout(), "command spacing: %dms\n", {{.Spec.Transport.CommandSpacingMS}})
+{{- end}}
+{{- if .Spec.Quirks}}
+			fmt.Fprintln(cmd.OutOrStdout(), "operating notes:")
+			for _, q := range info["quirks"].([]map[string]string) {
+				fmt.Fprintf(cmd.OutOrStdout(), "  - [%s] %s\n", q["category"], q["summary"])
+			}
+{{- end}}
 			if !probe {
 				if !device.LiveAvailable() {
 					fmt.Fprintln(cmd.OutOrStdout(), "hardware probe: skipped (rebuild with -tags ble_live to enable live BLE)")
@@ -1282,9 +1307,20 @@ func (b *liveBackend) Connect(ctx context.Context, address string, serviceUUIDs 
 	return &liveLink{dev: dev, chars: chars}, nil
 }
 
+{{- if gt .Spec.Transport.CommandSpacingMS 0}}
+// commandSpacing is the minimum time between consecutive writes to the device.
+// The firmware drops a command issued sooner than this after the previous one,
+// so a back-to-back burst (mode, start, speed) loses all but the first. From the
+// device spec's transport.command_spacing_ms contract.
+const commandSpacing = {{.Spec.Transport.CommandSpacingMS}} * time.Millisecond
+{{- end}}
+
 type liveLink struct {
 	dev   tinyble.Device
 	chars map[string]*tinyble.DeviceCharacteristic
+{{- if gt .Spec.Transport.CommandSpacingMS 0}}
+	lastWrite time.Time
+{{- end}}
 }
 
 func (l *liveLink) char(characteristicUUID string) (*tinyble.DeviceCharacteristic, error) {
@@ -1300,6 +1336,26 @@ func (l *liveLink) Write(characteristicUUID string, payload []byte) error {
 	if err != nil {
 		return err
 	}
+{{- if gt .Spec.Transport.CommandSpacingMS 0}}
+	// Honor the device's command spacing: sleep the deficit so a back-to-back
+	// burst is not dropped (see commandSpacing above).
+	if !l.lastWrite.IsZero() {
+		if wait := commandSpacing - time.Since(l.lastWrite); wait > 0 {
+			time.Sleep(wait)
+		}
+	}
+	defer func() { l.lastWrite = time.Now() }()
+{{- end}}
+{{- if eq .Spec.Transport.WriteMode "without-response"}}
+	// transport.write_mode: without-response — the spec declares this device's
+	// write characteristic write-command-only; try no-response first, falling back
+	// to an acknowledged write for firmware that also accepts it.
+	if _, err := c.WriteWithoutResponse(payload); err == nil {
+		return nil
+	}
+	_, err = c.Write(payload)
+	return err
+{{- else}}
 	// Prefer an acknowledged write so the command is confirmed by the device
 	// before we return: an unacknowledged write can be dropped if the caller
 	// closes the link or issues the next command immediately (a control command
@@ -1310,6 +1366,7 @@ func (l *liveLink) Write(characteristicUUID string, payload []byte) error {
 	}
 	_, err = c.WriteWithoutResponse(payload)
 	return err
+{{- end}}
 }
 
 func (l *liveLink) Read(characteristicUUID string) ([]byte, error) {

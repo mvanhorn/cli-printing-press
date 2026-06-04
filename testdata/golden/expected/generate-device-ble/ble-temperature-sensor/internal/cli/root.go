@@ -192,6 +192,13 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				"dogfood_env":   cliutil.IsDogfoodEnv(),
 				"service_uuids": device.ServiceUUIDs,
 				"address":       flags.address,
+				"transport": map[string]any{
+					"write_mode":         "acknowledged",
+					"command_spacing_ms": 0,
+					"poll_cadence_ms":    0,
+					"teardown":           "",
+					"single_client":      false,
+				},
 			}
 			// Probe hardware only when explicitly live, the BLE backend is
 			// compiled in, and not under verify.

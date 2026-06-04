@@ -26,6 +26,24 @@ const (
 	SessionReasonUnsafeOneShot      = "unsafe_one_shot"
 )
 
+// Transport write modes. acknowledged (write-with-response) is the default and
+// the safe choice for control commands: the peripheral confirms before the next
+// write, so a command is not dropped by an immediate disconnect. without-response
+// is for characteristics that only permit write-command (no-response) traffic.
+const (
+	WriteModeAcknowledged    = "acknowledged"
+	WriteModeWithoutResponse = "without-response"
+)
+
+// Transport teardown semantics: does dropping the BLE connection stop in-flight
+// actuation? keep-running means the device sustains its last state after
+// disconnect (so a one-shot write can actuate); stop-on-disconnect means control
+// only holds while the connection is held.
+const (
+	TeardownKeepRunning      = "keep-running"
+	TeardownStopOnDisconnect = "stop-on-disconnect"
+)
+
 const (
 	MatchStrengthWeak   = "weak"
 	MatchStrengthMedium = "medium"
@@ -76,7 +94,74 @@ type DeviceSpec struct {
 	BLE          BLESurface         `yaml:"ble" json:"ble"`
 	Capabilities DeviceCapabilities `yaml:"capabilities,omitempty" json:"capabilities"`
 	Session      SessionProfile     `yaml:"session,omitempty" json:"session"`
+	Transport    TransportContract  `yaml:"transport,omitempty" json:"transport"`
+	Quirks       []DeviceQuirk      `yaml:"quirks,omitempty" json:"quirks,omitempty"`
 	Evidence     []EvidenceRef      `yaml:"evidence,omitempty" json:"evidence,omitempty"`
+}
+
+// Quirk categories. Free-form is allowed (validated as a hint, not a hard enum),
+// but these are the common phases a behavioral quirk attaches to.
+const (
+	QuirkCategoryInit        = "init"
+	QuirkCategoryConnect     = "connect"
+	QuirkCategoryWrite       = "write"
+	QuirkCategoryNotify      = "notify"
+	QuirkCategoryTeardown    = "teardown"
+	QuirkCategoryPairing     = "pairing"
+	QuirkCategoryFirmware    = "firmware"
+	QuirkCategoryConcurrency = "concurrency"
+	QuirkCategoryOther       = "other"
+)
+
+// DeviceQuirk is a qualitative behavioral fact that does not reduce to a typed
+// field but must be factored into the printed CLI — an init trick, a stale-session
+// gotcha, a firmware-variant opcode shift, a notify-enable dance. Synthesized from
+// forums, issues, docs, and reference code during the research gate; it cannot
+// drive codegen, so it is carried as cited required-reading for the codec author,
+// surfaced by the generated CLI (README / doctor), and verified during dogfood.
+// Summary is the quirk; Handling is what the CLI/codec must do about it.
+type DeviceQuirk struct {
+	Category     string   `yaml:"category,omitempty" json:"category,omitempty"`
+	Summary      string   `yaml:"summary" json:"summary"`
+	Handling     string   `yaml:"handling,omitempty" json:"handling,omitempty"`
+	EvidenceRefs []string `yaml:"evidence_refs,omitempty" json:"evidence_refs,omitempty"`
+}
+
+// TransportContract is the operational protocol contract: how to *talk to* the
+// device, alongside the action->payload map in Capabilities. It is synthesized
+// from reference implementations and protocol captures during the research gate
+// and verified on hardware during dogfood — not rediscovered command-by-command.
+// The generator consumes WriteMode and CommandSpacingMS directly (emitting the
+// matching write path and a paced writer); the remaining fields are the cited
+// contract that drives the codec/choreography and the dogfood checklist. Capture
+// every field you have evidence for, and cite it in EvidenceRefs.
+type TransportContract struct {
+	WriteMode        string         `yaml:"write_mode,omitempty" json:"write_mode,omitempty"`
+	CommandSpacingMS int            `yaml:"command_spacing_ms,omitempty" json:"command_spacing_ms,omitempty"`
+	ConnectCeremony  []CeremonyStep `yaml:"connect_ceremony,omitempty" json:"connect_ceremony,omitempty"`
+	SettleDelays     []SettleDelay  `yaml:"settle_delays,omitempty" json:"settle_delays,omitempty"`
+	PollCadenceMS    int            `yaml:"poll_cadence_ms,omitempty" json:"poll_cadence_ms,omitempty"`
+	Teardown         string         `yaml:"teardown,omitempty" json:"teardown,omitempty"`
+	SingleClient     bool           `yaml:"single_client,omitempty" json:"single_client,omitempty"`
+	EvidenceRefs     []string       `yaml:"evidence_refs,omitempty" json:"evidence_refs,omitempty"`
+}
+
+// CeremonyStep is one step of the post-subscribe connection handshake some
+// devices need before they accept control or stream telemetry: write ValueHex to
+// CharacteristicUUID (when set), then wait WaitMS. The caller must already be
+// subscribed so the device's responses are not dropped.
+type CeremonyStep struct {
+	Name               string `yaml:"name,omitempty" json:"name,omitempty"`
+	CharacteristicUUID string `yaml:"characteristic_uuid,omitempty" json:"characteristic_uuid,omitempty"`
+	ValueHex           string `yaml:"value_hex,omitempty" json:"value_hex,omitempty"`
+	WaitMS             int    `yaml:"wait_ms,omitempty" json:"wait_ms,omitempty"`
+}
+
+// SettleDelay names a required pause between two state changes (for example the
+// delay a belt needs after a mode switch before it honors a start command).
+type SettleDelay struct {
+	Name string `yaml:"name" json:"name"`
+	MS   int    `yaml:"ms" json:"ms"`
 }
 
 type DeviceIdentity struct {

@@ -11,11 +11,13 @@ Use this reference when the requested CLI target is a local physical device cont
 
 Device Sniff is evidence-first. Community libraries, official docs, Android logs, Wireshark/nRF captures, and human action journals can guide discovery, but generated commands should remain tied to observed, replay-validated, or reference-backed BLE evidence.
 
-## Mapping Research Gate
+## Protocol Contract Synthesis Gate
 
-BLE device discovery has a hard mapping gate. A scan or service inspection can tell you that a device exposes characteristics, but it cannot tell you what command payloads mean. Before generating callable control commands or running a live write, establish the action-to-payload mapping from a concrete source.
+BLE device discovery has a hard gate. A scan or service inspection tells you a device exposes characteristics, but not what its command payloads mean, nor how to *operate* the device. Before generating callable control commands or running a live write, synthesize the device's protocol contract from concrete sources — in one deliberate research pass, not command-by-command on hardware. The gate has two halves; satisfy both.
 
-Accepted mapping sources:
+**1. The action map — what the bytes mean.** Establish action -> service/characteristic/payload from a concrete source.
+
+Accepted sources:
 
 - A user-provided device spec, payload table, or action journal.
 - Official docs, protocol notes, SDKs, or vendor examples.
@@ -23,12 +25,34 @@ Accepted mapping sources:
 - Android/iOS Bluetooth logs, btsnoop captures, Wireshark/nRF captures, or other external captures.
 - A human action journal correlated with observed writes, where one action maps cleanly to one payload/characteristic candidate.
 
+**2. The operational contract — how to talk to the device.** The same sources that give you payloads almost always document the *operating* contract too, and it is exactly the part that gets silently rediscovered on hardware if you skip it. Extract it into the spec's `transport:` block and `quirks:` list (see "Protocol Contract" below): write semantics, command spacing, connect ceremony and ordering, settle delays, poll cadence, teardown behavior, single-client constraints, and qualitative quirks (init tricks, stale-session gotchas, firmware-variant opcode shifts, notify-enable dances).
+
 Required behavior:
 
-- Research mappings before relying on live probing for controls. Search by product name/model, advertised BLE name, service UUIDs, app package name, and known library names.
+- **Expand from your seeds; do not stop at the first source.** A user-provided repo or doc is a starting point, not the finish line. Search GitHub code, Home Assistant / ESPHome integrations, vendor docs, issues, and forums by product name/model, advertised BLE name, service UUIDs, app package name, and known library names. Find the most complete reference and cross-check the contract across at least two independent sources when they exist.
+- **Synthesize once, then build.** Capture the action map into `capabilities` and the operational contract into `transport:` + `quirks:`, each with `evidence_refs`, before writing the codec or touching hardware.
+- **Don't relearn cited facts.** If a source states a timing, ordering, or write-semantics fact (a command-spacing minimum, a subscribe-before-handshake order, an acknowledged-write requirement, an init quirk), record it in the contract and implement it from the citation. Hardware trial-and-error is for genuinely undocumented gaps only — never to re-derive a fact a reference already states.
 - Treat scan/inspect/read/subscribe evidence as identity and telemetry discovery unless it is paired with mapping evidence.
 - If no mapping source is found, generate a read/status/capabilities-only CLI or stop and ask the user for mapping evidence. Do not create callable write commands from raw GATT shape alone.
 - Do not brute-force, fuzz, or actively probe mutating payloads on a physical device.
+
+## Protocol Contract
+
+The device spec carries two complementary halves of "how this device works", alongside the action map in `capabilities`:
+
+**`transport:` — the quantitative contract.** Fields the generator consumes or the codec needs:
+
+- `write_mode: acknowledged | without-response` — acknowledged (default) confirms each write before the next, so a control command is not dropped by an immediate disconnect. The generator emits the matching write path.
+- `command_spacing_ms: <int>` — minimum time between writes. The firmware drops a command sent sooner than this after the previous one, so a burst loses all but the first. When set, the generator emits a paced writer that sleeps the deficit before every write — you do not hand-author pacing.
+- `connect_ceremony: [{name, characteristic_uuid, value_hex, wait_ms}]` — the post-subscribe handshake some devices need before they accept control or stream telemetry. Codec/choreography input today; codegen is on the roadmap.
+- `settle_delays: [{name, ms}]` — required pauses between state changes (e.g. a mode switch before a start).
+- `poll_cadence_ms: <int>` — keep-alive / telemetry poll cadence.
+- `teardown: keep-running | stop-on-disconnect` — does dropping the connection stop in-flight actuation?
+- `single_client: <bool>` — only one BLE client at a time (the vendor app may need to disconnect first).
+
+**`quirks:` — the qualitative contract.** Behavioral facts that do not reduce to a field but must be factored in: an init trick, a stale-session gotcha, a firmware-variant opcode shift, a notify-enable dance. Each is `{category, summary, handling, evidence_refs}`. They cannot drive codegen, so the generated CLI surfaces them in `doctor` (text + JSON); they are required reading for the codec author and a line on the dogfood checklist.
+
+Capture every field and quirk you have evidence for, and cite it. The contract is the synthesis output — and it is your dogfood checklist: each entry is something to **confirm** on hardware, not rediscover. A divergence between the contract and observed behavior is a spec correction, not a fresh discovery.
 
 ## Standalone Hardware Probe
 
@@ -138,7 +162,7 @@ Before shipping, classify the device and act accordingly:
 
 1. Write a **codec** (pure Go, no BLE) implementing `device.DeviceCodec` — `EncodeCommand(command, args)` builds a command's payload (using its positional CLI args for parameterized commands) and `DecodeTelemetry(field, raw)` turns a telemetry frame into a typed value. This is the single source of truth for the wire format, grounded in the mapping evidence and cited protocol references. Add a `codec_test.go` that tests it with no hardware. Register it from an `init` (`codec = myCodec{}`).
 2. **Declare parameterized commands in the device spec** (`commands[].parameters: [{name, type}]`). The generator then emits the command with its `<arg>` usage, exact-arg validation, safety gating, dry-run, and verify no-op, and routes the args to your `EncodeCommand`. You do not hand-author the cobra command — only the encode logic. (A parameterized command with no registered codec is a hard error, not a silent static write.)
-3. For **stateful choreography only** (hold a connection and poll, multi-step sequences), add a hand-authored command via the `novelCommands` hook (set it from an `init` in your own file in `internal/cli`; preserved as a NOVEL file across regen). Use the exported `device.Dial(ctx, address, timeout) (device.Link, error)` + `device.Link` (`Write`/`Read`/`Subscribe`/`Close`) with your codec — do not reimplement the BLE backend.
+3. For **stateful choreography only** (hold a connection and poll, multi-step sequences), add a hand-authored command via the `novelCommands` hook (set it from an `init` in your own file in `internal/cli`; preserved as a NOVEL file across regen). Use the exported `device.Dial(ctx, address, timeout) (device.Link, error)` + `device.Link` (`Write`/`Read`/`Subscribe`/`Close`) with your codec — do not reimplement the BLE backend. Drive the choreography from the `transport:` contract: the connect ceremony, ordering (subscribe before handshake), settle delays, and poll cadence are recorded there, not re-derived. **Command spacing and write mode are already handled** — when `transport.command_spacing_ms` is set the generated `device.Link.Write` paces every write, and `transport.write_mode` selects the write path. Do not re-implement a paced-writer wrapper.
 4. **Gate every hand-authored live command** on `cliutil.IsVerifyEnv()` (no-op under verify; `device.Dial` also refuses with `ErrVerifyMode` as a backstop) and `cliutil.IsDogfoodEnv()` (bound long-running work). Generated commands already carry this gating. Keep the print-by-default / `--live`-to-actuate stance and conservative MCP annotations.
 5. Verify before ship: `go test ./...` (covers the codec and the generated Tier-1 path), `go build -tags ble_live ./...` compiles, and the live commands actuate on hardware when available.
 
@@ -158,10 +182,12 @@ Session scaffolding is optional and device-driven.
 Prefer this sequence for unknown devices:
 
 1. Identify the exact product, app, advertised BLE name, and service UUIDs.
-2. Search for protocol mappings in docs, community code, issues, forums, app logs, or captures.
-3. Scan and inspect to confirm identity and available characteristics.
-4. Read and subscribe for non-mutating telemetry evidence.
-5. Correlate observed writes with an action journal or imported capture.
-6. Replay known payloads under operator-visible control.
+2. Search for protocol sources in docs, community code, issues, forums, app logs, or captures — expanding from any user-provided seeds, not stopping at them.
+3. Synthesize the action map (`capabilities`) and the operational contract (`transport:` + `quirks:`) from the best sources, cross-checked and cited.
+4. Scan and inspect to confirm identity and available characteristics.
+5. Read and subscribe for non-mutating telemetry evidence.
+6. Correlate observed writes with an action journal or imported capture.
+7. Replay known payloads under operator-visible control.
+8. Dogfood to **verify** the contract on hardware — confirm each `transport:` field and `quirk:` holds; a divergence is a spec correction, not a fresh discovery.
 
 Do not actively probe mutating payloads without guidance.

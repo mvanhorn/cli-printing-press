@@ -195,6 +195,94 @@ capabilities:
 	assert.Contains(t, err.Error(), "commands[0].safety is required")
 }
 
+func TestParseTransportContract(t *testing.T) {
+	t.Parallel()
+
+	ds, err := ParseBytes([]byte(`
+version: 1
+name: transport-device
+protocol: ble
+ble:
+  services:
+    - uuid: "fe00"
+      characteristics:
+        - uuid: "fe01"
+          properties: [notify]
+        - uuid: "fe02"
+          properties: [write]
+transport:
+  write_mode: acknowledged
+  command_spacing_ms: 690
+  poll_cadence_ms: 500
+  teardown: keep-running
+  single_client: true
+  connect_ceremony:
+    - name: ask-profile
+      characteristic_uuid: "fe02"
+      value_hex: "f7a560"
+      wait_ms: 1500
+  settle_delays:
+    - name: mode_change
+      ms: 1500
+  evidence_refs: [ref-send-cmd]
+quirks:
+  - category: concurrency
+    summary: Vendor app caches a stale BLE session ~30s; force-close it before laptop control.
+    handling: Surface in doctor; suggest closing the app on connect failure.
+    evidence_refs: [forum-stale-session]
+`))
+	require.NoError(t, err)
+	require.NotNil(t, ds)
+	require.Len(t, ds.Quirks, 1)
+	assert.Equal(t, QuirkCategoryConcurrency, ds.Quirks[0].Category)
+	assert.Contains(t, ds.Quirks[0].Summary, "stale BLE session")
+	assert.Equal(t, WriteModeAcknowledged, ds.Transport.WriteMode)
+	assert.Equal(t, 690, ds.Transport.CommandSpacingMS)
+	assert.Equal(t, 500, ds.Transport.PollCadenceMS)
+	assert.Equal(t, TeardownKeepRunning, ds.Transport.Teardown)
+	assert.True(t, ds.Transport.SingleClient)
+	require.Len(t, ds.Transport.ConnectCeremony, 1)
+	assert.Equal(t, "fe02", ds.Transport.ConnectCeremony[0].CharacteristicUUID)
+	require.Len(t, ds.Transport.SettleDelays, 1)
+	assert.Equal(t, 1500, ds.Transport.SettleDelays[0].MS)
+}
+
+func TestValidateRejectsBadTransportFields(t *testing.T) {
+	t.Parallel()
+
+	base := `
+version: 1
+name: bad-transport
+protocol: ble
+ble:
+  services:
+    - uuid: "fe00"
+      characteristics:
+        - uuid: "fe02"
+          properties: [write]
+transport:
+`
+	cases := []struct {
+		name    string
+		block   string
+		wantErr string
+	}{
+		{"write_mode", "  write_mode: synchronous\n", "transport.write_mode must be one of"},
+		{"spacing", "  command_spacing_ms: -1\n", "transport.command_spacing_ms must be >= 0"},
+		{"teardown", "  teardown: explode\n", "transport.teardown must be one of"},
+		{"ceremony-missing-char", "  connect_ceremony:\n    - characteristic_uuid: \"dead\"\n", `references missing characteristic "dead"`},
+		{"ceremony-bad-hex", "  connect_ceremony:\n    - characteristic_uuid: \"fe02\"\n      value_hex: \"zz\"\n", "value_hex must be valid hex"},
+		{"settle-no-name", "  settle_delays:\n    - ms: 100\n", "transport.settle_delays[0].name is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseBytes([]byte(base + tc.block))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestParseRejectsUnsupportedVersionWithMigrationError(t *testing.T) {
 	t.Parallel()
 

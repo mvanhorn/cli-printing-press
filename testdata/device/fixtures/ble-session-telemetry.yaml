@@ -42,6 +42,25 @@ session:
   one_shot_fallback: true
   reconnect: true
   notification_stream: true
+transport:
+  write_mode: acknowledged
+  command_spacing_ms: 690
+  poll_cadence_ms: 500
+  teardown: keep-running
+  single_client: true
+  connect_ceremony:
+    - name: enable-notify
+      characteristic_uuid: "fd02"
+      wait_ms: 1000
+  settle_delays:
+    - name: mode_change
+      ms: 1500
+  evidence_refs: [proto-spacing]
+quirks:
+  - category: concurrency
+    summary: The vendor app holds the single BLE slot; disconnect it before laptop control.
+    handling: doctor surfaces this; suggest closing the app on a connect failure.
+    evidence_refs: [proto-single-client]
 evidence:
   - id: write-start
     source: action-journal
@@ -49,3 +68,9 @@ evidence:
   - id: notify-running
     source: imported-log
     summary: Status characteristic notified running state after start.
+  - id: proto-spacing
+    source: community-library
+    summary: Reference controller enforces a 0.69s minimum between commands.
+  - id: proto-single-client
+    source: forum
+    summary: Users report the vendor app must be closed before a second client connects.

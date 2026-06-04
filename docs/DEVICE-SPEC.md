@@ -11,6 +11,7 @@ A device spec preserves device-native evidence so generation can emit a CLI with
 - commands with payload encoding, evidence refs, validation status, and safety class
 - telemetry fields with source characteristics and optional store hints
 - session requirements for one-shot, optional, or required maintained connections
+- the operational protocol contract (`transport:`) and qualitative behavioral quirks (`quirks:`)
 
 ## Discovery Flow
 
@@ -27,6 +28,24 @@ Generate from the spec with:
 ```bash
 cli-printing-press generate --spec <device-spec.yaml> --validate
 ```
+
+## Protocol Contract
+
+The action map in `capabilities` says what the bytes mean; the **protocol contract** says how to *talk to* the device. It is synthesized from reference implementations, docs, and captures during the research gate — in one pass, cited — and **verified** on hardware during dogfood, not rediscovered command-by-command. It has two halves.
+
+`transport:` is the quantitative contract:
+
+- `write_mode` — `acknowledged` (default; the device confirms each write before the next, so a control command is not dropped by an immediate disconnect) or `without-response`. The generator emits the matching write path.
+- `command_spacing_ms` — minimum time between writes. When set, the generator emits a **paced writer**: every write sleeps the deficit, so a back-to-back burst is never dropped. No hand-authored pacing.
+- `connect_ceremony` — ordered post-subscribe handshake steps (`{name, characteristic_uuid, value_hex, wait_ms}`).
+- `settle_delays` — required pauses between state changes (`{name, ms}`).
+- `poll_cadence_ms` — keep-alive / telemetry poll cadence.
+- `teardown` — `keep-running` or `stop-on-disconnect`: does dropping the connection stop in-flight actuation?
+- `single_client` — only one BLE client at a time.
+
+`quirks:` is the qualitative contract — behavioral facts that do not reduce to a field (an init trick, a stale-session gotcha, a firmware-variant opcode shift, a notify-enable dance). Each is `{category, summary, handling, evidence_refs}`. They cannot drive codegen, so the generated CLI surfaces them in `doctor` (text + JSON), and they are required reading for the codec author and a line on the dogfood checklist.
+
+The contract is the synthesis output and the dogfood checklist. Authoring detail and the don't-relearn-cited-facts rule live in the `device-sniff-ble` skill reference.
 
 ## Evidence And Uncertainty
 

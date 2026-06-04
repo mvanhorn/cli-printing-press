@@ -184,6 +184,54 @@ func TestGeneratedBLEDeviceEmitsLiveBackendSeam(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+// TestGeneratedBLETransportContractDrivesCodegen verifies the transport contract
+// fields drive emitted code: command_spacing_ms emits a paced writer, write_mode
+// flips the write preference, and the contract + quirks surface in doctor. A
+// device with no transport block is unaffected (acknowledged-first, no pacing).
+func TestGeneratedBLETransportContractDrivesCodegen(t *testing.T) {
+	t.Parallel()
+
+	gen := func(mut func(*devicespec.DeviceSpec)) (bleLive, root string) {
+		ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-simple-actuator.yaml"))
+		require.NoError(t, err)
+		if mut != nil {
+			mut(ds)
+		}
+		dir := filepath.Join(t.TempDir(), "dev")
+		require.NoError(t, NewDevice(ds, dir).Generate())
+		bl, err := os.ReadFile(filepath.Join(dir, "internal", "device", "ble_live.go"))
+		require.NoError(t, err)
+		rt, err := os.ReadFile(filepath.Join(dir, "internal", "cli", "root.go"))
+		require.NoError(t, err)
+		return string(bl), string(rt)
+	}
+
+	// Baseline: no transport contract -> acknowledged-first, no pacing, doctor
+	// reports the effective contract but no quirks.
+	plainLive, plainRoot := gen(nil)
+	assert.NotContains(t, plainLive, "const commandSpacing")
+	assert.NotContains(t, plainLive, "l.lastWrite")
+	assert.Contains(t, plainLive, "if _, err := c.Write(payload); err == nil")
+	assert.Contains(t, plainRoot, `"write_mode"`)
+	assert.NotContains(t, plainRoot, `info["quirks"]`)
+
+	// command_spacing_ms -> paced writer.
+	pacedLive, _ := gen(func(ds *devicespec.DeviceSpec) { ds.Transport.CommandSpacingMS = 690 })
+	assert.Contains(t, pacedLive, "const commandSpacing = 690 * time.Millisecond")
+	assert.Contains(t, pacedLive, "time.Sleep(wait)")
+
+	// write_mode: without-response -> without-response-first.
+	woLive, _ := gen(func(ds *devicespec.DeviceSpec) { ds.Transport.WriteMode = devicespec.WriteModeWithoutResponse })
+	assert.Contains(t, woLive, "if _, err := c.WriteWithoutResponse(payload); err == nil")
+
+	// quirks -> doctor surfaces them for the operator/agent.
+	_, quirkRoot := gen(func(ds *devicespec.DeviceSpec) {
+		ds.Quirks = []devicespec.DeviceQuirk{{Category: devicespec.QuirkCategoryInit, Summary: "Dummy read before first write."}}
+	})
+	assert.Contains(t, quirkRoot, `info["quirks"]`)
+	assert.Contains(t, quirkRoot, "Dummy read before first write.")
+}
+
 func TestGeneratedBLEDeviceEmitsLiveTransportAndDoctor(t *testing.T) {
 	t.Parallel()
 

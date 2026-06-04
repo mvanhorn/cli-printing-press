@@ -199,6 +199,18 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				"dogfood_env":   cliutil.IsDogfoodEnv(),
 				"service_uuids": device.ServiceUUIDs,
 				"address":       flags.address,
+				"transport": map[string]any{
+					"write_mode":         "acknowledged",
+					"command_spacing_ms": 690,
+					"poll_cadence_ms":    500,
+					"teardown":           "keep-running",
+					"single_client":      true,
+				},
+			}
+			// Operating quirks synthesized from the device's protocol sources: these
+			// cannot be auto-handled, so doctor surfaces them for the operator/agent.
+			info["quirks"] = []map[string]string{
+				{"category": "concurrency", "summary": "The vendor app holds the single BLE slot; disconnect it before laptop control.", "handling": "doctor surfaces this; suggest closing the app on a connect failure."},
 			}
 			// Probe hardware only when explicitly live, the BLE backend is
 			// compiled in, and not under verify.
@@ -222,6 +234,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "verify env: %v\n", info["verify_env"])
 			fmt.Fprintf(cmd.OutOrStdout(), "dogfood env: %v\n", info["dogfood_env"])
 			fmt.Fprintf(cmd.OutOrStdout(), "service uuids: %v\n", info["service_uuids"])
+			fmt.Fprintf(cmd.OutOrStdout(), "command spacing: %dms\n", 690)
+			fmt.Fprintln(cmd.OutOrStdout(), "operating notes:")
+			for _, q := range info["quirks"].([]map[string]string) {
+				fmt.Fprintf(cmd.OutOrStdout(), "  - [%s] %s\n", q["category"], q["summary"])
+			}
 			if !probe {
 				if !device.LiveAvailable() {
 					fmt.Fprintln(cmd.OutOrStdout(), "hardware probe: skipped (rebuild with -tags ble_live to enable live BLE)")
