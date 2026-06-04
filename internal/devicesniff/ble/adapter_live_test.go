@@ -291,14 +291,16 @@ func TestLiveAdapterReadAndWrite(t *testing.T) {
 
 	readEvent, err := adapter.Read(context.Background(), CharacteristicRequest{Address: "AA", ServiceUUID: "180A", CharacteristicUUID: "2A29"})
 	require.NoError(t, err)
-	assert.Equal(t, "live-read", readEvent.ID)
+	assert.Regexp(t, `^live-read-180a-2a29-\d+$`, readEvent.ID)
+	assert.NotEmpty(t, readEvent.At)
 	assert.Equal(t, "dead", readEvent.ValueHex)
 	assert.Equal(t, "2a29", readEvent.CharacteristicUUID)
 	assert.Equal(t, "180a", readEvent.ServiceUUID, "discovered service UUID is recorded")
 
 	writeEvent, err := adapter.Write(context.Background(), WriteRequest{Address: "AA", ServiceUUID: "180A", CharacteristicUUID: "2A29", ValueHex: "BEEF"})
 	require.NoError(t, err)
-	assert.Equal(t, "live-write", writeEvent.ID)
+	assert.Regexp(t, `^live-write-180a-2a29-\d+$`, writeEvent.ID)
+	assert.NotEmpty(t, writeEvent.At)
 	assert.Equal(t, "beef", writeEvent.ValueHex)
 	assert.Equal(t, "180a", writeEvent.ServiceUUID)
 	require.Len(t, char.written, 1)
@@ -405,9 +407,11 @@ func TestLiveAdapterSubscribeCollectsNotifications(t *testing.T) {
 	events, err := adapter.Subscribe(context.Background(), CharacteristicRequest{Address: "AA", CharacteristicUUID: "2A29", DurationMillis: 20})
 	require.NoError(t, err)
 	require.Len(t, events, 2)
-	assert.Equal(t, "live-notify-1", events[0].ID)
+	assert.Regexp(t, `^live-notify-180a-2a29-\d+-1$`, events[0].ID)
+	assert.NotEmpty(t, events[0].At)
 	assert.Equal(t, "01", events[0].ValueHex)
-	assert.Equal(t, "live-notify-2", events[1].ID)
+	assert.Regexp(t, `^live-notify-180a-2a29-\d+-2$`, events[1].ID)
+	assert.NotEmpty(t, events[1].At)
 	assert.Equal(t, "0203", events[1].ValueHex)
 }
 

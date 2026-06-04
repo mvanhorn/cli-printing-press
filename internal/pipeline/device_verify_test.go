@@ -16,6 +16,23 @@ func writeStubFile(t *testing.T, path, content string) {
 	}
 }
 
+func TestDeviceTier2DenominatorMatchesTypeAndDeadCodeScale(t *testing.T) {
+	sc := &Scorecard{
+		UnscoredDimensions: []string{
+			DimPathValidity,
+			DimAuthProtocol,
+			DimDataPipelineIntegrity,
+			DimSyncCorrectness,
+			DimLiveAPIVerification,
+		},
+	}
+
+	max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity)
+	if max != 10 {
+		t.Fatalf("device tier-2 max = %d, want 10 for type fidelity + dead code", max)
+	}
+}
+
 // writeDeviceSpecGo writes a spec.go the canonical device detector recognizes:
 // it carries the `Protocol = "ble"` constant the device generator emits.
 func writeDeviceSpecGo(t *testing.T, dir string) {

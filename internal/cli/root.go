@@ -333,6 +333,10 @@ func newGenerateCmd() *cobra.Command {
 					if cliName != "" {
 						deviceSpec.Name = cliName
 					}
+					archivedDeviceSpec, err := archivedDeviceSpecBytes(data, deviceSpec, cliName)
+					if err != nil {
+						return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("serializing device spec %s: %w", specFiles[0], err)}
+					}
 					absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, deviceSpec.Name, force, !dryRun)
 					if err != nil {
 						return err
@@ -346,7 +350,7 @@ func newGenerateCmd() *cobra.Command {
 						return err
 					}
 					if snapshotDir != "" {
-						if err := finalizeForceMerge(snapshotDir, absOut, data); err != nil {
+						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec); err != nil {
 							return err
 						}
 					}
@@ -362,7 +366,7 @@ func newGenerateCmd() *cobra.Command {
 							}
 						}
 					}
-					if err := os.WriteFile(filepath.Join(absOut, "device-spec.yaml"), artifacts.RedactArchivedSpecSecrets(data), 0o644); err != nil {
+					if err := os.WriteFile(filepath.Join(absOut, "device-spec.yaml"), artifacts.RedactArchivedSpecSecrets(archivedDeviceSpec), 0o644); err != nil {
 						fmt.Fprintf(os.Stderr, "warning: could not archive device spec: %v\n", err)
 					}
 					fmt.Fprintf(os.Stderr, "Generated %s at %s (from BLE device spec)\n", deviceSpec.Name, absOut)
@@ -708,6 +712,54 @@ func runGenerateDeviceProject(deviceSpec *devicespec.DeviceSpec, absOut string, 
 		DisplayName: deviceSpec.DisplayName,
 		Polished:    runGeneratePolishPass(opts.polish, deviceSpec.Name, absOut),
 	}, nil
+}
+
+func archivedDeviceSpecBytes(source []byte, deviceSpec *devicespec.DeviceSpec, cliName string) ([]byte, error) {
+	if strings.TrimSpace(cliName) == "" {
+		return source, nil
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(source, &doc); err != nil {
+		return nil, err
+	}
+	if err := rewriteTopLevelYAMLScalarLine(&source, &doc, "name", deviceSpec.Name); err != nil {
+		return nil, err
+	}
+	return source, nil
+}
+
+func rewriteTopLevelYAMLScalarLine(source *[]byte, doc *yaml.Node, key, value string) error {
+	if doc == nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("device spec archive must be a YAML mapping")
+	}
+	mapping := doc.Content[0]
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keyNode := mapping.Content[i]
+		valueNode := mapping.Content[i+1]
+		if keyNode.Value != key {
+			continue
+		}
+		lines := strings.SplitAfter(string(*source), "\n")
+		lineIndex := valueNode.Line - 1
+		if lineIndex < 0 || lineIndex >= len(lines) {
+			return fmt.Errorf("could not locate YAML field %q line", key)
+		}
+		line := lines[lineIndex]
+		prefixEnd := strings.Index(line, ":")
+		if prefixEnd < 0 || strings.TrimSpace(line[:prefixEnd]) != key {
+			return fmt.Errorf("could not rewrite YAML field %q without reformatting", key)
+		}
+		lineEnding := ""
+		if strings.HasSuffix(line, "\n") {
+			lineEnding = "\n"
+			line = strings.TrimSuffix(line, "\n")
+		}
+		lines[lineIndex] = line[:prefixEnd+1] + " " + value + lineEnding
+		*source = []byte(strings.Join(lines, ""))
+		return nil
+	}
+	return fmt.Errorf("device spec archive missing YAML field %q", key)
 }
 
 type generateMCPFlagOverrides struct {

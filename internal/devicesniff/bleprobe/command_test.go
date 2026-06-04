@@ -127,6 +127,31 @@ func TestMergeEvidenceCombinesProbeOutputsForAnalyzer(t *testing.T) {
 	assert.Equal(t, "toggle", analysis.Spec.Capabilities.Commands[0].Name)
 }
 
+func TestMergeEvidenceKeepsDistinctLiveCharacteristicEvents(t *testing.T) {
+	t.Parallel()
+
+	firstPath := writeEvidenceFixture(t, ble.EvidenceInput{
+		Name: "merged-device",
+		Events: []ble.Event{
+			{ID: "live-read-180a-2a29-100", Type: ble.EventRead, ServiceUUID: "180a", CharacteristicUUID: "2a29", ValueHex: "01"},
+		},
+	})
+	secondPath := writeEvidenceFixture(t, ble.EvidenceInput{
+		Name: "merged-device",
+		Events: []ble.Event{
+			{ID: "live-read-180a-2a25-200", Type: ble.EventRead, ServiceUUID: "180a", CharacteristicUUID: "2a25", ValueHex: "02"},
+		},
+	})
+
+	output := executeProbe(t, "merge", firstPath, secondPath)
+	evidence, err := ble.ParseEvidence(output)
+	require.NoError(t, err)
+
+	require.Len(t, evidence.Events, 2)
+	assert.Equal(t, "2a29", evidence.Events[0].CharacteristicUUID)
+	assert.Equal(t, "2a25", evidence.Events[1].CharacteristicUUID)
+}
+
 func TestProbeRequiresReplayInputUnlessLive(t *testing.T) {
 	t.Parallel()
 

@@ -860,6 +860,9 @@ func scoreTypeFidelityDevice(dir string) int {
 	spec := readFileContent(filepath.Join(dir, "internal", "device", "spec.go"))
 	transport := readFileContent(filepath.Join(dir, "internal", "device", "transport.go"))
 	score := 0
+	// Device tier 2 removes HTTP-only dimensions, leaving Type Fidelity and
+	// Dead Code as the ten remaining points. Keep this scorer on the same
+	// five-point scale as the generic scorer; Dead Code supplies the other five.
 	if strings.Contains(spec, "type CommandDefinition struct") {
 		score++ // typed command model
 	}

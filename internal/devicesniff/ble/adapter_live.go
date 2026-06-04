@@ -30,9 +30,9 @@ const (
 	// 32-bit builds where int would truncate.
 	maxSafeDurationMillis = math.MaxInt64 / int64(time.Millisecond)
 
-	liveReadID         = "live-read"
-	liveWriteID        = "live-write"
-	liveNotifyIDPrefix = "live-notify-"
+	liveReadOp   = "read"
+	liveWriteOp  = "write"
+	liveNotifyOp = "notify"
 )
 
 // liveAdapter drives a bleDriver through the BLE evidence workflow. It holds no
@@ -156,6 +156,22 @@ func (a *liveAdapter) Inspect(ctx context.Context, req InspectRequest) ([]Event,
 	return events, nil
 }
 
+func liveEventID(op, serviceUUID, characteristicUUID string, capturedAt time.Time, seq int) string {
+	parts := []string{"live", op, liveIDPart(serviceUUID), liveIDPart(characteristicUUID), fmt.Sprintf("%d", capturedAt.UnixNano())}
+	if seq > 0 {
+		parts = append(parts, fmt.Sprintf("%d", seq))
+	}
+	return strings.Join(parts, "-")
+}
+
+func liveIDPart(value string) string {
+	normalized := normalizeUUID(value)
+	if normalized == "" {
+		return "unknown"
+	}
+	return normalized
+}
+
 func (a *liveAdapter) Read(ctx context.Context, req CharacteristicRequest) (Event, error) {
 	found, err := a.characteristic(ctx, req.Address, req.ServiceUUID, req.CharacteristicUUID)
 	if err != nil {
@@ -177,11 +193,14 @@ func (a *liveAdapter) Read(ctx context.Context, req CharacteristicRequest) (Even
 		// copied; clamp so a longer-than-buffer value cannot slice out of range.
 		n = len(buf)
 	}
+	capturedAt := time.Now().UTC()
+	characteristicUUID := normalizeUUID(found.char.UUID())
 	return Event{
-		ID:                 liveReadID,
+		ID:                 liveEventID(liveReadOp, found.serviceUUID, characteristicUUID, capturedAt, 0),
 		Type:               EventRead,
+		At:                 capturedAt.Format(time.RFC3339Nano),
 		ServiceUUID:        found.serviceUUID,
-		CharacteristicUUID: normalizeUUID(found.char.UUID()),
+		CharacteristicUUID: characteristicUUID,
 		ValueHex:           hex.EncodeToString(buf[:n]),
 	}, nil
 }
@@ -200,11 +219,14 @@ func (a *liveAdapter) Write(ctx context.Context, req WriteRequest) (Event, error
 	if _, err := found.char.Write(payload); err != nil {
 		return Event{}, mapLiveError(err)
 	}
+	capturedAt := time.Now().UTC()
+	characteristicUUID := normalizeUUID(found.char.UUID())
 	return Event{
-		ID:                 liveWriteID,
+		ID:                 liveEventID(liveWriteOp, found.serviceUUID, characteristicUUID, capturedAt, 0),
 		Type:               EventWrite,
+		At:                 capturedAt.Format(time.RFC3339Nano),
 		ServiceUUID:        found.serviceUUID,
-		CharacteristicUUID: normalizeUUID(found.char.UUID()),
+		CharacteristicUUID: characteristicUUID,
 		ValueHex:           strings.ToLower(strings.TrimSpace(req.ValueHex)),
 	}, nil
 }
@@ -223,10 +245,13 @@ func (a *liveAdapter) Subscribe(ctx context.Context, req CharacteristicRequest) 
 	var events []Event
 	if err := found.char.EnableNotifications(func(buf []byte) {
 		valueHex := hex.EncodeToString(buf)
+		capturedAt := time.Now().UTC()
 		mu.Lock()
+		seq := len(events) + 1
 		events = append(events, Event{
-			ID:                 fmt.Sprintf("%s%d", liveNotifyIDPrefix, len(events)+1),
+			ID:                 liveEventID(liveNotifyOp, serviceUUID, characteristicUUID, capturedAt, seq),
 			Type:               EventNotification,
+			At:                 capturedAt.Format(time.RFC3339Nano),
 			ServiceUUID:        serviceUUID,
 			CharacteristicUUID: characteristicUUID,
 			ValueHex:           valueHex,
