@@ -48,6 +48,23 @@ func TestGenerateMinimalBLEDeviceCLICompiles(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGeneratedBLEDeviceEscapesDisplayNameInRootCommand(t *testing.T) {
+	t.Parallel()
+
+	ds, err := devicespec.Parse(filepath.Join("..", "..", "testdata", "device", "fixtures", "ble-minimal.yaml"))
+	require.NoError(t, err)
+	ds.DisplayName = `BLE "Kitchen" Sensor`
+
+	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
+	require.NoError(t, NewDevice(ds, outputDir).Generate())
+
+	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootSrc), `Short:        "Control BLE \"Kitchen\" Sensor over BLE"`)
+	assert.Contains(t, string(rootSrc), `Long:         "Control BLE \"Kitchen\" Sensor over BLE using a generated device-native CLI surface."`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // TestGeneratedBLEDeviceEmitsPublishArtifacts verifies the device generator
 // emits the four standard publish artifacts the public library's
 // completeness verifier expects (AGENTS.md, LICENSE, NOTICE, .goreleaser.yaml).

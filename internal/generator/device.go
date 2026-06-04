@@ -423,8 +423,8 @@ func ExitCode(err error) int {
 func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:          "{{.CLIName}}",
-		Short:        "Control {{.DisplayName}} over BLE",
-		Long:         "Control {{.DisplayName}} over BLE using a generated device-native CLI surface.",
+		Short:        {{quote (printf "Control %s over BLE" .DisplayName)}},
+		Long:         {{quote (printf "Control %s over BLE using a generated device-native CLI surface." .DisplayName)}},
 		Version:      version,
 		SilenceUsage: true,
 	}
@@ -2532,7 +2532,7 @@ import (
 
 func main() {
 	s := server.NewMCPServer(
-		"{{.DisplayName}}",
+		{{quote .DisplayName}},
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)
