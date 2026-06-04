@@ -222,6 +222,34 @@ func TestCopyPublishableManuscriptDirFiltersSymlinks(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(dst, "large-link.bin"))
 }
 
+// TestCopyPublishableManuscriptDirExcludesDownloadedSources ensures a research
+// `sources/` subtree (downloaded third-party reference repos) never ships into a
+// published CLI — it is local research input, not authored manuscript output, and
+// publishing copies of other projects' code is a licensing + secret/PII exposure.
+func TestCopyPublishableManuscriptDirExcludesDownloadedSources(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+
+	// Authored manuscript output that must ship.
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "brief.md"), []byte("our synthesis"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "proofs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "proofs", "shipcheck.txt"), []byte("ok"), 0o644))
+
+	// Downloaded third-party reference repos under research/sources/ that must NOT ship.
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research", "sources", "thirdparty"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "sources", "thirdparty", "lib.py"), []byte("# someone else's code"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "sources", "README.md"), []byte("vendored readme"), 0o644))
+
+	require.NoError(t, CopyPublishableManuscriptDir(src, dst))
+
+	assert.FileExists(t, filepath.Join(dst, "research", "brief.md"))
+	assert.FileExists(t, filepath.Join(dst, "proofs", "shipcheck.txt"))
+	assert.NoDirExists(t, filepath.Join(dst, "research", "sources"))
+	assert.NoFileExists(t, filepath.Join(dst, "research", "sources", "thirdparty", "lib.py"))
+	assert.NoFileExists(t, filepath.Join(dst, "research", "sources", "README.md"))
+}
+
 // publishManifestEnvSetup wires PRINTING_PRESS_HOME/SCOPE/REPO_ROOT to a temp dir
 // so RunRoot()/PipelineDir()/PublishedLibraryRoot() resolve under the test sandbox.
 // Returns the temp root and a state seeded with the given run ID.

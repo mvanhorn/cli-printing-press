@@ -633,6 +633,16 @@ func CopyPublishableManuscriptDir(src, dst string) error {
 }
 
 func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo) bool {
+	// A `sources/` directory holds downloaded third-party reference repos — local
+	// research INPUT, not authored manuscript OUTPUT. Never publish copies of other
+	// projects' code: it is a licensing problem and a secret/PII vector (the only
+	// reason it surfaced once was a placeholder email in a vendored README tripping
+	// the PII scan — without it a third-party repo would have shipped silently). The
+	// research flow caches references outside manuscripts; this is the machine
+	// backstop that drops a stray copy regardless. Pruning the dir drops its subtree.
+	if info.IsDir() && filepath.Base(path) == "sources" {
+		return true
+	}
 	if strings.EqualFold(filepath.Ext(path), ".har") {
 		return true
 	}
@@ -726,6 +736,12 @@ func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInf
 			info, err := d.Info()
 			if err != nil {
 				return err
+			}
+			// A filtered copy may prune whole subtrees (e.g. downloaded
+			// third-party `sources/` in manuscripts). The unfiltered CopyDir
+			// passes a nil filter, so this never fires for full-CLI copies.
+			if skipFile != nil && skipFile(path, info) {
+				return filepath.SkipDir
 			}
 			return os.MkdirAll(target, info.Mode())
 		}
