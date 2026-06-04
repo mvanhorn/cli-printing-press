@@ -91,6 +91,7 @@ func (g *DeviceGenerator) Generate() error {
 		"go.mod": deviceGoModTemplate,
 		filepath.Join("cmd", data.CLIName, "main.go"):        deviceMainTemplate,
 		filepath.Join("internal", "cli", "root.go"):          deviceRootTemplate,
+		filepath.Join("internal", "cli", "version.go"):       "version.go.tmpl",
 		filepath.Join("internal", "cliutil", "verifyenv.go"): "cliutil_verifyenv.go.tmpl",
 		filepath.Join("internal", "device", "spec.go"):       deviceSpecTemplate,
 		filepath.Join("internal", "device", "transport.go"):  deviceTransportTemplate,
@@ -391,8 +392,10 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 		Use:          "{{.CLIName}}",
 		Short:        "Control {{.DisplayName}} over BLE",
 		Long:         "Control {{.DisplayName}} over BLE using a generated device-native CLI surface.",
+		Version:      version,
 		SilenceUsage: true,
 	}
+	rootCmd.SetVersionTemplate("{{.CLIName}} {{"{{"}} .Version {{"}}"}}\n")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "agent", false, "Output agent-friendly JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.live, "live", false, "Contact the physical device over BLE (needs a binary built with -tags ble_live)")
@@ -404,6 +407,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 {{- if .HasStore}}
 	rootCmd.PersistentFlags().StringVar(&flags.storePath, "store", "", "Telemetry store path (default: user cache)")
 {{- end}}
+	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newCapabilitiesCmd(flags))
 	rootCmd.AddCommand(newStatusCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))

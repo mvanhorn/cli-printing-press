@@ -274,6 +274,12 @@ func TestGeneratedBLEDeviceEmitsLiveTransportAndDoctor(t *testing.T) {
 	assert.Contains(t, root, "device.NewLiveTransport(flags.address, flags.timeout)")
 	assert.Contains(t, root, "func newDoctorCmd(")
 	assert.Contains(t, root, "func newScanCmd(")
+	// Shared version command: device CLIs emit internal/cli/version.go and register
+	// it, so they carry the version command + --version flag like HTTP CLIs (and
+	// pass the version quality gate).
+	assert.Contains(t, root, "rootCmd.AddCommand(newVersionCmd())")
+	assert.Contains(t, root, "Version:      version,")
+	assert.Contains(t, read(filepath.Join("internal", "cli", "version.go")), "func newVersionCmd()")
 
 	// LiveTransport implements the Transport interface over the BLE seam.
 	live := read(filepath.Join("internal", "device", "live.go"))

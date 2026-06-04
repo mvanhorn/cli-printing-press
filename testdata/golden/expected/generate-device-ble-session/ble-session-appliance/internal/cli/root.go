@@ -66,8 +66,10 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 		Use:          "ble-session-appliance-pp-cli",
 		Short:        "Control BLE Session Appliance over BLE",
 		Long:         "Control BLE Session Appliance over BLE using a generated device-native CLI surface.",
+		Version:      version,
 		SilenceUsage: true,
 	}
+	rootCmd.SetVersionTemplate("ble-session-appliance-pp-cli {{ .Version }}\n")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "json", false, "Output as JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.asJSON, "agent", false, "Output agent-friendly JSON")
 	rootCmd.PersistentFlags().BoolVar(&flags.live, "live", false, "Contact the physical device over BLE (needs a binary built with -tags ble_live)")
@@ -75,6 +77,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 20*time.Second, "Per-operation BLE timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Preview device writes without dispatching them")
 	rootCmd.PersistentFlags().StringVar(&flags.storePath, "store", "", "Telemetry store path (default: user cache)")
+	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newCapabilitiesCmd(flags))
 	rootCmd.AddCommand(newStatusCmd(flags))
 	rootCmd.AddCommand(newDoctorCmd(flags))

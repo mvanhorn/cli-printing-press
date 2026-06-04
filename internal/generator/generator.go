@@ -1840,6 +1840,7 @@ func (g *Generator) prepareOutput() error {
 func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
 		"main.go.tmpl":                             filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
+		"version.go.tmpl":                          filepath.Join("internal", "cli", "version.go"),
 		"helpers.go.tmpl":                          filepath.Join("internal", "cli", "helpers.go"),
 		"root_test.go.tmpl":                        filepath.Join("internal", "cli", "root_test.go"),
 		"doctor.go.tmpl":                           filepath.Join("internal", "cli", "doctor.go"),

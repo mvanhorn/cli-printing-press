@@ -17,8 +17,6 @@ import (
 	"printing-press-golden-pp-cli/internal/config"
 )
 
-var version = "1.0.0"
-
 type rootFlags struct {
 	asJSON     bool
 	compact    bool
@@ -258,7 +256,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newAPICmd(flags))
 	rootCmd.AddCommand(newCurrenciesPromotedCmd(flags))
 	rootCmd.AddCommand(newPublicPromotedCmd(flags))
-	rootCmd.AddCommand(newVersionCliCmd())
+	rootCmd.AddCommand(newVersionCmd())
 
 	return rootCmd
 }
@@ -310,14 +308,4 @@ func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]stri
 		fmt.Fprintln(tw, line)
 	}
 	return tw.Flush()
-}
-
-func newVersionCliCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "version",
-		Short: "Print version",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("%s %s\n", cmd.Root().Name(), version)
-		},
-	}
 }
