@@ -468,6 +468,41 @@ func TestUpsertBatch_Sets{{pascal .Name}}ParentID(t *testing.T) {
 		t.Fatalf("parent_id=parent-A count = %d, want 2 (parent_id column not populated)", matchedA)
 	}
 }
+
+// TestUpsertBatch_{{pascal .Name}}SearchableViaGenericFTS verifies that a
+// dependent-resource row stored via UpsertBatch — the exact path dependent
+// sync uses (upsertResourceBatch -> UpsertBatch) — is reachable through the
+// generic resources_fts index. `search "<term>"` queries that index, and
+// `search "<term>" --type {{.Resource}}` falls through to it for dependents
+// that declare no per-resource FTS5 table, so both surfaces return the row.
+// Regression for issue #2629, which reported dependent resources as silently
+// unsearchable (stored in the typed table but absent from any FTS index).
+func TestUpsertBatch_{{pascal .Name}}SearchableViaGenericFTS(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	// resources_fts indexes the full JSON blob, so a distinctive token in any
+	// field is matchable regardless of which columns {{.Name}} declares.
+	const probe = "zqxjpp2629probe"
+	items := []json.RawMessage{
+		json.RawMessage(`{"id": "search-001", "pp_fts_probe": "` + probe + `"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}, "parent_id": "parent-A"}`),
+	}
+	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+
+	results, err := s.Search(probe, 50)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("dependent resource %q stored but not searchable via generic resources_fts (issue #2629)", "{{.Resource}}")
+	}
+}
 {{- end}}
 {{- end}}
 {{- end}}
