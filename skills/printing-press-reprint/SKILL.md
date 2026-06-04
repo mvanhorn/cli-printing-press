@@ -376,6 +376,14 @@ for review. This honors the prefer-`regen-merge` guidance under the
 edit to that phase changes the routing rule, update this paragraph in the same
 PR -- the reprint skill is the dominant entry point that fires it.
 
+Attribution also stays owned by `/printing-press`: the hand-off runs generation
+for the same API slug, and the generate/promote path must preserve the existing
+library manifest's permanent `creator` while adding the reprinter to
+`contributors[]` when they differ. Do not repair this by hand-editing
+`creator`, `contributors[]`, README bylines, SKILL `author:`, or NOTICE; rerun
+with a current Printing Press binary so the manifest-first guard rewrites the
+working tree and promoted tree consistently.
+
 ## After hand-off
 
 The printing-press flow drives the rest. Don't summarize its work — let

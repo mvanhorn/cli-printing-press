@@ -380,6 +380,11 @@ func newGenerateCmd() *cobra.Command {
 			}); err != nil {
 				return err
 			}
+			var reprintContributor spec.Person
+			if researchDir != "" {
+				reprintContributor = currentGitPerson()
+			}
+			applyLibraryAttributionForGenerate(apiSpec, reprintContributor)
 
 			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
 			if err != nil {
@@ -2273,6 +2278,63 @@ func lookupCatalogEntryForGenerateSpec(apiName string, specRefs []string) *catal
 		}
 	}
 	return nil
+}
+
+func applyLibraryAttributionForGenerate(apiSpec *spec.APISpec, reprintContributor spec.Person) {
+	if apiSpec == nil || strings.TrimSpace(apiSpec.Name) == "" {
+		return
+	}
+	manifest, err := pipeline.ReadCLIManifest(filepath.Join(pipeline.PublishedLibraryRoot(), apiSpec.Name))
+	if err != nil {
+		return
+	}
+	if manifest.APIName != "" && manifest.APIName != apiSpec.Name {
+		return
+	}
+	if manifest.Creator == nil || manifest.Creator.IsZero() {
+		return
+	}
+
+	creator := manifest.Creator.Clean()
+	apiSpec.Creator = creator
+	apiSpec.Owner = manifest.Owner
+	if apiSpec.Owner == "" {
+		apiSpec.Owner = creator.Handle
+	}
+	apiSpec.OwnerName = creator.Name
+	apiSpec.Printer = manifest.Printer
+	if apiSpec.Printer == "" {
+		apiSpec.Printer = creator.Handle
+	}
+	apiSpec.PrinterName = manifest.PrinterName
+	if apiSpec.PrinterName == "" {
+		apiSpec.PrinterName = creator.Name
+	}
+	apiSpec.Contributors = prependGenerateContributor(manifest.Contributors, reprintContributor, creator)
+}
+
+func prependGenerateContributor(contributors []spec.Person, p, creator spec.Person) []spec.Person {
+	out := append([]spec.Person(nil), contributors...)
+	p = p.Clean()
+	if p.IsZero() || sameGeneratePerson(p, creator) {
+		return out
+	}
+	for _, c := range out {
+		if sameGeneratePerson(p, c) {
+			return out
+		}
+	}
+	return append([]spec.Person{p}, out...)
+}
+
+func sameGeneratePerson(a, b spec.Person) bool {
+	if a.Handle != "" && b.Handle != "" {
+		return strings.EqualFold(strings.TrimSpace(a.Handle), strings.TrimSpace(b.Handle))
+	}
+	if a.Handle == "" && b.Handle == "" && a.Name != "" {
+		return strings.EqualFold(strings.TrimSpace(a.Name), strings.TrimSpace(b.Name))
+	}
+	return false
 }
 
 func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
