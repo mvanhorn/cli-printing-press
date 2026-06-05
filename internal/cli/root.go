@@ -380,6 +380,11 @@ func newGenerateCmd() *cobra.Command {
 			}); err != nil {
 				return err
 			}
+			var reprintContributor spec.Person
+			if researchDir != "" {
+				reprintContributor = currentGitPerson()
+			}
+			applyLibraryAttributionForGenerate(apiSpec, reprintContributor)
 
 			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
 			if err != nil {
@@ -2273,6 +2278,43 @@ func lookupCatalogEntryForGenerateSpec(apiName string, specRefs []string) *catal
 		}
 	}
 	return nil
+}
+
+func applyLibraryAttributionForGenerate(apiSpec *spec.APISpec, reprintContributor spec.Person) {
+	if apiSpec == nil || strings.TrimSpace(apiSpec.Name) == "" {
+		return
+	}
+	manifest, err := pipeline.ReadCLIManifest(filepath.Join(pipeline.PublishedLibraryRoot(), apiSpec.Name))
+	if err != nil {
+		return
+	}
+	if manifest.APIName != "" && manifest.APIName != apiSpec.Name {
+		return
+	}
+	if manifest.Creator == nil || manifest.Creator.IsZero() {
+		return
+	}
+
+	creator := manifest.Creator.Clean()
+	apiSpec.Creator = creator
+	apiSpec.Owner = manifest.Owner
+	if apiSpec.Owner == "" {
+		apiSpec.Owner = creator.Handle
+	}
+	apiSpec.OwnerName = creator.Name
+	apiSpec.Printer = manifest.Printer
+	if apiSpec.Printer == "" {
+		apiSpec.Printer = creator.Handle
+	}
+	apiSpec.PrinterName = manifest.PrinterName
+	if apiSpec.PrinterName == "" {
+		apiSpec.PrinterName = creator.Name
+	}
+	if spec.SamePerson(reprintContributor, creator) {
+		apiSpec.Contributors = append([]spec.Person(nil), manifest.Contributors...)
+	} else {
+		apiSpec.Contributors = spec.PrependContributor(manifest.Contributors, reprintContributor)
+	}
 }
 
 func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {

@@ -134,6 +134,37 @@ func (p Person) Clean() Person {
 	return Person{Handle: cleanHandle(p.Handle), Name: cleanName(p.Name)}
 }
 
+// SamePerson reports whether two attribution entries are the same human.
+// Handles are the primary key (case-insensitive); when a handle is absent on
+// both sides it falls back to a name match so handle-less contributors still
+// dedupe instead of re-appending on every attribution update.
+func SamePerson(a, b Person) bool {
+	if a.Handle != "" && b.Handle != "" {
+		return strings.EqualFold(strings.TrimSpace(a.Handle), strings.TrimSpace(b.Handle))
+	}
+	if a.Handle == "" && b.Handle == "" && a.Name != "" {
+		return strings.EqualFold(strings.TrimSpace(a.Name), strings.TrimSpace(b.Name))
+	}
+	return false
+}
+
+// PrependContributor returns contributors with p at the front unless p is empty
+// or already present. The input slice is copied so callers can assign the result
+// without mutating manifest/spec data they still need for rendering.
+func PrependContributor(contributors []Person, p Person) []Person {
+	out := append([]Person(nil), contributors...)
+	p = p.Clean()
+	if p.IsZero() {
+		return out
+	}
+	for _, c := range out {
+		if SamePerson(p, c) {
+			return out
+		}
+	}
+	return append([]Person{p}, out...)
+}
+
 func cleanName(s string) string {
 	cleaned := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || strings.ContainsRune("[]`<>", r) {

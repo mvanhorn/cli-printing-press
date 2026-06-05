@@ -435,6 +435,9 @@ func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.
 	promote := substringBetween(t, skill, "### Promote to Library", "`ship-with-gaps` is promoted")
 
 	assert.Contains(t, promote, "Before choosing Path B for `NOVEL_COUNT > 0`, distinguish preservation")
+	assert.Contains(t, promote, "creator attribution is guarded in two places")
+	assert.Contains(t, promote, "restores the library creator, prepends the staged creator as contributor")
+	assert.Contains(t, promote, "must never silently replace the library creator with the operator's git identity")
 	assert.Contains(t, promote, "from-scratch reprint whose fresh tree reimplements all prior novels")
 	assert.Contains(t, promote, "REGEN_DRY_RUN_REPORT=\"$PROOFS_DIR/regen-merge-dry-run-report.json\"")
 	assert.Contains(t, promote, "regen-merge dry-run failed; see $REGEN_DRY_RUN_REPORT")
@@ -454,6 +457,8 @@ func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.
 	assert.Contains(t, reprint, "Phase 5.6 first\ndry-runs `cli-printing-press regen-merge")
 	assert.Contains(t, reprint, "fresh tree contains all prior novel work")
 	assert.Contains(t, reprint, "genuine `NOVEL-COLLISION` / missing-referent cases halt")
+	assert.Contains(t, reprint, "preserve the existing\nlibrary manifest's permanent `creator`")
+	assert.Contains(t, reprint, "Do not repair this by hand-editing")
 }
 
 func TestPrintingPressSkillSetsNonCatalogCategoryBeforeGenerate(t *testing.T) {

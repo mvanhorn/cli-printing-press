@@ -28,6 +28,33 @@ func TestPersonClean(t *testing.T) {
 	assert.Equal(t, Person{Handle: "trevin-chow", Name: "Trevin Q. O'Chow (TQC)"}, clean)
 }
 
+func TestSamePerson(t *testing.T) {
+	assert.True(t, SamePerson(Person{Handle: "Trevin-Chow"}, Person{Handle: "trevin-chow"}))
+	assert.True(t, SamePerson(Person{Name: "Trevin Chow"}, Person{Name: "trevin chow"}))
+	assert.False(t, SamePerson(Person{Handle: "trevin-chow"}, Person{Name: "Trevin Chow"}))
+	assert.False(t, SamePerson(Person{Name: "Trevin Chow"}, Person{Name: ""}))
+}
+
+func TestPrependContributor(t *testing.T) {
+	contributors := []Person{{Handle: "jane-doe", Name: "Jane Doe"}}
+
+	got := PrependContributor(contributors, Person{Handle: "tmchow", Name: "Trevin Chow"})
+	require.Equal(t, []Person{
+		{Handle: "tmchow", Name: "Trevin Chow"},
+		{Handle: "jane-doe", Name: "Jane Doe"},
+	}, got)
+	assert.Equal(t, []Person{{Handle: "jane-doe", Name: "Jane Doe"}}, contributors, "input slice is copied")
+
+	got = PrependContributor(got, Person{Handle: "TMCHOW", Name: "Trevin Chow"})
+	require.Equal(t, []Person{
+		{Handle: "tmchow", Name: "Trevin Chow"},
+		{Handle: "jane-doe", Name: "Jane Doe"},
+	}, got)
+
+	got = PrependContributor(contributors, Person{})
+	assert.Equal(t, contributors, got)
+}
+
 // An empty creator must not serialize as `creator: {}` / `"creator":{}` —
 // otherwise every generated spec and golden fixture gains attribution noise.
 // JSON relies on omitzero (Go 1.24+, honoring IsZero); YAML relies on
