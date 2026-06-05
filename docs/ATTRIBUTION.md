@@ -6,7 +6,7 @@ A printed CLI's attribution is a single permanent **`creator`** plus a multi-val
 
 Keep the `handle` / `name` split *inside* each `Person`; never conflate them into one string.
 
-- `handle` — the slug-safe GitHub @handle. Anchors the README/NOTICE byline link (`[@handle](github.com/handle)`; the byline renders only when `handle` is set) and the legacy slug-form copyright-header recovery regex (`copyrightOwnerRe`).
+- `handle` — the slug-safe GitHub @handle. Anchors the README/NOTICE byline link (`[@handle](https://github.com/handle)`; the byline renders only when `handle` is set) and the legacy slug-form copyright-header recovery regex (`copyrightOwnerRe`).
 - `name` — the prose display name. Drives the current copyright header `Copyright YYYY <name> and contributors.` and its recovery regex (`copyrightCreatorRe`), the `RewriteOwner` header-token swap, the SKILL `author:`, the NOTICE credit, and the byline's parenthetical name.
 
 ## Creator is permanent
