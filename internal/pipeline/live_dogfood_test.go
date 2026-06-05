@@ -4314,3 +4314,44 @@ func TestRunLiveDogfoodErrorPathRealReportContribution(t *testing.T) {
 		"MatrixSize should equal Passed + Failed (skipped entries do not contribute)")
 	assert.Equal(t, 0, report.Failed)
 }
+
+func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
+	// pp:happy-args supplies a real value, overriding the Example placeholder
+	// ("example-value") that strict upstream validators reject with HTTP 400.
+	flagCmd := liveDogfoodCommand{
+		Path:        []string{"users", "get-by-ids"},
+		Help:        "Usage:\n  cli users get-by-ids [flags]\n\nExamples:\n  cli users get-by-ids --ids example-value\n",
+		Annotations: map[string]string{happyArgsAnnotation: "--ids=12"},
+	}
+	args, ok := liveDogfoodHappyArgs(flagCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "12"}, args,
+		"flag-form pp:happy-args must override the Example placeholder")
+
+	// Positional form: <name>=value contributes the value as a positional arg.
+	// resolveCommandPositionals must NOT re-resolve (or skip) it even when the
+	// Usage line carries an <id> placeholder and no list companion is reachable.
+	posCmd := liveDogfoodCommand{
+		Path:        []string{"tweets", "get"},
+		Help:        "Usage:\n  cli tweets get <id> [flags]\n",
+		Annotations: map[string]string{happyArgsAnnotation: "<id>=1750000000000000000"},
+	}
+	args, ok = liveDogfoodHappyArgs(posCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, args)
+	resolved, skipped, reason := resolveCommandPositionals(posCmd, args, resolveCtx{})
+	assert.False(t, skipped, "pp:happy-args positional must not be skipped: %s", reason)
+	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, resolved,
+		"resolveCommandPositionals must preserve the pp:happy-args positional value")
+
+	// Empty annotation falls through to the Example-derivation path.
+	emptyCmd := liveDogfoodCommand{
+		Path:        []string{"users", "get-by-ids"},
+		Help:        "Usage:\n  cli users get-by-ids [flags]\n\nExamples:\n  cli users get-by-ids --ids example-value\n",
+		Annotations: map[string]string{happyArgsAnnotation: ""},
+	}
+	args, ok = liveDogfoodHappyArgs(emptyCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "example-value"}, args,
+		"empty pp:happy-args must fall through to Example derivation")
+}
