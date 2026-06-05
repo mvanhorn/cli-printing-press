@@ -3746,6 +3746,45 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 		"behavioral coverage of comment-prefix and statement-separator bypass vectors must ship into every printed CLI's mcp package")
 }
 
+// TestGenerateMCPSQLToolSurfacesRowErrors pins the emitted handleSQL error
+// handling so a regression to the silent-discard form (which returns a
+// truncated result set as a successful tool call) fails fast. It also pins the
+// shared toolResultJSON helper that surfaces a result-encoding failure instead
+// of discarding the json.MarshalIndent error.
+func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("rowerr-canary")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpCode := stripGoComments(string(mcpSrc))
+
+	assert.NotContains(t, mcpCode, "cols, _ := rows.Columns()",
+		"handleSQL must not discard the rows.Columns() error")
+	assert.Contains(t, mcpCode, "cols, err := rows.Columns()",
+		"handleSQL must capture and check the rows.Columns() error")
+	assert.Regexp(t, `if err := rows\.Scan\(ptrs\.\.\.\); err != nil`, mcpCode,
+		"handleSQL must check the rows.Scan error rather than ignore it")
+	assert.Regexp(t, `if err := rows\.Err\(\); err != nil`, mcpCode,
+		"handleSQL must check rows.Err() after the loop so a truncated result set is not returned as success")
+
+	assert.Contains(t, mcpCode, "func toolResultJSON(",
+		"mcp package must expose toolResultJSON so result encoding surfaces marshal errors")
+	assert.NotContains(t, mcpCode, `json.MarshalIndent(results, "", "  ")`,
+		"handleSQL/handleSearch must route result encoding through toolResultJSON, not discard the json.MarshalIndent error")
+	assert.Regexp(t, `(?s)func toolResultJSON\(.*json\.MarshalIndent\(v.*if err != nil`, mcpCode,
+		"toolResultJSON must check the json.MarshalIndent error")
+
+	// Compile-check the emission: the cols, err := redeclaration reusing the
+	// err already bound by db.Query must still build.
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // stripGoComments removes // line comments and /* ... */ block comments from
 // Go source. Crude but sufficient for canary assertions on emitted templates;
 // it doesn't try to parse string literals (none of the asserted substrings

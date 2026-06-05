@@ -263,6 +263,16 @@ func dbPath() string {
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
 // The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
+// toolResultJSON renders v as the indented JSON body of an MCP text result,
+// surfacing a marshal failure as a tool error instead of empty content.
+func toolResultJSON(v any) (*mcplib.CallToolResult, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("encoding result: %v", err)), nil
+	}
+	return mcplib.NewToolResultText(string(data)), nil
+}
+
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	ctx := map[string]any{
 		"api":         "public-param-golden",
@@ -284,8 +294,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			"Control page size with the limit parameter (default 100).",
 		},
 	}
-	data, _ := json.MarshalIndent(ctx, "", "  ")
-	return mcplib.NewToolResultText(string(data)), nil
+	return toolResultJSON(ctx)
 }
 
 // RegisterNovelFeatureTools is kept as a compatibility no-op for older MCP
