@@ -3748,7 +3748,9 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 
 // TestGenerateMCPSQLToolSurfacesRowErrors pins the emitted handleSQL error
 // handling so a regression to the silent-discard form (which returns a
-// truncated result set as a successful tool call) fails fast.
+// truncated result set as a successful tool call) fails fast. It also pins the
+// shared toolResultJSON helper that surfaces a result-encoding failure instead
+// of discarding the json.MarshalIndent error.
 func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
 	t.Parallel()
 
@@ -3770,6 +3772,13 @@ func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
 		"handleSQL must check the rows.Scan error rather than ignore it")
 	assert.Regexp(t, `if err := rows\.Err\(\); err != nil`, mcpCode,
 		"handleSQL must check rows.Err() after the loop so a truncated result set is not returned as success")
+
+	assert.Contains(t, mcpCode, "func toolResultJSON(",
+		"mcp package must expose toolResultJSON so result encoding surfaces marshal errors")
+	assert.NotContains(t, mcpCode, `json.MarshalIndent(results, "", "  ")`,
+		"handleSQL/handleSearch must route result encoding through toolResultJSON, not discard the json.MarshalIndent error")
+	assert.Regexp(t, `(?s)func toolResultJSON\(.*json\.MarshalIndent\(v.*if err != nil`, mcpCode,
+		"toolResultJSON must check the json.MarshalIndent error")
 
 	// Compile-check the emission: the cols, err := redeclaration reusing the
 	// err already bound by db.Query must still build.
