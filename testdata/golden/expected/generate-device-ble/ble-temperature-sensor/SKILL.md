@@ -7,12 +7,12 @@ description: Control BLE Temperature Sensor through the generated BLE device CLI
 
 This skill drives the `ble-temperature-sensor-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:
 
-1. Install via the Printing Press installer into a user bin directory:
+1. Install via the Printing Press installer. It defaults binaries to `$HOME/.local/bin` on macOS/Linux and `%LOCALAPPDATA%\Programs\PrintingPress\bin` on Windows:
    ```bash
-   npx -y @mvanhorn/printing-press-library install ble-temperature-sensor --cli-only --bin-dir ~/.local/bin
+   npx -y @mvanhorn/printing-press-library install ble-temperature-sensor --cli-only
    ```
 2. Verify: `ble-temperature-sensor-pp-cli --version`
-3. Ensure `~/.local/bin` is on `$PATH` for the agent/runtime that will invoke this skill.
+3. Ensure the reported install directory is on `$PATH` for the agent/runtime that will invoke this skill.
 
 If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.
 

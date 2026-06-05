@@ -27,12 +27,12 @@ const canonicalSkillInstallSectionStartFormat = "## Prerequisites: Install the C
 	"\n" +
 	"This skill drives the `%[1]s-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:\n" +
 	"\n" +
-	"1. Install via the Printing Press installer into a user bin directory:\n" +
+	"1. Install via the Printing Press installer. It defaults binaries to `$HOME/.local/bin` on macOS/Linux and `%%LOCALAPPDATA%%\\Programs\\PrintingPress\\bin` on Windows:\n" +
 	"   ```bash\n" +
-	"   npx -y @mvanhorn/printing-press-library install %[1]s --cli-only --bin-dir ~/.local/bin\n" +
+	"   npx -y @mvanhorn/printing-press-library install %[1]s --cli-only\n" +
 	"   ```\n" +
 	"2. Verify: `%[1]s-pp-cli --version`\n" +
-	"3. Ensure `~/.local/bin` is on `$PATH` for the agent/runtime that will invoke this skill.\n" +
+	"3. Ensure the reported install directory is on `$PATH` for the agent/runtime that will invoke this skill.\n" +
 	"\n"
 
 // canonicalSkillInstallSectionGoFallbackFormat is appended only once the

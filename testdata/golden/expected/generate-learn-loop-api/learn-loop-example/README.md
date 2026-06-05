@@ -66,10 +66,10 @@ Inside a Hermes chat session:
 ```
 
 ## Install for OpenClaw
-Install both the CLI binary and the focused OpenClaw skill into runtime-visible locations:
+Install both the CLI binary and the focused OpenClaw skill. The installer defaults binaries to a per-user bin directory (`$HOME/.local/bin` on macOS/Linux, `%LOCALAPPDATA%\Programs\PrintingPress\bin` on Windows):
 
 ```bash
-npx -y @mvanhorn/printing-press-library install learn-loop-example --agent openclaw --bin-dir ~/.local/bin
+npx -y @mvanhorn/printing-press-library install learn-loop-example --agent openclaw
 ```
 
 Restart the OpenClaw session or gateway if the newly installed skill is not visible immediately.
