@@ -112,7 +112,8 @@ The same lockstep applies to the learn-loop templates under `internal/generator/
 - `docs/SKILLS.md` - Skill authoring conventions: workflow parity, reference-file pattern, frontmatter fields
 - `docs/PATTERNS.md` - Cross-cutting design patterns
 - `docs/GOLDEN.md` - Golden harness decision rubric and fixture conventions
-- `docs/GLOSSARY.md` - Canonical terms and the full disambiguation table
+- `CONCEPTS.md` (repo root) - Shared domain vocabulary: what the core nouns mean (the Printing Press, printed CLI, spec, brief, manuscript, library, catalog, verify, scorecard, etc.), kept code-free. Relevant when orienting to the codebase or discussing domain concepts
+- `docs/GLOSSARY.md` - Naming conventions, overloaded-term disambiguation defaults, and the implementation reference (packages, subcommands, on-disk files) behind the concepts in `CONCEPTS.md`
 - `docs/RELEASE.md` - release-please / goreleaser flow
 - `docs/ATTRIBUTION.md` - Creator + contributors model: resolver fallback, validation layers, legacy-field dual-write window
 - `docs/CATALOG.md` - Catalog validation rationale and wrapper-only entry shape
@@ -126,7 +127,8 @@ Use canonical terms so intent stays unambiguous. In skills and user-facing outpu
 - "publish" -> the publish step (pipeline) unless the public-library workflow is called out explicitly
 - "manifest" -> `tools-manifest.json` unless another manifest is named explicitly
 - "catalog" -> embedded `catalog/` unless "public library catalog" is stated
-See [`docs/GLOSSARY.md`](docs/GLOSSARY.md) for the full term table and disambiguation cases.
+- "the CLI" -> a printed CLI, not the generator binary (say "cli-printing-press binary" for the latter)
+See [`CONCEPTS.md`](CONCEPTS.md) for what the domain nouns mean, and [`docs/GLOSSARY.md`](docs/GLOSSARY.md) for naming conventions, the disambiguation defaults above in full, and the implementation reference behind each concept.
 
 ## Attribution: creator + contributors
 
