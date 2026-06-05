@@ -8,6 +8,9 @@ cloud:
   digitalocean         Cloud infrastructure and developer platform API
   google-cloud-run     Cloud Run Admin API for deploying and managing serverless container services, revisions, jobs, and executions
 
+commerce:
+  shipping-tracker     Multi-carrier package tracking status for common parcel carriers through Shippo.
+
 developer-tools:
   github               Software development platform API
   launchdarkly         Feature flag management - flags, environments, segments, experiments, audit logs
