@@ -39,6 +39,7 @@ type DogfoodReport struct {
 	Dir                    string                       `json:"dir"`
 	SpecPath               string                       `json:"spec_path,omitempty"`
 	SpecSource             DogfoodSpecSource            `json:"spec_source,omitempty"`
+	IsDeviceCLI            bool                         `json:"is_device_cli,omitempty"`
 	Verdict                string                       `json:"verdict"`
 	PathCheck              PathCheckResult              `json:"path_check"`
 	AuthCheck              AuthCheckResult              `json:"auth_check"`
@@ -272,10 +273,11 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	specPath = resolvedSpec
 
 	report := &DogfoodReport{
-		Dir:        dir,
-		SpecPath:   specPath,
-		SpecSource: specSource,
-		Verdict:    "PASS",
+		Dir:         dir,
+		SpecPath:    specPath,
+		SpecSource:  specSource,
+		IsDeviceCLI: isDeviceCLIDir(dir),
+		Verdict:     "PASS",
 	}
 
 	var spec *openAPISpec
@@ -308,7 +310,13 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 		} else {
 			report.PathCheck = checkPaths(dir, spec.Paths)
 		}
-		report.AuthCheck = checkAuth(dir, spec.Auth)
+		if report.IsDeviceCLI {
+			// Device CLIs talk BLE, not HTTP; there is no client.go auth header
+			// to validate. Skip rather than report a false "client.go missing".
+			report.AuthCheck = AuthCheckResult{Match: true, Detail: "SKIP (device CLI: no HTTP auth protocol)"}
+		} else {
+			report.AuthCheck = checkAuth(dir, spec.Auth)
+		}
 		report.BrowserSessionCheck = checkBrowserSessionAuth(dir, spec.Auth)
 		report.OAuthScopeCoverage = checkOAuthScopeCoverage(dir, spec.OAuthScopeRequirements)
 	} else {
@@ -2301,7 +2309,7 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
 		return hasSpec && r.PathCheck.Tested > 0 && r.PathCheck.Pct < 70
 	}},
-	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool { return hasSpec && !r.AuthCheck.Match }},
+	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool { return hasSpec && !r.IsDeviceCLI && !r.AuthCheck.Match }},
 	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
 		return hasSpec && r.BrowserSessionCheck.Required && !r.BrowserSessionCheck.Pass
 	}},
@@ -2314,16 +2322,16 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.PipelineCheck.SyncCallsDomain }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && !r.PipelineCheck.SyncCallsDomain }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool {
 		// Issue #1156: when defaultSyncResources is emitted empty, the sync
 		// command is a runtime no-op and store-dependent novel commands have
 		// no advertised path to populate the store. Promote to WARN so the
 		// gap surfaces at shipcheck time rather than after publish.
-		return r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncResourcesPresent
+		return !r.IsDeviceCLI && r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncResourcesPresent
 	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ExampleCheck.InvalidFlags) > 0 }},
-	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.ExampleCheck.Skipped }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && r.ExampleCheck.Skipped }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.CommandTree.Unregistered) > 0 }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool {
 		return !r.WiringCheck.ConfigConsist.Consistent && len(r.WiringCheck.ConfigConsist.Mismatched) > 0
@@ -2364,7 +2372,7 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	if hasSpec && report.PathCheck.Tested > 0 && report.PathCheck.Pct < 70 {
 		issues = append(issues, fmt.Sprintf("%d%% path validity against spec", report.PathCheck.Pct))
 	}
-	if hasSpec && !report.AuthCheck.Match {
+	if hasSpec && !report.IsDeviceCLI && !report.AuthCheck.Match {
 		issues = append(issues, "auth protocol mismatch")
 	}
 	if hasSpec && report.BrowserSessionCheck.Required && !report.BrowserSessionCheck.Pass {
@@ -2381,10 +2389,10 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	if report.DeadFuncs.Dead > 0 {
 		issues = append(issues, fmt.Sprintf("%d dead helper functions found", report.DeadFuncs.Dead))
 	}
-	if !report.PipelineCheck.SyncCallsDomain {
+	if !report.IsDeviceCLI && !report.PipelineCheck.SyncCallsDomain {
 		issues = append(issues, "sync uses generic Upsert only")
 	}
-	if report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncResourcesPresent {
+	if !report.IsDeviceCLI && report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncResourcesPresent {
 		issues = append(issues, "defaultSyncResources empty: sync command is a runtime no-op; store-dependent novel commands have no advertised population path")
 	}
 	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
@@ -2393,7 +2401,7 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	if len(report.ExampleCheck.InvalidFlags) > 0 {
 		issues = append(issues, fmt.Sprintf("%d invalid flags in examples", len(report.ExampleCheck.InvalidFlags)))
 	}
-	if report.ExampleCheck.Skipped {
+	if !report.IsDeviceCLI && report.ExampleCheck.Skipped {
 		issues = append(issues, fmt.Sprintf("example check skipped: %s", report.ExampleCheck.Detail))
 	}
 	if len(report.WiringCheck.CommandTree.Unregistered) > 0 {
@@ -2594,6 +2602,13 @@ func checkExamples(dir string) ExampleCheckResult {
 func discoverExampleCheckCommands(binaryPath string) ([][]string, error) {
 	out, err := runStdoutOnly(binaryPath, 15*time.Second, "agent-context")
 	if err != nil {
+		// Device CLIs (and any CLI lacking agent-context) enumerate via --help.
+		if paths := enumerateCommandPathsViaHelp(binaryPath); len(paths) > 0 {
+			if len(paths) > 10 {
+				paths = sampleEvenlyCommandPaths(paths, 10)
+			}
+			return paths, nil
+		}
 		return nil, fmt.Errorf("agent-context failed: %w", err)
 	}
 	paths, err := dogfoodExampleCommandPathsFromAgentContext(out)

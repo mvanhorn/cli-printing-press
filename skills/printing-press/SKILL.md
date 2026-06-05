@@ -165,7 +165,7 @@ elif ! _resolve_press_bin >/dev/null; then
       echo "Install it in your terminal:"
       echo "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
     else
-      echo "Go 1.26.3 or newer is also not installed. Install Go from https://go.dev/dl/, then:"
+      echo "Go 1.26.4 or newer is also not installed. Install Go from https://go.dev/dl/, then:"
       echo "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
     fi
     echo ""
@@ -185,7 +185,7 @@ if ! command -v go >/dev/null 2>&1; then
   echo "[setup-error] Go toolchain not found."
   echo ""
   echo "The Printing Press generator runs Go-based quality gates after generation."
-  echo "Install Go 1.26.3 or newer from https://go.dev/dl/, then verify with:"
+  echo "Install Go 1.26.4 or newer from https://go.dev/dl/, then verify with:"
   echo "  go version"
   echo "Then re-run /printing-press."
   echo ""
@@ -733,6 +733,10 @@ These do not need to be 200+ lines. Keep them dense, evidence-backed, and direct
 Before new research:
 
 1. Resolve the spec source.
+
+   **Local physical device detection.** If the user's target is a local Bluetooth/BLE-controlled physical device (for example an appliance, toy, light, sensor, exercise machine, lock, or other device controlled from a phone app over Bluetooth), do not route it through browser-sniff as the primary discovery path. Read and apply [references/device-sniff-ble.md](references/device-sniff-ble.md). Use `device-sniff ble` for normalized BLE evidence and `bluetooth-sniff` as the discoverable alias. Community libraries, docs, Android logs, Wireshark/nRF captures, and manual action journals are evidence inputs; they are not a reason to hardcode a vendor-specific generator path.
+
+   **BLE mapping research gate.** A BLE scan/inspect/read/subscribe pass only discovers identity, services, characteristics, and telemetry candidates; it does not by itself discover what write payloads mean. Before generating callable control commands or running any live `write`, establish a command mapping from at least one concrete source: user-provided mapping, official docs, community protocol/library code, Android/iOS/Bluetooth logs, Wireshark/nRF captures, or an operator action journal that correlates a real user action with observed writes. If no mapping source is found, generate only read/status/capability metadata or stop and ask the user for mapping evidence. Do not invent mutating payloads or brute-force probe a physical device.
 
    **URL Detection** — If the argument contains `://`, it's a URL. Determine whether it's a spec or a website before proceeding.
 

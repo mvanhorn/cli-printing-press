@@ -1,0 +1,1 @@
+Generated ble-desk-lamp at <ARTIFACT_DIR>/generate-device-ble-control/ble-desk-lamp (from BLE device spec)

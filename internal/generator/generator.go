@@ -553,19 +553,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return string(runes[:max-1]) + "…"
 		},
-		// yamlDoubleQuoted escapes a string for safe embedding inside a YAML
-		// double-quoted scalar. Handles the three failure modes we've seen
-		// from LLM-authored narrative fields: unescaped " (breaks parser),
-		// unescaped \ (swallows next char), and raw newlines (terminates
-		// scalar). Leaves single quotes alone — valid in double-quoted YAML.
-		"yamlDoubleQuoted": func(s string) string {
-			s = strings.ReplaceAll(s, `\`, `\\`)
-			s = strings.ReplaceAll(s, `"`, `\"`)
-			s = strings.ReplaceAll(s, "\n", `\n`)
-			s = strings.ReplaceAll(s, "\r", `\r`)
-			s = strings.ReplaceAll(s, "\t", `\t`)
-			return s
-		},
+		"yamlDoubleQuoted": yamlDoubleQuoted,
 		// groupNovelFeatures clusters features by their Group field, preserving
 		// first-seen order of group names. Features with empty Group land in a
 		// trailing "More" bucket so nothing gets dropped. Returns nil when no
@@ -1840,6 +1828,7 @@ func (g *Generator) prepareOutput() error {
 func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
 		"main.go.tmpl":                             filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
+		"version.go.tmpl":                          filepath.Join("internal", "cli", "version.go"),
 		"helpers.go.tmpl":                          filepath.Join("internal", "cli", "helpers.go"),
 		"root_test.go.tmpl":                        filepath.Join("internal", "cli", "root_test.go"),
 		"doctor.go.tmpl":                           filepath.Join("internal", "cli", "doctor.go"),
@@ -1868,13 +1857,6 @@ func (g *Generator) renderSingleFiles() error {
 		"cliutil_odata_date.go.tmpl":               filepath.Join("internal", "cliutil", "odata_date.go"),
 		"cliutil_odata_date_test.go.tmpl":          filepath.Join("internal", "cliutil", "odata_date_test.go"),
 		"cliutil_test.go.tmpl":                     filepath.Join("internal", "cliutil", "cliutil_test.go"),
-		"cobratree/walker.go.tmpl":                 filepath.Join("internal", "mcp", "cobratree", "walker.go"),
-		"cobratree/classify.go.tmpl":               filepath.Join("internal", "mcp", "cobratree", "classify.go"),
-		"cobratree/typemap.go.tmpl":                filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
-		"cobratree/shellout.go.tmpl":               filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
-		"cobratree/shellout_test.go.tmpl":          filepath.Join("internal", "mcp", "cobratree", "shellout_test.go"),
-		"cobratree/cli_path.go.tmpl":               filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
-		"cobratree/names.go.tmpl":                  filepath.Join("internal", "mcp", "cobratree", "names.go"),
 		"types.go.tmpl":                            filepath.Join("internal", "types", "types.go"),
 		"golangci.yml.tmpl":                        ".golangci.yml",
 		"readme.md.tmpl":                           "README.md",
@@ -1883,6 +1865,7 @@ func (g *Generator) renderSingleFiles() error {
 		"LICENSE.tmpl":                             "LICENSE",
 		"NOTICE.tmpl":                              "NOTICE",
 	}
+	maps.Copy(singleFiles, cobratreeWalkerTemplateFiles())
 
 	for tmplName, outPath := range singleFiles {
 		if tmplName == "types.go.tmpl" && g.shouldPreserveExistingTypesFile(outPath) {
@@ -2392,6 +2375,21 @@ func frameworkUseNameForTemplate(tmpl string) string {
 	return strings.ReplaceAll(naming.Snake(ctor), "_", "-")
 }
 
+// cobratreeWalkerTemplateFiles maps each cobratree MCP-walker template to its
+// output path under internal/mcp/cobratree. The walker is API-agnostic, so the
+// file set is identical for every printed CLI (HTTP and device); single-source
+// it here rather than repeating the manifest in each generator's file map.
+func cobratreeWalkerTemplateFiles() map[string]string {
+	files := make(map[string]string)
+	for _, name := range []string{
+		"walker.go", "classify.go", "typemap.go", "shellout.go",
+		"shellout_test.go", "cli_path.go", "names.go",
+	} {
+		files["cobratree/"+name+".tmpl"] = filepath.Join("internal", "mcp", "cobratree", name)
+	}
+	return files
+}
+
 // GenerateMCPSurface rewrites the generated MCP entrypoint, tools package,
 // cobratree helpers, AND the generator-reserved cliutil package without
 // touching the printed CLI's command files. The cliutil package is
@@ -2411,13 +2409,6 @@ func (g *Generator) GenerateMCPSurface() error {
 	}
 	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
 	mcpFiles := map[string]string{
-		"cobratree/walker.go.tmpl":        filepath.Join("internal", "mcp", "cobratree", "walker.go"),
-		"cobratree/classify.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "classify.go"),
-		"cobratree/typemap.go.tmpl":       filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
-		"cobratree/shellout.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
-		"cobratree/shellout_test.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "shellout_test.go"),
-		"cobratree/cli_path.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
-		"cobratree/names.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "names.go"),
 		// cliutil files. Deliberately asymmetric with the marker-checked
 		// tools.go / handlers.go / root.go paths elsewhere in mcp-sync:
 		// those files can carry hand-edits and require explicit
@@ -2437,6 +2428,7 @@ func (g *Generator) GenerateMCPSurface() error {
 		"cliutil_jwtshape.go.tmpl":           filepath.Join("internal", "cliutil", "jwtshape.go"),
 		"cliutil_jwtshape_test.go.tmpl":      filepath.Join("internal", "cliutil", "jwtshape_test.go"),
 	}
+	maps.Copy(mcpFiles, cobratreeWalkerTemplateFiles())
 	for tmplName, outPath := range mcpFiles {
 		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
 			return fmt.Errorf("rendering %s: %w", tmplName, err)

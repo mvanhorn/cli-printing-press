@@ -177,7 +177,7 @@ resources:
 
 	const modulePath = "github.com/mvanhorn/printing-press-library/library/sales-and-crm/tenderned"
 	require.NoError(t, os.MkdirAll(outputDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.26.3\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.26.4\n"), 0o644))
 
 	cmd := newGenerateCmd()
 	cmd.SetArgs([]string{
@@ -200,6 +200,45 @@ resources:
 
 	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/tenderned-pp-cli")
+}
+
+func TestGenerateDeviceSpecArchiveUsesRenamedCLIName(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "device.yaml")
+	outputDir := filepath.Join(dir, "renamed-device")
+	require.NoError(t, os.WriteFile(specPath, []byte(`version: 1
+name: original-device
+display_name: Original Device
+protocol: ble
+ble:
+  services:
+    - uuid: "ff00"
+      characteristics:
+        - uuid: "ff01"
+          properties: [read]
+capabilities:
+  telemetry:
+    - name: battery
+      source_characteristic_uuid: "ff01"
+session:
+  mode: one-shot
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--name", "renamed-device",
+		"--output", outputDir,
+		"--validate=false",
+	})
+	require.NoError(t, cmd.Execute())
+
+	archived, err := os.ReadFile(filepath.Join(outputDir, "device-spec.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(archived), "name: renamed-device")
+	assert.NotContains(t, string(archived), "name: original-device")
 }
 
 func TestGenerateCmdForcePreservesManuscriptsAndManifestExtras(t *testing.T) {

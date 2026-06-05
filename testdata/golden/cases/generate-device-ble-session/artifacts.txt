@@ -1,0 +1,15 @@
+ble-session-appliance/go.mod
+ble-session-appliance/cmd/ble-session-appliance-pp-cli/main.go
+ble-session-appliance/internal/cli/root.go
+ble-session-appliance/internal/cliutil/verifyenv.go
+ble-session-appliance/internal/device/spec.go
+ble-session-appliance/internal/device/transport.go
+ble-session-appliance/internal/device/session.go
+ble-session-appliance/internal/device/store.go
+ble-session-appliance/README.md
+ble-session-appliance/SKILL.md
+ble-session-appliance/AGENTS.md
+ble-session-appliance/LICENSE
+ble-session-appliance/NOTICE
+ble-session-appliance/.goreleaser.yaml
+ble-session-appliance/device-spec.yaml

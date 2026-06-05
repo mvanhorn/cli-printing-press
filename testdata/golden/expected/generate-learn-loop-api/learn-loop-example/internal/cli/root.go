@@ -17,8 +17,6 @@ import (
 	"learn-loop-example-pp-cli/internal/config"
 )
 
-var version = "1.0.0"
-
 type rootFlags struct {
 	asJSON     bool
 	compact    bool
@@ -249,7 +247,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newAPICmd(flags))
 	rootCmd.AddCommand(newGamesPromotedCmd(flags))
 	rootCmd.AddCommand(newLeaguesPromotedCmd(flags))
-	rootCmd.AddCommand(newVersionCliCmd())
+	rootCmd.AddCommand(newVersionCmd())
 	// Self-learning loop commands. newLearnConfig (defined in
 	// learn_init.go) reads spec.Learn.TickerPatterns + Stopwords and
 	// returns a configured *entities.Config every call site shares;
@@ -346,14 +344,4 @@ func (f *rootFlags) printTable(w *cobra.Command, headers []string, rows [][]stri
 		fmt.Fprintln(tw, line)
 	}
 	return tw.Flush()
-}
-
-func newVersionCliCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "version",
-		Short: "Print version",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("%s %s\n", cmd.Root().Name(), version)
-		},
-	}
 }

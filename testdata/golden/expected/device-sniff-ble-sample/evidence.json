@@ -1,0 +1,76 @@
+{
+  "actions": [
+    {
+      "at": "2026-06-01T12:00:04Z",
+      "id": "action-start",
+      "label": "start",
+      "safety": "physical-effect"
+    }
+  ],
+  "display_name": "BLE Session Appliance",
+  "events": [
+    {
+      "at": "2026-06-01T12:00:00Z",
+      "device_address": "device-1",
+      "device_name": "redacted SessionThing",
+      "id": "adv-primary",
+      "rssi": -42,
+      "service_uuids": [
+        "fd00"
+      ],
+      "type": "advertisement"
+    },
+    {
+      "at": "2026-06-01T12:00:01Z",
+      "characteristic_uuid": "fd01",
+      "id": "svc-control",
+      "properties": [
+        "write"
+      ],
+      "service_uuid": "fd00",
+      "type": "service_discovery"
+    },
+    {
+      "at": "2026-06-01T12:00:01Z",
+      "characteristic_uuid": "fd02",
+      "id": "svc-status",
+      "properties": [
+        "notify"
+      ],
+      "service_uuid": "fd00",
+      "type": "service_discovery"
+    },
+    {
+      "at": "2026-06-01T12:00:05Z",
+      "characteristic_uuid": "fd01",
+      "id": "write-start",
+      "service_uuid": "fd00",
+      "type": "write",
+      "value_hex": "a001"
+    },
+    {
+      "at": "2026-06-01T12:00:06Z",
+      "characteristic_uuid": "fd02",
+      "id": "notify-running",
+      "service_uuid": "fd00",
+      "type": "notification",
+      "value_hex": "01"
+    },
+    {
+      "at": "2026-06-01T12:00:07Z",
+      "characteristic_uuid": "fd02",
+      "id": "notify-running-2",
+      "service_uuid": "fd00",
+      "type": "notification",
+      "value_hex": "02"
+    }
+  ],
+  "identity": {
+    "address_policy": "stable",
+    "advertised_names": [
+      "redacted SessionThing"
+    ],
+    "match_strength": "strong"
+  },
+  "name": "ble-session-appliance"
+}

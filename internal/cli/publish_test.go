@@ -587,7 +587,7 @@ func TestRunGoVulnCheckUsesPinnedDefaultCommandWithModuleToolchain(t *testing.T)
 		t.Skip("fake shell go binary is Unix-only")
 	}
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.3\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.4\n"), 0o644))
 
 	fakeBin := t.TempDir()
 	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
@@ -609,16 +609,16 @@ exit 42
 
 	calls, err := os.ReadFile(callsPath)
 	require.NoError(t, err)
-	assert.Equal(t, "args=run "+govulncheck.ToolModule+" ./...\ntoolchain=go1.26.3\n", string(calls))
+	assert.Equal(t, "args=run "+govulncheck.ToolModule+" ./...\ntoolchain=go1.26.4\n", string(calls))
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
 }
 
 func TestGovulncheckToolchainEnvPrefersToolchainDirective(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.25.0\ntoolchain go1.26.3\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.25.0\ntoolchain go1.26.4\n"), 0o644))
 
-	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.3"}, govulncheckToolchainEnv(dir))
+	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.4"}, govulncheckToolchainEnv(dir))
 }
 
 func TestGovulncheckToolchainEnvIgnoresLanguageOnlyGoDirective(t *testing.T) {

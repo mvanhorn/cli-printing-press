@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -110,6 +111,15 @@ const (
 	DimAuthProtocol          = "auth_protocol"
 	DimSyncCorrectness       = "sync_correctness"
 	DimLiveAPIVerification   = "live_api_verification"
+	// HTTP-API-shaped dimensions that do not apply to a BLE device CLI (no remote
+	// API, no sync->sql->search pipeline, no response cache). Marked N/A for
+	// device CLIs so they drop from the denominator instead of scoring a false 0.
+	DimLocalCache            = "local_cache"
+	DimVision                = "vision"
+	DimWorkflows             = "workflows"
+	DimInsight               = "insight"
+	DimAgentWorkflow         = "agent_workflow_readiness"
+	DimDataPipelineIntegrity = "data_pipeline_integrity"
 )
 
 // CompScore compares our score against a competitor on a single dimension.
@@ -142,25 +152,35 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 }
 
 func scoreScorecardDimensions(sc *Scorecard, outputDir, specPath string, verifyReport *VerifyReport) error {
-	scoreInfrastructureDimensions(sc, outputDir)
+	isDevice := isDeviceBackedCLIDir(outputDir) || looksLikeDeviceSpecFile(specPath)
+	scoreInfrastructureDimensions(sc, outputDir, isDevice)
 	spec, err := scoreSpecDimensions(sc, outputDir, specPath)
 	if err != nil {
 		return err
 	}
-	scoreDomainDimensions(sc, outputDir, spec, verifyReport)
+	scoreDomainDimensions(sc, outputDir, spec, verifyReport, isDevice)
 	return nil
 }
 
-func scoreInfrastructureDimensions(sc *Scorecard, outputDir string) {
+func scoreInfrastructureDimensions(sc *Scorecard, outputDir string, isDevice bool) {
 	reachableInternalFiles := scorecardReachableInternalFiles(outputDir)
 	reachableInternalContent := scorecardContentsFromFiles(reachableInternalFiles)
-	sc.Steinberger.OutputModes = scoreOutputModesWithSurface(outputDir, reachableInternalContent, reachableInternalFiles)
 	sc.Steinberger.Auth = scoreAuth(outputDir)
-	sc.Steinberger.ErrorHandling = scoreErrorHandlingFromSurface(reachableInternalContent)
-	sc.Steinberger.TerminalUX = scoreTerminalUXWithSurface(outputDir, reachableInternalContent)
-	sc.Steinberger.README = scoreREADME(outputDir)
-	sc.Steinberger.Doctor = scoreDoctor(outputDir)
-	sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
+	if isDevice {
+		sc.Steinberger.OutputModes = scoreOutputModesDevice(outputDir)
+		sc.Steinberger.ErrorHandling = scoreErrorHandlingDevice(reachableInternalContent)
+		sc.Steinberger.TerminalUX = scoreTerminalUXDevice(outputDir)
+		sc.Steinberger.README = scoreREADMEDevice(outputDir)
+		sc.Steinberger.Doctor = scoreDoctorDevice(outputDir)
+		sc.Steinberger.AgentNative = scoreAgentNativeDevice(outputDir)
+	} else {
+		sc.Steinberger.OutputModes = scoreOutputModesWithSurface(outputDir, reachableInternalContent, reachableInternalFiles)
+		sc.Steinberger.ErrorHandling = scoreErrorHandlingFromSurface(reachableInternalContent)
+		sc.Steinberger.TerminalUX = scoreTerminalUXWithSurface(outputDir, reachableInternalContent)
+		sc.Steinberger.README = scoreREADME(outputDir)
+		sc.Steinberger.Doctor = scoreDoctor(outputDir)
+		sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
+	}
 	sc.Steinberger.MCPQuality = scoreMCPQuality(outputDir)
 	mcpDescScore, mcpDescScored := scoreMCPDescriptionQuality(outputDir)
 	recordOptionalScore(sc, &sc.Steinberger.MCPDescriptionQuality, DimMCPDescriptionQuality, mcpDescScore, mcpDescScored)
@@ -172,14 +192,26 @@ func scoreInfrastructureDimensions(sc *Scorecard, outputDir string) {
 	recordOptionalScore(sc, &sc.Steinberger.MCPToolDesign, DimMCPToolDesign, toolDesignScore, toolDesignScored)
 	strategyScore, strategyScored := scoreMCPSurfaceStrategy(outputDir)
 	recordOptionalScore(sc, &sc.Steinberger.MCPSurfaceStrategy, DimMCPSurfaceStrategy, strategyScore, strategyScored)
-	sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
 	cacheFreshnessScore, cacheFreshnessScored := scoreCacheFreshness(outputDir)
 	recordOptionalScore(sc, &sc.Steinberger.CacheFreshness, DimCacheFreshness, cacheFreshnessScore, cacheFreshnessScored)
-	sc.Steinberger.Breadth = scoreBreadth(outputDir)
-	sc.Steinberger.Vision = scoreVision(outputDir)
-	sc.Steinberger.Workflows = scoreWorkflows(outputDir)
-	sc.Steinberger.Insight = scoreInsight(outputDir)
-	sc.Steinberger.AgentWorkflow = scoreAgentWorkflow(outputDir)
+	if isDevice {
+		sc.Steinberger.Breadth = scoreBreadthDevice(outputDir)
+	} else {
+		sc.Steinberger.Breadth = scoreBreadth(outputDir)
+	}
+	if isDevice {
+		// A BLE device CLI wraps no remote API and has no HTTP-shaped local cache,
+		// sync-driven datastore, or multi-source aggregation surface. Mark these
+		// N/A so they drop from the denominator rather than scoring a false 0.
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions,
+			DimLocalCache, DimVision, DimWorkflows, DimInsight, DimAgentWorkflow)
+	} else {
+		sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
+		sc.Steinberger.Vision = scoreVision(outputDir)
+		sc.Steinberger.Workflows = scoreWorkflows(outputDir)
+		sc.Steinberger.Insight = scoreInsight(outputDir)
+		sc.Steinberger.AgentWorkflow = scoreAgentWorkflow(outputDir)
+	}
 }
 
 func recordOptionalScore(sc *Scorecard, target *int, dimension string, score int, scored bool) {
@@ -191,6 +223,10 @@ func recordOptionalScore(sc *Scorecard, target *int, dimension string, score int
 }
 
 func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpecInfo, error) {
+	if isDeviceBackedCLIDir(outputDir) || looksLikeDeviceSpecFile(specPath) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
+		return nil, nil
+	}
 	if isLocalDatastoreCLIDir(outputDir) {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
 		return nil, nil
@@ -227,14 +263,24 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 	return spec, nil
 }
 
-func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInfo, verifyReport *VerifyReport) {
-	sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
-	if isLocalDatastoreCLIDir(outputDir) {
-		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimSyncCorrectness)
+func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInfo, verifyReport *VerifyReport, isDevice bool) {
+	if isDevice {
+		// BLE device CLIs have no sync->sql->search data pipeline; the HTTP-shaped
+		// pipeline and sync checks don't apply. Mark N/A rather than scoring 0.
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
 	} else {
-		sc.Steinberger.SyncCorrectness = scoreSyncCorrectness(outputDir)
+		sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
+		if isLocalDatastoreCLIDir(outputDir) {
+			sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimSyncCorrectness)
+		} else {
+			sc.Steinberger.SyncCorrectness = scoreSyncCorrectness(outputDir)
+		}
 	}
-	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir, spec)
+	if isDevice {
+		sc.Steinberger.TypeFidelity = scoreTypeFidelityDevice(outputDir)
+	} else {
+		sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir, spec)
+	}
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
 
 	// LiveAPIVerification is scored only when verify ran in live mode (real
@@ -613,6 +659,226 @@ func hasLocalDatastoreReachability(content string) bool {
 		strings.Contains(lower, ".query(") ||
 		strings.Contains(lower, ".queryrow(") ||
 		strings.Contains(lower, ".exec(")
+}
+
+// scoreDoctorDevice scores a BLE device CLI's doctor command. Device doctors
+// live in any cli file (not a dedicated doctor.go) and check BLE reachability,
+// build/verify state, and device metadata rather than HTTP auth/connectivity.
+// It reads the whole cli package directly because the doctor command may sit in
+// a file the HTTP-shaped reachability surface does not include.
+func scoreDoctorDevice(dir string) int {
+	joined := deviceCLIContent(dir)
+	if !strings.Contains(joined, `"doctor"`) {
+		return 0
+	}
+	lower := strings.ToLower(joined)
+	score := 2 // doctor command present
+	if hasDeviceReachability(joined) {
+		score += 2 // probes whether the device is reachable
+	}
+	if strings.Contains(lower, "verify") || strings.Contains(lower, "dogfood") || strings.Contains(lower, "compiled") {
+		score += 2 // reports build / verify-mode state
+	}
+	if strings.Contains(lower, "address") || strings.Contains(lower, "config") {
+		score += 2 // device address / config handling
+	}
+	if strings.Contains(lower, "capabilit") || strings.Contains(lower, "serviceuuid") || strings.Contains(lower, "service_uuid") {
+		score += 2 // surfaces device/service metadata
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func hasDeviceReachability(content string) bool {
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, ".scan(") ||
+		strings.Contains(lower, "reachable") ||
+		strings.Contains(lower, "available()")
+}
+
+// scoreErrorHandlingDevice scores error handling for a BLE device CLI. Device
+// errors are protocol- and safety-shaped (out-of-range inputs, "not found",
+// "pass --live", confirmation gating) rather than HTTP status codes.
+func scoreErrorHandlingDevice(surfaceContent []string) int {
+	score := 0
+	if countAcross(surfaceContent, "code:") >= 1 || containsAnyInAny(surfaceContent, "pp:typed-exit-codes") {
+		score += 2 // typed / documented exit codes
+	}
+	if containsAnyInAny(surfaceContent, "out of range", "not found", "must be") {
+		score += 2 // specific, input-naming validation errors
+	}
+	if containsAnyInAny(surfaceContent, "%w") {
+		score += 2 // wraps underlying errors for propagation
+	}
+	if containsAnyInAny(surfaceContent, "pass --live", "wp_live", "ErrLiveUnavailable", "official", "--confirm") {
+		score += 3 // actionable device/safety remediation guidance
+	}
+	if containsActionableDoctorSuggestion(surfaceContent) {
+		score += 1
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+// The scorers below grade the HTTP-shaped Steinberger dimensions on a BLE device
+// CLI's actual shape. The HTTP variants key off structure a device CLI does not
+// have -- separate per-command files, HTTP README sections, endpoint counts, API
+// response types -- and so score a healthy device CLI a false 0. A device CLI
+// keeps its commands in root.go, outputs --json/--agent + text, ships device
+// README sections, and exposes its agent surface via the MCP server.
+
+func deviceCLIContent(dir string) string {
+	return readAllGoFiles(filepath.Join(dir, "internal", "cli"))
+}
+
+func scoreOutputModesDevice(dir string) int {
+	cli := deviceCLIContent(dir)
+	score := 0
+	if strings.Contains(cli, `"json"`) {
+		score += 3 // structured machine output
+	}
+	if strings.Contains(cli, `"agent"`) {
+		score += 2 // agent-friendly JSON alias
+	}
+	if strings.Contains(cli, "writeJSON(") {
+		score += 3 // per-command JSON emission
+	}
+	if strings.Contains(cli, "OutOrStdout()") {
+		score += 2 // human-readable text output
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreTerminalUXDevice(dir string) int {
+	cli := deviceCLIContent(dir)
+	score := 0
+	if strings.Contains(cli, "OutOrStdout()") {
+		score += 3 // human-readable text output
+	}
+	if strings.Contains(cli, `"json"`) {
+		score += 2 // structured alternative for non-TTY use
+	}
+	switch shortCount := strings.Count(cli, "Short:"); {
+	case shortCount >= 4:
+		score += 3 // most commands carry a meaningful one-line description
+	case shortCount >= 2:
+		score += 1
+	}
+	if strings.Contains(cli, "NO_COLOR") || strings.Contains(cli, "IsTerminal") {
+		score += 2 // optional color / TTY awareness
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreREADMEDevice(dir string) int {
+	content := readFileContent(filepath.Join(dir, "README.md"))
+	score := 0
+	for _, section := range []string{"## Commands", "## Live control", "## MCP server"} {
+		if strings.Contains(content, section) {
+			score += 2
+		}
+	}
+	if strings.Contains(content, "-tags ble_live") {
+		score += 1 // documents the live build
+	}
+	if strings.Contains(content, "capabilities") {
+		score += 1 // points at the capability/safety surface
+	}
+	if strings.Contains(content, "device-native") || strings.Contains(content, "BLE device spec") {
+		score += 1
+	}
+	if len(content) >= 400 {
+		score += 1
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreAgentNativeDevice(dir string) int {
+	cli := deviceCLIContent(dir)
+	score := 0
+	if strings.Contains(cli, `"json"`) {
+		score += 2
+	}
+	if strings.Contains(cli, `"agent"`) {
+		score += 2
+	}
+	if strings.Contains(cli, "dry-run") {
+		score += 1
+	}
+	// Agent-native parity: an MCP server mirrors the command surface as tools.
+	if _, err := os.Stat(filepath.Join(dir, "internal", "mcp")); err == nil {
+		score += 3
+	}
+	if strings.Contains(cli, `"capabilities"`) {
+		score += 1 // machine-readable capability + safety discovery
+	}
+	if !strings.Contains(cli, "bufio.NewScanner(os.Stdin)") && !strings.Contains(cli, "ReadString(") {
+		score += 1 // non-interactive
+	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreBreadthDevice(dir string) int {
+	// Count registered commands across the cli package (generated built-ins,
+	// generated device commands, and hand-authored novel commands) plus telemetry
+	// fields -- breadth scales with how much of the device the CLI exposes.
+	commands := strings.Count(deviceCLIContent(dir), "AddCommand(")
+	telemetry := strings.Count(readFileContent(filepath.Join(dir, "internal", "device", "spec.go")), "SourceCharacteristicUUID:")
+	switch total := commands + telemetry; {
+	case total >= 14:
+		return 10
+	case total >= 10:
+		return 8
+	case total >= 7:
+		return 6
+	case total >= 5:
+		return 4
+	case total >= 3:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func scoreTypeFidelityDevice(dir string) int {
+	spec := readFileContent(filepath.Join(dir, "internal", "device", "spec.go"))
+	transport := readFileContent(filepath.Join(dir, "internal", "device", "transport.go"))
+	score := 0
+	// Device tier 2 removes HTTP-only dimensions, leaving Type Fidelity and
+	// Dead Code as the ten remaining points. Keep this scorer on the same
+	// five-point scale as the generic scorer; Dead Code supplies the other five.
+	if strings.Contains(spec, "type CommandDefinition struct") {
+		score++ // typed command model
+	}
+	if strings.Contains(spec, "type StatusField struct") {
+		score++ // typed telemetry model
+	}
+	if strings.Contains(spec, "type CapabilitySummary struct") {
+		score++ // typed capability summary
+	}
+	if strings.Contains(transport, "type CommandResult struct") {
+		score++ // typed command result
+	}
+	if strings.Contains(spec, `Parameters: []string{"`) {
+		score++ // a command declares typed parameters
+	}
+	return score
 }
 
 func scoreAgentNative(dir string) int {
@@ -1067,7 +1333,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.AgentWorkflow,
 	)
 
-	tier1Max := scorecardTierMax(sc, 200, DimMCPDescriptionQuality, DimMCPTokenEfficiency, DimCacheFreshness, DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy)
+	tier1Max := scorecardTierMax(sc, 200, DimMCPDescriptionQuality, DimMCPTokenEfficiency, DimCacheFreshness, DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy, DimLocalCache, DimVision, DimWorkflows, DimInsight, DimAgentWorkflow)
 	tier1Normalized := 0
 	if tier1Max > 0 {
 		tier1Normalized = (tier1Raw * 50) / tier1Max
@@ -1083,7 +1349,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.LiveAPIVerification,
 	)
 
-	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness)
+	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity)
 	tier2Normalized := 0
 	if tier2Max > 0 {
 		tier2Normalized = (tier2Raw * 50) / tier2Max
@@ -3312,6 +3578,24 @@ func fileExists(path string) bool {
 func isLocalDatastoreCLIDir(dir string) bool {
 	manifest, err := loadCLIManifestForScorecard(dir)
 	return err == nil && manifest.IsLocalDatastore()
+}
+
+func isDeviceBackedCLIDir(dir string) bool {
+	if looksLikeDeviceSpecFile(filepath.Join(dir, "device-spec.yaml")) {
+		return true
+	}
+	if strings.Contains(readFileContent(filepath.Join(dir, "README.md")), "Generated by the Printing Press from a BLE device spec.") {
+		return true
+	}
+	return strings.Contains(readFileContent(filepath.Join(dir, "internal", "device", "spec.go")), `Protocol = "ble"`)
+}
+
+func looksLikeDeviceSpecFile(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	return err == nil && devicespec.LooksLikeDeviceSpec(data)
 }
 
 func hasLocalDatastoreCodeSignal(dir string) bool {

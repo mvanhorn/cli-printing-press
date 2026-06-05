@@ -1,0 +1,13 @@
+ble-opaque-binary/go.mod
+ble-opaque-binary/cmd/ble-opaque-binary-pp-cli/main.go
+ble-opaque-binary/internal/cli/root.go
+ble-opaque-binary/internal/cliutil/verifyenv.go
+ble-opaque-binary/internal/device/spec.go
+ble-opaque-binary/internal/device/transport.go
+ble-opaque-binary/README.md
+ble-opaque-binary/SKILL.md
+ble-opaque-binary/AGENTS.md
+ble-opaque-binary/LICENSE
+ble-opaque-binary/NOTICE
+ble-opaque-binary/.goreleaser.yaml
+ble-opaque-binary/device-spec.yaml

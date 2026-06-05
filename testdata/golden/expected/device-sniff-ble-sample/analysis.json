@@ -1,0 +1,40 @@
+{
+  "command_candidates": [
+    {
+      "evidence_refs": [
+        "action-start",
+        "write-start",
+        "notify-running"
+      ],
+      "name": "start",
+      "summary": "action-start correlated with write-start"
+    }
+  ],
+  "command_discovery": {
+    "guidance_sources": [
+      "action_journal"
+    ],
+    "message": "Command candidates came from guidance evidence and should be replay-validated before printing a control CLI.",
+    "replay_validation_next": true,
+    "status": "guided_candidates",
+    "writable_targets": [
+      "fd01"
+    ]
+  },
+  "device_candidates": [
+    {
+      "address": "device-1",
+      "name": "redacted SessionThing",
+      "rssi": -42,
+      "service_uuids": [
+        "fd00"
+      ]
+    }
+  ],
+  "telemetry_candidates": [
+    {
+      "name": "fd02_notification",
+      "summary": "fd02 emitted changing notification values"
+    }
+  ]
+}

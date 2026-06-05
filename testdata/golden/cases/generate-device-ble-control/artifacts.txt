@@ -1,0 +1,13 @@
+ble-desk-lamp/go.mod
+ble-desk-lamp/cmd/ble-desk-lamp-pp-cli/main.go
+ble-desk-lamp/internal/cli/root.go
+ble-desk-lamp/internal/cliutil/verifyenv.go
+ble-desk-lamp/internal/device/spec.go
+ble-desk-lamp/internal/device/transport.go
+ble-desk-lamp/README.md
+ble-desk-lamp/SKILL.md
+ble-desk-lamp/AGENTS.md
+ble-desk-lamp/LICENSE
+ble-desk-lamp/NOTICE
+ble-desk-lamp/.goreleaser.yaml
+ble-desk-lamp/device-spec.yaml

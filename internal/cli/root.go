@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,11 +10,13 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
@@ -21,6 +24,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
@@ -46,8 +50,13 @@ func Execute() error {
 }
 
 func ExecuteWithName(commandName string) error {
+	// Cancel the command context on interrupt so long-running and hardware-backed
+	// subcommands (device-sniff --live, generate, dogfood) shut down gracefully
+	// rather than relying on the runtime's default kill.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	rootCmd := NewRootCommand(commandName)
-	return rootCmd.Execute()
+	return rootCmd.ExecuteContext(ctx)
 }
 
 func NewRootCommand(commandName string) *cobra.Command {
@@ -78,6 +87,8 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newPrintCmd())
 	rootCmd.AddCommand(newBrowserSniffCmd())
 	rootCmd.AddCommand(newCrowdSniffCmd())
+	rootCmd.AddCommand(newDeviceSniffCmd())
+	rootCmd.AddCommand(newBluetoothSniffCmd())
 	rootCmd.AddCommand(newCatalogCmd())
 	rootCmd.AddCommand(newLibraryCmd())
 	rootCmd.AddCommand(newAuthCmd())
@@ -307,6 +318,75 @@ func newGenerateCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec is required (or use --plan for plan-driven generation)")}
 			}
 
+			var singleSpecData []byte
+			if len(specFiles) == 1 {
+				data, err := readSpec(specFiles[0], refresh, dryRun)
+				if err != nil {
+					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFiles[0], err)}
+				}
+				singleSpecData = data
+				if devicespec.LooksLikeDeviceSpec(data) {
+					deviceSpec, err := devicespec.ParseBytes(data)
+					if err != nil {
+						return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing device spec %s: %w", specFiles[0], err)}
+					}
+					if cliName != "" {
+						deviceSpec.Name = cliName
+					}
+					archivedDeviceSpec, err := archivedDeviceSpecBytes(data, deviceSpec, cliName)
+					if err != nil {
+						return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("serializing device spec %s: %w", specFiles[0], err)}
+					}
+					absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, deviceSpec.Name, force, !dryRun)
+					if err != nil {
+						return err
+					}
+					if dryRun {
+						fmt.Fprintf(os.Stdout, "Would generate %s at %s from BLE device spec %s\n", naming.CLI(deviceSpec.Name), absOut, specFiles[0])
+						return nil
+					}
+					generateResult, err := runGenerateDeviceProject(deviceSpec, absOut, generateProjectOptions{validate: validate, polish: polish})
+					if err != nil {
+						return err
+					}
+					if snapshotDir != "" {
+						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec); err != nil {
+							return err
+						}
+					}
+					if !explicitOutput {
+						derivedDir := deviceSpec.Name
+						currentBase := filepath.Base(absOut)
+						if currentBase != derivedDir {
+							finalPath := filepath.Join(filepath.Dir(absOut), derivedDir)
+							if err := os.Rename(absOut, finalPath); err != nil {
+								fmt.Fprintf(os.Stderr, "warning: could not rename output dir from %s to %s: %v\n", currentBase, derivedDir, err)
+							} else {
+								absOut = finalPath
+							}
+						}
+					}
+					if err := os.WriteFile(filepath.Join(absOut, "device-spec.yaml"), artifacts.RedactArchivedSpecSecrets(archivedDeviceSpec), 0o644); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: could not archive device spec: %v\n", err)
+					}
+					fmt.Fprintf(os.Stderr, "Generated %s at %s (from BLE device spec)\n", deviceSpec.Name, absOut)
+					autoBundleForHost(absOut, os.Stderr)
+					if asJSON {
+						if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
+							"name":       deviceSpec.Name,
+							"output_dir": absOut,
+							"spec_files": specFiles,
+							"validated":  validate,
+							"polished":   generateResult.Polished,
+							"protocol":   deviceSpec.Protocol,
+						}); err != nil {
+							return fmt.Errorf("encoding JSON: %w", err)
+						}
+					}
+					return nil
+				}
+			}
+
 			if maxResources > 0 {
 				openapi.SetMaxResources(maxResources)
 			}
@@ -318,10 +398,16 @@ func newGenerateCmd() *cobra.Command {
 
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
-			for _, specFile := range specFiles {
-				data, err := readSpec(specFile, refresh, dryRun)
-				if err != nil {
-					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFile, err)}
+			for i, specFile := range specFiles {
+				var data []byte
+				var err error
+				if i == 0 && len(specFiles) == 1 && singleSpecData != nil {
+					data = singleSpecData
+				} else {
+					data, err = readSpec(specFile, refresh, dryRun)
+					if err != nil {
+						return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFile, err)}
+					}
 				}
 				specRawBytes = append(specRawBytes, data)
 
@@ -610,6 +696,70 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 		DisplayName:        gen.CatalogDisplayName(),
 		Polished:           runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
 	}, nil
+}
+
+func runGenerateDeviceProject(deviceSpec *devicespec.DeviceSpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
+	gen := generator.NewDevice(deviceSpec, absOut)
+	if err := gen.Generate(); err != nil {
+		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating device project: %w", err)}
+	}
+	if opts.validate {
+		if err := gen.Validate(); err != nil {
+			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated device project: %w", err)}
+		}
+	}
+	return generateProjectResult{
+		DisplayName: deviceSpec.DisplayName,
+		Polished:    runGeneratePolishPass(opts.polish, deviceSpec.Name, absOut),
+	}, nil
+}
+
+func archivedDeviceSpecBytes(source []byte, deviceSpec *devicespec.DeviceSpec, cliName string) ([]byte, error) {
+	if strings.TrimSpace(cliName) == "" {
+		return source, nil
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(source, &doc); err != nil {
+		return nil, err
+	}
+	if err := rewriteTopLevelYAMLScalarLine(&source, &doc, "name", deviceSpec.Name); err != nil {
+		return nil, err
+	}
+	return source, nil
+}
+
+func rewriteTopLevelYAMLScalarLine(source *[]byte, doc *yaml.Node, key, value string) error {
+	if doc == nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("device spec archive must be a YAML mapping")
+	}
+	mapping := doc.Content[0]
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keyNode := mapping.Content[i]
+		valueNode := mapping.Content[i+1]
+		if keyNode.Value != key {
+			continue
+		}
+		lines := strings.SplitAfter(string(*source), "\n")
+		lineIndex := valueNode.Line - 1
+		if lineIndex < 0 || lineIndex >= len(lines) {
+			return fmt.Errorf("could not locate YAML field %q line", key)
+		}
+		line := lines[lineIndex]
+		prefixEnd := strings.Index(line, ":")
+		if prefixEnd < 0 || strings.TrimSpace(line[:prefixEnd]) != key {
+			return fmt.Errorf("could not rewrite YAML field %q without reformatting", key)
+		}
+		lineEnding := ""
+		if strings.HasSuffix(line, "\n") {
+			lineEnding = "\n"
+			line = strings.TrimSuffix(line, "\n")
+		}
+		lines[lineIndex] = line[:prefixEnd+1] + " " + value + lineEnding
+		*source = []byte(strings.Join(lines, ""))
+		return nil
+	}
+	return fmt.Errorf("device spec archive missing YAML field %q", key)
 }
 
 type generateMCPFlagOverrides struct {
