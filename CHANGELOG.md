@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.21.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.20.1...v4.21.0) (2026-06-05)
+
+
+### Features
+
+* **catalog:** add Plane project-management catalog entry ([#2598](https://github.com/mvanhorn/cli-printing-press/issues/2598)) ([91245f6](https://github.com/mvanhorn/cli-printing-press/commit/91245f67e1cde1c0f319e8d552f4b2fc81524216))
+* **cli:** add BLE device-sniff and device-spec CLI generation ([#2601](https://github.com/mvanhorn/cli-printing-press/issues/2601)) ([4e0e8f8](https://github.com/mvanhorn/cli-printing-press/commit/4e0e8f845aaec9031cb3543aeec8190185d8aa96))
+
+
+### Bug Fixes
+
+* **ci:** bump Go to 1.26.4 to clear GO-2026-5037 / GO-2026-5039 stdlib advisories ([#2612](https://github.com/mvanhorn/cli-printing-press/issues/2612)) ([a4fcff7](https://github.com/mvanhorn/cli-printing-press/commit/a4fcff797bb914fea6e9fd3d8608f0bc661b28f5))
+* **cli:** bump emitted go directive to 1.26.4 ([#2627](https://github.com/mvanhorn/cli-printing-press/issues/2627)) ([a21d796](https://github.com/mvanhorn/cli-printing-press/commit/a21d7969f2decf0efe47cd54cd6099087fe3d56f))
+* **cli:** emit GraphQL-aware import for GraphQL specs, not REST POST ([#2618](https://github.com/mvanhorn/cli-printing-press/issues/2618)) ([7ba6fb0](https://github.com/mvanhorn/cli-printing-press/commit/7ba6fb0af5abd25f445c22b1da5f56476c3c029f))
+* **cli:** emit valid JSON for sync_warning events ([#2643](https://github.com/mvanhorn/cli-printing-press/issues/2643)) ([dec1fc9](https://github.com/mvanhorn/cli-printing-press/commit/dec1fc9336b0b8112381bb1339fcc9f41c663836))
+* **cli:** live dogfood happy-path honors pp:happy-args ([#2642](https://github.com/mvanhorn/cli-printing-press/issues/2642)) ([d2ca5a2](https://github.com/mvanhorn/cli-printing-press/commit/d2ca5a2cb3f31423658314340149d0cb05f2c86a))
+* **cli:** preserve creator attribution on reprint ([#2634](https://github.com/mvanhorn/cli-printing-press/issues/2634)) ([4e261dc](https://github.com/mvanhorn/cli-printing-press/commit/4e261dca6d6e40a447a0a1685de5bc817210676a))
+* **cli:** preserve live dogfood refresh credentials ([#2638](https://github.com/mvanhorn/cli-printing-press/issues/2638)) ([29aba15](https://github.com/mvanhorn/cli-printing-press/commit/29aba15f6bc78f1a38b1a159f5b83fa7b34313d7))
+
 ## [4.20.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.20.0...v4.20.1) (2026-06-01)
 
 
