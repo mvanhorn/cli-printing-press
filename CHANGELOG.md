@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.22.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.22.0...v4.22.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **ci:** raise Mergify max_parallel_checks to 5 and exclude draft PRs ([#2663](https://github.com/mvanhorn/cli-printing-press/issues/2663)) ([842f612](https://github.com/mvanhorn/cli-printing-press/commit/842f6126adf2c07460a7e786a0ff834b19cfbb40))
+
 ## [4.22.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.21.0...v4.22.0) (2026-06-05)
 
 
