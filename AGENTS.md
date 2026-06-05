@@ -127,6 +127,7 @@ Use canonical terms so intent stays unambiguous. In skills and user-facing outpu
 - "publish" -> the publish step (pipeline) unless the public-library workflow is called out explicitly
 - "manifest" -> `tools-manifest.json` unless another manifest is named explicitly
 - "catalog" -> embedded `catalog/` unless "public library catalog" is stated
+- "the CLI" -> a printed CLI, not the generator binary (say "cli-printing-press binary" for the latter)
 See [`CONCEPTS.md`](CONCEPTS.md) for what the domain nouns mean, and [`docs/GLOSSARY.md`](docs/GLOSSARY.md) for naming conventions, the disambiguation defaults above in full, and the implementation reference behind each concept.
 
 ## Attribution: creator + contributors

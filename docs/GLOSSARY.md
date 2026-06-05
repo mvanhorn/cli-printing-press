@@ -17,7 +17,7 @@ Subsystem names are fine alongside the Printing Press name. When skills produce 
 These defaults resolve overloaded words; follow the cross-reference for the full concept.
 
 - "library" → local library (`~/printing-press/library/<api-slug>/`). The public library is always called out explicitly: "public library" or "public library repo." (CONCEPTS: *local library*, *public library*.)
-- "publish" → prefer "the publish step" (pipeline) or "publish to the public library" (skill workflow) when context is not already established. (CONCEPTS: *publish*, under Flagged ambiguities.)
+- "publish" → prefer "the publish step" (the pipeline's publish phase) or "publish to the public library" (the `/printing-press-publish` skill workflow) when context is not already established. (CONCEPTS: *publish*, under Flagged ambiguities.)
 - "manifest" → `tools-manifest.json` (the MCP tool catalog). The other manifests (`manifest.json` for plugin metadata, `.printing-press.json` for provenance) are always called by full name. (See Implementation reference.)
 - "catalog" → the embedded `catalog/` in this repo. The public library's category-organized catalog of finished CLIs is "public library catalog." (CONCEPTS: *catalog*.)
 - "the CLI" → a printed CLI, not the generator binary. Say "cli-printing-press binary" or "generator binary" for the latter. (CONCEPTS: *printed CLI*; below: *the cli-printing-press binary*.)
