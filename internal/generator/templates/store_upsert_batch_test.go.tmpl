@@ -472,11 +472,12 @@ func TestUpsertBatch_Sets{{pascal .Name}}ParentID(t *testing.T) {
 // TestUpsertBatch_{{pascal .Name}}SearchableViaGenericFTS verifies that a
 // dependent-resource row stored via UpsertBatch — the exact path dependent
 // sync uses (upsertResourceBatch -> UpsertBatch) — is reachable through the
-// generic resources_fts index. `search "<term>"` queries that index, and
-// `search "<term>" --type {{.Resource}}` falls through to it for dependents
-// that declare no per-resource FTS5 table, so both surfaces return the row.
-// Regression for issue #2629, which reported dependent resources as silently
-// unsearchable (stored in the typed table but absent from any FTS index).
+// generic resources_fts index via Store.Search. That index is the substrate
+// both `search` surfaces query (the empty-type search directly, and the
+// non-FTS5 `--type {{.Resource}}` fallback), so populating it is the
+// precondition issue #2629 reported missing — dependent resources stored in
+// the typed table but absent from any FTS index. This asserts the store layer
+// where the claimed defect lived; it does not exercise the CLI search wiring.
 func TestUpsertBatch_{{pascal .Name}}SearchableViaGenericFTS(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)
@@ -491,8 +492,15 @@ func TestUpsertBatch_{{pascal .Name}}SearchableViaGenericFTS(t *testing.T) {
 	items := []json.RawMessage{
 		json.RawMessage(`{"id": "search-001", "pp_fts_probe": "` + probe + `"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}, "parent_id": "parent-A"}`),
 	}
-	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
+	stored, _, err := s.UpsertBatch("{{.Resource}}", items)
+	if err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
+	}
+	// Assert the probe row actually landed before searching for it: a PK
+	// extraction miss would leave stored == 0, and the FTS check below would
+	// then fail with a misleading "stored but not searchable" message.
+	if stored != 1 {
+		t.Fatalf("UpsertBatch stored %d rows, want 1 (probe row dropped before the FTS check)", stored)
 	}
 
 	results, err := s.Search(probe, 50)
