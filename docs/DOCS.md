@@ -20,7 +20,7 @@ When an extracted doc's applicability changes, update the inline trigger sentenc
 The extracted developer docs are:
 
 - `docs/GOLDEN.md` — golden harness rubric and fixture conventions
-- `docs/GLOSSARY.md` — full canonical-term table
+- `docs/GLOSSARY.md` — naming conventions, disambiguation defaults, and the implementation reference behind the concepts in `CONCEPTS.md`
 - `docs/RELEASE.md` — release-please / goreleaser flow
 - `docs/ATTRIBUTION.md` — creator + contributors attribution model
 - `docs/CATALOG.md` — catalog validator rationale and wrapper-only shape
