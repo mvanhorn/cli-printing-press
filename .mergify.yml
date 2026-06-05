@@ -20,6 +20,10 @@ queue_rules:
     # skips the bot-owned speculative check branches.
     queue_conditions:
       - base = main
+      # A draft PR can never merge (GitHub blocks it), but a PR converted
+      # back to draft mid-queue keeps its stale Greptile success and would
+      # otherwise hold a speculative-check slot it can never release.
+      - "-draft"
       # All Greptile/human inline review threads must be resolved and no
       # requested-changes review may remain before the PR enters the queue.
       # Greptile Review's check_run going green only reflects the confidence
@@ -89,8 +93,9 @@ merge_queue:
   # Parallel speculation across queued PRs. Mergify creates up to N
   # `mergify/merge-queue/*` draft PRs concurrently and runs CI on each.
   # Free on the OSS plan; the paid feature is `batch_size > 1`, which
-  # groups multiple PRs into one queue position.
-  max_parallel_checks: 3
+  # groups multiple PRs into one queue position. 5 is the OSS-plan
+  # default/ceiling for parallel speculation.
+  max_parallel_checks: 5
   queued_label: queued
   dequeued_label: dequeued
   status_comments: outcomes
