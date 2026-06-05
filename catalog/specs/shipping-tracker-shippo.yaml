@@ -284,10 +284,28 @@ components:
           format: date-time
           nullable: true
         substatus:
-          type: string
+          allOf:
+            - $ref: '#/components/schemas/TrackingSubstatus'
           nullable: true
         location:
           $ref: '#/components/schemas/TrackingLocation'
+
+    TrackingSubstatus:
+      type: object
+      description: Finer-grained classification of the tracking event.
+      properties:
+        code:
+          type: string
+          description: Machine-readable tracking substatus code.
+          example: information_received
+        text:
+          type: string
+          description: Human-readable tracking substatus description.
+          example: Information about the package received.
+        action_required:
+          type: boolean
+          description: Whether the substatus requires action from the shipper or recipient.
+          example: false
 
     TrackingAddress:
       type: object
