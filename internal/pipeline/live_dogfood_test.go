@@ -369,6 +369,328 @@ func TestRunLiveDogfoodAuthenticatedLocalDatastoreRetainsScopedHome(t *testing.T
 	assert.Equal(t, "PASS", report.Verdict, report.Tests)
 }
 
+func TestRunLiveDogfoodMirrorsConfigAndCookieCredentialsIntoScopedHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const (
+		binaryName         = "fixture-pp-cli"
+		configCredential   = "real-config-token"
+		cookieCredential   = "real-cookie-token"
+		configOriginalBody = "auth_header = \"" + configCredential + "\"\n"
+		cookieOriginalBody = `[{"name":"session","value":"` + cookieCredential + `","domain":".example.test","path":"/","secure":true}]`
+	)
+
+	operatorHome := t.TempDir()
+	t.Setenv("HOME", operatorHome)
+	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
+	cookiePath := filepath.Join(operatorHome, ".local", "share", binaryName, "cookies.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(cookiePath), 0o700))
+	require.NoError(t, os.WriteFile(configPath, []byte(configOriginalBody), 0o600))
+	require.NoError(t, os.WriteFile(cookiePath, []byte(cookieOriginalBody), 0o600))
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		RunID:         "run-live-dogfood",
+		AuthType:      "composed",
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  config_path="$HOME/.config/fixture-pp-cli/config.toml"
+  cookie_path="$HOME/.local/share/fixture-pp-cli/cookies.json"
+  if ! grep -q 'real-config-token' "$config_path"; then
+    echo "missing mirrored config credential" >&2
+    exit 1
+  fi
+  if ! grep -q 'real-cookie-token' "$cookie_path"; then
+    echo "missing mirrored cookie credential" >&2
+    exit 1
+  fi
+  printf 'auth_header = "real-config-token-mutated"\n' > "$config_path"
+  printf '[{"name":"session","value":"real-cookie-token-mutated","domain":".example.test","path":"/","secure":true}]' > "$cookie_path"
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	happy := findResultByCommandKind(report, "account show", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	jsonResult := findResultByCommandKind(report, "account show", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+
+	gotConfig, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, configOriginalBody, string(gotConfig), "live dogfood must not mutate the operator's real config")
+	gotCookies, err := os.ReadFile(cookiePath)
+	require.NoError(t, err)
+	assert.Equal(t, cookieOriginalBody, string(gotCookies), "live dogfood must not mutate the operator's real cookies")
+}
+
+func TestRunLiveDogfoodSyncsOAuth2RefreshConfigBackToOperatorHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const (
+		binaryName         = "fixture-pp-cli"
+		configOriginalBody = "access_token = \"expired-access\"\nrefresh_token = \"old-refresh\"\n"
+		configRotatedBody  = "access_token = \"fresh-access\"\nrefresh_token = \"new-refresh\"\n"
+	)
+
+	operatorHome := t.TempDir()
+	t.Setenv("HOME", operatorHome)
+	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+	require.NoError(t, os.WriteFile(configPath, []byte(configOriginalBody), 0o600))
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		RunID:         "run-live-dogfood",
+		AuthType:      "oauth2_refresh",
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  config_path="$HOME/.config/fixture-pp-cli/config.toml"
+  if ! grep -Eq 'old-refresh|new-refresh' "$config_path"; then
+    echo "missing mirrored refresh token" >&2
+    exit 1
+  fi
+  printf 'access_token = "fresh-access"\nrefresh_token = "new-refresh"\n' > "$config_path"
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	gotConfig, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, configRotatedBody, string(gotConfig), "rotated OAuth refresh tokens must survive live dogfood cleanup")
+}
+
+func TestRunLiveDogfoodSyncBackConflictStillReturnsReportAndWritesAcceptance(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const (
+		binaryName         = "fixture-pp-cli"
+		configOriginalBody = "access_token = \"expired-access\"\nrefresh_token = \"old-refresh\"\n"
+		configRotatedBody  = "access_token = \"fresh-access\"\nrefresh_token = \"new-refresh\"\n"
+		configConflictBody = "access_token = \"operator-edit\"\nrefresh_token = \"operator-refresh\"\n"
+	)
+
+	operatorHome := t.TempDir()
+	t.Setenv("HOME", operatorHome)
+	configPath := filepath.Join(operatorHome, ".config", binaryName, "config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+	require.NoError(t, os.WriteFile(configPath, []byte(configOriginalBody), 0o600))
+	t.Setenv("OPERATOR_CONFIG_PATH", configPath)
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		RunID:         "run-live-dogfood",
+		AuthType:      "oauth2_refresh",
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  config_path="$HOME/.config/fixture-pp-cli/config.toml"
+  if ! grep -Eq 'old-refresh|new-refresh' "$config_path"; then
+    echo "missing mirrored refresh token" >&2
+    exit 1
+  fi
+  printf 'access_token = "operator-edit"\nrefresh_token = "operator-refresh"\n' > "$OPERATOR_CONFIG_PATH"
+  printf 'access_token = "fresh-access"\nrefresh_token = "new-refresh"\n' > "$config_path"
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		WriteAcceptancePath: markerPath,
+	})
+	require.Error(t, err)
+	require.NotNil(t, report, "sync-back errors must not discard the completed live dogfood report")
+	assert.Contains(t, err.Error(), "operator config changed during dogfood")
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	gotConfig, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, configConflictBody, string(gotConfig), "sync-back conflict must preserve the operator edit")
+
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err, "sync-back errors must not suppress the Phase 5 acceptance marker")
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "pass", marker.Status)
+	assert.Equal(t, report.MatrixSize, marker.MatrixSize)
+	assert.Equal(t, report.Passed, marker.TestsPassed)
+}
+
+func TestSyncLiveDogfoodCredentialMirrorsRejectsOperatorConfigConflict(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "operator", "config.toml")
+	dst := filepath.Join(dir, "scoped", "config.toml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(src), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(dst), 0o700))
+	require.NoError(t, os.WriteFile(src, []byte("refresh_token = \"old\"\n"), 0o600))
+	require.NoError(t, os.WriteFile(dst, []byte("refresh_token = \"new\"\n"), 0o600))
+
+	mirror := liveDogfoodCredentialMirror{
+		src:      src,
+		dst:      dst,
+		original: []byte("refresh_token = \"original\"\n"),
+		mode:     0o600,
+	}
+
+	err := syncLiveDogfoodCredentialMirrors([]liveDogfoodCredentialMirror{mirror})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "operator config changed during dogfood")
+
+	got, readErr := os.ReadFile(src)
+	require.NoError(t, readErr)
+	assert.Equal(t, "refresh_token = \"old\"\n", string(got))
+}
+
 func TestRunLiveDogfoodProcessRetriesTransientAuth401(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
