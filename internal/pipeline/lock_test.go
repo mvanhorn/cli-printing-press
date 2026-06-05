@@ -453,6 +453,7 @@ func TestPromoteWorkingCLI_RestoresPermanentCreatorFromExistingLibrary(t *testin
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "README.md"), []byte("# Test CLI\n\nCreated by [@tmchow](https://github.com/tmchow) (Trevin Chow).\n\n## Install\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "SKILL.md"), []byte("---\nname: pp-test\nauthor: \"Trevin Chow\"\n---\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(workDir, "NOTICE"), []byte("test-pp-cli\nCopyright 2026 Trevin Chow and contributors\nCreated by Trevin Chow (@tmchow).\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "LICENSE"), []byte("Apache License\nCopyright 2026 Trevin Chow\nCopyright 2026 Trevin Chow and contributors\n"), 0o644))
 	require.NoError(t, WriteCLIManifest(workDir, CLIManifest{
 		SchemaVersion: CurrentCLIManifestSchemaVersion,
 		APIName:       "test",
@@ -498,6 +499,12 @@ func TestPromoteWorkingCLI_RestoresPermanentCreatorFromExistingLibrary(t *testin
 	assert.Contains(t, string(notice), "Created by Matt Van Horn (@mvanhorn).")
 	assert.Contains(t, string(notice), "Trevin Chow (@tmchow)")
 	assert.Contains(t, string(notice), "Jane Doe (@jane-doe)")
+
+	license, err := os.ReadFile(filepath.Join(libDir, "LICENSE"))
+	require.NoError(t, err)
+	assert.Contains(t, string(license), "Copyright 2026 Matt Van Horn\n")
+	assert.Contains(t, string(license), "Copyright 2026 Matt Van Horn and contributors\n")
+	assert.NotContains(t, string(license), "Copyright 2026 Trevin Chow")
 }
 
 func TestPromoteWorkingCLI_EmptyWorkingDir(t *testing.T) {

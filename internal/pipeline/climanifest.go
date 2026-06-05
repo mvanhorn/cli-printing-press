@@ -285,7 +285,7 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 			return false, fmt.Errorf("parsing creator: %w", err)
 		}
 	}
-	if samePerson(p, creator) {
+	if spec.SamePerson(p, creator) {
 		return false, nil
 	}
 
@@ -296,7 +296,7 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 		}
 	}
 	for _, c := range contributors {
-		if samePerson(p, c) {
+		if spec.SamePerson(p, c) {
 			return false, nil
 		}
 	}
@@ -320,21 +320,6 @@ func AppendContributor(dir string, p spec.Person, front bool) (bool, error) {
 		return false, fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	return true, nil
-}
-
-// samePerson reports whether two attribution entries are the same human.
-// Handles are the primary key (case-insensitive); when a handle is absent on
-// both sides — e.g. a contributor recorded with only a display name — it falls
-// back to a name match so a handle-less entry still dedupes instead of
-// re-appending on every call.
-func samePerson(a, b spec.Person) bool {
-	if a.Handle != "" && b.Handle != "" {
-		return strings.EqualFold(strings.TrimSpace(a.Handle), strings.TrimSpace(b.Handle))
-	}
-	if a.Handle == "" && b.Handle == "" && a.Name != "" {
-		return strings.EqualFold(strings.TrimSpace(a.Name), strings.TrimSpace(b.Name))
-	}
-	return false
 }
 
 // writeFileAtomic writes data to a sibling temp file and renames it over path,

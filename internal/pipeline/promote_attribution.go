@@ -29,7 +29,7 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 	if err != nil {
 		return fmt.Errorf("reading staged manifest: %w", err)
 	}
-	if staged.Creator == nil || staged.Creator.IsZero() || samePerson(*staged.Creator, *existing.Creator) {
+	if staged.Creator == nil || staged.Creator.IsZero() || spec.SamePerson(*staged.Creator, *existing.Creator) {
 		return nil
 	}
 
@@ -49,7 +49,7 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 	if staged.PrinterName == "" {
 		staged.PrinterName = restoredCreator.Name
 	}
-	staged.Contributors = prependContributor(existing.Contributors, priorCreator)
+	staged.Contributors = spec.PrependContributor(existing.Contributors, priorCreator)
 
 	if err := rewriteGeneratedAttribution(stagingDir, priorCreator, restoredCreator, priorContributors, staged.Contributors); err != nil {
 		return err
@@ -58,22 +58,6 @@ func restorePermanentCreatorForPromote(stagingDir, libraryDir, apiName string) e
 		return err
 	}
 	return nil
-}
-
-func prependContributor(contributors []spec.Person, p spec.Person) []spec.Person {
-	p = p.Clean()
-	if p.IsZero() {
-		return append([]spec.Person(nil), contributors...)
-	}
-	for _, c := range contributors {
-		if samePerson(p, c) {
-			return append([]spec.Person(nil), contributors...)
-		}
-	}
-	out := make([]spec.Person, 0, len(contributors)+1)
-	out = append(out, p)
-	out = append(out, contributors...)
-	return out
 }
 
 func rewriteGeneratedAttribution(dir string, oldCreator, newCreator spec.Person, oldContributors, newContributors []spec.Person) error {
@@ -126,7 +110,7 @@ func replaceNoPeriodCopyright(content, oldOwner, newOwner string) string {
 		return content
 	}
 	escapedNew := strings.ReplaceAll(newOwner, "$", "$$")
-	re := regexp.MustCompile(`(?m)^(\s*Copyright\s+\d+\s+)` + regexp.QuoteMeta(oldOwner) + `( and contributors)$`)
+	re := regexp.MustCompile(`(?m)^(\s*Copyright\s+\d+\s+)` + regexp.QuoteMeta(oldOwner) + `( and contributors)?$`)
 	return re.ReplaceAllString(content, "${1}"+escapedNew+"${2}")
 }
 

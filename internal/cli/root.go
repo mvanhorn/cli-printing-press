@@ -2310,31 +2310,11 @@ func applyLibraryAttributionForGenerate(apiSpec *spec.APISpec, reprintContributo
 	if apiSpec.PrinterName == "" {
 		apiSpec.PrinterName = creator.Name
 	}
-	apiSpec.Contributors = prependGenerateContributor(manifest.Contributors, reprintContributor, creator)
-}
-
-func prependGenerateContributor(contributors []spec.Person, p, creator spec.Person) []spec.Person {
-	out := append([]spec.Person(nil), contributors...)
-	p = p.Clean()
-	if p.IsZero() || sameGeneratePerson(p, creator) {
-		return out
+	if spec.SamePerson(reprintContributor, creator) {
+		apiSpec.Contributors = append([]spec.Person(nil), manifest.Contributors...)
+	} else {
+		apiSpec.Contributors = spec.PrependContributor(manifest.Contributors, reprintContributor)
 	}
-	for _, c := range out {
-		if sameGeneratePerson(p, c) {
-			return out
-		}
-	}
-	return append([]spec.Person{p}, out...)
-}
-
-func sameGeneratePerson(a, b spec.Person) bool {
-	if a.Handle != "" && b.Handle != "" {
-		return strings.EqualFold(strings.TrimSpace(a.Handle), strings.TrimSpace(b.Handle))
-	}
-	if a.Handle == "" && b.Handle == "" && a.Name != "" {
-		return strings.EqualFold(strings.TrimSpace(a.Name), strings.TrimSpace(b.Name))
-	}
-	return false
 }
 
 func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
