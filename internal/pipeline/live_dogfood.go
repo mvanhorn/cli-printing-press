@@ -560,6 +560,13 @@ func findListCompanion(candidates []liveDogfoodCommand) *liveDogfoodCommand {
 //   - (nil, true, reason)    — chain broke; caller must skip happy_path + json_fidelity
 //   - (happyArgs, false, "") — no positionals at all; pass-through unchanged
 func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, ctx resolveCtx) ([]string, bool, string) {
+	// pp:happy-args already supplies real positional values, so the args are
+	// authoritative — skip placeholder re-resolution, which would otherwise
+	// overwrite them via the list companion or skip the command when no
+	// companion is reachable.
+	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) != "" {
+		return happyArgs, false, ""
+	}
 	placeholders := extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))
 	if len(placeholders) == 0 {
 		return happyArgs, false, ""
@@ -1372,6 +1379,20 @@ func fileExistsRelativeTo(p, cliDir string) bool {
 }
 
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
+	// pp:happy-args supplies real happy-path args, overriding the Example-derived
+	// placeholders (e.g. "--ids example-value") that strict upstream validators
+	// reject with HTTP 400. Same `;`-separated `--flag=value` / `<name>=value`
+	// grammar the runtime layer uses (parseHappyArgsAnnotation), so a single
+	// annotation drives both surfaces.
+	if raw := strings.TrimSpace(command.Annotations[happyArgsAnnotation]); raw != "" {
+		parsed := parseHappyArgsAnnotation(raw)
+		args := append([]string{}, command.Path...)
+		args = append(args, parsed.positionals...)
+		args = append(args, parsed.flags...)
+		if len(args) > len(command.Path) {
+			return args, true
+		}
+	}
 	examples := extractExamplesSection(command.Help)
 	for line := range strings.SplitSeq(examples, "\n") {
 		candidate := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "$"))
