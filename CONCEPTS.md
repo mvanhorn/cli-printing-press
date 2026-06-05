@@ -11,15 +11,20 @@ The generator system this repository *is* — the binary, templates, skills, and
 *Avoid:* "the machine" in user-facing output (skill output, issues, retros, confirmation prompts); it is acceptable only in developer conversation and in-repo code and docs.
 
 ### printed CLI
-A CLI the Printing Press produces for one API. Its installed name carries a `-pp-` infix so it never collides with an official vendor CLI.
+A CLI the Printing Press produces for one target — usually an API, or a physical device when generated from a device spec (a *device-native* CLI). Its installed name carries a `-pp-` infix so it never collides with an official vendor CLI.
 *Avoid:* "the CLI" when the generator itself is meant — that is a distinct thing (see Flagged ambiguities).
 
-A printed CLI *wraps* an API; it never reimplements one. Every command either calls the real endpoint or reads from a local store that a sync populated — hand-rolled responses, canned payloads, and locally synthesized reference data are not printed-CLI behavior.
+A printed CLI *wraps* its target; it never reimplements it. Every command either reaches the real API or device, or reads from a local store that a sync populated — hand-rolled responses, canned payloads, and locally synthesized reference data are not printed-CLI behavior.
 
 ## Inputs
 
 ### spec
-The API contract that drives generation — an official machine-readable description, or one recovered through discovery when none is published. A spec may be declared *synthetic* when the CLI deliberately spans more than a single contract; the system then relaxes the checks that assume one source of truth.
+The contract that drives generation. Most often an API description — official, or recovered through discovery when none is published — but also a *device spec* for a physical device whose control surface is not HTTP-shaped. A spec may be declared *synthetic* when the CLI deliberately spans more than a single contract; the system then relaxes the checks that assume one source of truth.
+
+### device spec
+A spec for a local physical device whose control surface is not HTTP-shaped — the first supported protocol is Bluetooth Low Energy. It preserves device-native evidence (the device's services, characteristics, commands, telemetry, and session needs) rather than forcing the device into REST endpoints.
+
+A device spec also records the device's *protocol contract* — how to talk to it (write acknowledgement, command pacing, connection ceremony, teardown behavior) — its behavioral *quirks*, and the proven *workflow* sequences that operate it end to end. These are confirmed on real hardware during validation, not rediscovered command by command, so generation emits real device control rather than guesswork. Each command also carries a *safety class* describing how risky its effect is.
 
 ### API slug
 The normalized, lowercase identity derived from a spec's title, used as the stable key for an API across the system. The printed CLI's name is built from the slug but is not the same string — do not use the two interchangeably.
@@ -32,13 +37,16 @@ The Printing Press's curated set of API blueprints — vetted, reusable starting
 A catalog entry's provenance class: *official* (a vendor-maintained spec backs it) or *community* (the spec is unofficial or reverse-engineered). It sets how much risk to expect from a generated CLI.
 
 ### discovery
-Recovering a usable spec when no official one exists, by observing how an API is actually used. Its two techniques are browser-sniff and crowd-sniff; they are complementary, and either can also supplement an official spec with endpoints the docs miss.
+Recovering a usable spec when no official one exists, by observing how the target is actually used. For APIs the techniques are browser-sniff and crowd-sniff; for physical devices it is device-sniff. They are complementary, and a sniff can also supplement an official spec with surface the docs miss.
 
 ### browser-sniff
 Discovery from a single live session: real API traffic is captured through the browser and analyzed into a spec. Sees what one authenticated user's client actually calls.
 
 ### crowd-sniff
 Discovery from the community: published unofficial clients and packages are mined to learn undocumented endpoints, auth patterns, and rate limits. Community-sourced rather than session-captured.
+
+### device-sniff
+Discovery for a physical device: captured device evidence (Bluetooth Low Energy, the first supported protocol) is analyzed into a device spec plus a redacted evidence record. The device-world analog of browser-sniff and crowd-sniff; also called *bluetooth-sniff* for the BLE backend.
 
 ## A generation run and its artifacts
 

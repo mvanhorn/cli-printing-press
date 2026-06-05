@@ -28,11 +28,12 @@ On-disk locations for the artifact concepts — local library, manuscripts, runs
 
 Concrete names that back the concepts — kept here, out of `CONCEPTS.md`, because they are file paths, package names, and subcommands that move as the code moves.
 
-Many concepts are also `cli-printing-press` subcommands (`generate`, `verify`, `dogfood`, `scorecard`, `emboss`, `browser-sniff`, `crowd-sniff`, …) or skill workflows (`polish`, `reprint`, `retro`); their *meaning* is in `CONCEPTS.md`. The table below lists names that are **purely** tooling — packages, conventions, diagnostic subcommands, and on-disk files with no standalone domain meaning.
+Many concepts are also `cli-printing-press` subcommands (`generate`, `verify`, `dogfood`, `scorecard`, `emboss`, `browser-sniff`, `crowd-sniff`, `device-sniff` / `bluetooth-sniff`, …) or skill workflows (`polish`, `reprint`, `retro`); their *meaning* is in `CONCEPTS.md`. The table below lists names that are **purely** tooling — packages, conventions, diagnostic subcommands, and on-disk files with no standalone domain meaning.
 
 | Term | What it is |
 |------|------------|
 | **the cli-printing-press binary** | The Go binary built from `cmd/cli-printing-press/`. Commands: `generate`, `verify`, `emboss`, `scorecard`, `publish`, etc. Always say "cli-printing-press binary" or "generator binary" — never just "the CLI." |
+| **ble-probe** | The BLE device-sniff probe surface (scan, inspect, read, subscribe, capture write evidence) packaged as a standalone binary built from `cmd/ble-probe/`, for machines without the full Printing Press checkout. Same surface as `cli-printing-press device-sniff ble`; built via `scripts/build-ble-probe.sh`. |
 | **cliutil** | Generator-owned Go package emitted into every printed CLI at `internal/cliutil/`. Shared helpers for agent-authored novel code: `cliutil.FanoutRun` (aggregation commands), `cliutil.CleanText` (text normalization), `cliutil.IsVerifyEnv()` (the side-effect short-circuit). **Generator-reserved namespace** — do not hand-author here or shadow its exports. |
 | **cobratree** | Generator-owned package at `internal/mcp/cobratree/`. The MCP server walks the printed CLI's Cobra tree at startup and registers shell-out tools for user-facing commands that lack a typed endpoint tool. Classification rules and the framework skip list live in `cobratree/classify.go.tmpl`. **Generator-reserved namespace.** |
 | **canonicalargs** | Subpackage at `internal/canonicalargs/` exporting `Lookup(name) (string, bool)` for cross-domain positional placeholders (`since`, `until`, `tag`, `vertical`). Domain-specific names belong in the spec author's `Param.Default`, not here — "never change the machine for one CLI's edge case." |
