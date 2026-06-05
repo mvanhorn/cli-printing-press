@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.22.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.21.0...v4.22.0) (2026-06-05)
+
+
+### Features
+
+* **catalog:** add shipping tracker blueprint ([#2649](https://github.com/mvanhorn/cli-printing-press/issues/2649)) ([4bfd960](https://github.com/mvanhorn/cli-printing-press/commit/4bfd960b73f96d0ec4c4935ab6059b0426427a47))
+
+
+### Bug Fixes
+
+* **cli:** surface row errors in generated MCP sql tool ([#2650](https://github.com/mvanhorn/cli-printing-press/issues/2650)) ([2af370c](https://github.com/mvanhorn/cli-printing-press/commit/2af370c7525c45be9bff818dc018988a387b9b8b))
+* **generator:** rely on installer default bin directory ([#2654](https://github.com/mvanhorn/cli-printing-press/issues/2654)) ([0a9969c](https://github.com/mvanhorn/cli-printing-press/commit/0a9969cc3c32313a04c6c27cebb36b79b8a0b42a))
+
 ## [4.21.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.20.1...v4.21.0) (2026-06-05)
 
 
