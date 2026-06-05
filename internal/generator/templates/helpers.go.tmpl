@@ -358,9 +358,12 @@ func syncWarningJSON(resource, parent string, status int, reason, message string
 		Event    string `json:"event"`
 		Resource string `json:"resource"`
 		Parent   string `json:"parent,omitempty"`
-		Status   int    `json:"status,omitempty"`
-		Reason   string `json:"reason,omitempty"`
-		Message  string `json:"message,omitempty"`
+		// status/reason/message are always present (matching the prior raw
+		// fmt.Fprintf shape); only parent was conditional. No omitempty so
+		// consumers parsing the event don't see fields disappear on zero values.
+		Status  int    `json:"status"`
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
 	}{
 		Event:    "sync_warning",
 		Resource: resource,
