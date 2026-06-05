@@ -298,19 +298,32 @@ func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
 	assert.Contains(t, content, "<!-- pp-hermes-install-anchor -->",
 		"sweep-tool anchor must be present so retrofit can locate the insertion point")
 
-	// Hermes section: both forms (CLI + chat) use the full
-	// mvanhorn/printing-press-library/cli-skills path.
-	assert.Contains(t, content, "## Install for Hermes")
-	assert.Contains(t, content, "hermes skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
+	hermesStart := strings.Index(content, "## Install for Hermes")
+	require.NotEqual(t, -1, hermesStart, "README must include the Hermes install section")
+	hermesEnd := strings.Index(content[hermesStart:], "## Install for OpenClaw")
+	require.NotEqual(t, -1, hermesEnd, "Hermes section must be followed by the OpenClaw install section")
+	hermesSection := content[hermesStart : hermesStart+hermesEnd]
+
+	openClawStart := hermesStart + hermesEnd
+	openClawEnd := strings.Index(content[openClawStart:], "## Use with Claude Desktop")
+	require.NotEqual(t, -1, openClawEnd, "OpenClaw section must be followed by the Claude Desktop section")
+	openClawSection := content[openClawStart : openClawStart+openClawEnd]
+
+	// Hermes section: install the binary as well as the focused skill; both
+	// skill-install forms use the full mvanhorn/printing-press-library/cli-skills path.
+	assert.Contains(t, hermesSection, "npx -y @mvanhorn/printing-press-library install hermes-install --cli-only",
+		"Hermes section must install the CLI binary before installing the focused skill")
+	assert.NotContains(t, hermesSection, "hermes-install --cli-only --bin-dir",
+		"Hermes binary install should rely on the installer default bin directory unless explicitly overridden")
+	assert.Contains(t, hermesSection, "hermes skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
 		"Hermes CLI form must use mvanhorn/printing-press-library/cli-skills (the short mvanhorn/cli-skills form was wrong)")
-	assert.Contains(t, content, "/skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
+	assert.Contains(t, hermesSection, "/skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
 		"Hermes chat form must use mvanhorn/printing-press-library/cli-skills")
 
 	// OpenClaw section: copyable code-fenced agent instruction.
-	assert.Contains(t, content, "## Install for OpenClaw")
-	assert.Contains(t, content, "npx -y @mvanhorn/printing-press-library install hermes-install --agent openclaw",
+	assert.Contains(t, openClawSection, "npx -y @mvanhorn/printing-press-library install hermes-install --agent openclaw",
 		"OpenClaw form must install both the focused skill and binary using the installer default bin directory")
-	assert.NotContains(t, content, "--agent openclaw --bin-dir",
+	assert.NotContains(t, openClawSection, "--agent openclaw --bin-dir",
 		"OpenClaw form should rely on the installer default bin directory unless explicitly overridden")
 }
 
