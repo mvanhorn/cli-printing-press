@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,11 +112,11 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	if strings.TrimSpace(opts.CLIDir) == "" {
 		return nil, fmt.Errorf("CLIDir is required")
 	}
-	releaseHome, err := scopeLiveDogfoodSubprocessHome(opts.CLIDir)
+	homeScope, err := scopeLiveDogfoodSubprocessHome(opts.CLIDir, opts.BinaryName)
 	if err != nil {
 		return nil, err
 	}
-	defer releaseHome()
+	defer homeScope.release()
 
 	level, err := normalizeLiveDogfoodLevel(opts.Level)
 	if err != nil {
@@ -179,15 +180,209 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 			return nil, err
 		}
 	}
+	if err := homeScope.syncBack(); err != nil {
+		return report, err
+	}
 	return report, nil
 }
 
-func scopeLiveDogfoodSubprocessHome(cliDir string) (func(), error) {
+type liveDogfoodHomeScope struct {
+	release  func()
+	syncBack func() error
+}
+
+func noopLiveDogfoodHomeScope() *liveDogfoodHomeScope {
+	return &liveDogfoodHomeScope{
+		release:  func() {},
+		syncBack: func() error { return nil },
+	}
+}
+
+func scopeLiveDogfoodSubprocessHome(cliDir, binaryName string) (*liveDogfoodHomeScope, error) {
 	manifest, err := ReadCLIManifest(cliDir)
 	if err == nil && manifest.IsLocalDatastore() && strings.EqualFold(strings.TrimSpace(manifest.AuthType), "none") {
-		return func() {}, nil
+		return noopLiveDogfoodHomeScope(), nil
 	}
-	return scopeSubprocessHome()
+	cliName := strings.TrimSpace(manifest.CLIName)
+	if cliName == "" {
+		cliName = strings.TrimSpace(binaryName)
+	}
+	if cliName == "" {
+		cliName = findCLIName(cliDir)
+	}
+	syncConfigBack := strings.EqualFold(strings.TrimSpace(manifest.AuthType), "oauth2_refresh")
+	return scopeSubprocessHomeWithCredentialMirror(cliName, syncConfigBack)
+}
+
+func scopeSubprocessHomeWithCredentialMirror(cliName string, syncConfigBack bool) (*liveDogfoodHomeScope, error) {
+	homeDir, removeHome, err := newScopedConfigHome()
+	if err != nil {
+		return nil, err
+	}
+	mirrors, err := mirrorLiveDogfoodCredentialFiles(homeDir, cliName, syncConfigBack)
+	if err != nil {
+		removeHome()
+		return nil, err
+	}
+	restore := installScopedSubprocessHome(homeDir)
+	return &liveDogfoodHomeScope{
+		release: func() {
+			restore()
+			removeHome()
+		},
+		syncBack: func() error {
+			return syncLiveDogfoodCredentialMirrors(mirrors)
+		},
+	}, nil
+}
+
+type liveDogfoodCredentialMirror struct {
+	src      string
+	dst      string
+	original []byte
+	mode     os.FileMode
+}
+
+func mirrorLiveDogfoodCredentialFiles(scopedHome, cliName string, syncConfigBack bool) ([]liveDogfoodCredentialMirror, error) {
+	cliName = strings.TrimSpace(cliName)
+	if scopedHome == "" || cliName == "" {
+		return nil, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil, nil
+	}
+	paths := []struct {
+		rel      string
+		syncBack bool
+	}{
+		{rel: filepath.Join(".config", cliName, "config.toml"), syncBack: syncConfigBack},
+		{rel: filepath.Join(".config", cliName, "config.json"), syncBack: syncConfigBack},
+		{rel: filepath.Join(".local", "share", cliName, "cookies.json")},
+	}
+	var mirrors []liveDogfoodCredentialMirror
+	for _, path := range paths {
+		src := filepath.Join(home, path.rel)
+		dst := filepath.Join(scopedHome, path.rel)
+		mirror, err := copyLiveDogfoodCredentialFile(src, dst)
+		if err != nil {
+			return nil, err
+		}
+		if path.syncBack && mirror != nil {
+			mirrors = append(mirrors, *mirror)
+		}
+	}
+	return mirrors, nil
+}
+
+func syncLiveDogfoodCredentialMirrors(mirrors []liveDogfoodCredentialMirror) error {
+	for _, mirror := range mirrors {
+		updated, err := os.ReadFile(mirror.dst)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("reading live dogfood credential mirror %s: %w", mirror.dst, err)
+		}
+		if bytes.Equal(updated, mirror.original) {
+			continue
+		}
+		if err := writeLiveDogfoodCredentialFileIfUnchanged(mirror, updated); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeLiveDogfoodCredentialFileIfUnchanged(mirror liveDogfoodCredentialMirror, updated []byte) error {
+	dir := filepath.Dir(mirror.src)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating live dogfood credential mirror directory for %s: %w", mirror.src, err)
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(mirror.src)+".dogfood-sync-*")
+	if err != nil {
+		return fmt.Errorf("creating live dogfood credential sync temp file for %s: %w", mirror.src, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(updated); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing live dogfood credential sync temp file %s: %w", tmpName, err)
+	}
+	if err := tmp.Chmod(mirror.mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting live dogfood credential sync temp file mode %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing live dogfood credential sync temp file %s: %w", tmpName, err)
+	}
+
+	// Best-effort compare-and-swap: generated printed CLIs do not share a file
+	// lock with live dogfood, so a non-cooperating writer can still race after
+	// this final read. The temp-file rename keeps the sync-back atomic and this
+	// last comparison catches operator edits made before live dogfood commits
+	// the rotated credential.
+	current, err := os.ReadFile(mirror.src)
+	if err != nil {
+		return fmt.Errorf("reading operator credential file before sync-back %s: %w", mirror.src, err)
+	}
+	if !bytes.Equal(current, mirror.original) {
+		return fmt.Errorf("refusing to sync refreshed live dogfood credentials to %s: operator config changed during dogfood", mirror.src)
+	}
+	if err := os.Rename(tmpName, mirror.src); err != nil {
+		return fmt.Errorf("writing live dogfood credential file %s: %w", mirror.src, err)
+	}
+	cleanup = false
+	return nil
+}
+
+func writeLiveDogfoodCredentialMirrorFile(dst string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("creating live dogfood credential mirror directory for %s: %w", dst, err)
+	}
+	if err := os.WriteFile(dst, data, mode); err != nil {
+		return fmt.Errorf("writing live dogfood credential file %s: %w", dst, err)
+	}
+	return nil
+}
+
+func copyLiveDogfoodCredentialFile(src, dst string) (*liveDogfoodCredentialMirror, error) {
+	in, err := os.Open(src)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("opening live dogfood credential file %s: %w", src, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	info, err := in.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("checking live dogfood credential file %s: %w", src, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("live dogfood credential file %s is not a regular file", src)
+	}
+
+	data, err := io.ReadAll(in)
+	if err != nil {
+		return nil, fmt.Errorf("reading live dogfood credential file %s: %w", src, err)
+	}
+	mode := info.Mode().Perm()
+	if err := writeLiveDogfoodCredentialMirrorFile(dst, data, mode); err != nil {
+		return nil, err
+	}
+	return &liveDogfoodCredentialMirror{
+		src:      src,
+		dst:      dst,
+		original: data,
+		mode:     mode,
+	}, nil
 }
 
 func liveDogfoodBinaryPath(dir, name string) (string, error) {
