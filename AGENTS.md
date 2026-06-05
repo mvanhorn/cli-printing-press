@@ -8,7 +8,7 @@ This repo is **the machine** (generator, templates, binary, skills) that produce
 - **Don't change the machine for one CLI's edge case.** If a fix helps one API but breaks another, guard it with a clear conditional or leave it as a printed-CLI fix.
 - **Don't hardcode API/site names in reusable artifacts.** Skills, templates, generator code, prompts, and shared docs must use placeholders (`<api>`, `<site>`, "the target site") unless the text is explicitly an example or test fixture.
 - **Update dependent verifiers in the same change.** A new generator capability that affects scoring requires a scorer update; one that changes the MCP surface requires an audit update.
-When iterating on a printed CLI to discover issues, label findings as systemic (retro candidate) vs specific (printed-CLI fix). The retro -> plan -> implement loop feeds discoveries back into the machine.
+When iterating on a printed CLI to discover issues, label findings as systemic (retro candidate) vs specific (printed-CLI fix).
 
 ### Anti-reimplementation
 A printed CLI wraps an API; it does not replace one. Novel-feature commands must call the real endpoint or read from the local store populated by sync.
@@ -41,16 +41,16 @@ Hand-written novel commands that perform visible actions (open browser tabs, sen
 1. Print by default; require explicit opt-in (`--launch`, `--send`, `--play`, etc.) to actually act.
 2. Short-circuit when `cliutil.IsVerifyEnv()` is true. The verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; this env-var check is the floor that catches any side-effect command the verifier's heuristic classifier misses.
 
-Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PUT/PATCH) at the transport layer in `internal/client/client.go`. Under `PRINTING_PRESS_VERIFY=1` such requests short-circuit with a synthetic `{"__pp_verify_synthetic__":true,"status":"noop","reason":"verify_short_circuit",...}` envelope and never dial. Read-only operations that ride a mutating verb on the wire (GraphQL queries, JSON-RPC reads, POST-based search; codegen-marked `mcp:read-only`) route through `doRead()` and bypass the gate, so verify-mode does not silently break reads on shared-endpoint APIs. The outer command envelope reports `verify_noop: true` and `success: false` so naive validators do not read the noop as a real mutation. `cli-printing-press verify` opts its mock-mode subprocesses back in via `PRINTING_PRESS_VERIFY_LIVE_HTTP=1` so the httptest mock server still receives mutating requests; agents, narrative full-example runs, and ad-hoc operators leave `LIVE_HTTP` unset so mutating requests no-op. Live verifiers (`live_dogfood`, `workflow_verify`) strip both env vars from subprocess env so they cannot inherit verify-mode short-circuiting. `<cli> doctor` surfaces the active verify state as a defense-in-depth diagnosis anchor.
+Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PUT/PATCH) at the transport layer (`internal/client/client.go`): under `PRINTING_PRESS_VERIFY=1` they short-circuit to a synthetic noop and never dial, while reads that ride a mutating verb (GraphQL/JSON-RPC reads, POST search; codegen-marked `mcp:read-only`) route through `doRead()` and bypass the gate. The command envelope reports `verify_noop: true` / `success: false`. `cli-printing-press verify` re-enables real HTTP to its mock server via `PRINTING_PRESS_VERIFY_LIVE_HTTP=1`; agents and ad-hoc runs leave it unset (mutations no-op), and live verifiers (`live_dogfood`, `workflow_verify`) strip both vars.
 
 
 ### Long-running commands under live-dogfood
-Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess and applies a flat 30s per-command timeout; without a short-circuit, the happy-path test trips the timeout and the matrix verdict flips to FAIL even when the command itself is healthy. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix. Use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
+Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess under a flat 30s per-command timeout, so an uncapped happy path trips the timeout and flips the matrix verdict to FAIL. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix; use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
 
 ### Generator-reserved namespaces
 `internal/cliutil/`, `internal/learn/`, and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil` or `learn`.
 
-The `internal/learn` templates under `internal/generator/templates/learn**` must stay domain-neutral — the loop generalized from prediction-goat's recall/teach flow, and every printed CLI inherits the loop without inheriting prediction-market vocabulary. The `verify-learn-purity.yml` CI workflow runs `scripts/verify-learn-purity.sh` on PRs that touch those templates and fails the build if any domain-specific identifier from the original lineage (Polymarket / Kalshi / market / event slugs, etc.) sneaks back in. Per-CLI domain examples belong in the spec's `learn:` block or in narrative recipes, never in the templates themselves.
+The `internal/learn` templates under `internal/generator/templates/learn**` must stay domain-neutral — every printed CLI inherits the loop without inheriting any source domain's vocabulary. `verify-learn-purity.yml` runs `scripts/verify-learn-purity.sh` on PRs touching those templates and fails if a domain-specific identifier (Polymarket / Kalshi / market / event slugs, etc.) appears. Per-CLI domain examples belong in the spec's `learn:` block or narrative recipes, never the templates.
 
 ### Typed exit-code verification
 `cli-printing-press verify` treats exit `0` as success by default. For commands where a non-zero code is intentional control flow, declare it in Cobra with `Annotations: map[string]string{"pp:typed-exit-codes": "0,2"}`. The verifier reads that annotation first, then falls back to a command-level `Exit codes:` help block. Do not put the whole global failure palette in a command-level help block unless those codes should count as verify-pass for that specific command.
@@ -62,8 +62,8 @@ go test ./...
 go fmt ./...
 golangci-lint run ./...
 ```
-A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push hook runs `golangci-lint`. The same config in `.golangci.yml` runs in CI. Install hooks with `brew install lefthook && lefthook install --reset-hooks-path`; the `--reset-hooks-path` flag clears stale local `core.hooksPath` settings that block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
-After writing Go code, format it with `go fmt ./...` before handing back work. Use `go fmt ./...` for repo-wide formatting and `gofmt -w path/to/file.go` only for explicit files. Do not run `gofmt -w ./...` (gofmt does not accept Go package patterns) or `gofmt -w .` from the repo root (it walks into `testdata/golden/expected/` and rewrites frozen golden fixtures).
+A pre-commit hook runs `gofmt -w` on staged Go files; a pre-push hook runs `golangci-lint` (same `.golangci.yml` as CI). Install with `brew install lefthook && lefthook install --reset-hooks-path` — `--reset-hooks-path` clears stale `core.hooksPath` settings that block hook sync; avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
+Format with `go fmt ./...` before handing back work; use `gofmt -w path/to/file.go` only for explicit files. Do not run `gofmt -w ./...` (gofmt rejects Go package patterns) or `gofmt -w .` from the repo root (it walks into `testdata/golden/expected/` and rewrites frozen golden fixtures).
 Always use relative paths for build output. Never build to `/tmp` or another shared absolute path; use `./cli-printing-press`.
 
 ## Generator Output Stability
@@ -88,19 +88,15 @@ If the "obvious" fix violates a parser, verifier, scorer, or printed-CLI invaria
 
 ## Cross-repo dependency: published-library sweep tool
 
-When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence or removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so the already-published CLIs can be retrofitted to match. Fresh prints from this generator will produce the new shape automatically, but every existing entry in the public library silently drifts from canonical shape until the sweep retrofit runs.
+When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence/removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so already-published CLIs can be retrofitted to match. Fresh prints get the new shape automatically; existing entries drift until the sweep runs.
 
-The same rule applies to `internal/pipeline/agentcookie_manifest.go` and the `hasNonCookieAuth` template helper in `internal/generator/generator.go`: when manifest shape or sweep-eligibility logic changes here, update `tools/sweep-canonical/agentcookie.go` in lockstep so existing library entries' `agentcookie.toml` retrofits match generator-side fresh prints byte-for-byte. The inline TOML render exists because the sweep tool runs in GOPATH mode; it is a deliberate duplication, not a candidate for "just import the helper".
+The same rule applies to `internal/pipeline/agentcookie_manifest.go` and the `hasNonCookieAuth` template helper in `internal/generator/generator.go`: when manifest shape or sweep-eligibility logic changes here, update `tools/sweep-canonical/agentcookie.go` in lockstep so existing entries' `agentcookie.toml` retrofits match fresh prints byte-for-byte. The inline TOML render exists because the sweep tool runs in GOPATH mode — a deliberate duplication, not a candidate for "just import the helper".
 
-If you can't make the matching sweep change in the same session, file a tracking issue at https://github.com/mvanhorn/printing-press-library/issues/new before merging the template PR. The issue should include:
+If you can't make the matching sweep change in the same session, file a tracking issue at https://github.com/mvanhorn/printing-press-library/issues/new before merging the template PR, including: (1) a link to the template PR here; (2) the shape change(s) the sweep must handle — sweep runs must be idempotent (second run = zero diff), so name the heading boundaries, regex anchors, or section markers it can hang off; (3) any test additions needed in `tools/sweep-canonical/main_test.go`.
 
-1. A link to the template PR here.
-2. The shape change(s) the sweep needs to handle. Sweep changes must be idempotent (second run produces zero textual diff) — name the heading boundaries, regex anchors, or section markers the sweep can hang off.
-3. Any test additions needed in `tools/sweep-canonical/main_test.go`.
+The downstream side of this contract (when/how to run the sweep, the `-readme-only` + author-preservation safeties) is documented in `printing-press-library/AGENTS.md` under "Bulk SKILL.md/README.md retrofits".
 
-Without the sweep update or a tracking issue, the divergence between fresh prints and existing entries is invisible until someone notices a specific published README looks "old" relative to the rest. The downstream side of this contract (the published library's stance on when to run the sweep, how to scope it, and the `-readme-only` + author-preservation safeties on the sweep tool) is documented in `printing-press-library/AGENTS.md` under "Bulk SKILL.md/README.md retrofits".
-
-The same lockstep contract applies to the learn-loop templates under `internal/generator/templates/learn**` (the `internal/learn` package emitted into every printed CLI). When a change to those templates shifts the package shape — exported function rename, signature change, file rename, added or removed sub-package, schema field added to the v3 store tables — the library-side sweep tool needs a parallel update so the already-published CLIs can be regenerated to match. Fresh prints inherit the new shape; existing entries silently drift until a sweep run lands. Track this work in the same tracking-issue flow described above; the issue should name the renamed export or schema field and the regex/AST anchors the sweep can hang off.
+The same lockstep applies to the learn-loop templates under `internal/generator/templates/learn**` (the `internal/learn` package): when a change shifts the package shape — exported function rename, signature change, file rename, added/removed sub-package, schema field on the v3 store tables — the library-side sweep needs a parallel update. Track it via the same tracking-issue flow, naming the renamed export or schema field and the regex/AST anchors the sweep can hang off.
 
 ## Project Structure
 - `cmd/cli-printing-press/` - CLI entry point
@@ -118,13 +114,14 @@ The same lockstep contract applies to the learn-loop templates under `internal/g
 - `docs/GOLDEN.md` - Golden harness decision rubric and fixture conventions
 - `docs/GLOSSARY.md` - Canonical terms and the full disambiguation table
 - `docs/RELEASE.md` - release-please / goreleaser flow
+- `docs/ATTRIBUTION.md` - Creator + contributors model: resolver fallback, validation layers, legacy-field dual-write window
 - `docs/CATALOG.md` - Catalog validation rationale and wrapper-only entry shape
 - `docs/ARTIFACTS.md` - Local library, manuscripts, and public-library flow
 - `docs/DOCS.md` - Doc-authoring rules, including pointer-rot prevention
 - `docs/solutions/` - Documented solutions to past problems (bugs, design patterns, best practices, conventions), organized by category subdir with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
 
 ## Naming and Disambiguation
-Use canonical terms in your responses so intent stays unambiguous. In skills and user-facing output (GitHub issues, retro documents, confirmation prompts), use **"the Printing Press"** as the system name, never "the machine." Subsystem names (generator, scorer, skills, binary) are fine alongside it. When user phrasing is ambiguous and the distinction affects what action to take, ask before acting.
+Use canonical terms so intent stays unambiguous. In skills and user-facing output (GitHub issues, retros, confirmation prompts), call the system **"the Printing Press"**, never "the machine"; subsystem names (generator, scorer, skills, binary) are fine alongside it. When user phrasing is ambiguous and the distinction affects what action to take, ask before acting.
 - "library" -> local library (`~/printing-press/library/<api-slug>/`) unless the public library is called out explicitly
 - "publish" -> the publish step (pipeline) unless the public-library workflow is called out explicitly
 - "manifest" -> `tools-manifest.json` unless another manifest is named explicitly
@@ -133,25 +130,21 @@ See [`docs/GLOSSARY.md`](docs/GLOSSARY.md) for the full term table and disambigu
 
 ## Attribution: creator + contributors
 
-A printed CLI's attribution is a single permanent **`creator`** plus a multi-valued **`contributors[]`**, both `spec.Person{handle, name}` on `APISpec` and `CLIManifest`. Keep the dual-key split *inside* each Person: `handle` is the slug-safe GitHub @handle (drives the copyright-header recovery regex and `RewriteOwner`); `name` is the prose display name (drives the README byline, SKILL `author:`, and NOTICE). Never conflate them into one string.
-
-- **Creator is permanent.** It is the human who first got the CLI accepted into the library; never reassign it on a reprint or contribution. Top-billed everywhere. The copyright header is `Copyright YYYY <creator name> and contributors.` — the `and contributors` suffix is constant regardless of count (zero included), so it never churns golden fixtures.
-- **Contributors accrue only via deliberate contribution flows** (`publish` / `amend` / `reprint`), using `cli-printing-press contributors add` (idempotent; skips the creator and anyone already listed; `--front` prepends the reprinter). A plain `generate --force` / `mcp-sync` / sweep **preserves** the list and never appends the operator. The same-lineage guard (`api_name` + spec checksum) plus a non-nil-empty explicit-clear signal keep a cross-API `--force` from resurrecting another CLI's list.
-- **Manifest is the source of truth.** Resolution prefers the manifest over re-derivation so regens by others don't overwrite attribution; the resolver falls back manifest-creator → legacy `printer`/`printer_name` → `owner`/`owner_name` → copyright header → git config. `New()` bridges in-memory legacy fields into the creator (printer in full; owner as **name-only** so the vendor slug never leaks into the byline).
-- **Validation is layered.** `Generate()` soft-validates (stderr warning + visibly-wrong fallback on empty creator, never fatal, so tests and `mcp-sync`/`regen-merge` keep working); the publish path strictly rejects empty or `"USER"`/`"user"` creator handles.
-- **Transition window: legacy fields are dual-written, not removed.** `owner`/`owner_name`/`printer`/`printer_name` are still emitted (derived from `creator`) so older skills and library tooling that read them keep working — this change is additive (`feat`, not breaking). `min-binary-version` stays at the major baseline (`4.0.0`); the additive `contributors add` step degrades gracefully on a binary that predates it. A future major removes the legacy write — that removal is the breaking change.
-- **Never hand-edit `creator` or `contributors[]`** (or the NOTICE/byline blocks) in a publish PR — the command and the library's post-merge refresh own them. NOTICE credits both the per-CLI creator/contributors and the Press's own co-creators (Matt Van Horn and Trevin Chow) — distinct concerns.
-
-The library-side sweep that migrates already-published CLIs and backfills contributors from git history lands in `printing-press-library` per the cross-repo lockstep contract.
+A printed CLI's attribution is a single permanent **`creator`** plus a multi-valued **`contributors[]`** (`spec.Person{handle, name}` on `APISpec` and `CLIManifest`). Keep the `handle` (slug-safe @handle; anchors the `@handle` byline link and the legacy slug copyright recovery) and `name` (display name; drives the current `<name> and contributors` copyright header, `RewriteOwner`, SKILL `author:`, NOTICE) split *inside* each Person; never conflate them into one string.
+- **Never hand-edit `creator` / `contributors[]`** (or the NOTICE/byline blocks) in a publish PR — the `publish` / `amend` / `reprint` commands and the library's post-merge refresh own them.
+- **Creator is permanent** — the human who first got the CLI accepted into the library; never reassign it on a reprint or contribution.
+- **Contributors accrue only via `cli-printing-press contributors add`** (run by the contribution flows; idempotent). A plain `generate --force` / `mcp-sync` / sweep preserves the list and never appends the operator.
+- **Manifest is the source of truth** — resolution prefers it over re-derivation so others' regens don't overwrite attribution.
+See [`docs/ATTRIBUTION.md`](docs/ATTRIBUTION.md) for the resolver fallback chain, the copyright-header format, layered validation, the legacy-field dual-write window, and the NOTICE co-creator credit.
 
 ## Issue Work Ownership
 Contributor agents without maintainer or admin access must make sure a GitHub issue exists before fixing a bug or behavior change. Maintainers and admins may bypass these issue-ownership rules for maintainer-owned direct work. Do not treat a private plan, external doc, review artifact, or PR body as the only problem statement. Search open and recently closed issues first; reuse an existing issue when one matches instead of filing a duplicate. If no issue exists, open one with enough context for maintainers to understand the bug, scope, and intended fix.
 
-Before implementation, claim the issue: assign it to yourself (or to the GitHub user you are explicitly working on behalf of) and post a short comment stating you are picking it up. Assignment may fail because of permissions; that is fine, but still leave the claim comment. Claim *before* you start coding so duplicate work is prevented at the moment it would otherwise begin; claiming after a PR is open is too late.
+Before implementation, claim the issue: assign it to yourself (or the GitHub user you are explicitly working on behalf of) and post a short comment that you are picking it up. Assignment may fail on permissions — that is fine, but still leave the comment. Claim *before* you start coding, not after a PR is open; that is when duplicate work is prevented.
 
 If the issue already has an assignee, treat that as active ownership until you can determine otherwise from recent activity or direct confirmation. For a plausibly stale assignment, ask the current assignee by tagging them in an issue comment before taking over or reassigning the issue.
 
-If you stop, abandon, or hand off the work before opening a PR, unclaim the issue: remove the assignment and post a short comment so the next picker-upper knows it is free. You do not need to unclaim on successful completion — a merged PR closes the issue.
+If you stop, abandon, or hand off before opening a PR, unclaim: remove the assignment and comment so the next picker-upper knows it is free. No need to unclaim on success — a merged PR closes the issue.
 
 ## Commit Style
 Format: `type(scope): description`. Both type and scope are required.
@@ -163,28 +156,11 @@ Format: `type(scope): description`. Both type and scope are required.
 - `ci` covers workflows, release config, and goreleaser.
 - `main` is reserved for release-please generated release PRs targeting `main`.
 
-**Allowed types:**
-- `feat` — new functionality, capability, command, or flag (a user can do something they couldn't before).
-- `fix` — corrects incorrect behavior in code that's already shipping.
-- `docs` — documentation changes including AGENTS.md, README, doc comments, **and template wording changes that don't alter generator behavior** (e.g., reword an install instruction in `readme.md.tmpl` or `skill.md.tmpl`).
-- `refactor` — internal restructuring with no observable behavior change.
-- `chore` — build, tooling, dependency, or housekeeping work outside production code.
-- `test` — test-only additions or corrections.
-- `ci` — workflow and CI configuration changes.
-- `perf` — performance improvements.
-- `build` — build-system changes.
-- `style` — formatting-only changes.
-- `revert` — reverts a prior commit.
+**Allowed types:** standard conventional-commits — `feat` `fix` `docs` `refactor` `chore` `test` `ci` `perf` `build` `style` `revert` (the set `pr-title.yml` enforces). Repo-specific nuance: `docs` also covers **template wording changes that don't alter generator behavior** (e.g. rewording an install line in `readme.md.tmpl` / `skill.md.tmpl`) — those are `docs`/`fix`, never `feat`.
 
-**Breaking changes** use `!` after the scope: `feat(cli)!: rename catalog command to registry`. The `!` triggers a major version bump through release-please, so reserve it for changes that *break a downstream contract* — a renamed/removed command, a renamed/removed flag, a removed manifest field, an incompatible config-file shape. **What isn't breaking:** template wording changes, README updates, and generator-output diffs that don't remove or rename a documented surface are `docs(...)` or `fix(...)` — not `feat(...)!`. Even if every printed CLI's output changes on next regen, that alone doesn't qualify as breaking unless something downstream breaks too. The release-versioning consequence of `!` is intentional; if you're unsure, ask before adding it.
+**Breaking changes** use `!` after the scope: `feat(cli)!: rename catalog command to registry`. The `!` triggers a major version bump through release-please, so reserve it for changes that *break a downstream contract* — a renamed/removed command, a renamed/removed flag, a removed manifest field, an incompatible config-file shape. **What isn't breaking:** template wording changes, README updates, and generator-output diffs that don't remove or rename a documented surface are `docs(...)` or `fix(...)` — not `feat(...)!`, even when every printed CLI's output changes on next regen. The release-versioning consequence of `!` is intentional; if you're unsure, ask before adding it.
 
-**Examples:**
-- `feat(cli): add --select flag to all read commands`
-- `feat(catalog): add maps blueprint entry`
-- `feat(cli)!: rename catalog command to registry`
-- `fix(cli): correct trailing newline in skill.md.tmpl`
-- `docs(cli): clarify install instructions in generated README`
-- `chore(ci): bump goreleaser to v2.5`
+**Examples:** `feat(cli): add --select flag to all read commands` · `feat(cli)!: rename catalog command to registry` · `docs(cli): clarify install instructions in generated README`
 
 **Version bump rules:** `fix(scope):` -> patch; `feat(scope):` -> minor; `feat(scope)!:` or `BREAKING CHANGE:` -> major; `refactor(scope):` is included in the next release PR but does not trigger a bump alone; `docs:`, `chore:`, and `test:` do not trigger a bump alone and stay out of release notes by default.
 
@@ -201,7 +177,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the human-facing contributor guide 
 ## Versioning
 Releases are automated by release-please. Never manually edit version numbers.
 - Normal feature/fix PRs land through the Mergify queue: add the `ready-to-merge` label when the PR is ready to merge, and let Mergify rebase/test/merge it. Do not use the GitHub merge button for normal PRs once `Mergify Merge Protections` is required on `main`.
-- release-please PRs are the release control point. They collect already-merged conventional commits; merge the release PR only when you intend to cut a release. The Mergify config allows release-please PRs to satisfy merge protection without `ready-to-merge`, so maintainers can still merge the release PR manually after CI passes.
+- release-please PRs are the release control point: they collect already-merged conventional commits, so merge one only when you intend to cut a release. Mergify lets release-please PRs satisfy merge protection without `ready-to-merge`, so maintainers can merge them manually after CI passes.
 - When enabling branch protection for the Mergify queue, require the `Mergify Merge Protections` status check and set `required_status_checks.strict=false`; Mergify owns latest-`main` validation through the queue, and GitHub's strict up-to-date requirement recreates the manual rebase loop.
 - The plugin version lives in exactly two places and must stay in sync: `.claude-plugin/plugin.json` -> `version`, and `internal/version/version.go` -> `var Version` (annotated `x-release-please-version`; goreleaser injects via ldflags).
 - `TestVersionConsistencyAcrossFiles` in [`internal/cli/release_test.go`](internal/cli/release_test.go#L57) fails if those two versions drift.
@@ -209,31 +185,17 @@ Releases are automated by release-please. Never manually edit version numbers.
 See [`docs/RELEASE.md`](docs/RELEASE.md) for the merge-the-release-PR flow.
 
 ## Supported-version floor
-`supported-versions.txt` (repo root) is the **currency floor** — the lowest binary version the generation skills will generate with. The `printing-press` and `printing-press-amend` preflights (and `reprint` via its hand-off to `printing-press`) fetch it from `main` via raw.githubusercontent and **hard-block** with `[upgrade-required]` (interactive upgrade-or-abort, no skip) when the installed binary is below it. To push users off a known-buggy release, bump `min_supported` here — a one-line PR takes effect within the 24h version-check cache, with no binary or skill release.
+`supported-versions.txt` (repo root) is the **currency floor** — the lowest binary version the generation skills will generate with. The `printing-press` and `printing-press-amend` preflights (and `reprint`, via its hand-off) fetch it from `main` and **hard-block** with `[upgrade-required]` (interactive upgrade-or-abort, no skip) when the installed binary is below it. To push users off a known-buggy release, bump `min_supported` — a one-line PR that takes effect within the 24h version-check cache, no binary or skill release needed.
 - `min_supported` must be `major.minor.patch`. At runtime it is clamped to `<= latest` (a value above the newest release is ignored, so a typo cannot brick installs) and is a no-op below the frozen `min-binary-version`.
 - Distinct from `min-binary-version`: that is the release-managed, skill-frontmatter compatibility floor (the hard "skill cannot run below this" baseline, tracking the major and moving only on a major bump). The currency floor is a freely-tunable freshness gate. Do not conflate them.
 - `TestSkillsEnforceCurrencyFloor` in [`internal/pipeline/contracts_test.go`](internal/pipeline/contracts_test.go) locks the file shape and both contracts' enforce-every-run gate and clamp.
 
 ## Adding Catalog Entries
-When adding or editing `catalog/*.yaml`, first decide whether the entry belongs in the curated blueprint catalog. The embedded catalog is not a public-library index or a shortcut for reprinting existing CLIs; reprint from the current local/public library artifact when that is the source of truth. Add catalog entries only when they represent a distinct, reusable Printing Press pattern and have a real user-facing workflow, a reachable maintained source, and a reproducible generation route: vendor spec, docs-derived in-repo spec, verified sniffed spec, or wrapper-only backing that truthfully describes what the generator can do today. Do not add aspirational entries, dead wrappers, unproven private endpoints, personalized app flows without an auth model, duplicate examples of an already-covered pattern, or scrape ideas without live crawl evidence.
-- Use the PR template's `Catalog Justification` section when the PR touches `catalog/*.yaml` or `catalog/specs/**`; `validate-catalog.yml` rejects catalog PRs without it.
-- Document why the entry belongs in the embedded catalog, not just why the files belong in this repo. Name the reusable blueprint pattern it adds, the closest existing catalog entries checked, and why this is not a duplicate or a public-library-only reprint.
-- Document provenance in the PR: source URL(s), source type (`official`, `docs`, `sniffed`, `community`, or wrapper-only), live smoke evidence, auth requirements, tenant/region/base-URL assumptions, and what is intentionally out of scope.
-- Refresh the PR body after the final code changes. Do not leave stale raw diff excerpts, tenant-specific instructions, internal secret names, old endpoint counts, or outdated verification claims in the description.
-- If the entry should make `cli-printing-press generate <name>` work, provide a real `spec_url` or in-repo spec; wrapper-only entries are discovery/backing notes unless the generator has a concrete spec path.
-- If catalog output intentionally changes, update `testdata/golden/expected/catalog-list/stdout.txt`.
-- The entry must pass `internal/catalog` validation.
-- Required fields: `name`, `display_name`, `description`, `category`, and `tier`, plus `spec_url` and `spec_format` unless the entry is wrapper-only (`wrapper_libraries` is set and `spec_url` is omitted).
-- `spec_url`, when present, must use HTTPS.
-- `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `maps`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other`. The validator also accepts `example` as a test-only catch-all; do not use it for real catalog entries.
-- `tier` must be `official` or `community`.
-- `bearer_refresh`, when present, must include `bundle_url` and `pattern`; `bundle_url` must use HTTPS, and `pattern` must compile as a Go regexp.
-- `auth_key_url`, when present, must use HTTPS. It overrides any URL inferred from the spec and surfaces in the printed CLI as `Get a key at: <URL>`.
-- `auth_instructions`, when present, is a one-line string rendered under the URL. It overrides any `x-auth-instructions` value from the spec.
-- `auth_env_vars`, when present, is an ordered list of canonical credential env var names (`^[A-Z][A-Z0-9_]*$`, no duplicates, no empties). The generator merges them in front of the parser's name-derived default and emits `config.go` reading each in order. Ignored for HTTP Basic auth.
-- `base_url`, when present, must use HTTPS. Use it only when the upstream spec omits `servers:` and the correct API origin is known.
-- Rebuild the binary after editing; `catalog.FS` is a Go embed.
-See [`docs/CATALOG.md`](docs/CATALOG.md) for the inclusion rubric, evidence checklist, validation rationale, wrapper-only entry shape, and bearer-refresh metadata.
+When adding or editing `catalog/*.yaml`, first decide whether the entry belongs in the curated blueprint catalog — it is not a public-library index or a reprint shortcut. Add an entry only when it is a distinct, reusable pattern with a real workflow, a reachable maintained source, and a reproducible generation route (vendor spec, docs-derived in-repo spec, verified sniffed spec, or truthful wrapper-only backing). Do not add aspirational entries, dead wrappers, unproven private endpoints, personalized app flows without an auth model, duplicates of a covered pattern, or scrape ideas without live crawl evidence.
+- PRs touching `catalog/*.yaml` or `catalog/specs/**` must complete the PR template's `Catalog Justification` section; `validate-catalog.yml` rejects catalog PRs without it. Justify why the entry belongs in the embedded catalog (the blueprint pattern it adds, nearest entries checked) and document provenance — source URL(s), source type (`official`/`docs`/`sniffed`/`community`/wrapper-only), live smoke evidence, auth, scope — per the evidence checklist in [`docs/CATALOG.md`](docs/CATALOG.md). Refresh the PR body after final changes; no stale diff excerpts, secret names, endpoint counts, or outdated verification claims.
+- Required fields: `name`, `display_name`, `description`, `category`, and `tier`, plus `spec_url` and `spec_format` unless wrapper-only (`wrapper_libraries` set, `spec_url` omitted). A real `spec_url`/in-repo spec is what makes `cli-printing-press generate <name>` work; wrapper-only entries are discovery/backing notes.
+- The entry must pass `internal/catalog` validation; rebuild the binary after editing (`catalog.FS` is a Go embed). If catalog output intentionally changes, update `testdata/golden/expected/catalog-list/stdout.txt`.
+See [`docs/CATALOG.md`](docs/CATALOG.md) for the full field schema (`category`/`tier` enums, HTTPS rules, `bearer_refresh`, `auth_key_url`, `auth_instructions`, `auth_env_vars`, `base_url`), inclusion rubric, evidence checklist, and wrapper-only entry shape.
 
 ## Testing
 When you change code, check for a `_test.go` file in the same package. If one exists, read it; your change likely requires a test update. If tests fail after your change, investigate whether it is a bug in your code or a stale test; do not just delete the test.
@@ -242,12 +204,12 @@ Run `go test ./...` before considering your work done.
 
 ## Quality Gates
 Generated CLIs must pass 8 gates: `go mod tidy`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
-Run `govulncheck` in default mode only, scoped to the generated or publishing CLI module (`./...` from that CLI directory). Do not use `-show verbose` or a whole public-library scan as a blocking gate; the public library is a historical collection, so its blocking CI should scan only added or changed CLI modules and leave whole-library sweeps to scheduled/reporting workflows.
+Run `govulncheck` in default mode only, scoped to the generated or publishing CLI module (`./...` from that CLI directory). Do not use `-show verbose` or a whole public-library scan as a blocking gate; blocking CI scans only added or changed CLI modules, leaving whole-library sweeps to scheduled/reporting workflows.
 - For CLIs with `auth.type` of `cookie` or `composed`, `press-auth` (`cmd/press-auth/`) is the canonical cookie capture path. The generated `auth login --chrome` prefers it; the legacy extraction chain (pycookiecheat / browser-use / etc.) is the fallback when press-auth isn't installed. See [`skills/printing-press/references/auth-companion.md`](skills/printing-press/references/auth-companion.md).
 
 ## Supply-chain hardening
 
-PRs touching `.github/workflows/**` are gated by Greptile rules in [`greptile.json`](greptile.json) and a Python scan in [`.github/scripts/verify-supply-chain/`](.github/scripts/verify-supply-chain/) run by `verify-supply-chain.yml`. The signal set is the workflow-trust + Go-env subset of the published-library gate; see `signals.py` for scope adaptations (no library go.mod, no npm wrapper, no published-CLI module paths). Run locally with `python3 .github/scripts/verify-supply-chain/scan.py --base-ref origin/main`; tests are `python3 -m unittest scan_test` from that directory.
+PRs touching `.github/workflows/**` are gated by Greptile rules in [`greptile.json`](greptile.json) and a Python scan in [`.github/scripts/verify-supply-chain/`](.github/scripts/verify-supply-chain/) run by `verify-supply-chain.yml` (a workflow-trust + Go-env subset of the published-library gate; scope adaptations in `signals.py`). Run locally with `python3 .github/scripts/verify-supply-chain/scan.py --base-ref origin/main`; tests are `python3 -m unittest scan_test` from that directory.
 
 Runs informationally on landing — promote to a required branch-protection check only after a one-week green window. Canonical incident background lives in the [published-library solutions doc](https://github.com/mvanhorn/printing-press-library/blob/main/docs/solutions/security/2026-05-supply-chain-hardening.md).
 
@@ -255,10 +217,10 @@ Runs informationally on landing — promote to a required branch-protection chec
 Generated artifacts live under `~/printing-press/`, not in this repo: `library/<api-slug>/`, `manuscripts/<api-slug>/`, and `.runstate/<scope>/`. The API slug is derived by the generator from the spec title (`cleanSpecName`), and the binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it. See [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md) for local-vs-public flow and divergence rules.
 
 ## Plan documents stay local
-When writing a plan document for cli-printing-press work, do not `git add` files under `docs/plans/`. This repo is public; plans frequently describe in-progress, unreleased, or third-party-collaborator work that should not be world-readable. The `/docs/plans/` entry in `.gitignore` enforces this for new files. Historical plans committed before the 2026-05-25 cutover remain visible in git history; the gitignore covers everything from that point forward. `TestPlansDirectoryGitignored` in [`internal/cli/release_test.go`](internal/cli/release_test.go) fails if the gitignore line is removed.
+When writing a plan document for cli-printing-press work, do not `git add` files under `docs/plans/`. This repo is public; plans frequently describe in-progress, unreleased, or third-party-collaborator work that should not be world-readable. The `/docs/plans/` entry in `.gitignore` enforces this for new files. `TestPlansDirectoryGitignored` in [`internal/cli/release_test.go`](internal/cli/release_test.go) fails if the gitignore line is removed.
 
 ## No private-module requires in printed CLIs
-Printed CLIs are installed by users via `go install`. A require on a private module (e.g., `github.com/mvanhorn/agentcookie`) breaks `go mod download` for anyone without read access to that module and silently regresses the install path for every freshly-printed CLI. `TestNoPrivateRequiresInGeneratedGoMod` in [`internal/generator/private_dep_guard_test.go`](internal/generator/private_dep_guard_test.go) regenerates a fixture per auth-type fork and asserts none of them carry a require on any prefix in `privateModulePrefixes`. When introducing a new internal-by-default module that any printed CLI might want to consume, add its prefix to that list rather than relying on review to catch it.
+Printed CLIs are installed via `go install`, so a require on a private module (e.g., `github.com/mvanhorn/agentcookie`) breaks `go mod download` for any user without read access. `TestNoPrivateRequiresInGeneratedGoMod` in [`internal/generator/private_dep_guard_test.go`](internal/generator/private_dep_guard_test.go) regenerates a fixture per auth-type fork and asserts none carry a require on any prefix in `privateModulePrefixes`. When introducing a new internal-by-default module any printed CLI might consume, add its prefix to that list rather than relying on review.
 
 ## Publishing to the Public Library
 The only supported path for **publishing a generated CLI** (adding or updating an entry under `library/<category>/<api-slug>/` in [mvanhorn/printing-press-library](https://github.com/mvanhorn/printing-press-library)) is to invoke the `/printing-press-publish` skill. The skill runs the required `gh`/`git` commands itself; do not reproduce them by hand.
@@ -266,9 +228,7 @@ The only supported path for **publishing a generated CLI** (adding or updating a
 - Do not skip the skill and improvise the same steps from scratch (manual `gh repo fork` / `cp -r` into a library clone / `gh pr create --repo mvanhorn/printing-press-library …` / branch push to a fork without the skill driving it). The commands look similar; the difference is the preflight checks and conventions the skill enforces before they run.
 - Do not edit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md` in a publish PR — the public library refreshes those post-merge (registry and READMEs from `.printing-press.json` / `manifest.json`; the cli-skills mirror via the library's `generate-skills.yml` workflow). The library's `Guard against hand-edits to cli-skills mirror` check rejects any fork PR whose commits touch the mirror, so committing it pre-rejects the publish before review.
 
-Why this matters: the publish skill enforces preflight checks (printer sentinel validation, manifest shape, vendor-spec PII scope, govulncheck scoped to the changed module) and mirrors the public library's own `AGENTS.md` requirements. An agent operating in this repo's CWD never loads the public library's `AGENTS.md`, so those rules are invisible unless the skill is the entry point.
-
-If `/printing-press-publish` fails, fix the underlying issue (or report it as a machine bug) — do not bypass the skill to land a CLI-publish PR.
+The skill enforces preflight checks invisible from this repo's CWD (printer sentinel, manifest shape, vendor-spec PII scope, govulncheck scoped to the changed module) and mirrors the public library's own `AGENTS.md`. If `/printing-press-publish` fails, fix the underlying issue (or report it as a machine bug) — do not bypass the skill to land a CLI-publish PR.
 
 ## Internal Skills
 `skills/` at the repo root contains the Printing Press skills (for example `printing-press-retro`). To make them available to Claude Code regardless of working directory, install them globally:

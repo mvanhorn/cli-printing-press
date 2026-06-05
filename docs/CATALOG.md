@@ -1,6 +1,6 @@
 # Catalog Entry Validation
 
-Catalog entries in `catalog/` are validated by [`internal/catalog/catalog.go`](../internal/catalog/catalog.go). Keep the inline `AGENTS.md` rule in sync with that validator; when the validator's applicability or allowed values change, update the inline trigger sentence in the same PR.
+Catalog entries in `catalog/` are validated by [`internal/catalog/catalog.go`](../internal/catalog/catalog.go). This doc is the authoritative field schema — allowed values, HTTPS rules, per-field semantics — and must stay in sync with that validator. The inline `AGENTS.md` rule carries the trigger, required fields, and a pointer here; update its trigger sentence in the same PR when the validator's applicability changes.
 
 ## Purpose
 
@@ -14,7 +14,7 @@ Add entries when they broaden or sharpen the blueprint set: official OpenAPI, do
 
 The catalog is embedded into the printing-press binary via `catalog.FS`, so a bad entry is not a local typo; it becomes part of every rebuilt binary. The inline `AGENTS.md` rule keeps the write-time fence close to the edit, while this doc carries the longer rationale and the wrapper-only shape.
 
-`category` and `tier` are deliberately finite enums because they drive catalog browsing, risk expectations, and downstream copy. `other` is the public catch-all. `example` is accepted only as a test-only bucket for fixtures such as `catalog/petstore.yaml`; do not use it for real catalog entries.
+`category` and `tier` are deliberately finite enums because they drive catalog browsing, risk expectations, and downstream copy. `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `maps`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other` (the public catch-all). `tier` must be `official` or `community`. `example` is accepted only as a test-only bucket for fixtures such as `catalog/petstore.yaml`; do not use it for real catalog entries.
 
 ## Inclusion rubric
 
@@ -39,7 +39,7 @@ Use the source type to set reviewer expectations:
 - `community`: A third-party spec or library-backed source. The PR must explain why the source is credible and whether it is maintained.
 - Wrapper-only: No direct spec. The entry documents a wrapper library or reverse-engineering technique. Use this when the source is useful catalog backing but does not by itself make `printing-press generate <name>` work.
 
-If an entry should be directly generatable from the catalog, provide a real `spec_url` and `spec_format`. For specs maintained in this repo, place them under `catalog/specs/` and point `spec_url` at the raw GitHub URL. Wrapper-only entries are acceptable, but they must not imply direct generation unless the generator has a concrete spec path.
+If an entry should be directly generatable from the catalog, provide a real `spec_url` and `spec_format`. For specs maintained in this repo, place them under `catalog/specs/` and point `spec_url` at the raw GitHub URL. `spec_url`, when present, must use HTTPS. Wrapper-only entries are acceptable, but they must not imply direct generation unless the generator has a concrete spec path.
 
 ## Evidence checklist
 
@@ -79,7 +79,7 @@ Wrapper-only entries should not:
 - Include mutating workflows as default-safe just because a wrapper exposes them.
 - Treat private mobile-app endpoints, extracted client secrets, or personalized app flows as public API surface without an auth model.
 
-If the validator or enum values change, update both this doc and the inline `AGENTS.md` rule together.
+If the validator or enum values change, update this doc's field schema in the same PR (and the inline `AGENTS.md` trigger if its applicability changes).
 
 ## Bearer refresh metadata
 
