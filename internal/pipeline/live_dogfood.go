@@ -1372,6 +1372,20 @@ func fileExistsRelativeTo(p, cliDir string) bool {
 }
 
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
+	// pp:happy-args supplies real happy-path args, overriding the Example-derived
+	// placeholders (e.g. "--ids example-value") that strict upstream validators
+	// reject with HTTP 400. Same `;`-separated `--flag=value` / `<name>=value`
+	// grammar the runtime layer uses (parseHappyArgsAnnotation), so a single
+	// annotation drives both surfaces.
+	if raw := strings.TrimSpace(command.Annotations[happyArgsAnnotation]); raw != "" {
+		parsed := parseHappyArgsAnnotation(raw)
+		args := append([]string{}, command.Path...)
+		args = append(args, parsed.positionals...)
+		args = append(args, parsed.flags...)
+		if len(args) > len(command.Path) {
+			return args, true
+		}
+	}
 	examples := extractExamplesSection(command.Help)
 	for line := range strings.SplitSeq(examples, "\n") {
 		candidate := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "$"))
