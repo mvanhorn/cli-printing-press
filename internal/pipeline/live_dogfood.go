@@ -169,9 +169,6 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	}
 
 	finalizeLiveDogfoodReport(report)
-	if err := homeScope.syncBack(); err != nil {
-		return nil, err
-	}
 	// The Phase 5.6 acceptance gate's contract is "marker from the runner on
 	// every outcome": pass → promote, fail → hold-path, missing → "Phase 5
 	// was skipped or not recorded." Writing only on PASS forced operators to
@@ -182,6 +179,9 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		if err := writeLiveDogfoodAcceptance(opts, report); err != nil {
 			return nil, err
 		}
+	}
+	if err := homeScope.syncBack(); err != nil {
+		return report, err
 	}
 	return report, nil
 }
@@ -287,21 +287,61 @@ func syncLiveDogfoodCredentialMirrors(mirrors []liveDogfoodCredentialMirror) err
 		if bytes.Equal(updated, mirror.original) {
 			continue
 		}
-		current, err := os.ReadFile(mirror.src)
-		if err != nil {
-			return fmt.Errorf("reading operator credential file before sync-back %s: %w", mirror.src, err)
-		}
-		if !bytes.Equal(current, mirror.original) {
-			return fmt.Errorf("refusing to sync refreshed live dogfood credentials to %s: operator config changed during dogfood", mirror.src)
-		}
-		if err := writeLiveDogfoodCredentialFile(mirror.src, updated, mirror.mode); err != nil {
+		if err := writeLiveDogfoodCredentialFileIfUnchanged(mirror, updated); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func writeLiveDogfoodCredentialFile(dst string, data []byte, mode os.FileMode) error {
+func writeLiveDogfoodCredentialFileIfUnchanged(mirror liveDogfoodCredentialMirror, updated []byte) error {
+	dir := filepath.Dir(mirror.src)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating live dogfood credential mirror directory for %s: %w", mirror.src, err)
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(mirror.src)+".dogfood-sync-*")
+	if err != nil {
+		return fmt.Errorf("creating live dogfood credential sync temp file for %s: %w", mirror.src, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(updated); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("writing live dogfood credential sync temp file %s: %w", tmpName, err)
+	}
+	if err := tmp.Chmod(mirror.mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("setting live dogfood credential sync temp file mode %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing live dogfood credential sync temp file %s: %w", tmpName, err)
+	}
+
+	// Best-effort compare-and-swap: generated printed CLIs do not share a file
+	// lock with live dogfood, so a non-cooperating writer can still race after
+	// this final read. The temp-file rename keeps the sync-back atomic and this
+	// last comparison catches operator edits made before live dogfood commits
+	// the rotated credential.
+	current, err := os.ReadFile(mirror.src)
+	if err != nil {
+		return fmt.Errorf("reading operator credential file before sync-back %s: %w", mirror.src, err)
+	}
+	if !bytes.Equal(current, mirror.original) {
+		return fmt.Errorf("refusing to sync refreshed live dogfood credentials to %s: operator config changed during dogfood", mirror.src)
+	}
+	if err := os.Rename(tmpName, mirror.src); err != nil {
+		return fmt.Errorf("writing live dogfood credential file %s: %w", mirror.src, err)
+	}
+	cleanup = false
+	return nil
+}
+
+func writeLiveDogfoodCredentialMirrorFile(dst string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("creating live dogfood credential mirror directory for %s: %w", dst, err)
 	}
@@ -334,7 +374,7 @@ func copyLiveDogfoodCredentialFile(src, dst string) (*liveDogfoodCredentialMirro
 		return nil, fmt.Errorf("reading live dogfood credential file %s: %w", src, err)
 	}
 	mode := info.Mode().Perm()
-	if err := writeLiveDogfoodCredentialFile(dst, data, mode); err != nil {
+	if err := writeLiveDogfoodCredentialMirrorFile(dst, data, mode); err != nil {
 		return nil, err
 	}
 	return &liveDogfoodCredentialMirror{
