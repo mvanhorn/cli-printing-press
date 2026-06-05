@@ -173,6 +173,23 @@ components:
           type: string
           description: Shippo carrier token.
           example: usps
+          enum:
+            - usps
+            - ups
+            - fedex
+            - dhl_express
+            - dhl_ecommerce
+            - canada_post
+            - royal_mail
+            - australia_post
+            - lasership
+            - ontrac
+            - purolator
+            - dpd_uk
+            - deutsche_post
+            - colissimo
+            - new_zealand_post
+            - shippo
         tracking_number:
           type: string
           description: Carrier tracking number.
@@ -230,13 +247,13 @@ components:
           items:
             type: string
         weight:
-          type: array
-          items:
-            $ref: '#/components/schemas/PackageWeight'
+          allOf:
+            - $ref: '#/components/schemas/PackageWeight'
+          nullable: true
         dimensions:
-          type: array
-          items:
-            $ref: '#/components/schemas/PackageDimensions'
+          allOf:
+            - $ref: '#/components/schemas/PackageDimensions'
+          nullable: true
 
     TrackingStatus:
       type: object
