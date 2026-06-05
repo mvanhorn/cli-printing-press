@@ -678,8 +678,7 @@ func syncResource(ctx context.Context, c interface {
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
-					fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","status":%d,"reason":"%s","message":"%s"}`+"\n",
-						resource, w.Status, w.Reason, strings.ReplaceAll(w.Message, `"`, `\"`))
+					fmt.Fprintln(syncEvents, syncWarningJSON(resource, "", w.Status, w.Reason, w.Message))
 				}
 				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
 			}
@@ -2210,8 +2209,7 @@ func syncDependentResource(ctx context.Context, c interface {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "\n  %s: access denied for parent %s: %s\n", dep.Name, parentID, w.Reason)
 					} else {
-						fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":"%s","status":%d,"reason":"%s","message":"%s"}`+"\n",
-							dep.Name, parentID, w.Status, w.Reason, strings.ReplaceAll(w.Message, `"`, `\"`))
+						fmt.Fprintln(syncEvents, syncWarningJSON(dep.Name, parentID, w.Status, w.Reason, w.Message))
 					}
 				} else if humanFriendly {
 					fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)

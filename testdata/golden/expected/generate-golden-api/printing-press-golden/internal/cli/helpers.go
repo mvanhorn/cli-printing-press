@@ -273,6 +273,33 @@ func syncErrorJSON(resource, parent string, err error) string {
 	return string(out)
 }
 
+// syncWarningJSON renders a sync_warning event as a single valid JSON line.
+// Marshaling (rather than fmt.Fprintf string interpolation) escapes the
+// message field, whose value is an upstream error body that may be
+// pretty-printed multi-line JSON — embedding it raw broke the NDJSON stream.
+func syncWarningJSON(resource, parent string, status int, reason, message string) string {
+	payload := struct {
+		Event    string `json:"event"`
+		Resource string `json:"resource"`
+		Parent   string `json:"parent,omitempty"`
+		// status/reason/message are always present (matching the prior raw
+		// fmt.Fprintf shape); only parent was conditional. No omitempty so
+		// consumers parsing the event don't see fields disappear on zero values.
+		Status  int    `json:"status"`
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}{
+		Event:    "sync_warning",
+		Resource: resource,
+		Parent:   parent,
+		Status:   status,
+		Reason:   reason,
+		Message:  message,
+	}
+	out, _ := json.Marshal(payload)
+	return string(out)
+}
+
 // syncUserParams carries user-supplied query parameters injected into sync
 // HTTP requests. flatGlobal entries come from --param and inject into
 // flat-list requests only; trueGlobal entries come from --global-param and

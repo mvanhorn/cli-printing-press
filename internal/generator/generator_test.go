@@ -11001,8 +11001,9 @@ func TestGeneratedSyncTreatsAccessDeniedAsWarning(t *testing.T) {
 
 	// Sync emits the structured warn event and routes to the warn-aware exit branch.
 	assert.Contains(t, syncContent, `Warn     error`)
-	assert.Contains(t, syncContent, `{"event":"sync_warning"`)
-	assert.Contains(t, syncContent, `"status":%d,"reason":"%s"`)
+	// The access-denied warning is marshaled via syncWarningJSON (escaping the
+	// embedded upstream error body) rather than raw fmt.Fprintf interpolation.
+	assert.Contains(t, syncContent, `syncWarningJSON(resource, "", w.Status, w.Reason, w.Message)`)
 	assert.Contains(t, syncContent, `{"event":"sync_summary"`)
 	assert.Contains(t, syncContent, `Sync complete: %d records across %d resources (%d warned, %.1fs)`)
 	assert.Contains(t, syncContent, `successCount == 0`)
@@ -17028,4 +17029,61 @@ paths:
 		assert.Regexp(t, `Short:\s+"List and get invoices"`, string(invoicesSrc))
 		assert.NotRegexp(t, `Coordinate commerce workflows`, string(invoicesSrc))
 	})
+}
+
+// TestSyncWarningEmitsValidJSON guards the contract that sync_warning events
+// are emitted as valid single-line JSON. The message field carries an upstream
+// error body that can be multi-line pretty-printed JSON; the old raw
+// fmt.Fprintf path escaped only quotes, so embedded newlines broke the NDJSON
+// stream (dogfood json_fidelity rejected it). The generated code must route
+// warnings through syncWarningJSON, which marshals the event.
+func TestSyncWarningEmitsValidJSON(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "warnjson",
+		Version: "0.1.0",
+		BaseURL: "https://warnjson.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/warnjson-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"messages": {
+				Description: "Messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/messages",
+						Description: "List messages",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpersSrc), "func syncWarningJSON(",
+		"helpers.go must define syncWarningJSON")
+	assert.Contains(t, string(helpersSrc), "json.Marshal(payload)",
+		"syncWarningJSON must marshal the event rather than interpolate it")
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(syncSrc), "syncWarningJSON(",
+		"sync.go must route sync_warning events through syncWarningJSON")
+	assert.NotContains(t, string(syncSrc), `ReplaceAll(w.Message`,
+		"sync.go must not quote-only-escape the warning message (drops newline escaping)")
+	// Compile-level proof for the emitted sync.go + helpers.go is covered by
+	// scripts/verify-generator-output.sh (which builds the generate-golden-api
+	// module, exercising the syncWarningJSON call site); asserting the contract
+	// here keeps the canary close to the template change.
 }
