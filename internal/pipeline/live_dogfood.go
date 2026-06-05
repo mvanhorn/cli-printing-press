@@ -560,6 +560,13 @@ func findListCompanion(candidates []liveDogfoodCommand) *liveDogfoodCommand {
 //   - (nil, true, reason)    — chain broke; caller must skip happy_path + json_fidelity
 //   - (happyArgs, false, "") — no positionals at all; pass-through unchanged
 func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, ctx resolveCtx) ([]string, bool, string) {
+	// pp:happy-args already supplies real positional values, so the args are
+	// authoritative — skip placeholder re-resolution, which would otherwise
+	// overwrite them via the list companion or skip the command when no
+	// companion is reachable.
+	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) != "" {
+		return happyArgs, false, ""
+	}
 	placeholders := extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))
 	if len(placeholders) == 0 {
 		return happyArgs, false, ""

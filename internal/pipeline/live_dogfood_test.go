@@ -4329,13 +4329,20 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 		"flag-form pp:happy-args must override the Example placeholder")
 
 	// Positional form: <name>=value contributes the value as a positional arg.
+	// resolveCommandPositionals must NOT re-resolve (or skip) it even when the
+	// Usage line carries an <id> placeholder and no list companion is reachable.
 	posCmd := liveDogfoodCommand{
 		Path:        []string{"tweets", "get"},
+		Help:        "Usage:\n  cli tweets get <id> [flags]\n",
 		Annotations: map[string]string{happyArgsAnnotation: "<id>=1750000000000000000"},
 	}
 	args, ok = liveDogfoodHappyArgs(posCmd)
 	require.True(t, ok)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, args)
+	resolved, skipped, reason := resolveCommandPositionals(posCmd, args, resolveCtx{})
+	assert.False(t, skipped, "pp:happy-args positional must not be skipped: %s", reason)
+	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, resolved,
+		"resolveCommandPositionals must preserve the pp:happy-args positional value")
 
 	// Empty annotation falls through to the Example-derivation path.
 	emptyCmd := liveDogfoodCommand{
