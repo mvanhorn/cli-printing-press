@@ -298,9 +298,13 @@ func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
 	assert.Contains(t, content, "<!-- pp-hermes-install-anchor -->",
 		"sweep-tool anchor must be present so retrofit can locate the insertion point")
 
-	// Hermes section: both forms (CLI + chat) use the full
-	// mvanhorn/printing-press-library/cli-skills path.
+	// Hermes section: install the binary as well as the focused skill; both
+	// skill-install forms use the full mvanhorn/printing-press-library/cli-skills path.
 	assert.Contains(t, content, "## Install for Hermes")
+	assert.Contains(t, content, "npx -y @mvanhorn/printing-press-library install hermes-install --cli-only",
+		"Hermes section must install the CLI binary before installing the focused skill")
+	assert.NotContains(t, content, "hermes-install --cli-only --bin-dir",
+		"Hermes binary install should rely on the installer default bin directory unless explicitly overridden")
 	assert.Contains(t, content, "hermes skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
 		"Hermes CLI form must use mvanhorn/printing-press-library/cli-skills (the short mvanhorn/cli-skills form was wrong)")
 	assert.Contains(t, content, "/skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
