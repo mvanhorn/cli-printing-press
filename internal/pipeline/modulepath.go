@@ -115,11 +115,20 @@ func rewriteGoImportModulePaths(content, oldPath, newPath string) string {
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(trimmed, "import ("):
+		case strings.HasPrefix(trimmed, "import (") || strings.HasPrefix(trimmed, "import("):
 			inImportBlock = true
-			continue
+			// A grouped import may carry a path on the same line
+			// (e.g. import("oldmod")); rewrite it and, if the group also
+			// closes on this line, leave the block.
+			lines[i] = rewriteGoImportLine(line, oldPath, newPath)
+			if strings.Contains(trimmed, ")") {
+				inImportBlock = false
+			}
 		case inImportBlock && trimmed == ")":
 			inImportBlock = false
+		case strings.HasPrefix(trimmed, "//"):
+			// Comment line (incl. inside an import block): never rewrite, so a
+			// comment that happens to quote the old module path is untouched.
 			continue
 		case inImportBlock || strings.HasPrefix(trimmed, "import "):
 			lines[i] = rewriteGoImportLine(line, oldPath, newPath)
