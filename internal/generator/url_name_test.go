@@ -206,6 +206,29 @@ func TestMCPParamBindingsUseParamWireName(t *testing.T) {
 	require.Equal(t, "query", bindings[0].Location)
 }
 
+func TestMCPParamBindingsCarryQueryDefaults(t *testing.T) {
+	t.Parallel()
+
+	bindings := mcpParamBindings(spec.Endpoint{
+		Params: []spec.Param{
+			{Name: "location", Type: "string", Default: "city"},
+			{Name: "category", Type: "string"},
+			{Name: "itemId", Type: "string", Default: "ignored"},
+		},
+	}, "/items/{itemId}")
+
+	require.Len(t, bindings, 3)
+	require.Equal(t, "location", bindings[0].PublicName)
+	require.Equal(t, "query", bindings[0].Location)
+	require.Equal(t, "city", bindings[0].Default)
+	require.Equal(t, "category", bindings[1].PublicName)
+	require.Equal(t, "query", bindings[1].Location)
+	require.Empty(t, bindings[1].Default)
+	require.Equal(t, "itemId", bindings[2].PublicName)
+	require.Equal(t, "path", bindings[2].Location)
+	require.Empty(t, bindings[2].Default)
+}
+
 func TestCodeOrchQueryParamsUseParamWireName(t *testing.T) {
 	t.Parallel()
 
