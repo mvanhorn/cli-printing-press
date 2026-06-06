@@ -508,6 +508,67 @@ func TestReconcileSpecNameWithDirRejectsDriftEvenOnSuffixedDir(t *testing.T) {
 	assert.NotContains(t, string(after), "weather-goat-pp-cli", "the suffix must never reach the slug-of-record")
 }
 
+func TestReconcileSpecNameWithDirFallsBackToDirSlugWhenNameMissing(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "nameless-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	specPath := filepath.Join(cliDir, "spec.yaml")
+	original := "description: Nameless API\nversion: 1.0.0\nbase_url: https://api.example.com\n"
+	require.NoError(t, os.WriteFile(specPath, []byte(original), 0o644))
+
+	parsed := &spec.APISpec{}
+	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+	require.NoError(t, err)
+	assert.Equal(t, "", renamedFrom)
+	assert.Equal(t, "nameless", parsed.Name)
+
+	after, err := os.ReadFile(specPath)
+	require.NoError(t, err)
+	assert.Equal(t, "name: nameless\n"+original, string(after))
+}
+
+func TestSyncPreservesManifestSpecNameInTransientRegenDir(t *testing.T) {
+	t.Parallel()
+	apiSpec := &spec.APISpec{
+		Name:        "swell",
+		Description: "Swell API",
+		Version:     "1.0.0",
+		BaseURL:     "https://api.example.com",
+		Auth:        spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	cliDir := filepath.Join(t.TempDir(), "swell-pp-cli.regen-test")
+	gen := generator.New(apiSpec, cliDir)
+	require.NoError(t, gen.Generate())
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   "swell",
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+
+	before, err := os.ReadFile(filepath.Join(cliDir, "spec.yaml"))
+	require.NoError(t, err)
+	require.Contains(t, string(before), "name: swell\n")
+
+	_, err = Sync(cliDir, Options{Force: true})
+	require.NoError(t, err)
+
+	after, err := os.ReadFile(filepath.Join(cliDir, "spec.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(after), "name: swell\n")
+	assert.NotContains(t, string(after), "swell-pp-cli.regen-test")
+}
+
 // TestEnsureMCPGoMinVersionBumpsOldPin — older library CLIs predating
 // the cobratree templates pin a v0.x version that lacks
 // WithReadOnlyHintAnnotation/GetArguments. mcp-sync bumps to the floor
@@ -1494,11 +1555,15 @@ func TestSyncManifestAPINameWinsOverSpecDerivedSlug(t *testing.T) {
 		Name   string `json:"name"`
 		Server struct {
 			EntryPoint string `json:"entry_point"`
+			MCPConfig  struct {
+				Command string `json:"command"`
+			} `json:"mcp_config"`
 		} `json:"server"`
 	}
 	require.NoError(t, json.Unmarshal(manifestData, &manifest))
 	assert.Equal(t, "telegram-pp-mcp", manifest.Name, "MCPB manifest name must derive from manifest api_name")
 	assert.Equal(t, "bin/telegram-pp-mcp", manifest.Server.EntryPoint, "entry_point must derive from manifest api_name, not spec title")
+	assert.Equal(t, "${__dirname}/bin/telegram-pp-mcp", manifest.Server.MCPConfig.Command, "mcp_config.command must derive from manifest api_name, not spec title")
 
 	// No stray cmd/telegram-bot-pp-{cli,mcp}/ directories should have
 	// been created by GenerateMCPSurface.
