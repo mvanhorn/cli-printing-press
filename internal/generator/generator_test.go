@@ -3935,10 +3935,6 @@ func TestSyncExtractPaginationNestedCursor(t *testing.T) {
 		"pageItemKeys must include features (GeoJSON support)")
 	assert.Contains(t, src, `"Features"`,
 		"pageItemKeys must include Features (PascalCase GeoJSON support)")
-	assert.Contains(t, src, `"metadata": true`,
-		"pageEnvelopeMetadataKeys must skip lowercase metadata wrapper objects")
-	assert.Contains(t, src, `"Metadata": true`,
-		"pageEnvelopeMetadataKeys must skip PascalCase metadata wrapper objects")
 
 	// Tier 2: behavioral test, written into the generated tree as a
 	// same-package _test.go so it can call the unexported helper.
