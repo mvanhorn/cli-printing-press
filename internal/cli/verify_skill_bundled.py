@@ -87,15 +87,19 @@ USE_RE = re.compile(r'Use:\s*"([^"]+)"')
 ARGS_RE = re.compile(
     r'Args:\s*cobra\.(ExactArgs|MinimumNArgs|MaximumNArgs|RangeArgs|NoArgs|OnlyValidArgs|ExactValidArgs)\s*\(([^)]*)\)'
 )
-FLAG_DECL_RE = re.compile(
-    r'(Persistent)?Flags\(\)\.'
-    r'(StringVar|BoolVar|IntVar|Int32Var|Int64Var|Float32Var|Float64Var|DurationVar|'
+FLAG_METHOD_PATTERN = (
+    r'StringVar|BoolVar|IntVar|Int32Var|Int64Var|Float32Var|Float64Var|DurationVar|'
     r'StringSliceVar|StringArrayVar|IntSliceVar|Int32SliceVar|Int64SliceVar|'
     r'Float64SliceVar|BoolSliceVar|DurationSliceVar|'
     r'UintVar|Uint32Var|Uint64Var|UintSliceVar|IPVar|IPSliceVar|Float32SliceVar|'
-    r'StringToStringVar|StringToIntVar|StringToInt64Var)P?\('
+    r'StringToStringVar|StringToIntVar|StringToInt64Var'
+)
+FLAG_DECL_RE = re.compile(
+    r'(Persistent)?Flags\(\)\.'
+    r'(' + FLAG_METHOD_PATTERN + r')P?\('
     r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
 )
+FLAG_ALIAS_RE = re.compile(r'\b([A-Za-z_]\w*)\s*(?::=|=)\s*cmd\.(Persistent)?Flags\(\)')
 @dataclass
 class Finding:
     check: str
@@ -437,14 +441,35 @@ def _legacy_find_command_source(cli_dir: Path, cmd_path: list[str]):
     return top_files, candidates[0][2], candidates[0][3]
 
 
+def iter_flag_declarations(text: str) -> Iterable[tuple[bool, str]]:
+    for m in FLAG_DECL_RE.finditer(text):
+        persistent, _, name = m.groups()
+        yield persistent == "Persistent", name
+
+    aliases = {
+        m.group(1): m.group(2) == "Persistent"
+        for m in FLAG_ALIAS_RE.finditer(text)
+    }
+    if not aliases:
+        return
+
+    alias_decl_re = re.compile(
+        r'\b(' + "|".join(re.escape(alias) for alias in aliases) + r')\.'
+        r'(' + FLAG_METHOD_PATTERN + r')P?\('
+        r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
+    )
+    for m in alias_decl_re.finditer(text):
+        yield aliases[m.group(1)], m.group(3)
+
+
 def flag_declared_in(files: Iterable[Path], flag_name: str) -> bool:
     for f in files:
         try:
             text = read_utf8(f)
         except Exception:
             continue
-        for m in FLAG_DECL_RE.finditer(text):
-            if m.group(3) == flag_name:
+        for _, name in iter_flag_declarations(text):
+            if name == flag_name:
                 return True
     return False
 
@@ -580,8 +605,8 @@ def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name
             continue
         for m in func_re.finditer(text):
             body = go_block_body(text, m.end() - 1)
-            for fm in FLAG_DECL_RE.finditer(body):
-                if fm.group(3) == flag_name:
+            for _, name in iter_flag_declarations(body):
+                if name == flag_name:
                     return True
     return False
 
@@ -595,9 +620,8 @@ def persistent_flag_declared(cli_dir: Path, flag_name: str) -> bool:
             text = read_utf8(go_file)
         except Exception:
             continue
-        for m in FLAG_DECL_RE.finditer(text):
-            persistent, _, name = m.groups()
-            if name == flag_name and persistent == "Persistent":
+        for persistent, name in iter_flag_declarations(text):
+            if name == flag_name and persistent:
                 return True
     return False
 
@@ -630,6 +654,12 @@ def _cli_invocation_from_tokens(
         ):
             break
         if len(cmd_path) < 3 and re.match(r"^[a-z][a-z0-9-]*$", t):
+            if cli_dir is not None:
+                _files, use_str, _args_info = find_command_source(cli_dir, cmd_path)
+                if use_str:
+                    _, _, optional, variadic = parse_use(use_str)
+                    if optional > 0 or variadic:
+                        break
             # Verify adding this token still maps to a valid command. If the
             # extended path has no source match, this token is an argument.
             if cli_dir is not None:
