@@ -921,6 +921,35 @@ func TestPublishPackageStripsRootBinaries(t *testing.T) {
 	require.FileExists(t, filepath.Join(result.StagedDir, "root_test.go"), "staged dir should keep Go test source files")
 }
 
+func TestPublishPackageStripsRootShipcheckReports(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	for _, name := range stagedShipcheckReportNames() {
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, name), []byte(`{"passed":true}`+"\n"), 0o644))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "config.json"), []byte(`{"name":"test"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "internal", "cli", "extra.go"), []byte("package cli\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	for _, name := range stagedShipcheckReportNames() {
+		assert.FileExists(t, filepath.Join(cliDir, name), "package must not delete source-tree shipcheck report %s", name)
+		assert.NoFileExists(t, filepath.Join(result.StagedDir, name), "staged dir must not include root-level shipcheck report %s", name)
+	}
+	assert.FileExists(t, filepath.Join(result.StagedDir, "config.json"), "legitimate root JSON source should remain staged")
+	assert.FileExists(t, filepath.Join(result.StagedDir, "internal", "cli", "extra.go"), "legitimate Go source should remain staged")
+}
+
 func TestStagedBinaryNamesDeduplicates(t *testing.T) {
 	t.Parallel()
 
