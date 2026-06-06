@@ -23,10 +23,13 @@ const (
 	defaultHTTPAddr = ":7777"
 )
 
+// version is the printed MCP server's version, overridable at build time via ldflags.
+var version = "1.0.0"
+
 func main() {
 	s := server.NewMCPServer(
 		"Printing Press Studio",
-		"1.0.0",
+		version,
 		server.WithToolCapabilities(false),
 	)
 

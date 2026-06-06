@@ -113,6 +113,7 @@ func TestGeneratedBLEDeviceEmitsPublishArtifacts(t *testing.T) {
 	assert.Contains(t, goreleaser, "main: ./cmd/"+naming.CLI(ds.Name))
 	assert.Contains(t, goreleaser, "main: ./cmd/"+naming.MCP(ds.Name))
 	assert.Contains(t, goreleaser, naming.CLI(ds.Name)+"/internal/cli.version=")
+	assert.Contains(t, goreleaser, "-X main.version={{ .Version }}")
 	assert.Contains(t, goreleaser, `description: "`)
 
 	// AGENTS.md is the device-aware variant: it uses BLE/replay concepts and the
