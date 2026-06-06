@@ -59,6 +59,10 @@ func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
 	require.NotContains(t, client, "os.MkdirAll(c.cacheDir, 0o755)")
 	require.NotContains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o644)")
 
+	// minimalSpec does not enable HTML extraction, so the writeCacheContentType
+	// ".meta.json" 0o600 write is not emitted here; that path's permission is
+	// covered by the golden suite's HTML-extraction fixtures. This test guards
+	// the always-emitted cache/client/config perms.
 	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	config := string(configSrc)
