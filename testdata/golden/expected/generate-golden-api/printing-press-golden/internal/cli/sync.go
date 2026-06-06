@@ -1007,6 +1007,13 @@ func isZeroCountField(key string, raw json.RawMessage) bool {
 	default:
 		return false
 	}
+	// A JSON null count is not a numeric zero-count signal: json.Unmarshal of
+	// "null" into a float64 is a no-op (leaves n at 0, returns nil), so without
+	// this guard a null count would falsely qualify as zero — masking a
+	// possibly-malformed {"items":null,"total":null} as an empty page.
+	if isJSONNull(raw) {
+		return false
+	}
 	var n float64
 	return json.Unmarshal(raw, &n) == nil && n == 0
 }

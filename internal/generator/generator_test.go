@@ -12417,6 +12417,7 @@ func TestIsEmptyPageResponseRejectsNullSingletonFields(t *testing.T) {
 		{"known wrapper null is not an empty page", ` + "`" + `{"results":null}` + "`" + `, false},
 		{"known data wrapper null is not an empty page", ` + "`" + `{"data":null}` + "`" + `, false},
 		{"unknown wrapper null with missing count is not an empty page", ` + "`" + `{"orders":null}` + "`" + `, false},
+		{"unknown wrapper null with null count is not an empty page", ` + "`" + `{"orders":null,"total":null}` + "`" + `, false},
 		{"single null field is not an empty page", ` + "`" + `{"user":null}` + "`" + `, false},
 		{"singleton object with null field is not an empty page", ` + "`" + `{"id":"rec_1","user":null}` + "`" + `, false},
 	}
