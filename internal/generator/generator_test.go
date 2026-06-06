@@ -15491,6 +15491,8 @@ func TestGeneratedFrameworkCommandsEmitReadOnlyAnnotations(t *testing.T) {
 	feedbackSrc := readFile("feedback.go")
 	assert.Regexp(t, readonlyAnnotation, generatedFunctionBody(t, feedbackSrc, "func newFeedbackListCmd(flags *rootFlags) *cobra.Command"),
 		"feedback list only reads the local feedback ledger")
+	assert.NotRegexp(t, readonlyAnnotation, generatedFunctionBody(t, feedbackSrc, "func newFeedbackCmd(flags *rootFlags) *cobra.Command"),
+		"feedback (record/POST) must not be emitted as mcp read-only true")
 
 	profileSrc := readFile("profile.go")
 	assert.Regexp(t, readonlyAnnotation, generatedFunctionBody(t, profileSrc, "func newProfileListCmd(flags *rootFlags) *cobra.Command"),
