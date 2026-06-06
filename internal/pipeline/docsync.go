@@ -525,7 +525,11 @@ func syncMCPNovelFeatureContext(path string, features []NovelFeature) (bool, err
 
 func renderMCPCommandMirrorCapabilities(features []NovelFeature) string {
 	if len(features) == 0 {
-		return ""
+		// Mirror renderWhichIndex's empty case: emit an empty (but well-formed)
+		// literal rather than "" so syncMCPMapList does a normal in-place replace
+		// (preserving the surrounding indentation) instead of taking its delete
+		// branch, which would strip the leading tabs off the following map entry.
+		return "\"command_mirror_capabilities\": []map[string]string{\n\t\t},"
 	}
 	var b strings.Builder
 	b.WriteString(`"command_mirror_capabilities": []map[string]string{`)
