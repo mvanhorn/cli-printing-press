@@ -9923,6 +9923,13 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "detectCookieTool")
 	assert.Contains(t, content, "extractCookies")
 	assert.Contains(t, content, "cookieToolSupportsProfiles")
+	assert.Contains(t, content, "func requiredAuthCookies() []string")
+	assert.Contains(t, content, "strings.TrimSpace(name)")
+	assert.Contains(t, content, "RequiredCookieCount int")
+	assert.Contains(t, content, "discoverChromeProfiles(domain, requiredCookies)")
+	assert.Contains(t, content, "SELECT DISTINCT name FROM cookies WHERE host_key LIKE")
+	assert.Contains(t, content, "is missing required cookies")
+	assert.Contains(t, content, "required cookies present")
 	assert.Contains(t, content, "--url")
 	assert.Contains(t, content, "does not support --profile")
 	assert.Contains(t, content, ".example.com")
@@ -10494,6 +10501,14 @@ func TestGenerate_ComposedAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "detectCookieTool")
 	assert.Contains(t, content, "extractCookies")
 	assert.Contains(t, content, "pagliacci.com")
+	assert.Contains(t, content, `raw := []string{"customerId", "authToken"}`)
+	assert.Contains(t, content, "RequiredCookieCount")
+	assert.Contains(t, content, "profiles[i].RequiredCookieCount > profiles[j].RequiredCookieCount")
+	assert.Contains(t, content, "SELECT DISTINCT name FROM cookies WHERE host_key LIKE")
+	assert.Contains(t, content, "printMissingCookieHint")
+	assert.Contains(t, content, "required cookies present")
+	assert.NotContains(t, content, "case 0:")
+	assert.NotContains(t, content, `profileDir != "" && profileDir != "Default"`)
 	// Should NOT contain auth_simple template signature. newAuthSetupCmd
 	// is auth_simple-only — auth_browser uses newAuthLoginCmd instead.
 	// (set-token used to be the proxy, but auth_browser now also emits
