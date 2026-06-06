@@ -80,10 +80,9 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// api_name, manifest.json's name/entry_point, and
 	// cmd/<slug>-pp-{cli,mcp}/ directories under the title-derived slug
 	// — silently flipping a "telegram" CLI to "telegram-bot" mid-sync.
-	manifestNameAuthoritative := manifestAPINameMatchesParsed(cliDir, parsed)
-	if prior := applyManifestNameOverride(cliDir, parsed); prior != "" {
+	prior, manifestNameAuthoritative := applyManifestNameOverride(cliDir, parsed)
+	if prior != "" {
 		fmt.Fprintf(os.Stderr, "mcp-sync: using manifest api_name %q over spec-derived slug %q\n", parsed.Name, prior)
-		manifestNameAuthoritative = true
 	}
 	applyCatalogMetadata(parsed)
 	// Validate that spec.yaml.name matches the directory's basename.
@@ -496,13 +495,17 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 // roots) are left alone.
 const defaultConfigPathFormat = "~/.config/%s/config.toml"
 
-// applyManifestNameOverride replaces parsed.Name with the existing
-// CLI manifest's api_name when the two diverge. Returns the prior
-// parsed.Name when an override happened, "" otherwise (manifest
-// missing, api_name empty, or values already agreed).
-func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) string {
+// applyManifestNameOverride aligns parsed.Name with the existing CLI manifest's
+// api_name (the operator's chosen identity). It returns the prior parsed.Name
+// when an override actually happened ("" otherwise: manifest missing, api_name
+// empty, or the values already agreed) and authoritative=true when the manifest
+// api_name is the identity of record — i.e. it either overrode parsed.Name or
+// already matched it. The manifest is read exactly once, and the trimmed
+// api_name is used for both the comparison and the assignment so a hand-edited
+// manifest with stray whitespace can't leak a padded name downstream.
+func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) (prior string, authoritative bool) {
 	if parsed == nil {
-		return ""
+		return "", false
 	}
 	m, err := pipeline.ReadCLIManifest(cliDir)
 	if err != nil {
@@ -514,29 +517,22 @@ func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) string {
 		if !errors.Is(err, fs.ErrNotExist) {
 			fmt.Fprintf(os.Stderr, "mcp-sync: could not read .printing-press.json (%v); falling back to spec-derived slug\n", err)
 		}
-		return ""
+		return "", false
 	}
-	if m.APIName == "" || m.APIName == parsed.Name {
-		return ""
+	apiName := strings.TrimSpace(m.APIName)
+	if apiName == "" {
+		return "", false
 	}
-	prior := parsed.Name
+	if apiName == parsed.Name {
+		return "", true
+	}
+	prior = parsed.Name
 	if parsed.Config.Path == fmt.Sprintf(defaultConfigPathFormat, naming.CLI(prior)) {
-		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(m.APIName))
+		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(apiName))
 	}
-	catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, m.APIName)
-	parsed.Name = m.APIName
-	return prior
-}
-
-func manifestAPINameMatchesParsed(cliDir string, parsed *spec.APISpec) bool {
-	if parsed == nil || parsed.Name == "" {
-		return false
-	}
-	m, err := pipeline.ReadCLIManifest(cliDir)
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(m.APIName) == parsed.Name
+	catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, apiName)
+	parsed.Name = apiName
+	return prior, true
 }
 
 func applyCatalogMetadata(parsed *spec.APISpec) {

@@ -1325,7 +1325,7 @@ func TestApplyManifestNameOverrideReplacesParsedName(t *testing.T) {
 			Path:   "~/.config/telegram-bot-pp-cli/config.toml",
 		},
 	}
-	prior := applyManifestNameOverride(cliDir, parsed)
+	prior, _ := applyManifestNameOverride(cliDir, parsed)
 	assert.Equal(t, "telegram-bot", prior, "should report the prior spec-derived slug")
 	assert.Equal(t, "telegram", parsed.Name, "parsed.Name should adopt the manifest's api_name")
 	assert.Equal(t, "~/.config/telegram-pp-cli/config.toml", parsed.Config.Path,
@@ -1379,7 +1379,7 @@ func TestApplyManifestNameOverrideNoOpWhenManifestAgrees(t *testing.T) {
 			Path:   "~/.config/producthunt-pp-cli/config.toml",
 		},
 	}
-	prior := applyManifestNameOverride(cliDir, parsed)
+	prior, _ := applyManifestNameOverride(cliDir, parsed)
 	assert.Equal(t, "", prior, "agreement should report no override")
 	assert.Equal(t, "producthunt", parsed.Name)
 	assert.Equal(t, "~/.config/producthunt-pp-cli/config.toml", parsed.Config.Path)
@@ -1400,7 +1400,7 @@ func TestApplyManifestNameOverrideMissingManifest(t *testing.T) {
 			Path:   "~/.config/legacy-api-pp-cli/config.toml",
 		},
 	}
-	prior := applyManifestNameOverride(cliDir, parsed)
+	prior, _ := applyManifestNameOverride(cliDir, parsed)
 	assert.Equal(t, "", prior, "missing manifest should report no override")
 	assert.Equal(t, "legacy-api", parsed.Name, "parsed.Name must be untouched when manifest is absent")
 	assert.Equal(t, "~/.config/legacy-api-pp-cli/config.toml", parsed.Config.Path)
@@ -1423,7 +1423,7 @@ func TestApplyManifestNameOverrideMalformedJSON(t *testing.T) {
 	))
 
 	parsed := &spec.APISpec{Name: "spec-derived"}
-	prior := applyManifestNameOverride(cliDir, parsed)
+	prior, _ := applyManifestNameOverride(cliDir, parsed)
 	assert.Equal(t, "", prior, "malformed manifest must not produce an override")
 	assert.Equal(t, "spec-derived", parsed.Name, "parsed.Name must be preserved when the manifest cannot be parsed")
 }
@@ -1441,7 +1441,7 @@ func TestApplyManifestNameOverrideEmptyAPIName(t *testing.T) {
 	}))
 
 	parsed := &spec.APISpec{Name: "partial-api"}
-	prior := applyManifestNameOverride(cliDir, parsed)
+	prior, _ := applyManifestNameOverride(cliDir, parsed)
 	assert.Equal(t, "", prior)
 	assert.Equal(t, "partial-api", parsed.Name, "empty api_name must not override")
 }
@@ -1467,7 +1467,7 @@ func TestApplyManifestNameOverridePreservesCustomConfigPath(t *testing.T) {
 			Path:   "$XDG_CONFIG_HOME/telegram/config.toml",
 		},
 	}
-	prior := applyManifestNameOverride(cliDir, parsed)
+	prior, _ := applyManifestNameOverride(cliDir, parsed)
 	assert.Equal(t, "telegram-bot", prior)
 	assert.Equal(t, "telegram", parsed.Name)
 	assert.Equal(t, "$XDG_CONFIG_HOME/telegram/config.toml", parsed.Config.Path,
