@@ -49,7 +49,15 @@ type chromeProfile struct {
 }
 
 func requiredAuthCookies() []string {
-	return []string{"session_id", "csrf_token"}
+	raw := []string{"session_id", "csrf_token"}
+	out := raw[:0]
+	for _, name := range raw {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
@@ -503,28 +511,38 @@ func inspectCookiesForDomain(cookiesDB, domainPattern string, requiredCookies []
 		return count, 0, append([]string{}, requiredCookies...)
 	}
 
-	present := map[string]bool{}
+	quotedNames := make([]string, 0, len(requiredCookies))
 	for _, name := range requiredCookies {
+		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		query := fmt.Sprintf(
-			"SELECT COUNT(*) FROM cookies WHERE host_key LIKE '%s' AND name = '%s'",
-			sqlQuoteLiteral(domainPattern),
-			sqlQuoteLiteral(name),
-		)
-		out, err := exec.Command("sqlite3", tmpPath, query).Output()
-		if err != nil {
-			continue
-		}
-		n := 0
-		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &n)
-		if n > 0 {
+		quotedNames = append(quotedNames, "'"+sqlQuoteLiteral(name)+"'")
+	}
+	if len(quotedNames) == 0 {
+		return count, 0, nil
+	}
+
+	query = fmt.Sprintf(
+		"SELECT DISTINCT name FROM cookies WHERE host_key LIKE '%s' AND name IN (%s)",
+		sqlQuoteLiteral(domainPattern),
+		strings.Join(quotedNames, ","),
+	)
+	out, err = exec.Command("sqlite3", tmpPath, query).Output()
+	if err != nil {
+		return count, 0, append([]string{}, requiredCookies...)
+	}
+
+	present := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name := strings.TrimSpace(line)
+		if name != "" && !present[name] {
 			present[name] = true
 			requiredCount++
 		}
 	}
 	for _, name := range requiredCookies {
+		name = strings.TrimSpace(name)
 		if name != "" && !present[name] {
 			missing = append(missing, name)
 		}
@@ -582,6 +600,7 @@ func resolveChromeProfile(w io.Writer, r io.Reader, domain, profileFlag string, 
 		if len(withRequiredCookies) > 0 {
 			return chooseChromeProfile(w, r, domain, withRequiredCookies, true)
 		}
+		printMissingCookieHint(w, profiles, requiredCookies)
 	}
 
 	// Fall back to profiles that have any cookie for this domain. This preserves
@@ -593,13 +612,27 @@ func resolveChromeProfile(w io.Writer, r io.Reader, domain, profileFlag string, 
 		}
 	}
 
+	if len(withCookies) == 0 {
+		return "", fmt.Errorf("no Chrome profile has cookies for %s", domain)
+	}
 	return chooseChromeProfile(w, r, domain, withCookies, false)
+}
+
+func printMissingCookieHint(w io.Writer, profiles []chromeProfile, requiredCookies []string) {
+	if len(requiredCookies) == 0 {
+		return
+	}
+	for _, p := range profiles {
+		if p.CookieCount == 0 || len(p.MissingCookies) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "Chrome profile %s (%s) is missing required cookies: %s\n", p.DisplayName, p.Dir, strings.Join(p.MissingCookies, ", "))
+		return
+	}
 }
 
 func chooseChromeProfile(w io.Writer, r io.Reader, domain string, profiles []chromeProfile, matchedRequired bool) (string, error) {
 	switch len(profiles) {
-	case 0:
-		return "", fmt.Errorf("no Chrome profile has cookies for %s", domain)
 	case 1:
 		if matchedRequired {
 			fmt.Fprintf(w, "Auto-detected Chrome profile: %s (%s, required cookies present)\n", profiles[0].DisplayName, profiles[0].Dir)
