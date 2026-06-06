@@ -1808,6 +1808,7 @@ func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string
 	return cursorFromNextURL(nextURL, cursorParam)
 }
 
+// nextCursorFromTopLevelURL extracts a cursor from top-level absolute or relative next URLs.
 func nextCursorFromTopLevelURL(envelope map[string]json.RawMessage, cursorParam string) string {
 	for _, key := range []string{"next", "next_url"} {
 		rawNext, ok := envelope[key]
@@ -1818,11 +1819,22 @@ func nextCursorFromTopLevelURL(envelope map[string]json.RawMessage, cursorParam 
 		if json.Unmarshal(rawNext, &nextURL) != nil || nextURL == "" {
 			continue
 		}
-		if strings.HasPrefix(strings.ToLower(nextURL), "http") {
+		if isFollowableNextURL(nextURL) {
 			return cursorFromNextURL(nextURL, cursorParam)
 		}
 	}
 	return ""
+}
+
+// isFollowableNextURL reports whether a top-level "next" string is a URL we can
+// pull a cursor query param from: an absolute http(s) URL, a root-relative path,
+// or any value carrying a query string. Bare opaque cursor tokens (no query)
+// are rejected so they aren't mis-parsed.
+func isFollowableNextURL(nextURL string) bool {
+	lower := strings.ToLower(nextURL)
+	return strings.HasPrefix(lower, "http") ||
+		strings.HasPrefix(nextURL, "/") ||
+		strings.Contains(nextURL, "?")
 }
 
 func cursorFromNextURL(nextURL string, cursorParam string) string {
@@ -2770,7 +2782,7 @@ func depluralizeResourceStem(r string) string {
 
 func scalarIDString(value any) string {
 	switch value.(type) {
-	case nil, string, bool, int, int8, int16, int32, int64,
+	case string, bool, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, json.Number, []byte:
 		return store.ResourceIDString(value)

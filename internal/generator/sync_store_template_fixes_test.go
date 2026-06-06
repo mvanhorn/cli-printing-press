@@ -105,6 +105,10 @@ func TestCurrencyCodeSuffixExtractsResourceID(t *testing.T) {
 	if got := ExtractResourceID("currencies", obj); got != "USD" {
 		t.Fatalf("suffix fallback id = %q, want USD", got)
 	}
+	obj = map[string]any{"currency_code": nil, "symbol": "$"}
+	if got := ExtractResourceID("currencies", obj); got != "" {
+		t.Fatalf("nil suffix fallback id = %q, want empty", got)
+	}
 	if got := ExtractResourceID("get-currencies", map[string]any{"currency_code": "USD"}); got != "USD" {
 		t.Fatalf("verb-prefixed suffix fallback id = %q, want USD", got)
 	}
@@ -209,6 +213,20 @@ func TestExtractPageItemsDRFTopLevelNextURL(t *testing.T) {
 	}
 }
 
+func TestExtractPageItemsDRFTopLevelRelativeNextURL(t *testing.T) {
+	body := json.RawMessage(` + "`" + `{"count":2,"next":"/api/things?cursor=rel-abc","results":[{"id":"one"}]}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(body, "cursor")
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	if cursor != "rel-abc" {
+		t.Fatalf("cursor = %q, want rel-abc", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("hasMore = false, want true")
+	}
+}
+
 func TestExtractPageItemsBareTokenCursorUnaffected(t *testing.T) {
 	body := json.RawMessage(` + "`" + `{"next_cursor":"bare-token","next":"http://h.example/api/things?cursor=url-token","results":[{"id":"one"}]}` + "`" + `)
 	_, cursor, _ := extractPageItems(body, "cursor")
@@ -281,5 +299,5 @@ func TestSyncDependentResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "batch4_sync_test.go"), []byte(cliTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestCurrencyCodeSuffixExtractsResourceID", "-count=1")
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncDependentResourceNonJSONBodyEmitsAnomaly)", "-count=1")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "Test(SyncExtractIDSuffixFallbackIsGuarded|ExtractPageItemsDRFTopLevelNextURL|ExtractPageItemsDRFTopLevelRelativeNextURL|ExtractPageItemsBareTokenCursorUnaffected|SyncResourceNonJSONBodyEmitsAnomaly|SyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly|SyncDependentResourceNonJSONBodyEmitsAnomaly)", "-count=1")
 }

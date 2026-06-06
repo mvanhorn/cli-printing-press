@@ -1008,7 +1008,7 @@ func depluralizeResourceStem(r string) string {
 
 func scalarIDString(value any) string {
 	switch value.(type) {
-	case nil, string, bool, int, int8, int16, int32, int64,
+	case string, bool, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, json.Number, []byte:
 		return ResourceIDString(value)
