@@ -235,7 +235,22 @@ func novelFeatureCommandParts(command string) []string {
 }
 
 func novelFeatureHasPositional(command string) bool {
-	return strings.Contains(command, "<") || strings.Contains(command, "[")
+	// Only tokens before the first flag are positional arguments; a `<`/`[`
+	// inside a flag-value hint (e.g. "search --filter [active|inactive]") is
+	// not a positional and must not re-arm the args-based Help guard (#2592).
+	for token := range strings.FieldsSeq(command) {
+		token = strings.Trim(token, `"'`)
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			break
+		}
+		if novelFeatureTokenIsPositional(token) {
+			return true
+		}
+	}
+	return false
 }
 
 func novelFeatureTokenIsPositional(token string) bool {
@@ -246,8 +261,13 @@ func novelFeatureUse(segment, command string) string {
 	var positional []string
 	for token := range strings.FieldsSeq(command) {
 		token = strings.Trim(token, `"'`)
-		if token == "" || strings.HasPrefix(token, "-") {
+		if token == "" {
 			continue
+		}
+		// Stop at the first flag: placeholders after a flag are value hints,
+		// not positional args, and must not leak into the cobra Use string.
+		if strings.HasPrefix(token, "-") {
+			break
 		}
 		if novelFeatureTokenIsPositional(token) {
 			positional = append(positional, token)
@@ -260,23 +280,14 @@ func novelFeatureUse(segment, command string) string {
 }
 
 func novelFeatureParentShort(node *novelFeatureStubNode) string {
+	// Only called from the else-if len(node.children) > 0 branch, so children
+	// is always non-empty here.
 	children := sortedNovelChildren(node)
-	if len(children) == 0 {
-		return novelFeatureTitleSegment(node.segment) + " commands"
-	}
 	leafNames := make([]string, 0, len(children))
 	for _, child := range children {
 		leafNames = append(leafNames, child.segment)
 	}
 	return fmt.Sprintf("%s subcommands: %s", node.segment, strings.Join(leafNames, ", "))
-}
-
-func novelFeatureTitleSegment(segment string) string {
-	segment = strings.TrimSpace(segment)
-	if segment == "" {
-		return "Novel"
-	}
-	return strings.ToUpper(segment[:1]) + segment[1:]
 }
 
 func novelFeatureStubIdent(parts []string) string {

@@ -137,6 +137,12 @@ func TestGeneratorNovelFeatureHelpGuardRequiresPositionalUse(t *testing.T) {
 			Description: "Audit local cache state.",
 			Example:     "novelargs-pp-cli audit",
 		},
+		{
+			Name:        "Search",
+			Command:     "search --filter [active|inactive]",
+			Description: "Search items, filtered by flag.",
+			Example:     "novelargs-pp-cli search --filter active",
+		},
 	}
 	require.NoError(t, gen.Generate())
 
@@ -156,6 +162,14 @@ func TestGeneratorNovelFeatureHelpGuardRequiresPositionalUse(t *testing.T) {
 	assert.Contains(t, audit, "// validate required flags here")
 	assert.Contains(t, audit, "if dryRunOK(flags) {")
 	assert.Contains(t, audit, `TODO: implement novel feature %q", "audit"`)
+
+	// A bracket/angle placeholder inside a flag-value hint is NOT a positional
+	// (#2592 regression guard): no args-based Help guard, and the flag-value
+	// hint must not leak into the cobra Use string.
+	search := readGeneratedFile(t, outputDir, "internal", "cli", "search.go")
+	assert.NotContains(t, search, "return cmd.Help()")
+	assert.Contains(t, search, "// validate required flags here")
+	assert.NotContains(t, search, "[active|inactive]")
 }
 
 func TestGeneratorNovelFeatureParentShortHasNoTODO(t *testing.T) {
