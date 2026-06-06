@@ -30,11 +30,28 @@ const (
 const (
 	WarningLowConfidence      = "low_confidence"
 	WarningResourceNotInStore = "resource_not_in_store"
+	// WarningCrossAliasMatch flags a hit whose entity_match verdict was
+	// promoted from Mismatch to Exact because the query and stored row
+	// share a canonical via entity_lookups even though their literal
+	// entities differ.
+	WarningCrossAliasMatch = "cross_alias_match"
 )
 
 // Top-level recall envelope warnings.
 const (
 	TopWarningNoLearningsForQueryFamily = "no_learnings_for_query_family"
+	// WarningSimilarShapeDifferentEntity surfaces when stored rows match
+	// the query's structural shape but resolve to a different canonical.
+	// Emitted as `similar_shape_different_entity:<canonical>` (one per
+	// alternative canonical) so the agent sees a similar-shape learning
+	// exists rather than treating the query as a cold start.
+	WarningSimilarShapeDifferentEntity = "similar_shape_different_entity"
+	// WarningAmbiguousAlias surfaces when a single query entity resolves
+	// to multiple canonicals via entity_lookups. Narrow trigger: only
+	// fires for a single entity with multi-canonical resolution; does not
+	// fire for multi-entity queries where each individual entity resolves
+	// unambiguously even if the union spans multiple canonicals.
+	WarningAmbiguousAlias = "ambiguous_alias"
 )
 
 // Jaccard returns the token-set Jaccard coefficient of two string

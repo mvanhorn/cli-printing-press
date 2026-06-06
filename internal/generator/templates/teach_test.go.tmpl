@@ -515,3 +515,213 @@ func TestRecallCommand_EnvelopeCarriesQueryEntities(t *testing.T) {
 // by referencing the package so the unused-import lint doesn't fire
 // when the suite shrinks.
 var _ = entities.NewConfig
+
+// TestTeachCommand_IntegratedPlaybookFile covers R3: a single
+// `teach --query --resource --playbook-file --playbook-notes-file`
+// call records both the resource learning AND the playbook row in
+// one shot, so end-of-session flows don't need to fire two CLIs.
+func TestTeachCommand_IntegratedPlaybookFile(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+
+	pbPath := writePlaybookFile(t, home, "pb.json",
+		`{"steps":[{"cmd":"items list {category.id}"}],"entity_slots":["$CATEGORY"]}`)
+	notesPath := writePlaybookFile(t, home, "notes.md",
+		"the items-by-source endpoint needs source_type=2; duplicate labels")
+
+	stdout, stderr, err := runRootArgs(t,
+		"teach",
+		"--query", "list all widgets in inventory and their top stats",
+		"--resource", "widget-42",
+		"--resource-type", "items",
+		"--playbook-file", pbPath,
+		"--playbook-notes-file", notesPath,
+		"--db", dbPath,
+	)
+	if err != nil {
+		t.Fatalf("teach integrated: %v (stderr=%q)", err, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("teach should be silent on success; stdout=%q", stdout)
+	}
+
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer s.Close()
+
+	// Resource learning landed.
+	rows, err := listLearningsRows(s, store.ListLearningsFilter{})
+	if err != nil {
+		t.Fatalf("listLearnings: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ResourceID != "widget-42" {
+		t.Fatalf("expected 1 learning for widget-42, got %#v", rows)
+	}
+
+	// Playbook row landed in the same call.
+	pb, err := s.ListPlaybooks()
+	if err != nil {
+		t.Fatalf("ListPlaybooks: %v", err)
+	}
+	if len(pb) != 1 {
+		t.Fatalf("expected 1 playbook row, got %d", len(pb))
+	}
+	if !strings.Contains(pb[0].PlaybookJSON, "items list") {
+		t.Errorf("playbook_json not stored: %q", pb[0].PlaybookJSON)
+	}
+	if !strings.Contains(pb[0].NotesText, "source_type=2") {
+		t.Errorf("notes_text not stored: %q", pb[0].NotesText)
+	}
+}
+
+// TestTeachCommand_IntegratedNoPlaybookFlags confirms the playbook
+// upsert is a no-op when none of the playbook flags is set -- the
+// resource learning still lands, no playbook row is written, and the
+// command exits 0.
+func TestTeachCommand_IntegratedNoPlaybookFlags(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+
+	_, _, err := runRootArgs(t,
+		"teach",
+		"--query", "find all widgets",
+		"--resource", "widget-1",
+		"--resource-type", "items",
+		"--db", dbPath,
+	)
+	if err != nil {
+		t.Fatalf("teach: %v", err)
+	}
+
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	rows, _ := listLearningsRows(s, store.ListLearningsFilter{})
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 learning, got %d", len(rows))
+	}
+	pb, _ := s.ListPlaybooks()
+	if len(pb) != 0 {
+		t.Errorf("expected 0 playbooks (no flags set), got %d", len(pb))
+	}
+}
+
+// TestTeachCommand_IntegratedPlaybookFileOnly covers the variant
+// where only --playbook-file is set: playbook lands, notes_text is
+// empty, resource learning still lands.
+func TestTeachCommand_IntegratedPlaybookFileOnly(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+	pbPath := writePlaybookFile(t, home, "pb.json",
+		`{"steps":[{"cmd":"items list"}]}`)
+
+	_, _, err := runRootArgs(t,
+		"teach",
+		"--query", "list widgets again",
+		"--resource", "widget-7",
+		"--resource-type", "items",
+		"--playbook-file", pbPath,
+		"--db", dbPath,
+	)
+	if err != nil {
+		t.Fatalf("teach: %v", err)
+	}
+
+	s, _ := store.OpenWithContext(context.Background(), dbPath)
+	defer s.Close()
+	pb, _ := s.ListPlaybooks()
+	if len(pb) != 1 {
+		t.Fatalf("expected 1 playbook, got %d", len(pb))
+	}
+	if pb[0].PlaybookJSON == "" {
+		t.Errorf("playbook_json should be non-empty; got %q", pb[0].PlaybookJSON)
+	}
+	if pb[0].NotesText != "" {
+		t.Errorf("notes_text should be empty when only --playbook-file set; got %q", pb[0].NotesText)
+	}
+}
+
+// TestTeachCommand_IntegratedNotesFileOnly covers the variant where
+// only --playbook-notes-file is set: playbook row lands with empty
+// playbook_json and populated notes_text.
+func TestTeachCommand_IntegratedNotesFileOnly(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+	notesPath := writePlaybookFile(t, home, "notes.md", "remember to set source_type")
+
+	_, _, err := runRootArgs(t,
+		"teach",
+		"--query", "yet another widget query",
+		"--resource", "widget-9",
+		"--resource-type", "items",
+		"--playbook-notes-file", notesPath,
+		"--db", dbPath,
+	)
+	if err != nil {
+		t.Fatalf("teach: %v", err)
+	}
+
+	s, _ := store.OpenWithContext(context.Background(), dbPath)
+	defer s.Close()
+	pb, _ := s.ListPlaybooks()
+	if len(pb) != 1 {
+		t.Fatalf("expected 1 playbook, got %d", len(pb))
+	}
+	if pb[0].PlaybookJSON != "" {
+		t.Errorf("playbook_json should be empty when only --playbook-notes-file set; got %q", pb[0].PlaybookJSON)
+	}
+	if !strings.Contains(pb[0].NotesText, "source_type") {
+		t.Errorf("notes_text content missing: %q", pb[0].NotesText)
+	}
+}
+
+// TestTeachCommand_IntegratedPlaybookErrorDegrades confirms that a
+// failing playbook input (malformed JSON) does NOT prevent the
+// resource learning from landing. Per design, playbook failures log
+// to teach.log; the command still exits 0 because the agent's
+// primary write (resource learning) succeeded.
+func TestTeachCommand_IntegratedPlaybookErrorDegrades(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+	badPath := writePlaybookFile(t, home, "bad.json", "{not valid json")
+
+	stdout, _, err := runRootArgs(t,
+		"teach",
+		"--query", "graceful degrade query",
+		"--resource", "widget-deg",
+		"--resource-type", "items",
+		"--playbook-file", badPath,
+		"--db", dbPath,
+	)
+	if err != nil {
+		t.Fatalf("teach should not fail on bad playbook input; got %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("teach should stay silent on degrade path; stdout=%q", stdout)
+	}
+
+	s, _ := store.OpenWithContext(context.Background(), dbPath)
+	defer s.Close()
+	rows, _ := listLearningsRows(s, store.ListLearningsFilter{})
+	if len(rows) != 1 {
+		t.Errorf("resource learning should still land despite playbook failure; got %d rows", len(rows))
+	}
+	pb, _ := s.ListPlaybooks()
+	if len(pb) != 0 {
+		t.Errorf("no playbook should land when input fails to parse; got %d", len(pb))
+	}
+
+	// teach.log should record the upsert failure for diagnosis.
+	logPath := filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", teachErrLogFileName)
+	data, statErr := os.ReadFile(logPath)
+	if statErr != nil {
+		t.Fatalf("teach.log should exist on degrade: %v", statErr)
+	}
+	if !strings.Contains(string(data), "playbook upsert") {
+		t.Errorf("teach.log should mention playbook upsert; got %q", string(data))
+	}
+}

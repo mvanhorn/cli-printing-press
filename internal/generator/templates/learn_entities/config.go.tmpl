@@ -79,11 +79,17 @@ func (c *Config) RegisterStopwords(words ...string) {
 	}
 }
 
-// isStopword reports whether a lowercase token is a stopword for this
+// IsStopword reports whether a lowercase token is a stopword for this
 // Config. Caller must lowercase the token first.
-func (c *Config) isStopword(lower string) bool {
+func (c *Config) IsStopword(lower string) bool {
 	_, ok := c.stopwords[lower]
 	return ok
+}
+
+// isStopword is the internal-package alias retained for backward
+// compatibility with intra-package call sites.
+func (c *Config) isStopword(lower string) bool {
+	return c.IsStopword(lower)
 }
 
 // matchesTicker reports whether a token matches any registered ticker

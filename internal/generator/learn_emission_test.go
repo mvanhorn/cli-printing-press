@@ -37,6 +37,14 @@ func TestGenerateLearnPackageEmitsAllFiles(t *testing.T) {
 		"internal/learn/teach_log_test.go",
 		"internal/learn/preseed.go",
 		"internal/learn/preseed_test.go",
+		"internal/learn/playbooks.go",
+		"internal/learn/playbooks_test.go",
+		"internal/learn/promote.go",
+		"internal/learn/promote_test.go",
+		// U4: store-layer playbook accessors live in the store package
+		// alongside store.go, gated under the same Store vision flag.
+		"internal/store/playbooks.go",
+		"internal/store/playbooks_test.go",
 		"internal/learn/entities/config.go",
 		"internal/learn/entities/config_test.go",
 		"internal/learn/entities/extract.go",
@@ -57,6 +65,28 @@ func TestGenerateLearnPackageEmitsAllFiles(t *testing.T) {
 		// package itself stays cobra-free.
 		"internal/cli/teach.go",
 		"internal/cli/teach_test.go",
+		// U7 (playbook surface): teach_playbook.go ships the standalone
+		// playbook write commands (`teach-playbook`, `playbook list`,
+		// `playbook amend`) alongside teach.go. Root.go.tmpl wires the
+		// registration in a later unit.
+		"internal/cli/teach_playbook.go",
+		"internal/cli/teach_playbook_test.go",
+		// U9: internal/cli/playbooks/ ships the embed.FS scaffold for
+		// hand-authored playbook content (JSON + notes files). MANIFEST.md
+		// keeps the //go:embed *.json *.md directive matching at least
+		// one file when no authored content has shipped yet, so the
+		// package compiles cleanly on a fresh print. The auto-install
+		// path that walks this FS is owned by a later unit.
+		"internal/cli/playbooks/embed.go",
+		"internal/cli/playbooks/MANIFEST.md",
+		// U10: playbook_init.go is the embed-FS auto-install path.
+		// Walks playbooks.FS at first DB open, seeds learning_playbooks
+		// under each query family derived from query_family_examples,
+		// and tracks SeedVersion in a sentinel row. The test file
+		// injects an fstest.MapFS so scenarios are independent of the
+		// authored playbook content shipped under cli/playbooks/.
+		"internal/cli/playbook_init.go",
+		"internal/cli/playbook_init_test.go",
 	}
 	for _, rel := range wantFiles {
 		_, err := os.Stat(filepath.Join(outputDir, rel))
@@ -83,6 +113,18 @@ func TestGenerateLearnPackageGatedOff(t *testing.T) {
 	// U7: teach.go in internal/cli/ is also gated off.
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "teach.go"))
 	require.True(t, os.IsNotExist(err), "internal/cli/teach.go must not exist when Learn.Enabled=false")
+
+	// U7 (playbook surface): teach_playbook.go is gated off too.
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "teach_playbook.go"))
+	require.True(t, os.IsNotExist(err), "internal/cli/teach_playbook.go must not exist when Learn.Enabled=false")
+
+	// U9: cli/playbooks/ embed.FS scaffold is gated off too.
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "playbooks"))
+	require.True(t, os.IsNotExist(err), "internal/cli/playbooks must not exist when Learn.Enabled=false")
+
+	// U10: playbook_init.go is gated off too.
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "playbook_init.go"))
+	require.True(t, os.IsNotExist(err), "internal/cli/playbook_init.go must not exist when Learn.Enabled=false")
 }
 
 // TestGenerateLearnPackageCompilesAndTests drives the emitted learn
@@ -127,7 +169,16 @@ func TestGenerateLearnCLICommandsCompileAndTest(t *testing.T) {
 	// tests all live in internal/cli/teach_test.go; running the whole
 	// internal/cli/ test set is the agreed-upon verification path per
 	// the U7 plan.
-	runGoCommand(t, outputDir, "test", "-run", "TestTeach|TestRecall|TestLearnings|TestSkipLearnHook|TestNewLearnConfig|TestInitLearn", "./internal/cli/...")
+	//
+	// U11 wired runPlaybookInitOnce + newTeachPlaybookCmd + newPlaybookCmd
+	// into root.go.tmpl, so the TestTeachPlaybook_* and TestPlaybook*
+	// tests from teach_playbook_test.go.tmpl now run alongside the rest.
+	//
+	// TestPlaybookInit_* (from playbook_init_test.go.tmpl) tests call
+	// installPlaybooksFromEmbed directly with an injected fstest.MapFS,
+	// so they don't depend on cobra registration and are included in
+	// the filter.
+	runGoCommand(t, outputDir, "test", "-run", "^(TestTeach|TestRecall|TestLearnings|TestSkipLearnHook|TestNewLearnConfig|TestInitLearn|TestPlaybook)", "./internal/cli/...")
 }
 
 // TestGenerateLearnInitWiresSpec verifies that the emitted learn_init.go

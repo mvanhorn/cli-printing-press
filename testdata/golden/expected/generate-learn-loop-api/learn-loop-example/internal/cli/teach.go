@@ -16,6 +16,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -156,6 +157,13 @@ func newTeachCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
 	var dbPath string
 	var notes string
 	var noValidate bool
+	// Playbook side -- optional. When either is set, after the resource
+	// learning lands, also upsert a learning_playbooks row keyed on the
+	// query family. Failures here log to teach.log but don't fail the
+	// resource learning (graceful degrade).
+	var playbookFile string
+	var playbookNotesInline string
+	var playbookNotesFile string
 
 	cmd := &cobra.Command{
 		Use:   "teach",
@@ -200,6 +208,14 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 			defer s.Close()
 
 			normalized := learn.Normalize(query, learnCfg)
+			// Apply entity_lookups promotion symmetrically with recall so
+			// lowercase/numeric-prefix aliases land in query_entities even
+			// when the capitalization-based extractor missed them. Without
+			// this, recall's cross-alias canonical resolver has nothing to
+			// compare against on the stored side, and teach-playbook would
+			// derive a different family for the same query.
+			resolver := learn.NewCanonicalResolver(cmd.Context(), s.DB())
+			normalized = learn.PromoteEntities(normalized, resolver)
 			for _, rid := range resources {
 				rid = strings.TrimSpace(rid)
 				if rid == "" {
@@ -234,6 +250,18 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				writeTeachErrLog(fmt.Sprintf("teach: patterns.Extract: %v", exErr))
 			}
 
+			// Optional playbook side: record the structured choreography
+			// + free-text gotchas keyed on the query family. Either
+			// field may be set; both empty means skip. Failures log to
+			// teach.log but don't fail the resource learning above --
+			// the agent's primary write (resource learning) already
+			// succeeded, so degraded playbook recording is acceptable.
+			if strings.TrimSpace(playbookFile) != "" || strings.TrimSpace(playbookNotesInline) != "" || strings.TrimSpace(playbookNotesFile) != "" {
+				if pbErr := upsertPlaybookFromTeach(cmd.Context(), s, learnCfg, query, playbookFile, playbookNotesInline, playbookNotesFile, normalized); pbErr != nil {
+					writeTeachErrLog(fmt.Sprintf("teach: playbook upsert: %v", pbErr))
+				}
+			}
+
 			if auditErr := appendLearningsAudit(map[string]any{
 				"action":     "teach",
 				"query":      query,
@@ -264,20 +292,62 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
 	cmd.Flags().StringVar(&notes, "notes", "", "Optional free-form note recorded in the audit log")
 	cmd.Flags().BoolVar(&noValidate, "no-validate", false, "Suppress teach-time resource-shape validation (warnings to teach.log)")
+	cmd.Flags().StringVar(&playbookFile, "playbook-file", "", "Optional path to a JSON playbook recording the CLI choreography for this query family")
+	cmd.Flags().StringVar(&playbookNotesInline, "playbook-notes", "", "Optional inline gotchas/workarounds for this query family (stored alongside the playbook)")
+	cmd.Flags().StringVar(&playbookNotesFile, "playbook-notes-file", "", "Optional path to a markdown file with playbook notes")
 	return cmd
+}
+
+// upsertPlaybookFromTeach loads playbook + notes inputs and writes a
+// learning_playbooks row. Helper for the teach command's optional
+// playbook-side write. Failures bubble up to the caller, which logs
+// them to teach.log without failing the surrounding resource learning.
+//
+// ctx is first per Go convention (and to satisfy staticcheck SA1012).
+// ctx, learnCfg, and query are accepted today for signature parity with
+// the standalone teach-playbook flow; the helper does not yet need them
+// directly because normalize+promote runs in the caller. Keeping the
+// parameters reserved here means future refinements (e.g. a per-call
+// resolver reused for slot validation) don't have to ripple back into
+// the cobra surface.
+func upsertPlaybookFromTeach(ctx context.Context, s *store.Store, learnCfg *entities.Config, query, playbookFile, notesInline, notesFile string, normalized learn.NormalizedQuery) error {
+	playbookJSON, notes, err := resolvePlaybookInputs(playbookFile, notesInline, notesFile)
+	if err != nil {
+		return err
+	}
+	if playbookJSON == "" && notes == "" {
+		return nil
+	}
+	family := learn.QueryFamily(normalized)
+	if family == "" {
+		return fmt.Errorf("query normalized to empty family")
+	}
+	_, _, err = s.UpsertPlaybook(store.UpsertPlaybookInput{
+		QueryFamily:  family,
+		PlaybookJSON: playbookJSON,
+		NotesText:    notes,
+	})
+	return err
 }
 
 // recallEnvelope is the JSON shape returned by `recall --agent`. The
 // LLM consumes this before deciding whether to skip discovery.
+//
+// Playbook + Notes surface the learning_playbooks row matching the
+// query's structural family (when one exists). Older agent prompts
+// that only consume {found, results} continue to work; the new fields
+// are purely additive.
 type recallEnvelope struct {
-	Found         bool                   `json:"found"`
-	Query         string                 `json:"query"`
-	Normalized    string                 `json:"normalized"`
-	QueryEntities []string               `json:"query_entities"`
-	MatchScore    float64                `json:"match_score,omitempty"`
-	Results       []recallEnvelopeResult `json:"results"`
-	Mismatches    []recallEnvelopeResult `json:"mismatches,omitempty"`
-	Warnings      []string               `json:"warnings,omitempty"`
+	Found         bool                    `json:"found"`
+	Query         string                  `json:"query"`
+	Normalized    string                  `json:"normalized"`
+	QueryEntities []string                `json:"query_entities"`
+	MatchScore    float64                 `json:"match_score,omitempty"`
+	Results       []recallEnvelopeResult  `json:"results"`
+	Mismatches    []recallEnvelopeResult  `json:"mismatches,omitempty"`
+	Warnings      []string                `json:"warnings,omitempty"`
+	Playbook      *learn.ResolvedPlaybook `json:"playbook,omitempty"`
+	Notes         string                  `json:"notes,omitempty"`
 }
 
 type recallEnvelopeResult struct {
@@ -369,6 +439,8 @@ when learnings exist.`,
 				envelope.Mismatches = toEnvelopeResults(result.Mismatches)
 			}
 			envelope.Warnings = result.Warnings
+			envelope.Playbook = result.Playbook
+			envelope.Notes = result.Notes
 			return emitRecall(cmd, flags, envelope)
 		},
 	}

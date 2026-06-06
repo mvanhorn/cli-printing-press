@@ -2061,6 +2061,18 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("learnings_test.go.tmpl", filepath.Join("internal", "store", "learnings_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering store learnings engine test: %w", err)
 		}
+		// store/playbooks.go ports the playbook-row CRUD (UpsertPlaybook,
+		// AppendPlaybookNotes, GetPlaybookByFamily, ListPlaybooks) into
+		// the generator's internal/store/ output. Lives next to
+		// learnings.go and shares the LearningSourceTaught constant + the
+		// learning_playbooks table created by store.go.tmpl. Gated under
+		// Learn.Enabled for the same reason as learnings.go.
+		if err := g.renderTemplate("store_playbooks.go.tmpl", filepath.Join("internal", "store", "playbooks.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store playbooks: %w", err)
+		}
+		if err := g.renderTemplate("store_playbooks_test.go.tmpl", filepath.Join("internal", "store", "playbooks_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store playbooks test: %w", err)
+		}
 		// teach.go and teach_test.go are emitted into internal/cli/
 		// (not the learn package) because they wire cobra commands;
 		// the learn package itself stays cobra-free per the boundary
@@ -2070,6 +2082,50 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 		if err := g.renderTemplate("teach_test.go.tmpl", filepath.Join("internal", "cli", "teach_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering teach commands test: %w", err)
+		}
+		// teach_playbook.go ships the standalone playbook write surface:
+		// `teach-playbook` (query-family-keyed playbook + notes), `playbook list`
+		// (sentinel-filtered inspection), and `playbook amend` (atomic
+		// AppendPlaybookNotes self-correction). Lives in internal/cli/ alongside
+		// teach.go for the same package-boundary reason — cobra wiring stays
+		// out of the learn package. Registration on the root command is
+		// owned by root.go.tmpl (a later unit wires it).
+		if err := g.renderTemplate("teach_playbook.go.tmpl", filepath.Join("internal", "cli", "teach_playbook.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach-playbook commands: %w", err)
+		}
+		if err := g.renderTemplate("teach_playbook_test.go.tmpl", filepath.Join("internal", "cli", "teach_playbook_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering teach-playbook commands test: %w", err)
+		}
+		// internal/cli/playbooks/ ships the embed.FS scaffold for hand-
+		// authored playbook content (JSON + notes files). U9 emits the
+		// scaffold only — the auto-install path that walks this FS lives
+		// in playbook_init.go (a later unit). MANIFEST.md keeps the
+		// //go:embed *.json *.md directive matching at least one file
+		// when no authored content has shipped yet, so the package
+		// compiles cleanly on a fresh print.
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "cli", "playbooks"), 0o755); err != nil {
+			return fmt.Errorf("creating cli/playbooks dir for embed.FS scaffold: %w", err)
+		}
+		if err := g.renderTemplate("playbooks_embed.go.tmpl", filepath.Join("internal", "cli", "playbooks", "embed.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cli/playbooks embed.go: %w", err)
+		}
+		if err := g.renderTemplate("playbooks_manifest.md.tmpl", filepath.Join("internal", "cli", "playbooks", "MANIFEST.md"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cli/playbooks MANIFEST.md: %w", err)
+		}
+		// playbook_init.go is the embed-FS auto-install path. At first
+		// DB open after schema migration it walks playbooks.FS, parses
+		// each <base>.json + <base>_notes.md pair, derives the query
+		// family via learn.QueryFamily(learn.Normalize(example)), and
+		// upserts a row per family. A sentinel row tracks SeedVersion;
+		// re-seed fires on binary upgrades that bump the constant.
+		// `playbook amend` writes are preserved across upgrades via an
+		// anchored regex check on the `[amend YYYY-...]` marker.
+		// Root.go.tmpl wires runPlaybookInitOnce in a later unit.
+		if err := g.renderTemplate("playbook_init.go.tmpl", filepath.Join("internal", "cli", "playbook_init.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering playbook init: %w", err)
+		}
+		if err := g.renderTemplate("playbook_init_test.go.tmpl", filepath.Join("internal", "cli", "playbook_init_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering playbook init test: %w", err)
 		}
 		// learn_init.go translates spec.Learn (ticker patterns, stopwords,
 		// entity-lookup seeds) into a runtime *entities.Config and seeds
@@ -2167,19 +2223,24 @@ func (g *Generator) renderLearnFiles() error {
 		"learn_entities/extract.go.tmpl":      filepath.Join("internal", "learn", "entities", "extract.go"),
 		"learn_entities/extract_test.go.tmpl": filepath.Join("internal", "learn", "entities", "extract_test.go"),
 
-		"learn/doc.go.tmpl":            filepath.Join("internal", "learn", "doc.go"),
-		"learn/normalize.go.tmpl":      filepath.Join("internal", "learn", "normalize.go"),
-		"learn/normalize_test.go.tmpl": filepath.Join("internal", "learn", "normalize_test.go"),
-		"learn/match.go.tmpl":          filepath.Join("internal", "learn", "match.go"),
-		"learn/match_test.go.tmpl":     filepath.Join("internal", "learn", "match_test.go"),
-		"learn/recall.go.tmpl":         filepath.Join("internal", "learn", "recall.go"),
-		"learn/recall_test.go.tmpl":    filepath.Join("internal", "learn", "recall_test.go"),
-		"learn/teach.go.tmpl":          filepath.Join("internal", "learn", "teach.go"),
-		"learn/teach_test.go.tmpl":     filepath.Join("internal", "learn", "teach_test.go"),
-		"learn/teach_log.go.tmpl":      filepath.Join("internal", "learn", "teach_log.go"),
-		"learn/teach_log_test.go.tmpl": filepath.Join("internal", "learn", "teach_log_test.go"),
-		"learn/preseed.go.tmpl":        filepath.Join("internal", "learn", "preseed.go"),
-		"learn/preseed_test.go.tmpl":   filepath.Join("internal", "learn", "preseed_test.go"),
+		"learn/doc.go.tmpl":                   filepath.Join("internal", "learn", "doc.go"),
+		"learn/normalize.go.tmpl":             filepath.Join("internal", "learn", "normalize.go"),
+		"learn/normalize_test.go.tmpl":        filepath.Join("internal", "learn", "normalize_test.go"),
+		"learn/match.go.tmpl":                 filepath.Join("internal", "learn", "match.go"),
+		"learn/match_test.go.tmpl":            filepath.Join("internal", "learn", "match_test.go"),
+		"learn/recall.go.tmpl":                filepath.Join("internal", "learn", "recall.go"),
+		"learn/recall_test.go.tmpl":           filepath.Join("internal", "learn", "recall_test.go"),
+		"learn/recall_canonical_test.go.tmpl": filepath.Join("internal", "learn", "recall_canonical_test.go"),
+		"learn/teach.go.tmpl":                 filepath.Join("internal", "learn", "teach.go"),
+		"learn/teach_test.go.tmpl":            filepath.Join("internal", "learn", "teach_test.go"),
+		"learn/teach_log.go.tmpl":             filepath.Join("internal", "learn", "teach_log.go"),
+		"learn/teach_log_test.go.tmpl":        filepath.Join("internal", "learn", "teach_log_test.go"),
+		"learn/preseed.go.tmpl":               filepath.Join("internal", "learn", "preseed.go"),
+		"learn/preseed_test.go.tmpl":          filepath.Join("internal", "learn", "preseed_test.go"),
+		"learn/playbooks.go.tmpl":             filepath.Join("internal", "learn", "playbooks.go"),
+		"learn/playbooks_test.go.tmpl":        filepath.Join("internal", "learn", "playbooks_test.go"),
+		"learn/promote.go.tmpl":               filepath.Join("internal", "learn", "promote.go"),
+		"learn/promote_test.go.tmpl":          filepath.Join("internal", "learn", "promote_test.go"),
 
 		"learn_lookups/store.go.tmpl":      filepath.Join("internal", "learn", "lookups", "store.go"),
 		"learn_lookups/store_test.go.tmpl": filepath.Join("internal", "learn", "lookups", "store_test.go"),
