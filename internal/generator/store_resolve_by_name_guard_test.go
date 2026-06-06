@@ -91,6 +91,13 @@ func TestResolveByNameReturnsQueryAndIterationErrors(t *testing.T) {
 		}
 		defer s.Close()
 
+		// The "{" value is syntactically broken JSON: json_extract raises a
+		// statement error during row iteration, which ResolveByName must
+		// surface via rows.Err(). This relies on SQLite >= 3.38
+		// (modernc.org/sqlite) erroring on malformed JSON rather than
+		// returning NULL; if that behavior ever changes the query would
+		// return zero rows and this subtest would stop exercising the
+		// rows.Err() path (ResolveByName would report not-found instead).
 		if _, err := s.DB().Exec("INSERT INTO resources (resource_type, id, data) VALUES (?, ?, ?)", "users", "bad-json", "{"); err != nil {
 			t.Fatalf("seed malformed resource: %v", err)
 		}
