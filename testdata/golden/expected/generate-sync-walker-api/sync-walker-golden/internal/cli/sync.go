@@ -60,7 +60,6 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 		Long: `Sync data from the API into a local SQLite database. Supports resumable
 incremental sync (only fetches new data since last sync) and full resync.
 
-
 Exit codes & warnings:
   Resources the API denies access to (HTTP 403, or HTTP 400 with an
   access-policy body) are reported as warnings rather than failing the
