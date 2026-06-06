@@ -3807,7 +3807,14 @@ func isPathSubstitutionParam(param spec.Param) bool {
 }
 
 func isGlobalFilterCandidate(param spec.Param) bool {
-	return !isPathSubstitutionParam(param) && !param.Required
+	// A param carrying an explicit default expresses deliberate must-send
+	// intent: the author wants that value on the wire, not the API's implicit
+	// server-side default. Exclude such params from the global-frequency filter
+	// so a ubiquitous-but-load-bearing flag (e.g. a supportsAllDrives-style
+	// access scope that defaults true) is not silently stripped, while plain
+	// high-frequency boilerplate (prettyPrint, quotaUser) with no default is
+	// still dropped.
+	return !isPathSubstitutionParam(param) && !param.Required && param.Default == nil
 }
 
 func isRetainableSoleGlobalInputParam(param spec.Param) bool {

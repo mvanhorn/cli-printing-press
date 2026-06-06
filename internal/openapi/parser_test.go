@@ -3239,6 +3239,107 @@ paths:
 	}
 }
 
+func TestParsePreservesDefaultedQueryParamsDuringGlobalFilter(t *testing.T) {
+	t.Parallel()
+
+	// A non-required query param on every endpoint exceeds the 80% global
+	// filter threshold and would normally be stripped as boilerplate. When it
+	// carries an explicit default it is load-bearing — the value must reach the
+	// wire — so it must survive, while a sibling high-frequency param with no
+	// default is still dropped.
+	data := []byte(`
+openapi: 3.0.0
+info:
+  title: All-Drives API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /files:
+    get:
+      operationId: listFiles
+      parameters:
+        - in: query
+          name: supportsAllDrives
+          schema:
+            type: boolean
+            default: true
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: q
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /drives:
+    get:
+      operationId: listDrives
+      parameters:
+        - in: query
+          name: supportsAllDrives
+          schema:
+            type: boolean
+            default: true
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+  /teamdrives:
+    get:
+      operationId: listTeamdrives
+      parameters:
+        - in: query
+          name: supportsAllDrives
+          schema:
+            type: boolean
+            default: true
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: useDomainAdminAccess
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	for _, path := range []string{"/files", "/drives", "/teamdrives"} {
+		endpoint := findEndpoint(t, parsed, path)
+
+		var supports, pretty *spec.Param
+		for i := range endpoint.Params {
+			switch endpoint.Params[i].Name {
+			case "supportsAllDrives":
+				supports = &endpoint.Params[i]
+			case "prettyPrint":
+				pretty = &endpoint.Params[i]
+			}
+		}
+
+		if assert.NotNil(t, supports, "defaulted high-frequency query param should survive global filtering on %s", path) {
+			assert.Equal(t, true, supports.Default, "explicit default should be preserved on %s", path)
+		}
+		assert.Nil(t, pretty, "high-frequency query param without a default should still be filtered on %s", path)
+	}
+}
+
 func TestParsePreservesRequiredQueryParamsDuringGlobalFilter(t *testing.T) {
 	t.Parallel()
 
