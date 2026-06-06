@@ -99,7 +99,7 @@ FLAG_DECL_RE = re.compile(
     r'(' + FLAG_METHOD_PATTERN + r')P?\('
     r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
 )
-FLAG_ALIAS_RE = re.compile(r'\b([A-Za-z_]\w*)\s*(?::=|=)\s*cmd\.(Persistent)?Flags\(\)')
+FLAG_ALIAS_RE = re.compile(r'\b([A-Za-z_]\w*)\s*(?::=|=)\s*[A-Za-z_][\w.]*\.(Persistent)?Flags\(\)')
 @dataclass
 class Finding:
     check: str
