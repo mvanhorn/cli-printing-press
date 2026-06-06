@@ -538,6 +538,15 @@ func syncResource(ctx context.Context, c interface {
 			hasMore = true
 		}
 
+		if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\nwarning: %s returned a 200 response with a non-JSON body; no rows were stored.\n", resource)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","reason":"non_json_200_body"}`+"\n", resource)
+			}
+			break
+		}
+
 		if len(items) == 0 {
 			if isEmptyPageResponse(data) {
 				break
@@ -1046,6 +1055,11 @@ func isJSONNull(raw json.RawMessage) bool {
 	return strings.TrimSpace(string(raw)) == "null"
 }
 
+func isJSONResponse(data json.RawMessage) bool {
+	var probe any
+	return json.Unmarshal(data, &probe) == nil
+}
+
 // extractPaginationFromEnvelope extracts cursor and has_more from a response envelope.
 func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorParam string) (string, bool) {
 	var hasMore bool
@@ -1083,6 +1097,10 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 				break
 			}
 		}
+	}
+
+	if nextCursor == "" {
+		nextCursor = nextCursorFromTopLevelURL(envelope, cursorParam)
 	}
 
 	// Try common has_more field names
@@ -1165,6 +1183,27 @@ func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string
 		return ""
 	}
 
+	return cursorFromNextURL(nextURL, cursorParam)
+}
+
+func nextCursorFromTopLevelURL(envelope map[string]json.RawMessage, cursorParam string) string {
+	for _, key := range []string{"next", "next_url"} {
+		rawNext, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var nextURL string
+		if json.Unmarshal(rawNext, &nextURL) != nil || nextURL == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(nextURL), "http") {
+			return cursorFromNextURL(nextURL, cursorParam)
+		}
+	}
+	return ""
+}
+
+func cursorFromNextURL(nextURL string, cursorParam string) string {
 	cursorKeys := []string{cursorParam}
 	if cursorParam != "page[cursor]" {
 		cursorKeys = append(cursorKeys, "page[cursor]")
@@ -1527,6 +1566,15 @@ func syncDependentResource(ctx context.Context, c interface {
 				hasMore = true
 			}
 
+			if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\nwarning: %s returned a 200 response with a non-JSON body for parent %s; no rows were stored.\n", dep.Name, parentID)
+				} else {
+					fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","parent":"%s","reason":"non_json_200_body"}`+"\n", dep.Name, parentID)
+				}
+				break
+			}
+
 			if len(items) == 0 {
 				break
 			}
@@ -1807,5 +1855,94 @@ func extractID(resource string, obj map[string]any) string {
 			}
 		}
 	}
+	if s := suffixIDFieldFallback(resource, obj); s != "" {
+		return s
+	}
 	return ""
+}
+
+// suffixIDFieldFallback resolves an id-less resource that keys on its own
+// "<name>_code" / "<name>_id" / "<name>_key" / "<name>_slug" field (e.g. the
+// "currencies" resource keying on "currency_code" — see #2327). It is scoped to
+// the resource's OWN name so a foreign key like account_id/parent_id is never
+// promoted to the primary key, and it uses direct map lookups in a fixed suffix
+// order so the chosen id is deterministic.
+func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
+	for _, base := range resourceIDBaseNames(resourceType) {
+		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
+			if v, ok := obj[base+suffix]; ok {
+				if s := scalarIDString(v); s != "" && s != "<nil>" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// resourceIDBaseNames returns lowercase candidate singular/plural stems of a
+// resource name to build "<base>_id"-style key probes from (e.g. "currencies"
+// -> ["currencies","currency"]). OpenAPI-/path-derived names can carry a
+// leading verb token ("get-currencies"), so the same probes are also attempted
+// on the de-verbed stem. Minimal English depluralization; the raw name is
+// always included so already-singular names work too.
+func resourceIDBaseNames(resourceType string) []string {
+	r := strings.ToLower(strings.TrimSpace(resourceType))
+	if r == "" {
+		return nil
+	}
+	stems := []string{r}
+	if d := stripLeadingResourceVerb(r); d != "" && d != r {
+		stems = append(stems, d)
+	}
+	var bases []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			bases = append(bases, s)
+		}
+	}
+	for _, stem := range stems {
+		add(stem)
+		add(depluralizeResourceStem(stem))
+	}
+	return bases
+}
+
+func stripLeadingResourceVerb(r string) string {
+	for _, verb := range []string{"get", "list", "fetch", "find", "retrieve", "read", "show", "all"} {
+		for _, sep := range []string{"-", "_"} {
+			prefix := verb + sep
+			if strings.HasPrefix(r, prefix) && len(r) > len(prefix) {
+				return r[len(prefix):]
+			}
+		}
+	}
+	return ""
+}
+
+func depluralizeResourceStem(r string) string {
+	switch {
+	case strings.HasSuffix(r, "ies") && len(r) > 3:
+		return strings.TrimSuffix(r, "ies") + "y" // currencies -> currency
+	case strings.HasSuffix(r, "ses") || strings.HasSuffix(r, "xes") ||
+		strings.HasSuffix(r, "zes") || strings.HasSuffix(r, "ches") ||
+		strings.HasSuffix(r, "shes"):
+		return strings.TrimSuffix(r, "es") // boxes -> box
+	case strings.HasSuffix(r, "s") && !strings.HasSuffix(r, "ss") && len(r) > 1:
+		return strings.TrimSuffix(r, "s") // languages -> language
+	}
+	return r
+}
+
+func scalarIDString(value any) string {
+	switch value.(type) {
+	case nil, string, bool, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, json.Number, []byte:
+		return store.ResourceIDString(value)
+	default:
+		return ""
+	}
 }
