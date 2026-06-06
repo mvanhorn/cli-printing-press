@@ -5,11 +5,42 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHelpGateTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		goos string
+		want time.Duration
+	}{
+		{
+			name: "windows",
+			goos: "windows",
+			want: 30 * time.Second,
+		},
+		{
+			name: "linux",
+			goos: "linux",
+			want: 15 * time.Second,
+		},
+		{
+			name: "darwin",
+			goos: "darwin",
+			want: 15 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, helpGateTimeout(tt.goos))
+		})
+	}
+}
 
 func TestGoBuildCacheDirIsShared(t *testing.T) {
 	t.Setenv("GOCACHE", "")
