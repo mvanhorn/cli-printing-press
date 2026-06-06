@@ -497,7 +497,7 @@ func syncResource(ctx context.Context, c interface {
 		// 1 even though more pages exist (the original symptom in #1296).
 		// Guard on cursorType, not cursorParam name, so all canonical
 		// spellings (page / page_number / pageNumber / page[number]) work.
-		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
 			currentPage, _ := strconv.Atoi(cursor)
 			if currentPage < 1 {
 				currentPage = 1
@@ -1024,6 +1024,48 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 	return nextCursor, hasMore
 }
 
+func pageAllowsPageIntFallback(data json.RawMessage) bool {
+	hasMore, parsed := pageExplicitHasMore(data)
+	return !parsed || hasMore
+}
+
+func pageExplicitHasMore(data json.RawMessage) (bool, bool) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return false, false
+	}
+	if hasMore, parsed := envelopeExplicitHasMore(envelope); parsed {
+		return hasMore, true
+	}
+	for _, key := range dataEnvelopeKeys {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(raw, &inner) == nil {
+			if hasMore, parsed := envelopeExplicitHasMore(inner); parsed {
+				return hasMore, true
+			}
+		}
+	}
+	return false, false
+}
+
+func envelopeExplicitHasMore(envelope map[string]json.RawMessage) (bool, bool) {
+	for _, key := range []string{"has_more", "hasMore", "has_next", "hasNext", "next_page"} {
+		raw, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var hasMore bool
+		if json.Unmarshal(raw, &hasMore) == nil {
+			return hasMore, true
+		}
+	}
+	return false, false
+}
+
 // nextCursorFromLinks extracts JSON:API-style pagination cursors from
 // {"links":{"next":"https://example.com/items?page[cursor]=..."}}.
 func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string) string {
@@ -1291,7 +1333,7 @@ var pageEnvelopeMetadataKeys = map[string]bool{
 	"success": true, "status": true, "message": true, "error": true, "errors": true,
 	"warnings": true, "Warnings": true, "ok": true, "Ok": true,
 	// wrapper objects
-	"links": true, "meta": true, "pagination": true,
+	"links": true, "meta": true, "metadata": true, "Metadata": true, "pagination": true,
 	"response_metadata": true, "paging": true,
 	// links shape
 	"next": true, "prev": true, "previous": true, "first": true, "last": true,
