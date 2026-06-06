@@ -719,7 +719,7 @@ func allSyncAttemptsWereUnknownCommand(errs []error) bool {
 
 func isUnknownSyncCommandError(err error) bool {
 	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "unknown command") && strings.Contains(text, "sync")
+	return strings.Contains(text, "unknown command \"sync\"")
 }
 
 func isAuxiliaryPipelineTable(table string, totalTables int) bool {
