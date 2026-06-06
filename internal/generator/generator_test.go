@@ -326,6 +326,16 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		assert.Contains(t, string(data), probe.snippet, "%s missing %q", probe.file, probe.snippet)
 	}
 
+	textSrc, err := os.ReadFile(filepath.Join(cliutilDir, "text.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(textSrc), `(?:key|token)=`,
+		"SanitizeErrorBody must redact token=<value> credential assignments without redacting bare prose token")
+
+	cliutilTestSrc, err := os.ReadFile(filepath.Join(cliutilDir, "cliutil_test.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cliutilTestSrc), "token=abc.def-ghi",
+		"emitted cliutil tests must cover token=<value> credential redaction")
+
 	// The generated cliutil package must compile and its tests must pass.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
@@ -3713,6 +3723,15 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	mcpCode := stripGoComments(string(mcpSrc))
+
+	assert.Contains(t, mcpCode, "resources(resource_type, id, data)",
+		"SQL tool description must name the generated single-table resources schema")
+	assert.Contains(t, mcpCode, "resource_type",
+		"SQL tool description must tell agents to filter by resource_type")
+	assert.Contains(t, mcpCode, "json_extract(data,'$.name')",
+		"SQL tool description must show how to read fields from the JSON data column")
+	assert.NotContains(t, mcpCode, "Tables match resource names",
+		"SQL tool description must not imply per-resource tables")
 
 	assert.NotRegexp(t, `(?s)func handleSQL\(.*store\.OpenWithContext\(`, mcpCode,
 		"handleSQL must use store.OpenReadOnly, not OpenWithContext")
