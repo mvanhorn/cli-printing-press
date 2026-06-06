@@ -312,10 +312,20 @@ type intentEndpointMeta struct {
 // reference a new endpoint must be declared in the spec, which keeps this
 // table in sync with actual usage.
 var intentEndpoints = map[string]intentEndpointMeta{
-{{- range .MCP.Intents}}
-{{- range .Steps}}
+{{- range $intentIndex, $intent := .MCP.Intents}}
+{{- range $stepIndex, $step := $intent.Steps}}
+{{- $seenBefore := false}}
+{{- range $scanIntentIndex, $scanIntent := $.MCP.Intents}}
+{{- range $scanStepIndex, $scanStep := $scanIntent.Steps}}
+{{- if and (eq $scanStep.Endpoint $step.Endpoint) (or (lt $scanIntentIndex $intentIndex) (and (eq $scanIntentIndex $intentIndex) (lt $scanStepIndex $stepIndex)))}}
+{{- $seenBefore = true}}
+{{- end}}
+{{- end}}
+{{- end}}
+{{- if not $seenBefore}}
 {{- $ep := lookupEndpoint $.APISpec .Endpoint}}
 	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}{{if $.HasRequiredRoles}}, requiredRole: {{if $ep.RequiresRole}}cli.Persona{{pascal $ep.RequiresRole}}{{else}}cli.Persona(""){{end}}{{end}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}{{if $ep.BodyIsArray}}, bodyIsArray: true{{end}}},
+{{- end}}
 {{- end}}
 {{- end}}
 }

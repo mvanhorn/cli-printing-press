@@ -36,6 +36,36 @@ func TestClientCacheKeyScopesByBaseURLAndAuthIdentity(t *testing.T) {
 	require.Contains(t, body, `sort.Strings(paramKeys)`, "cache keys should be deterministic for map params")
 }
 
+func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cache-perms")
+	outputDir := filepath.Join(t.TempDir(), "cache-perms-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cacheSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cache", "cache.go"))
+	require.NoError(t, err)
+	cache := string(cacheSrc)
+	require.Contains(t, cache, "os.MkdirAll(s.Dir, 0o700)")
+	require.Contains(t, cache, "os.WriteFile(s.path(key), []byte(value), 0o600)")
+	require.NotContains(t, cache, "os.MkdirAll(s.Dir, 0o755)")
+	require.NotContains(t, cache, "os.WriteFile(s.path(key), []byte(value), 0o644)")
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	client := string(clientSrc)
+	require.Contains(t, client, "os.MkdirAll(c.cacheDir, 0o700)")
+	require.Contains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o600)")
+	require.NotContains(t, client, "os.MkdirAll(c.cacheDir, 0o755)")
+	require.NotContains(t, client, "os.WriteFile(cacheFile, []byte(data), 0o644)")
+
+	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	config := string(configSrc)
+	require.Contains(t, config, "os.MkdirAll(dir, 0o700)")
+	require.Contains(t, config, "os.WriteFile(c.Path, data, 0o600)")
+}
+
 func clientCacheKeyBody(t *testing.T, content string) string {
 	t.Helper()
 	start := strings.Index(content, "func (c *Client) cacheKey(")

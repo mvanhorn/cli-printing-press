@@ -67,6 +67,9 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(root), "func RootCmd() *cobra.Command")
 
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "TestSplitShellArgs")
+
 	// main.go calls only RegisterTools; RegisterTools owns endpoint tools and
 	// the runtime command mirror.
 	main, err := os.ReadFile(filepath.Join(outputDir, "cmd", "noveltest-pp-mcp", "main.go"))
