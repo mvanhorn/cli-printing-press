@@ -134,6 +134,7 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 			for _, d := range dropped {
 				fmt.Fprintf(stderr, "  dropped: %s %s (origin(s): %s)\n", d.Method, d.Path, strings.Join(d.OriginBaseURLs, ", "))
 			}
+			fmt.Fprintf(stderr, "WARNING: dropped %d endpoint(s); generated spec covers only target host %s; review the drops above.\n", len(dropped), targetHost)
 		}
 		aggregated = kept
 	}
