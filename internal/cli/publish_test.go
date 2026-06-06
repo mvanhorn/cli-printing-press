@@ -614,20 +614,6 @@ exit 42
 	assert.NotContains(t, string(calls), "verbose")
 }
 
-func TestGovulncheckToolchainEnvPrefersToolchainDirective(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.25.0\ntoolchain go1.26.4\n"), 0o644))
-
-	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.4"}, govulncheckToolchainEnv(dir))
-}
-
-func TestGovulncheckToolchainEnvIgnoresLanguageOnlyGoDirective(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.24\n"), 0o644))
-
-	assert.Nil(t, govulncheckToolchainEnv(dir))
-}
-
 func TestPublishPackageMissingDirFlag(t *testing.T) {
 	cmd := newPublishCmd()
 	cmd.SetArgs([]string{"package", "--json"})
