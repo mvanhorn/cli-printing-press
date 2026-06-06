@@ -2192,6 +2192,110 @@ func newHealthCmd() *cobra.Command {
 	})
 }
 
+func TestSyncCLITranscendenceDocsSyncsNovelFeatureGoSurfaces(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
+	writeTestFile(t, filepath.Join(cliDir, "internal", "cli", "which.go"), `package cli
+
+type whichEntry struct {
+	Command      string
+	Description  string
+	Group        string
+	WhyItMatters string
+}
+
+var whichIndex = []whichEntry{
+	{Command: "old", Description: "old copy", Group: "", WhyItMatters: ""},
+}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "internal", "mcp", "tools.go"), `package mcp
+
+func context() map[string]any {
+	return map[string]any{
+		"command_mirror_capabilities": []map[string]string{
+			{"name": "Old", "command": "old", "description": "old copy", "rationale": "", "via": "mcp-command-mirror"},
+		},
+		"playbook": []map[string]string{
+			{"topic": "Old", "insight": "old why"},
+			{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."},
+		},
+	}
+}
+`)
+
+	artifacts, err := SyncCLITranscendenceDocs(cliDir, []NovelFeature{{
+		Name:         "Fresh insight",
+		Command:      "fresh scan",
+		Description:  "Fresh copy from research",
+		Rationale:    "Requires current research",
+		WhyItMatters: "Agents get the current path",
+		Group:        "Analysis",
+	}})
+	require.NoError(t, err)
+	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "cli", "which.go"), Detail: "whichIndex"})
+	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
+
+	whichData, err := os.ReadFile(filepath.Join(cliDir, "internal", "cli", "which.go"))
+	require.NoError(t, err)
+	which := string(whichData)
+	assert.Contains(t, which, `Command: "fresh scan"`)
+	assert.Contains(t, which, `Description: "Fresh copy from research"`)
+	assert.NotContains(t, which, "old copy")
+
+	mcpData, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcp := string(mcpData)
+	assert.Contains(t, mcp, `"name": "Fresh insight"`)
+	assert.Contains(t, mcp, `"command": "fresh scan"`)
+	assert.Contains(t, mcp, `{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."}`)
+	assert.NotContains(t, mcp, `"topic": "Fresh insight"`)
+	assert.NotContains(t, mcp, "old copy")
+}
+
+func TestSyncCLITranscendenceDocsWarnsBeforeDroppingDocumentedCommands(t *testing.T) {
+	cliDir := t.TempDir()
+	writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+		"# Test CLI",
+		"",
+		"## Unique Features",
+		"",
+		"These capabilities aren't available in any other tool for this API.",
+		"- **`health`** — current health",
+		"- **`reports sync`** — post-generation reports sync",
+		"",
+		"## Usage",
+		"",
+		"Run help.",
+		"",
+	}, "\n"))
+	writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+		"# Test Skill",
+		"",
+		"## Unique Capabilities",
+		"",
+		"These capabilities aren't available in any other tool for this API.",
+		"- **`health`** — current health",
+		"- **`stops sync`** — post-generation stops sync",
+		"",
+		"## Command Reference",
+		"",
+	}, "\n"))
+
+	var stderr string
+	_ = captureStderr(t, &stderr, func() []syncedArtifact {
+		artifacts, syncErr := SyncCLITranscendenceDocs(cliDir, []NovelFeature{{
+			Name:        "Health",
+			Command:     "health",
+			Description: "current health",
+		}})
+		require.NoError(t, syncErr)
+		return artifacts
+	})
+	assert.Contains(t, stderr, "dogfood_warning: README.md Unique Features will drop documented commands reports sync")
+	assert.Contains(t, stderr, "dogfood_warning: SKILL.md Unique Capabilities will drop documented commands stops sync")
+}
+
 // TestCheckNovelFeatures_BacktickUse pins that the walker matches commands
 // declared with Go's backtick raw-string Use: form. Authors reach for
 // backticks when the command name contains a literal double-quote (e.g.,
