@@ -49,9 +49,14 @@ const playbookSeedSentinelFamily = "__seed_meta__"
 //
 //	\n[amend YYYY-MM-DDTHH:MMZ]: ...
 //
-// The leading newline ensures we don't match a literal that just
-// happens to appear at byte 0, and \d{4}- pins the year prefix.
-var amendMarkerRe = regexp.MustCompile({{backtick}}\n\[amend \d{4}-{{backtick}})
+// The anchor accepts the marker either after a newline (the
+// COALESCE-append UPDATE path) or at byte 0: the first-ever amend on
+// an unseeded family takes AppendPlaybookNotes' INSERT path, which
+// trims the marker's leading newlines before storing, so the row's
+// notes_text starts with "[amend " at byte 0. Both shapes are
+// agent-authored and must be preserved across re-seeds; \d{4}- pins
+// the year prefix so prose like "the [amend foo] flag" never matches.
+var amendMarkerRe = regexp.MustCompile({{backtick}}(?:^|\n)\[amend \d{4}-{{backtick}})
 
 // playbookInitOnce gates runPlaybookInitOnce so seeding happens at
 // most once per CLI process.
@@ -222,10 +227,10 @@ func installPlaybooksFromEmbed(ctx context.Context, s *store.Store, embedFS fs.F
 			// The amend command appends a "[amend YYYY-MM-DDTHH:MMZ]:"
 			// marker, which is the durable signal that a row has agent
 			// content. If the stored notes carry that marker (matched
-			// via amendMarkerRe's leading-newline + year-prefix anchor),
-			// preserve them; otherwise overwrite with the freshly-
-			// embedded notes so the SeedVersion bump actually ships the
-			// content corrections.
+			// via amendMarkerRe's newline-or-start + year-prefix
+			// anchor), preserve them; otherwise overwrite with the
+			// freshly-embedded notes so the SeedVersion bump actually
+			// ships the content corrections.
 			preserve := false
 			if existing, ok, gerr := s.GetPlaybookByFamily(family); gerr == nil && ok {
 				if amendMarkerRe.MatchString(existing.NotesText) {

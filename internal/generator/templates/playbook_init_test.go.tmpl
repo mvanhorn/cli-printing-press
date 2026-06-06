@@ -19,6 +19,7 @@ import (
 	"testing/fstest"
 
 	"{{modulePath}}/internal/cli/playbooks"
+	"{{modulePath}}/internal/learn"
 	"{{modulePath}}/internal/store"
 )
 
@@ -291,6 +292,69 @@ func TestPlaybookInit_ReseedPreservesNotesWithAmend(t *testing.T) {
 	if got.NotesText != amended {
 		t.Errorf("re-seed should preserve notes containing [amend ...] marker;\n got %q\nwant %q",
 			firstNChars(got.NotesText, 200), amended)
+	}
+}
+
+// TestPlaybookInit_ReseedPreservesFirstInsertAmend pins the INSERT-path
+// variant of amend preservation: the first-ever `playbook amend` on a
+// family with no existing row takes AppendPlaybookNotes' INSERT path,
+// which trims the marker's leading newlines, so the stored notes_text
+// begins with "[amend " at byte 0 (no preceding newline). When a later
+// SeedVersion bump ships an embed JSON normalizing to that same
+// family, the preserve check must still recognize the row as
+// agent-authored and keep the notes.
+func TestPlaybookInit_ReseedPreservesFirstInsertAmend(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	// First install ships only alpha; beta's family has no row yet.
+	full := twoPlaybookFS()
+	alphaOnly := fstest.MapFS{
+		"alpha.json":     full["alpha.json"],
+		"alpha_notes.md": full["alpha_notes.md"],
+	}
+	if err := installPlaybooksFromEmbed(context.Background(), s, alphaOnly); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+
+	// Compute beta's family exactly the way the installer does, then
+	// amend it. The row does not exist, so this takes the INSERT path
+	// and stores the marker with leading newlines trimmed.
+	betaFamily := learn.QueryFamily(learn.Normalize("beta example query", newLearnConfig()))
+	if betaFamily == "" {
+		t.Fatal("beta example query normalized to empty family")
+	}
+	marker := "\n\n[amend 2026-05-27T03:14Z]: hard-won agent gotcha"
+	if _, inserted, err := s.AppendPlaybookNotes(betaFamily, marker); err != nil {
+		t.Fatalf("amend: %v", err)
+	} else if !inserted {
+		t.Fatal("expected INSERT path (no pre-existing beta row)")
+	}
+
+	// Binary upgrade: SeedVersion bump ships a beta embed normalizing
+	// to the amended family.
+	if _, _, err := s.UpsertPlaybook(store.UpsertPlaybookInput{
+		QueryFamily: playbookSeedSentinelFamily,
+		NotesText:   "old-version",
+		Source:      "seeded",
+	}); err != nil {
+		t.Fatalf("reset sentinel: %v", err)
+	}
+	if err := installPlaybooksFromEmbed(context.Background(), s, full); err != nil {
+		t.Fatalf("re-install: %v", err)
+	}
+
+	got, ok, err := s.GetPlaybookByFamily(betaFamily)
+	if err != nil || !ok {
+		t.Fatalf("get beta family after re-seed: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(got.NotesText, "hard-won agent gotcha") {
+		t.Errorf("re-seed overwrote first-insert amend notes;\n got %q", firstNChars(got.NotesText, 200))
 	}
 }
 
