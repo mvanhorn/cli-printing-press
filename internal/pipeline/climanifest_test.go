@@ -663,6 +663,36 @@ func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
 	assert.Equal(t, "my-spec.yaml", got.SpecPath)
 }
 
+func TestWriteManifestForGenerateStampsLocalSQLiteSpecFormat(t *testing.T) {
+	dir := t.TempDir()
+	localSpec := &spec.APISpec{
+		Name:   "local-data",
+		Source: spec.SourceLocalSQLite,
+		Auth:   spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	for range 2 {
+		require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+			APIName:   "local-data",
+			SpecSrcs:  []string{"/tmp/local-data.yaml"},
+			OutputDir: dir,
+			Spec:      localSpec,
+		}))
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, spec.SourceLocalSQLite, got.SpecFormat)
+	assert.True(t, got.IsLocalDatastore())
+	assert.Equal(t, "local-data.yaml", got.SpecPath)
+}
+
 func TestWriteManifestForGenerateMCPBManifestUsesResolvedMCPBinarySlug(t *testing.T) {
 	dir := t.TempDir()
 
