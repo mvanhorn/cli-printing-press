@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"{{modulePath}}/internal/store"
 	"github.com/spf13/cobra"
@@ -102,13 +103,27 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 	}
 
 	counts := make(map[string]int)
+	validFields := make(map[string]struct{})
+	matchedAny := false
+	decodedRows := 0
 	for _, item := range items {
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err != nil {
 			continue
 		}
-		val := fmt.Sprintf("%v", obj[field])
+		decodedRows++
+		for key := range obj {
+			validFields[key] = struct{}{}
+		}
+		raw, ok := resolvedGroupValue(obj, field)
+		if ok {
+			matchedAny = true
+		}
+		val := fmt.Sprintf("%v", raw)
 		counts[val]++
+	}
+	if decodedRows > 0 && !matchedAny {
+		return fmt.Errorf("group-by field %q was not found in any %s record; valid group-by fields: %s", field, resourceType, formatGroupByFields(validFields))
 	}
 
 	type kv struct {
@@ -136,4 +151,28 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 		fmt.Fprintf(out, "%s\t%d\n", kv.Key, kv.Count)
 	}
 	return nil
+}
+
+func resolvedGroupValue(obj map[string]any, field string) (any, bool) {
+	if val, ok := obj[field]; ok {
+		return val, true
+	}
+	if !strings.HasSuffix(field, "_id") {
+		if val, ok := obj[field+"_id"]; ok {
+			return val, true
+		}
+	}
+	return nil, false
+}
+
+func formatGroupByFields(fields map[string]struct{}) string {
+	if len(fields) == 0 {
+		return "none"
+	}
+	var names []string
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
