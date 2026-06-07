@@ -33,9 +33,13 @@ func NewAdaptiveLimiter(ratePerSec float64) *AdaptiveLimiter {
 	if ratePerSec <= 0 {
 		return nil
 	}
+	floor := 0.5
+	if ratePerSec < floor {
+		floor = ratePerSec
+	}
 	return &AdaptiveLimiter{
 		rate:      ratePerSec,
-		floor:     0.5,
+		floor:     floor,
 		rampAfter: 10,
 	}
 }

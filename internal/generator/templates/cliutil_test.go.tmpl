@@ -679,6 +679,15 @@ func TestAdaptiveLimiter_FloorsAtHalfRPS(t *testing.T) {
 	}
 }
 
+func TestAdaptiveLimiter_DoesNotRaiseSubFloorRateOnRateLimit(t *testing.T) {
+	l := NewAdaptiveLimiter(0.3)
+	startRate := l.Rate()
+	l.OnRateLimit()
+	if got := l.Rate(); got > startRate {
+		t.Errorf("Rate() after OnRateLimit = %v, want <= %v", got, startRate)
+	}
+}
+
 func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 	l := NewAdaptiveLimiter(10.0)
 	l.Wait()

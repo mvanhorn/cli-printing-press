@@ -1,7 +1,10 @@
 package generator
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,16 +61,47 @@ func TestAdaptiveLimiterFloor_AllowsBackoffToHalfRPS(t *testing.T) {
 	require.NoError(t, err)
 	src := string(srcBytes)
 
-	require.Contains(t, src, "floor:     0.5,")
+	require.Contains(t, src, "floor := 0.5")
+	require.Contains(t, src, "if ratePerSec < floor {")
+	require.Contains(t, src, "floor:     floor,")
 	require.Contains(t, src, "if l.rate < l.floor {")
 	require.NotContains(t, src, "floor:     ratePerSec,")
 
-	runGoCommandRequired(
+	requireGeneratedTestsPass(
 		t,
 		outputDir,
-		"test",
-		"./internal/cliutil",
-		"-run",
-		"TestAdaptiveLimiter_(HalvesOnRateLimit|FloorsAtHalfRPS)$",
+		"TestAdaptiveLimiter_(HalvesOnRateLimit|FloorsAtHalfRPS|DoesNotRaiseSubFloorRateOnRateLimit)$",
+		[]string{
+			"TestAdaptiveLimiter_HalvesOnRateLimit",
+			"TestAdaptiveLimiter_FloorsAtHalfRPS",
+			"TestAdaptiveLimiter_DoesNotRaiseSubFloorRateOnRateLimit",
+		},
 	)
+}
+
+func requireGeneratedTestsPass(t *testing.T, dir, pattern string, want []string) {
+	t.Helper()
+
+	cmd := exec.Command("go", "test", "-mod=mod", "-json", "./internal/cliutil", "-run", pattern)
+	cmd.Dir = dir
+	cacheDir, err := goBuildCacheDir(dir)
+	require.NoError(t, err)
+	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+
+	var event struct {
+		Action string `json:"Action"`
+		Test   string `json:"Test"`
+	}
+	seen := map[string]bool{}
+	dec := json.NewDecoder(bytes.NewReader(output))
+	for dec.Decode(&event) == nil {
+		if event.Action == "pass" && event.Test != "" {
+			seen[event.Test] = true
+		}
+	}
+	for _, name := range want {
+		require.Truef(t, seen[name], "generated test selector %q did not run %s", pattern, name)
+	}
 }
