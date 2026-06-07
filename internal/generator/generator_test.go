@@ -6563,9 +6563,10 @@ func (e *jsonSyntaxStub) Error() string { return e.msg }
 // for records that don't match the canonical id/name/title allowlist:
 //
 //  1. The static allow-list covers canonical scalars (price/fare/locale/code/...).
-//  2. A data-driven extension keeps any scalar key present in 80%+ of rows,
-//     so hand-written novel commands whose output keys aren't on the
-//     allow-list (object_name, match_key, snippet) survive projection.
+//  2. A data-driven extension keeps any non-blocklisted key present in
+//     80%+ of rows, so hand-written novel commands whose output keys
+//     aren't on the allow-list (object_name, match_key, snippet, series,
+//     metrics) survive projection.
 //  3. Verbose fields (description, body, ...) are excluded from the
 //     extension regardless of frequency.
 //  4. A per-item fallback preserves the original item when no key matches.
@@ -6602,12 +6603,94 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 	// (e.g. {"id":"x","object_name":"users","match_key":"uuid"} -> {"id":"x"}).
 	assert.Contains(t, body, "keyCounts",
 		"compactListFields must count per-key occurrence so frequent novel-command keys survive")
-	assert.Contains(t, body, "isCompactScalar",
-		"compactListFields must filter the data-driven extension by scalar type so nested objects/arrays don't bloat --compact output")
 	assert.Contains(t, body, "compactVerboseListFields",
 		"compactListFields must exclude description/body/content from the data-driven extension regardless of frequency")
 	assert.Contains(t, body, "threshold",
 		"compactListFields must compute a frequency threshold for the data-driven extension")
+}
+
+func TestGeneratedCompactListFieldsPreservesFrequentNestedPayloads(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("compact-nested")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	runtimeTest := `package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
+
+func TestCompactFieldsKeepsFrequentNestedPayloads(t *testing.T) {
+	input := json.RawMessage(` + "`" + `[
+		{"id":"lead","series":[1,2],"metrics":{"clicks":10},"rare":{"only":1},"body":"verbose"},
+		{"id":"sale","series":[3,4],"metrics":{"clicks":20},"body":"verbose"},
+		{"id":"trial","series":[5,6],"body":"verbose"}
+	]` + "`" + `)
+
+	got := compactFields(input)
+	var rows []map[string]any
+	if err := json.Unmarshal(got, &rows); err != nil {
+		t.Fatalf("compactFields returned invalid JSON: %v\n%s", err, got)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3: %s", len(rows), got)
+	}
+	for i, row := range rows {
+		if _, ok := row["series"].([]any); !ok {
+			t.Fatalf("row %d dropped frequent nested series: %#v", i, row)
+		}
+		if _, ok := row["body"]; ok {
+			t.Fatalf("row %d kept blocklisted body field: %#v", i, row)
+		}
+		if _, ok := row["rare"]; ok {
+			t.Fatalf("row %d kept sparse nested field: %#v", i, row)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if _, ok := rows[i]["metrics"].(map[string]any); !ok {
+			t.Fatalf("row %d dropped majority nested metrics: %#v", i, rows[i])
+		}
+	}
+	if _, ok := rows[2]["metrics"]; ok {
+		t.Fatalf("row 2 invented missing metrics field: %#v", rows[2])
+	}
+}
+
+func TestPrintJSONFilteredSelectOverridesCompact(t *testing.T) {
+	payload := []map[string]any{
+		{"id":"lead","series":[]any{1, 2},"rare":map[string]any{"only":1}},
+		{"id":"sale","series":[]any{3, 4}},
+	}
+	flags := &rootFlags{asJSON: true, compact: true, selectFields: "rare"}
+	var out bytes.Buffer
+	if err := printJSONFiltered(&out, payload, flags); err != nil {
+		t.Fatalf("printJSONFiltered failed: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("printJSONFiltered returned invalid JSON: %v\n%s", err, out.String())
+	}
+	if _, ok := rows[0]["rare"].(map[string]any); !ok {
+		t.Fatalf("--select did not keep explicitly requested rare field: %#v", rows[0])
+	}
+	if _, ok := rows[0]["series"]; ok {
+		t.Fatalf("--compact ran before --select and kept series unexpectedly: %#v", rows[0])
+	}
+	if _, ok := rows[0]["id"]; ok {
+		t.Fatalf("--select should drop unrequested id field: %#v", rows[0])
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "compact_list_fields_runtime_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(runtimeTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCompactFieldsKeepsFrequentNestedPayloads|TestPrintJSONFilteredSelectOverridesCompact", "-count=1")
 }
 
 // matchClosingBrace walks s from start, finds the first `{`, then returns
