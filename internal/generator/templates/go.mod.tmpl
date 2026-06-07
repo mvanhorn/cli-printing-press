@@ -1,6 +1,8 @@
 module {{modulePath}}
 
-go 1.26.4
+go 1.26
+
+toolchain go1.26.4
 
 require (
 {{- if .UsesBrowserHTTPTransport}}

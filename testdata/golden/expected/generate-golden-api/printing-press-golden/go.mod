@@ -1,6 +1,8 @@
 module printing-press-golden-pp-cli
 
-go 1.26.4
+go 1.26
+
+toolchain go1.26.4
 
 require (
 	github.com/spf13/cobra v1.9.1
