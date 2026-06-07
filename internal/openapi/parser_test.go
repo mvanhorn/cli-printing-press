@@ -10595,6 +10595,7 @@ func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
 		{"google camelCase pageToken", "pageToken", "pageToken", "page_token"},
 		{"snake_case page_token", "page_token", "page_token", "page_token"},
 		{"plain after", "after", "after", "cursor"},
+		{"snake_case next_token", "next_token", "next_token", "cursor"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -17650,6 +17650,198 @@ func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateSyncIncludesMultiLeafCollectionResources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Wearable Metrics
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /v2/usercollection/daily_sleep:
+    get:
+      operationId: get_daily_sleep
+      parameters:
+        - name: start_date
+          in: query
+          schema: {type: string, format: date}
+        - name: next_token
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailySleepEnvelope"
+  /v2/usercollection/heartrate:
+    get:
+      operationId: get_heartrate
+      parameters:
+        - name: start_datetime
+          in: query
+          schema: {type: string, format: date-time}
+        - name: next_token
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartrateEnvelope"
+  /v2/usercollection/personal_info:
+    get:
+      operationId: get_personal_info
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonalInfoEnvelope"
+  /v2/webhook/subscription:
+    get:
+      operationId: list_webhook_subscriptions
+      tags: [oauth]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEnvelope"
+components:
+  schemas:
+    DailySleepEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/DailySleep"
+        next_token:
+          type: string
+          nullable: true
+    HeartrateEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Heartrate"
+        next_token:
+          type: string
+          nullable: true
+    PersonalInfoEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PersonalInfo"
+    WebhookEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Webhook"
+    DailySleep:
+      type: object
+      properties:
+        id: {type: string}
+        day: {type: string, format: date}
+    Heartrate:
+      type: object
+      properties:
+        id: {type: string}
+        timestamp: {type: string, format: date-time}
+    PersonalInfo:
+      type: object
+      properties:
+        id: {type: string}
+        age: {type: integer}
+    Webhook:
+      type: object
+      properties:
+        id: {type: string}
+`))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	src := string(syncSrc)
+
+	assert.Contains(t, src, `"/v2/usercollection/daily_sleep"`,
+		"syncResourcePath must include every data list resource under a shared collection prefix")
+	assert.Contains(t, src, `"/v2/usercollection/heartrate"`,
+		"syncResourcePath must include sibling list resources instead of collapsing to one resource")
+	assert.Contains(t, src, `"/v2/usercollection/personal_info"`,
+		"single-page data resources under the shared prefix must stay syncable")
+	assert.Contains(t, src, `"/v2/webhook/subscription"`,
+		"auth-tagged resources remain accepted when explicitly requested")
+
+	defaultResources := regexp.MustCompile(`(?s)func defaultSyncResources\(\) \[\]string \{(.*?)\n\}`).FindStringSubmatch(src)
+	require.Len(t, defaultResources, 2)
+	assert.Contains(t, defaultResources[1], `"usercollection",`)
+	assert.Contains(t, defaultResources[1], `"usercollection-daily-sleep",`)
+	assert.Contains(t, defaultResources[1], `"usercollection-personal-info",`)
+	assert.NotContains(t, defaultResources[1], `"usercollection-heartrate",`,
+		"heartrate should stay absorbed by the canonical usercollection resource")
+	assert.NotContains(t, defaultResources[1], `"webhook",`,
+		"auth-tagged webhook resources must stay out of the default sync set")
+
+	paginationSwitch := regexp.MustCompile(`(?s)func resourceSupportsPagination\(resource string\) bool \{(.*?)\n\}`).FindStringSubmatch(src)
+	require.Len(t, paginationSwitch, 2)
+	assert.Contains(t, paginationSwitch[1], `case "usercollection":`)
+	assert.Contains(t, paginationSwitch[1], `case "usercollection-daily-sleep":`)
+	assert.NotContains(t, paginationSwitch[1], `case "usercollection-personal-info":`,
+		"single-object resources without cursor params must not be marked paginated")
+	assert.Contains(t, src, `cursorParam: "next_token"`,
+		"the generated sync layer must derive the API cursor param instead of hardcoding after")
+
+	sinceFormatTest := `package cli
+
+import "testing"
+
+func TestSyncSinceParamFormatForDateOnlyResources(t *testing.T) {
+	if got := syncResourceSinceParamFormat("usercollection-daily-sleep"); got != "date" {
+		t.Fatalf("daily sleep since format = %q, want date", got)
+	}
+	// The canonical usercollection endpoint is heartrate because it has the shortest shared-prefix path.
+	if got := syncResourceSinceParamFormat("usercollection"); got != "date-time" {
+		t.Fatalf("heartrate since format = %q, want date-time", got)
+	}
+	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "date"); got != "2026-06-07" {
+		t.Fatalf("date-formatted since value = %q, want YYYY-MM-DD", got)
+	}
+	if got := formatSyncSinceValue("2026-06-07T12:34:56.789Z", "date"); got != "2026-06-07" {
+		t.Fatalf("date-formatted fractional since value = %q, want YYYY-MM-DD", got)
+	}
+	if got := formatSyncSinceValue("not-a-date-value", "date"); got != "not-a-date-value" {
+		t.Fatalf("invalid date-formatted since value = %q, want original value", got)
+	}
+	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "date-time"); got != "2026-06-07T12:34:56Z" {
+		t.Fatalf("date-time since value = %q, want original RFC3339", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_since_format_test.go"), []byte(sinceFormatTest), 0o644))
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestSyncSinceParamFormatForDateOnlyResources$")
+}
+
 func TestGenerateGlobalPathTemplateVarRootFlag(t *testing.T) {
 	t.Parallel()
 

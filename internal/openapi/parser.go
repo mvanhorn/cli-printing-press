@@ -7403,7 +7403,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		}
 	}
 	if pag.Type == "" {
-		for _, name := range []string{"after", "cursor", "page[cursor]"} {
+		for _, name := range []string{"after", "cursor", "page[cursor]", "nexttoken", "next_token"} {
 			if orig, ok := originalCase[name]; ok {
 				pag.CursorParam = orig
 				pag.Type = "cursor"
@@ -7640,7 +7640,7 @@ var nextFieldPageTokenNames = []string{"next_page_token", "nextpagetoken"}
 // strings that cannot advance pagination without a known query parameter.
 // The runtime treats their presence as a truncation signal when no cursor
 // param is configured.
-var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "cursor"}
+var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "next_token", "nexttoken", "cursor"}
 
 // nextFieldBoolNames lists boolean-typed "more pages" flags.
 var nextFieldBoolNames = []string{"has_more", "hasmore"}
