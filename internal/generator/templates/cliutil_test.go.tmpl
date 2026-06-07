@@ -92,8 +92,8 @@ func TestAuthErrorHelpers(t *testing.T) {
 		t.Fatal("unexpected auth classification for non-auth message")
 	}
 
-	got := SanitizeErrorBody("token sk-abcdefghi Bearer abc.def key=secretvalue")
-	if got != "token [REDACTED] [REDACTED] [REDACTED]" {
+	got := SanitizeErrorBody("token sk-abcdefghi Bearer abc.def key=secretvalue token=abc.def-ghi")
+	if got != "token [REDACTED] [REDACTED] [REDACTED] [REDACTED]" {
 		t.Fatalf("SanitizeErrorBody redaction = %q", got)
 	}
 }

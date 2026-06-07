@@ -77,7 +77,7 @@ func SanitizeErrorBody(msg string) string {
 	if len(msg) > 200 {
 		msg = msg[:200] + "..."
 	}
-	credPatterns := regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|key=[a-zA-Z0-9._\-]+)`)
+	credPatterns := regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{8,}|sk_live_[a-zA-Z0-9]+|Bearer\s+[a-zA-Z0-9._\-]+|(?:key|token)=[a-zA-Z0-9._\-]+)`)
 	msg = credPatterns.ReplaceAllString(msg, "[REDACTED]")
 	return msg
 }
