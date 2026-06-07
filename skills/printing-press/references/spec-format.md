@@ -9,7 +9,8 @@ Use this format when no OpenAPI spec is available.
 name: my-api                     # string (REQUIRED) CLI binary prefix, e.g. "my-api"
 description: "My API CLI"       # string shown in command help
 version: "0.1.0"                # string baked into generated binary
-base_url: "https://api.example.com/v1" # string (REQUIRED) default base API URL
+source: ""                       # string optional source archetype; local-sqlite means no HTTP API origin
+base_url: "https://api.example.com/v1" # string (REQUIRED unless source: local-sqlite) default base API URL
 http_transport: standard          # string optional: standard | browser-http | browser-chrome | browser-chrome-h3
 health_check_path: "/health"      # string optional doctor reachability path; defaults to /
 required_headers:                 # []RequiredHeader optional headers sent on every request
@@ -372,7 +373,8 @@ pass nested payloads without hand-written Go.
 Validation in `spec.Validate()` enforces:
 
 - `name` is required
-- root `base_url` is required unless `base_path` is supplied
+- `source`, when set, must be `local-sqlite`
+- root `base_url` is required unless `base_path` is supplied or `source: local-sqlite` declares an operator-local SQLite source with no HTTP API origin
 - at least one `resources` entry is required
 - every resource must have at least one endpoint
 - every endpoint must have both `method` and `path`
@@ -385,7 +387,7 @@ Validation in `spec.Validate()` enforces:
 
 These commonly cause generation/build failures or incorrect CLI behavior:
 
-- Missing required fields (`name`, root `base_url`, resource endpoints, endpoint `method`, endpoint `path`)
+- Missing required fields (`name`, root `base_url` for HTTP specs, resource endpoints, endpoint `method`, endpoint `path`)
 - Invalid `method` values (generator templates only handle `GET`, `POST`, `PUT`, `DELETE`)
 - Missing `path` on endpoints
 - Defining `body` params on `GET` endpoints (allowed in YAML, but ignored by GET command generation)

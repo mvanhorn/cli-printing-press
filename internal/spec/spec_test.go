@@ -745,6 +745,31 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+func TestValidationAllowsLocalSQLiteSourceWithoutBaseURL(t *testing.T) {
+	s := APISpec{
+		Name:   "local-data",
+		Source: SourceLocalSQLite,
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	require.NoError(t, s.Validate())
+}
+
+func TestValidationRejectsUnknownSource(t *testing.T) {
+	s := APISpec{
+		Name:    "local-data",
+		Source:  "local-postgres",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	require.ErrorContains(t, s.Validate(), `source "local-postgres" is not supported; valid values: local-sqlite`)
+}
+
 // validateAdditionalAuthHeaders covers six distinct error paths; this table
 // hits each one and confirms the happy path still validates.
 func TestValidateAdditionalAuthHeadersErrors(t *testing.T) {
