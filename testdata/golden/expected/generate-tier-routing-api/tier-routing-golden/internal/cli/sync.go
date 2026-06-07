@@ -939,7 +939,56 @@ func isEmptyPageEnvelope(envelope map[string]json.RawMessage) bool {
 			}
 		}
 	}
+	if hasExactlyOneNullArrayWithZeroCount(envelope) {
+		return true
+	}
 	return hasExactlyOneEmptyArray(envelope)
+}
+
+func hasExactlyOneNullArrayWithZeroCount(envelope map[string]json.RawMessage) bool {
+	nullArrayCount := 0
+	hasZeroCount := false
+	for key, raw := range envelope {
+		if isZeroCountField(key, raw) {
+			hasZeroCount = true
+			continue
+		}
+		if isJSONNull(raw) && isNullPageItemCandidateKey(key) {
+			nullArrayCount++
+			continue
+		}
+		if pageEnvelopeMetadataKeys[key] {
+			continue
+		}
+		return false
+	}
+	return nullArrayCount == 1 && hasZeroCount
+}
+
+func isZeroCountField(key string, raw json.RawMessage) bool {
+	switch key {
+	case "total", "Total", "count", "Count", "total_count", "totalCount", "TotalCount":
+	default:
+		return false
+	}
+	// A JSON null count is not a numeric zero-count signal: json.Unmarshal of
+	// "null" into a float64 is a no-op (leaves n at 0, returns nil), so without
+	// this guard a null count would falsely qualify as zero — masking a
+	// possibly-malformed {"items":null,"total":null} as an empty page.
+	if isJSONNull(raw) {
+		return false
+	}
+	var n float64
+	return json.Unmarshal(raw, &n) == nil && n == 0
+}
+
+func isNullPageItemCandidateKey(key string) bool {
+	for _, itemKey := range pageItemKeys {
+		if key == itemKey {
+			return true
+		}
+	}
+	return !pageEnvelopeMetadataKeys[key]
 }
 
 func hasExactlyOneEmptyArray(envelope map[string]json.RawMessage) bool {
