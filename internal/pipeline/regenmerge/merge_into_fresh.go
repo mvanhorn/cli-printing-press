@@ -209,7 +209,7 @@ func pruneDeclsFromGoFile(path string, collisions declSet) error {
 				kept = append(kept, decl)
 				continue
 			}
-			if d.Tok == token.CONST && constDeclHasIotaPruneRisk(d, collisions) {
+			if d.Tok == token.CONST && constDeclHasPruneRisk(d, collisions) {
 				break
 			}
 			specs := d.Specs[:0]
@@ -249,24 +249,26 @@ func pruneDeclsFromGoFile(path string, collisions declSet) error {
 	return os.Chmod(path, info.Mode().Perm())
 }
 
-func constDeclHasIotaPruneRisk(decl *ast.GenDecl, collisions declSet) bool {
-	usesIota := false
+func constDeclHasPruneRisk(decl *ast.GenDecl, collisions declSet) bool {
+	collides := false
+	hasImplicitValues := false
+	hasIota := false
 	for _, spec := range decl.Specs {
 		valueSpec, ok := spec.(*ast.ValueSpec)
 		if !ok {
 			continue
 		}
+		if len(valueSpec.Values) == 0 {
+			hasImplicitValues = true
+		}
 		if len(valueSpec.Values) > 0 && exprListUsesIota(valueSpec.Values) {
-			usesIota = true
+			hasIota = true
 		}
-		if !valueSpecCollides(valueSpec, collisions) {
-			continue
-		}
-		if usesIota || len(valueSpec.Values) == 0 {
-			return true
+		if valueSpecCollides(valueSpec, collisions) {
+			collides = true
 		}
 	}
-	return false
+	return collides && (hasImplicitValues || hasIota)
 }
 
 func exprListUsesIota(exprs []ast.Expr) bool {
