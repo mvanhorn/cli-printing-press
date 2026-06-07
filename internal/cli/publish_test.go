@@ -905,9 +905,11 @@ func TestPublishPackageStripsRootBinaries(t *testing.T) {
 		"test",        // phantom bare-slug binary
 		"test-pp-cli", // primary CLI binary
 		"test-pp-mcp", // MCP peer binary (now covered by both code-level strip and skill cleanup)
+		"cli.test",    // compiled `go test -c` binary
 	} {
 		require.NoError(t, os.WriteFile(filepath.Join(cliDir, name), []byte("\x7fELF"), 0o755))
 	}
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "root_test.go"), []byte("package main\n"), 0o644))
 
 	target := filepath.Join(t.TempDir(), "staging")
 	cmd := newPublishCmd()
@@ -920,16 +922,17 @@ func TestPublishPackageStripsRootBinaries(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(output), &result))
 
 	// Source binaries stay — we don't mutate the operator's working tree.
-	for _, name := range []string{"test", "test-pp-cli", "test-pp-mcp"} {
+	for _, name := range []string{"test", "test-pp-cli", "test-pp-mcp", "cli.test", "root_test.go"} {
 		_, srcErr := os.Stat(filepath.Join(cliDir, name))
-		assert.NoError(t, srcErr, "package must not delete source-tree binary %s", name)
+		assert.NoError(t, srcErr, "package must not delete source-tree file %s", name)
 	}
 
 	// Staged tree must have none of them.
-	for _, name := range []string{"test", "test-pp-cli", "test-pp-mcp"} {
+	for _, name := range []string{"test", "test-pp-cli", "test-pp-mcp", "cli.test"} {
 		_, stagedErr := os.Stat(filepath.Join(result.StagedDir, name))
 		assert.ErrorIs(t, stagedErr, os.ErrNotExist, "staged dir must not include root-level binary %s", name)
 	}
+	require.FileExists(t, filepath.Join(result.StagedDir, "root_test.go"), "staged dir should keep Go test source files")
 }
 
 func TestStagedBinaryNamesDeduplicates(t *testing.T) {
