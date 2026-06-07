@@ -3260,7 +3260,7 @@ if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 }
 ```
 
-The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Return empty JSON (`[]`) for `--json` / `--agent` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
+The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Return empty JSON (`[]`) for `--json` / `--agent` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. The unconditional `return nil` is intentional for both machine and human paths: a missing local mirror is an empty local-cache state, not a usage or API failure. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
 
 Multi-positional commands (N >= 2 required args) must use a two-check shape so only the bare help probe returns exit 0:
 

@@ -68,6 +68,7 @@ func TestPrintingPressSkillSQLiteNovelCommandsGuardMissingMirror(t *testing.T) {
 	require.Contains(t, content, "live execution without `--dry-run`, before the user has run `sync`")
 	require.Contains(t, content, "os.Stat(dbPath); os.IsNotExist(statErr)")
 	require.Contains(t, content, "flags.asJSON || flags.agent")
+	require.Contains(t, content, "The unconditional `return nil` is intentional")
 	require.Contains(t, content, "store.OpenWithContext")
 
 	guard := strings.Index(content, "os.Stat(dbPath); os.IsNotExist(statErr)")
