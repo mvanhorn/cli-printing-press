@@ -1,8 +1,13 @@
 package regenmerge
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -108,6 +113,10 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 		}
 	}
 
+	if err := pruneFreshDeclCollisions(freshDir, report); err != nil {
+		return fmt.Errorf("pruning fresh declaration collisions: %w", err)
+	}
+
 	if report.GoMod != nil {
 		merged, err := renderMergedGoModWithModulePaths(snapshotDir, freshDir)
 		switch {
@@ -134,6 +143,152 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 
 	report.Applied = true
 	return nil
+}
+
+// pruneFreshDeclCollisions removes declarations from fresh-owned Go files when
+// a preserved snapshot file in the same package directory already defines the
+// same top-level name. This handles template splits such as moving `var
+// version` from root.go to version.go while root.go is preserved for real
+// hand edits.
+func pruneFreshDeclCollisions(freshDir string, report *MergeReport) error {
+	preservedByDir := map[string]declSet{}
+	freshOwnedByDir := map[string][]string{}
+	for _, fc := range report.Files {
+		if !strings.HasSuffix(fc.Path, ".go") {
+			continue
+		}
+		dir := filepath.Dir(filepath.ToSlash(fc.Path))
+		switch {
+		case fc.Applied:
+			decls, err := extractDecls(filepath.Join(freshDir, fc.Path))
+			if err != nil {
+				return err
+			}
+			if preservedByDir[dir] == nil {
+				preservedByDir[dir] = declSet{}
+			}
+			for name := range decls {
+				preservedByDir[dir].add(name)
+			}
+		case fc.Verdict == VerdictTemplatedClean || fc.Verdict == VerdictNewTemplateEmission:
+			freshOwnedByDir[dir] = append(freshOwnedByDir[dir], fc.Path)
+		}
+	}
+	for dir, preserved := range preservedByDir {
+		if len(preserved) == 0 {
+			continue
+		}
+		for _, rel := range freshOwnedByDir[dir] {
+			if err := pruneDeclsFromGoFile(filepath.Join(freshDir, rel), preserved); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func pruneDeclsFromGoFile(path string, collisions declSet) error {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+	changed := false
+	var kept []ast.Decl
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if _, collides := collisions[canonicalFuncName(d)]; collides {
+				changed = true
+				continue
+			}
+		case *ast.GenDecl:
+			if d.Tok == token.IMPORT {
+				kept = append(kept, decl)
+				continue
+			}
+			specs := d.Specs[:0]
+			for _, spec := range d.Specs {
+				next, specChanged := pruneCollidingSpec(spec, collisions)
+				if specChanged {
+					changed = true
+				}
+				if next == nil {
+					continue
+				}
+				specs = append(specs, next)
+			}
+			if len(specs) == 0 {
+				continue
+			}
+			d.Specs = specs
+		}
+		kept = append(kept, decl)
+	}
+	if !changed {
+		return nil
+	}
+	file.Decls = kept
+	var buf bytes.Buffer
+	if err := printer.Fprint(&buf, fset, file); err != nil {
+		return fmt.Errorf("printing %s: %w", path, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("statting %s: %w", path, err)
+	}
+	if err := writeFileAtomic(path, buf.Bytes()); err != nil {
+		return err
+	}
+	return os.Chmod(path, info.Mode().Perm())
+}
+
+func pruneCollidingSpec(spec ast.Spec, collisions declSet) (ast.Spec, bool) {
+	switch s := spec.(type) {
+	case *ast.TypeSpec:
+		if _, ok := collisions[s.Name.Name]; ok {
+			return nil, true
+		}
+	case *ast.ValueSpec:
+		colliding := make([]bool, len(s.Names))
+		collisionCount := 0
+		for i, name := range s.Names {
+			if _, ok := collisions[name.Name]; ok {
+				colliding[i] = true
+				collisionCount++
+			}
+		}
+		switch {
+		case collisionCount == 0:
+			return spec, false
+		case collisionCount == len(s.Names):
+			return nil, true
+		case len(s.Values) != 0 && len(s.Values) != len(s.Names):
+			return spec, false
+		}
+		origNames := append([]*ast.Ident(nil), s.Names...)
+		origValues := append([]ast.Expr(nil), s.Values...)
+		names := s.Names[:0]
+		var values []ast.Expr
+		if len(origValues) > 0 {
+			values = s.Values[:0]
+		}
+		for i, name := range origNames {
+			if colliding[i] {
+				continue
+			}
+			names = append(names, name)
+			if len(origValues) > 0 {
+				values = append(values, origValues[i])
+			}
+		}
+		s.Names = names
+		if len(origValues) > 0 {
+			s.Values = values
+		}
+		return spec, true
+	}
+	return spec, false
 }
 
 func preserveTemplatedDriftInNovelOnly(rel string) bool {
