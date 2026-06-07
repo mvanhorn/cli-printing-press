@@ -607,6 +607,15 @@ func TestPolishSkillInheritsPrintingPressBinaryFromParent(t *testing.T) {
 	assert.NotContains(t, polishSkill, "cli-printing-press mcp-sync \"$CLI_DIR\"")
 }
 
+func TestReprintSkillInitializesPrintingPressBinary(t *testing.T) {
+	reprintSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-reprint", "SKILL.md"))
+
+	assert.Contains(t, reprintSkill, "printing_press_bin: <abs-path>")
+	assert.Contains(t, reprintSkill, `PRINTING_PRESS_BIN="${PRINTING_PRESS_BIN:-}"`)
+	assert.Contains(t, reprintSkill, `command -v cli-printing-press`)
+	assert.Contains(t, reprintSkill, `"$PRINTING_PRESS_BIN" scorecard --dir "$LIB_TARGET" --json`)
+}
+
 func TestPolishSkillPinsGo126CompatibleGosecFallback(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
 	fallback := "go run github.com/securego/gosec/v2/cmd/gosec@v2.26.1"
