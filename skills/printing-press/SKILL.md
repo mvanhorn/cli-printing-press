@@ -141,9 +141,57 @@ _resolve_press_bin() {
   return 1
 }
 
+# Strict-older semver compare on the first three components. Pre-release
+# suffixes collapse to their GA counterpart (acceptable: we ship no pre-release
+# tags).
+_semver_lt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, ".")
+    split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if ((x[i] + 0) < (y[i] + 0)) exit 0
+      if ((x[i] + 0) > (y[i] + 0)) exit 1
+    }
+    exit 1
+  }'
+}
+
+_source_press_version() {
+  sed -nE 's/^var[[:space:]]+Version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+    "$_scope_dir/internal/version/version.go" 2>/dev/null | head -n 1
+}
+
+_rebuild_local_press_bin_if_stale() {
+  if [ "$_press_repo" != "true" ] || [ ! -x "$_scope_dir/cli-printing-press" ]; then
+    return 0
+  fi
+
+  _local_v="$("$_scope_dir/cli-printing-press" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
+  _source_v="$(_source_press_version)"
+  if [ -z "$_local_v" ] || [ -z "$_source_v" ] || ! _semver_lt "$_local_v" "$_source_v"; then
+    return 0
+  fi
+
+  echo ""
+  echo "[local-binary-stale] local build v$_local_v is older than source v$_source_v"
+  if ! command -v go >/dev/null 2>&1; then
+    echo "[setup-error] local cli-printing-press binary is stale and Go is not on PATH, so it cannot be rebuilt."
+    return 1 2>/dev/null || exit 1
+  fi
+
+  if (cd "$_scope_dir" && go build -o ./cli-printing-press ./cmd/cli-printing-press); then
+    echo "[local-binary-rebuilt] rebuilt $_scope_dir/cli-printing-press"
+    echo ""
+  else
+    echo "[setup-error] local cli-printing-press binary is stale and rebuild failed."
+    return 1 2>/dev/null || exit 1
+  fi
+}
+
 # Prefer local build when running from inside the printing-press repo.
-# The lefthook build hook keeps ./cli-printing-press current after every commit/pull,
-# so it's always newer than the go-install version.
+# Lefthook may keep ./cli-printing-press current, but hooks can be absent or
+# disabled. Compare against the checked-out source version before trusting it.
+_rebuild_local_press_bin_if_stale || { return 1 2>/dev/null || exit 1; }
 if [ "$_press_repo" = "true" ] && [ -x "$_scope_dir/cli-printing-press" ]; then
   export PATH="$_scope_dir:$PATH"
   echo "Using local build: $_scope_dir/cli-printing-press"
@@ -323,20 +371,6 @@ PRESS_VERCHECK_FILE="$PRESS_HOME/.version-check"
 PRESS_VERCHECK_TTL=86400
 _now_ts=$(date +%s)
 
-# Strict-older semver compare on the first three components. Pre-release
-# suffixes collapse to their GA counterpart (acceptable: we ship no pre-release
-# tags).
-_semver_lt() {
-  awk -v a="$1" -v b="$2" 'BEGIN {
-    split(a, x, ".")
-    split(b, y, ".")
-    for (i = 1; i <= 3; i++) {
-      if ((x[i] + 0) < (y[i] + 0)) exit 0
-      if ((x[i] + 0) > (y[i] + 0)) exit 1
-    }
-    exit 1
-  }'
-}
 _should_check=true
 if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
   _last_ts=$(awk -F= '/^last_check=/{print $2}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
@@ -501,7 +535,7 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
 
 **Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `cli-printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `cli-printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/cli-printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `cli-printing-press generate ...` for readability — replace `cli-printing-press` with the captured absolute path each time you actually run one.
 
