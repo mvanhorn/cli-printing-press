@@ -40,13 +40,29 @@ func TestLibraryDirName(t *testing.T) {
 
 func TestMCP(t *testing.T) {
 	tests := map[string]string{
-		"stripe":  "stripe-pp-mcp",
-		"cal-com": "cal-com-pp-mcp",
-		"notion":  "notion-pp-mcp",
+		"stripe":        "stripe-pp-mcp",
+		"cal-com":       "cal-com-pp-mcp",
+		"notion":        "notion-pp-mcp",
+		"foo-pp":        "foo-pp-mcp",
+		"foo-pp-events": "foo-pp-events-pp-mcp",
 	}
 	for input, want := range tests {
 		if got := MCP(input); got != want {
 			t.Fatalf("MCP(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestCLI(t *testing.T) {
+	tests := map[string]string{
+		"foo":           "foo-pp-cli",
+		"foo-pp":        "foo-pp-cli",
+		"foo-pp-events": "foo-pp-events-pp-cli",
+	}
+
+	for input, want := range tests {
+		if got := CLI(input); got != want {
+			t.Fatalf("CLI(%q) = %q, want %q", input, got, want)
 		}
 	}
 }

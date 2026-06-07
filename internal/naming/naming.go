@@ -53,11 +53,15 @@ func IsThinCommandShort(s string) bool {
 }
 
 func CLI(name string) string {
-	return name + CurrentCLISuffix
+	return trimPPSuffixToken(name) + CurrentCLISuffix
 }
 
 func MCP(name string) string {
-	return name + MCPSuffix
+	return trimPPSuffixToken(name) + MCPSuffix
+}
+
+func trimPPSuffixToken(name string) string {
+	return strings.TrimSuffix(name, "-pp")
 }
 
 func LegacyCLI(name string) string {
