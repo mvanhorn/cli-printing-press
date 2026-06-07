@@ -173,6 +173,52 @@ func TestGenerateSyncDefaultsSkipAuthTaggedResources(t *testing.T) {
 	assert.NotContains(t, archiveBlock, `"authorization-grant"`)
 }
 
+func TestGenerateSyncDefaultsSkipTypedIDlessResources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("sync-idless")
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Technology": {
+			Fields: []spec.TypeField{
+				{Name: "title", Type: "string"},
+				{Name: "url", Type: "string"},
+			},
+		},
+	}
+	apiSpec.Resources = map[string]spec.Resource{
+		"technologies": {
+			Description: "Technologies",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:   "GET",
+					Path:     "/technologies",
+					Response: spec.ResponseDef{Type: "array", Item: "Technology"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	defaultsStart := strings.Index(syncSrc, "func defaultSyncResources() []string")
+	knownStart := strings.Index(syncSrc, "func knownSyncResourceNames() []string")
+	require.NotEqual(t, -1, defaultsStart)
+	require.NotEqual(t, -1, knownStart)
+	defaultsBlock := syncSrc[defaultsStart:knownStart]
+	assert.NotContains(t, defaultsBlock, `"technologies"`,
+		"idless typed resources must not be selected by empty-args sync")
+
+	knownBlock := syncSrc[knownStart:]
+	assert.Contains(t, knownBlock, `"technologies"`,
+		"explicit --resources should still accept the idless list endpoint")
+	assert.Contains(t, syncSrc, "no default sync resources",
+		"sync should explain why empty-args sync is a no-op")
+	assert.Contains(t, syncSrc, `"reason":"no_bulk_list_endpoints"`,
+		"JSON sync warnings should preserve the existing structured reason")
+}
+
 // dependentResourceSpec builds a minimal spec with a parent + child
 // resource so syncDependentResource is actually emitted. The
 // dependent-resource profiler requires paginated list endpoints (not
@@ -495,7 +541,7 @@ func TestGenerateSyncEmitsEmptyHintWhenNoBulkList(t *testing.T) {
 
 	// The runtime hint surfaces in both modes so JSON-driven agents and human
 	// callers both see the explanation instead of a silent total_records:0.
-	assert.Contains(t, syncSrc, "no bulk-list endpoints",
+	assert.Contains(t, syncSrc, "no default sync resources",
 		"sync should print a stderr hint when defaultSyncResources is empty")
 	assert.Contains(t, syncSrc, `"reason":"no_bulk_list_endpoints"`,
 		"sync should emit a sync_warning JSON event when defaultSyncResources is empty")

@@ -2773,6 +2773,60 @@ func TestProfileExcludesScalarArrayAndSamplerEndpoints(t *testing.T) {
 		"an array-of-scalars endpoint must not be selected as a syncable list (no extractable primary key)")
 }
 
+func TestProfileSkipsTypedIDlessListsFromDefaultSync(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "docs",
+		Types: map[string]spec.TypeDef{
+			"Technology": {
+				Fields: []spec.TypeField{
+					{Name: "title", Type: "string"},
+					{Name: "url", Type: "string"},
+				},
+			},
+			"Sample": {
+				Fields: []spec.TypeField{
+					{Name: "sample_id", Type: "string"},
+					{Name: "title", Type: "string"},
+				},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"technologies": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/technologies",
+						Response: spec.ResponseDef{Type: "array", Item: "Technology"},
+					},
+				},
+			},
+			"samples": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/samples",
+						Response: spec.ResponseDef{Type: "array", Item: "Sample"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "technologies",
+		"idless list endpoints stay explicit sync targets")
+	assert.True(t, byName["technologies"].SkipDefaultSync,
+		"typed list endpoints with no runtime-extractable ID must not run in empty-args sync")
+	require.Contains(t, byName, "samples")
+	assert.False(t, byName["samples"].SkipDefaultSync,
+		"resource-suffixed ID fields are runtime-extractable and remain in the default sync set")
+}
+
 func TestIsScalarItemArray(t *testing.T) {
 	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "string"}))
 	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "int"}))

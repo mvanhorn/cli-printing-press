@@ -297,6 +297,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"composeMCPDesc":                     composeMCPDesc,
 		"composeMCPSubDesc":                  composeMCPSubDesc,
 		"mcpParamDesc":                       g.mcpParamDescription,
+		"hasDefaultSyncResources":            hasDefaultSyncResources,
 		"flagName":                           flagName,
 		"paramIdent":                         paramIdent,
 		"paramWireName":                      paramWireName,
@@ -3263,6 +3264,15 @@ func paginationSupportedResources(syncable []profiler.SyncableResource, dependen
 	}
 	sort.Strings(names)
 	return names
+}
+
+func hasDefaultSyncResources(syncable []profiler.SyncableResource) bool {
+	for _, resource := range syncable {
+		if !resource.SkipDefaultSync {
+			return true
+		}
+	}
+	return false
 }
 
 func specDateTimeFieldNames(api *spec.APISpec) []string {
