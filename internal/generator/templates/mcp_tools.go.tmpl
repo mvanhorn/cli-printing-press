@@ -19,6 +19,7 @@ import (
 {{- end}}
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -207,6 +208,13 @@ func mcpFormFieldValue(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 {{- end}}
+func formatMCPParamValue(v any) string {
+	if f, ok := v.(float64); ok {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return fmt.Sprintf("%v", v)
+}
+
 {{- if $hasNestedBodyPath}}
 func setNestedBodyArg(body map[string]any, path []string, value any) {
 	if len(path) == 0 {
@@ -324,13 +332,13 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			case "path":
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)
 {{- if .GlobalPathTemplateVars}}
 			case "template":
 				if c.Config.TemplateVars == nil {
 					c.Config.TemplateVars = map[string]string{}
 				}
-				c.Config.TemplateVars[binding.WireName] = fmt.Sprintf("%v", v)
+				c.Config.TemplateVars[binding.WireName] = formatMCPParamValue(v)
 {{- end}}
 			case "body":
 {{- if $hasNestedBodyPath}}
@@ -370,7 +378,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				}
 {{- end}}
 			default:
-				params[binding.WireName] = fmt.Sprintf("%v", v)
+				params[binding.WireName] = formatMCPParamValue(v)
 			}
 		}
 		for _, p := range positionalParams {
@@ -380,7 +388,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			}
 			pathParams[p] = true
 			if v, ok := args[p]; ok {
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)
 			}
 		}
 
@@ -402,7 +410,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				}
 {{- end}}
 			default:
-				params[k] = fmt.Sprintf("%v", v)
+				params[k] = formatMCPParamValue(v)
 			}
 		}
 

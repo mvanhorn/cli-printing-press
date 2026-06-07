@@ -43,7 +43,7 @@ func TestGenerateMutatingEndpointPassesQueryParams(t *testing.T) {
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_text-to-speech.go")
 	assert.Contains(t, endpointSrc, `params := map[string]string{}`)
-	assert.Contains(t, endpointSrc, `params["output_format"] = fmt.Sprintf("%v", flagOutputFormat)`)
+	assert.Contains(t, endpointSrc, `params["output_format"] = formatCLIParamValue(flagOutputFormat)`)
 	assert.Contains(t, endpointSrc, `c.PostWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
