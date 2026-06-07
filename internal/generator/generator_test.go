@@ -3748,6 +3748,8 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 		"mcp package must expose validateReadOnlyQuery — the gate that handleSQL must call before opening the store")
 	assert.Contains(t, mcpCode, `func stripLeadingSQLNoise(`,
 		"mcp package must expose stripLeadingSQLNoise — without it the gate's HasPrefix check is bypassable by SQL comments and semicolons that SQLite skips before parsing")
+	assert.Contains(t, mcpCode, `func hasTrailingSQLStatement(`,
+		"mcp package must expose hasTrailingSQLStatement so SELECT-prefix multi-statement payloads cannot append mutating SQL after the read-only allowlist")
 	// handleSQL must dispatch through validateReadOnlyQuery; a regression
 	// to inline HasPrefix-on-blocklist would silently restore the
 	// comment-prefix bypass.
@@ -3765,6 +3767,10 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 	mcpTestCode := string(mcpTestSrc)
 	assert.Contains(t, mcpTestCode, "TestValidateReadOnlyQuery_RejectsBypassVectors",
 		"behavioral coverage of comment-prefix and statement-separator bypass vectors must ship into every printed CLI's mcp package")
+	assert.Contains(t, mcpTestCode, "TestHasTrailingSQLStatement",
+		"behavioral coverage of multi-statement parsing must ship into every printed CLI's mcp package")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestGenerateMCPSQLToolSurfacesRowErrors pins the emitted handleSQL error
