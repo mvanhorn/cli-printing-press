@@ -13549,6 +13549,87 @@ paths:
 	assert.Contains(t, string(storeGo), `"identity_providers": "idpId",`)
 }
 
+func TestGeneratedSyncSkipsRequiredQueryDependentResources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("required-query-dependent")
+	apiSpec.Resources = map[string]spec.Resource{
+		"widgets": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/widgets",
+					Response:   spec.ResponseDef{Type: "array", Item: "Widget"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+				},
+			},
+			SubResources: map[string]spec.Resource{
+				"comments": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/widgets/{widget_id}/comments",
+							Response:   spec.ResponseDef{Type: "array", Item: "Comment"},
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						},
+					},
+				},
+				"availableSlots": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/widgets/{widget_id}/availableSlots",
+							Response: spec.ResponseDef{Type: "array", Item: "AvailableSlot"},
+							Params: []spec.Param{{
+								Name:     "size",
+								Type:     "string",
+								Required: true,
+							}},
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						},
+					},
+				},
+				"typedViews": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/widgets/{widget_id}/typedViews",
+							Response: spec.ResponseDef{Type: "array", Item: "TypedView"},
+							Params: []spec.Param{{
+								Name:     "viewType",
+								Type:     "string",
+								Required: true,
+								Enum:     []string{"compact", "full"},
+							}},
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := profiler.Profile(apiSpec)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "widgets", profile.SyncableResources[0].Name)
+	require.Len(t, profile.DependentSyncResources, 1)
+	assert.Equal(t, "comments", profile.DependentSyncResources[0].Name)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+	require.Len(t, gen.profile.DependentSyncResources, 1)
+	assert.Equal(t, "comments", gen.profile.DependentSyncResources[0].Name)
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(syncGo), `case "comments":`)
+	assert.NotContains(t, string(syncGo), "/widgets/{widget_id}/availableSlots")
+	assert.NotContains(t, string(syncGo), "/widgets/{widget_id}/typedViews")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	t.Parallel()
 

@@ -449,7 +449,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 					// entity type that should sync independently. Example:
 					// GET /v1/api/networkentity?entityType=collection|workspace|api|flow
 					// → sync resources: collection, workspace, api, flow
-					if enumParam := findEntityTypeEnum(endpoint); enumParam != nil && len(enumParam.Enum) >= 2 {
+					if enumParam := findEntityTypeEnum(endpoint); standaloneList && enumParam != nil && len(enumParam.Enum) >= 2 {
 						addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 						for _, val := range enumParam.Enum {
 							expandedName := strings.ToLower(val)
@@ -461,7 +461,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 							meta.Path = expandedPath
 							syncable[expandedName] = meta
 						}
-					} else if strings.Contains(endpoint.Path, "{") && !resolvable {
+					} else if strings.Contains(endpoint.Path, "{") && !resolvable && !hasRequiredDependentScopeParams(endpoint) {
 						// Parameterized paginated paths can't sync standalone — track
 						// them for dependent-resource detection below. Carry the
 						// endpoint's metadata so x-resource-id and x-critical
@@ -840,6 +840,18 @@ func pathParamsAllTemplateVars(path string, s *spec.APISpec) bool {
 // hasRequiredScopeParams flags "scoped list" endpoints (e.g., GetFriendList
 // requires steamid) that can't be synced without runtime context.
 func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
+	return hasRequiredScopeParamsForSync(endpoint, true)
+}
+
+// hasRequiredDependentScopeParams flags parameterized child endpoints that
+// require a caller-supplied query filter that dependent sync cannot satisfy.
+// Unlike hasRequiredScopeParams, enum params are not exempt here because
+// dependent sync has no per-parent enum-expansion path.
+func hasRequiredDependentScopeParams(endpoint spec.Endpoint) bool {
+	return hasRequiredScopeParamsForSync(endpoint, false)
+}
+
+func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bool) bool {
 	temporalOrFormatParams := map[string]bool{
 		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
 		"key": true, "format": true,
@@ -851,7 +863,9 @@ func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
 				continue
 			}
 			// Enum params with 2+ values are handled by enum expansion, not scope
-			if len(param.Enum) >= 2 {
+			// for flat resources. Dependent sync has no per-parent enum expansion
+			// path, so required enum filters are still unsatisfied there.
+			if allowEnumExpansion && len(param.Enum) >= 2 {
 				continue
 			}
 			return true
