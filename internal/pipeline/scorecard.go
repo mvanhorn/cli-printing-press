@@ -231,6 +231,7 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
 		return nil, nil
 	}
+	specPath = scorecardSpecPath(outputDir, specPath)
 	if specPath == "" {
 		// No spec: mark spec-dependent dimensions as unscored.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
@@ -261,6 +262,14 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimAuthProtocol)
 	}
 	return spec, nil
+}
+
+func scorecardSpecPath(outputDir, specPath string) string {
+	embedded := filepath.Join(outputDir, "spec.json")
+	if fileExists(embedded) {
+		return embedded
+	}
+	return specPath
 }
 
 func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInfo, verifyReport *VerifyReport, isDevice bool) {
