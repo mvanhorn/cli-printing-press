@@ -2706,6 +2706,7 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 
 	usageCounts := securitySchemeOperationUsageCounts(doc)
 	candidates := candidateSecuritySchemeNames(doc, usageCounts)
+	effectiveRequirements := allEffectiveSecurityRequirements(doc)
 
 	bestScore := math.MaxInt
 	bestUsageCount := 0
@@ -2718,7 +2719,7 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 			continue
 		}
 		usageCount := usageCounts[name]
-		score := schemePriorityScore(scheme)
+		score := schemePriorityScoreForDoc(doc, effectiveRequirements, name, scheme)
 		if usageCount > bestUsageCount || (usageCount == bestUsageCount && score < bestScore) {
 			bestUsageCount = usageCount
 			bestScore = score
@@ -2825,22 +2826,27 @@ func effectiveSecurityRequirements(op *openapi3.Operation, doc *openapi3.T) open
 	return doc.Security
 }
 
-// Ordering rationale: Bearer is the simplest for CLI use; OAuth2 flows rank
-// by viability for non-interactive runs (cc > authorization_code > password >
-// implicit); apiKey-in-header beats apiKey-in-query because query strings leak
-// to logs; HTTP Basic ranks below standalone apiKey because compound legacy
-// schemes (email + key) surface as basic-ish patterns and shouldn't outrank a
-// modern apiKey alternative when both are offered. Password (ROPC) is
-// deprecated but kept above all apiKey shapes so multi-scheme specs that
-// pair ROPC with an apiKey alternative don't regress vs. the prior selector,
-// which returned any well-formed oauth2 before any apiKey.
+// Ordering rationale: Bearer is the simplest already-minted token shape and
+// stays first. OAuth2 Device Code and Password (ROPC) are CLI-friendly flows
+// that stay above apiKey so specs that intentionally offer them do not silently
+// regress. Among OAuth2 alternatives, client_credentials keeps its old edge
+// over password for non-interactive runs. A standalone apiKey-in-header beats
+// OAuth2 browser/client-credential flows because printed CLIs usually want the
+// simplest user-supplied token when the API offers alternatives. apiKey-in-query
+// stays lower because query strings leak to logs. HTTP Basic ranks below
+// standalone apiKey because compound legacy schemes (email + key) surface as
+// basic-ish patterns and shouldn't outrank a modern apiKey alternative when
+// both are offered.
 const (
 	schemePriorityBearer          = 0
-	schemePriorityOAuth2CC        = 100
+	schemePriorityOAuth2Device    = 25
+	schemePriorityOAuth2CC        = 30
+	schemePriorityOAuth2Password  = 40
+	schemePriorityAPIKeyHeader    = 50
+	schemePriorityOAuth2CCAlt     = 100
 	schemePriorityOAuth2AuthCode  = 200
-	schemePriorityOAuth2Password  = 250
 	schemePriorityOAuth2Implicit  = 300
-	schemePriorityAPIKeyHeader    = 400
+	schemePriorityAPIKeyANDPeer   = 400
 	schemePriorityAPIKeyQuery     = 450
 	schemePriorityHTTPBasic       = 500
 	schemePriorityAPIKeyCookie    = 600
@@ -2862,7 +2868,7 @@ func schemePriorityScore(scheme *openapi3.SecurityScheme) int {
 		return schemePriorityHTTPOther
 	case "oauth2":
 		if _, ok := scheme.Extensions[extensionOAuthDeviceFlow]; ok {
-			return schemePriorityOAuth2AuthCode
+			return schemePriorityOAuth2Device
 		}
 		if scheme.Flows != nil {
 			if cc := scheme.Flows.ClientCredentials; cc != nil && strings.TrimSpace(cc.TokenURL) != "" {
@@ -2891,6 +2897,98 @@ func schemePriorityScore(scheme *openapi3.SecurityScheme) int {
 		return schemePriorityAPIKeyOther
 	}
 	return schemePriorityUnknown
+}
+
+func schemePriorityScoreForDoc(doc *openapi3.T, requirements openapi3.SecurityRequirements, name string, scheme *openapi3.SecurityScheme) int {
+	score := schemePriorityScore(scheme)
+	if score == schemePriorityAPIKeyHeader && apiKeyOnlyAppearsWithNonAPIKeySibling(doc, requirements, name) {
+		return schemePriorityAPIKeyANDPeer
+	}
+	if score == schemePriorityOAuth2CC && hasStandaloneHeaderAPIKeyRequirement(doc, requirements) {
+		return schemePriorityOAuth2CCAlt
+	}
+	return score
+}
+
+func apiKeyOnlyAppearsWithNonAPIKeySibling(doc *openapi3.T, requirements openapi3.SecurityRequirements, schemeName string) bool {
+	seen := false
+	for _, requirement := range requirements {
+		if _, ok := requirement[schemeName]; !ok {
+			continue
+		}
+		seen = true
+		hasNonAPIKeySibling := false
+		for siblingName := range requirement {
+			if siblingName == schemeName {
+				continue
+			}
+			sibling := securitySchemeValue(doc.Components.SecuritySchemes[siblingName])
+			if sibling != nil && !strings.EqualFold(sibling.Type, "apiKey") {
+				hasNonAPIKeySibling = true
+				break
+			}
+		}
+		if !hasNonAPIKeySibling {
+			return false
+		}
+	}
+	return seen
+}
+
+func hasStandaloneHeaderAPIKeyRequirement(doc *openapi3.T, requirements openapi3.SecurityRequirements) bool {
+	for _, requirement := range requirements {
+		hasHeaderAPIKey := false
+		hasNonAPIKeySibling := false
+		for schemeName := range requirement {
+			scheme := securitySchemeValue(doc.Components.SecuritySchemes[schemeName])
+			if scheme == nil {
+				continue
+			}
+			if strings.EqualFold(scheme.Type, "apiKey") && strings.EqualFold(scheme.In, "header") {
+				hasHeaderAPIKey = true
+				continue
+			}
+			if !strings.EqualFold(scheme.Type, "apiKey") {
+				hasNonAPIKeySibling = true
+			}
+		}
+		if hasHeaderAPIKey && !hasNonAPIKeySibling {
+			return true
+		}
+	}
+	return false
+}
+
+func allEffectiveSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequirements {
+	if doc == nil {
+		return nil
+	}
+	var requirements openapi3.SecurityRequirements
+	rootIncluded := false
+	if doc.Paths != nil {
+		for _, pathItem := range doc.Paths.Map() {
+			if pathItem == nil {
+				continue
+			}
+			for _, op := range pathItem.Operations() {
+				if op == nil {
+					continue
+				}
+				if op.Security != nil {
+					requirements = append(requirements, (*op.Security)...)
+					continue
+				}
+				if !rootIncluded {
+					requirements = append(requirements, doc.Security...)
+					rootIncluded = true
+				}
+			}
+		}
+	}
+	if len(requirements) > 0 {
+		return requirements
+	}
+	return doc.Security
 }
 
 func securitySchemeValue(ref *openapi3.SecuritySchemeRef) *openapi3.SecurityScheme {

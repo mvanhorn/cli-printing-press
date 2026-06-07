@@ -62,7 +62,7 @@ func TestGenerateGlobalScopeParamRequiresExplicitFlag(t *testing.T) {
 	assert.Contains(t, content, `func newUsersListCmd`)
 	assert.Contains(t, content, `StringVar(&flagTenantFilter, "tenant-filter", "", "Tenant scope")`)
 	assert.Contains(t, content, `return fmt.Errorf("required flag \"%s\" not set", "tenant-filter")`)
-	assert.Contains(t, content, `params["TenantFilter"] = fmt.Sprintf("%v", flagTenantFilter)`)
+	assert.Contains(t, content, `params["TenantFilter"] = formatCLIParamValue(flagTenantFilter)`)
 	assert.NotContains(t, content, `CIPP_TENANT_FILTER`)
 	assert.NotContains(t, content, `defaults from`)
 	assert.NotContains(t, strings.ToLower(content), `markflagrequired`)

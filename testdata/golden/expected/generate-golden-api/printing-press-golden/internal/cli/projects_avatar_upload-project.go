@@ -35,7 +35,7 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 			path = replacePathParam(path, "projectId", args[0])
 			params := map[string]string{}
 			if flagOverwrite != false {
-				params["overwrite"] = fmt.Sprintf("%v", flagOverwrite)
+				params["overwrite"] = formatCLIParamValue(flagOverwrite)
 			}
 			fields := map[string]string{}
 			fileFields := map[string]string{}

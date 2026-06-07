@@ -382,13 +382,13 @@ func TestPromotedCommandSubstitutesFlagPathParams(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	src := readPromotedCommandFile(t, outputDir)
-	assert.Contains(t, src, `path = replacePathParam(path, "userId", fmt.Sprintf("%v", flagUserId))`,
+	assert.Contains(t, src, `path = replacePathParam(path, "userId", formatCLIParamValue(flagUserId))`,
 		"promoted command must substitute flag-backed path params before making the request")
-	assert.Contains(t, src, `params["limit"] = fmt.Sprintf("%v", flagLimit)`,
+	assert.Contains(t, src, `params["limit"] = formatCLIParamValue(flagLimit)`,
 		"ordinary non-positional flags still belong in query params")
 	assert.NotContains(t, src, `params["userId"]`,
 		"path params must not also be sent as query params")
-	assert.NotContains(t, src, `"userId": fmt.Sprintf("%v", flagUserID)`,
+	assert.NotContains(t, src, `"userId": formatCLIParamValue(flagUserID)`,
 		"path params must not be passed to paginated query maps")
 }
 
