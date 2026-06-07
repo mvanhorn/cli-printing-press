@@ -17702,6 +17702,8 @@ components:
 	assert.Contains(t, defaultResources[1], `"usercollection",`)
 	assert.Contains(t, defaultResources[1], `"usercollection-daily-sleep",`)
 	assert.Contains(t, defaultResources[1], `"usercollection-personal-info",`)
+	assert.NotContains(t, defaultResources[1], `"usercollection-heartrate",`,
+		"heartrate should stay absorbed by the canonical usercollection resource")
 	assert.NotContains(t, defaultResources[1], `"webhook",`,
 		"auth-tagged webhook resources must stay out of the default sync set")
 
@@ -17722,11 +17724,18 @@ func TestSyncSinceParamFormatForDateOnlyResources(t *testing.T) {
 	if got := syncResourceSinceParamFormat("usercollection-daily-sleep"); got != "date" {
 		t.Fatalf("daily sleep since format = %q, want date", got)
 	}
+	// The canonical usercollection endpoint is heartrate because it has the shortest shared-prefix path.
 	if got := syncResourceSinceParamFormat("usercollection"); got != "date-time" {
 		t.Fatalf("heartrate since format = %q, want date-time", got)
 	}
 	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "date"); got != "2026-06-07" {
 		t.Fatalf("date-formatted since value = %q, want YYYY-MM-DD", got)
+	}
+	if got := formatSyncSinceValue("2026-06-07T12:34:56.789Z", "date"); got != "2026-06-07" {
+		t.Fatalf("date-formatted fractional since value = %q, want YYYY-MM-DD", got)
+	}
+	if got := formatSyncSinceValue("not-a-date-value", "date"); got != "not-a-date-value" {
+		t.Fatalf("invalid date-formatted since value = %q, want original value", got)
 	}
 	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "date-time"); got != "2026-06-07T12:34:56Z" {
 		t.Fatalf("date-time since value = %q, want original RFC3339", got)
