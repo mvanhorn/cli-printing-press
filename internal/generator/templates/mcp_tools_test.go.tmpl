@@ -33,6 +33,13 @@ func TestValidateReadOnlyQuery_AllowsSelectAndWITH(t *testing.T) {
 		"/* a *//* b */ SELECT 1",
 		"WITH r AS (SELECT 1) SELECT * FROM r",
 		"with r as (select 1) select * from r",
+		"SELECT 1;",
+		"SELECT 1; -- trailing comment",
+		"SELECT 1; /* trailing comment */",
+		"SELECT * FROM resources WHERE id = 'a;b'",
+		`SELECT * FROM "semi;colon"`,
+		"SELECT * FROM `semi;colon`",
+		"SELECT * FROM [semi;colon]",
 	}
 	for _, q := range allowed {
 		if err := validateReadOnlyQuery(q); err != nil {
@@ -67,6 +74,13 @@ func TestValidateReadOnlyQuery_RejectsBypassVectors(t *testing.T) {
 		"-- x\nATTACH DATABASE '/tmp/x.db' AS evil",
 		";VACUUM INTO '/tmp/x.db'",
 		"; ; VACUUM INTO '/tmp/x.db'",
+		"SELECT 1; ATTACH DATABASE 'file:/tmp/x?mode=rwc' AS evil; CREATE TABLE evil.t(x)",
+		"SELECT 1; DROP TABLE resources",
+		"SELECT 1; VACUUM INTO '/tmp/x.db'",
+		"WITH r AS (SELECT 1) SELECT * FROM r; ATTACH DATABASE '/tmp/x.db' AS evil",
+		"SELECT 1 /* c */ ; ATTACH DATABASE '/tmp/x.db' AS evil",
+		"SELECT 'a;b'; VACUUM INTO '/tmp/x.db'",
+		`SELECT * FROM "semi;colon"; ATTACH DATABASE '/tmp/x.db' AS evil`,
 		"/* a */ /* b */ INSERT INTO t VALUES (1)",
 		"/* outer /* not nested */ */ SELECT 1", // SQLite doesn't nest, so trailing "*/" closes; second SELECT remains. Reject — the gate must err on the side of caution when the leading shape is suspicious.
 		"-- only a comment",
@@ -78,6 +92,36 @@ func TestValidateReadOnlyQuery_RejectsBypassVectors(t *testing.T) {
 	for _, q := range rejected {
 		if err := validateReadOnlyQuery(q); err == nil {
 			t.Errorf("validateReadOnlyQuery(%q) = nil, want error", q)
+		}
+	}
+}
+
+func TestHasTrailingSQLStatement(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{name: "single select", query: "SELECT 1", want: false},
+		{name: "trailing terminator", query: "SELECT 1;", want: false},
+		{name: "trailing terminator and comment", query: "SELECT 1; -- ok", want: false},
+		{name: "two statements", query: "SELECT 1; SELECT 2", want: true},
+		{name: "attach after select", query: "SELECT 1; ATTACH DATABASE '/tmp/x.db' AS evil", want: true},
+		{name: "semicolon in single quote", query: "SELECT 'a;b'", want: false},
+		{name: "escaped single quote", query: "SELECT 'a'';b'", want: false},
+		{name: "semicolon in double quote", query: `SELECT * FROM "a;b"`, want: false},
+		{name: "escaped double quote", query: `SELECT * FROM "a"";b"`, want: false},
+		{name: "semicolon in backtick", query: "SELECT * FROM `a;b`", want: false},
+		{name: "escaped backtick", query: "SELECT * FROM `a``;b`", want: false},
+		{name: "semicolon in bracket", query: "SELECT * FROM [a;b]", want: false},
+		{name: "semicolon in line comment", query: "SELECT 1 -- ;\n", want: false},
+		{name: "statement after line comment", query: "SELECT 1 -- ;\n; SELECT 2", want: true},
+		{name: "semicolon in block comment", query: "SELECT 1 /* ; */", want: false},
+		{name: "statement after block comment", query: "SELECT 1 /* ; */; SELECT 2", want: true},
+	}
+	for _, c := range cases {
+		if got := hasTrailingSQLStatement(c.query); got != c.want {
+			t.Errorf("hasTrailingSQLStatement(%q) [%s] = %v, want %v", c.query, c.name, got, c.want)
 		}
 	}
 }
