@@ -3133,6 +3133,7 @@ type visionRenderData struct {
 	GraphQLFieldPaths            map[string]string
 	AgentMoneyWorkflow           AgentMoneyWorkflow
 	HTMLSyncStub                 bool
+	HTMLPageModeResources        []criticalResourceEntry
 }
 
 type resourceIDFieldOverrideEntry struct {
@@ -3166,6 +3167,48 @@ func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, depend
 	entries := make([]resourceIDFieldOverrideEntry, len(names))
 	for i, name := range names {
 		entries[i] = resourceIDFieldOverrideEntry{Name: name, Value: overrides[name]}
+	}
+	return entries
+}
+
+func htmlPageModeResourceEntries(api *spec.APISpec, syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []criticalResourceEntry {
+	resources := map[string]bool{}
+	if api != nil {
+		var collect func(resourceMap map[string]spec.Resource)
+		collect = func(resourceMap map[string]spec.Resource) {
+			for resourceName, resource := range resourceMap {
+				name := spec.ToSnakeCase(resourceName)
+				for _, endpoint := range resource.Endpoints {
+					if endpoint.UsesHTMLResponse() && endpoint.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+						resources[name] = true
+						break
+					}
+				}
+				collect(resource.SubResources)
+			}
+		}
+		collect(api.Resources)
+	}
+	for _, resource := range syncable {
+		if syncableResourceUsesHTMLPageMode(resource) {
+			resources[resource.Name] = true
+		}
+	}
+	for _, resource := range dependent {
+		if dependentResourceUsesHTMLPageMode(resource) {
+			resources[resource.Name] = true
+		}
+	}
+
+	names := make([]string, 0, len(resources))
+	for name := range resources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]criticalResourceEntry, len(names))
+	for i, name := range names {
+		entries[i] = criticalResourceEntry{Name: name}
 	}
 	return entries
 }
@@ -3291,6 +3334,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		GraphQLFieldPaths:            gqlFieldPaths,
 		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
 		HTMLSyncStub:                 g.shouldEmitHTMLSyncStub(),
+		HTMLPageModeResources:        htmlPageModeResourceEntries(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources),
 	}
 }
 

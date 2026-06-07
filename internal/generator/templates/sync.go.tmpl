@@ -9,6 +9,10 @@
 {{- $hasHTMLSync := false -}}
 {{- range .SyncableResources}}{{if .UsesHTMLResponse}}{{- $hasHTMLSync = true -}}{{end}}{{end -}}
 {{- range .DependentSyncResources}}{{if .UsesHTMLResponse}}{{- $hasHTMLSync = true -}}{{end}}{{end }}
+{{- $hasHTMLPageModeSync := false -}}
+{{- range .HTMLPageModeResources}}{{- $hasHTMLPageModeSync = true -}}{{end }}
+{{- $hasDomainTable := false -}}
+{{- range .Tables}}{{if emitsDomainTable .}}{{- $hasDomainTable = true -}}{{end}}{{end }}
 
 package cli
 
@@ -1978,16 +1982,55 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 
 	resource = resolveDiscriminatedResource(resource, obj)
 
+{{ if $hasHTMLPageModeSync}}
+{{- if $hasDomainTable}}
+	var forceTypedID bool
+{{- end}}
+	var id string
+	if htmlPageModeResources[resource] {
+{{- if $hasDomainTable}}
+		id, forceTypedID = resourceIDFieldOverrideID(resource, obj)
+{{- else}}
+		id, _ = resourceIDFieldOverrideID(resource, obj)
+{{- end}}
+		if id == "" {
+			id = extractIDFallback(resource, obj)
+{{- if $hasDomainTable}}
+			forceTypedID = id != ""
+{{- end}}
+		}
+		if id == "" {
+			id = synthesizeHTMLPageModeID(resource, obj)
+{{- if $hasDomainTable}}
+			forceTypedID = id != ""
+{{- end}}
+		}
+	} else {
+		id = extractID(resource, obj)
+		if id == "" {
+			id = resource
+		}
+	}
+{{- else}}
 	id := extractID(resource, obj)
 	if id == "" {
 		id = resource
 	}
+{{- end}}
 
 	switch resource {
 {{- range .Tables}}
 {{- if emitsDomainTable .}}
 	case "{{.Resource}}":
+{{- if $hasHTMLPageModeSync}}
+		typedData, err := typedSingleObjectData(data, obj, id, forceTypedID)
+		if err != nil {
+			return err
+		}
+		return db.Upsert{{pascal .Name}}(typedData)
+{{- else}}
 		return db.Upsert{{pascal .Name}}(data)
+{{- end}}
 {{- end}}
 {{- end}}
 	default:
@@ -2617,6 +2660,17 @@ var resourceIDFieldOverrides = map[string]string{
 {{- end}}
 }
 
+{{- if $hasHTMLPageModeSync}}
+
+// htmlPageModeResources identifies sync resources whose single-object HTML
+// extraction may produce page metadata without an API-native id field.
+var htmlPageModeResources = map[string]bool{
+{{- range .HTMLPageModeResources}}
+	{{printf "%q" .Name}}: true,
+{{- end}}
+}
+{{- end}}
+
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec
 // annotations (x-resource-id), not this list. Order matters: vendor
@@ -2696,14 +2750,33 @@ var criticalResources = map[string]bool{
 // way — divergence between the two paths produces silent drops on
 // heterogeneous payloads.
 func extractID(resource string, obj map[string]any) string {
+{{- if $hasHTMLPageModeSync}}
+	if s, ok := resourceIDFieldOverrideID(resource, obj); ok {
+		return s
+	}
+	return extractIDFallback(resource, obj)
+}
+
+func resourceIDFieldOverrideID(resource string, obj map[string]any) (string, bool) {
+{{- end}}
 	if override, ok := resourceIDFieldOverrides[resource]; ok && override != "" {
 		if v := store.LookupFieldValue(obj, override); v != nil {
 			s := store.ResourceIDString(v)
 			if s != "" && s != "<nil>" {
+{{- if $hasHTMLPageModeSync}}
+				return s, true
+{{- else}}
 				return s
+{{- end}}
 			}
 		}
 	}
+{{- if $hasHTMLPageModeSync}}
+	return "", false
+}
+
+func extractIDFallback(resource string, obj map[string]any) string {
+{{- end}}
 	for _, key := range genericIDFieldFallbacks {
 		if v := store.LookupFieldValue(obj, key); v != nil {
 			s := store.ResourceIDString(v)
@@ -2717,6 +2790,40 @@ func extractID(resource string, obj map[string]any) string {
 	}
 	return ""
 }
+
+{{- if $hasHTMLPageModeSync}}
+
+func synthesizeHTMLPageModeID(resource string, obj map[string]any) string {
+	if !htmlPageModeResources[resource] {
+		return ""
+	}
+	for _, key := range []string{"canonical_url", "url", "image_url"} {
+		if v := store.LookupFieldValue(obj, key); v != nil {
+			s := store.ResourceIDString(v)
+			if s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+	return resource
+}
+
+func typedSingleObjectData(data json.RawMessage, obj map[string]any, id string, forceTypedID bool) (json.RawMessage, error) {
+	if !forceTypedID {
+		return data, nil
+	}
+	return objectWithSyntheticID(obj, id)
+}
+
+func objectWithSyntheticID(obj map[string]any, id string) (json.RawMessage, error) {
+	withID := make(map[string]any, len(obj)+1)
+	for key, value := range obj {
+		withID[key] = value
+	}
+	withID["id"] = id
+	return json.Marshal(withID)
+}
+{{- end}}
 
 // suffixIDFieldFallback resolves an id-less resource that keys on its own
 // "<name>_code" / "<name>_id" / "<name>_key" / "<name>_slug" field (e.g. the
