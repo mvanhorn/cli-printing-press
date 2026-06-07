@@ -2351,6 +2351,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"WARN", func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && r.MCPSurfaceParityCheck.HandEdited
 	}},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		return len(r.ReimplementationCheck.MissingDataSourceStrategy) > 0
+	}},
 	// Surface hand-rolled responses without hard-blocking early iteration.
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.SyncParamDropCheck.Findings) > 0 }},
@@ -2454,6 +2457,16 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		}
 		issues = append(issues, fmt.Sprintf("%d/%d novel features look reimplemented: %s",
 			len(report.ReimplementationCheck.Suspicious),
+			report.ReimplementationCheck.Checked,
+			strings.Join(parts, "; ")))
+	}
+	if len(report.ReimplementationCheck.MissingDataSourceStrategy) > 0 {
+		parts := make([]string, 0, len(report.ReimplementationCheck.MissingDataSourceStrategy))
+		for _, f := range report.ReimplementationCheck.MissingDataSourceStrategy {
+			parts = append(parts, fmt.Sprintf("%s (%s) — %s", f.Command, f.File, f.Reason))
+		}
+		issues = append(issues, fmt.Sprintf("%d/%d novel features missing data-source strategy: %s",
+			len(report.ReimplementationCheck.MissingDataSourceStrategy),
 			report.ReimplementationCheck.Checked,
 			strings.Join(parts, "; ")))
 	}

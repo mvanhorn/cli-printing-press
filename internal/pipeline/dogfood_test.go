@@ -783,6 +783,20 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
 }
 
+func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
+	report := passingDogfoodReport()
+	report.ReimplementationCheck = ReimplementationCheckResult{
+		Checked: 1,
+		MissingDataSourceStrategy: []ReimplementationFinding{{
+			Command: "id-hunt",
+			File:    "id_hunt.go",
+			Reason:  "missing // pp:data-source <auto|local|live> annotation",
+		}},
+	}
+
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+}
+
 func TestExtractExamplesSection(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3372,6 +3386,22 @@ func TestCollectDogfoodIssues_IncludesNovelFeatureStubs(t *testing.T) {
 
 	issues := collectDogfoodIssues(report, false)
 	assert.Contains(t, issues, "1/2 novel features are TODO stubs: call")
+}
+
+func TestCollectDogfoodIssues_IncludesMissingDataSourceStrategy(t *testing.T) {
+	report := &DogfoodReport{
+		ReimplementationCheck: ReimplementationCheckResult{
+			Checked: 2,
+			MissingDataSourceStrategy: []ReimplementationFinding{{
+				Command: "id-hunt",
+				File:    "id_hunt.go",
+				Reason:  "missing // pp:data-source <auto|local|live> annotation",
+			}},
+		},
+	}
+
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "1/2 novel features missing data-source strategy: id-hunt (id_hunt.go) — missing // pp:data-source <auto|local|live> annotation")
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {
