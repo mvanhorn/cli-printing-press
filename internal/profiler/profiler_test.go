@@ -1688,6 +1688,101 @@ func TestProfileDependentResources_NoParentNoDependent(t *testing.T) {
 	assert.Empty(t, profile.DependentSyncResources, "no parent resource means no dependent detection")
 }
 
+func TestProfileDependentResources_SkipsRequiredQueryParamDependents(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "widgets",
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/widgets",
+						Response:   spec.ResponseDef{Type: "array", Item: "Widget"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"comments": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/widgets/{widget_id}/comments",
+								Response:   spec.ResponseDef{Type: "array", Item: "Comment"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+					"availableSlots": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:   "GET",
+								Path:     "/widgets/{widget_id}/availableSlots",
+								Response: spec.ResponseDef{Type: "array", Item: "AvailableSlot"},
+								Params: []spec.Param{{
+									Name:     "size",
+									Type:     "string",
+									Required: true,
+								}},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+					"typedViews": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:   "GET",
+								Path:     "/widgets/{widget_id}/typedViews",
+								Response: spec.ResponseDef{Type: "array", Item: "TypedView"},
+								Params: []spec.Param{{
+									Name:     "viewType",
+									Type:     "string",
+									Required: true,
+									Enum:     []string{"compact", "full"},
+								}},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+					"pagedLogs": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:   "GET",
+								Path:     "/widgets/{widget_id}/pagedLogs",
+								Response: spec.ResponseDef{Type: "array", Item: "PagedLog"},
+								Params: []spec.Param{{
+									Name:     "limit",
+									Type:     "integer",
+									Required: true,
+								}},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncNames := make(map[string]bool)
+	for _, resource := range profile.SyncableResources {
+		syncNames[resource.Name] = true
+	}
+	names := make(map[string]bool)
+	for _, dep := range profile.DependentSyncResources {
+		names[dep.Name] = true
+	}
+	assert.False(t, syncNames["available_slots"], "filter-required child collection must not flatten into SyncableResources")
+	assert.False(t, syncNames["typedviews"], "required enum child collection must not flatten into SyncableResources")
+	assert.False(t, syncNames["compact"], "dependent sync has no per-parent enum expansion")
+	assert.False(t, syncNames["full"], "dependent sync has no per-parent enum expansion")
+	assert.True(t, names["comments"], "ordinary parent-scoped collections stay syncable")
+	assert.True(t, names["paged_logs"], "required pagination params are supplied by sync and stay syncable")
+	assert.False(t, names["available_slots"], "filter-required child collection must not auto-sync without that filter")
+	assert.False(t, names["typed_views"], "dependent sync cannot enum-expand required filters per parent")
+}
+
 // TestProfileSyncableResourcePropagatesIDFieldAndCritical asserts that the new
 // per-endpoint metadata flows into SyncableResource. The OpenAPI parser is
 // responsible for resolving IDField (x-resource-id → id → name → required
