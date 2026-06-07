@@ -11639,6 +11639,66 @@ func TestGeneratedSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGeneratedGraphQLSyncEventsUseJSONSafeHelpers pins #2675: the GraphQL
+// sync template must share REST's syncWarningJSON/syncErrorJSON event helpers.
+// The old GraphQL path escaped only quotes with strings.ReplaceAll, so a
+// message containing a quote plus newline corrupted the NDJSON stream.
+func TestGeneratedGraphQLSyncEventsUseJSONSafeHelpers(t *testing.T) {
+	t.Parallel()
+
+	gqlSpec, err := graphql.ParseSDL(filepath.Join("..", "..", "testdata", "graphql", "test.graphql"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(gqlSpec.Name))
+	gen := New(gqlSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpersSrc), "func syncWarningJSON(",
+		"GraphQL CLI helpers.go must define syncWarningJSON")
+	assert.Contains(t, string(helpersSrc), "func syncErrorJSON(",
+		"GraphQL CLI helpers.go must define syncErrorJSON")
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(syncGo), `syncWarningJSON(resource, "", w.Status, w.Reason, w.Message)`,
+		"GraphQL sync_warning events must route through syncWarningJSON")
+	assert.Contains(t, string(syncGo), `syncErrorJSON(resource, "", err)`,
+		"GraphQL sync_error events must route through syncErrorJSON")
+	assert.NotContains(t, string(syncGo), `ReplaceAll(w.Message`,
+		"GraphQL sync.go must not quote-only-escape warning messages")
+	assert.NotContains(t, string(syncGo), `ReplaceAll(err.Error()`,
+		"GraphQL sync.go must not quote-only-escape error messages")
+
+	behaviorTest := `package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestGraphQLSyncEventsRoundTripJSONUnsafeMessages(t *testing.T) {
+	warningLine := syncWarningJSON("issues", "", 403, "forbidden", "denied \"scope\"\ntry again")
+	errorLine := syncErrorJSON("issues", "", errors.New("upstream \"failure\"\ntry again"))
+
+	for name, line := range map[string]string{"warning": warningLine, "error": errorLine} {
+		if strings.Contains(line, "\n") {
+			t.Fatalf("%s event contains a raw newline: %q", name, line)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			t.Fatalf("%s event is invalid JSON: %v; line=%q", name, err, line)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "graphql_sync_json_events_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestGraphQLSyncEventsRoundTripJSONUnsafeMessages$")
+}
+
 // TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv pins the same
 // override in the GraphQL sync template. graphql_sync.go.tmpl drives
 // sync.go when isGraphQLSpec selects it; the race-on-SQLite problem under
