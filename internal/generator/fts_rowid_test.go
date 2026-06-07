@@ -63,7 +63,7 @@ func TestGenerateStoreFTSRowIDMigration(t *testing.T) {
 			gen.VisionSet = VisionTemplateSet{Store: true}
 			require.NoError(t, gen.Generate())
 
-			runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^Test(SchemaVersion_StampedOnFreshDB|Migrate_ResourcesCompositeKeyUpgrade|Migrate_V2ResourcesFTSRowIDUpgrade|Migrate_V3ResourcesFTSNoRebuild)$", "-count=1")
+			runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^Test(SchemaVersion_StampedOnFreshDB|Migrate_ResourcesCompositeKeyUpgrade|Migrate_V2ResourcesFTSRowIDUpgrade|Migrate_V3ResourcesFTSRebuildsSearchableContent|Migrate_ResourcesFTSContentSchemaVersionNoRebuild)$", "-count=1")
 		})
 	}
 }
