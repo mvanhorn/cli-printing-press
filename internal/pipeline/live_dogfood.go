@@ -406,6 +406,11 @@ func copyLiveDogfoodCredentialFile(src, dst string) (*liveDogfoodCredentialMirro
 }
 
 func liveDogfoodBinaryPath(dir, name string) (string, error) {
+	if refresh, err := refreshLiveCheckStageBinary(dir, name); err != nil {
+		return "", fmt.Errorf("rebuilding staged binary: %w", err)
+	} else if refresh.Action == "failed" {
+		return "", fmt.Errorf("rebuilding staged binary: %s", refresh.Reason)
+	}
 	if path, err := resolveBinaryPath(dir, name); err == nil {
 		return path, nil
 	} else if strings.TrimSpace(name) != "" {
@@ -1501,6 +1506,8 @@ func liveDogfoodAuth401Output(output string) bool {
 	}
 	return strings.Contains(output, "couldn't authenticate") ||
 		strings.Contains(output, "could not authenticate") ||
+		strings.Contains(output, "login required") ||
+		strings.Contains(output, "request is missing required authentication credential") ||
 		strings.Contains(output, "not authenticated")
 }
 
