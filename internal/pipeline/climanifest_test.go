@@ -663,6 +663,30 @@ func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
 	assert.Equal(t, "my-spec.yaml", got.SpecPath)
 }
 
+func TestWriteManifestForGenerateMCPBManifestUsesResolvedMCPBinarySlug(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "foo-bar",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name:        "foo.bar",
+			Description: "Foo.Bar API",
+			Auth:        spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readMCPBManifest(t, dir)
+	assert.Equal(t, "foo-bar-pp-mcp", got.Name)
+	assert.Equal(t, "bin/foo-bar-pp-mcp", got.Server.EntryPoint)
+	assert.Equal(t, "${__dirname}/bin/foo-bar-pp-mcp", got.Server.MCPConfig.Command)
+
+	data, err := os.ReadFile(filepath.Join(dir, MCPBManifestFilename))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "foo.bar")
+}
+
 func TestWriteManifestForGenerateKeepsCatalogDisplayNameOverTitleFallback(t *testing.T) {
 	dir := t.TempDir()
 
