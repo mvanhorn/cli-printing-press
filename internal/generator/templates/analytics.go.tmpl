@@ -105,6 +105,7 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 	counts := make(map[string]int)
 	validFields := make(map[string]struct{})
 	matchedAny := false
+	missingFieldCount := 0
 	decodedRows := 0
 	for _, item := range items {
 		var obj map[string]any
@@ -118,12 +119,17 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 		raw, ok := resolvedGroupValue(obj, field)
 		if ok {
 			matchedAny = true
+			val := fmt.Sprintf("%v", raw)
+			counts[val]++
+		} else {
+			missingFieldCount++
 		}
-		val := fmt.Sprintf("%v", raw)
-		counts[val]++
 	}
 	if decodedRows > 0 && !matchedAny {
 		return fmt.Errorf("group-by field %q was not found in any %s record; valid group-by fields: %s", field, resourceType, formatGroupByFields(validFields))
+	}
+	if missingFieldCount > 0 {
+		counts["<nil>"] += missingFieldCount
 	}
 
 	type kv struct {
@@ -170,9 +176,22 @@ func formatGroupByFields(fields map[string]struct{}) string {
 		return "none"
 	}
 	var names []string
+	var aliases []string
 	for name := range fields {
 		names = append(names, name)
+		if strings.HasSuffix(name, "_id") {
+			alias := strings.TrimSuffix(name, "_id")
+			if alias != "" {
+				if _, exists := fields[alias]; !exists {
+					aliases = append(aliases, alias)
+				}
+			}
+		}
 	}
 	sort.Strings(names)
-	return strings.Join(names, ", ")
+	sort.Strings(aliases)
+	if len(aliases) == 0 {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s (aliases: %s)", strings.Join(names, ", "), strings.Join(aliases, ", "))
 }

@@ -15992,9 +15992,9 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 	if strings.Contains(stdout, "<nil>") {
 		t.Fatalf("analytics bogus group-by stdout = %q, want no nil bucket", stdout)
 	}
-	for _, want := range []string{` + "`" + `group-by field "bogus" was not found` + "`" + `, "valid group-by fields:", "stage_id", "status"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("analytics bogus group-by error = %q, want %q", err.Error(), want)
+	for _, want := range []string{` + "`" + `group-by field "bogus" was not found` + "`" + `, "valid group-by fields:", "stage_id", "status", "aliases:", "stage"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("analytics bogus group-by stderr = %q, want %q", stderr, want)
 		}
 	}
 
