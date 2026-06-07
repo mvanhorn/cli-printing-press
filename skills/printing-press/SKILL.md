@@ -652,7 +652,7 @@ mkdir -p "$PRESS_RUNSTATE/runs"
 RUN_ID=""
 API_RUN_DIR=""
 for attempt in 1 2 3 4 5; do
-  RUN_SUFFIX="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c 8 2>/dev/null || true)"
+  RUN_SUFFIX="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 8 || true)"
   if [ -z "$RUN_SUFFIX" ]; then
     RUN_SUFFIX="pid$$-$attempt"
   fi
