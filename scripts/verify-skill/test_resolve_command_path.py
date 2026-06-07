@@ -391,6 +391,51 @@ func newRrCmd() *cobra.Command {
         self.assertEqual(["item-123"], positional)
         self.assertEqual(["--filter"], flags)
 
+    def test_boolean_long_flag_does_not_swallow_following_positional(self):
+        """A value-less boolean flag (e.g. `--json`) takes no value, so the
+        token after it is a positional and must not be consumed as the flag's
+        value. A value-bearing flag in the same CLI still consumes its value."""
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newGetCmd())
+    return rootCmd.Execute()
+}
+''',
+                "get.go": '''package cli
+import "github.com/spf13/cobra"
+func newGetCmd() *cobra.Command {
+    cmd := &cobra.Command{Use: "get <id>"}
+    var asJSON bool
+    var filter string
+    cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+    cmd.Flags().StringVar(&filter, "filter", "", "filter expression")
+    return cmd
+}
+''',
+            })
+
+            # Boolean flag: the next token is a positional, not the flag's value.
+            cmd_path, positional, flags = _cli_invocation_from_tokens(
+                ["get", "--json", "item-123"], cli_dir,
+            )
+            self.assertEqual(["get"], cmd_path)
+            self.assertEqual(
+                ["item-123"], positional,
+                "a positional after a boolean flag must not be swallowed as its value",
+            )
+            self.assertEqual(["--json"], flags)
+
+            # Value-bearing flag still consumes its space-separated value.
+            cmd_path, positional, flags = _cli_invocation_from_tokens(
+                ["get", "--filter", "active", "item-123"], cli_dir,
+            )
+            self.assertEqual(["item-123"], positional)
+            self.assertEqual(["--filter"], flags)
+
 
 class UTF8ReadTest(unittest.TestCase):
     def test_read_text_uses_explicit_utf8_encoding(self):

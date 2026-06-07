@@ -462,6 +462,55 @@ def iter_flag_declarations(text: str) -> Iterable[tuple[bool, str]]:
         yield aliases[m.group(1)], m.group(3)
 
 
+def _iter_bool_flag_names(text: str) -> Iterable[str]:
+    """Long-names of boolean flags declared in text (BoolVar/BoolVarP and the
+    alias-receiver form). Mirrors iter_flag_declarations' direct + alias scan but
+    keeps only the boolean methods, so the recipe tokenizer can tell a value-less
+    boolean flag (`--json <positional>`) from a value-bearing one
+    (`--filter <value>`)."""
+    for m in FLAG_DECL_RE.finditer(text):
+        _persistent, method, name = m.groups()
+        if method in ("BoolVar", "BoolSliceVar"):
+            yield name
+
+    aliases = {
+        m.group(1): m.group(2) == "Persistent"
+        for m in FLAG_ALIAS_RE.finditer(text)
+    }
+    if not aliases:
+        return
+
+    alias_decl_re = re.compile(
+        r'\b(' + "|".join(re.escape(alias) for alias in aliases) + r')\.'
+        r'(' + FLAG_METHOD_PATTERN + r')P?\('
+        r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
+    )
+    for m in alias_decl_re.finditer(text):
+        if m.group(2) in ("BoolVar", "BoolSliceVar"):
+            yield m.group(3)
+
+
+@lru_cache(maxsize=None)
+def _boolean_flag_names(cli_dir: Path) -> frozenset[str]:
+    """Long-names of every boolean flag declared in the CLI's internal/cli/*.go
+    (cached per cli_dir). The recipe tokenizer consults this so it never consumes
+    the token after a value-less boolean flag as that flag's value — doing so
+    would silently drop a real positional. A CLI-wide scan (rather than
+    per-command) deliberately includes persistent/root booleans like --json or
+    --verbose, which are the common case a recipe writes before a positional."""
+    cli_pkg = cli_dir / "internal" / "cli"
+    if not cli_pkg.is_dir():
+        return frozenset()
+    names: set[str] = set()
+    for path in sorted(cli_pkg.glob("*.go")):
+        try:
+            text = read_utf8(path)
+        except Exception:
+            continue
+        names.update(_iter_bool_flag_names(text))
+    return frozenset(names)
+
+
 def flag_declared_in(files: Iterable[Path], flag_name: str) -> bool:
     for f in files:
         try:
@@ -680,11 +729,24 @@ def _cli_invocation_from_tokens(
             i += 1
             continue
         if t.startswith("--"):
-            flags.append(t.split("=", 1)[0])
-            # Skip a space-separated value (`--flag value`), but NOT when the
-            # value is inline (`--flag=value`) — there the next token is a
-            # positional, not this flag's value.
-            if "=" not in t and i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            flag_name = t.split("=", 1)[0]
+            flags.append(flag_name)
+            # Skip a space-separated value (`--flag value`), but NOT when:
+            #  - the value is inline (`--flag=value`) — the next token is a
+            #    positional, not this flag's value; or
+            #  - the flag is a known boolean flag, which takes no value, so the
+            #    next token is a positional (consuming it would under-count the
+            #    recipe's positional args).
+            is_bool = (
+                cli_dir is not None
+                and flag_name.lstrip("-") in _boolean_flag_names(cli_dir)
+            )
+            if (
+                "=" not in t
+                and not is_bool
+                and i + 1 < len(tokens)
+                and not tokens[i + 1].startswith("-")
+            ):
                 i += 2
                 continue
         elif t.startswith("-"):
