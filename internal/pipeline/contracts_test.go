@@ -235,6 +235,9 @@ func TestPrintingPressSkillUsesRunRootStateFile(t *testing.T) {
 	assert.Contains(t, skill, `STATE_FILE="$API_RUN_DIR/state.json"`)
 	assert.NotContains(t, skill, `STATE_FILE="$PIPELINE_DIR/state.json"`)
 	assert.Contains(t, skill, `"working_dir": "$CLI_WORK_DIR"`)
+	assert.Contains(t, skill, `CANDIDATE_RUN_ID="$(date +%Y%m%d-%H%M%S)-$RUN_SUFFIX"`)
+	assert.Contains(t, skill, `if mkdir "$CANDIDATE_RUN_DIR" 2>/dev/null; then`)
+	assert.Contains(t, skill, "state file the source of truth for generate, dogfood acceptance, promote")
 }
 
 func TestPrintingPressSkillWarnsOnMultiSpecDirectories(t *testing.T) {

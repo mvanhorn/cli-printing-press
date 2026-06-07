@@ -832,12 +832,13 @@ func TestDeriveRunIDFromResearchDir(t *testing.T) {
 		expected string
 	}{
 		{"canonical run_id basename", "/tmp/runs/20260504-190931", "20260504-190931"},
+		{"skill-allocated suffixed basename", "/tmp/runs/20260504-190931-a1b2c3d4", "20260504-190931-a1b2c3d4"},
 		{"trailing slash", "/tmp/runs/20260504-190931/", "20260504-190931"},
 		{"basename only", "20260101-000000", "20260101-000000"},
 		{"empty input", "", ""},
 		{"non-matching basename", "/tmp/runs/research", ""},
 		{"partial match (date only)", "/tmp/runs/20260504", ""},
-		{"longer suffix", "/tmp/runs/20260504-190931-x", ""},
+		{"legacy basename with suffix", "/tmp/runs/20260504-190931-x", "20260504-190931-x"},
 		{"wrong shape (T separator)", "/tmp/runs/20260504T190931", ""},
 	}
 	for _, tc := range cases {
@@ -845,6 +846,32 @@ func TestDeriveRunIDFromResearchDir(t *testing.T) {
 			assert.Equal(t, tc.expected, DeriveRunIDFromResearchDir(tc.input))
 		})
 	}
+}
+
+func TestResolveRunIDFromResearchDir(t *testing.T) {
+	t.Parallel()
+
+	t.Run("state json wins over basename", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "20260504-190931")
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "state.json"),
+			[]byte(`{"api_name":"canvas","run_id":"20260606-102750-a1b2c3d4"}`),
+			0o644,
+		))
+		assert.Equal(t, "20260606-102750-a1b2c3d4", ResolveRunIDFromResearchDir(dir))
+	})
+
+	t.Run("falls back to legacy basename", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "20260504-190931", ResolveRunIDFromResearchDir("/tmp/runs/20260504-190931"))
+	})
+
+	t.Run("empty string when state and basename are not usable", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "", ResolveRunIDFromResearchDir(t.TempDir()))
+	})
 }
 
 func TestLoadAPINameFromResearchDir(t *testing.T) {
