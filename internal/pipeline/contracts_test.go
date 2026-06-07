@@ -424,8 +424,8 @@ func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	// Lock acquire should appear before generation.
 	assert.Contains(t, skill, `cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"`)
 
-	// Lock promote should appear in Phase 5.5.
-	assert.Contains(t, skill, `cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"`)
+	// Lock promote should use the preflight-selected binary, not PATH.
+	assert.Contains(t, skill, `"$PRINTING_PRESS_BIN" lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"`)
 
 	// Phase 6 should still reference $PRESS_LIBRARY (reads from promoted location, slug-keyed).
 	assert.Contains(t, skill, `$PRESS_LIBRARY/<api>`)
@@ -457,7 +457,7 @@ func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.
 	assert.Contains(t, promote, "A false Path A clobbers hand work; a")
 	assert.Contains(t, promote, "false Path B only asks for review")
 
-	assert.Contains(t, reprint, "Phase 5.6 first\ndry-runs `cli-printing-press regen-merge")
+	assert.Contains(t, reprint, "Phase 5.6 first\ndry-runs `\"$PRINTING_PRESS_BIN\" regen-merge")
 	assert.Contains(t, reprint, "fresh tree contains all prior novel work")
 	assert.Contains(t, reprint, "genuine `NOVEL-COLLISION` / missing-referent cases halt")
 	assert.Contains(t, reprint, "preserve the existing\nlibrary manifest's permanent `creator`")
@@ -592,11 +592,33 @@ func TestGeneratedAgentsTemplatePointsToCatalogForPatchMechanics(t *testing.T) {
 func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
 
-	assert.Contains(t, skill, `cli-printing-press publish validate --dir "$CLI_DIR" --json`)
+	assert.Contains(t, skill, `"$PRINTING_PRESS_BIN" publish validate --dir "$CLI_DIR" --json`)
 	assert.Contains(t, skill, "Publish validation failures")
 	assert.Contains(t, skill, "The publish-validate leg is a hard ship-gate")
 	assert.Contains(t, skill, "phase5 acceptance")
 	assert.Contains(t, skill, "ship cannot fire while publish validate fails")
+}
+
+func TestPolishSkillInheritsPrintingPressBinaryFromParent(t *testing.T) {
+	mainSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	polishSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+
+	assert.Contains(t, mainSkill, "printing_press_bin: <captured PRINTING_PRESS_BIN>")
+	assert.Contains(t, polishSkill, "printing_press_bin: <abs-path>")
+	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" lock update --cli "$CLI_NAME" --phase polish`)
+	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" mcp-sync "$CLI_DIR"`)
+	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR"`)
+	assert.NotContains(t, polishSkill, "cli-printing-press lock update --cli \"$CLI_NAME\"")
+	assert.NotContains(t, polishSkill, "cli-printing-press mcp-sync \"$CLI_DIR\"")
+}
+
+func TestReprintSkillInitializesPrintingPressBinary(t *testing.T) {
+	reprintSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-reprint", "SKILL.md"))
+
+	assert.Contains(t, reprintSkill, "printing_press_bin: <abs-path>")
+	assert.Contains(t, reprintSkill, `PRINTING_PRESS_BIN="${PRINTING_PRESS_BIN:-}"`)
+	assert.Contains(t, reprintSkill, `command -v cli-printing-press`)
+	assert.Contains(t, reprintSkill, `"$PRINTING_PRESS_BIN" scorecard --dir "$LIB_TARGET" --json`)
 }
 
 func TestPolishSkillPinsGo126CompatibleGosecFallback(t *testing.T) {

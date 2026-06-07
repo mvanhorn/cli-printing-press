@@ -29,6 +29,9 @@ a usable brand name.`,
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving cli dir: %w", err)}
 			}
+			if err := ensureNotOlderThanCLIManifest(cliDir, "mcp-sync"); err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
 			result, err := mcpsync.Sync(cliDir, mcpsync.Options{Force: force})
 			if err != nil {
 				if errors.Is(err, mcpsync.ErrHandEdited) {
