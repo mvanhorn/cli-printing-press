@@ -1097,6 +1097,21 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.True(t, os.IsNotExist(statErr))
 	})
 
+	t.Run("uses generate-time placeholder instead of printing press version", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "demo",
+			MCPBinary:            "demo-pp-mcp",
+			MCPReady:             "full",
+			PrintingPressVersion: "4.11.0",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "0.0.0", got.Version)
+	})
+
 	t.Run("api_key auth emits required user_config fields", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{

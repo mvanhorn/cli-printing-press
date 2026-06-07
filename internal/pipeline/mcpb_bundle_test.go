@@ -157,6 +157,46 @@ func TestBuildMCPBBundle(t *testing.T) {
 		assert.Equal(t, mData, readZipEntryBytes(t, out, MCPBManifestFilename))
 	})
 
+	t.Run("stamps release version only in bundled manifest", func(t *testing.T) {
+		dir := t.TempDir()
+
+		mData := []byte(`{
+  "manifest_version": "0.3",
+  "name": "demo-pp-mcp",
+  "version": "0.0.0",
+  "server": {
+    "type": "binary",
+    "entry_point": "bin/demo-pp-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/bin/demo-pp-mcp",
+      "custom_launch_field": "preserve-me"
+    }
+  },
+  "custom_top_level_field": ["preserve-me"]
+}`)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, MCPBManifestFilename), mData, 0o644))
+
+		mcpPath := filepath.Join(dir, "fake-mcp")
+		require.NoError(t, os.WriteFile(mcpPath, []byte("mcp"), 0o755))
+
+		out := filepath.Join(dir, "demo.mcpb")
+		err := BuildMCPBBundle(BundleParams{
+			CLIDir:     dir,
+			BinaryPath: mcpPath,
+			OutputPath: out,
+			Version:    "0.1.4",
+		})
+		require.NoError(t, err)
+
+		bundledDoc := readZipJSONMap(t, out, MCPBManifestFilename)
+		assert.Equal(t, "0.1.4", bundledDoc["version"])
+		assert.Equal(t, []any{"preserve-me"}, bundledDoc["custom_top_level_field"])
+		server := bundledDoc["server"].(map[string]any)
+		mcpConfig := server["mcp_config"].(map[string]any)
+		assert.Equal(t, "preserve-me", mcpConfig["custom_launch_field"])
+		assert.Equal(t, mData, readManifestFileBytes(t, filepath.Join(dir, MCPBManifestFilename)))
+	})
+
 	t.Run("missing manifest skips silently", func(t *testing.T) {
 		dir := t.TempDir()
 		// No manifest.json written; bundle call should no-op.
@@ -280,6 +320,13 @@ func readManifestFile(t *testing.T, path string) MCPBManifest {
 	var manifest MCPBManifest
 	require.NoError(t, json.Unmarshal(data, &manifest))
 	return manifest
+}
+
+func readManifestFileBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
 }
 
 func readZipJSONMap(t *testing.T, path, entry string) map[string]any {
