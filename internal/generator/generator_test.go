@@ -3806,6 +3806,40 @@ func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGenerateMCPToolResultTextBudgetTestsPass(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-result-budget")
+	apiSpec.Resources = map[string]spec.Resource{
+		"groups": {
+			Description: "Groups",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/groups",
+					Description: "List groups",
+					Response:    spec.ResponseDef{Type: "array", Item: "Group"},
+				},
+			},
+		},
+	}
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Group": {
+			Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "name", Type: "string"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPToolResultText")
+}
+
 // stripGoComments removes // line comments and /* ... */ block comments from
 // Go source. Crude but sufficient for canary assertions on emitted templates;
 // it doesn't try to parse string literals (none of the asserted substrings
@@ -3950,6 +3984,8 @@ func TestSyncExtractPaginationNestedCursor(t *testing.T) {
 		"sync.go must parse JSON:API links.next cursors")
 	assert.Contains(t, src, `"response_metadata"`,
 		"paginationWrapperKeys must include response_metadata (Slack's envelope)")
+	assert.Contains(t, src, `"additional_data"`,
+		"paginationWrapperKeys must include additional_data (Pipedrive V2's envelope)")
 	assert.Contains(t, src, `"pagination"`,
 		"paginationWrapperKeys must include pagination (MongoDB Atlas-style)")
 	assert.Contains(t, src, `"features"`,
@@ -4054,6 +4090,23 @@ func TestExtractPageItemsMongoPaginationEnvelope(t *testing.T) {
 	}
 	if !hasMore {
 		t.Fatalf("want hasMore=true when nested cursor is present")
+	}
+}
+
+func TestExtractPageItemsPipedriveAdditionalDataEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"data": [{"id":"deal-1"},{"id":"deal-2"}],
+		"additional_data": {"next_cursor": "pd-next"}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if cursor != "pd-next" {
+		t.Fatalf("want cursor pd-next, got %q", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("want hasMore=true when additional_data.next_cursor is present")
 	}
 }
 
@@ -5226,11 +5279,11 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 		t.Fatalf("iterate contacts: %v", err)
 	}
 
-	if got["contact-injected"] != "list-A" {
-		t.Fatalf("injected contact lists_id = %q, want list-A", got["contact-injected"])
+	if got["contact-injected\x00list-A"] != "list-A" {
+		t.Fatalf("injected contact lists_id = %q, want list-A", got["contact-injected\x00list-A"])
 	}
-	if got["contact-preserved"] != "api-list" {
-		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved"])
+	if got["contact-preserved\x00api-list"] != "api-list" {
+		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved\x00api-list"])
 	}
 }
 `
@@ -6563,9 +6616,10 @@ func (e *jsonSyntaxStub) Error() string { return e.msg }
 // for records that don't match the canonical id/name/title allowlist:
 //
 //  1. The static allow-list covers canonical scalars (price/fare/locale/code/...).
-//  2. A data-driven extension keeps any scalar key present in 80%+ of rows,
-//     so hand-written novel commands whose output keys aren't on the
-//     allow-list (object_name, match_key, snippet) survive projection.
+//  2. A data-driven extension keeps any non-blocklisted key present in
+//     80%+ of rows, so hand-written novel commands whose output keys
+//     aren't on the allow-list (object_name, match_key, snippet, series,
+//     metrics) survive projection.
 //  3. Verbose fields (description, body, ...) are excluded from the
 //     extension regardless of frequency.
 //  4. A per-item fallback preserves the original item when no key matches.
@@ -6602,12 +6656,94 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 	// (e.g. {"id":"x","object_name":"users","match_key":"uuid"} -> {"id":"x"}).
 	assert.Contains(t, body, "keyCounts",
 		"compactListFields must count per-key occurrence so frequent novel-command keys survive")
-	assert.Contains(t, body, "isCompactScalar",
-		"compactListFields must filter the data-driven extension by scalar type so nested objects/arrays don't bloat --compact output")
 	assert.Contains(t, body, "compactVerboseListFields",
 		"compactListFields must exclude description/body/content from the data-driven extension regardless of frequency")
 	assert.Contains(t, body, "threshold",
 		"compactListFields must compute a frequency threshold for the data-driven extension")
+}
+
+func TestGeneratedCompactListFieldsPreservesFrequentNestedPayloads(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("compact-nested")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	runtimeTest := `package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
+
+func TestCompactFieldsKeepsFrequentNestedPayloads(t *testing.T) {
+	input := json.RawMessage(` + "`" + `[
+		{"id":"lead","series":[1,2],"metrics":{"clicks":10},"rare":{"only":1},"body":"verbose"},
+		{"id":"sale","series":[3,4],"metrics":{"clicks":20},"body":"verbose"},
+		{"id":"trial","series":[5,6],"body":"verbose"}
+	]` + "`" + `)
+
+	got := compactFields(input)
+	var rows []map[string]any
+	if err := json.Unmarshal(got, &rows); err != nil {
+		t.Fatalf("compactFields returned invalid JSON: %v\n%s", err, got)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3: %s", len(rows), got)
+	}
+	for i, row := range rows {
+		if _, ok := row["series"].([]any); !ok {
+			t.Fatalf("row %d dropped frequent nested series: %#v", i, row)
+		}
+		if _, ok := row["body"]; ok {
+			t.Fatalf("row %d kept blocklisted body field: %#v", i, row)
+		}
+		if _, ok := row["rare"]; ok {
+			t.Fatalf("row %d kept sparse nested field: %#v", i, row)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if _, ok := rows[i]["metrics"].(map[string]any); !ok {
+			t.Fatalf("row %d dropped majority nested metrics: %#v", i, rows[i])
+		}
+	}
+	if _, ok := rows[2]["metrics"]; ok {
+		t.Fatalf("row 2 invented missing metrics field: %#v", rows[2])
+	}
+}
+
+func TestPrintJSONFilteredSelectOverridesCompact(t *testing.T) {
+	payload := []map[string]any{
+		{"id":"lead","series":[]any{1, 2},"rare":map[string]any{"only":1}},
+		{"id":"sale","series":[]any{3, 4}},
+	}
+	flags := &rootFlags{asJSON: true, compact: true, selectFields: "rare"}
+	var out bytes.Buffer
+	if err := printJSONFiltered(&out, payload, flags); err != nil {
+		t.Fatalf("printJSONFiltered failed: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("printJSONFiltered returned invalid JSON: %v\n%s", err, out.String())
+	}
+	if _, ok := rows[0]["rare"].(map[string]any); !ok {
+		t.Fatalf("--select did not keep explicitly requested rare field: %#v", rows[0])
+	}
+	if _, ok := rows[0]["series"]; ok {
+		t.Fatalf("--compact ran before --select and kept series unexpectedly: %#v", rows[0])
+	}
+	if _, ok := rows[0]["id"]; ok {
+		t.Fatalf("--select should drop unrequested id field: %#v", rows[0])
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "compact_list_fields_runtime_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(runtimeTest), 0o644))
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCompactFieldsKeepsFrequentNestedPayloads|TestPrintJSONFilteredSelectOverridesCompact", "-count=1")
 }
 
 // matchClosingBrace walks s from start, finds the first `{`, then returns
@@ -11370,6 +11506,12 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	assert.Contains(t, syncContent,
 		`{"event":"sync_warning","resource":"%s","parent":"%s","reason":"stuck_pagination"`,
 		"dependent-resource stuck-pagination must emit a structured sync_warning")
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","reason":"pagination_cursor_missing"`,
+		"flat-path full-page-without-cursor must emit a structured sync_warning")
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","parent":"%s","reason":"pagination_cursor_missing"`,
+		"dependent-resource full-page-without-cursor must emit a structured sync_warning")
 
 	// AGENTS.md: emission must use the "%s" embedded-quote pattern, not
 	// %q. A %q usage here would be a real bug — JSON shapes for resource
@@ -11428,6 +11570,72 @@ func (c *resumeCursorClient) Get(ctx context.Context, path string, params map[st
 
 func (c *resumeCursorClient) RateLimit() float64 {
 	return 0
+}
+
+type fullNoCursorClient struct {
+	calls int
+	explicitFinalPage bool
+}
+
+func (c *fullNoCursorClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	c.calls++
+	items := make([]map[string]string, 100)
+	for i := range items {
+		items[i] = map[string]string{"id": "item-" + strconv.Itoa(i)}
+	}
+	response := map[string]any{
+		"items": items,
+	}
+	if c.explicitFinalPage {
+		response["has_more"] = false
+	}
+	return json.Marshal(response)
+}
+
+func (c *fullNoCursorClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncResourceWarnsOnFullPageWithoutCursor(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	client := &fullNoCursorClient{}
+	var events strings.Builder
+	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, nil, &events)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("calls = %d, want 1", client.calls)
+	}
+	if !strings.Contains(events.String(), ` + "`" + `"reason":"pagination_cursor_missing"` + "`" + `) {
+		t.Fatalf("sync events missing pagination_cursor_missing warning: %s", events.String())
+	}
+}
+
+func TestSyncResourceDoesNotWarnOnExplicitFinalFullPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	client := &fullNoCursorClient{explicitFinalPage: true}
+	var events strings.Builder
+	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, nil, &events)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("calls = %d, want 1", client.calls)
+	}
+	if strings.Contains(events.String(), ` + "`" + `"reason":"pagination_cursor_missing"` + "`" + `) {
+		t.Fatalf("sync events should not warn on explicit final full page: %s", events.String())
+	}
 }
 
 func TestSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
@@ -11493,6 +11701,9 @@ func TestSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
 	}
 	defer db.Close()
 
+	if err := db.Upsert("channels", "existing", []byte(` + "`" + `{"id":"existing"}` + "`" + `)); err != nil {
+		t.Fatalf("seed existing channel: %v", err)
+	}
 	if err := db.SaveSyncState("channels", "page-3", 200); err != nil {
 		t.Fatalf("seed sync state: %v", err)
 	}
@@ -11521,6 +11732,9 @@ func TestSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
 	}
 	defer db.Close()
 
+	if err := db.Upsert("channels", "existing", []byte(` + "`" + `{"id":"existing"}` + "`" + `)); err != nil {
+		t.Fatalf("seed existing channel: %v", err)
+	}
 	if err := db.SaveSyncState("channels", "stuck", 100); err != nil {
 		t.Fatalf("seed sync state: %v", err)
 	}
@@ -11543,7 +11757,7 @@ func TestSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_resume_cursor_test.go"), []byte(behaviorTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestSyncResource(PreservesCursorOnMaxPagesCap|ClearsCursorWhenCapEqualsFinalPage|ClearsSelfReferentialCursorOnMaxPagesCap)$")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestSyncResource(WarnsOnFullPageWithoutCursor|DoesNotWarnOnExplicitFinalFullPage|PreservesCursorOnMaxPagesCap|ClearsCursorWhenCapEqualsFinalPage|ClearsSelfReferentialCursorOnMaxPagesCap)$")
 
 	// Build the generated CLI to catch template-syntax / import errors that
 	// substring assertions miss.
@@ -12125,7 +12339,7 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
-func TestGeneratedSyncInjectsFieldSelectorDefaults(t *testing.T) {
+func TestGeneratedSyncDoesNotInjectFieldSelectorDefaults(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := &spec.APISpec{
@@ -12191,29 +12405,133 @@ func TestGeneratedSyncInjectsFieldSelectorDefaults(t *testing.T) {
 	require.NoError(t, err)
 	syncContent := string(syncGo)
 
-	assert.Contains(t, syncContent, "func syncResourceFieldSelector(resource string) (string, string)",
-		"sync.go must emit per-resource field-selector defaults")
+	assert.NotContains(t, syncContent, "func syncResourceFieldSelector(resource string) (string, string)",
+		"sync.go must not emit sync-time field-selector defaults")
+	assert.NotContains(t, syncContent, "fieldSelectorKey",
+		"sync.go must not inject a generated field-selector query param during sync")
+	assert.NotContains(t, syncContent, `return "opt_fields", "gid,completed,assignee.gid,custom_fields.gid"`,
+		"sync.go must not carry record-narrowing defaults into sync")
+	assert.Contains(t, syncContent, "userParams.applyTo(resource, params, false)",
+		"syncResource must still allow explicit user-supplied sync params")
 
-	fieldSelectorStart := strings.Index(syncContent, "func syncResourceFieldSelector(resource string) (string, string)")
-	require.NotEqual(t, -1, fieldSelectorStart, "sync.go must emit syncResourceFieldSelector")
-	fieldSelectorBody := syncContent[fieldSelectorStart:]
-	if nextFunc := strings.Index(fieldSelectorBody[1:], "\nfunc "); nextFunc != -1 {
-		fieldSelectorBody = fieldSelectorBody[:nextFunc+1]
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedSyncIgnoresCheckpointWhenStoreEmpty(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "emptystorecheckpoint",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"EMPTYSTORECHECKPOINT_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/emptystorecheckpoint-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"events": {
+				Description: "Events",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/events",
+						Description: "List events",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params: []spec.Param{
+							{Name: "updated_since", Type: "string"},
+						},
+					},
+				},
+			},
+		},
 	}
 
-	assert.Contains(t, fieldSelectorBody, `case "tasks":`,
-		"tasks must appear in the field-selector switch")
-	assert.Contains(t, fieldSelectorBody, `return "opt_fields", "gid,completed,assignee.gid,custom_fields.gid"`,
-		"tasks must map to the spec-declared field selector and generated default")
-	assert.NotContains(t, fieldSelectorBody, `case "users":`,
-		"resources without a field selector must not inject an opt_fields-like query param")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
 
-	defaultIdx := strings.Index(syncContent, "fieldSelectorKey, fieldSelectorValue := syncResourceFieldSelector(resource)")
-	applyIdx := strings.Index(syncContent, "userParams.applyTo(resource, params, false)")
-	require.NotEqual(t, -1, defaultIdx, "syncResource must apply field-selector defaults")
-	require.NotEqual(t, -1, applyIdx, "syncResource must still apply user params")
-	assert.Less(t, defaultIdx, applyIdx,
-		"user-supplied --param/--resource-param must override field-selector defaults")
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type checkpointClient struct {
+	params []map[string]string
+}
+
+func (c *checkpointClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	copied := map[string]string{}
+	for k, v := range params {
+		copied[k] = v
+	}
+	c.params = append(c.params, copied)
+	return json.RawMessage(` + "`" + `[{"id":"evt-1"}]` + "`" + `), nil
+}
+
+func (c *checkpointClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncResourceIgnoresCheckpointWhenStoreEmpty(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.SaveSyncState("events", "stale-cursor", 10); err != nil {
+		t.Fatalf("seed stale sync state: %v", err)
+	}
+
+	emptyClient := &checkpointClient{}
+	res := syncResource(context.Background(), emptyClient, db, "events", "", false, 0, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("empty-store syncResource error: %v", res.Err)
+	}
+	if got := emptyClient.params[0]["after"]; got != "" {
+		t.Fatalf("empty store sent stale cursor %q", got)
+	}
+	if got := emptyClient.params[0]["updated_since"]; got != "" {
+		t.Fatalf("empty store sent stale updated_since %q", got)
+	}
+
+	if err := db.SaveSyncState("events", "resume-cursor", 1); err != nil {
+		t.Fatalf("seed populated sync state: %v", err)
+	}
+
+	populatedClient := &checkpointClient{}
+	res = syncResource(context.Background(), populatedClient, db, "events", "", false, 0, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("populated-store syncResource error: %v", res.Err)
+	}
+	if got := populatedClient.params[0]["after"]; got != "resume-cursor" {
+		t.Fatalf("populated store cursor = %q, want resume-cursor", got)
+	}
+	if got := populatedClient.params[0]["updated_since"]; got == "" {
+		t.Fatalf("populated store did not send updated_since checkpoint")
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "sync_empty_store_checkpoint_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "^TestSyncResourceIgnoresCheckpointWhenStoreEmpty$", "./internal/cli")
 }
 
 func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
@@ -13146,7 +13464,7 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 		cliContent,
 		"defaulted operation-routing path param should be user-overridable")
 	assert.Contains(t, cliContent,
-		`path = replacePathParam(path, "pathQueryId", fmt.Sprintf("%v", flagPathQueryId))`,
+		`path = replacePathParam(path, "pathQueryId", formatCLIParamValue(flagPathQueryId))`,
 		"generated command must substitute the path template before calling the API")
 
 	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
@@ -14813,7 +15131,7 @@ func TestGenerateMCPCodeOrchestrationGlobalPathTemplateVars(t *testing.T) {
 	src := string(data)
 	assert.Contains(t, src, `TemplateParams []codeOrchParamBinding`)
 	assert.Contains(t, src, `TemplateParams: []codeOrchParamBinding{{PublicName: "tenant_id", WireName: "tenant_id"}}`)
-	assert.Contains(t, src, `c.Config.TemplateVars[binding.WireName] = fmt.Sprintf("%v", v)`)
+	assert.Contains(t, src, `c.Config.TemplateVars[binding.WireName] = formatMCPParamValue(v)`)
 	assert.Contains(t, src, `delete(params, binding.PublicName)`,
 		"code-orchestration execute must not also route promoted template params as query/body inputs")
 
@@ -15115,6 +15433,81 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateMCPHandlerFormatsNumericPathAndQueryScalars(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcpnumericformat")
+	apiSpec.Resources = map[string]spec.Resource{
+		"projects": {
+			Description: "Projects",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/projects/business/{businessId}/projects",
+					Description: "List projects",
+					Params: []spec.Param{
+						{Name: "businessId", Type: "number", Required: true, PathParam: true, Description: "Business ID"},
+						{Name: "page", Type: "number", Description: "Page cursor"},
+						{Name: "archived", Type: "boolean", Description: "Archived filter"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assert.Contains(t, tools, "func formatMCPParamValue(v any) string",
+		"generated MCP handler must emit a scalar formatter shared by path and query binding")
+	assert.Contains(t, tools, `path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)`,
+		"path params must use scalar formatting so large JSON numbers do not render as e+ notation")
+	assert.Contains(t, tools, `params[binding.WireName] = formatMCPParamValue(v)`,
+		"query params must use scalar formatting so large JSON numbers do not render as e+ notation")
+	assert.NotContains(t, tools, `path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)`)
+	assert.NotContains(t, tools, `params[binding.WireName] = fmt.Sprintf("%v", v)`)
+
+	inlineTest := `package mcp
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestFormatMCPParamValueFormatsNumbersWithoutExponent(t *testing.T) {
+	tests := []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{name: "large integer float", input: float64(14229361), want: "14229361"},
+		{name: "fractional float", input: float64(1.5), want: "1.5"},
+		{name: "large float above threshold", input: float64(2e15), want: "2000000000000000"},
+		{name: "negative integer float", input: float64(-14229361), want: "-14229361"},
+		{name: "string", input: "abc123", want: "abc123"},
+		{name: "bool", input: true, want: "true"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatMCPParamValue(tt.input)
+			if got != tt.want {
+				t.Fatalf("formatMCPParamValue(%v) = %q, want %q", tt.input, got, tt.want)
+			}
+			if strings.Contains(got, "e+") || strings.Contains(got, "E+") {
+				t.Fatalf("formatMCPParamValue(%v) used exponent notation: %q", tt.input, got)
+			}
+		})
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "mcp", "scalar_string_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "TestFormatMCPParamValueFormatsNumbersWithoutExponent")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGenerateMCPToolsEmitsParamDefaultFallback(t *testing.T) {
 	t.Parallel()
 
@@ -15185,7 +15578,7 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, findSource, `StringVar(&flagS, "s", "", "Street address")`)
 	assert.Contains(t, findSource, `_ = cmd.Flags().MarkHidden("s")`)
 	assert.Contains(t, findSource, `if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && !flags.dryRun`)
-	assert.Contains(t, findSource, `params["s"] = fmt.Sprintf("%v", flagS)`)
+	assert.Contains(t, findSource, `params["s"] = formatCLIParamValue(flagS)`)
 	assert.NotContains(t, findSource, `required flag "s" not set`)
 
 	createSource := readGeneratedFile(t, outputDir, "internal", "cli", "stores_create.go")
@@ -15196,7 +15589,7 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	assert.Contains(t, mcpSource, `mcplib.WithString("address", mcplib.Required(), mcplib.Description("Street address"))`)
 	assert.Contains(t, mcpSource, `PublicName: "address", WireName: "s", Location: "query"`)
-	assert.Contains(t, mcpSource, `params[binding.WireName] = fmt.Sprintf("%v", v)`)
+	assert.Contains(t, mcpSource, `params[binding.WireName] = formatMCPParamValue(v)`)
 	assert.Contains(t, mcpSource, `mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code"))`)
 	assert.Contains(t, mcpSource, `PublicName: "store-code", WireName: "store_code", Location: "body"`)
 	assert.Contains(t, mcpSource, `bodyArgs[binding.WireName] = v`)
@@ -15906,6 +16299,15 @@ func runPMHintCommand(t *testing.T, dbPath string, args ...string) (string, stri
 
 func runPMCommand(t *testing.T, dbPath string, asJSON bool, args ...string) (string, string) {
 	t.Helper()
+	stdout, stderr, err := runPMCommandErr(t, dbPath, asJSON, args...)
+	if err != nil {
+		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr)
+	}
+	return stdout, stderr
+}
+
+func runPMCommandErr(t *testing.T, dbPath string, asJSON bool, args ...string) (string, string, error) {
+	t.Helper()
 	root := RootCmd()
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
@@ -15915,10 +16317,8 @@ func runPMCommand(t *testing.T, dbPath string, asJSON bool, args ...string) (str
 		fullArgs = append(fullArgs, "--json")
 	}
 	root.SetArgs(fullArgs)
-	if err := root.Execute(); err != nil {
-		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr.String())
-	}
-	return stdout.String(), stderr.String()
+	err := root.Execute()
+	return stdout.String(), stderr.String(), err
 }
 
 func TestPMWorkflowCommandEmitsSyncHints(t *testing.T) {
@@ -15968,8 +16368,8 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	for _, raw := range []string{
-		` + "`" + `{"id":"issue-1","status":"open"}` + "`" + `,
-		` + "`" + `{"id":"issue-2","status":"open"}` + "`" + `,
+		` + "`" + `{"id":"issue-1","status":"open","stage_id":"qualified"}` + "`" + `,
+		` + "`" + `{"id":"issue-2","status":"open","stage_id":"qualified"}` + "`" + `,
 	} {
 		var payload json.RawMessage = []byte(raw)
 		var obj map[string]any
@@ -16001,6 +16401,26 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 	for _, want := range []string{"status\tCount", "open\t2"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("analytics text group-by stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, _ = runPMCommand(t, dbPath, false, "analytics", "--type", "issues", "--group-by", "stage")
+	for _, want := range []string{"stage\tCount", "qualified\t2"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics friendly group-by stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, stderr, err := runPMCommandErr(t, dbPath, false, "analytics", "--type", "issues", "--group-by", "bogus")
+	if err == nil {
+		t.Fatalf("analytics bogus group-by stdout = %q, stderr = %q, want error", stdout, stderr)
+	}
+	if strings.Contains(stdout, "<nil>") {
+		t.Fatalf("analytics bogus group-by stdout = %q, want no nil bucket", stdout)
+	}
+	for _, want := range []string{` + "`" + `group-by field "bogus" was not found` + "`" + `, "valid group-by fields:", "stage_id", "status", "aliases:", "stage"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("analytics bogus group-by stderr = %q, want %q", stderr, want)
 		}
 	}
 
@@ -16310,6 +16730,127 @@ func TestLiveCommandPrefersAPIOverLocalStore(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestLiveCommandPrefersAPIOverLocalStore", "./internal/cli")
 	assert.Greater(t, requestCount.Load(), int32(0), "generated command should call the live API in auto mode")
+}
+
+func TestGeneratedLocalSearchIndexesMeaningfulContent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	apiSpec.Name = "localsearch"
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"testing"
+
+	"localsearch-pp-cli/internal/store"
+)
+
+func TestLocalSearchIndexesMeaningfulContent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dbPath := defaultDBPath("localsearch-pp-cli")
+
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for _, seed := range []struct {
+		resourceType string
+		id           string
+		data         json.RawMessage
+	}{
+		{"campaigns", "camp_1", json.RawMessage(` + "`" + `{"id":"camp_1","description":"Blue taxi hotel transfer","currency":"USD","cost":"120.50","created_at":"2026-06-07","account_id":"acct_1","url":"https://example.com/taxi"}` + "`" + `)},
+		{"campaigns", "camp_2", json.RawMessage(` + "`" + `{"id":"camp_2","description":"Airport rail pass","currency":"USD","account_id":"acct_1"}` + "`" + `)},
+		{"transactions", "tx_1", json.RawMessage(` + "`" + `{"id":"tx_1","description":"Taxi hotel receipt","note":"yellow cab","currency":"USD","account_id":"acct_2"}` + "`" + `)},
+		{"transactions", "tx_2", json.RawMessage(` + "`" + `{"id":"tx_2","description":"Museum pass","currency":"USD","account_id":"acct_2"}` + "`" + `)},
+	} {
+		if err := db.Upsert(seed.resourceType, seed.id, seed.data); err != nil {
+			t.Fatalf("upsert %s/%s: %v", seed.resourceType, seed.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	fieldNameHits := runLocalSearch(t, dbPath, "description")
+	if len(fieldNameHits) != 0 {
+		t.Fatalf("searching JSON field name returned %d hits, want 0: %#v", len(fieldNameHits), fieldNameHits)
+	}
+
+	punctuatedHits := runLocalSearch(t, dbPath, "taxi-hotel")
+	if got := ids(punctuatedHits); !sameIDs(got, []string{"camp_1", "tx_1"}) {
+		t.Fatalf("punctuated search ids = %#v, want camp_1 and tx_1", got)
+	}
+
+	transactionHits := runLocalSearch(t, dbPath, "taxi-hotel", "--type", "transactions")
+	if got := ids(transactionHits); !sameIDs(got, []string{"tx_1"}) {
+		t.Fatalf("--type transactions ids = %#v, want tx_1 only", got)
+	}
+
+	multiTermHits := runLocalSearch(t, dbPath, "taxi receipt")
+	if got := ids(multiTermHits); !sameIDs(got, []string{"tx_1"}) {
+		t.Fatalf("multi-term search ids = %#v, want tx_1 only", got)
+	}
+}
+
+func runLocalSearch(t *testing.T, dbPath, query string, extra ...string) []map[string]any {
+	t.Helper()
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	args := append([]string{"search", query, "--data-source", "local", "--json", "--db", dbPath}, extra...)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr.String())
+	}
+	var payload struct {
+		Results []map[string]any ` + "`" + `json:"results"` + "`" + `
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("parse search output: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	return payload.Results
+}
+
+func ids(rows []map[string]any) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if id, ok := row["id"].(string); ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func sameIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[string]int, len(got))
+	for _, id := range got {
+		seen[id]++
+	}
+	for _, id := range want {
+		seen[id]--
+		if seen[id] < 0 {
+			return false
+		}
+	}
+	return true
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "local_search_test.go"), []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestLocalSearchIndexesMeaningfulContent", "./internal/cli")
 }
 
 // TestSearchTemplateEmptyTypeQueriesGenericFTS pins #1390 — the
@@ -16965,7 +17506,7 @@ func TestGenerateGlobalPathTemplateVarRootFlag(t *testing.T) {
 		"MCP endpoint tools must expose a per-call override matching the CLI root flag")
 	assert.Contains(t, mcpSrc, `Location: "template"`,
 		"MCP handler binding must route tenant_id into Config.TemplateVars instead of query params")
-	assert.Contains(t, mcpSrc, `c.Config.TemplateVars[binding.WireName] = fmt.Sprintf("%v", v)`,
+	assert.Contains(t, mcpSrc, `c.Config.TemplateVars[binding.WireName] = formatMCPParamValue(v)`,
 		"MCP handler must merge global template inputs into Config.TemplateVars before the request")
 	contactsGetTool := generatedMCPToolBlock(t, mcpSrc, "contacts_get")
 	assert.NotContains(t, contactsGetTool, `"tenant_id"`,

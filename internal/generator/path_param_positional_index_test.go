@@ -291,7 +291,7 @@ func TestPathParamArgsIndexFlagExposedPathParam(t *testing.T) {
 		`path = replacePathParam(path, "reportId", args[0])`,
 		"positional path param must resolve to args[0] when a flag-exposed path param precedes it in Params")
 	assert.Contains(t, body,
-		`path = replacePathParam(path, "groupId", fmt.Sprintf("%v", flagGroupId))`,
+		`path = replacePathParam(path, "groupId", formatCLIParamValue(flagGroupId))`,
 		"flag-exposed path param must continue to substitute from its flag, not args[]")
 	assert.NotContains(t, body,
 		`args[1]`,
@@ -351,7 +351,7 @@ func TestPromotedCommandPathParamArgsIndexFlagExposedPathParam(t *testing.T) {
 		`path = replacePathParam(path, "reportId", args[0])`,
 		"promoted command: positional path param must resolve to args[0] when a flag-exposed path param precedes it")
 	assert.Contains(t, src,
-		`path = replacePathParam(path, "groupId", fmt.Sprintf("%v", flagGroupId))`,
+		`path = replacePathParam(path, "groupId", formatCLIParamValue(flagGroupId))`,
 		"promoted command: flag-exposed path param must continue to substitute from its flag")
 	assert.Contains(t, src,
 		`if len(args) < 1`,

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicesniff/ble"
@@ -250,4 +252,17 @@ func TestDeviceSniffBLECmdRequiresCapturedEvidenceInput(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "required flag(s) \"input\" not set")
+}
+
+func TestDefaultCLIBuildDoesNotLinkTinyGoBluetooth(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "./cmd/cli-printing-press")
+	cmd.Dir = filepath.Join("..", "..")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+
+	for dep := range strings.FieldsSeq(string(output)) {
+		assert.False(t, strings.HasPrefix(dep, "tinygo.org/x/bluetooth"), "default cli-printing-press builds must not link the live BLE backend (got %s)", dep)
+	}
 }

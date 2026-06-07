@@ -229,10 +229,10 @@ func callIntentEndpoint(ctx context.Context, c *client.Client, {{if .HasRequired
 	for k, v := range params {
 		placeholder := "{" + k + "}"
 		if strings.Contains(path, placeholder) {
-			path = strings.ReplaceAll(path, placeholder, fmt.Sprintf("%v", v))
+			path = strings.ReplaceAll(path, placeholder, formatMCPParamValue(v))
 			continue
 		}
-		query[k] = fmt.Sprintf("%v", v)
+		query[k] = formatMCPParamValue(v)
 	}
 
 	var data json.RawMessage
@@ -371,7 +371,7 @@ func recipeValueString(value any) string {
 	case string:
 		return strings.TrimSpace(v)
 	case float64:
-		return fmt.Sprintf("%v", v)
+		return formatMCPParamValue(v)
 	case bool:
 		if v {
 			return "true"

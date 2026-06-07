@@ -42,7 +42,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 			path := "/stores"
 			params := map[string]string{}
 			if flagDryRun != false {
-				params["$dry_run"] = fmt.Sprintf("%v", flagDryRun)
+				params["$dry_run"] = formatCLIParamValue(flagDryRun)
 			}
 			var body map[string]any
 			if stdinBody {

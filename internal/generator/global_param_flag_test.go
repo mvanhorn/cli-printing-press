@@ -65,7 +65,7 @@ paths:
 
 		assert.Contains(t, cmdSrc, `cmd.Flags().StringVar(&flagInput, "input", "", "Input")`,
 			"%s: the sole global query param must be registered as a --input flag", file)
-		assert.Contains(t, cmdSrc, `params["input"] = fmt.Sprintf("%v", flagInput)`,
+		assert.Contains(t, cmdSrc, `params["input"] = formatCLIParamValue(flagInput)`,
 			"%s: the --input flag value must propagate into the request params map", file)
 	}
 

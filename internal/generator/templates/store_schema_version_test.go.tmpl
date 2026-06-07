@@ -7,7 +7,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -601,7 +603,7 @@ func TestMigrate_V2ResourcesFTSRowIDUpgrade(t *testing.T) {
 	}
 }
 
-func TestMigrate_V3ResourcesFTSNoRebuild(t *testing.T) {
+func TestMigrate_V3ResourcesFTSRebuildsSearchableContent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 
 	raw, err := sql.Open("sqlite", dbPath)
@@ -657,7 +659,58 @@ func TestMigrate_V3ResourcesFTSNoRebuild(t *testing.T) {
 	if err := s.DB().QueryRow(`SELECT content FROM resources_fts WHERE id = 'shared' AND resource_type = 'biz'`).Scan(&content); err != nil {
 		t.Fatalf("read resources_fts content: %v", err)
 	}
-	if content != `{"kind":"biz","name":"sentinel fts"}` {
+	if strings.Contains(content, "sentinel") || strings.Contains(content, "name") || !strings.Contains(content, "canonical resource") {
+		t.Fatalf("resources_fts content = %s, want rebuilt searchable values only", content)
+	}
+}
+
+func TestMigrate_ResourcesFTSContentSchemaVersionNoRebuild(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE resources (
+		id TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		data JSON NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (resource_type, id)
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create resources: %v", err)
+	}
+	if _, err := raw.Exec(resourcesFTSCreateSQL); err != nil {
+		raw.Close()
+		t.Fatalf("create resources_fts: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('shared', 'biz', '{"kind":"biz","name":"canonical resource"}')`); err != nil {
+		raw.Close()
+		t.Fatalf("seed resource: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, 'shared', 'biz', 'sentinel fts')`, ftsRowID("biz", "shared")); err != nil {
+		raw.Close()
+		t.Fatalf("seed resources_fts row: %v", err)
+	}
+	if _, err := raw.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, resourcesFTSContentSchemaVersion)); err != nil {
+		raw.Close()
+		t.Fatalf("stamp resources fts content schema version: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer s.Close()
+
+	var content string
+	if err := s.DB().QueryRow(`SELECT content FROM resources_fts WHERE id = 'shared' AND resource_type = 'biz'`).Scan(&content); err != nil {
+		t.Fatalf("read resources_fts content: %v", err)
+	}
+	if content != "sentinel fts" {
 		t.Fatalf("resources_fts content = %s, want sentinel row preserved", content)
 	}
 }

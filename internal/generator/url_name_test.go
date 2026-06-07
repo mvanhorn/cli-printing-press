@@ -301,6 +301,6 @@ func TestCodeOrchQueryParamsUseParamWireName(t *testing.T) {
 		"GET and POST code-orch endpoints must preserve both public and wire query names")
 	require.Contains(t, content, `query[codeOrchWireQueryName(ep.QueryParams, k)]`,
 		"GET/DELETE code-orch routing must translate public names to wire names")
-	require.Contains(t, content, `uv.Set(q.WireName, fmt.Sprintf("%v", v))`,
+	require.Contains(t, content, `uv.Set(q.WireName, formatMCPParamValue(v))`,
 		"write-method code-orch routing must append wire query names")
 }
