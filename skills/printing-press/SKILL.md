@@ -3248,6 +3248,20 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
 Why each branch exists: the `len(args) == 0 && cmd.Flags().NFlag() == 0` branch handles an interactive `<cli> mycommand` help-only invocation without treating help as an error. The `dryRunOK` branch handles verify's `<cli> mycommand <fixture> --dry-run` probes before network or filesystem IO. The required-input branch handles non-help invocations where a mode or output flag is present (`--no-input`, `--agent`, `--json`) but the required ID, query, path, or other command input is still missing. Missing required input must print usage and return `usageErr(...)` so callers get exit code 2 instead of a silent rc=0 skip.
 
+For SQLite-backed novel commands only, add this missing-mirror guard after `dryRunOK(flags)`, after any required-input `usageErr(...)` check, and after `dbPath` is resolved, but before `store.OpenWithContext`, `store.OpenReadOnly`, `sql.Open`, or other SQLite access:
+
+```go
+if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+	fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
+	if flags.asJSON || flags.agent {
+		fmt.Fprintln(cmd.OutOrStdout(), "[]")
+	}
+	return nil
+}
+```
+
+The missing-mirror branch covers a different probe layer from `dryRunOK`: live execution without `--dry-run`, before the user has run `sync`. Return empty JSON (`[]`) for `--json` / `--agent` so agents receive a valid empty result instead of a SQLite open failure; print a human hint to stderr that names the sync command needed to populate the mirror. The unconditional `return nil` is intentional for both machine and human paths: a missing local mirror is an empty local-cache state, not a usage or API failure. Do not add this branch to novel commands that call live API endpoints directly or do not use the local store.
+
 Multi-positional commands (N >= 2 required args) must use a two-check shape so only the bare help probe returns exit 0:
 
 ```go
@@ -3377,7 +3391,7 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
-	// add: "encoding/json", "fmt", "<module>/internal/store", etc. as needed
+	// add: "encoding/json", "fmt", "os", "<module>/internal/store", etc. as needed
 )
 
 func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
@@ -3582,6 +3596,13 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	}
 	if dbPath == "" {
 		dbPath = defaultDBPath("<cli>-pp-cli") // replace <cli> with the API slug
+	}
+	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
+		if flags.asJSON || flags.agent {
+			fmt.Fprintln(cmd.OutOrStdout(), "[]")
+		}
+		return nil
 	}
 	db, err := store.OpenWithContext(ctx, dbPath)
 	if err != nil {
