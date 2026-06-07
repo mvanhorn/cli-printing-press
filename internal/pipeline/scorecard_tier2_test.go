@@ -274,6 +274,8 @@ package cli
 func filterFields() {}
 
 func outputCSV() {}
+
+func boundCtx() {}
 `)
 
 		// 2 dead flags (csvOutput, stdinInput), 2 dead functions (filterFields, outputCSV)
