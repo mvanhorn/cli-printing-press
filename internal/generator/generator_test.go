@@ -12197,7 +12197,7 @@ func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
 		"sync loops must not require an API-returned next cursor for offset pagination")
 	assert.Contains(t, syncContent, `if !hasMore || len(items) < pageSize.limit {`,
 		"sync loops must break only on real done signals before handling cursor advancement")
-	assert.Contains(t, syncContent, `if pageSize.cursorParam == "offset" {`,
+	assert.Contains(t, syncContent, `if pageSize.cursorType == "offset" {`,
 		"offset pagination must advance the cursor client-side when has_more is true")
 	assert.Contains(t, syncContent, `nextCursor = strconv.Itoa(currentOffset + pageSize.limit)`,
 		"offset pagination must compute the next offset from the current cursor and limit")
@@ -12206,6 +12206,132 @@ func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedSyncAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "offsetnosignal",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/offsetnosignal-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"records": {
+				Description: "Records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/records",
+						Description: "List records",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.profile = &profiler.APIProfile{
+		Pagination: profiler.PaginationProfile{
+			CursorParam:     "offset",
+			CursorType:      "offset",
+			PageSizeParam:   "limit",
+			DefaultPageSize: 2,
+			ItemsKey:        "items",
+		},
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "records", Path: "/records", Method: "GET", SupportsPagination: true},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	behaviorTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type offsetNoSignalSyncClient struct {
+	responses []json.RawMessage
+	params    []map[string]string
+}
+
+func (c *offsetNoSignalSyncClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	_ = ctx
+	copied := map[string]string{}
+	for k, v := range params {
+		copied[k] = v
+	}
+	c.params = append(c.params, copied)
+	if len(c.responses) == 0 {
+		return json.RawMessage(` + "`" + `{"items":[]}` + "`" + `), nil
+	}
+	next := c.responses[0]
+	c.responses = c.responses[1:]
+	return next, nil
+}
+
+func (c *offsetNoSignalSyncClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncResourceAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	client := &offsetNoSignalSyncClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"},{"id":"two"}]}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"three"}]}` + "`" + `),
+	}}
+	res := syncResource(context.Background(), client, db, "records", "", true, 0, false, nil, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if res.Count != 3 {
+		t.Fatalf("synced count = %d, want 3", res.Count)
+	}
+	if len(client.params) != 2 {
+		t.Fatalf("requests = %d, want 2", len(client.params))
+	}
+	if client.params[0]["limit"] != "2" {
+		t.Fatalf("first request limit = %q, want 2", client.params[0]["limit"])
+	}
+	if _, ok := client.params[0]["offset"]; ok {
+		t.Fatalf("first request should not include an offset cursor, got params=%#v", client.params[0])
+	}
+	if client.params[1]["offset"] != "2" {
+		t.Fatalf("second request offset = %q, want 2", client.params[1]["offset"])
+	}
+
+	rows, err := db.List("records", 10)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("stored rows = %d, want 3", len(rows))
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_offset_no_signal_test.go"), []byte(behaviorTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "^TestSyncResourceAdvancesOffsetAfterFullPageWithoutHasMore$", "./internal/cli")
 }
 
 // TestGeneratedSyncGatesSinceParamPerResource pins the fix for issue #900:

@@ -646,12 +646,22 @@ func paginatedGet(ctx context.Context, c interface {
 		var items []json.RawMessage
 		if json.Unmarshal(data, &items) == nil {
 			allItems = append(allItems, items...)
+			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, limitParam, len(items)); ok {
+				if page >= paginatedGetMaxPages {
+					emitPaginatedGetMaxPagesWarning()
+					break
+				}
+				clean[cursorParam] = next
+				continue
+			}
 		} else {
 			// Response is an object - look for array inside
 			var obj map[string]json.RawMessage
 			if json.Unmarshal(data, &obj) == nil {
+				itemCount := 0
 				if nested, ok := extractPaginatedItems(obj); ok {
 					allItems = append(allItems, nested...)
+					itemCount = len(nested)
 				}
 
 				// Check for next cursor
@@ -670,21 +680,35 @@ func paginatedGet(ctx context.Context, c interface {
 
 				// Check has_more. Page and offset paginators can advance
 				// client-side; cursor-based APIs still need a body cursor.
+				hasExplicitNoMore := false
 				if hasMoreField != "" {
 					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
 						var more bool
-						if json.Unmarshal(moreRaw, &more) == nil && more {
-							if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, limitParam); ok {
-								if page >= paginatedGetMaxPages {
-									emitPaginatedGetMaxPagesWarning()
-									break
+						if json.Unmarshal(moreRaw, &more) == nil {
+							if more {
+								if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, limitParam); ok {
+									if page >= paginatedGetMaxPages {
+										emitPaginatedGetMaxPagesWarning()
+										break
+									}
+									clean[cursorParam] = next
+									continue
 								}
-								clean[cursorParam] = next
-								continue
+								emitMissingPaginationCursorWarning(nextCursorPath)
+								break
 							}
-							emitMissingPaginationCursorWarning(nextCursorPath)
+							hasExplicitNoMore = true
+						}
+					}
+				}
+				if !hasExplicitNoMore {
+					if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, limitParam, itemCount); ok {
+						if page >= paginatedGetMaxPages {
+							emitPaginatedGetMaxPagesWarning()
 							break
 						}
+						clean[cursorParam] = next
+						continue
 					}
 				}
 			}
@@ -706,6 +730,17 @@ func paginatedGet(ctx context.Context, c interface {
 	}
 	result, _ := json.Marshal(allItems)
 	return json.RawMessage(result), nil
+}
+
+func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType, limitParam string, itemCount int) (string, bool) {
+	if paginationType != "offset" || itemCount == 0 {
+		return "", false
+	}
+	limit, err := strconv.Atoi(params[limitParam])
+	if err != nil || limit <= 0 || itemCount < limit {
+		return "", false
+	}
+	return nextClientSidePaginationCursor(params, cursorParam, paginationType, limitParam)
 }
 
 func nextClientSidePaginationCursor(params map[string]string, cursorParam, paginationType, limitParam string) (string, bool) {

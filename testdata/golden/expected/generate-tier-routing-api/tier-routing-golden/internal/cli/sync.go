@@ -508,6 +508,11 @@ func syncResource(ctx context.Context, c interface {
 			nextCursor = strconv.Itoa(currentPage + 1)
 			hasMore = true
 		}
+		if pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+			currentOffset, _ := strconv.Atoi(cursor)
+			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
+			hasMore = true
+		}
 
 		if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
 			if humanFriendly {
@@ -616,7 +621,7 @@ func syncResource(ctx context.Context, c interface {
 				capExitCursor = nextCursor
 			}
 			if truncatedByCap && capExitCursor == "" {
-				if pageSize.cursorParam == "offset" {
+				if pageSize.cursorType == "offset" {
 					currentOffset, _ := strconv.Atoi(cursor)
 					capExitCursor = strconv.Itoa(currentOffset + pageSize.limit)
 				} else {
@@ -660,7 +665,7 @@ func syncResource(ctx context.Context, c interface {
 			break
 		}
 		if nextCursor == "" {
-			if pageSize.cursorParam == "offset" {
+			if pageSize.cursorType == "offset" {
 				// Cursor-based APIs return the next cursor in the envelope.
 				// Offset-based APIs carry their pagination position client-side.
 				currentOffset, _ := strconv.Atoi(cursor)

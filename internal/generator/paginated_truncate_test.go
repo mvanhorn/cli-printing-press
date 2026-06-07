@@ -315,6 +315,72 @@ func TestPaginatedGetAdvancesOffsetCursorByLimitWhenHasMoreHasNoBodyCursor(t *te
 	}
 }
 
+func TestPaginatedGetAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"},{"id":"two"}]}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"three"}]}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"2", "offset":"0"}, nil, true, "offset", "offset", "limit", "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d items, want 3; data=%s", len(got), data)
+	}
+	if len(client.params) != 2 {
+		t.Fatalf("got %d requests, want 2", len(client.params))
+	}
+	if client.params[1]["offset"] != "2" {
+		t.Fatalf("second request offset = %q, want 2", client.params[1]["offset"])
+	}
+}
+
+func TestPaginatedGetStopsOffsetAtExplicitHasMoreFalseAfterFullPage(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"},{"id":"two"}],"meta":{"has_more":false}}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"three"}]}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"2", "offset":"0"}, nil, true, "offset", "offset", "limit", "", "meta.has_more")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2; data=%s", len(got), data)
+	}
+	if len(client.params) != 1 {
+		t.Fatalf("got %d requests, want 1; params=%v", len(client.params), client.params)
+	}
+}
+
+func TestPaginatedGetStopsOffsetAfterShortPageWithoutHasMore(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}]}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"two"}]}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"2", "offset":"0"}, nil, true, "offset", "offset", "limit", "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d items, want 1; data=%s", len(got), data)
+	}
+	if len(client.params) != 1 {
+		t.Fatalf("got %d requests, want 1", len(client.params))
+	}
+}
+
 func TestPaginatedGetWarnsWhenHasMorePageParamIsNonNumeric(t *testing.T) {
 	client := &paginatedTestClient{responses: []json.RawMessage{
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"has_more":true}}` + "`" + `),
