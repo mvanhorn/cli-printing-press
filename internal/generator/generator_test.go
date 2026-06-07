@@ -15248,6 +15248,8 @@ func TestFormatMCPParamValueFormatsNumbersWithoutExponent(t *testing.T) {
 	}{
 		{name: "large integer float", input: float64(14229361), want: "14229361"},
 		{name: "fractional float", input: float64(1.5), want: "1.5"},
+		{name: "large float above threshold", input: float64(2e15), want: "2000000000000000"},
+		{name: "negative integer float", input: float64(-14229361), want: "-14229361"},
 		{name: "string", input: "abc123", want: "abc123"},
 		{name: "bool", input: true, want: "true"},
 	}
