@@ -87,15 +87,19 @@ USE_RE = re.compile(r'Use:\s*"([^"]+)"')
 ARGS_RE = re.compile(
     r'Args:\s*cobra\.(ExactArgs|MinimumNArgs|MaximumNArgs|RangeArgs|NoArgs|OnlyValidArgs|ExactValidArgs)\s*\(([^)]*)\)'
 )
-FLAG_DECL_RE = re.compile(
-    r'(Persistent)?Flags\(\)\.'
-    r'(StringVar|BoolVar|IntVar|Int32Var|Int64Var|Float32Var|Float64Var|DurationVar|'
+FLAG_METHOD_PATTERN = (
+    r'StringVar|BoolVar|IntVar|Int32Var|Int64Var|Float32Var|Float64Var|DurationVar|'
     r'StringSliceVar|StringArrayVar|IntSliceVar|Int32SliceVar|Int64SliceVar|'
     r'Float64SliceVar|BoolSliceVar|DurationSliceVar|'
     r'UintVar|Uint32Var|Uint64Var|UintSliceVar|IPVar|IPSliceVar|Float32SliceVar|'
-    r'StringToStringVar|StringToIntVar|StringToInt64Var)P?\('
+    r'StringToStringVar|StringToIntVar|StringToInt64Var'
+)
+FLAG_DECL_RE = re.compile(
+    r'(Persistent)?Flags\(\)\.'
+    r'(' + FLAG_METHOD_PATTERN + r')P?\('
     r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
 )
+FLAG_ALIAS_RE = re.compile(r'\b([A-Za-z_]\w*)\s*(?::=|=)\s*[A-Za-z_][\w.]*\.(Persistent)?Flags\(\)')
 @dataclass
 class Finding:
     check: str
@@ -437,14 +441,84 @@ def _legacy_find_command_source(cli_dir: Path, cmd_path: list[str]):
     return top_files, candidates[0][2], candidates[0][3]
 
 
+def iter_flag_declarations(text: str) -> Iterable[tuple[bool, str]]:
+    for m in FLAG_DECL_RE.finditer(text):
+        persistent, _, name = m.groups()
+        yield persistent == "Persistent", name
+
+    aliases = {
+        m.group(1): m.group(2) == "Persistent"
+        for m in FLAG_ALIAS_RE.finditer(text)
+    }
+    if not aliases:
+        return
+
+    alias_decl_re = re.compile(
+        r'\b(' + "|".join(re.escape(alias) for alias in aliases) + r')\.'
+        r'(' + FLAG_METHOD_PATTERN + r')P?\('
+        r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
+    )
+    for m in alias_decl_re.finditer(text):
+        yield aliases[m.group(1)], m.group(3)
+
+
+def _iter_bool_flag_names(text: str) -> Iterable[str]:
+    """Long-names of boolean flags declared in text (BoolVar/BoolVarP and the
+    alias-receiver form). Mirrors iter_flag_declarations' direct + alias scan but
+    keeps only the boolean methods, so the recipe tokenizer can tell a value-less
+    boolean flag (`--json <positional>`) from a value-bearing one
+    (`--filter <value>`)."""
+    for m in FLAG_DECL_RE.finditer(text):
+        _persistent, method, name = m.groups()
+        if method in ("BoolVar", "BoolSliceVar"):
+            yield name
+
+    aliases = {
+        m.group(1): m.group(2) == "Persistent"
+        for m in FLAG_ALIAS_RE.finditer(text)
+    }
+    if not aliases:
+        return
+
+    alias_decl_re = re.compile(
+        r'\b(' + "|".join(re.escape(alias) for alias in aliases) + r')\.'
+        r'(' + FLAG_METHOD_PATTERN + r')P?\('
+        r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
+    )
+    for m in alias_decl_re.finditer(text):
+        if m.group(2) in ("BoolVar", "BoolSliceVar"):
+            yield m.group(3)
+
+
+@lru_cache(maxsize=None)
+def _boolean_flag_names(cli_dir: Path) -> frozenset[str]:
+    """Long-names of every boolean flag declared in the CLI's internal/cli/*.go
+    (cached per cli_dir). The recipe tokenizer consults this so it never consumes
+    the token after a value-less boolean flag as that flag's value — doing so
+    would silently drop a real positional. A CLI-wide scan (rather than
+    per-command) deliberately includes persistent/root booleans like --json or
+    --verbose, which are the common case a recipe writes before a positional."""
+    cli_pkg = cli_dir / "internal" / "cli"
+    if not cli_pkg.is_dir():
+        return frozenset()
+    names: set[str] = set()
+    for path in sorted(cli_pkg.glob("*.go")):
+        try:
+            text = read_utf8(path)
+        except Exception:
+            continue
+        names.update(_iter_bool_flag_names(text))
+    return frozenset(names)
+
+
 def flag_declared_in(files: Iterable[Path], flag_name: str) -> bool:
     for f in files:
         try:
             text = read_utf8(f)
         except Exception:
             continue
-        for m in FLAG_DECL_RE.finditer(text):
-            if m.group(3) == flag_name:
+        for _, name in iter_flag_declarations(text):
+            if name == flag_name:
                 return True
     return False
 
@@ -580,8 +654,8 @@ def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name
             continue
         for m in func_re.finditer(text):
             body = go_block_body(text, m.end() - 1)
-            for fm in FLAG_DECL_RE.finditer(body):
-                if fm.group(3) == flag_name:
+            for _, name in iter_flag_declarations(body):
+                if name == flag_name:
                     return True
     return False
 
@@ -595,9 +669,8 @@ def persistent_flag_declared(cli_dir: Path, flag_name: str) -> bool:
             text = read_utf8(go_file)
         except Exception:
             continue
-        for m in FLAG_DECL_RE.finditer(text):
-            persistent, _, name = m.groups()
-            if name == flag_name and persistent == "Persistent":
+        for persistent, name in iter_flag_declarations(text):
+            if name == flag_name and persistent:
                 return True
     return False
 
@@ -630,6 +703,12 @@ def _cli_invocation_from_tokens(
         ):
             break
         if len(cmd_path) < 3 and re.match(r"^[a-z][a-z0-9-]*$", t):
+            if cli_dir is not None:
+                _files, use_str, _args_info = find_command_source(cli_dir, cmd_path)
+                if use_str:
+                    _, _, optional, variadic = parse_use(use_str)
+                    if optional > 0 or variadic:
+                        break
             # Verify adding this token still maps to a valid command. If the
             # extended path has no source match, this token is an argument.
             if cli_dir is not None:
@@ -650,11 +729,24 @@ def _cli_invocation_from_tokens(
             i += 1
             continue
         if t.startswith("--"):
-            flags.append(t.split("=", 1)[0])
-            # Skip a space-separated value (`--flag value`), but NOT when the
-            # value is inline (`--flag=value`) — there the next token is a
-            # positional, not this flag's value.
-            if "=" not in t and i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            flag_name = t.split("=", 1)[0]
+            flags.append(flag_name)
+            # Skip a space-separated value (`--flag value`), but NOT when:
+            #  - the value is inline (`--flag=value`) — the next token is a
+            #    positional, not this flag's value; or
+            #  - the flag is a known boolean flag, which takes no value, so the
+            #    next token is a positional (consuming it would under-count the
+            #    recipe's positional args).
+            is_bool = (
+                cli_dir is not None
+                and flag_name.lstrip("-") in _boolean_flag_names(cli_dir)
+            )
+            if (
+                "=" not in t
+                and not is_bool
+                and i + 1 < len(tokens)
+                and not tokens[i + 1].startswith("-")
+            ):
                 i += 2
                 continue
         elif t.startswith("-"):

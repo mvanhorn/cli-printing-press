@@ -23,6 +23,8 @@ from verify_skill import (  # noqa: E402
     resolve_command_path,
     find_command_source,
     run_checks,
+    extract_recipes,
+    _cli_invocation_from_tokens,
     _extract_function_body,
 )
 
@@ -242,6 +244,43 @@ func newSearchCmd() *cobra.Command {
 
 
 class TestFlagChecks(unittest.TestCase):
+    def test_alias_receiver_flags_are_recognized(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newSearchCmd())
+    return rootCmd.Execute()
+}
+''',
+                "search.go": '''package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+    cmd := &cobra.Command{Use: "search"}
+    var level string
+    f := cmd.Flags()
+    f.StringVar(&level, "level", "", "filter level")
+    return cmd
+}
+''',
+            })
+            cli_binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{cli_binary} search --level high
+```
+""",
+                encoding="utf-8",
+            )
+
+            report = run_checks(cli_dir, {"flag-names", "flag-commands"})
+
+            self.assertEqual([], report.findings)
+
     def test_missing_limit_flag_is_reported(self):
         with tempfile.TemporaryDirectory() as td:
             cli_dir = _write_cli(Path(td), {
@@ -293,6 +332,109 @@ func newSearchCmd() *cobra.Command {
                     and f.detail == "--limit is not declared anywhere"
                 ),
             )
+
+
+class TestInvocationParsing(unittest.TestCase):
+    def test_optional_positionals_are_bound_before_sibling_resolution(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newIssuancesCmd())
+    rootCmd.AddCommand(newRrCmd())
+    return rootCmd.Execute()
+}
+''',
+                "issuances.go": '''package cli
+import "github.com/spf13/cobra"
+func newIssuancesCmd() *cobra.Command {
+    cmd := &cobra.Command{Use: "issuances"}
+    cmd.AddCommand(newCitedByCmd())
+    return cmd
+}
+func newCitedByCmd() *cobra.Command {
+    return &cobra.Command{Use: "cited-by [type] [number-year]"}
+}
+''',
+                "rr.go": '''package cli
+import "github.com/spf13/cobra"
+func newRrCmd() *cobra.Command {
+    return &cobra.Command{Use: "rr"}
+}
+''',
+            })
+            cli_binary = f"{cli_dir.name}-pp-cli"
+            skill = cli_dir / "SKILL.md"
+            skill.write_text(
+                f"""# Fixture
+
+```bash
+{cli_binary} issuances cited-by rr 7-2003
+```
+""",
+                encoding="utf-8",
+            )
+
+            recipes = extract_recipes(skill, cli_binary, cli_dir)
+
+            self.assertEqual([(["issuances", "cited-by"], ["rr", "7-2003"], [])], recipes)
+
+    def test_space_separated_long_flag_value_is_not_positional(self):
+        cmd_path, positional, flags = _cli_invocation_from_tokens(
+            ["search", "--filter", "status=active", "item-123"],
+            None,
+        )
+
+        self.assertEqual(["search"], cmd_path)
+        self.assertEqual(["item-123"], positional)
+        self.assertEqual(["--filter"], flags)
+
+    def test_boolean_long_flag_does_not_swallow_following_positional(self):
+        """A value-less boolean flag (e.g. `--json`) takes no value, so the
+        token after it is a positional and must not be consumed as the flag's
+        value. A value-bearing flag in the same CLI still consumes its value."""
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newGetCmd())
+    return rootCmd.Execute()
+}
+''',
+                "get.go": '''package cli
+import "github.com/spf13/cobra"
+func newGetCmd() *cobra.Command {
+    cmd := &cobra.Command{Use: "get <id>"}
+    var asJSON bool
+    var filter string
+    cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
+    cmd.Flags().StringVar(&filter, "filter", "", "filter expression")
+    return cmd
+}
+''',
+            })
+
+            # Boolean flag: the next token is a positional, not the flag's value.
+            cmd_path, positional, flags = _cli_invocation_from_tokens(
+                ["get", "--json", "item-123"], cli_dir,
+            )
+            self.assertEqual(["get"], cmd_path)
+            self.assertEqual(
+                ["item-123"], positional,
+                "a positional after a boolean flag must not be swallowed as its value",
+            )
+            self.assertEqual(["--json"], flags)
+
+            # Value-bearing flag still consumes its space-separated value.
+            cmd_path, positional, flags = _cli_invocation_from_tokens(
+                ["get", "--filter", "active", "item-123"], cli_dir,
+            )
+            self.assertEqual(["item-123"], positional)
+            self.assertEqual(["--filter"], flags)
 
 
 class UTF8ReadTest(unittest.TestCase):
