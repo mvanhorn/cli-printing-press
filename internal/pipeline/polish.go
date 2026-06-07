@@ -184,7 +184,7 @@ func findAllDeadFunctions(cliDir string, extraSearchDirs ...string) []string {
 	seen := map[string]bool{}
 	var dead []string
 	for _, def := range allDefs {
-		if seen[def.name] || skipNames[def.name] {
+		if seen[def.name] || skipNames[def.name] || isAllowedDeadHelper(def.name) {
 			continue
 		}
 		if strings.HasPrefix(def.name, "Test") || strings.HasPrefix(def.name, "Benchmark") {

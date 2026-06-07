@@ -366,6 +366,8 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Equal(t, 3, strings.Count(starters, "if len(args) == 0 && cmd.Flags().NFlag() == 0 {"))
 	assert.Equal(t, 3, strings.Count(starters, "return cmd.Help()"))
 	assert.Equal(t, 3, strings.Count(starters, "if dryRunOK(flags) {"))
+	assert.Equal(t, 3, strings.Count(starters, "ctx, cancel := boundCtx(cmd.Context(), flags)"))
+	assert.Equal(t, 3, strings.Count(starters, "defer cancel()"))
 	assert.Equal(t, 3, strings.Count(starters, "_ = cmd.Usage()"))
 	assert.Equal(t, 3, strings.Count(starters, `return usageErr(fmt.Errorf("<flag-or-arg> is required"))`))
 	assert.Contains(t, starters, "**RunE skeleton — parallel-fetch aggregation shape**")
@@ -376,9 +378,23 @@ func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	assert.Contains(t, starters, "partial results: %d of %d fetches failed; average computed over %d items")
 }
 
+func TestPrintingPressSkillRequiresPerCommandTimeoutBoundary(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	checklist := substringBetween(t, skill, "### Agent Build Checklist (per command)", "#### Verify-friendly RunE template")
+	helpers := substringBetween(t, skill, "**Helpers already emitted by the generator.**", "```go")
+	review := substringBetween(t, skill, "## Phase 4.95: Local Code Review", "**Tool selection")
+
+	assert.Contains(t, checklist, "11. **Per-command timeout boundary**")
+	assert.Contains(t, checklist, "boundCtx(cmd.Context(), flags)")
+	assert.Contains(t, checklist, "Generated endpoint commands already pass `flags.timeout` into `client.New`")
+	assert.Contains(t, helpers, "`boundCtx(parent context.Context, flags *rootFlags) (context.Context, context.CancelFunc)`")
+	assert.Contains(t, review, "**Native timeout-boundary check.**")
+	assert.Contains(t, review, "Files that only use `flags.newClient()` / generated `internal/client`")
+}
+
 func TestPrintingPressSkillRequiresScanAndFilterCaps(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
-	block := substringBetween(t, skill, "12. **Scan-and-filter caps**", "#### Verify-friendly RunE template")
+	block := substringBetween(t, skill, "13. **Scan-and-filter caps**", "#### Verify-friendly RunE template")
 
 	assert.Contains(t, block, `"list, filter locally, fan out to detail"`)
 	assert.Contains(t, block, "**`--max-scan-pages int`**")
