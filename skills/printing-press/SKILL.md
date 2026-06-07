@@ -3073,7 +3073,7 @@ Priority 3 (polish):
 
 ### Agent Build Checklist (per command)
 
-After building each command in Priority 1 and Priority 2, verify these 12 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
+After building each command in Priority 1 and Priority 2, verify these 13 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
 
 1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
 2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON should use the generated receiver-style helper, `flags.printJSON(cmd, v)`, or call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` directly. Both route through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
@@ -3103,12 +3103,13 @@ After building each command in Priority 1 and Priority 2, verify these 12 princi
      ```
      Distinct from `IsVerifyEnv`: dogfood is a real-API matrix, so curtail work (paginate once, smaller `--limit`), never substitute mock data for real calls.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
-11. **Parallel-fetch partial failures**: any command that fans out N API calls and computes an aggregate (averages, rollups, comparisons, cross-source merges, digest summaries) MUST preserve each fetch error through the result channel and exclude error-tagged entries from totals and denominators. Failed fetches may still appear in the response so the caller can see the gap, but they must not become zero-valued phantom rows that dilute averages or counts. Surface the partial failure explicitly with:
+11. **Per-command timeout boundary**: Hand-written novel commands that call a sibling typed HTTP client (`internal/<api>/`, `internal/source/<name>/`, `internal/recipes/`, etc.) MUST wrap `cmd.Context()` with `boundCtx(cmd.Context(), flags)` and `defer cancel()` before the first client call. Generated endpoint commands already pass `flags.timeout` into `client.New`; sibling clients do not. Without this boundary, root `--timeout` is advertised in help but does not bound wide scans, crawlers, or fan-out loops.
+12. **Parallel-fetch partial failures**: any command that fans out N API calls and computes an aggregate (averages, rollups, comparisons, cross-source merges, digest summaries) MUST preserve each fetch error through the result channel and exclude error-tagged entries from totals and denominators. Failed fetches may still appear in the response so the caller can see the gap, but they must not become zero-valued phantom rows that dilute averages or counts. Surface the partial failure explicitly with:
    - a stderr warning that names the failed count and the actual aggregation denominator, for example `warning: 2 of 10 fetches failed; averages computed over the remaining 8 items`
    - a `fetch_failures` field in the JSON response envelope listing the failed entries and error messages
 
 Silently averaging phantom zeros is worse than reporting a partial result.
-12. **Scan-and-filter caps**: any hand-written transcendence command that scans
+13. **Scan-and-filter caps**: any hand-written transcendence command that scans
     a paginated or otherwise unsorted endpoint, filters locally, and then keeps
     matching rows MUST bound scan effort separately from output size. This is the
     "list, filter locally, fan out to detail" shape: the API cannot filter on the
@@ -3363,6 +3364,7 @@ The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed A
 - `printAutoTable(w io.Writer, items []map[string]any) error` - render JSON-like rows as the generated human table format.
 - `defaultDBPath(name string) string` - resolve the local SQLite database path for `<name>`.
 - `dryRunOK(flags *rootFlags) bool` - detect verify-friendly `--dry-run` short-circuits before network, store, or filesystem work.
+- `boundCtx(parent context.Context, flags *rootFlags) (context.Context, context.CancelFunc)` - apply root `--timeout` to hand-written commands that call sibling typed clients instead of the generated `internal/client`.
 - `filterFields(data json.RawMessage, fields string) json.RawMessage` - apply `--select` to a JSON blob.
 - `compactFields(data json.RawMessage) json.RawMessage` - apply `--compact` to a JSON blob.
 - `isTerminal(w io.Writer) bool` - detect terminal output versus pipes.
@@ -3414,7 +3416,7 @@ func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
 // Single-word Commands register directly: rootCmd.AddCommand(newNovelXxxCmd(flags)).
 ```
 
-**RunE skeleton — API-call shape** (live data via the generated client):
+**RunE skeleton — API-call shape** (live data via a sibling typed client):
 
 ```go
 RunE: func(cmd *cobra.Command, args []string) error {
@@ -3425,18 +3427,20 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource>")
 		return nil
 	}
+	ctx, cancel := boundCtx(cmd.Context(), flags)
+	defer cancel()
 	if <required input missing> {
 		_ = cmd.Usage()
 		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
 	}
-	c, err := flags.newClient()
+	c, err := newSiblingClient(flags) // replace with your internal/<api> or internal/source/<name> constructor
 	if err != nil {
 		return err
 	}
-	// Replace path with the absorbed endpoint or hand-rolled URL. Use
-	// cliutil.FanoutRun for any --site/--source/--region CSV fan-out;
-	// re-implementing fanout inline is the recipe-goat silent-drop bug.
-	data, err := c.Get("/api/v1/path", nil)
+	// Pass ctx to every sibling-client request so root --timeout bounds
+	// crawls, wide scans, and fan-out loops. Generated endpoint commands that
+	// use flags.newClient()/internal/client already consume flags.timeout.
+	data, err := c.FetchResource(ctx, <request params>)
 	if err != nil {
 		return fmt.Errorf("fetching <resource>: %w", err)
 	}
@@ -3469,11 +3473,13 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "would fetch <resource> details")
 		return nil
 	}
+	ctx, cancel := boundCtx(cmd.Context(), flags)
+	defer cancel()
 	if <required input missing> {
 		_ = cmd.Usage()
 		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
 	}
-	c, err := flags.newClient()
+	c, err := newSiblingClient(flags) // replace with your internal/<api> or internal/source/<name> constructor
 	if err != nil {
 		return err
 	}
@@ -3490,7 +3496,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			data, err := c.Get("/api/v1/resource/"+url.PathEscape(id), nil)
+			data, err := c.FetchDetail(ctx, id)
 			if err != nil {
 				results <- fetchResult{idx: idx, id: id, err: err}
 				return
@@ -3568,6 +3574,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "would query local store")
 		return nil
 	}
+	ctx, cancel := boundCtx(cmd.Context(), flags)
+	defer cancel()
 	if <required input missing> {
 		_ = cmd.Usage()
 		return usageErr(fmt.Errorf("<flag-or-arg> is required"))
@@ -3575,7 +3583,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	if dbPath == "" {
 		dbPath = defaultDBPath("<cli>-pp-cli") // replace <cli> with the API slug
 	}
-	db, err := store.OpenWithContext(cmd.Context(), dbPath)
+	db, err := store.OpenWithContext(ctx, dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
@@ -3586,7 +3594,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	// API only exposes the resource flat; add a <resource_singular>
 	// entry for APIs that toggle plural/singular casing. SQL must be
 	// SELECT-only; the search/sql gates reject mutating statements.
-	rows, err := db.DB().QueryContext(cmd.Context(), `
+	rows, err := db.DB().QueryContext(ctx, `
 		SELECT id, data FROM resources
 		WHERE resource_type IN ('<resource>', '<parent>_<resource>')
 		  AND ...`)
@@ -3895,6 +3903,8 @@ The sub-skill carries `context: fork` so the reviewer agent's diagnostic chatter
 **Runs after Phase 4.85, before Phase 5.** Reviews the printed CLI source for security and correctness issues *before* any PR exists. This is the cheapest fix window in the pipeline — session context is hot, no PR feedback round-trip, no CI comments to chase. Catching issues here means they never become PR-time review comments, which is the wrong fix window for the same problems.
 
 **Target.** The generated CLI and MCP source under `$CLI_WORK_DIR`. In scope: `internal/cli/`, `internal/mcp/` (excluding `cobratree/`), `internal/store/`, `internal/client/`, and `cmd/`. **Out of scope:** `internal/cliutil/` and `internal/mcp/cobratree/` — these are generator-reserved packages. Any finding there is a machine bug; route to retro, do not patch in place.
+
+**Native timeout-boundary check.** Before reviewer dispatch, scan every hand-written file under `internal/cli/` that imports a sibling internal package (`internal/<api>/`, `internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc.) and makes live requests. Each such command file must call `boundCtx(cmd.Context(), flags)` and pass that context into the sibling client or store query path before the first request. Files that only use `flags.newClient()` / generated `internal/client` are already covered by `client.New(cfg, flags.timeout, ...)` and should not be flagged for missing `boundCtx`.
 
 **Tool selection — pick what's installed, do not name-match.** This phase needs *a* code review, not a specific named command. Survey the review-shaped capabilities the current harness has and pick the best fit. Plausible candidates (names drift across harnesses and plugin sets; treat this as an example list, not a closed set):
 

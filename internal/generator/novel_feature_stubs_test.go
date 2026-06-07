@@ -94,6 +94,62 @@ func TestNovelFeatureStubsResolveAtRuntime(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli")
 }
 
+func TestGeneratorEmitsBoundCtxHelperForNovelCommands(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("timeoutnovel")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Sibling client scan",
+			Command:     "scan",
+			Description: "Scan via a sibling client.",
+			Example:     "timeoutnovel-pp-cli scan --json",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+	assert.Contains(t, helpers, "func boundCtx(parent context.Context, flags *rootFlags) (context.Context, context.CancelFunc)")
+	assert.Contains(t, helpers, "return context.WithTimeout(parent, flags.timeout)")
+
+	var runtimeTest strings.Builder
+	runtimeTest.WriteString(`package cli
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestBoundCtxAppliesRootTimeout(t *testing.T) {
+	parent := context.Background()
+	ctx, cancel := boundCtx(parent, &rootFlags{timeout: 25 * time.Millisecond})
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatalf("boundCtx did not apply a deadline")
+	}
+	if time.Until(deadline) <= 0 {
+		t.Fatalf("deadline already expired")
+	}
+}
+
+func TestBoundCtxNoopsWithoutTimeout(t *testing.T) {
+	parent := context.Background()
+	ctx, cancel := boundCtx(parent, &rootFlags{})
+	defer cancel()
+	if ctx != parent {
+		t.Fatalf("boundCtx should return the parent context when timeout is unset")
+	}
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "bound_ctx_runtime_test.go"), []byte(runtimeTest.String()), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratorSkipsNovelFeatureWiringForAbsorbedEndpointCollisions(t *testing.T) {
 	t.Parallel()
 

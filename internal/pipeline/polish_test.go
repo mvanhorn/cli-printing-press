@@ -223,6 +223,20 @@ func funcB() { funcA() }
 		assert.Empty(t, dead)
 	})
 
+	t.Run("keeps generated extension point helpers", func(t *testing.T) {
+		dir := t.TempDir()
+
+		_ = os.WriteFile(filepath.Join(dir, "helpers.go"), []byte(`package cli
+
+func boundCtx() {}
+
+func deadHelper() {}
+`), 0o644)
+
+		dead := findAllDeadFunctions(dir)
+		assert.Equal(t, []string{"deadHelper"}, dead)
+	})
+
 	t.Run("empty directory", func(t *testing.T) {
 		dir := t.TempDir()
 		dead := findAllDeadFunctions(dir)
