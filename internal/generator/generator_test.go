@@ -13229,7 +13229,7 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 		cliContent,
 		"defaulted operation-routing path param should be user-overridable")
 	assert.Contains(t, cliContent,
-		`path = replacePathParam(path, "pathQueryId", fmt.Sprintf("%v", flagPathQueryId))`,
+		`path = replacePathParam(path, "pathQueryId", formatCLIParamValue(flagPathQueryId))`,
 		"generated command must substitute the path template before calling the API")
 
 	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
@@ -14896,7 +14896,7 @@ func TestGenerateMCPCodeOrchestrationGlobalPathTemplateVars(t *testing.T) {
 	src := string(data)
 	assert.Contains(t, src, `TemplateParams []codeOrchParamBinding`)
 	assert.Contains(t, src, `TemplateParams: []codeOrchParamBinding{{PublicName: "tenant_id", WireName: "tenant_id"}}`)
-	assert.Contains(t, src, `c.Config.TemplateVars[binding.WireName] = fmt.Sprintf("%v", v)`)
+	assert.Contains(t, src, `c.Config.TemplateVars[binding.WireName] = formatMCPParamValue(v)`)
 	assert.Contains(t, src, `delete(params, binding.PublicName)`,
 		"code-orchestration execute must not also route promoted template params as query/body inputs")
 
@@ -15268,7 +15268,7 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, findSource, `StringVar(&flagS, "s", "", "Street address")`)
 	assert.Contains(t, findSource, `_ = cmd.Flags().MarkHidden("s")`)
 	assert.Contains(t, findSource, `if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && !flags.dryRun`)
-	assert.Contains(t, findSource, `params["s"] = fmt.Sprintf("%v", flagS)`)
+	assert.Contains(t, findSource, `params["s"] = formatCLIParamValue(flagS)`)
 	assert.NotContains(t, findSource, `required flag "s" not set`)
 
 	createSource := readGeneratedFile(t, outputDir, "internal", "cli", "stores_create.go")
@@ -15279,7 +15279,7 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	assert.Contains(t, mcpSource, `mcplib.WithString("address", mcplib.Required(), mcplib.Description("Street address"))`)
 	assert.Contains(t, mcpSource, `PublicName: "address", WireName: "s", Location: "query"`)
-	assert.Contains(t, mcpSource, `params[binding.WireName] = fmt.Sprintf("%v", v)`)
+	assert.Contains(t, mcpSource, `params[binding.WireName] = formatMCPParamValue(v)`)
 	assert.Contains(t, mcpSource, `mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code"))`)
 	assert.Contains(t, mcpSource, `PublicName: "store-code", WireName: "store_code", Location: "body"`)
 	assert.Contains(t, mcpSource, `bodyArgs[binding.WireName] = v`)
@@ -17075,7 +17075,7 @@ func TestGenerateGlobalPathTemplateVarRootFlag(t *testing.T) {
 		"MCP endpoint tools must expose a per-call override matching the CLI root flag")
 	assert.Contains(t, mcpSrc, `Location: "template"`,
 		"MCP handler binding must route tenant_id into Config.TemplateVars instead of query params")
-	assert.Contains(t, mcpSrc, `c.Config.TemplateVars[binding.WireName] = fmt.Sprintf("%v", v)`,
+	assert.Contains(t, mcpSrc, `c.Config.TemplateVars[binding.WireName] = formatMCPParamValue(v)`,
 		"MCP handler must merge global template inputs into Config.TemplateVars before the request")
 	contactsGetTool := generatedMCPToolBlock(t, mcpSrc, "contacts_get")
 	assert.NotContains(t, contactsGetTool, `"tenant_id"`,

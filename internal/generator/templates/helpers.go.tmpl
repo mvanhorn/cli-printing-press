@@ -49,6 +49,13 @@ var As = errors.As
 
 const paginatedGetMaxPages = 100
 
+func formatCLIParamValue(v any) string {
+	if f, ok := v.(float64); ok {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return fmt.Sprintf("%v", v)
+}
+
 // noColor is set by the --no-color flag
 var noColor bool
 
