@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -85,7 +86,7 @@ func (g *Generator) Validate() error {
 		{
 			name: naming.CLI(g.Spec.Name) + " --help",
 			run: func() error {
-				return validateCommandOutput(g.OutputDir, 15*time.Second, binPath, "--help")
+				return validateCommandOutput(g.OutputDir, helpGateTimeout(runtime.GOOS), binPath, "--help")
 			},
 		},
 		{
@@ -111,6 +112,13 @@ func (g *Generator) Validate() error {
 	}
 
 	return nil
+}
+
+func helpGateTimeout(goos string) time.Duration {
+	if goos == "windows" {
+		return 30 * time.Second
+	}
+	return 15 * time.Second
 }
 
 func validateCommandOutput(dir string, timeout time.Duration, name string, args ...string) error {
