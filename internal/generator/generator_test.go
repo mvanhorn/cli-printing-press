@@ -3806,6 +3806,40 @@ func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestGenerateMCPToolResultTextBudgetTestsPass(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-result-budget")
+	apiSpec.Resources = map[string]spec.Resource{
+		"groups": {
+			Description: "Groups",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/groups",
+					Description: "List groups",
+					Response:    spec.ResponseDef{Type: "array", Item: "Group"},
+				},
+			},
+		},
+	}
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Group": {
+			Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "name", Type: "string"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPToolResultText")
+}
+
 // stripGoComments removes // line comments and /* ... */ block comments from
 // Go source. Crude but sufficient for canary assertions on emitted templates;
 // it doesn't try to parse string literals (none of the asserted substrings
