@@ -736,25 +736,23 @@ type GenerateManifestParams struct {
 	Owner         string                 // legacy, derived from Creator.Handle (dual-write)
 	Printer       string                 // legacy, derived from Creator.Handle (dual-write)
 	PrinterName   string                 // legacy, derived from Creator.Name (dual-write)
-	RunID         string                 // YYYYMMDD-HHMMSS, derived from --research-dir basename when empty
+	RunID         string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
 	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
 	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 }
 
-// runIDPattern matches the canonical pipeline run_id shape: YYYYMMDD-HHMMSS.
-// When an arbitrary path basename happens to match this pattern, treat it as
-// a real run_id; otherwise fall back to empty (and warn at the call site).
-var runIDPattern = regexp.MustCompile(`^\d{8}-\d{6}$`)
+// runIDPattern matches legacy and skill-allocated pipeline run_id basenames.
+// State files are the source of truth for current runs; this is only a legacy
+// fallback for older run directories that predate state-backed generate.
+var runIDPattern = regexp.MustCompile(`^\d{8}-\d{6}(?:-[A-Za-z0-9._-]+)?$`)
 
-// runIDTimeFormat is the canonical YYYYMMDD-HHMMSS layout matched by
-// runIDPattern. Kept as a const so the format and pattern can't drift.
+// runIDTimeFormat is the legacy timestamp-only layout used when generate has
+// no state-backed run_id. Kept as a const so fallback formatting stays stable.
 const runIDTimeFormat = "20060102-150405"
 
 // DeriveRunIDFromResearchDir extracts a canonical run_id from a research-dir
-// path, or returns "" when no valid run_id can be derived. The standalone
-// generate command does not load a PipelineState, so it cannot reach
-// state.RunID directly; the basename of --research-dir is the only structured
-// signal available without a state-loading refactor.
+// path, or returns "" when no valid run_id can be derived. Prefer
+// ResolveRunIDFromResearchDir for current generate flows so state.json wins.
 func DeriveRunIDFromResearchDir(researchDir string) string {
 	if researchDir == "" {
 		return ""
@@ -766,6 +764,39 @@ func DeriveRunIDFromResearchDir(researchDir string) string {
 	return ""
 }
 
+type generateResearchState struct {
+	APIName string `json:"api_name"`
+	RunID   string `json:"run_id"`
+}
+
+func loadGenerateResearchState(researchDir string) (generateResearchState, bool) {
+	if researchDir == "" {
+		return generateResearchState{}, false
+	}
+	statePath := filepath.Join(researchDir, "state.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return generateResearchState{}, false
+	}
+	var state generateResearchState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return generateResearchState{}, false
+	}
+	state.APIName = strings.TrimSpace(state.APIName)
+	state.RunID = strings.TrimSpace(state.RunID)
+	return state, state.APIName != "" || state.RunID != ""
+}
+
+// ResolveRunIDFromResearchDir reads the run_id recorded by Run Initialization
+// in `<researchDir>/state.json`, falling back to the path basename only for
+// legacy runs that predate state-backed generate.
+func ResolveRunIDFromResearchDir(researchDir string) string {
+	if state, ok := loadGenerateResearchState(researchDir); ok && state.RunID != "" {
+		return state.RunID
+	}
+	return DeriveRunIDFromResearchDir(researchDir)
+}
+
 // LoadAPINameFromResearchDir reads `<researchDir>/state.json` and returns the
 // recorded api_name slug, or "" when the file is absent, unreadable, malformed,
 // or has no api_name. The generate command uses this as an implicit --name
@@ -775,21 +806,11 @@ func DeriveRunIDFromResearchDir(researchDir string) string {
 // --name wins over this; an absent or unreadable state.json silently yields
 // to the title-derived default.
 func LoadAPINameFromResearchDir(researchDir string) string {
-	if researchDir == "" {
+	state, ok := loadGenerateResearchState(researchDir)
+	if !ok {
 		return ""
 	}
-	statePath := filepath.Join(researchDir, "state.json")
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		return ""
-	}
-	var probe struct {
-		APIName string `json:"api_name"`
-	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(probe.APIName)
+	return state.APIName
 }
 
 // WriteManifestForGenerate writes a .printing-press.json manifest into the
@@ -798,8 +819,9 @@ func LoadAPINameFromResearchDir(researchDir string) string {
 //
 // An empty p.RunID is auto-filled with a fresh timestamp so the emitted
 // manifest satisfies publish-validate's required-run_id contract. Phase 5
-// dogfood acceptance still needs the original research-dir-derived run_id,
-// and the root.go --research-dir warning informs phase5 callers of that gap.
+// dogfood acceptance still needs the original run_id from state.json or the
+// legacy research-dir basename, and the root.go --research-dir warning
+// informs phase5 callers of that gap.
 func WriteManifestForGenerate(p GenerateManifestParams) error {
 	now := time.Now().UTC()
 	runID := p.RunID
