@@ -602,8 +602,10 @@ func TestPolishSkillInheritsPrintingPressBinaryFromParent(t *testing.T) {
 
 	assert.Contains(t, mainSkill, "printing_press_bin: <captured PRINTING_PRESS_BIN>")
 	assert.Contains(t, polishSkill, "printing_press_bin: <abs-path>")
+	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" lock update --cli "$CLI_NAME" --phase polish`)
 	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" mcp-sync "$CLI_DIR"`)
 	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR"`)
+	assert.NotContains(t, polishSkill, "cli-printing-press lock update --cli \"$CLI_NAME\"")
 	assert.NotContains(t, polishSkill, "cli-printing-press mcp-sync \"$CLI_DIR\"")
 }
 

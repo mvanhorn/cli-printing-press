@@ -408,7 +408,7 @@ Record baseline scores: scorecard total, verify pass rate, dogfood verdict, go v
 Fix in priority order. After each priority level, update the lock heartbeat:
 
 ```bash
-cli-printing-press lock update --cli "$CLI_NAME" --phase polish 2>/dev/null
+"$PRINTING_PRESS_BIN" lock update --cli "$CLI_NAME" --phase polish 2>/dev/null
 ```
 
 ### Runtime variant default checklist
