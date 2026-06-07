@@ -865,6 +865,7 @@ func (s *Store) UpsertLeagues(data json.RawMessage) error {
 	if id == "" {
 		return fmt.Errorf("missing id for leagues")
 	}
+	storageID := resourceStorageID("leagues", id, obj)
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -874,10 +875,10 @@ func (s *Store) UpsertLeagues(data json.RawMessage) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.upsertGenericResourceTx(tx, "leagues", id, data); err != nil {
+	if err := s.upsertGenericResourceTx(tx, "leagues", storageID, data); err != nil {
 		return err
 	}
-	if err := s.upsertLeaguesTx(tx, id, obj, data); err != nil {
+	if err := s.upsertLeaguesTx(tx, storageID, obj, data); err != nil {
 		return err
 	}
 
@@ -904,6 +905,14 @@ var resourceIDFieldOverrides = map[string]string{
 // so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
 // field and upsert on names — see #1394.
 var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}
+
+// resourceParentKeyColumns identifies generated dependent resources whose
+// local mirror rows need the parent context in the storage key. Without this,
+// many-to-many sub-collections collapse every parent association onto the
+// child's bare id and silently keep only the last synced parent.
+var resourceParentKeyColumns = map[string]string{
+	"leagues": "parent_id",
+}
 
 // ExtractResourceID resolves the primary key UpsertBatch would use for a
 // resource item. Callers that need to gate best-effort writes can use this to
@@ -1024,6 +1033,18 @@ func scalarIDString(value any) string {
 	}
 }
 
+func resourceStorageID(resourceType, id string, obj map[string]any) string {
+	parentKey := resourceParentKeyColumns[resourceType]
+	if parentKey == "" {
+		return id
+	}
+	parentValue := ResourceIDString(lookupFieldValue(obj, parentKey))
+	if parentValue == "" || parentValue == "<nil>" {
+		return id
+	}
+	return id + "_" + parentValue
+}
+
 // UpsertBatch inserts or replaces multiple records in a single transaction
 // and returns (stored, extractFailures, err). stored counts rows landed in
 // the generic resources table; extractFailures counts items that survived
@@ -1071,38 +1092,39 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 			extractFailures++
 			continue
 		}
+		storageID := resourceStorageID(resourceType, id, obj)
 
-		if err := s.upsertGenericResourceTx(tx, resourceType, id, item); err != nil {
+		if err := s.upsertGenericResourceTx(tx, resourceType, storageID, item); err != nil {
 			// Return the running stored count rather than zero so callers
 			// inspecting partial progress on failure see what already
 			// landed in earlier loop iterations.
-			return stored, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
+			return stored, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, storageID, err)
 		}
 		stored++
 
 		savepoint := fmt.Sprintf("pp_typed_%d", i)
 		if _, err := tx.Exec("SAVEPOINT " + savepoint); err != nil {
-			return stored, extractFailures, fmt.Errorf("savepoint begin for %s/%s: %w", resourceType, id, err)
+			return stored, extractFailures, fmt.Errorf("savepoint begin for %s/%s: %w", resourceType, storageID, err)
 		}
 
 		var typedErr error
 		switch resourceType {
 		case "leagues":
-			typedErr = s.upsertLeaguesTx(tx, id, obj, item)
+			typedErr = s.upsertLeaguesTx(tx, storageID, obj, item)
 		}
 
 		if typedErr != nil {
 			if _, rbErr := tx.Exec("ROLLBACK TO SAVEPOINT " + savepoint); rbErr != nil {
-				return stored, extractFailures, fmt.Errorf("rollback to savepoint for %s/%s (typed err: %v): %w", resourceType, id, typedErr, rbErr)
+				return stored, extractFailures, fmt.Errorf("rollback to savepoint for %s/%s (typed err: %v): %w", resourceType, storageID, typedErr, rbErr)
 			}
 			if _, relErr := tx.Exec("RELEASE SAVEPOINT " + savepoint); relErr != nil {
-				return stored, extractFailures, fmt.Errorf("release savepoint after rollback for %s/%s: %w", resourceType, id, relErr)
+				return stored, extractFailures, fmt.Errorf("release savepoint after rollback for %s/%s: %w", resourceType, storageID, relErr)
 			}
 			typedFailures++
 			continue
 		}
 		if _, err := tx.Exec("RELEASE SAVEPOINT " + savepoint); err != nil {
-			return stored, extractFailures, fmt.Errorf("release savepoint for %s/%s: %w", resourceType, id, err)
+			return stored, extractFailures, fmt.Errorf("release savepoint for %s/%s: %w", resourceType, storageID, err)
 		}
 	}
 
