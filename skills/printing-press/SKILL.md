@@ -648,8 +648,26 @@ Default to option 1 unless the user overrides. Record the decision in `source-pr
 After you know `<api>` (from the Orientation & Briefing flow above; preflight already ran at the top), initialize the run-scoped artifact paths:
 
 ```bash
-RUN_ID="$(date +%Y%m%d-%H%M%S)"
-API_RUN_DIR="$PRESS_RUNSTATE/runs/$RUN_ID"
+mkdir -p "$PRESS_RUNSTATE/runs"
+RUN_ID=""
+API_RUN_DIR=""
+for attempt in 1 2 3 4 5; do
+  RUN_SUFFIX="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 8 || true)"
+  if [ -z "$RUN_SUFFIX" ]; then
+    RUN_SUFFIX="pid$$-$attempt"
+  fi
+  CANDIDATE_RUN_ID="$(date +%Y%m%d-%H%M%S)-$RUN_SUFFIX"
+  CANDIDATE_RUN_DIR="$PRESS_RUNSTATE/runs/$CANDIDATE_RUN_ID"
+  if mkdir "$CANDIDATE_RUN_DIR" 2>/dev/null; then
+    RUN_ID="$CANDIDATE_RUN_ID"
+    API_RUN_DIR="$CANDIDATE_RUN_DIR"
+    break
+  fi
+done
+if [ -z "$RUN_ID" ]; then
+  echo "could not allocate a unique run directory under $PRESS_RUNSTATE/runs" >&2
+  exit 1
+fi
 RESEARCH_DIR="$API_RUN_DIR/research"
 PROOFS_DIR="$API_RUN_DIR/proofs"
 PIPELINE_DIR="$API_RUN_DIR/pipeline"
@@ -694,7 +712,7 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 }
 ```
 
-`run_id` is the same `YYYYMMDD-HHMMSS` value computed earlier as `RUN_ID="$(date +%Y%m%d-%H%M%S)"`. The generator's manifest writer derives the same value from the `--research-dir` basename when generate is invoked through the canonical `$API_RUN_DIR` (whose basename equals `$RUN_ID`); persisting it in `state.json` here keeps `/printing-press-score` and any future state-loading consumer in sync. Without `run_id` in either path, `cli-printing-press dogfood --live --write-acceptance` refuses to write the gate marker.
+`run_id` is the unique value allocated above from the wall-clock stamp plus a short random suffix. `mkdir "$CANDIDATE_RUN_DIR"` is the collision guard: if another run already owns a candidate directory, allocate another ID instead of reusing the directory. Persisting this value in `state.json` makes the state file the source of truth for generate, dogfood acceptance, promote, `/printing-press-score`, and future state-loading consumers. Without `run_id` in either state or legacy path fallback, `cli-printing-press dogfood --live --write-acceptance` refuses to write the gate marker.
 
 Do not create a `go.work` file in `$CLI_WORK_DIR`. Generated modules must build and test as standalone modules; a mismatched workspace `go` directive can break Go 1.25+ toolchains and lefthook checks. Editor/gopls workspace noise is cosmetic and must not be traded for broken `go build` or `go test`.
 
