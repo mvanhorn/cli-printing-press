@@ -348,7 +348,11 @@ func (c *Config) AuthHeader() string {
 			{{- end}}
 		})
 		{{- else}}
+		{{- if $.Auth.Prefix}}
+		return {{printf "%q" (printf "%s " $.Auth.Prefix)}} + c.{{resolveEnvVarField .Name}}
+		{{- else}}
 		return c.{{resolveEnvVarField .Name}}
+		{{- end}}
 		{{- end}}
 	}
 {{- end}}
@@ -404,7 +408,11 @@ func (c *Config) AuthHeader() string {
 	}
 	return applyAuthFormat("{{.Auth.Format}}", replacements)
 	{{- else if $canonicalEnvVar}}
+	{{- if .Auth.Prefix}}
+	return {{printf "%q" (printf "%s " .Auth.Prefix)}} + token
+	{{- else}}
 	return token
+	{{- end}}
 	{{- else}}
 	return ""
 	{{- end}}
