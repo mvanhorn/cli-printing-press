@@ -1,3 +1,5 @@
 dogfood: synced .printing-press.json (novel_features) from novel_features_built
+dogfood_warning: README.md Unique Features will drop documented commands triage not found in the built feature set; update research.json to keep them
+dogfood_warning: SKILL.md Unique Capabilities will drop documented commands triage not found in the built feature set; update research.json to keep them
 dogfood: synced README.md (Unique Features) from novel_features_built
 dogfood: synced SKILL.md (Unique Capabilities) from novel_features_built

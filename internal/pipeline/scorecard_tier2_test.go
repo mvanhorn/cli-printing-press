@@ -599,6 +599,33 @@ func runLinks() string {
 	})
 }
 
+func TestScoreSpecDimensionsPrefersEmbeddedMergedSpecJSON(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/cli/merged.go", `
+package cli
+
+func runMerged() string {
+	path := "/merged"
+	return path
+}
+`)
+	writeScorecardFixture(t, dir, "spec.json", `{
+  "openapi": "3.0.0",
+  "paths": {"/merged": {}}
+}`)
+	callerSpec := filepath.Join(t.TempDir(), "single.json")
+	assert.NoError(t, os.WriteFile(callerSpec, []byte(`{
+  "openapi": "3.0.0",
+  "paths": {"/single": {}}
+}`), 0o644))
+
+	sc := &Scorecard{}
+	_, err := scoreSpecDimensions(sc, dir, callerSpec)
+	assert.NoError(t, err)
+	assert.Equal(t, 10, sc.Steinberger.PathValidity)
+	assert.NotContains(t, sc.UnscoredDimensions, DimPathValidity)
+}
+
 func TestScoreTypeFidelity(t *testing.T) {
 	t.Run("scores wrong id flag types and dummy guards low", func(t *testing.T) {
 		dir := t.TempDir()
