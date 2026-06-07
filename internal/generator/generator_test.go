@@ -15433,6 +15433,81 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateMCPHandlerFormatsNumericPathAndQueryScalars(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcpnumericformat")
+	apiSpec.Resources = map[string]spec.Resource{
+		"projects": {
+			Description: "Projects",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/projects/business/{businessId}/projects",
+					Description: "List projects",
+					Params: []spec.Param{
+						{Name: "businessId", Type: "number", Required: true, PathParam: true, Description: "Business ID"},
+						{Name: "page", Type: "number", Description: "Page cursor"},
+						{Name: "archived", Type: "boolean", Description: "Archived filter"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assert.Contains(t, tools, "func formatMCPParamValue(v any) string",
+		"generated MCP handler must emit a scalar formatter shared by path and query binding")
+	assert.Contains(t, tools, `path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)`,
+		"path params must use scalar formatting so large JSON numbers do not render as e+ notation")
+	assert.Contains(t, tools, `params[binding.WireName] = formatMCPParamValue(v)`,
+		"query params must use scalar formatting so large JSON numbers do not render as e+ notation")
+	assert.NotContains(t, tools, `path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)`)
+	assert.NotContains(t, tools, `params[binding.WireName] = fmt.Sprintf("%v", v)`)
+
+	inlineTest := `package mcp
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestFormatMCPParamValueFormatsNumbersWithoutExponent(t *testing.T) {
+	tests := []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{name: "large integer float", input: float64(14229361), want: "14229361"},
+		{name: "fractional float", input: float64(1.5), want: "1.5"},
+		{name: "large float above threshold", input: float64(2e15), want: "2000000000000000"},
+		{name: "negative integer float", input: float64(-14229361), want: "-14229361"},
+		{name: "string", input: "abc123", want: "abc123"},
+		{name: "bool", input: true, want: "true"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatMCPParamValue(tt.input)
+			if got != tt.want {
+				t.Fatalf("formatMCPParamValue(%v) = %q, want %q", tt.input, got, tt.want)
+			}
+			if strings.Contains(got, "e+") || strings.Contains(got, "E+") {
+				t.Fatalf("formatMCPParamValue(%v) used exponent notation: %q", tt.input, got)
+			}
+		})
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "mcp", "scalar_string_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "TestFormatMCPParamValueFormatsNumbersWithoutExponent")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGenerateMCPToolsEmitsParamDefaultFallback(t *testing.T) {
 	t.Parallel()
 
