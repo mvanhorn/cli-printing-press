@@ -40,9 +40,10 @@ import (
 // opt-outs exist so an operator can ask for a quick read-only sweep
 // without verify auto-repairing source or scorecard sampling live calls.
 type shipcheckOpts struct {
-	dir         string
-	spec        string
-	researchDir string
+	dir          string
+	spec         string
+	researchDir  string
+	verifyNoSpec bool
 
 	// JSON envelope output. When set, suppresses the human summary table
 	// and emits a structured envelope at end-of-run instead. Each leg's
@@ -75,7 +76,9 @@ var shipcheckLegs = []shipcheckLeg{
 		name: "verify",
 		args: func(o *shipcheckOpts) []string {
 			a := []string{"verify", "--dir", o.dir}
-			if o.spec != "" {
+			if o.verifyNoSpec && o.spec != "" {
+				a = append(a, "--no-spec")
+			} else if o.spec != "" {
 				a = append(a, "--spec", o.spec)
 			}
 			if !o.noFix {
@@ -173,6 +176,16 @@ func shipcheckCLIPath(o *shipcheckOpts) string {
 
 func shipcheckCLIPathForGOOS(o *shipcheckOpts, goos string) string {
 	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, shipcheckBinaryName(o.dir)), goos)
+}
+
+const shipcheckHTMLSyncStubMarker = "generic spec-driven sync template does not fit predominantly HTML page-mode endpoints"
+
+func shipcheckShouldVerifyNoSpec(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "cli", "sync.go"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), shipcheckHTMLSyncStubMarker)
 }
 
 // shipcheckLegResult is the per-leg outcome of one umbrella run.
@@ -436,6 +449,7 @@ Each leg remains callable standalone — this command is additive orchestration.
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving --dir: %w", err)}
 			}
 			opts.dir = absDir
+			opts.verifyNoSpec = shipcheckShouldVerifyNoSpec(opts.dir)
 
 			binPath, err := resolveSelfBinary()
 			if err != nil {

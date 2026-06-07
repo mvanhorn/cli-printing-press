@@ -36,6 +36,23 @@ func fakeCLIDir(t *testing.T) string {
 	return dir
 }
 
+func writeHTMLSyncStubMarker(t *testing.T, dir string) {
+	t.Helper()
+	syncDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(syncDir, 0o755); err != nil {
+		t.Fatalf("creating sync dir: %v", err)
+	}
+	syncSrc := `package cli
+
+func syncStubMarker() string {
+	return "sync is not implemented for this CLI; write internal/cli/sync_example.go because the generic spec-driven sync template does not fit predominantly HTML page-mode endpoints"
+}
+`
+	if err := os.WriteFile(filepath.Join(syncDir, "sync.go"), []byte(syncSrc), 0o644); err != nil {
+		t.Fatalf("writing sync stub marker: %v", err)
+	}
+}
+
 // withStubBinary swaps resolveSelfBinary for the duration of a test so
 // the umbrella spawns the stub instead of the real printing-press
 // binary. Returns a cleanup function callers must defer.
@@ -325,6 +342,9 @@ func TestShipcheck_PassesSpecAndResearchDir(t *testing.T) {
 	if !argvHas(verifyArgs, "--spec") || !argvHas(verifyArgs, specPath) {
 		t.Errorf("verify argv missing --spec: %v", verifyArgs)
 	}
+	if argvHas(verifyArgs, "--no-spec") {
+		t.Errorf("spec-driven verify argv should not include --no-spec: %v", verifyArgs)
+	}
 
 	scorecardArgs := findInvocation(invocations, "scorecard")
 	if !argvHas(scorecardArgs, "--spec") || !argvHas(scorecardArgs, specPath) {
@@ -344,6 +364,56 @@ func TestShipcheck_PassesSpecAndResearchDir(t *testing.T) {
 		if argvHas(args, "--research-dir") {
 			t.Errorf("%s should not receive --research-dir; got %v", leg, args)
 		}
+	}
+}
+
+func TestShipcheck_HTMLSyncStubUsesNoSpecForVerify(t *testing.T) {
+	h := newShipcheckHarness(t)
+	writeHTMLSyncStubMarker(t, h.dir)
+
+	specPath := "/some/spec.yaml"
+	if err := runShipcheckCmd(t, "--dir", h.dir, "--spec", specPath); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	invocations := readStubLog(t, h.logFile)
+
+	verifyArgs := findInvocation(invocations, "verify")
+	if !argvHas(verifyArgs, "--no-spec") {
+		t.Errorf("HTML sync-stub verify argv missing --no-spec: %v", verifyArgs)
+	}
+	if argvHas(verifyArgs, "--spec") || argvHas(verifyArgs, specPath) {
+		t.Errorf("HTML sync-stub verify argv should not receive --spec: %v", verifyArgs)
+	}
+	if !argvHas(verifyArgs, "--fix") {
+		t.Errorf("HTML sync-stub verify argv should preserve default --fix: %v", verifyArgs)
+	}
+
+	for _, leg := range []string{"dogfood", "scorecard"} {
+		args := findInvocation(invocations, leg)
+		if !argvHas(args, "--spec") || !argvHas(args, specPath) {
+			t.Errorf("%s argv should still receive --spec; got %v", leg, args)
+		}
+		if argvHas(args, "--no-spec") {
+			t.Errorf("%s argv should not receive --no-spec; got %v", leg, args)
+		}
+	}
+}
+
+func TestShipcheck_HTMLSyncStubWithoutSpecDoesNotPassSpecFlag(t *testing.T) {
+	h := newShipcheckHarness(t)
+	writeHTMLSyncStubMarker(t, h.dir)
+
+	if err := runShipcheckCmd(t, "--dir", h.dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+	if argvHas(verifyArgs, "--no-spec") {
+		t.Errorf("HTML sync-stub verify argv without --spec should not receive --no-spec: %v", verifyArgs)
+	}
+	if argvHas(verifyArgs, "--spec") {
+		t.Errorf("HTML sync-stub verify argv without --spec should not receive --spec: %v", verifyArgs)
 	}
 }
 
