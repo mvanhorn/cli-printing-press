@@ -45,13 +45,13 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			path := "/power/store-locator"
 			params := map[string]string{}
 			if flagS != "" {
-				params["s"] = fmt.Sprintf("%v", flagS)
+				params["s"] = formatCLIParamValue(flagS)
 			}
 			if flagC != "" {
-				params["c"] = fmt.Sprintf("%v", flagC)
+				params["c"] = formatCLIParamValue(flagC)
 			}
 			if flagLocationId != "" {
-				params["location_id"] = fmt.Sprintf("%v", flagLocationId)
+				params["location_id"] = formatCLIParamValue(flagLocationId)
 			}
 			data, err := c.Get(cmd.Context(), path, params)
 			if err != nil {

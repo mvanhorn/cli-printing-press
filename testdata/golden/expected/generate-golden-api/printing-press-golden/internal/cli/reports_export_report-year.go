@@ -36,7 +36,7 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/reports/{year}/export"
-			path = replacePathParam(path, "year", fmt.Sprintf("%v", flagYear))
+			path = replacePathParam(path, "year", formatCLIParamValue(flagYear))
 			headerOverrides := map[string]string{
 				"Accept":                           "application/octet-stream",
 				"X-Printing-Press-Binary-Response": "true",
