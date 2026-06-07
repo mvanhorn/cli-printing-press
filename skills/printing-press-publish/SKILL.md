@@ -22,6 +22,7 @@ Publish a generated CLI from your local library to the [printing-press-library](
 /printing-press publish notion
 /printing-press publish notion --from-polish
 /printing-press publish notion --skip-live-test=auth-unavailable
+/printing-press publish notion --blocked-api-journal notion
 /printing-press publish
 ```
 
@@ -42,6 +43,13 @@ resolving the CLI name. The marker is not a second confirmation and is not
 passed to `cli-printing-press`; it only preserves standalone polish's old
 post-publish retro offer after the fresh-turn publish completes.
 
+If the request includes `--blocked-api-journal`, enter **Blocked API Journal
+Mode** below instead of the normal printed-CLI publish flow. This mode may be
+invoked from `/printing-press`'s hold-path menu after the user explicitly chose
+"Add to blocked-API journal"; that parent menu choice is sufficient user
+authorization for the public-library journal write. Do not require a second
+fresh-turn invocation for this journal-only mode.
+
 If the fresh user-authored request includes `--skip-live-test=<reason>`, record
 the exact non-empty reason as `SKIP_LIVE_TEST_REASON` and remove the flag before
 resolving the CLI name. This is the only supported escape valve for the
@@ -58,6 +66,93 @@ workflows. The library's `Fail on changes to generated artifacts` check in
 `verify-library-conventions.yml` hard-fails any PR — fork or same-repo — whose
 diff against base touches `registry.json` or `cli-skills/pp-*/SKILL.md`, so a
 publish that includes either is pre-rejected before review.
+
+`blocked-apis.json` is different: it is a hand-maintained public-library journal,
+not a generated registry surface. Journal-only PRs may edit `blocked-apis.json`
+and must not stage `library/`, `registry.json`, README catalog cells, or
+`cli-skills/`.
+
+## Blocked API Journal Mode
+
+Use this mode only when the invocation includes `--blocked-api-journal`. It
+records a held `/printing-press` attempt whose blocker is likely to repeat for
+other users until a machine or upstream issue changes.
+
+Required fields from the caller:
+
+- `slug`: canonical API slug, not the CLI binary name.
+- `attempted_at`: `YYYY-MM-DD`.
+- `verdict`: `hold`.
+- `reason`: concise blocker reason, with no secrets, local paths, cookies,
+  tokens, or account-specific details.
+- `blocking_issue`: Printing Press issue number if known, otherwise `null`.
+- `permanent`: boolean.
+
+If the caller did not provide one of these fields, infer only safe values from
+the current run context. If `reason` is missing or vague, stop and ask for one
+specific blocker sentence; do not write an unhelpful journal entry.
+
+Run the normal Setup, Configuration, scoped clone cleanup, and GitHub auth
+checks, then prepare the public-library clone exactly as the normal publish
+flow does: fork if needed, ensure `upstream` points to
+`mvanhorn/printing-press-library`, fetch `upstream`, and reset the clone to
+`upstream/main` before editing.
+
+Then update only `$PUBLISH_REPO_DIR/blocked-apis.json`:
+
+```bash
+cd "$PUBLISH_REPO_DIR"
+if [ ! -f blocked-apis.json ]; then
+  printf '[]\n' > blocked-apis.json
+fi
+jq --arg slug "<api-slug>" \
+   --arg attempted_at "<YYYY-MM-DD>" \
+   --arg verdict "hold" \
+   --arg reason "<reason>" \
+   --argjson blocking_issue '<number-or-null>' \
+   --argjson permanent '<true-or-false>' '
+  (if type == "array" then . else [] end)
+  | map(select(.slug != $slug))
+  + [{
+      slug: $slug,
+      attempted_at: $attempted_at,
+      verdict: $verdict,
+      reason: $reason,
+      blocking_issue: $blocking_issue,
+      permanent: $permanent
+    }]
+  | sort_by(.slug)
+' blocked-apis.json > blocked-apis.json.tmp || {
+  rm -f blocked-apis.json.tmp
+  echo "Error: jq failed to update blocked-apis.json"
+  exit 1
+}
+if ! jq empty blocked-apis.json.tmp; then
+  rm -f blocked-apis.json.tmp
+  echo "Error: blocked-apis.json update produced invalid JSON"
+  exit 1
+fi
+mv blocked-apis.json.tmp blocked-apis.json
+```
+
+Create a journal branch and PR:
+
+```bash
+git checkout -B chore/blocked-api-<api-slug>
+git add blocked-apis.json
+git commit -m "chore(<api-slug>): journal blocked API"
+git push --force-with-lease -u origin chore/blocked-api-<api-slug>
+```
+
+Open the PR against `mvanhorn/printing-press-library` with a body that includes:
+
+- the held API slug and reason
+- whether the block is permanent or tied to `blocking_issue`
+- the expected Phase 0 behavior: future `/printing-press <api-slug>` runs warn
+  before repeating the attempt
+
+After the PR is open, report the URL and stop. Do not continue into normal
+printed-CLI package, live-test, registry, or skill-mirror steps.
 
 ## Setup
 
