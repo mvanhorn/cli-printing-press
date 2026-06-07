@@ -136,8 +136,8 @@ func validateBundleVersion(version string) error {
 	if version == "" {
 		return nil
 	}
-	if strings.HasPrefix(version, "v") {
-		return fmt.Errorf("--version must not have a v prefix (got %q); use %q", version, strings.TrimPrefix(version, "v"))
+	if trimmed, ok := strings.CutPrefix(version, "v"); ok {
+		return fmt.Errorf("--version must not have a v prefix (got %q); use %q", version, trimmed)
 	}
 	if !bundleVersionPattern.MatchString(version) || !semver.IsValid("v"+version) {
 		return fmt.Errorf("--version must be a semantic version without a v prefix, e.g. %q (got %q)", "1.2.3", version)
