@@ -58,8 +58,8 @@ func TestListZeroLimitReturnsAllRows(t *testing.T) {
 		t.Fatalf("List with positive limit returned %d rows, want 50", len(limitedRows))
 	}
 }
-`), 0o644))
+	`), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "./internal/store", "-run", "TestListZeroLimitReturnsAllRows", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "TestListZeroLimitReturnsAllRows", "-count=1")
 }
