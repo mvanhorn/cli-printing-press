@@ -215,8 +215,8 @@ func TestGenerateSyncDefaultsSkipTypedIDlessResources(t *testing.T) {
 		"explicit --resources should still accept the idless list endpoint")
 	assert.Contains(t, syncSrc, "no default sync resources",
 		"sync should explain why empty-args sync is a no-op")
-	assert.Contains(t, syncSrc, `"reason":"no_default_sync_resources"`,
-		"JSON sync warnings should classify the empty default set")
+	assert.Contains(t, syncSrc, `"reason":"no_bulk_list_endpoints"`,
+		"JSON sync warnings should preserve the existing structured reason")
 }
 
 // dependentResourceSpec builds a minimal spec with a parent + child
@@ -543,7 +543,7 @@ func TestGenerateSyncEmitsEmptyHintWhenNoBulkList(t *testing.T) {
 	// callers both see the explanation instead of a silent total_records:0.
 	assert.Contains(t, syncSrc, "no default sync resources",
 		"sync should print a stderr hint when defaultSyncResources is empty")
-	assert.Contains(t, syncSrc, `"reason":"no_default_sync_resources"`,
+	assert.Contains(t, syncSrc, `"reason":"no_bulk_list_endpoints"`,
 		"sync should emit a sync_warning JSON event when defaultSyncResources is empty")
 }
 

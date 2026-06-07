@@ -227,7 +227,7 @@ Resource scoping:
 				if humanFriendly {
 					fmt.Fprintln(os.Stderr, "{{.Name}}-pp-cli sync: no default sync resources in spec; use --resources for explicit sync targets or populate the store via single-fetch commands.")
 				} else {
-					fmt.Fprintln(syncEventWriter, `{"event":"sync_warning","reason":"no_default_sync_resources","detail":"no default sync resources in spec; use --resources for explicit sync targets or populate the store via single-fetch commands"}`)
+					fmt.Fprintln(syncEventWriter, `{"event":"sync_warning","reason":"no_bulk_list_endpoints","detail":"no default sync resources in spec; use --resources for explicit sync targets or populate the store via single-fetch commands"}`)
 				}
 			}
 {{- end}}

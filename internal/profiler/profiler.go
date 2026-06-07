@@ -1916,7 +1916,7 @@ func typeDefHasRuntimeIDField(resourceName string, typeDef spec.TypeDef) bool {
 	for _, field := range typeDef.Fields {
 		fieldNames[normalizeName(spec.ToSnakeCase(field.Name))] = struct{}{}
 	}
-	for _, key := range []string{"id", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"} {
+	for _, key := range []string{"id", "gid", "sid", "uid", "uuid", "guid", "slug", "key", "code"} {
 		if _, ok := fieldNames[key]; ok {
 			return true
 		}
