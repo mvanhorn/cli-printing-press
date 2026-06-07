@@ -322,6 +322,109 @@ func TestSaveBearerTokenPersistsOverBuiltinEnvOverride(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveBearerTokenPersistsOverBuiltinEnvOverride")
 }
 
+// TestConfigSaveBearerTokenClearsNonBuiltinEnvCollision covers the #2720 review
+// gap: SaveBearerToken zeroed non-builtin custom env-var fields in memory but
+// did not delete their envOverrides entries, so configForSave restored the stale
+// on-disk value and the credential field was never cleared from config.toml on
+// refresh. Also exercises the fileConfig map-isolation (deep-copy) fix.
+func TestConfigSaveBearerTokenClearsNonBuiltinEnvCollision(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bearer-refresh-custom-env")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "bearer_token",
+		Header: "Authorization",
+		Format: "Bearer {access_token}",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "API_TENANT", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+	apiSpec.BearerRefresh = spec.BearerRefreshConfig{
+		BundleURL: "https://cdn.example.com/main.js",
+		Pattern:   `"(AAAAAAAA[^"]+)"`,
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "bearer-refresh-custom-env-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSaveBearerTokenClearsNonBuiltinEnvOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+
+	// Seed a stale on-disk value for the non-builtin custom credential field,
+	// with no env override in effect.
+	seed, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	seed.ApiTenant = "disk-tenant"
+	if err := seed.save(); err != nil {
+		t.Fatalf("seed save() error = %v", err)
+	}
+
+	// Now the env var overrides the disk value.
+	t.Setenv("API_TENANT", "env-tenant")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ApiTenant != "env-tenant" {
+		t.Fatalf("ApiTenant after Load() = %q, want env-tenant", cfg.ApiTenant)
+	}
+
+	refreshedAt := time.Date(2032, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := cfg.SaveBearerToken("refreshed-access-token", refreshedAt); err != nil {
+		t.Fatalf("SaveBearerToken() error = %v", err)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(after)
+	// On refresh the custom credential field must be cleared: neither the env
+	// value nor the stale on-disk value may survive. (Before the fix the
+	// lingering envOverride entry made configForSave write the stale disk value.)
+	for _, stale := range []string{"disk-tenant", "env-tenant"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("config.toml kept stale custom credential %q:\n%s", stale, text)
+		}
+	}
+}
+
+func TestSnapshotFileConfigIsolatesHeaderMap(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Headers == nil {
+		cfg.Headers = map[string]string{}
+	}
+	cfg.snapshotFileConfig()
+	// Mutating the live Headers map after snapshotting must not leak into the
+	// fileConfig snapshot (reference-type isolation, #2720 P2).
+	cfg.Headers["X-Isolation-Probe"] = "mutated"
+	if cfg.fileConfig != nil {
+		if _, leaked := cfg.fileConfig.Headers["X-Isolation-Probe"]; leaked {
+			t.Fatalf("snapshot fileConfig shares the Headers map with the live config")
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "bearer_custom_collision_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveBearerTokenClearsNonBuiltinEnvOverride|TestSnapshotFileConfigIsolatesHeaderMap")
+}
+
 func TestConfigClearTokensClearsBuiltinEnvCollisionCredentials(t *testing.T) {
 	t.Parallel()
 

@@ -200,10 +200,28 @@ func (c *Config) markEnvOverride(field string) {
 	c.envOverrides[field] = true
 }
 
+// cloneStringMap returns an independent copy of m (nil stays nil). The fileConfig
+// snapshot must not share reference-type map fields (such as Headers) with the
+// live config, or a later mutation to one would silently track in the other.
+func cloneStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 func (c *Config) snapshotFileConfig() {
 	snapshot := *c
 	snapshot.envOverrides = nil
 	snapshot.fileConfig = nil
+	// *c is a shallow copy: map fields are reference types, so the snapshot would
+	// share them with c and silently track later mutations, defeating the
+	// isolation this snapshot exists to provide. Clone them.
+	snapshot.Headers = cloneStringMap(c.Headers)
 	c.fileConfig = &snapshot
 }
 
@@ -257,6 +275,10 @@ func (c *Config) save() error {
 	c.fileConfig = &persisted
 	c.fileConfig.envOverrides = nil
 	c.fileConfig.fileConfig = nil
+	// persisted shares its map fields with c (configForSave shallow-copies *c),
+	// so isolate the stored fileConfig the same way snapshotFileConfig does;
+	// otherwise later mutations to c's maps leak into the on-disk snapshot.
+	c.fileConfig.Headers = cloneStringMap(c.fileConfig.Headers)
 	return nil
 }
 
