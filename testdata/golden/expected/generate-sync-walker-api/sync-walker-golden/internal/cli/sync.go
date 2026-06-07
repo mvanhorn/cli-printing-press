@@ -457,6 +457,9 @@ func syncResource(ctx context.Context, c interface {
 		}
 		effectiveSince = ""
 	}
+	if effectiveSince != "" {
+		effectiveSince = formatSyncSinceValue(effectiveSince, syncResourceSinceParamFormat(resource))
+	}
 
 	cursor := existingCursor
 	pageSize := determinePaginationDefaults()
@@ -784,6 +787,27 @@ func syncResourceSinceParam(resource string) string {
 	return ""
 }
 
+func syncResourceSinceParamFormat(resource string) string {
+	switch resource {
+	}
+	return ""
+}
+
+func formatSyncSinceValue(value string, paramFormat string) string {
+	if strings.EqualFold(paramFormat, "date") {
+		if ts, err := time.Parse(time.RFC3339, value); err == nil {
+			return ts.Format("2006-01-02")
+		}
+		if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
+			return ts.Format("2006-01-02")
+		}
+		if _, err := time.Parse("2006-01-02", value); err == nil {
+			return value
+		}
+	}
+	return value
+}
+
 // extractPageItems attempts to extract an array of items and pagination cursor from a response.
 // It tries multiple strategies:
 // 1. Direct JSON array
@@ -1080,8 +1104,8 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 
 	// Try common cursor field names
 	cursorKeys := []string{
-		"next_cursor", "nextCursor", "cursor", "next_page_token",
-		"nextPageToken", "page_token", "after", "end_cursor", "endCursor",
+		"next_cursor", "nextCursor", "next_token", "nextToken", "cursor",
+		"next_page_token", "nextPageToken", "page_token", "after", "end_cursor", "endCursor",
 	}
 	if nextCursor == "" {
 		nextCursor = findCursorInMap(envelope, cursorKeys)
@@ -1527,6 +1551,9 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 		depSinceTS = ""
 	}
+	if depSinceTS != "" {
+		depSinceTS = formatSyncSinceValue(depSinceTS, syncResourceSinceParamFormat(dep.Name))
+	}
 	// Per-resource extract-failure tracking for the F4b symptom probe and
 	// per-item primary_key_unresolved warning. See syncResource for the
 	// concurrency rationale (one goroutine per resource → no race).
@@ -1846,6 +1873,7 @@ var pageEnvelopeMetadataKeys = map[string]bool{
 	"Data": true, "Results": true, "Items": true,
 	// pagination cursors / tokens
 	"next_cursor": true, "nextCursor": true, "NextCursor": true,
+	"next_token": true, "nextToken": true, "NextToken": true,
 	"next_page_token": true, "nextPageToken": true, "NextPageToken": true,
 	"page_token": true, "pageToken": true, "PageToken": true,
 	"end_cursor": true, "endCursor": true, "EndCursor": true,

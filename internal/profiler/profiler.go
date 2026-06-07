@@ -123,6 +123,10 @@ type SyncableResource struct {
 	// those resources and emits one resource_not_incremental warning per
 	// run when --since/incremental sync was requested.
 	SinceParam string
+	// SinceParamFormat mirrors the OpenAPI format hint for SinceParam. The
+	// sync template uses "date" to send YYYY-MM-DD values instead of RFC3339
+	// timestamps to date-only endpoints.
+	SinceParamFormat string
 
 	// SupportsPagination is true when the chosen list endpoint declares a
 	// cursor or page-size parameter. The sync template uses this to avoid
@@ -183,7 +187,8 @@ type DependentResource struct {
 	// SinceParam mirrors SyncableResource.SinceParam for child paths so
 	// the same per-resource temporal-filter gating applies to dependent
 	// syncs.
-	SinceParam string
+	SinceParam       string
+	SinceParamFormat string
 
 	// SupportsPagination mirrors SyncableResource.SupportsPagination for child
 	// paths so dependent syncs skip synthetic limit/offset params on endpoints
@@ -525,7 +530,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 			}
 			for _, param := range endpoint.Params {
 				name := strings.ToLower(param.Name)
-				if strings.Contains(name, "since") || strings.Contains(name, "updated_after") || strings.Contains(name, "modified_since") || strings.Contains(name, "updated_at") {
+				if isEndpointSinceParamName(name) {
 					sinceParams[param.Name]++
 				}
 				if name == "dates" || name == "date_range" || name == "daterange" {
@@ -1373,6 +1378,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		IDField:            entry.meta.IDField,
 		Critical:           entry.meta.Critical,
 		SinceParam:         entry.meta.SinceParam,
+		SinceParamFormat:   entry.meta.SinceParamFormat,
 		SupportsPagination: entry.meta.SupportsPagination,
 		UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
 		HTMLExtract:        entry.meta.HTMLExtract,
@@ -1587,6 +1593,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				IDField:            meta.IDField,
 				Critical:           meta.Critical,
 				SinceParam:         meta.SinceParam,
+				SinceParamFormat:   meta.SinceParamFormat,
 				SupportsPagination: meta.SupportsPagination,
 				UsesHTMLResponse:   meta.UsesHTMLResponse,
 				HTMLExtract:        meta.HTMLExtract,
@@ -1838,6 +1845,7 @@ type syncableMeta struct {
 	IDField            string
 	Critical           bool
 	SinceParam         string
+	SinceParamFormat   string
 	SupportsPagination bool
 	UsesHTMLResponse   bool
 	HTMLExtract        *spec.HTMLExtract
@@ -1878,6 +1886,7 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		IDField:            e.IDField,
 		Critical:           e.Critical,
 		SinceParam:         detectEndpointSinceParam(e.Params),
+		SinceParamFormat:   detectEndpointSinceParamFormat(e.Params),
 		SupportsPagination: endpointSupportsPagination(e),
 		UsesHTMLResponse:   e.UsesHTMLResponse(),
 		HTMLExtract:        e.HTMLExtract,
@@ -1997,13 +2006,36 @@ func paginationLimitDefault(endpoint spec.Endpoint) (int, bool) {
 // Profile() so per-endpoint detection stays consistent with the
 // PaginationProfile.SinceParam summary.
 func detectEndpointSinceParam(params []spec.Param) string {
+	name, _ := detectEndpointSinceParamAndFormat(params)
+	return name
+}
+
+func detectEndpointSinceParamFormat(params []spec.Param) string {
+	_, format := detectEndpointSinceParamAndFormat(params)
+	return format
+}
+
+func detectEndpointSinceParamAndFormat(params []spec.Param) (string, string) {
 	for _, p := range params {
 		name := strings.ToLower(p.Name)
-		if strings.Contains(name, "since") || strings.Contains(name, "updated_after") || strings.Contains(name, "modified_since") || strings.Contains(name, "updated_at") {
-			return p.Name
+		if isEndpointSinceParamName(name) {
+			return p.Name, strings.ToLower(strings.TrimSpace(p.Format))
 		}
 	}
-	return ""
+	return "", ""
+}
+
+func isEndpointSinceParamName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.Contains(name, "since") ||
+		strings.Contains(name, "updated_after") ||
+		strings.Contains(name, "modified_since") ||
+		strings.Contains(name, "updated_at") ||
+		name == "start_date" ||
+		name == "start_datetime" ||
+		name == "start_time" ||
+		name == "from_date" ||
+		name == "from_datetime"
 }
 
 func detectEndpointFieldSelector(endpoint spec.Endpoint) FieldSelector {
@@ -2290,6 +2322,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			IDField:            meta.IDField,
 			Critical:           meta.Critical,
 			SinceParam:         meta.SinceParam,
+			SinceParamFormat:   meta.SinceParamFormat,
 			SupportsPagination: meta.SupportsPagination,
 			UsesHTMLResponse:   meta.UsesHTMLResponse,
 			HTMLExtract:        meta.HTMLExtract,
