@@ -1370,6 +1370,53 @@ func TestMergeSpecsPrefixesDistinctEndpointResourceCollision(t *testing.T) {
 	assert.Equal(t, "/v1alpha/accounts", merged.Resources["analytics-admin-accounts"].Endpoints["list"].Path)
 }
 
+func TestMergeSpecsDeduplicatesTrailingSlashEndpointResourceCollision(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+			"reports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/reports"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "analytics-admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts/"},
+				},
+			},
+			"metadata": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/metadata"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "ga4")
+
+	assert.Contains(t, merged.Resources, "accounts")
+	assert.NotContains(t, merged.Resources, "analytics-admin-accounts")
+	assert.Equal(t, "/v1beta/accounts", merged.Resources["accounts"].Endpoints["list"].Path)
+}
+
 func TestMergeSpecsNamePrefixOptInKeepsNamespacedResourceForm(t *testing.T) {
 	t.Parallel()
 
@@ -1417,6 +1464,44 @@ func TestMergeSpecsNamePrefixOptInKeepsNamespacedResourceForm(t *testing.T) {
 	assert.Contains(t, merged.Resources, "analytics-admin-accounts")
 	assert.Equal(t, "/v1beta/accounts", merged.Resources["admin-accounts"].Endpoints["list"].Path)
 	assert.Equal(t, "/v1beta/accounts", merged.Resources["analytics-admin-accounts"].Endpoints["list"].Path)
+}
+
+func TestMergeSpecsNamePrefixDisambiguatesSameSpecNameCollision(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1alpha/accounts"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecsWithOptions([]*spec.APISpec{specA, specB}, "ga4", mergeSpecOptions{NamePrefix: true})
+
+	assert.Contains(t, merged.Resources, "admin-accounts")
+	assert.Contains(t, merged.Resources, "admin-accounts-2")
+	assert.Equal(t, "/v1beta/accounts", merged.Resources["admin-accounts"].Endpoints["list"].Path)
+	assert.Equal(t, "/v1alpha/accounts", merged.Resources["admin-accounts-2"].Endpoints["list"].Path)
 }
 
 func TestGenerateMultiSpecDeduplicatesSameEndpointResourceCollision(t *testing.T) {

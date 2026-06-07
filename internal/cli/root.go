@@ -1238,6 +1238,7 @@ func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOpt
 					continue
 				}
 				key = prefixedMultiSpecResourceName(s, resourceName)
+				key = uniqueMultiSpecResourceName(merged.Resources, key)
 			}
 			resource = rewriteDefaultResourceDescription(resource, resourceName, key)
 			if key != resourceName {
@@ -1269,6 +1270,18 @@ func prefixedMultiSpecResourceName(s *spec.APISpec, resourceName string) string 
 		return resourceName
 	}
 	return specName + "-" + resourceName
+}
+
+func uniqueMultiSpecResourceName(resources map[string]spec.Resource, preferred string) string {
+	if _, exists := resources[preferred]; !exists {
+		return preferred
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", preferred, i)
+		if _, exists := resources[candidate]; !exists {
+			return candidate
+		}
+	}
 }
 
 func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
@@ -1535,7 +1548,7 @@ func endpointSignature(resource spec.Resource, endpoint spec.Endpoint) string {
 		baseURL = strings.TrimRight(strings.TrimSpace(resource.BaseURL), "/")
 	}
 	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
-	path := strings.TrimSpace(endpoint.Path)
+	path := strings.TrimRight(strings.TrimSpace(endpoint.Path), "/")
 	return method + " " + baseURL + " " + path
 }
 
