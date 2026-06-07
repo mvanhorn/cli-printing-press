@@ -58,6 +58,9 @@ tree at <cli-dir> by default; --force overrides.`,
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving cli dir: %w", err)}
 			}
+			if err := ensureNotOlderThanCLIManifest(cliDir, "regen-merge"); err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
 			freshAbs, err := filepath.Abs(freshDir)
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving fresh dir: %w", err)}
