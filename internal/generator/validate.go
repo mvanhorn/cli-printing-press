@@ -58,7 +58,8 @@ func (g *Generator) Validate() error {
 		{
 			name: "govulncheck ./...",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", govulncheck.GoRunArgs("./...")...)
+				env := govulncheck.ToolchainEnv(g.OutputDir)
+				_, err := runCommandWithEnv(g.OutputDir, qualityGateTimeout, env, "go", govulncheck.GoRunArgs("./...")...)
 				return err
 			},
 		},
@@ -133,6 +134,10 @@ func validateCommandOutput(dir string, timeout time.Duration, name string, args 
 }
 
 func runCommand(dir string, timeout time.Duration, name string, args ...string) (string, error) {
+	return runCommandWithEnv(dir, timeout, nil, name, args...)
+}
+
+func runCommandWithEnv(dir string, timeout time.Duration, extraEnv []string, name string, args ...string) (string, error) {
 	ctx := context.Background()
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -147,6 +152,7 @@ func runCommand(dir string, timeout time.Duration, name string, args ...string) 
 		return "", err
 	}
 	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	cmd.Env = append(cmd.Env, extraEnv...)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
