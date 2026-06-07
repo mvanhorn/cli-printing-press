@@ -197,8 +197,15 @@ func TestNewBundleCmdVersionStampsBundledManifest(t *testing.T) {
 }
 
 func TestNewBundleCmdRejectsInvalidBundleVersion(t *testing.T) {
-	for _, version := range []string{"v0.1.4", "latest", "0.1"} {
-		t.Run(version, func(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		wantErr string
+	}{
+		{version: "v0.1.4", wantErr: "--version must not have a v prefix"},
+		{version: "latest", wantErr: "--version must be a semantic version"},
+		{version: "0.1", wantErr: "--version must be a semantic version"},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
 			dir := t.TempDir()
 			writeBundleManifest(t, dir, pipeline.MCPBManifest{
 				ManifestVersion: pipeline.MCPBManifestVersion,
@@ -213,11 +220,11 @@ func TestNewBundleCmdRejectsInvalidBundleVersion(t *testing.T) {
 
 			cmd := newBundleCmd()
 			cmd.SilenceUsage = true
-			cmd.SetArgs([]string{dir, "--version", version})
+			cmd.SetArgs([]string{dir, "--version", tc.version})
 
 			err := cmd.Execute()
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "--version must be a semantic version")
+			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
 }
