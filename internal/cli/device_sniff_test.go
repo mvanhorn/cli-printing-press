@@ -263,6 +263,6 @@ func TestDefaultCLIBuildDoesNotLinkTinyGoBluetooth(t *testing.T) {
 	require.NoError(t, err, string(output))
 
 	for dep := range strings.FieldsSeq(string(output)) {
-		assert.NotEqual(t, "tinygo.org/x/bluetooth", dep, "default cli-printing-press builds must not link the live BLE backend")
+		assert.False(t, strings.HasPrefix(dep, "tinygo.org/x/bluetooth"), "default cli-printing-press builds must not link the live BLE backend (got %s)", dep)
 	}
 }
