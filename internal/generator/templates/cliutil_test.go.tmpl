@@ -688,6 +688,18 @@ func TestAdaptiveLimiter_DoesNotRaiseSubFloorRateOnRateLimit(t *testing.T) {
 	}
 }
 
+func TestAdaptiveLimiter_DoesNotRampBelowFloorAfterRateLimit(t *testing.T) {
+	l := NewAdaptiveLimiter(0.3)
+	floor := l.Rate()
+	l.OnRateLimit()
+	for i := 0; i < l.rampAfter; i++ {
+		l.OnSuccess()
+	}
+	if got := l.Rate(); got < floor {
+		t.Errorf("Rate() after ramping from rate-limit ceiling = %v, want >= %v", got, floor)
+	}
+}
+
 func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 	l := NewAdaptiveLimiter(10.0)
 	l.Wait()

@@ -74,6 +74,9 @@ func (l *AdaptiveLimiter) OnSuccess() {
 		if l.ceiling > 0 && newRate > l.ceiling*0.9 {
 			newRate = l.ceiling * 0.9
 		}
+		if newRate < l.floor {
+			newRate = l.floor
+		}
 		l.rate = newRate
 		l.successes = 0
 	}
