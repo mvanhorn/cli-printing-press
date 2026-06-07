@@ -122,8 +122,17 @@ jq --arg slug "<api-slug>" \
       permanent: $permanent
     }]
   | sort_by(.slug)
-' blocked-apis.json > blocked-apis.json.tmp
-jq empty blocked-apis.json.tmp && mv blocked-apis.json.tmp blocked-apis.json
+' blocked-apis.json > blocked-apis.json.tmp || {
+  rm -f blocked-apis.json.tmp
+  echo "Error: jq failed to update blocked-apis.json"
+  exit 1
+}
+if ! jq empty blocked-apis.json.tmp; then
+  rm -f blocked-apis.json.tmp
+  echo "Error: blocked-apis.json update produced invalid JSON"
+  exit 1
+fi
+mv blocked-apis.json.tmp blocked-apis.json
 ```
 
 Create a journal branch and PR:
