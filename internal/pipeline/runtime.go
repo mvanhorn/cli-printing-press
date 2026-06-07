@@ -319,7 +319,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		report.DataPipeline = true
 		report.DataPipelineDetail = "SKIP (device CLI: no sync data pipeline)"
 	} else {
-		report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, report.Mode, buildEnv, expectedMockRows)
+		report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, cfg.Dir, report.Mode, buildEnv, expectedMockRows)
 	}
 	report.Freshness = runFreshnessContractTest(cfg.Dir)
 	report.PathParamProbes = runPathParamProbes(binaryPath, buildEnv(), paramDefaults)
@@ -610,7 +610,16 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 
 // runDataPipelineTest tests the sync -> sql -> search -> health chain.
 // Returns (pass bool, detail string) where detail gives PASS/WARN/SKIP/FAIL context.
-func runDataPipelineTest(binary, mode string, envFn func() []string, expectedRows int) (bool, string) {
+func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, expectedRows int) (bool, string) {
+	if strings.TrimSpace(cliDir) != "" {
+		if manifest, err := ReadCLIManifest(cliDir); err == nil && manifest.IsLocalDatastore() {
+			return true, "SKIP (local-datastore CLI: no network sync to verify)"
+		}
+		if !cliHasSyncCommand(cliDir) {
+			return true, "SKIP (CLI has no sync command)"
+		}
+	}
+
 	env := envFn()
 
 	// Create a temp dir for the test database
@@ -720,6 +729,10 @@ func allSyncAttemptsWereUnknownCommand(errs []error) bool {
 func isUnknownSyncCommandError(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "unknown command \"sync\"")
+}
+
+func cliHasSyncCommand(cliDir string) bool {
+	return hasRegisteredCommandFileWithPrefix(filepath.Join(cliDir, "internal", "cli"), "sync")
 }
 
 func isAuxiliaryPipelineTable(table string, totalTables int) bool {

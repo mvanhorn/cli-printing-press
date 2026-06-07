@@ -207,7 +207,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("fails when sync creates tables but stores no rows", func(t *testing.T) {
 		binary := buildDataPipelineProbeBinary(t, 0)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.False(t, pass)
 		assert.Contains(t, detail, "1 domain tables created but 0 rows after sync")
@@ -216,7 +216,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("fails when nested mock sync stores fewer rows than served", func(t *testing.T) {
 		binary := buildDataPipelineProbeBinary(t, 1)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.False(t, pass)
 		assert.Contains(t, detail, "items has 1 rows after sync, expected at least 2")
@@ -225,7 +225,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("passes when sync stores rows", func(t *testing.T) {
 		binary := buildDataPipelineProbeBinary(t, 2)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.True(t, pass)
 		assert.Contains(t, detail, "items has 2 rows")
@@ -234,7 +234,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
 		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0, 2)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.True(t, pass)
 		assert.Contains(t, detail, "items has 2 rows")
@@ -243,7 +243,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("passes when an auxiliary table has fewer rows before populated data table", func(t *testing.T) {
 		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 1, 2)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.True(t, pass)
 		assert.Contains(t, detail, "items has 2 rows")
@@ -252,7 +252,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("fails when only an auxiliary table satisfies expected rows", func(t *testing.T) {
 		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 3, 0)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.False(t, pass)
 		assert.Contains(t, detail, "items has 0 rows")
@@ -261,7 +261,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("warns when sync command is absent", func(t *testing.T) {
 		binary := buildNoSyncDataPipelineProbeBinary(t)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.True(t, pass)
 		assert.Equal(t, "WARN: no sync command — data-pipeline check skipped", detail)
@@ -270,10 +270,45 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("fails when sync command exists but crashes", func(t *testing.T) {
 		binary := buildFailingSyncDataPipelineProbeBinary(t)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.False(t, pass)
 		assert.Equal(t, "FAIL: sync crashed", detail)
+	})
+}
+
+func TestRunDataPipelineTestSkipsUnsyncableCLIs(t *testing.T) {
+	t.Run("skips local-datastore manifests before sync", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "sqlite"}))
+		binary := buildNoSyncDataPipelineProbeBinary(t)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Equal(t, "SKIP (local-datastore CLI: no network sync to verify)", detail)
+	})
+
+	t.Run("skips CLIs without sync command", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, false)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		binary := buildNoSyncDataPipelineProbeBinary(t)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Equal(t, "SKIP (CLI has no sync command)", detail)
+	})
+
+	t.Run("runs normal sync CLIs", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		binary := buildDataPipelineProbeBinary(t, 2)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
 	})
 }
 
@@ -688,6 +723,30 @@ func dbArg(args []string) string {
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
 	return binaryPath
+}
+
+func seedDataPipelineCLIDir(t *testing.T, includeSync bool) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	if includeSync {
+		writeTestFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newSyncCmd(nil)) }
+`)
+		writeTestFile(t, filepath.Join(cliDir, "sync_bluray.go"), `package cli
+func newSyncCmd(flags any) {}
+`)
+		return dir
+	}
+	writeTestFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "items.go"), `package cli
+func newItemsCmd(flags any) {}
+`)
+	return dir
 }
 
 func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T, settingsRows, itemRows int) string {
