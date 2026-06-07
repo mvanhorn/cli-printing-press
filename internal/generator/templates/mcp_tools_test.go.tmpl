@@ -4,8 +4,11 @@
 package mcp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
 )
 
 // TestValidateReadOnlyQuery_AllowsSelectAndWITH pins the contract: the MCP
@@ -107,4 +110,167 @@ func TestStripLeadingSQLNoise(t *testing.T) {
 			t.Errorf("stripLeadingSQLNoise(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
+}
+
+func TestMCPToolResultTextBoundsListResponses(t *testing.T) {
+	items := make([]string, 0, mcpToolResultMaxItems+25)
+	for i := 0; i < mcpToolResultMaxItems+25; i++ {
+		items = append(items, strings.Repeat("x", 1600))
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := mcpTextContent(t, mcpToolResultText("GET", data))
+	if len(text) > mcpToolResultMaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	}
+
+	var envelope struct {
+		Count         int               `json:"count"`
+		Items         []json.RawMessage `json:"items"`
+		Truncated     bool              `json:"truncated"`
+		ReturnedCount int               `json:"returned_count"`
+		OriginalBytes int               `json:"original_bytes"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("bounded list result must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("bounded list result did not mark truncation: %s", text)
+	}
+	if envelope.Count != len(items) {
+		t.Fatalf("count = %d, want %d", envelope.Count, len(items))
+	}
+	if envelope.ReturnedCount != len(envelope.Items) {
+		t.Fatalf("returned_count = %d, want item count %d", envelope.ReturnedCount, len(envelope.Items))
+	}
+	if envelope.OriginalBytes != len(data) {
+		t.Fatalf("original_bytes = %d, want %d", envelope.OriginalBytes, len(data))
+	}
+}
+
+func TestMCPToolResultTextBoundsSingleArrayEnvelope(t *testing.T) {
+	groups := make([]map[string]string, 0, mcpToolResultMaxItems+25)
+	for i := 0; i < mcpToolResultMaxItems+25; i++ {
+		groups = append(groups, map[string]string{
+			"id":   strings.Repeat("g", 8),
+			"name": strings.Repeat("verbose group name ", 90),
+		})
+	}
+	data, err := json.Marshal(map[string]any{
+		"groups": groups,
+		"cursor": "next-page",
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := mcpTextContent(t, mcpToolResultText("GET", data))
+	if len(text) > mcpToolResultMaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	}
+
+	var envelope struct {
+		Groups        []json.RawMessage `json:"groups"`
+		Cursor        string            `json:"cursor"`
+		Truncated     bool              `json:"_pp_truncated"`
+		TotalCount    int               `json:"_pp_total_count"`
+		ReturnedCount int               `json:"_pp_returned_count"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("bounded envelope result must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("bounded envelope result did not mark truncation: %s", text)
+	}
+	if envelope.Cursor != "next-page" {
+		t.Fatalf("cursor = %q, want preserved metadata", envelope.Cursor)
+	}
+	if envelope.TotalCount != len(groups) {
+		t.Fatalf("total_count = %d, want %d", envelope.TotalCount, len(groups))
+	}
+	if envelope.ReturnedCount != len(envelope.Groups) {
+		t.Fatalf("returned_count = %d, want group count %d", envelope.ReturnedCount, len(envelope.Groups))
+	}
+}
+
+func TestMCPToolResultTextFallsBackToOversizedPreview(t *testing.T) {
+	data, err := json.Marshal(map[string]string{
+		"blob": strings.Repeat("z", mcpToolResultMaxBytes+10000),
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := mcpTextContent(t, mcpToolResultText("GET", data))
+	if len(text) > mcpToolResultMaxBytes {
+		t.Fatalf("preview result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	}
+
+	var envelope struct {
+		Truncated     bool   `json:"truncated"`
+		OriginalBytes int    `json:"original_bytes"`
+		Preview       string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("preview result must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("preview result did not mark truncation: %s", text)
+	}
+	if envelope.OriginalBytes != len(data) {
+		t.Fatalf("original_bytes = %d, want %d", envelope.OriginalBytes, len(data))
+	}
+	if envelope.Preview == "" {
+		t.Fatalf("preview result should include a bounded preview")
+	}
+}
+
+func TestMCPToolResultTextBoundsOversizedNonGETResponses(t *testing.T) {
+	data, err := json.Marshal(map[string]string{
+		"blob": strings.Repeat("z", mcpToolResultMaxBytes+10000),
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := mcpTextContent(t, mcpToolResultText("POST", data))
+	if len(text) > mcpToolResultMaxBytes {
+		t.Fatalf("preview result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	}
+
+	var envelope struct {
+		Truncated     bool   `json:"truncated"`
+		OriginalBytes int    `json:"original_bytes"`
+		Preview       string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("preview result must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("preview result did not mark truncation: %s", text)
+	}
+	if envelope.OriginalBytes != len(data) {
+		t.Fatalf("original_bytes = %d, want %d", envelope.OriginalBytes, len(data))
+	}
+	if envelope.Preview == "" {
+		t.Fatalf("preview result should include a bounded preview")
+	}
+}
+
+func mcpTextContent(t *testing.T, result *mcplib.CallToolResult) string {
+	t.Helper()
+	if result == nil {
+		t.Fatalf("result is nil")
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("result content length = %d, want 1", len(result.Content))
+	}
+	content, ok := result.Content[0].(mcplib.TextContent)
+	if !ok {
+		t.Fatalf("result content type = %T, want mcp.TextContent", result.Content[0])
+	}
+	return content.Text
 }
