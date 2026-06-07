@@ -1131,9 +1131,12 @@ var resourceParentKeyColumns = map[string]string{
 {{- end}}
 }
 
-// ExtractResourceID resolves the primary key UpsertBatch would use for a
-// resource item. Callers that need to gate best-effort writes can use this to
-// avoid passing non-entity envelopes into the batch path.
+// ExtractResourceID resolves the bare resource id field that UpsertBatch
+// extracts from a resource item. For dependent resource types, UpsertBatch
+// derives the actual storage key by combining this id with the parent value;
+// use resourceStorageID if you need the key as it appears in the database.
+// Callers that need to gate best-effort writes can use this to avoid passing
+// non-entity envelopes into the batch path.
 func ExtractResourceID(resourceType string, obj map[string]any) string {
 	if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
 		if v := lookupFieldValue(obj, override); v != nil {
@@ -1259,7 +1262,7 @@ func resourceStorageID(resourceType, id string, obj map[string]any) string {
 	if parentValue == "" || parentValue == "<nil>" {
 		return id
 	}
-	return id + "_" + parentValue
+	return id + string([]byte{0}) + parentValue
 }
 
 // UpsertBatch inserts or replaces multiple records in a single transaction

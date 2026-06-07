@@ -450,9 +450,10 @@ func TestUpsertBatch_Keys{{pascal .Name}}ByChildAndParent(t *testing.T) {
 	defer s.Close()
 
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "shared-child", "{{$parentFKCol}}": "parent-A"}`),
-		json.RawMessage(`{"id": "shared-child", "{{$parentFKCol}}": "parent-B"}`),
-		json.RawMessage(`{"id": "other-child", "{{$parentFKCol}}": "parent-A"}`),
+		json.RawMessage(`{"id": "shared_child", "{{$parentFKCol}}": "parent_A"}`),
+		json.RawMessage(`{"id": "shared", "{{$parentFKCol}}": "child_parent_A"}`),
+		json.RawMessage(`{"id": "shared_child", "{{$parentFKCol}}": "parent_B"}`),
+		json.RawMessage(`{"id": "other_child", "{{$parentFKCol}}": "parent_A"}`),
 	}
 	stored, extractFailures, err := s.UpsertBatch("{{.Resource}}", items)
 	if err != nil {
@@ -486,11 +487,11 @@ func TestUpsertBatch_Keys{{pascal .Name}}ByChildAndParent(t *testing.T) {
 
 	var parentMatches int
 	parentQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "{{$parentFKCol}}" = ?`, "{{.Name}}")
-	if err := db.QueryRow(parentQuery, "parent-A").Scan(&parentMatches); err != nil {
+	if err := db.QueryRow(parentQuery, "parent_A").Scan(&parentMatches); err != nil {
 		t.Fatalf("count by {{$parentFKCol}}: %v", err)
 	}
 	if parentMatches != 2 {
-		t.Fatalf("{{$parentFKCol}}=parent-A count = %d, want 2", parentMatches)
+		t.Fatalf("{{$parentFKCol}}=parent_A count = %d, want 2", parentMatches)
 	}
 }
 {{- end}}
