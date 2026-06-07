@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -212,7 +213,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				if snapshotDir != "" {
-					if err := finalizeForceMerge(snapshotDir, absOut, docYAML); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, docYAML, validate); err != nil {
 						return err
 					}
 				}
@@ -295,7 +296,7 @@ func newGenerateCmd() *cobra.Command {
 					// SpecChecksum, so the cross-spec guard naturally lands
 					// on the defensive full-merge path. Pass nil so any
 					// manifest hash that does exist still gates merge mode.
-					if err := finalizeForceMerge(snapshotDir, absOut, nil); err != nil {
+					if err := finalizeForceMerge(snapshotDir, absOut, nil, validate); err != nil {
 						return err
 					}
 				}
@@ -350,7 +351,7 @@ func newGenerateCmd() *cobra.Command {
 						return err
 					}
 					if snapshotDir != "" {
-						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec); err != nil {
+						if err := finalizeForceMerge(snapshotDir, absOut, archivedDeviceSpec, validate); err != nil {
 							return err
 						}
 					}
@@ -495,7 +496,7 @@ func newGenerateCmd() *cobra.Command {
 				if len(specRawBytes) > 0 {
 					primarySpec = specRawBytes[0]
 				}
-				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec); err != nil {
+				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec, validate); err != nil {
 					return err
 				}
 			}
@@ -1794,13 +1795,18 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 // one preserves hand-edits consistently — discarding snapshotDir after
 // generation would silently lose user work and leave an orphan that blocks
 // future --force runs.
-func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte) error {
+func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte, validate bool) error {
 	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes)
 	if err != nil {
 		return &ExitError{Code: ExitGenerationError, Err: err}
 	}
 	if gomodMerged {
 		retidyAfterMerge(freshDir)
+	}
+	if validate {
+		if err := validatePostMergeBuild(freshDir); err != nil {
+			return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating post-merge generated project: %w; snapshot preserved at %s", err, snapshotDir)}
+		}
 	}
 	if removeErr := os.RemoveAll(snapshotDir); removeErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not remove snapshot dir %s: %v\n", snapshotDir, removeErr)
@@ -1826,12 +1832,17 @@ func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte) e
 // error includes the snapshot path so the user can recover manually with
 // `rm -rf <freshDir> && mv <snapshotDir> <freshDir>`.
 func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (gomodMerged bool, err error) {
-	report, err := regenmerge.Classify(snapshotDir, freshDir, regenmerge.Options{Force: true})
+	novelOnly := !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
+	baseDir, cleanupBase := synthesizeForceRegenBase(snapshotDir, currentSpecBytes, novelOnly)
+	if cleanupBase != nil {
+		defer cleanupBase()
+	}
+
+	classifyOpts := regenmerge.Options{Force: true, BaseDir: baseDir}
+	report, err := regenmerge.Classify(snapshotDir, freshDir, classifyOpts)
 	if err != nil {
 		return false, fmt.Errorf("classifying snapshot vs fresh: %w; snapshot preserved at %s", err, snapshotDir)
 	}
-
-	novelOnly := !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
 
 	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly}
 	if err := regenmerge.MergeIntoFreshTree(snapshotDir, freshDir, report, mergeOpts); err != nil {
@@ -1859,6 +1870,86 @@ func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (
 	return report.GoMod != nil && report.GoMod.Merged, nil
 }
 
+func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novelOnly bool) (string, func()) {
+	if novelOnly || len(currentSpecBytes) == 0 {
+		return "", nil
+	}
+	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
+	if err != nil {
+		return "", nil
+	}
+	priorVersion := strings.TrimSpace(manifest.PrintingPressVersion)
+	if priorVersion == "" || sameSemver(priorVersion, version.Version) {
+		return "", nil
+	}
+	if !validPrintingPressVersion(priorVersion) {
+		fmt.Fprintf(os.Stderr, "warning: cannot synthesize force-regen base from invalid printing_press_version %q\n", priorVersion)
+		return "", nil
+	}
+
+	tmp, err := os.MkdirTemp("", "printing-press-force-base-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot create force-regen base tempdir: %v\n", err)
+		return "", nil
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	specPath := filepath.Join(tmp, "spec.yaml")
+	baseDir := filepath.Join(tmp, "base")
+	if err := os.WriteFile(specPath, currentSpecBytes, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot write force-regen base spec: %v\n", err)
+		cleanup()
+		return "", nil
+	}
+	moduleVersion := strings.TrimPrefix(priorVersion, "v")
+	moduleVersion = "v" + moduleVersion
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "run", forceRegenCommandModulePath(moduleVersion)+"@"+moduleVersion,
+		"generate", "--spec", specPath, "--output", baseDir, "--validate=false")
+	fmt.Fprintf(os.Stderr, "Synthesizing force-regen base with cli-printing-press %s (this may take a moment)...\n", moduleVersion)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "warning: force-regen base synthesis with cli-printing-press %s timed out; falling back to two-way merge\n", moduleVersion)
+		cleanup()
+		return "", nil
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: force-regen base synthesis with cli-printing-press %s failed: %v\n%s", moduleVersion, err, out)
+		cleanup()
+		return "", nil
+	}
+	return baseDir, cleanup
+}
+
+func sameSemver(a, b string) bool {
+	return strings.TrimPrefix(strings.TrimSpace(a), "v") == strings.TrimPrefix(strings.TrimSpace(b), "v")
+}
+
+var printingPressVersionPattern = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$`)
+
+func validPrintingPressVersion(v string) bool {
+	return printingPressVersionPattern.MatchString(strings.TrimSpace(v))
+}
+
+func forceRegenCommandModulePath(moduleVersion string) string {
+	major := printingPressMajor(moduleVersion)
+	base := "github.com/mvanhorn/cli-printing-press"
+	if major >= 2 {
+		base += "/v" + strconv.Itoa(major)
+	}
+	return base + "/cmd/cli-printing-press"
+}
+
+func printingPressMajor(moduleVersion string) int {
+	v := strings.TrimPrefix(strings.TrimSpace(moduleVersion), "v")
+	majorText, _, _ := strings.Cut(v, ".")
+	major, err := strconv.Atoi(majorText)
+	if err != nil {
+		return 0
+	}
+	return major
+}
+
 // retidyAfterMerge re-runs `go mod tidy` against dir so go.sum picks up
 // hashes for any requires the merge added. Generation's prior tidy ran
 // against fresh's go.mod before merge, so any preserved require from the
@@ -1872,6 +1963,21 @@ func retidyAfterMerge(dir string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: post-merge `go mod tidy` failed: %v\n%s", err, out)
 	}
+}
+
+func validatePostMergeBuild(dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "./...")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("go build ./... timed out after 5m")
+	}
+	if err != nil {
+		return fmt.Errorf("go build ./... failed: %w\n%s", err, out)
+	}
+	return nil
 }
 
 // forceRegenSpecHashMatches reports whether the snapshot's recorded spec
