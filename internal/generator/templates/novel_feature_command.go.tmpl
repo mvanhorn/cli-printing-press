@@ -28,9 +28,13 @@ func newNovel{{.Ident}}Cmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"mcp:read-only": {{printf "%q" .ReadOnlyString}}},
 {{- if .Feature}}
 		RunE: func(cmd *cobra.Command, args []string) error {
+{{- if .HasPositional}}
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+{{- else}}
+			// validate required flags here
+{{- end}}
 			if dryRunOK(flags) {
 				return nil
 			}
