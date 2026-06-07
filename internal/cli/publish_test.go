@@ -895,6 +895,8 @@ func TestPublishPackageStripsRootBinaries(t *testing.T) {
 	} {
 		require.NoError(t, os.WriteFile(filepath.Join(cliDir, name), []byte("\x7fELF"), 0o755))
 	}
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "cmd", "test-pp-mcp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "cmd", "test-pp-mcp", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "root_test.go"), []byte("package main\n"), 0o644))
 
 	target := filepath.Join(t.TempDir(), "staging")
@@ -918,6 +920,8 @@ func TestPublishPackageStripsRootBinaries(t *testing.T) {
 		_, stagedErr := os.Stat(filepath.Join(result.StagedDir, name))
 		assert.ErrorIs(t, stagedErr, os.ErrNotExist, "staged dir must not include root-level binary %s", name)
 	}
+	require.FileExists(t, filepath.Join(result.StagedDir, "cmd", "test-pp-cli", "main.go"), "staged dir should keep CLI command source")
+	require.FileExists(t, filepath.Join(result.StagedDir, "cmd", "test-pp-mcp", "main.go"), "staged dir should keep MCP command source")
 	require.FileExists(t, filepath.Join(result.StagedDir, "root_test.go"), "staged dir should keep Go test source files")
 }
 
