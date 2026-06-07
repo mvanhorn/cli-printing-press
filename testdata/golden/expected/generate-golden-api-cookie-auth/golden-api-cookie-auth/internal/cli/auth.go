@@ -858,7 +858,7 @@ func extractViaPycookiecheat(tool cookieTool, domain, profileDir string) (string
 
 func extractViaPycookiecheatCLI(tool cookieTool, domain, profileDir string) (string, error) {
 	cleanDomain := strings.TrimPrefix(domain, ".")
-	args := []string{}
+	var args []string
 	if profileDir != "" {
 		dataDir, err := chromeDataDir()
 		if err != nil {
