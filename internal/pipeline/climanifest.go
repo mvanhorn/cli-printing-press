@@ -918,6 +918,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if p.Spec != nil && p.Spec.Version != "" {
 		m.APIVersion = p.Spec.Version
 	}
+	if p.Spec != nil && p.Spec.IsLocalSQLiteSource() {
+		m.SpecFormat = spec.SourceLocalSQLite
+	}
 
 	// Populate MCP metadata from the parsed spec.
 	if p.Spec != nil {
