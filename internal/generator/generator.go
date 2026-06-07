@@ -389,6 +389,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"hasFormRequest":               hasFormRequest,
 		"hasBodyJSONFallback":          hasBodyJSONFallback,
 		"hasMCPNestedBodyPath":         hasMCPNestedBodyPath,
+		"hasMCPParamDefault":           hasMCPParamDefault,
 		"publicFlagName":               publicFlagName,
 		"publicFlagAliases":            publicFlagAliases,
 		"flagChangedExpr":              flagChangedExpr,
@@ -4577,6 +4578,7 @@ type mcpParamBinding struct {
 	BodyPath           []string
 	Format             string
 	RequestContentType string
+	Default            string
 }
 
 func flagChangedExpr(p spec.Param) string {
@@ -4606,12 +4608,22 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		if loc == "path" {
 			wireName = p.Name
 		}
-		bindings = append(bindings, mcpParamBinding{
+		binding := mcpParamBinding{
 			PublicName:         p.PublicInputName(),
 			WireName:           wireName,
 			Location:           loc,
 			RequestContentType: requestContentType,
-		})
+		}
+		// Carry the spec default onto the MCP binding for query params so an
+		// omitted arg sends the same value the cobra flag would (#2679). Format
+		// must match the cobra default rendering for CLI/MCP wire parity; keep in
+		// sync with that path (and cf. pipeline.stringifyParamDefault).
+		if loc == "query" {
+			if def, ok := mcpParamDefaultValue(p); ok {
+				binding.Default = def
+			}
+		}
+		bindings = append(bindings, binding)
 	}
 	if endpoint.BodyJSONFallback {
 		// Single opaque body-json input; the handler parses it as JSON and
@@ -4777,6 +4789,62 @@ func bodyHasReachableNestedLeaf(body []spec.Param, depth int) bool {
 
 func hasMCPNestedBodyPath(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, endpointHasMCPNestedBodyPath)
+}
+
+// mcpParamDefaultValue returns the wire-effective stringified default for a
+// param and whether it is effective. A default that stringifies to "" is NOT
+// effective: the non-paginated CLI template's zero-value gate (`if flag != ""`)
+// skips an empty-string default on the wire, so for CLI/MCP parity the MCP
+// binding must skip it too. (Paginated CLI branches emit query params without
+// that gate, but the client layer — paginatedGet and client.Get — strips empty
+// values before the wire, so parity holds there as well.) Counting/emitting an
+// empty default would also leave a dead Default field and fallback block,
+// breaking the "default-less CLIs stay byte-identical" goal. The check is on the
+// stringified value, so a numeric/bool zero (%v -> "0"/"false") is a real
+// default and is kept.
+func mcpParamDefaultValue(p spec.Param) (string, bool) {
+	if p.Default == nil {
+		return "", false
+	}
+	v := fmt.Sprintf("%v", p.Default)
+	return v, v != ""
+}
+
+func endpointHasMCPParamDefault(endpoint spec.Endpoint, pathTemplate string) bool {
+	for _, p := range endpoint.Params {
+		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
+			continue
+		}
+		if _, ok := mcpParamDefaultValue(p); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMCPParamDefault(apiSpec *spec.APISpec) bool {
+	if apiSpec == nil {
+		return false
+	}
+	var walk func(parent spec.Resource, resources map[string]spec.Resource, subResource bool) bool
+	walk = func(parent spec.Resource, resources map[string]spec.Resource, subResource bool) bool {
+		for _, resource := range resources {
+			for _, endpoint := range resource.Endpoints {
+				pathTemplate := effectiveEndpointPath(resource, endpoint)
+				if subResource {
+					pathTemplate = effectiveSubEndpointPath(parent, resource, endpoint)
+				}
+				if endpointHasMCPParamDefault(endpoint, pathTemplate) {
+					return true
+				}
+			}
+			if walk(resource, resource.SubResources, true) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(spec.Resource{}, apiSpec.Resources, false)
 }
 
 func multipartBindingFormat(endpoint spec.Endpoint, p spec.Param) string {

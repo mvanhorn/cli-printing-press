@@ -206,6 +206,61 @@ func TestMCPParamBindingsUseParamWireName(t *testing.T) {
 	require.Equal(t, "query", bindings[0].Location)
 }
 
+func TestMCPParamBindingsCarryQueryDefaults(t *testing.T) {
+	t.Parallel()
+
+	bindings := mcpParamBindings(spec.Endpoint{
+		Params: []spec.Param{
+			{Name: "location", Type: "string", Default: "city"},
+			{Name: "category", Type: "string"},
+			{Name: "itemId", Type: "string", Default: "ignored"},
+		},
+	}, "/items/{itemId}")
+
+	require.Len(t, bindings, 3)
+	require.Equal(t, "location", bindings[0].PublicName)
+	require.Equal(t, "query", bindings[0].Location)
+	require.Equal(t, "city", bindings[0].Default)
+	require.Equal(t, "category", bindings[1].PublicName)
+	require.Equal(t, "query", bindings[1].Location)
+	require.Empty(t, bindings[1].Default)
+	require.Equal(t, "itemId", bindings[2].PublicName)
+	require.Equal(t, "path", bindings[2].Location)
+	require.Empty(t, bindings[2].Default)
+}
+
+func TestMCPParamBindingsSkipEmptyStringQueryDefault(t *testing.T) {
+	t.Parallel()
+
+	// An empty-string default carries no wire value: the cobra flag's
+	// zero-value gate (`if flag != ""`) skips it on the CLI side, so the MCP
+	// binding must skip it too for CLI/MCP parity. It must also not count as a
+	// "has default" endpoint, or the generator would emit a dead Default field +
+	// fallback block and break the default-less byte-identical guarantee.
+	bindings := mcpParamBindings(spec.Endpoint{
+		Params: []spec.Param{
+			{Name: "filter", Type: "string", Default: ""},
+			{Name: "limit", Type: "integer", Default: 0},
+		},
+	}, "/items")
+	require.Len(t, bindings, 2)
+	require.Equal(t, "query", bindings[0].Location)
+	require.Empty(t, bindings[0].Default,
+		"an empty-string default must not be carried onto the MCP binding")
+	// The effectiveness check is on the stringified value, not a falsy check:
+	// a numeric zero default stringifies to "0" (not "") and must be carried.
+	require.Equal(t, "0", bindings[1].Default,
+		"a numeric zero default must still be carried (it is not the empty string)")
+
+	emptyOnly := spec.Endpoint{Params: []spec.Param{{Name: "filter", Type: "string", Default: ""}}}
+	require.False(t, endpointHasMCPParamDefault(emptyOnly, "/items"),
+		"an endpoint whose only default is empty-string has no effective MCP default")
+
+	nonEmpty := spec.Endpoint{Params: []spec.Param{{Name: "location", Type: "string", Default: "city"}}}
+	require.True(t, endpointHasMCPParamDefault(nonEmpty, "/items"),
+		"a non-empty default is still an effective MCP default")
+}
+
 func TestCodeOrchQueryParamsUseParamWireName(t *testing.T) {
 	t.Parallel()
 

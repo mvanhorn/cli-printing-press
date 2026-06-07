@@ -15115,6 +15115,39 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateMCPToolsEmitsParamDefaultFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcpdefaults")
+	apiSpec.Resources = map[string]spec.Resource{
+		"places": {
+			Description: "Places",
+			Endpoints: map[string]spec.Endpoint{
+				"search": {
+					Method:      "GET",
+					Path:        "/places/search",
+					Description: "Search places",
+					Params: []spec.Param{
+						{Name: "location", Type: "string", Default: "city", Description: "Search location"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	toolsData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	tools := string(toolsData)
+
+	assert.Contains(t, tools, `Default: "city"`,
+		"defaulted query params must carry the spec default into typed MCP bindings")
+	assert.Contains(t, tools, `if binding.Default != ""`,
+		"handler must fall back to binding defaults only when an MCP arg is absent")
+}
+
 func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	t.Parallel()
 
