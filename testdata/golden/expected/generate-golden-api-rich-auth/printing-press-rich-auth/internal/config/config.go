@@ -210,6 +210,14 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 func (c *Config) SaveCredential(token string) error {
 	c.AuthHeaderVal = ""
 	c.AccessToken = ""
+	// Pair each builtin-field zeroing with an envOverrides delete, like
+	// ClearTokens/SaveBearerToken: if an env var's placeholder collides with the
+	// AuthHeaderVal/AccessToken builtin tag, the override would otherwise survive
+	// and configForSave would restore the stale on-disk value instead of "".
+	delete(c.envOverrides, "AuthHeaderVal")
+	delete(c.envOverrides, "AccessToken")
+	c.updateFileConfigField("AuthHeaderVal")
+	c.updateFileConfigField("AccessToken")
 	c.RichAuthApiKey = token
 	delete(c.envOverrides, "RichAuthApiKey")
 	c.updateFileConfigField("RichAuthApiKey")

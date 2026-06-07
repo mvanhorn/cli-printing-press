@@ -425,6 +425,78 @@ func TestSnapshotFileConfigIsolatesHeaderMap(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveBearerTokenClearsNonBuiltinEnvOverride|TestSnapshotFileConfigIsolatesHeaderMap")
 }
 
+// TestConfigSaveCredentialClearsBuiltinEnvCollision covers the #2720 follow-up
+// Greptile P1: SaveCredential zeroed AuthHeaderVal/AccessToken but only deleted
+// the canonical env-var's override. A NON-canonical env var that collides with
+// the access_token builtin tag (resolving to the AccessToken field) left its
+// override active, so configForSave restored the stale on-disk value instead of
+// the cleared "". SaveCredential is the one credential-write method in the family
+// that previously had no builtin-collision test.
+func TestConfigSaveCredentialClearsBuiltinEnvCollision(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("apikey-builtin-collision")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "api_key",
+		Header: "X-API-Key",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			// Canonical request credential -> non-builtin custom field.
+			{Name: "SVC_API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			// Non-canonical, collides with the access_token builtin tag -> AccessToken.
+			{Name: "SVC_ACCESS_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "apikey-builtin-collision-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSaveCredentialClearsBuiltinEnvOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("access_token = \"disk-access-token\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// SVC_ACCESS_TOKEN collides with the access_token builtin tag, so it resolves
+	// to the AccessToken field and marks an override on Load.
+	t.Setenv("SVC_ACCESS_TOKEN", "env-access-token")
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.AccessToken != "env-access-token" {
+		t.Fatalf("AccessToken after Load() = %q, want env-access-token", cfg.AccessToken)
+	}
+
+	if err := cfg.SaveCredential("new-key"); err != nil {
+		t.Fatalf("SaveCredential() error = %v", err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(after)
+	// SaveCredential clears the alternate AccessToken slot; without deleting its
+	// env-override entry, configForSave would restore the stale on-disk value.
+	for _, stale := range []string{"disk-access-token", "env-access-token"} {
+		if strings.Contains(text, stale) {
+			t.Fatalf("config.toml kept stale AccessToken %q after SaveCredential:\n%s", stale, text)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "save_credential_collision_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestSaveCredentialClearsBuiltinEnvOverride")
+}
+
 func TestConfigClearTokensClearsBuiltinEnvCollisionCredentials(t *testing.T) {
 	t.Parallel()
 
