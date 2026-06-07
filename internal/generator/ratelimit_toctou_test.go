@@ -87,15 +87,18 @@ func requireGeneratedTestsPass(t *testing.T, dir, pattern string, want []string)
 	cacheDir, err := goBuildCacheDir(dir)
 	require.NoError(t, err)
 	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(output))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	require.NoError(t, err, stderr.String())
 
 	var event struct {
 		Action string `json:"Action"`
 		Test   string `json:"Test"`
 	}
 	seen := map[string]bool{}
-	dec := json.NewDecoder(bytes.NewReader(output))
+	dec := json.NewDecoder(&stdout)
 	for dec.Decode(&event) == nil {
 		if event.Action == "pass" && event.Test != "" {
 			seen[event.Test] = true
