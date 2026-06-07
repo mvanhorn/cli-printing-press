@@ -3597,14 +3597,14 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	if dbPath == "" {
 		dbPath = defaultDBPath("<cli>-pp-cli") // replace <cli> with the API slug
 	}
-		if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
-			fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
-			if flags.asJSON || flags.agent {
-				fmt.Fprintln(cmd.OutOrStdout(), "[]")
-			}
-			return nil
+	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "no local mirror at %s\nrun: <cli> sync --resources <resource> --db %s\n", dbPath, dbPath)
+		if flags.asJSON || flags.agent {
+			fmt.Fprintln(cmd.OutOrStdout(), "[]")
 		}
-		db, err := store.OpenWithContext(ctx, dbPath)
+		return nil
+	}
+	db, err := store.OpenWithContext(ctx, dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
