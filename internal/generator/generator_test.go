@@ -12325,7 +12325,14 @@ func TestGraphQLLatestOnlyIgnoresDateLikeNonTimestampFields(t *testing.T) {
 			{"id": "forward-1", "title": "newest first", "createdAt": "2026-06-02T00:00:00Z"},
 		},
 		[]map[string]any{
-			{"id": "backward-1", "title": "2027-01-01"},
+			{
+				"id":         "backward-1",
+				"title":      "2027-01-01",
+				"lastUpdate": "2027-01-01T00:00:00Z",
+				"candidate":  "2027-01-02",
+				"uptime":     "2027-01-03T00:00:00Z",
+				"runtime":    "2027-01-04T00:00:00Z",
+			},
 		},
 	)
 	assertGraphQLLatestOnlyStored(t, db, "forward-1", "backward-1")

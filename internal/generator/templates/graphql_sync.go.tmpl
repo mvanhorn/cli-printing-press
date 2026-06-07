@@ -627,8 +627,12 @@ func isSyncTimestampField(name string) bool {
 		strings.HasSuffix(lower, "_at") ||
 		strings.HasSuffix(lower, "-at") ||
 		strings.Contains(normalized, "timestamp") ||
-		strings.HasSuffix(normalized, "time") ||
-		strings.HasSuffix(normalized, "date")
+		strings.HasSuffix(name, "Time") ||
+		strings.HasSuffix(lower, "_time") ||
+		strings.HasSuffix(lower, "-time") ||
+		strings.HasSuffix(name, "Date") ||
+		strings.HasSuffix(lower, "_date") ||
+		strings.HasSuffix(lower, "-date")
 }
 
 func parseSyncTimestamp(value string) (time.Time, bool) {
