@@ -3316,6 +3316,9 @@ func scoreDeadCode(dir string) int {
 	// Use Count >= 2 because the definition itself contributes 1 occurrence of name+"(".
 	allContent := helpersContent + "\n" + otherHelpers
 	for _, name := range funcNames {
+		if isAllowedDeadHelper(name) {
+			continue
+		}
 		if strings.Count(allContent, name+"(") < 2 {
 			deadFunctions++
 		}
