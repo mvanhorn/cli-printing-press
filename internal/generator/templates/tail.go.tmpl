@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"{{modulePath}}/internal/cliutil"
 	"github.com/spf13/cobra"
 )
 
@@ -61,23 +62,31 @@ native streaming instead of polling.`,
 				return err
 			}
 			c.NoCache = true
+			if cliutil.IsDogfoodEnv() {
+				follow = false
+			}
 
 			path := "/" + resource
 
 			sig := make(chan os.Signal, 1)
 			signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-
 			enc := json.NewEncoder(os.Stdout)
 
-			fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
+			if follow {
+				fmt.Fprintf(os.Stderr, "Tailing %s every %s (Ctrl+C to stop)\n", resource, interval)
+			}
 
 			// Initial fetch
 			if err := fetchAndEmit(cmd.Context(), c, path, enc); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: initial fetch failed: %v\n", err)
 			}
+			if !follow {
+				return nil
+			}
+
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
 
 			for {
 				select {
