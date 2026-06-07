@@ -1906,6 +1906,7 @@ func synthesizeForceRegenBase(snapshotDir string, currentSpecBytes []byte, novel
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "run", forceRegenCommandModulePath(moduleVersion)+"@"+moduleVersion,
 		"generate", "--spec", specPath, "--output", baseDir, "--validate=false")
+	fmt.Fprintf(os.Stderr, "Synthesizing force-regen base with cli-printing-press %s (this may take a moment)...\n", moduleVersion)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "warning: force-regen base synthesis with cli-printing-press %s timed out; falling back to two-way merge\n", moduleVersion)
@@ -1976,7 +1977,6 @@ func validatePostMergeBuild(dir string) error {
 	if err != nil {
 		return fmt.Errorf("go build ./... failed: %w\n%s", err, out)
 	}
-	fmt.Fprintln(os.Stderr, "PASS post-merge go build ./...")
 	return nil
 }
 
