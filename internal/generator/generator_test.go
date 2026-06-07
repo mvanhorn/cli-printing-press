@@ -12403,6 +12403,14 @@ func TestGeneratedSyncTreatsEmptyWrappedPageAsSuccessfulZeroRecords(t *testing.T
 		switch r.URL.Path {
 		case "/empty-records":
 			_, _ = w.Write([]byte(`{"results":[]}`))
+		case "/null-orders-zero":
+			_, _ = w.Write([]byte(`{"orders":null,"total":0}`))
+		case "/empty-orders-zero":
+			_, _ = w.Write([]byte(`{"orders":[],"total":0}`))
+		case "/single-order":
+			_, _ = w.Write([]byte(`{"id":"ord_1","name":"One"}`))
+		case "/null-orders-missing-count":
+			_, _ = w.Write([]byte(`{"orders":null}`))
 		case "/records":
 			_, _ = w.Write([]byte(`{"results":[{"id":"rec_1","name":"One"}]}`))
 		default:
@@ -12445,9 +12453,63 @@ func TestGeneratedSyncTreatsEmptyWrappedPageAsSuccessfulZeroRecords(t *testing.T
 					},
 				},
 			},
+			"null_orders_zero": {
+				Description: "Manage null orders zero",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/null-orders-zero",
+						Description: "List null orders zero",
+						Response:    spec.ResponseDef{Type: "array", Item: "Order"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"empty_orders_zero": {
+				Description: "Manage empty orders zero",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/empty-orders-zero",
+						Description: "List empty orders zero",
+						Response:    spec.ResponseDef{Type: "array", Item: "Order"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"single_order": {
+				Description: "Manage single order",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/single-order",
+						Description: "List single order",
+						Response:    spec.ResponseDef{Type: "array", Item: "Order"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"null_orders_missing_count": {
+				Description: "Manage null orders missing count",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/null-orders-missing-count",
+						Description: "List null orders missing count",
+						Response:    spec.ResponseDef{Type: "array", Item: "Order"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
 		},
 		Types: map[string]spec.TypeDef{
 			"Record": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+			"Order": {
 				Fields: []spec.TypeField{
 					{Name: "id", Type: "string"},
 					{Name: "name", Type: "string"},
@@ -12475,9 +12537,13 @@ func TestIsEmptyPageResponseRejectsNullSingletonFields(t *testing.T) {
 	}{
 		{"known wrapper empty array", ` + "`" + `{"results":[]}` + "`" + `, true},
 		{"unknown wrapper empty array", ` + "`" + `{"empty":[]}` + "`" + `, true},
+		{"unknown wrapper null with zero total", ` + "`" + `{"orders":null,"total":0}` + "`" + `, true},
+		{"unknown wrapper empty array with zero total", ` + "`" + `{"orders":[],"total":0}` + "`" + `, true},
 		{"top-level null is not an empty page", ` + "`" + `null` + "`" + `, false},
 		{"known wrapper null is not an empty page", ` + "`" + `{"results":null}` + "`" + `, false},
 		{"known data wrapper null is not an empty page", ` + "`" + `{"data":null}` + "`" + `, false},
+		{"unknown wrapper null with missing count is not an empty page", ` + "`" + `{"orders":null}` + "`" + `, false},
+		{"unknown wrapper null with null count is not an empty page", ` + "`" + `{"orders":null,"total":null}` + "`" + `, false},
 		{"single null field is not an empty page", ` + "`" + `{"user":null}` + "`" + `, false},
 		{"singleton object with null field is not an empty page", ` + "`" + `{"id":"rec_1","user":null}` + "`" + `, false},
 	}
@@ -12513,6 +12579,41 @@ func TestIsEmptyPageResponseRejectsNullSingletonFields(t *testing.T) {
 	assert.NotContains(t, output, `"event":"sync_error"`)
 	assert.Contains(t, output, `{"event":"sync_complete","resource":"records","total":1`)
 	assert.Contains(t, output, `{"event":"sync_summary","total_records":1,"resources":1,"success":1,"warned":0,"errored":0`)
+
+	nullOrdersZeroDB := filepath.Join(t.TempDir(), "null-orders-zero.db")
+	cmd = exec.Command(binaryPath, "--json", "sync", "--resources", "null_orders_zero", "--db", nullOrdersZeroDB, "--max-pages", "1")
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	output = string(out)
+	assert.NotContains(t, output, `"event":"sync_error"`)
+	assert.Contains(t, output, `{"event":"sync_complete","resource":"null_orders_zero","total":0`)
+	assert.Contains(t, output, `{"event":"sync_summary","total_records":0,"resources":1,"success":1,"warned":0,"errored":0`)
+
+	emptyOrdersZeroDB := filepath.Join(t.TempDir(), "empty-orders-zero.db")
+	cmd = exec.Command(binaryPath, "--json", "sync", "--resources", "empty_orders_zero", "--db", emptyOrdersZeroDB, "--max-pages", "1")
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	output = string(out)
+	assert.NotContains(t, output, `"event":"sync_error"`)
+	assert.Contains(t, output, `{"event":"sync_complete","resource":"empty_orders_zero","total":0`)
+	assert.Contains(t, output, `{"event":"sync_summary","total_records":0,"resources":1,"success":1,"warned":0,"errored":0`)
+
+	singleOrderDB := filepath.Join(t.TempDir(), "single-order.db")
+	cmd = exec.Command(binaryPath, "--json", "sync", "--resources", "single_order", "--db", singleOrderDB, "--max-pages", "1")
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	output = string(out)
+	assert.NotContains(t, output, `"event":"sync_error"`)
+	assert.Contains(t, output, `{"event":"sync_complete","resource":"single_order","total":1`)
+	assert.Contains(t, output, `{"event":"sync_summary","total_records":1,"resources":1,"success":1,"warned":0,"errored":0`)
+
+	nullOrdersMissingCountDB := filepath.Join(t.TempDir(), "null-orders-missing-count.db")
+	cmd = exec.Command(binaryPath, "--json", "sync", "--strict", "--resources", "null_orders_missing_count", "--db", nullOrdersMissingCountDB, "--max-pages", "1")
+	out, err = cmd.CombinedOutput()
+	require.Error(t, err, string(out))
+	output = string(out)
+	assert.Contains(t, output, `"event":"sync_error"`)
+	assert.NotContains(t, output, `{"event":"sync_complete","resource":"null_orders_missing_count","total":0`)
 }
 
 // TestGeneratedSyncExitPolicy pins the generated sync command's exit-code
