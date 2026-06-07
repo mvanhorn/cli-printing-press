@@ -15557,6 +15557,40 @@ func TestProjectManagementWorkflowsEmitReadOnlyAnnotations(t *testing.T) {
 	}
 }
 
+func TestGeneratedFrameworkCommandsEmitReadOnlyAnnotations(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("framework-readonly")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	readFile := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", name))
+		require.NoError(t, err)
+		return string(data)
+	}
+	readonlyAnnotation := regexp.MustCompile(`"mcp:read-only":\s+"true"`)
+
+	whichSrc := readFile("which.go")
+	assert.Regexp(t, readonlyAnnotation, generatedFunctionBody(t, whichSrc, "func newWhichCmd(flags *rootFlags) *cobra.Command"),
+		"which only reads the generated capability index")
+
+	feedbackSrc := readFile("feedback.go")
+	assert.Regexp(t, readonlyAnnotation, generatedFunctionBody(t, feedbackSrc, "func newFeedbackListCmd(flags *rootFlags) *cobra.Command"),
+		"feedback list only reads the local feedback ledger")
+	assert.NotRegexp(t, readonlyAnnotation, generatedFunctionBody(t, feedbackSrc, "func newFeedbackCmd(flags *rootFlags) *cobra.Command"),
+		"feedback (record/POST) must not be emitted as mcp read-only true")
+
+	profileSrc := readFile("profile.go")
+	assert.Regexp(t, readonlyAnnotation, generatedFunctionBody(t, profileSrc, "func newProfileListCmd(flags *rootFlags) *cobra.Command"),
+		"profile list only reads the local profile store")
+	assert.Regexp(t, readonlyAnnotation, generatedFunctionBody(t, profileSrc, "func newProfileShowCmd(flags *rootFlags) *cobra.Command"),
+		"profile show only reads the local profile store")
+	assert.NotRegexp(t, readonlyAnnotation, generatedFunctionBody(t, profileSrc, "func newProfileUseCmd(flags *rootFlags) *cobra.Command"),
+		"profile use must not be emitted as mcp read-only true")
+}
+
 func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
 	t.Parallel()
 
