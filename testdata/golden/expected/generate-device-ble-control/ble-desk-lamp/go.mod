@@ -1,6 +1,8 @@
 module ble-desk-lamp-pp-cli
 
-go 1.26.4
+go 1.26
+
+toolchain go1.26.4
 
 require (
 	github.com/mark3labs/mcp-go v0.47.0
