@@ -988,8 +988,9 @@ Before new research:
    > "`<entry.slug>` was attempted on `<entry.attempted_at>` and held — `<entry.reason>`<tracking suffix>. The shared blocked-API journal exists so users do not repeat known unreachable or unbuildable runs before the blocker changes. Proceed anyway?"
 
    Where `<tracking suffix>` is:
-   - ` (tracking #<entry.blocking_issue>)` when `blocking_issue` is non-null.
-   - ` (marked permanent)` when `permanent` is `true` and no blocking issue is present.
+   - ` (tracking #<entry.blocking_issue>; marked permanent)` when `blocking_issue` is non-null and `permanent` is `true`.
+   - ` (tracking #<entry.blocking_issue>)` when `blocking_issue` is non-null and `permanent` is `false`.
+   - ` (marked permanent)` when `permanent` is `true` and `blocking_issue` is `null`.
    - empty when neither applies.
 
    Options:

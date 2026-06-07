@@ -536,6 +536,7 @@ func TestPrintingPressSkillChecksBlockedAPIJournal(t *testing.T) {
 	assert.Contains(t, skill, "Add to blocked-API journal")
 	assert.Contains(t, skill, "/printing-press-publish --blocked-api-journal <api>")
 	assert.Contains(t, skill, "Offer journaling only when the one-line hold reason is a reachability or buildability blocker")
+	assert.Contains(t, skill, " (tracking #<entry.blocking_issue>; marked permanent)")
 }
 
 func TestPublishSkillDocumentsBlockedAPIJournalMode(t *testing.T) {
@@ -546,6 +547,8 @@ func TestPublishSkillDocumentsBlockedAPIJournalMode(t *testing.T) {
 	assert.Contains(t, skill, "Do not continue into normal")
 	assert.Contains(t, skill, "printed-CLI package, live-test, registry, or skill-mirror steps")
 	assert.Contains(t, skill, "Journal-only PRs may edit `blocked-apis.json`")
+	assert.Contains(t, skill, "/printing-press publish notion --blocked-api-journal notion")
+	assert.Contains(t, skill, "jq empty blocked-apis.json.tmp\nmv blocked-apis.json.tmp blocked-apis.json")
 	assert.NotContains(t, skill, "git add library/ blocked-apis.json")
 }
 

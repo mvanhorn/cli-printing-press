@@ -22,6 +22,7 @@ Publish a generated CLI from your local library to the [printing-press-library](
 /printing-press publish notion
 /printing-press publish notion --from-polish
 /printing-press publish notion --skip-live-test=auth-unavailable
+/printing-press publish notion --blocked-api-journal notion
 /printing-press publish
 ```
 
@@ -122,8 +123,8 @@ jq --arg slug "<api-slug>" \
     }]
   | sort_by(.slug)
 ' blocked-apis.json > blocked-apis.json.tmp
+jq empty blocked-apis.json.tmp
 mv blocked-apis.json.tmp blocked-apis.json
-jq empty blocked-apis.json
 ```
 
 Create a journal branch and PR:
