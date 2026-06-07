@@ -99,16 +99,25 @@ func cliArgsFromMCP(args map[string]any) []string {
 	return out
 }
 
-// SplitShellArgs whitespace-splits with double-quoted-token preservation.
+// SplitShellArgs whitespace-splits with shell-style quote preservation.
 func SplitShellArgs(s string) []string {
 	var tokens []string
 	var cur []rune
-	inQuote := false
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
 	for _, r := range s {
 		switch {
-		case r == '"':
-			inQuote = !inQuote
-		case (r == ' ' || r == '\t') && !inQuote:
+		case escaped:
+			cur = append(cur, r)
+			escaped = false
+		case r == '\\' && !inSingleQuote:
+			escaped = true
+		case r == '\'' && !inDoubleQuote:
+			inSingleQuote = !inSingleQuote
+		case r == '"' && !inSingleQuote:
+			inDoubleQuote = !inDoubleQuote
+		case (r == ' ' || r == '\t') && !inSingleQuote && !inDoubleQuote:
 			if len(cur) > 0 {
 				tokens = append(tokens, string(cur))
 				cur = cur[:0]
@@ -116,6 +125,9 @@ func SplitShellArgs(s string) []string {
 		default:
 			cur = append(cur, r)
 		}
+	}
+	if escaped {
+		cur = append(cur, '\\')
 	}
 	if len(cur) > 0 {
 		tokens = append(tokens, string(cur))

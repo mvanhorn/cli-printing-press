@@ -15306,6 +15306,49 @@ func TestGenerateMCPIntentsEmittedWhenDeclared(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGenerateMCPIntentsDeduplicatesEndpointMeta proves that overlapping
+// intent steps do not emit duplicate keys in the intentEndpoints map literal.
+func TestGenerateMCPIntentsDeduplicatesEndpointMeta(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{
+		Intents: []spec.Intent{
+			{
+				Name:        "first_contacts_lookup",
+				Description: "First fixture lookup",
+				Steps: []spec.IntentStep{
+					{Endpoint: "contacts.list", Capture: "contacts"},
+				},
+				Returns: "contacts",
+			},
+			{
+				Name:        "second_contacts_lookup",
+				Description: "Second fixture lookup",
+				Steps: []spec.IntentStep{
+					{Endpoint: "contacts.list", Capture: "contacts"},
+				},
+				Returns: "contacts",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	intentsPath := filepath.Join(outputDir, "internal", "mcp", "intents.go")
+	data, err := os.ReadFile(intentsPath)
+	require.NoError(t, err)
+	body := string(data)
+	assert.Equal(t, 1, strings.Count(body, `"contacts.list": {method:`),
+		"shared intent endpoint must be emitted once in intentEndpoints")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateMCPEndpointToolsHiddenSuppressesEndpointTools proves that
 // endpoint_tools: hidden removes the raw per-endpoint MCP tools but keeps
 // the intent registration wired in. This is the surface agents see when the
