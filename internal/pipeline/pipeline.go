@@ -57,7 +57,8 @@ type Options struct {
 }
 
 // Init creates the pipeline directory, state file, and plan seeds.
-// It does NOT execute any phases.
+// It does NOT execute pipeline phases, but resolves the API spec via
+// DiscoverSpec, which may involve network I/O.
 func Init(apiName string, opts Options) (*PipelineState, error) {
 	if opts.Resume && StateExists(apiName) {
 		return LoadState(apiName)
