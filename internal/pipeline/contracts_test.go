@@ -74,9 +74,16 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			assert.Contains(t, block, `PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"`)
 			assert.Contains(t, block, `PRESS_LIBRARY="$PRESS_HOME/library"`)
 
-			// May reference local build for repo-internal development,
-			// but must not hardcode go build or use ./cli-printing-press as default
-			assert.NotContains(t, block, `go build`)
+			// May reference local build for repo-internal development.
+			// Only /printing-press may rebuild it, and only after a stale local
+			// binary is detected against the checked-out source version.
+			if filepath.Base(filepath.Dir(tt.path)) == "printing-press" {
+				assert.Contains(t, block, `_rebuild_local_press_bin_if_stale`)
+				assert.Contains(t, block, `[local-binary-stale]`)
+				assert.Contains(t, block, `go build -o ./cli-printing-press ./cmd/cli-printing-press`)
+			} else {
+				assert.NotContains(t, block, `go build`)
+			}
 			// Must NOT contain REPO_ROOT or cd to repo
 			assert.NotContains(t, block, `REPO_ROOT`)
 			assert.NotContains(t, block, `cd "$REPO_ROOT"`)
@@ -88,6 +95,28 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPrintingPressSetupContractRebuildsStaleRepoLocalBinary(t *testing.T) {
+	t.Parallel()
+
+	output, goLog := runPrintingPressSetupContract(t, "4.12.0", "4.23.0")
+
+	assert.Contains(t, output, "[local-binary-stale] local build v4.12.0 is older than source v4.23.0")
+	assert.Contains(t, output, "[local-binary-rebuilt] rebuilt")
+	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+	assert.Contains(t, goLog, "build -o ./cli-printing-press ./cmd/cli-printing-press")
+}
+
+func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T) {
+	t.Parallel()
+
+	output, goLog := runPrintingPressSetupContract(t, "4.23.0", "4.23.0")
+
+	assert.NotContains(t, output, "[local-binary-stale]")
+	assert.NotContains(t, output, "[local-binary-rebuilt]")
+	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+	assert.NotContains(t, goLog, "build -o ./cli-printing-press ./cmd/cli-printing-press")
 }
 
 func TestSkillsEnforceCurrencyFloor(t *testing.T) {
@@ -822,6 +851,97 @@ func extractContractBlock(t *testing.T, content string) string {
 	require.NotEqual(t, -1, endIdx, "missing contract end marker")
 
 	return content[startIdx : startIdx+endIdx]
+}
+
+func runPrintingPressSetupContract(t *testing.T, localVersion, sourceVersion string) (output string, goLog string) {
+	t.Helper()
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fakeBin := filepath.Join(root, "bin")
+	home := filepath.Join(root, "home")
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "cmd", "cli-printing-press"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "internal", "version"), 0o755))
+	require.NoError(t, os.MkdirAll(fakeBin, 0o755))
+	require.NoError(t, os.MkdirAll(home, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/press\n\ngo 1.20\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "internal", "version", "version.go"), []byte(`package version
+
+var Version = "`+sourceVersion+`" // x-release-please-version
+`), 0o644))
+	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript(localVersion))
+
+	goLogPath := filepath.Join(root, "go.log")
+	require.NoError(t, os.WriteFile(goLogPath, nil, 0o644))
+	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
+echo "$@" >> "$GO_LOG"
+if [ "$1" = "run" ]; then
+  exit 0
+fi
+if [ "$1" = "build" ]; then
+  out=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+      shift
+      out="$1"
+      break
+    fi
+    shift
+  done
+  if [ -z "$out" ]; then
+    echo "missing -o" >&2
+    exit 1
+  fi
+  cat > "$out" <<'__PP_FAKE_BINARY__'
+`+versionScript(sourceVersion)+`__PP_FAKE_BINARY__
+  chmod +x "$out"
+  exit 0
+fi
+exit 0
+`)
+
+	gitInit := exec.Command("git", "init")
+	gitInit.Dir = repo
+	gitInitOutput, err := gitInit.CombinedOutput()
+	require.NoError(t, err, string(gitInitOutput))
+
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	contract := extractContractBlock(t, skill)
+	contract = strings.ReplaceAll(contract, "```bash\n", "")
+	contract = strings.ReplaceAll(contract, "\n```", "")
+	scriptPath := filepath.Join(root, "setup-contract.sh")
+	writeExecutable(t, scriptPath, "#!/bin/sh\n"+contract)
+
+	cmd := exec.Command(scriptPath)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(),
+		"ARGUMENTS=",
+		"GO_LOG="+goLogPath,
+		"HOME="+home,
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PRINTING_PRESS_HOME="+filepath.Join(home, "printing-press"),
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	logBytes, err := os.ReadFile(goLogPath)
+	require.NoError(t, err)
+	return string(out), string(logBytes)
+}
+
+func versionScript(version string) string {
+	return `#!/bin/sh
+if [ "$1" = "version" ] && [ "$2" = "--json" ]; then
+  echo '{"version":"` + version + `"}'
+  exit 0
+fi
+echo "cli-printing-press ` + version + `"
+`
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o755))
 }
 
 func substringBetween(t *testing.T, content, start, end string) string {
