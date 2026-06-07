@@ -3778,7 +3778,7 @@ func classifyGlobalParams(resources map[string]spec.Resource) {
 
 		seen := map[string]struct{}{}
 		for _, param := range endpoint.Params {
-			if !isGlobalFilterCandidate(param) {
+			if isPathSubstitutionParam(param) {
 				continue
 			}
 			key := strings.ToLower(param.Name)
@@ -3858,11 +3858,11 @@ func classifyGlobalParams(resources map[string]spec.Resource) {
 		filtered := endpoint.Params[:0]
 		for _, param := range endpoint.Params {
 			key := strings.ToLower(param.Name)
-			if isGlobalFilterCandidate(param) {
-				if _, ok := scopeParams[key]; ok {
-					param.Required = true
-					param.GlobalScope = true
-				} else if _, ok := filteredParams[key]; ok {
+			if _, ok := scopeParams[key]; ok {
+				param.Required = true
+				param.GlobalScope = true
+			} else if isGlobalFilterCandidate(param) {
+				if _, ok := filteredParams[key]; ok {
 					droppedCounts[key]++
 					continue
 				}
