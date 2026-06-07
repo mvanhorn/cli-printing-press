@@ -113,6 +113,7 @@ func TestGeneratedBLEDeviceEmitsPublishArtifacts(t *testing.T) {
 	assert.Contains(t, goreleaser, "main: ./cmd/"+naming.CLI(ds.Name))
 	assert.Contains(t, goreleaser, "main: ./cmd/"+naming.MCP(ds.Name))
 	assert.Contains(t, goreleaser, naming.CLI(ds.Name)+"/internal/cli.version=")
+	assert.Contains(t, goreleaser, "-X main.version={{ .Version }}")
 	assert.Contains(t, goreleaser, `description: "`)
 
 	// AGENTS.md is the device-aware variant: it uses BLE/replay concepts and the
@@ -161,6 +162,15 @@ func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {
 	// tree (honoring mcp:read-only / mcp:hidden per command).
 	assert.FileExists(t, filepath.Join(outputDir, "cmd", naming.MCP(ds.Name), "main.go"))
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "mcp", "cobratree", "walker.go"))
+
+	mcpMainSrc, err := os.ReadFile(filepath.Join(outputDir, "cmd", naming.MCP(ds.Name), "main.go"))
+	require.NoError(t, err)
+	mcpMain := string(mcpMainSrc)
+	// The MCP server version must be an ldflag-overridable var, not a hardcoded
+	// literal — the device .goreleaser injects -X main.version at release time, so
+	// a bare "1.0.0" in NewMCPServer would make that injection a silent no-op.
+	assert.Contains(t, mcpMain, `var version = "1.0.0"`)
+	assert.NotContains(t, mcpMain, "\n\t\t\"1.0.0\",\n\t\tserver.WithToolCapabilities(false),")
 
 	toolsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)

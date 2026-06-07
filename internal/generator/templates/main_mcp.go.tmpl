@@ -25,10 +25,13 @@ const (
 	defaultHTTPAddr = "{{if .MCP.Addr}}{{.MCP.Addr}}{{else}}:7777{{end}}"
 )
 
+// version is the printed MCP server's version, overridable at build time via ldflags.
+var version = "1.0.0"
+
 func main() {
 	s := server.NewMCPServer(
 		"{{.EffectiveDisplayName}}",
-		"1.0.0",
+		version,
 		server.WithToolCapabilities(false),
 	)
 
@@ -78,10 +81,13 @@ import (
 	mcptools "{{modulePath}}/internal/mcp"
 )
 
+// version is the printed MCP server's version, overridable at build time via ldflags.
+var version = "1.0.0"
+
 func main() {
 	s := server.NewMCPServer(
 		"{{.EffectiveDisplayName}}",
-		"1.0.0",
+		version,
 		server.WithToolCapabilities(false),
 	)
 
