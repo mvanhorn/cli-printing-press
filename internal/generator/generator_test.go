@@ -4121,12 +4121,52 @@ func TestExtractPageItemsNoCursor(t *testing.T) {
 		t.Fatalf("want hasMore=false when no cursor present")
 	}
 }
+
+func TestExtractPageItemsMetadataEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"items": [{"id":1},{"id":2}],
+		"metadata": {"total": 42}
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("metadata object envelope: want 2 items, got %d", len(items))
+	}
+}
+
+func TestExtractPageItemsMetadataArrayStillData(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"metadata": [{"id":1},{"id":2}]
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("metadata array envelope: want 2 items, got %d", len(items))
+	}
+}
+
+func TestPageAllowsPageIntFallback(t *testing.T) {
+	withFalse := json.RawMessage(` + "`" + `{"results":[{"id":1}],"has_more":false}` + "`" + `)
+	if pageAllowsPageIntFallback(withFalse) {
+		t.Fatalf("want explicit has_more:false to block page-int fallback")
+	}
+	omitted := json.RawMessage(` + "`" + `{"results":[{"id":1}]}` + "`" + `)
+	if !pageAllowsPageIntFallback(omitted) {
+		t.Fatalf("want omitted has_more to allow page-int fallback")
+	}
+	withTrue := json.RawMessage(` + "`" + `{"results":[{"id":1}],"has_more":true}` + "`" + `)
+	if !pageAllowsPageIntFallback(withTrue) {
+		t.Fatalf("want explicit has_more:true to allow page-int fallback")
+	}
+	nestedFalse := json.RawMessage(` + "`" + `{"data":{"results":[{"id":1}],"has_more":false}}` + "`" + `)
+	if pageAllowsPageIntFallback(nestedFalse) {
+		t.Fatalf("want nested explicit has_more:false to block page-int fallback")
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "sync_pagination_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "Test(ExtractPageItems|PageAllowsPageIntFallback)", "./internal/cli")
 }
 
 // TestSyncPageIntPaginationAdvancesAfterFullPage guards #1296: APIs that
@@ -4200,6 +4240,8 @@ func TestSyncPageIntPaginationAdvancesAfterFullPage(t *testing.T) {
 			// page[number]) fires the fallback.
 			assert.Contains(t, src, `pageSize.cursorType == "page"`,
 				"sync.go must guard the page-int fallback on cursorType, not the raw param name")
+			assert.Contains(t, src, `&& pageAllowsPageIntFallback(data)`,
+				"sync.go must not synthesize page+1 when the envelope explicitly parsed has_more")
 			assert.Contains(t, src, `strconv.Itoa(currentPage + 1)`,
 				"page-int fallback must increment the integer cursor")
 			assert.Contains(t, src, `cursorType:  "page"`,
