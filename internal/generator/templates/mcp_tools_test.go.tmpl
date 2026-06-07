@@ -228,6 +228,38 @@ func TestMCPToolResultTextFallsBackToOversizedPreview(t *testing.T) {
 	}
 }
 
+func TestMCPToolResultTextBoundsOversizedNonGETResponses(t *testing.T) {
+	data, err := json.Marshal(map[string]string{
+		"blob": strings.Repeat("z", mcpToolResultMaxBytes+10000),
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := mcpTextContent(t, mcpToolResultText("POST", data))
+	if len(text) > mcpToolResultMaxBytes {
+		t.Fatalf("preview result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	}
+
+	var envelope struct {
+		Truncated     bool   `json:"truncated"`
+		OriginalBytes int    `json:"original_bytes"`
+		Preview       string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("preview result must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("preview result did not mark truncation: %s", text)
+	}
+	if envelope.OriginalBytes != len(data) {
+		t.Fatalf("original_bytes = %d, want %d", envelope.OriginalBytes, len(data))
+	}
+	if envelope.Preview == "" {
+		t.Fatalf("preview result should include a bounded preview")
+	}
+}
+
 func mcpTextContent(t *testing.T, result *mcplib.CallToolResult) string {
 	t.Helper()
 	if result == nil {

@@ -477,7 +477,7 @@ func mcpBoundedListEnvelope(field string, items []json.RawMessage, originalBytes
 			"count": len(items),
 			field:   subset,
 		}
-		if len(subset) < len(items) || originalBytes > mcpToolResultMaxBytes {
+		if len(subset) < len(items) {
 			out["truncated"] = true
 			out["returned_count"] = len(subset)
 			out["original_bytes"] = originalBytes
@@ -503,7 +503,7 @@ func mcpFitJSONItems(items []json.RawMessage, build func([]json.RawMessage) any)
 			return out
 		}
 	}
-	out, _ := json.Marshal(build(nil))
+	out, _ := json.Marshal(build(items[:0]))
 	return out
 }
 
