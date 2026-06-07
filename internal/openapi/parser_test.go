@@ -3763,6 +3763,10 @@ paths:
           name: TenantFilter
           schema: {type: string}
         - in: query
+          name: workspaceId
+          required: true
+          schema: {type: string}
+        - in: query
           name: limit
           schema: {type: integer}
       responses: {"200": {description: ok}}
@@ -3774,6 +3778,10 @@ paths:
           name: TenantFilter
           schema: {type: string}
         - in: query
+          name: workspaceId
+          required: true
+          schema: {type: string}
+        - in: query
           name: limit
           schema: {type: integer}
       responses: {"200": {description: ok}}
@@ -3783,6 +3791,10 @@ paths:
       parameters:
         - in: query
           name: TenantFilter
+          schema: {type: string}
+        - in: query
+          name: workspaceId
+          required: true
           schema: {type: string}
         - in: query
           name: limit
@@ -3812,16 +3824,21 @@ paths:
 
 	for _, resourceName := range []string{"users", "mailboxes", "devices"} {
 		endpoint := parsed.Resources[resourceName].Endpoints["list"]
-		var tenant spec.Param
+		var tenant, workspace spec.Param
 		for _, param := range endpoint.Params {
 			if param.Name == "TenantFilter" {
 				tenant = param
-				break
+			}
+			if param.Name == "workspaceId" {
+				workspace = param
 			}
 		}
 		require.Equal(t, "TenantFilter", tenant.Name, "%s should keep TenantFilter", resourceName)
 		assert.True(t, tenant.Required)
 		assert.True(t, tenant.GlobalScope)
+		require.Equal(t, "workspaceId", workspace.Name, "%s should keep required workspaceId", resourceName)
+		assert.True(t, workspace.Required)
+		assert.True(t, workspace.GlobalScope)
 		for _, param := range endpoint.Params {
 			assert.NotEqual(t, "limit", param.Name, "%s should still filter non-scope global params", resourceName)
 		}

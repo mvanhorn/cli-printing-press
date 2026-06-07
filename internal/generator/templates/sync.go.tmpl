@@ -75,6 +75,16 @@ type syncResult struct {
 	Duration time.Duration
 }
 
+{{- if globalScopeParams .Resources}}
+func applySyncGlobalScopeEnvDefaults(userParams *syncUserParams) {
+{{- range globalScopeParams .Resources}}
+	if v := globalScopeParamDefault("{{globalScopeEnvName .}}", {{printf "%q" (globalScopeFallbackValue .)}}); v != "" {
+		userParams.setGlobalDefault("{{paramWireName .}}", v)
+	}
+{{- end}}
+}
+{{- end}}
+
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
 	var full bool
@@ -152,6 +162,9 @@ Resource scoping:
 			if err != nil {
 				return usageErr(err)
 			}
+{{- if globalScopeParams .Resources}}
+			applySyncGlobalScopeEnvDefaults(userParams)
+{{- end}}
 {{- if .EndpointTemplateVars}}
 			pathContext, err := parseSyncKVFlags(pathContextFlags, "--path-context")
 			if err != nil {
