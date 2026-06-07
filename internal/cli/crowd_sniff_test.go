@@ -233,6 +233,45 @@ func TestRunCrowdSniff_SourceErrorGracefulDegradation(t *testing.T) {
 	assert.Contains(t, string(data), "https://api.example.com")
 }
 
+func TestRunCrowdSniff_HostFilterDropSummary(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	outputPath := filepath.Join(outputDir, "test-spec.yaml")
+	var stderr bytes.Buffer
+
+	opts := crowdSniffOptions{
+		sources: []crowdSniffSource{
+			&mockSource{result: endpointsResult("https://api.example.com",
+				crowdsniff.DiscoveredEndpoint{
+					Method:        "GET",
+					Path:          "/users",
+					SourceTier:    crowdsniff.TierOfficialSDK,
+					SourceName:    "sdk",
+					OriginBaseURL: "https://api.example.com",
+				},
+				crowdsniff.DiscoveredEndpoint{
+					Method:        "POST",
+					Path:          "/uploads",
+					SourceTier:    crowdsniff.TierOfficialSDK,
+					SourceName:    "sdk",
+					OriginBaseURL: "https://uploads.example.com",
+				},
+			)},
+		},
+		stdout: &bytes.Buffer{},
+		stderr: &stderr,
+	}
+
+	err := runCrowdSniff(context.Background(), "test", "https://api.example.com", outputPath, false, opts)
+	require.NoError(t, err)
+
+	errOut := stderr.String()
+	assert.Contains(t, errOut, "filtered 1 endpoint(s) from other origins (target host: api.example.com)")
+	assert.Contains(t, errOut, "  dropped: POST /uploads (origin(s): https://uploads.example.com)")
+	assert.Contains(t, errOut, "WARNING: dropped 1 endpoint(s); generated spec covers only target host api.example.com; review the drops above.")
+}
+
 func TestRunCrowdSniff_AllSourcesFail(t *testing.T) {
 	t.Parallel()
 
