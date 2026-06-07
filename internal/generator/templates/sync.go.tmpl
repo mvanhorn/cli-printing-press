@@ -1993,20 +1993,23 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 {{- else}}
 		id, _ = resourceIDFieldOverrideID(resource, obj)
 {{- end}}
+		if id == "" {
+			id = extractIDFallback(resource, obj)
+{{- if $hasDomainTable}}
+			forceTypedID = id != ""
+{{- end}}
+		}
+		if id == "" {
+			id = synthesizeHTMLPageModeID(resource, obj)
+{{- if $hasDomainTable}}
+			forceTypedID = id != ""
+{{- end}}
+		}
 	} else {
 		id = extractID(resource, obj)
-	}
-	if htmlPageModeResources[resource] && id == "" {
-		id = extractIDFallback(resource, obj)
-	}
-	if htmlPageModeResources[resource] && id == "" {
-		id = synthesizeHTMLPageModeID(resource, obj)
-{{- if $hasDomainTable}}
-		forceTypedID = id != ""
-{{- end}}
-	}
-	if id == "" {
-		id = resource
+		if id == "" {
+			id = resource
+		}
 	}
 {{- else}}
 	id := extractID(resource, obj)

@@ -81,6 +81,7 @@ func TestGeneratedHTMLPageModeSingleObjectIDSynthesis(t *testing.T) {
 					{Name: "canonical_url", Type: "string"},
 					{Name: "image_url", Type: "string"},
 					{Name: "slug", Type: "string"},
+					{Name: "key", Type: "string"},
 				},
 			},
 			"Ship": {
@@ -198,6 +199,11 @@ func TestSyncSingleObjectHTMLPageModeIDFallbacks(t *testing.T) {
 		t.Fatalf("upsert slug page: %v", err)
 	}
 	assertStoredID(t, db, "pages", "pages", "explicit-slug")
+
+	if err := upsertSingleObject(db, "pages", json.RawMessage(` + "`" + `{"title":"Vendor keyed","key":"vendor-key"}` + "`" + `)); err != nil {
+		t.Fatalf("upsert vendor-key fallback: %v", err)
+	}
+	assertStoredID(t, db, "pages", "pages", "vendor-key")
 
 	if err := upsertSingleObject(db, "ships", json.RawMessage(` + "`" + `{"imo":"IMO-123","name":"Mutable Vessel Name","canonical_url":"https://example.test/ships/IMO-123"}` + "`" + `)); err != nil {
 		t.Fatalf("upsert x-resource-id page: %v", err)
