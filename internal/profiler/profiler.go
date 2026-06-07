@@ -843,6 +843,10 @@ func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
 	return hasRequiredScopeParamsForSync(endpoint, true)
 }
 
+// hasRequiredDependentScopeParams flags parameterized child endpoints that
+// require a caller-supplied query filter that dependent sync cannot satisfy.
+// Unlike hasRequiredScopeParams, enum params are not exempt here because
+// dependent sync has no per-parent enum-expansion path.
 func hasRequiredDependentScopeParams(endpoint spec.Endpoint) bool {
 	return hasRequiredScopeParamsForSync(endpoint, false)
 }
