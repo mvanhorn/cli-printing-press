@@ -598,30 +598,36 @@ func paginatedGet(ctx context.Context, c interface {
 
 				// Check has_more. Page and offset paginators can advance
 				// client-side; cursor-based APIs still need a body cursor.
+				hasExplicitNoMore := false
 				if hasMoreField != "" {
 					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
 						var more bool
-						if json.Unmarshal(moreRaw, &more) == nil && more {
-							if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, limitParam); ok {
-								if page >= paginatedGetMaxPages {
-									emitPaginatedGetMaxPagesWarning()
-									break
+						if json.Unmarshal(moreRaw, &more) == nil {
+							if more {
+								if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, limitParam); ok {
+									if page >= paginatedGetMaxPages {
+										emitPaginatedGetMaxPagesWarning()
+										break
+									}
+									clean[cursorParam] = next
+									continue
 								}
-								clean[cursorParam] = next
-								continue
+								emitMissingPaginationCursorWarning(nextCursorPath)
+								break
 							}
-							emitMissingPaginationCursorWarning(nextCursorPath)
-							break
+							hasExplicitNoMore = true
 						}
 					}
 				}
-				if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, limitParam, itemCount); ok {
-					if page >= paginatedGetMaxPages {
-						emitPaginatedGetMaxPagesWarning()
-						break
+				if !hasExplicitNoMore {
+					if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, limitParam, itemCount); ok {
+						if page >= paginatedGetMaxPages {
+							emitPaginatedGetMaxPagesWarning()
+							break
+						}
+						clean[cursorParam] = next
+						continue
 					}
-					clean[cursorParam] = next
-					continue
 				}
 			}
 			// No more pages

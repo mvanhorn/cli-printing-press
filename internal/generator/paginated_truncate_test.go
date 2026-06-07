@@ -339,6 +339,27 @@ func TestPaginatedGetAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
 	}
 }
 
+func TestPaginatedGetStopsOffsetAtExplicitHasMoreFalseAfterFullPage(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"},{"id":"two"}],"meta":{"has_more":false}}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"three"}]}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"2", "offset":"0"}, nil, true, "offset", "offset", "limit", "", "meta.has_more")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2; data=%s", len(got), data)
+	}
+	if len(client.params) != 1 {
+		t.Fatalf("got %d requests, want 1; params=%v", len(client.params), client.params)
+	}
+}
+
 func TestPaginatedGetStopsOffsetAfterShortPageWithoutHasMore(t *testing.T) {
 	client := &paginatedTestClient{responses: []json.RawMessage{
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}]}` + "`" + `),
