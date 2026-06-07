@@ -23,6 +23,7 @@ func newBundleCmd() *cobra.Command {
 	var binaryPath string
 	var cliSkipBuild bool
 	var cliBinaryPath string
+	var bundleVersion string
 
 	cmd := &cobra.Command{
 		Use:   "bundle <cli-dir>",
@@ -104,6 +105,7 @@ from another build pipeline.`,
 				CLIBinaryName: cliArchiveName,
 				CLIBinaryPath: cliBinaryPath,
 				OutputPath:    output,
+				Version:       bundleVersion,
 			}); err != nil {
 				return fmt.Errorf("packaging bundle: %w", err)
 			}
@@ -119,6 +121,7 @@ from another build pipeline.`,
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Pre-built MCP binary path (only meaningful with --skip-build)")
 	cmd.Flags().BoolVar(&cliSkipBuild, "cli-skip-build", false, "Skip go build for the companion CLI binary; use the binary at --cli-binary")
 	cmd.Flags().StringVar(&cliBinaryPath, "cli-binary", "", "Pre-built CLI binary path (only meaningful with --cli-skip-build)")
+	cmd.Flags().StringVar(&bundleVersion, "version", "", "Printed CLI release version to stamp into the bundled manifest")
 	return cmd
 }
 
