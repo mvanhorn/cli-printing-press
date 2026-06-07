@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -54,6 +55,26 @@ func TestPrintingPressSkillTranscendenceCollectorSliceInit(t *testing.T) {
 	require.Contains(t, content, "successfulItems := make([]yourEntryType, 0)")
 	require.NotContains(t, content, "var failures []fetchFailure")
 	require.NotContains(t, content, "var successfulItems []yourEntryType")
+}
+
+func TestPrintingPressSkillSQLiteNovelCommandsGuardMissingMirror(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+
+	content := string(data)
+	require.Contains(t, content, "For SQLite-backed novel commands only")
+	require.Contains(t, content, "live execution without `--dry-run`, before the user has run `sync`")
+	require.Contains(t, content, "os.Stat(dbPath); os.IsNotExist(statErr)")
+	require.Contains(t, content, "flags.asJSON || flags.agent")
+	require.Contains(t, content, "The unconditional `return nil` is intentional")
+	require.Contains(t, content, "store.OpenWithContext")
+
+	guard := strings.Index(content, "os.Stat(dbPath); os.IsNotExist(statErr)")
+	openStore := strings.Index(content, "store.OpenWithContext(ctx, dbPath)")
+	require.NotEqual(t, -1, openStore, "full store.OpenWithContext(ctx, dbPath) call not found in SKILL.md")
+	require.Less(t, guard, openStore, "missing-mirror guard should be shown before opening SQLite")
 }
 
 func TestPrintingPressSkillReachabilityGateAllowsLANOnlyCarveout(t *testing.T) {
