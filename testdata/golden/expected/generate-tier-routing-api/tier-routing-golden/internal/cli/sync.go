@@ -573,7 +573,7 @@ func syncResource(ctx context.Context, c interface {
 
 		totalCount += stored
 		atomic.AddInt64(&progressCount, int64(stored))
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit {
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -1081,6 +1081,10 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 }
 
 func pageAllowsPageIntFallback(data json.RawMessage) bool {
+	return pageMayHaveMore(data)
+}
+
+func pageMayHaveMore(data json.RawMessage) bool {
 	hasMore, parsed := pageExplicitHasMore(data)
 	return !parsed || hasMore
 }

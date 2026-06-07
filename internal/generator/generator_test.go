@@ -11457,6 +11457,7 @@ func (c *resumeCursorClient) RateLimit() float64 {
 
 type fullNoCursorClient struct {
 	calls int
+	explicitFinalPage bool
 }
 
 func (c *fullNoCursorClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
@@ -11465,9 +11466,13 @@ func (c *fullNoCursorClient) Get(ctx context.Context, path string, params map[st
 	for i := range items {
 		items[i] = map[string]string{"id": "item-" + strconv.Itoa(i)}
 	}
-	return json.Marshal(map[string]any{
+	response := map[string]any{
 		"items": items,
-	})
+	}
+	if c.explicitFinalPage {
+		response["has_more"] = false
+	}
+	return json.Marshal(response)
 }
 
 func (c *fullNoCursorClient) RateLimit() float64 {
@@ -11492,6 +11497,27 @@ func TestSyncResourceWarnsOnFullPageWithoutCursor(t *testing.T) {
 	}
 	if !strings.Contains(events.String(), ` + "`" + `"reason":"pagination_cursor_missing"` + "`" + `) {
 		t.Fatalf("sync events missing pagination_cursor_missing warning: %s", events.String())
+	}
+}
+
+func TestSyncResourceDoesNotWarnOnExplicitFinalFullPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	client := &fullNoCursorClient{explicitFinalPage: true}
+	var events strings.Builder
+	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, nil, &events)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("calls = %d, want 1", client.calls)
+	}
+	if strings.Contains(events.String(), ` + "`" + `"reason":"pagination_cursor_missing"` + "`" + `) {
+		t.Fatalf("sync events should not warn on explicit final full page: %s", events.String())
 	}
 }
 
@@ -11614,7 +11640,7 @@ func TestSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
 }
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_resume_cursor_test.go"), []byte(behaviorTest), 0o644))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestSyncResource(WarnsOnFullPageWithoutCursor|PreservesCursorOnMaxPagesCap|ClearsCursorWhenCapEqualsFinalPage|ClearsSelfReferentialCursorOnMaxPagesCap)$")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "^TestSyncResource(WarnsOnFullPageWithoutCursor|DoesNotWarnOnExplicitFinalFullPage|PreservesCursorOnMaxPagesCap|ClearsCursorWhenCapEqualsFinalPage|ClearsSelfReferentialCursorOnMaxPagesCap)$")
 
 	// Build the generated CLI to catch template-syntax / import errors that
 	// substring assertions miss.
