@@ -60,7 +60,7 @@ func (g *Generator) renderNovelFeatureStubs() ([]novelFeatureCommandRender, erro
 
 	var roots []novelFeatureCommandRender
 	for _, child := range sortedNovelChildren(root) {
-		rendered, err := g.renderNovelFeatureNode(child, true)
+		rendered, err := g.renderNovelFeatureNode(child)
 		if err != nil {
 			return nil, err
 		}
@@ -111,6 +111,9 @@ func (g *Generator) novelFeatureChildrenByParent() map[string][]novelFeatureChil
 		if len(children) > 0 && len(node.path) > 0 {
 			parentPath := strings.Join(node.path, " ")
 			for _, child := range children {
+				if g.novelFeatureStubCollidesWithGeneratedCommand(child.path) {
+					continue
+				}
 				out[parentPath] = append(out[parentPath], novelFeatureChildRender{Ident: novelFeatureStubIdent(child.path)})
 			}
 		}
@@ -124,18 +127,28 @@ func (g *Generator) novelFeatureChildrenByParent() map[string][]novelFeatureChil
 	return out
 }
 
-func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, topLevel bool) (*novelFeatureCommandRender, error) {
+func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode) (*novelFeatureCommandRender, error) {
+	var renderedChildren []novelFeatureChildRender
 	for _, child := range sortedNovelChildren(node) {
-		if _, err := g.renderNovelFeatureNode(child, false); err != nil {
+		rendered, err := g.renderNovelFeatureNode(child)
+		if err != nil {
 			return nil, err
+		}
+		if rendered != nil {
+			renderedChildren = append(renderedChildren, novelFeatureChildRender{Ident: rendered.Ident})
 		}
 	}
 
 	data := g.novelFeatureCommandData(node)
+	data.Children = renderedChildren
 	outPath := filepath.Join("internal", "cli", novelFeatureStubFileName(node.path))
+	if g.novelFeatureStubCollidesWithGeneratedCommand(node.path) {
+		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to generated command path; skipping novel stub\n", data.CommandPath)
+		return nil, nil
+	}
 	if _, err := os.Stat(filepath.Join(g.OutputDir, outPath)); err == nil {
 		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s; leaving existing file unchanged\n", data.CommandPath, outPath)
-		return nil, nil
+		return &data, nil
 	}
 	if err := g.renderTemplate("novel_feature_command.go.tmpl", outPath, data); err != nil {
 		return nil, fmt.Errorf("rendering novel feature command %s: %w", data.CommandPath, err)
@@ -152,10 +165,7 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, topLevel 
 		}
 	}
 
-	if topLevel {
-		return &data, nil
-	}
-	return nil, nil
+	return &data, nil
 }
 
 func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFeatureCommandRender {
@@ -201,6 +211,50 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 		Flags:          flags,
 		Children:       childData,
 	}
+}
+
+func (g *Generator) novelFeatureStubCollidesWithGeneratedCommand(parts []string) bool {
+	_, ok := g.generatedCommandPaths()[novelFeatureCommandKey(parts)]
+	return ok
+}
+
+func (g *Generator) generatedCommandPaths() map[string]struct{} {
+	paths := map[string]struct{}{}
+	add := func(parts ...string) {
+		paths[novelFeatureCommandKey(parts)] = struct{}{}
+	}
+	for _, promoted := range g.PromotedCommands {
+		add(promoted.PromotedName)
+	}
+	for name, resource := range g.Spec.Resources {
+		if !g.PromotedResourceNames[name] {
+			add(name)
+		}
+		for eName := range resource.Endpoints {
+			if g.PromotedEndpointNames[name] == eName {
+				continue
+			}
+			add(name, eName)
+		}
+		for subName, subResource := range resource.SubResources {
+			add(name, subName)
+			for eName := range subResource.Endpoints {
+				add(name, subName, eName)
+			}
+		}
+	}
+	return paths
+}
+
+func novelFeatureCommandKey(parts []string) string {
+	normalized := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		normalized = append(normalized, toKebab(part))
+	}
+	return strings.Join(normalized, " ")
 }
 
 func sortedNovelChildren(node *novelFeatureStubNode) []*novelFeatureStubNode {

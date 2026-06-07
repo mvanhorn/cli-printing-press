@@ -3796,6 +3796,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 		}
 	}
 
+	novelChildrenByParent := g.novelFeatureChildrenByParent()
 	// Generate promoted top-level commands (user-friendly aliases for nested API commands)
 	// promotedCommands was computed earlier so promoted resources can replace their raw parents.
 	for _, pc := range promotedCommands {
@@ -3813,6 +3814,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			Resource          spec.Resource
 			FuncPrefix        string
 			IsReadOnly        bool
+			NovelChildren     []novelFeatureChildRender
 			*spec.APISpec
 		}{
 			PromotedName:  pc.PromotedName,
@@ -3832,6 +3834,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			Resource:          resource,
 			FuncPrefix:        pc.ResourceName,
 			IsReadOnly:        endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			NovelChildren:     novelChildrenByParent[toKebab(pc.PromotedName)],
 			APISpec:           g.Spec,
 		}
 		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
