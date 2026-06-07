@@ -845,6 +845,7 @@ var Version = "`+sourceVersion+`" // x-release-please-version
 	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript(localVersion))
 
 	goLogPath := filepath.Join(root, "go.log")
+	require.NoError(t, os.WriteFile(goLogPath, nil, 0o644))
 	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
 echo "$@" >> "$GO_LOG"
 if [ "$1" = "run" ]; then
