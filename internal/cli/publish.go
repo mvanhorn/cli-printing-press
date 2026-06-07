@@ -392,6 +392,17 @@ func newPublishPackageCmd() *cobra.Command {
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged binary %s: %w", name, err)}
 				}
 			}
+			testBinaries, err := filepath.Glob(filepath.Join(outCLIDir, "*.test"))
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("finding staged test binaries: %w", err)}
+			}
+			for _, path := range testBinaries {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged test binary %s: %w", filepath.Base(path), err)}
+				}
+			}
 
 			// Rewrite go.mod module path if --module-path is set
 			if modulePath != "" {
