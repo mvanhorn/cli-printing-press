@@ -2320,6 +2320,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"FAIL", func(r *DogfoodReport, _ bool) bool {
 		return r.ExampleCheck.Tested > 0 && (r.ExampleCheck.WithExamples*100/r.ExampleCheck.Tested) < 50
 	}},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		return len(r.ReimplementationCheck.MissingDataSourceStrategy) > 0
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.IsDeviceCLI && !r.PipelineCheck.SyncCallsDomain }},
@@ -2350,9 +2353,6 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && r.MCPSurfaceParityCheck.HandEdited
-	}},
-	{"FAIL", func(r *DogfoodReport, _ bool) bool {
-		return len(r.ReimplementationCheck.MissingDataSourceStrategy) > 0
 	}},
 	// Surface hand-rolled responses without hard-blocking early iteration.
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},

@@ -785,6 +785,7 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 
 func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
 	report := passingDogfoodReport()
+	report.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 1, Found: 1, Stubbed: []string{"id-hunt"}}
 	report.ReimplementationCheck = ReimplementationCheckResult{
 		Checked: 1,
 		MissingDataSourceStrategy: []ReimplementationFinding{{
