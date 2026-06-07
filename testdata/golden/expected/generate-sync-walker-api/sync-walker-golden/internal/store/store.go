@@ -834,8 +834,6 @@ func shouldIndexSearchString(key, value string) bool {
 		return false
 	case strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://"):
 		return false
-	case strings.Contains(s, "@") && strings.Contains(s, "."):
-		return false
 	case upper == s && len(s) == 3 && strings.IndexFunc(s, func(r rune) bool { return r < 'A' || r > 'Z' }) == -1:
 		return false
 	}
