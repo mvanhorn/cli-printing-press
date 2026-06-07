@@ -12,6 +12,10 @@ Build a live BLE probe for the current machine:
 scripts/build-ble-probe.sh live
 ```
 
+Live builds use the `ble_live` build tag and link the host BLE stack. The
+default `cli-printing-press` and `ble-probe` builds are replay-only so ordinary
+generation and verification paths do not load Bluetooth frameworks.
+
 Build a copyable Windows artifact from macOS:
 
 ```bash
