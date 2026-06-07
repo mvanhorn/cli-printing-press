@@ -217,7 +217,7 @@ func newGenerateCmd() *cobra.Command {
 					}
 				}
 
-				runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
+				runID := pipeline.ResolveRunIDFromResearchDir(researchDir)
 				if runID == "" {
 					fmt.Fprintln(os.Stderr, "warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it")
 				}
@@ -517,7 +517,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
-			runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
+			runID := pipeline.ResolveRunIDFromResearchDir(researchDir)
 			if runID == "" {
 				fmt.Fprintln(os.Stderr, "warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it")
 			}
