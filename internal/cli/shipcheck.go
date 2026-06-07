@@ -76,7 +76,7 @@ var shipcheckLegs = []shipcheckLeg{
 		name: "verify",
 		args: func(o *shipcheckOpts) []string {
 			a := []string{"verify", "--dir", o.dir}
-			if o.verifyNoSpec {
+			if o.verifyNoSpec && o.spec != "" {
 				a = append(a, "--no-spec")
 			} else if o.spec != "" {
 				a = append(a, "--spec", o.spec)

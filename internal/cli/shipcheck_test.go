@@ -400,6 +400,23 @@ func TestShipcheck_HTMLSyncStubUsesNoSpecForVerify(t *testing.T) {
 	}
 }
 
+func TestShipcheck_HTMLSyncStubWithoutSpecDoesNotPassSpecFlag(t *testing.T) {
+	h := newShipcheckHarness(t)
+	writeHTMLSyncStubMarker(t, h.dir)
+
+	if err := runShipcheckCmd(t, "--dir", h.dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+	if argvHas(verifyArgs, "--no-spec") {
+		t.Errorf("HTML sync-stub verify argv without --spec should not receive --no-spec: %v", verifyArgs)
+	}
+	if argvHas(verifyArgs, "--spec") {
+		t.Errorf("HTML sync-stub verify argv without --spec should not receive --spec: %v", verifyArgs)
+	}
+}
+
 func TestShipcheck_ValidateNarrativeUsesResearchAndBuiltBinary(t *testing.T) {
 	h := newShipcheckHarness(t)
 	researchDir := t.TempDir()
