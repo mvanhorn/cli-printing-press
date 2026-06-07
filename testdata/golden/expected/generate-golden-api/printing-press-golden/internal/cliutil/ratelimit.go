@@ -35,7 +35,7 @@ func NewAdaptiveLimiter(ratePerSec float64) *AdaptiveLimiter {
 	}
 	return &AdaptiveLimiter{
 		rate:      ratePerSec,
-		floor:     ratePerSec,
+		floor:     0.5,
 		rampAfter: 10,
 	}
 }
@@ -83,8 +83,8 @@ func (l *AdaptiveLimiter) OnRateLimit() {
 	defer l.mu.Unlock()
 	l.ceiling = l.rate
 	l.rate = l.rate / 2
-	if l.rate < 0.5 {
-		l.rate = 0.5
+	if l.rate < l.floor {
+		l.rate = l.floor
 	}
 	l.successes = 0
 }

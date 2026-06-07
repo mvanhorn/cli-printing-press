@@ -46,3 +46,28 @@ func TestAdaptiveLimiterWait_ReservesUnderSingleLock(t *testing.T) {
 	require.Less(t, lockIdx, writeIdx, "Wait must hold lock before reservation write")
 	require.Less(t, writeIdx, unlockIdx, "Wait must not unlock before reservation write")
 }
+
+func TestAdaptiveLimiterFloor_AllowsBackoffToHalfRPS(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("ratelimit-floor")
+	outputDir := filepath.Join(t.TempDir(), "ratelimit-floor-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	srcBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cliutil", "ratelimit.go"))
+	require.NoError(t, err)
+	src := string(srcBytes)
+
+	require.Contains(t, src, "floor:     0.5,")
+	require.Contains(t, src, "if l.rate < l.floor {")
+	require.NotContains(t, src, "floor:     ratePerSec,")
+
+	runGoCommandRequired(
+		t,
+		outputDir,
+		"test",
+		"./internal/cliutil",
+		"-run",
+		"TestAdaptiveLimiter_(HalvesOnRateLimit|FloorsAtHalfRPS)$",
+	)
+}
