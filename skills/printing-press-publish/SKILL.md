@@ -123,8 +123,7 @@ jq --arg slug "<api-slug>" \
     }]
   | sort_by(.slug)
 ' blocked-apis.json > blocked-apis.json.tmp
-jq empty blocked-apis.json.tmp
-mv blocked-apis.json.tmp blocked-apis.json
+jq empty blocked-apis.json.tmp && mv blocked-apis.json.tmp blocked-apis.json
 ```
 
 Create a journal branch and PR:

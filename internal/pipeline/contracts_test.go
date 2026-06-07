@@ -548,7 +548,7 @@ func TestPublishSkillDocumentsBlockedAPIJournalMode(t *testing.T) {
 	assert.Contains(t, skill, "printed-CLI package, live-test, registry, or skill-mirror steps")
 	assert.Contains(t, skill, "Journal-only PRs may edit `blocked-apis.json`")
 	assert.Contains(t, skill, "/printing-press publish notion --blocked-api-journal notion")
-	assert.Contains(t, skill, "jq empty blocked-apis.json.tmp\nmv blocked-apis.json.tmp blocked-apis.json")
+	assert.Contains(t, skill, "jq empty blocked-apis.json.tmp && mv blocked-apis.json.tmp blocked-apis.json")
 	assert.NotContains(t, skill, "git add library/ blocked-apis.json")
 }
 
