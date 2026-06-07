@@ -284,6 +284,17 @@ func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
 }
 
+// boundCtx applies the root --timeout flag to hand-written command work that
+// does not go through the generated internal/client.Client. Generated endpoint
+// commands already pass flags.timeout into client.New; sibling typed clients
+// used by novel commands need an explicit command-level context boundary.
+func boundCtx(parent context.Context, flags *rootFlags) (context.Context, context.CancelFunc) {
+	if flags == nil || flags.timeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, flags.timeout)
+}
+
 // parentNoSubcommandRunE returns a RunE that handles parents invoked without a
 // subcommand. In machine output (--json/--agent) the parent emits a structured
 // error to stdout listing valid subcommands and exits 2; otherwise cobra's

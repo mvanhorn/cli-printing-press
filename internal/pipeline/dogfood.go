@@ -1890,6 +1890,9 @@ func checkDeadFunctions(dir string) DeadCodeResult {
 
 	names := make(map[string]struct{})
 	for _, match := range matches {
+		if isAllowedDeadHelper(match[1]) {
+			continue
+		}
 		names[match[1]] = struct{}{}
 	}
 

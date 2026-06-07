@@ -44,6 +44,7 @@ func configure(flags *rootFlags) {
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "helpers.go"), `package cli
 func usedHelper() {}
 func deadHelper() {}
+func boundCtx() {}
 `)
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_list.go"), `package cli
 func usersList() {
