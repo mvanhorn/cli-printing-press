@@ -19,6 +19,7 @@ type novelFeatureCommandRender struct {
 	Short          string
 	CommandPath    string
 	ReadOnlyString string
+	HasPositional  bool
 	Feature        bool
 	Flags          []novelFeatureFlagRender
 	Children       []novelFeatureChildRender
@@ -160,6 +161,8 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, topLevel 
 func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFeatureCommandRender {
 	commandPath := strings.Join(node.path, " ")
 	short := "TODO: implement " + commandPath
+	use := node.segment
+	hasPositional := false
 	readOnly := true
 	var flags []novelFeatureFlagRender
 	if node.feature != nil {
@@ -172,6 +175,10 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 		}
 		readOnly = novelFeatureReadOnly(*node.feature)
 		flags = novelFeatureFlags(*node.feature, node.path, g.Spec.Name)
+		hasPositional = novelFeatureHasPositional(node.feature.Command)
+		use = novelFeatureUse(node.segment, node.feature.Command)
+	} else if len(node.children) > 0 {
+		short = novelFeatureParentShort(node)
 	}
 	children := sortedNovelChildren(node)
 	childData := make([]novelFeatureChildRender, 0, len(children))
@@ -185,10 +192,11 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 	return novelFeatureCommandRender{
 		Owner:          g.Spec.Owner,
 		Ident:          novelFeatureStubIdent(node.path),
-		Use:            node.segment,
+		Use:            use,
 		Short:          short,
 		CommandPath:    commandPath,
 		ReadOnlyString: readOnlyString,
+		HasPositional:  hasPositional,
 		Feature:        node.feature != nil,
 		Flags:          flags,
 		Children:       childData,
@@ -212,9 +220,25 @@ func sortedNovelChildren(node *novelFeatureStubNode) []*novelFeatureStubNode {
 }
 
 func novelFeatureCommandParts(command string) []string {
-	tokens := strings.Fields(strings.ToLower(command))
-	parts := make([]string, 0, len(tokens))
-	for _, token := range tokens {
+	parts := make([]string, 0)
+	for token := range strings.FieldsSeq(strings.ToLower(command)) {
+		token = strings.Trim(token, `"'`)
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") || novelFeatureTokenIsPositional(token) {
+			break
+		}
+		parts = append(parts, toKebab(token))
+	}
+	return parts
+}
+
+func novelFeatureHasPositional(command string) bool {
+	// Only tokens before the first flag are positional arguments; a `<`/`[`
+	// inside a flag-value hint (e.g. "search --filter [active|inactive]") is
+	// not a positional and must not re-arm the args-based Help guard (#2592).
+	for token := range strings.FieldsSeq(command) {
 		token = strings.Trim(token, `"'`)
 		if token == "" {
 			continue
@@ -222,9 +246,48 @@ func novelFeatureCommandParts(command string) []string {
 		if strings.HasPrefix(token, "-") {
 			break
 		}
-		parts = append(parts, toKebab(token))
+		if novelFeatureTokenIsPositional(token) {
+			return true
+		}
 	}
-	return parts
+	return false
+}
+
+func novelFeatureTokenIsPositional(token string) bool {
+	return strings.Contains(token, "<") || strings.Contains(token, "[")
+}
+
+func novelFeatureUse(segment, command string) string {
+	var positional []string
+	for token := range strings.FieldsSeq(command) {
+		token = strings.Trim(token, `"'`)
+		if token == "" {
+			continue
+		}
+		// Stop at the first flag: placeholders after a flag are value hints,
+		// not positional args, and must not leak into the cobra Use string.
+		if strings.HasPrefix(token, "-") {
+			break
+		}
+		if novelFeatureTokenIsPositional(token) {
+			positional = append(positional, token)
+		}
+	}
+	if len(positional) == 0 {
+		return segment
+	}
+	return strings.Join(append([]string{segment}, positional...), " ")
+}
+
+func novelFeatureParentShort(node *novelFeatureStubNode) string {
+	// Only called from the else-if len(node.children) > 0 branch, so children
+	// is always non-empty here.
+	children := sortedNovelChildren(node)
+	leafNames := make([]string, 0, len(children))
+	for _, child := range children {
+		leafNames = append(leafNames, child.segment)
+	}
+	return fmt.Sprintf("%s subcommands: %s", node.segment, strings.Join(leafNames, ", "))
 }
 
 func novelFeatureStubIdent(parts []string) string {
