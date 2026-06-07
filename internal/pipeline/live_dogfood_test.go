@@ -2352,6 +2352,55 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 	assert.True(t, skipped)
 }
 
+func TestResolveCommandPositionalsMixedStoreAndCompanionSourceIsUntagged(t *testing.T) {
+	requireSQLite3(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "fixture-pp-cli")
+	script := `#!/bin/sh
+set -u
+if [ "$1" = "projects" ] && [ "$2" = "tasks" ] && [ "$3" = "list" ] && [ "$4" = "real-project-1" ] && [ "$5" = "--json" ]; then
+  echo '{"results":[{"id":"real-task-1"}]}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binaryPath, []byte(script), 0o755))
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	createResources := "CREATE TABLE resources (id TEXT NOT NULL, resource_type TEXT NOT NULL, data JSON NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (resource_type, id)); INSERT INTO resources(resource_type, id, data) VALUES('projects', 'real-project-1', '{}')"
+	require.NoError(t, exec.Command("sqlite3", dbPath, createResources).Run())
+
+	cmd := liveDogfoodCommand{
+		Path: []string{"projects", "tasks", "get"},
+		Help: "Usage:\n  fixture-pp-cli projects tasks get <project-id> <task-id> [flags]\n",
+	}
+	listCmd := liveDogfoodCommand{Path: []string{"projects", "tasks", "list"}}
+	ctx := resolveCtx{
+		binaryPath:  binaryPath,
+		cliDir:      dir,
+		siblings:    map[string][]liveDogfoodCommand{"projects tasks": {listCmd}},
+		cache:       newCompanionCache(),
+		timeout:     time.Second,
+		storeDBPath: dbPath,
+	}
+
+	args, skipped, reason, source := resolveCommandPositionals(cmd, []string{"projects", "tasks", "get", "example-project", "example-task"}, ctx)
+	require.False(t, skipped, reason)
+	assert.Equal(t, []string{"projects", "tasks", "get", "real-project-1", "real-task-1"}, args)
+	assert.Empty(t, source, "mixed store and companion resolution should not be counted as store-backed")
+}
+
+func TestLiveDogfoodPreSyncTimeoutCapsLongTimeout(t *testing.T) {
+	assert.Equal(t, 5*time.Second, liveDogfoodPreSyncTimeout(30*time.Second))
+	assert.Equal(t, 2*time.Second, liveDogfoodPreSyncTimeout(2*time.Second))
+	assert.Equal(t, 5*time.Second, liveDogfoodPreSyncTimeout(0))
+}
+
 func TestCommandSupportsSearch(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3115,10 +3164,15 @@ exit 99
 
 func writeTestManifestForLiveDogfood(t *testing.T, dir string) {
 	t.Helper()
+	writeTestManifestForLiveDogfoodCLIName(t, dir, "fixture-pp-cli")
+}
+
+func writeTestManifestForLiveDogfoodCLIName(t *testing.T, dir, cliName string) {
+	t.Helper()
 	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
 		SchemaVersion: 1,
 		APIName:       "fixture",
-		CLIName:       "fixture-pp-cli",
+		CLIName:       cliName,
 		RunID:         "run-live-dogfood",
 		AuthType:      "none",
 	}))
@@ -3753,8 +3807,8 @@ func writeLiveDogfoodStoreFixture(t *testing.T, seedTask bool) (dir string, bina
 	}
 
 	dir = t.TempDir()
-	binaryName = "fixture-pp-cli"
-	writeTestManifestForLiveDogfood(t, dir)
+	binaryName = liveDogfoodStoreFixtureBinaryName(t.Name())
+	writeTestManifestForLiveDogfoodCLIName(t, dir, binaryName)
 
 	seedLine := ":"
 	if seedTask {
@@ -3783,10 +3837,10 @@ if [ "$1" = "sync" ] && [ "${2:-}" = "--help" ]; then
 Sync records.
 
 Usage:
-  fixture-pp-cli sync [flags]
+  %[1]s sync [flags]
 
 Examples:
-  fixture-pp-cli sync
+  %[1]s sync
 
 Flags:
       --json    Output JSON
@@ -3795,10 +3849,10 @@ HELP
 fi
 
 if [ "$1" = "sync" ]; then
-  db="$HOME/.local/share/fixture-pp-cli/data.db"
+  db="$HOME/.local/share/%[1]s/data.db"
   mkdir -p "$(dirname "$db")"
   sqlite3 "$db" "CREATE TABLE IF NOT EXISTS resources (id TEXT NOT NULL, resource_type TEXT NOT NULL, data JSON NOT NULL, synced_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (resource_type, id))"
-  %s
+  %[2]s
   echo '{"synced":true}'
   exit 0
 fi
@@ -3808,10 +3862,10 @@ if [ "$1" = "tasks" ] && [ "$2" = "get-task" ] && [ "${3:-}" = "--help" ]; then
 Get a task.
 
 Usage:
-  fixture-pp-cli tasks get-task <task-id> [flags]
+  %[1]s tasks get-task <task-id> [flags]
 
 Examples:
-  fixture-pp-cli tasks get-task example-id
+  %[1]s tasks get-task example-id
 
 Flags:
       --json    Output JSON
@@ -3834,9 +3888,15 @@ fi
 
 echo "unexpected args: $*" >&2
 exit 99
-`, seedLine)
+`, binaryName, seedLine)
 	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
 	return dir, binaryName
+}
+
+func liveDogfoodStoreFixtureBinaryName(testName string) string {
+	name := strings.ToLower(testName)
+	name = strings.NewReplacer("/", "-", "_", "-").Replace(name)
+	return "fixture-" + name + "-pp-cli"
 }
 
 func TestRunLiveDogfoodStoreFixtureSourceUsesSyncedResourceID(t *testing.T) {

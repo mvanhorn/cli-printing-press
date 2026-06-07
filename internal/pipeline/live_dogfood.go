@@ -580,10 +580,18 @@ func runLiveDogfoodPreSync(commands []liveDogfoodCommand, ctx resolveCtx) {
 	}
 	for _, command := range commands {
 		if len(command.Path) == 1 && command.Path[0] == "sync" {
-			_ = runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, []string{"sync"}, ctx.timeout)
+			_ = runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, []string{"sync"}, liveDogfoodPreSyncTimeout(ctx.timeout))
 			return
 		}
 	}
+}
+
+func liveDogfoodPreSyncTimeout(timeout time.Duration) time.Duration {
+	const maxPreSyncTimeout = 5 * time.Second
+	if timeout <= 0 || timeout > maxPreSyncTimeout {
+		return maxPreSyncTimeout
+	}
+	return timeout
 }
 
 // buildSiblingMap groups commands by their joined parent path so the chain
@@ -649,7 +657,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 	}
 
 	resolved := make([]string, 0, nPlaceholders)
-	fixtureSource := ""
+	storeResolved := 0
 	for i, name := range placeholders {
 		nameLower := strings.ToLower(name)
 		// id-shape covers: bare "id", snake_case "*_id", or camelCase "*id"
@@ -668,7 +676,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 		listCmd := findListCompanion(ctx.siblings[siblingKey])
 		if listCmd == nil {
 			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
-				fixtureSource = "store"
+				storeResolved++
 				resolved = append(resolved, id)
 				continue
 			} else if storeAvailable {
@@ -691,7 +699,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 				// run. Skip immediately so sibling get-shape commands sharing
 				// the same companion don't each block on the same 30s timeout.
 				if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
-					fixtureSource = "store"
+					storeResolved++
 					resolved = append(resolved, id)
 					continue
 				} else if storeAvailable {
@@ -708,7 +716,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 		if run.exitCode != 0 {
 			ctx.cache.results[cacheKey] = "" // negative-cache sentinel
 			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
-				fixtureSource = "store"
+				storeResolved++
 				resolved = append(resolved, id)
 				continue
 			} else if storeAvailable {
@@ -722,7 +730,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 		if !ok {
 			ctx.cache.results[cacheKey] = "" // negative-cache sentinel
 			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
-				fixtureSource = "store"
+				storeResolved++
 				resolved = append(resolved, id)
 				continue
 			} else if storeAvailable {
@@ -736,6 +744,10 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 		resolved = append(resolved, id)
 	}
 
+	fixtureSource := ""
+	if storeResolved == nPlaceholders {
+		fixtureSource = "store"
+	}
 	return substitutePositionals(happyArgs, command.Path, resolved), false, "", fixtureSource
 }
 
