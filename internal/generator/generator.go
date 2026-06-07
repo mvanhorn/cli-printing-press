@@ -394,7 +394,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"publicFlagAliases":            publicFlagAliases,
 		"flagChangedExpr":              flagChangedExpr,
 		"graphqlListParams":            graphqlListParams,
+		"graphqlLatestParams":          graphqlLatestParams,
 		"graphqlVariableType":          graphqlVariableType,
+		"hasGraphQLParam":              hasGraphQLParam,
 		"mcpInputName":                 mcpInputName,
 		"mcpToolInputParams":           mcpToolInputParams,
 		"mcpParamBindings":             mcpParamBindings,
@@ -6734,6 +6736,31 @@ func graphqlListParams(endpoint spec.Endpoint) []spec.Param {
 	return params
 }
 
+func graphqlLatestParams(endpoint spec.Endpoint) []spec.Param {
+	params := make([]spec.Param, 0, len(endpoint.Params))
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam {
+			continue
+		}
+		switch p.Name {
+		case "last", "query":
+		default:
+			continue
+		}
+		params = append(params, p)
+	}
+	return params
+}
+
+func hasGraphQLParam(endpoint spec.Endpoint, name string) bool {
+	for _, p := range endpoint.Params {
+		if p.Name == name && !p.Positional && !p.PathParam {
+			return true
+		}
+	}
+	return false
+}
+
 func graphqlVariableType(p spec.Param) string {
 	var typ string
 	switch primitiveKind(p.Type) {
@@ -6748,7 +6775,7 @@ func graphqlVariableType(p spec.Param) string {
 	default:
 		typ = "String"
 	}
-	if p.Required || strings.EqualFold(p.Name, "first") {
+	if p.Required || strings.EqualFold(p.Name, "first") || strings.EqualFold(p.Name, "last") {
 		typ += "!"
 	}
 	return typ
