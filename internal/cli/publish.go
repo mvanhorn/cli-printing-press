@@ -402,6 +402,12 @@ func newPublishPackageCmd() *cobra.Command {
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged test binary %s: %w", filepath.Base(path), err)}
 				}
 			}
+			for _, name := range stagedShipcheckReportNames() {
+				if err := os.Remove(filepath.Join(outCLIDir, name)); err != nil && !os.IsNotExist(err) {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged shipcheck report %s: %w", name, err)}
+				}
+			}
 
 			// Rewrite go.mod module path if --module-path is set
 			if modulePath != "" {
@@ -1350,6 +1356,10 @@ func stagedBinaryNames(cliName, apiSlug string) []string {
 		add(apiSlug + "-pp-mcp")
 	}
 	return names
+}
+
+func stagedShipcheckReportNames() []string {
+	return []string{"dogfood-results.json", "workflow-verify-report.json"}
 }
 
 type fileSnapshot struct {
