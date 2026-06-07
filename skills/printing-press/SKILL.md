@@ -838,7 +838,7 @@ Before new research:
    First, check lock status to detect active builds:
 
    ```bash
-   LOCK_STATUS=$(cli-printing-press lock status --cli <api>-pp-cli --json 2>/dev/null)
+   LOCK_STATUS=$("$PRINTING_PRESS_BIN" lock status --cli <api>-pp-cli --json 2>/dev/null)
    LOCK_HELD=$(echo "$LOCK_STATUS" | grep -o '"held"[[:space:]]*:[[:space:]]*[a-z]*' | head -1 | sed 's/.*: *//')
    LOCK_STALE=$(echo "$LOCK_STATUS" | grep -o '"stale"[[:space:]]*:[[:space:]]*[a-z]*' | head -1 | sed 's/.*: *//')
    LOCK_PHASE=$(echo "$LOCK_STATUS" | grep -o '"phase"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"phase"[[:space:]]*:[[:space:]]*"//;s/"//')
@@ -2929,7 +2929,7 @@ If generation fails:
 - prefer generator fixes over manual generated-code surgery when the failure is systemic
 - if retries are exhausted, release the lock and stop:
   ```bash
-  cli-printing-press lock release --cli <api>-pp-cli
+  "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
   ```
 
 ## Phase 3: Build The GOAT
@@ -3688,7 +3688,7 @@ Include:
 
 If the final verdict is `hold`, release the lock without promoting to library:
 ```bash
-cli-printing-press lock release --cli <api>-pp-cli
+"$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
 ```
 The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to Phase 5.6 to archive manuscripts (archiving still happens on hold).
 
@@ -3999,7 +3999,7 @@ keep PII out of the acceptance report from the moment you write it.
 **Gate = FAIL:** fix issues inline (Step 3) and re-run failing tests, up to
 2 fix loops. If the gate still fails after 2 loops, put the CLI on hold:
 ```bash
-cli-printing-press lock release --cli <api>-pp-cli
+"$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
 ```
 The working copy remains in `$CLI_WORK_DIR`. Proceed to Phase 5.6 to archive
 manuscripts (archiving still happens on hold). Tag the failure reason in the
@@ -4098,9 +4098,12 @@ proof or a hold decision.
 **Always runs.** Invoke the `printing-press-polish` skill to run diagnostics, fix quality issues, and return a delta. The polish skill carries `context: fork` in its frontmatter, so its diagnostic-fix-rediagnose loop runs in a forked context — diagnostic spam, fix iterations, and re-audits stay scoped to the polish session and don't pollute this generation flow. The skill is autonomous — no user input needed. The goal is to ship the best CLI possible, not the fastest.
 
 Before invoking polish, collect the Phase 3 transcendence gate state and include
-it in the polish input bundle:
+it in the polish input bundle. Include the captured `PRINTING_PRESS_BIN` value
+so the forked polish skill uses the same preflight-selected binary instead of
+resolving a potentially stale global binary from PATH:
 
 ```yaml
+printing_press_bin: <captured PRINTING_PRESS_BIN>
 phase3_transcendence_rows_planned: <planned>
 phase3_transcendence_rows_built: <built>
 phase3_transcendence_rows_missing:
@@ -4116,6 +4119,7 @@ Pass `$CLI_WORK_DIR` as the first line of `args`, followed by the Phase 3 bundle
 Skill(
   skill: "cli-printing-press:printing-press-polish",
   args: "$CLI_WORK_DIR
+printing_press_bin: <captured PRINTING_PRESS_BIN>
 phase3_transcendence_rows_planned: <planned>
 phase3_transcendence_rows_built: <built>
 phase3_transcendence_rows_missing:
@@ -4223,11 +4227,11 @@ novel list:
 REGEN_DRY_RUN_REPORT="$PROOFS_DIR/regen-merge-dry-run-report.json"
 PATH_A_REBUILT_NOVELS=0
 if [ -d "$LIB_TARGET" ] && [ "$NOVEL_COUNT" -gt 0 ]; then
-  if ! cli-printing-press regen-merge "$LIB_TARGET" \
+  if ! "$PRINTING_PRESS_BIN" regen-merge "$LIB_TARGET" \
       --fresh "$CLI_WORK_DIR" --json > "$REGEN_DRY_RUN_REPORT"; then
     # Real error (input error, missing fresh tree, unreadable library). Release
     # the upstream pipeline lock and surface the dry-run failure.
-    cli-printing-press lock release --cli <api>-pp-cli
+    "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
     echo "regen-merge dry-run failed; see $REGEN_DRY_RUN_REPORT" >&2
     exit 1
   fi
@@ -4270,7 +4274,7 @@ The override is forbidden unless the fresh tree contains the novels:
 
 ```bash
 # Atomic swap: copies working dir, writes manifest, updates run pointer, releases lock.
-cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
+"$PRINTING_PRESS_BIN" lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
 ```
 
 The `promote` command handles the full sequence: stages the working directory, atomically swaps it into `$PRESS_LIBRARY/<api>` (slug-keyed), writes the `.printing-press.json` manifest, updates the `CurrentRunPointer`, and releases the lock — all in one step. The `--cli` flag accepts the CLI binary name; the Go code translates to the slug-keyed library path internally.
@@ -4281,12 +4285,12 @@ The `promote` command handles the full sequence: stages the working directory, a
 
 ```bash
 REGEN_REPORT="$PROOFS_DIR/regen-merge-report.json"
-if ! cli-printing-press regen-merge "$LIB_TARGET" \
+if ! "$PRINTING_PRESS_BIN" regen-merge "$LIB_TARGET" \
     --fresh "$CLI_WORK_DIR" --apply --json > "$REGEN_REPORT"; then
   # Real error (input error, apply failure). Release the lock — it was
   # acquired upstream by the press pipeline; regen-merge does not own it —
   # and surface the failure to the user.
-  cli-printing-press lock release --cli <api>-pp-cli
+  "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
   echo "regen-merge --apply failed; see $REGEN_REPORT" >&2
   exit 1
 fi
@@ -4300,7 +4304,7 @@ NEEDS_REVIEW=$(jq '[.files[] | select(.verdict == "TEMPLATED-WITH-ADDITIONS"
 if [ "$NEEDS_REVIEW" -gt 0 ]; then
   # Release the lock so the next reprint of this CLI is not blocked until
   # timeout. lock promote would have released it; the halt path must too.
-  cli-printing-press lock release --cli <api>-pp-cli
+  "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
   echo "regen-merge flagged $NEEDS_REVIEW file(s) for human review. " \
        "Inspect $REGEN_REPORT, resolve inline hand-edits, then re-run." >&2
   exit 1
@@ -4322,8 +4326,8 @@ else
   # line-shifted generator files and surface false-positive pendings.
   rm -f "$LIB_TARGET/.printing-press-pii-polish.json"
 fi
-cli-printing-press lock promote --cli <api>-pp-cli --dir "$LIB_TARGET" || {
-  cli-printing-press lock release --cli <api>-pp-cli
+"$PRINTING_PRESS_BIN" lock promote --cli <api>-pp-cli --dir "$LIB_TARGET" || {
+  "$PRINTING_PRESS_BIN" lock release --cli <api>-pp-cli
   echo "lock promote failed for $LIB_TARGET; lock released. " \
        "Inspect the PII gate output above and resolve before re-running." >&2
   exit 1
@@ -4537,7 +4541,8 @@ Invoke `/printing-press-retro`. The retro skill analyzes the session for generat
 ```
 Skill(
   skill: "cli-printing-press:printing-press-polish",
-  args: "$CLI_WORK_DIR"
+  args: "$CLI_WORK_DIR
+printing_press_bin: <captured PRINTING_PRESS_BIN>"
 )
 ```
 
@@ -4546,13 +4551,14 @@ Three reasons for this exact form, all mirroring Phase 5.5:
 1. **Pass `$CLI_WORK_DIR` (absolute path), not the slug.** Hold runs leave the CLI in the working directory because Phase 5.6 did not promote — `$PRESS_LIBRARY/<slug>/` either does not exist or holds a stale prior run, and a slug-form invocation would polish that stale copy.
 2. **Use the Skill tool (forked context), not the `/printing-press-polish` slash command.** This matches Phase 5.5's invocation pattern — same shape, same expectations. Slash-command invocations auto-enable polish's standalone mode (Publish Offer fires); the Skill tool form defers to the parent unless `--standalone` is passed explicitly. Main SKILL owns the menu on this path.
 3. **Do not include `--standalone` in `args`.** The flag is what polish gates its Publish Offer on (see polish SKILL.md "Publish Offer"). On the hold path the CLI has not been promoted; firing the offer would open a public PR for an un-promoted, un-shipped working copy.
+4. **Pass `printing_press_bin`.** Use the absolute path captured by the parent setup preflight so this forked polish pass cannot downgrade the CLI by resolving an older global binary.
 
 After polish returns, parse the result block and act on the new `ship_recommendation`:
 
 - **Polish landed on `ship` or `ship-with-gaps`** — the verdict transitioned out of hold. The working copy is still un-promoted; the library is stale. Run promote, then route to the ship-path menu (above):
 
   ```bash
-  cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
+  "$PRINTING_PRESS_BIN" lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
   ```
 
   Then re-enter the ship-path menu using polish's new result block. Skip the Phase 5.6 acceptance-gate JSON check — that gate was already satisfied when this run originally reached Phase 5.6, and polish does not regenerate it.
