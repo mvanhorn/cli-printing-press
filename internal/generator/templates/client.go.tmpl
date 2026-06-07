@@ -718,9 +718,9 @@ func (c *Client) readCache(path string, params map[string]string) (json.RawMessa
 }
 
 func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage{{if .HasHTMLExtraction}}, contentType string{{end}}) {
-	os.MkdirAll(c.cacheDir, 0o755)
+	os.MkdirAll(c.cacheDir, 0o700)
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
-	os.WriteFile(cacheFile, []byte(data), 0o644)
+	os.WriteFile(cacheFile, []byte(data), 0o600)
 {{- if .HasHTMLExtraction}}
 	c.writeCacheContentType(cacheFile, contentType)
 {{- end}}
@@ -753,7 +753,7 @@ func (c *Client) writeCacheContentType(cacheFile, contentType string) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(cacheFile+".meta.json", data, 0o644)
+	_ = os.WriteFile(cacheFile+".meta.json", data, 0o600)
 }
 
 {{- end}}

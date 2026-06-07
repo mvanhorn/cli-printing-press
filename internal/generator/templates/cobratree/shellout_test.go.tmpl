@@ -13,9 +13,9 @@ import (
 	"testing"
 )
 
-// TestSplitShellArgs pins the whitespace + double-quote splitting used by
+// TestSplitShellArgs pins the whitespace + quote splitting used by
 // the args-field passthrough. Behavior we rely on: bare whitespace splits,
-// tabs split, double-quoted spans stay together, empty input yields nil.
+// tabs split, quoted spans stay together, empty input yields nil.
 func TestSplitShellArgs(t *testing.T) {
 	cases := []struct {
 		name string
@@ -29,6 +29,9 @@ func TestSplitShellArgs(t *testing.T) {
 		{"tabs", "foo\tbar", []string{"foo", "bar"}},
 		{"quoted token", `"hello world"`, []string{"hello world"}},
 		{"mixed quoted and bare", `contacts "john doe" active`, []string{"contacts", "john doe", "active"}},
+		{"double quoted apostrophe", `"My Club's Night"`, []string{"My Club's Night"}},
+		{"single quoted span", `'a b' c`, []string{"a b", "c"}},
+		{"escaped whitespace", `a\ b c`, []string{"a b", "c"}},
 	}
 	for _, tc := range cases {
 		tc := tc
