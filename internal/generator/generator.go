@@ -3037,6 +3037,9 @@ func (g *Generator) schemaWithDependentParents() []TableDef {
 				if table.JSONOnlyFallback {
 					continue
 				}
+				if schema[i].ParentKeyColumn == "" {
+					schema[i].ParentKeyColumn = "parent_id"
+				}
 				hasParentID := false
 				for _, col := range table.Columns {
 					if col.Name == "parent_id" {
