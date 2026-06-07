@@ -15989,6 +15989,15 @@ func runPMHintCommand(t *testing.T, dbPath string, args ...string) (string, stri
 
 func runPMCommand(t *testing.T, dbPath string, asJSON bool, args ...string) (string, string) {
 	t.Helper()
+	stdout, stderr, err := runPMCommandErr(t, dbPath, asJSON, args...)
+	if err != nil {
+		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr)
+	}
+	return stdout, stderr
+}
+
+func runPMCommandErr(t *testing.T, dbPath string, asJSON bool, args ...string) (string, string, error) {
+	t.Helper()
 	root := RootCmd()
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
@@ -15998,10 +16007,8 @@ func runPMCommand(t *testing.T, dbPath string, asJSON bool, args ...string) (str
 		fullArgs = append(fullArgs, "--json")
 	}
 	root.SetArgs(fullArgs)
-	if err := root.Execute(); err != nil {
-		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr.String())
-	}
-	return stdout.String(), stderr.String()
+	err := root.Execute()
+	return stdout.String(), stderr.String(), err
 }
 
 func TestPMWorkflowCommandEmitsSyncHints(t *testing.T) {
@@ -16051,8 +16058,8 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	for _, raw := range []string{
-		` + "`" + `{"id":"issue-1","status":"open"}` + "`" + `,
-		` + "`" + `{"id":"issue-2","status":"open"}` + "`" + `,
+		` + "`" + `{"id":"issue-1","status":"open","stage_id":"qualified"}` + "`" + `,
+		` + "`" + `{"id":"issue-2","status":"open","stage_id":"qualified"}` + "`" + `,
 	} {
 		var payload json.RawMessage = []byte(raw)
 		var obj map[string]any
@@ -16084,6 +16091,26 @@ func TestAnalyticsCommandWritesToConfiguredOutput(t *testing.T) {
 	for _, want := range []string{"status\tCount", "open\t2"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("analytics text group-by stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, _ = runPMCommand(t, dbPath, false, "analytics", "--type", "issues", "--group-by", "stage")
+	for _, want := range []string{"stage\tCount", "qualified\t2"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("analytics friendly group-by stdout = %q, want %q in configured output", stdout, want)
+		}
+	}
+
+	stdout, stderr, err := runPMCommandErr(t, dbPath, false, "analytics", "--type", "issues", "--group-by", "bogus")
+	if err == nil {
+		t.Fatalf("analytics bogus group-by stdout = %q, stderr = %q, want error", stdout, stderr)
+	}
+	if strings.Contains(stdout, "<nil>") {
+		t.Fatalf("analytics bogus group-by stdout = %q, want no nil bucket", stdout)
+	}
+	for _, want := range []string{` + "`" + `group-by field "bogus" was not found` + "`" + `, "valid group-by fields:", "stage_id", "status", "aliases:", "stage"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("analytics bogus group-by stderr = %q, want %q", stderr, want)
 		}
 	}
 
