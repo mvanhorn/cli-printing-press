@@ -430,6 +430,12 @@ func syncResource(ctx context.Context, c interface {
 
 	// Resume cursor from sync_state (unless --full cleared it)
 	existingCursor, lastSynced, _, _ := db.GetSyncState(resource)
+	if !full {
+		if storedCount, err := db.Count(resource); err == nil && storedCount == 0 {
+			existingCursor = ""
+			lastSynced = time.Time{}
+		}
+	}
 
 	// Determine the since param value:
 	// 1. Explicit --since flag takes priority
@@ -455,7 +461,6 @@ func syncResource(ctx context.Context, c interface {
 
 	cursor := existingCursor
 	pageSize := determinePaginationDefaults()
-
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
@@ -487,7 +492,6 @@ func syncResource(ctx context.Context, c interface {
 		if effectiveSince != "" {
 			params[sinceParam] = effectiveSince
 		}
-
 		// Apply user-supplied --param / --resource-param overrides last so they
 		// win over spec-derived defaults (e.g. forcing mine=true on a list
 		// endpoint whose OpenAPI spec marks the filter optional).
@@ -612,6 +616,9 @@ func syncResource(ctx context.Context, c interface {
 
 		totalCount += stored
 		atomic.AddInt64(&progressCount, int64(stored))
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data) {
+			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
+		}
 
 		// Progress reporting (include rate limit info when active)
 		currentRate := c.RateLimit()
@@ -1082,12 +1089,13 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 
 	// If no top-level cursor was found, look one level deeper into well-known
 	// pagination wrapper objects. Slack returns {"messages":[...],
-	// "response_metadata":{"next_cursor":"..."}}; MongoDB Atlas uses
-	// "pagination"; many APIs use "meta" or "paging". Purely additive — only
+	// "response_metadata":{"next_cursor":"..."}}; Pipedrive uses
+	// "additional_data"; MongoDB Atlas uses "pagination"; many APIs use
+	// "meta" or "paging". Purely additive — only
 	// runs when the top-level scan returned empty — and uses the same
 	// cursorKeys set so wrapper contents go through the same name match.
 	if nextCursor == "" {
-		paginationWrapperKeys := []string{"response_metadata", "pagination", "meta", "paging"}
+		paginationWrapperKeys := []string{"response_metadata", "additional_data", "pagination", "meta", "paging"}
 		for _, wrapperKey := range paginationWrapperKeys {
 			rawWrapper, ok := envelope[wrapperKey]
 			if !ok {
@@ -1127,6 +1135,10 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 }
 
 func pageAllowsPageIntFallback(data json.RawMessage) bool {
+	return pageMayHaveMore(data)
+}
+
+func pageMayHaveMore(data json.RawMessage) bool {
 	hasMore, parsed := pageExplicitHasMore(data)
 	return !parsed || hasMore
 }
@@ -1264,6 +1276,22 @@ func findCursorInMap(m map[string]json.RawMessage, cursorKeys []string) string {
 		}
 	}
 	return ""
+}
+
+func emitSyncMissingPaginationCursorWarning(syncEvents io.Writer, humanFriendly bool, resource, parent string) {
+	if humanFriendly {
+		if parent != "" {
+			fmt.Fprintf(os.Stderr, "\nwarning: %s returned a full page for parent %s without a next cursor; data may be truncated.\n", resource, parent)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "\nwarning: %s returned a full page without a next cursor; data may be truncated.\n", resource)
+		return
+	}
+	if parent != "" {
+		fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"pagination_cursor_missing","message":"API returned a full page without a usable next cursor; data may be truncated."}`+"\n", resource, parent)
+		return
+	}
+	fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","reason":"pagination_cursor_missing","message":"API returned a full page without a usable next cursor; data may be truncated."}`+"\n", resource)
 }
 
 type discriminatorDispatch struct {
@@ -1548,7 +1576,6 @@ func syncDependentResource(ctx context.Context, c interface {
 			if depSinceTS != "" {
 				params[depSinceParam] = depSinceTS
 			}
-
 			// Apply user flags last so they win over spec-derived cursor/since/limit.
 			// Dependent path: --param is skipped (already scoped by the parent path
 			// segment); --global-param and --resource-param still apply.
@@ -1661,6 +1688,9 @@ func syncDependentResource(ctx context.Context, c interface {
 			}
 
 			totalCount += stored
+			if resourceSupportsPagination(dep.Name) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data) {
+				emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, dep.Name, parentID)
+			}
 			pagesFetched++
 
 			if maxPages > 0 && pagesFetched >= maxPages {
