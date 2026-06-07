@@ -44,7 +44,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			path = replacePathParam(path, "taskId", args[1])
 			params := map[string]string{}
 			if flagNotify != false {
-				params["notify"] = fmt.Sprintf("%v", flagNotify)
+				params["notify"] = formatCLIParamValue(flagNotify)
 			}
 			var body map[string]any
 			if stdinBody {

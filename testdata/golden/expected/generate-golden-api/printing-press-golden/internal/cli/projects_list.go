@@ -43,9 +43,9 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/projects"
 			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "projects", path, map[string]string{
-				"status": fmt.Sprintf("%v", flagStatus),
-				"limit":  fmt.Sprintf("%v", flagLimit),
-				"cursor": fmt.Sprintf("%v", flagCursor),
+				"status": formatCLIParamValue(flagStatus),
+				"limit":  formatCLIParamValue(flagLimit),
+				"cursor": formatCLIParamValue(flagCursor),
 			}, nil, flagAll, "cursor", "cursor", "limit", "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
