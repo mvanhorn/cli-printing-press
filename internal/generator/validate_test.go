@@ -95,6 +95,7 @@ func TestValidateRunsPinnedDefaultGovulncheckGate(t *testing.T) {
 	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
 if [ "$1" = "run" ]; then
+  printf 'toolchain=%s\n' "$GOTOOLCHAIN" >> "$FAKE_GO_CALLS"
   echo "fake govulncheck failure" >&2
   exit 42
 fi
@@ -102,6 +103,7 @@ exit 0
 `), 0o755))
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_GO_CALLS", callsPath)
+	t.Setenv("GOTOOLCHAIN", "auto")
 
 	err := gen.Validate()
 	require.Error(t, err)
@@ -111,6 +113,7 @@ exit 0
 	require.NoError(t, err)
 	assert.Contains(t, string(calls), "mod tidy\n")
 	assert.Contains(t, string(calls), "run "+govulncheck.ToolModule+" ./...\n")
+	assert.Contains(t, string(calls), "toolchain=go1.26.4\n")
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
 }
