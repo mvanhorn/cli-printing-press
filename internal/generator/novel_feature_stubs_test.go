@@ -111,3 +111,100 @@ func TestGeneratorSkipsNovelFeatureStubsWhenNoCommandPath(t *testing.T) {
 	_, err := os.Stat(filepath.Join(outputDir, "internal", "cli", "global_search.go"))
 	assert.True(t, os.IsNotExist(err))
 }
+
+func TestGeneratorNovelFeatureHelpGuardRequiresPositionalUse(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("novelargs")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Inspect item",
+			Command:     "inspect <id>",
+			Description: "Inspect one item.",
+			Example:     "novelargs-pp-cli inspect item-123 --format json",
+		},
+		{
+			Name:        "Metric report",
+			Command:     "report",
+			Description: "Report metrics selected by flags.",
+			Example:     "novelargs-pp-cli report --metric latency",
+		},
+		{
+			Name:        "Audit",
+			Command:     "audit",
+			Description: "Audit local cache state.",
+			Example:     "novelargs-pp-cli audit",
+		},
+		{
+			Name:        "Search",
+			Command:     "search --filter [active|inactive]",
+			Description: "Search items, filtered by flag.",
+			Example:     "novelargs-pp-cli search --filter active",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	inspect := readGeneratedFile(t, outputDir, "internal", "cli", "inspect.go")
+	assert.Contains(t, inspect, `Use:         "inspect <id>"`)
+	assert.Contains(t, inspect, "if len(args) == 0 {")
+	assert.Contains(t, inspect, "return cmd.Help()")
+
+	report := readGeneratedFile(t, outputDir, "internal", "cli", "report.go")
+	assert.NotContains(t, report, "return cmd.Help()")
+	assert.Contains(t, report, "// validate required flags here")
+	assert.Contains(t, report, "if dryRunOK(flags) {")
+	assert.Contains(t, report, `TODO: implement novel feature %q", "report"`)
+
+	audit := readGeneratedFile(t, outputDir, "internal", "cli", "audit.go")
+	assert.NotContains(t, audit, "return cmd.Help()")
+	assert.Contains(t, audit, "// validate required flags here")
+	assert.Contains(t, audit, "if dryRunOK(flags) {")
+	assert.Contains(t, audit, `TODO: implement novel feature %q", "audit"`)
+
+	// A bracket/angle placeholder inside a flag-value hint is NOT a positional
+	// (#2592 regression guard): no args-based Help guard, and the flag-value
+	// hint must not leak into the cobra Use string.
+	search := readGeneratedFile(t, outputDir, "internal", "cli", "search.go")
+	assert.NotContains(t, search, "return cmd.Help()")
+	assert.Contains(t, search, "// validate required flags here")
+	assert.NotContains(t, search, "[active|inactive]")
+}
+
+func TestGeneratorNovelFeatureParentShortHasNoTODO(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("novelparent")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Snapshot diff",
+			Command:     "snapshot diff",
+			Description: "Compare two snapshots.",
+			Example:     "novelparent-pp-cli snapshot diff before after",
+		},
+		{
+			Name:        "Snapshot list",
+			Command:     "snapshot list",
+			Description: "List snapshots.",
+			Example:     "novelparent-pp-cli snapshot list",
+		},
+		{
+			Name:        "Single command",
+			Command:     "single",
+			Description: "A single-segment novel command.",
+			Example:     "novelparent-pp-cli single",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	parent := readGeneratedFile(t, outputDir, "internal", "cli", "snapshot.go")
+	assert.Contains(t, parent, `Short:       "snapshot subcommands: diff, list"`)
+	assert.NotContains(t, parent, `Short:       "TODO`)
+
+	single := readGeneratedFile(t, outputDir, "internal", "cli", "single.go")
+	assert.Contains(t, single, `Short:       "A single-segment novel command."`)
+	assert.NotContains(t, single, `subcommands:`)
+}
