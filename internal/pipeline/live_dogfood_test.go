@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -2311,7 +2312,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "list"},
 		Help: "Usage:\n  cli widgets list [flags]\n",
 	}
-	args, skipped, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, ctx)
+	args, skipped, _, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, ctx)
 	assert.False(t, skipped)
 	assert.Equal(t, []string{"widgets", "list"}, args)
 
@@ -2320,7 +2321,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "search"},
 		Help: "Usage:\n  cli widgets search <query> [flags]\n",
 	}
-	_, skipped, reason := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, ctx)
+	_, skipped, reason, _ := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "non-id positional")
 
@@ -2329,7 +2330,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "get"},
 		Help: "Usage:\n  cli widgets get <id> [flags]\n",
 	}
-	_, skipped, reason = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, ctx)
+	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
 
@@ -2338,7 +2339,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"movies", "get"},
 		Help: "Usage:\n  cli movies get <movieId> [flags]\n",
 	}
-	_, skipped, reason = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, ctx)
+	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
 
@@ -2347,7 +2348,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"get"},
 		Help: "Usage:\n  cli get <id> <name> [flags]\n",
 	}
-	_, skipped, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, ctx)
+	_, skipped, _, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, ctx)
 	assert.True(t, skipped)
 }
 
@@ -3737,6 +3738,135 @@ func runRichFixtureMatrix(t *testing.T, dir, binaryName string) *LiveDogfoodRepo
 	return report
 }
 
+func requireSQLite3(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 is required for live dogfood store fixture tests")
+	}
+}
+
+func writeLiveDogfoodStoreFixture(t *testing.T, seedTask bool) (dir string, binaryName string) {
+	t.Helper()
+	requireSQLite3(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	seedLine := ":"
+	if seedTask {
+		seedLine = `sqlite3 "$db" "INSERT OR REPLACE INTO resources(resource_type, id, data) VALUES('tasks', 'real-task-1', '{}')"`
+	}
+	binPath := filepath.Join(dir, binaryName)
+	script := fmt.Sprintf(`#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"sync"},
+    {"name":"tasks","subcommands":[
+      {"name":"get-task"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "sync" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Sync records.
+
+Usage:
+  fixture-pp-cli sync [flags]
+
+Examples:
+  fixture-pp-cli sync
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "sync" ]; then
+  db="$HOME/.local/share/fixture-pp-cli/data.db"
+  mkdir -p "$(dirname "$db")"
+  sqlite3 "$db" "CREATE TABLE IF NOT EXISTS resources (id TEXT NOT NULL, resource_type TEXT NOT NULL, data JSON NOT NULL, synced_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (resource_type, id))"
+  %s
+  echo '{"synced":true}'
+  exit 0
+fi
+
+if [ "$1" = "tasks" ] && [ "$2" = "get-task" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Get a task.
+
+Usage:
+  fixture-pp-cli tasks get-task <task-id> [flags]
+
+Examples:
+  fixture-pp-cli tasks get-task example-id
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "tasks" ] && [ "$2" = "get-task" ]; then
+  if [ "${3:-}" = "real-task-1" ]; then
+    if [ "${4:-}" = "--json" ]; then
+      echo '{"id":"real-task-1"}'
+    else
+      echo 'real-task-1'
+    fi
+    exit 0
+  fi
+  echo 'HTTP 400: Invalid argument value' >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`, seedLine)
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func TestRunLiveDogfoodStoreFixtureSourceUsesSyncedResourceID(t *testing.T) {
+	dir, binaryName := writeLiveDogfoodStoreFixture(t, true)
+	report := runRichFixtureMatrix(t, dir, binaryName)
+
+	happy := findResultByCommandKind(report, "tasks get-task", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected tasks get-task happy_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	assert.Equal(t, []string{"tasks", "get-task", "real-task-1"}, happy.Args)
+	assert.Equal(t, "store", happy.FixtureSource)
+
+	jsonResult := findResultByCommandKind(report, "tasks get-task", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult, "expected tasks get-task json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+	assert.Equal(t, []string{"tasks", "get-task", "real-task-1", "--json"}, jsonResult.Args)
+	assert.Equal(t, "store", jsonResult.FixtureSource)
+}
+
+func TestRunLiveDogfoodStoreFixtureSourceMarksSyntheticWhenStoreEmpty(t *testing.T) {
+	dir, binaryName := writeLiveDogfoodStoreFixture(t, false)
+	report := runRichFixtureMatrix(t, dir, binaryName)
+
+	happy := findResultByCommandKind(report, "tasks get-task", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected tasks get-task happy_path result")
+	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
+	assert.Equal(t, []string{"tasks", "get-task", "example-id"}, happy.Args)
+	assert.Equal(t, "synthetic", happy.FixtureSource)
+}
+
 func TestRunLiveDogfoodResolveSuccessSinglePositional(t *testing.T) {
 	dir, binaryName, argvLog := setupRichFixture(t)
 	report := runRichFixtureMatrix(t, dir, binaryName)
@@ -4451,7 +4581,7 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 	args, ok = liveDogfoodHappyArgs(posCmd)
 	require.True(t, ok)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, args)
-	resolved, skipped, reason := resolveCommandPositionals(posCmd, args, resolveCtx{})
+	resolved, skipped, reason, _ := resolveCommandPositionals(posCmd, args, resolveCtx{})
 	assert.False(t, skipped, "pp:happy-args positional must not be skipped: %s", reason)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, resolved,
 		"resolveCommandPositionals must preserve the pp:happy-args positional value")
