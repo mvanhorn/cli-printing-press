@@ -767,7 +767,7 @@ func TestValidationRejectsUnknownSource(t *testing.T) {
 		},
 	}
 
-	require.ErrorContains(t, s.Validate(), "source must be one of: local-sqlite")
+	require.ErrorContains(t, s.Validate(), `source "local-postgres" is not supported; valid values: local-sqlite`)
 }
 
 // validateAdditionalAuthHeaders covers six distinct error paths; this table

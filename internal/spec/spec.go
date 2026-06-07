@@ -3609,7 +3609,7 @@ func (s *APISpec) Validate() error {
 	switch strings.ToLower(strings.TrimSpace(s.Source)) {
 	case "", SourceLocalSQLite:
 	default:
-		return fmt.Errorf("source must be one of: local-sqlite")
+		return fmt.Errorf("source %q is not supported; valid values: local-sqlite", s.Source)
 	}
 	// Parser fallback may supply a placeholder base_url when the source spec omits servers.
 	if s.BaseURL == "" && s.BasePath == "" && !s.IsLocalSQLiteSource() {
