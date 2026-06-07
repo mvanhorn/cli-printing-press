@@ -518,27 +518,67 @@ func newestGraphQLConnectionTimestamp(fieldPath string, data json.RawMessage) (t
 }
 
 func newestJSONTimestamp(data json.RawMessage) (time.Time, bool) {
-	var obj map[string]any
-	if err := json.Unmarshal(data, &obj); err != nil {
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
 		return time.Time{}, false
 	}
+	return newestJSONValueTimestamp("", value)
+}
+
+func newestJSONValueTimestamp(fieldName string, value any) (time.Time, bool) {
 	var newest time.Time
 	var found bool
-	for _, value := range obj {
-		s, ok := value.(string)
-		if !ok {
-			continue
+	switch v := value.(type) {
+	case map[string]any:
+		for k, child := range v {
+			ts, ok := newestJSONValueTimestamp(k, child)
+			if !ok {
+				continue
+			}
+			if !found || ts.After(newest) {
+				newest = ts
+				found = true
+			}
 		}
-		ts, ok := parseSyncTimestamp(s)
-		if !ok {
-			continue
+	case []any:
+		for _, child := range v {
+			ts, ok := newestJSONValueTimestamp("", child)
+			if !ok {
+				continue
+			}
+			if !found || ts.After(newest) {
+				newest = ts
+				found = true
+			}
 		}
-		if !found || ts.After(newest) {
-			newest = ts
-			found = true
+	case string:
+		if isSyncTimestampField(fieldName) {
+			ts, ok := parseSyncTimestamp(v)
+			if ok {
+				newest = ts
+				found = true
+			}
 		}
 	}
 	return newest, found
+}
+
+func isSyncTimestampField(name string) bool {
+	if name == "" {
+		return false
+	}
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(name))
+	switch normalized {
+	case "createdat", "updatedat", "publishedat", "modifiedat", "completedat", "closedat", "openedat", "startedat", "endedat", "expiresat", "timestamp", "datetime", "date", "time":
+		return true
+	}
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(name, "At") ||
+		strings.HasSuffix(lower, "_at") ||
+		strings.HasSuffix(lower, "-at") ||
+		strings.Contains(normalized, "timestamp") ||
+		strings.HasSuffix(normalized, "time") ||
+		strings.HasSuffix(normalized, "date")
 }
 
 func parseSyncTimestamp(value string) (time.Time, bool) {

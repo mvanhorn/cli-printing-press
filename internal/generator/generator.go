@@ -6742,9 +6742,7 @@ func graphqlLatestParams(endpoint spec.Endpoint) []spec.Param {
 		if p.Positional || p.PathParam {
 			continue
 		}
-		switch p.Name {
-		case "last", "query":
-		default:
+		if p.Name != "last" {
 			continue
 		}
 		params = append(params, p)

@@ -30,6 +30,7 @@ const {{pascal $rName}}ListLatestQuery = {{backtick}}query{{if $latestParams}}({
       {{.}}
 {{- end}}
     }
+    pageInfo { hasNextPage endCursor }
   }
 }{{backtick}}
 {{- end}}
