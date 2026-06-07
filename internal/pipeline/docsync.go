@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -114,6 +116,7 @@ func SyncCLINarrativeDocs(dir, apiName string, narrative *ReadmeNarrative) ([]sy
 // blocks from dogfood-verified features. Empty verified sets remove the blocks.
 func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArtifact, error) {
 	var synced []syncedArtifact
+	warnBeforeDroppingDocumentedFeatures(filepath.Join(dir, "README.md"), "README.md", "## Unique Features", features)
 	changed, err := syncMarkdownFeatureSection(
 		filepath.Join(dir, "README.md"),
 		"## Unique Features",
@@ -127,6 +130,7 @@ func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArti
 		synced = append(synced, syncedArtifact{Path: "README.md", Detail: "Unique Features"})
 	}
 
+	warnBeforeDroppingDocumentedFeatures(filepath.Join(dir, "SKILL.md"), "SKILL.md", "## Unique Capabilities", features)
 	changed, err = syncMarkdownFeatureSection(
 		filepath.Join(dir, "SKILL.md"),
 		"## Unique Capabilities",
@@ -139,7 +143,76 @@ func SyncCLITranscendenceDocs(dir string, features []NovelFeature) ([]syncedArti
 	if changed {
 		synced = append(synced, syncedArtifact{Path: "SKILL.md", Detail: "Unique Capabilities"})
 	}
+
+	changed, err = syncWhichIndex(filepath.Join(dir, "internal", "cli", "which.go"), features)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		synced = append(synced, syncedArtifact{Path: filepath.Join("internal", "cli", "which.go"), Detail: "whichIndex"})
+	}
+
+	changed, err = syncMCPNovelFeatureContext(filepath.Join(dir, "internal", "mcp", "tools.go"), features)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		synced = append(synced, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
+	}
 	return synced, nil
+}
+
+func warnBeforeDroppingDocumentedFeatures(path, displayPath, heading string, features []NovelFeature) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	existing := documentedFeatureCommandsInSection(string(data), heading)
+	if len(existing) == 0 {
+		return
+	}
+	built := map[string]bool{}
+	for _, feature := range features {
+		if command := strings.TrimSpace(feature.Command); command != "" {
+			built[command] = true
+		}
+	}
+	var missing []string
+	for _, command := range existing {
+		if !built[command] {
+			missing = append(missing, command)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	slices.Sort(missing)
+	fmt.Fprintf(os.Stderr, "dogfood_warning: %s %s will drop documented commands %s not found in the built feature set; update research.json to keep them\n",
+		displayPath, strings.TrimPrefix(heading, "## "), strings.Join(missing, ", "))
+}
+
+var documentedFeatureCommandRE = regexp.MustCompile(`(?m)-\s+\*\*` + "`" + `([^` + "`" + `]+)` + "`" + `\*\*`)
+
+func documentedFeatureCommandsInSection(content, heading string) []string {
+	start := findMarkdownHeading(content, heading)
+	if start < 0 {
+		return nil
+	}
+	end := findNextLevelTwoHeading(content, start+len(heading))
+	seen := map[string]bool{}
+	var commands []string
+	for _, match := range documentedFeatureCommandRE.FindAllStringSubmatch(content[start:end], -1) {
+		if len(match) < 2 {
+			continue
+		}
+		command := strings.TrimSpace(match[1])
+		if command == "" || seen[command] {
+			continue
+		}
+		seen[command] = true
+		commands = append(commands, command)
+	}
+	return commands
 }
 
 func syncReadmeAuthNarrative(path, authNarrative string) (bool, error) {
@@ -419,6 +492,156 @@ func syncMarkdownFile(path string, rewrite func(string) string) (bool, error) {
 		return false, fmt.Errorf("writing %s: %w", path, err)
 	}
 	return true, nil
+}
+
+func syncWhichIndex(path string, features []NovelFeature) (bool, error) {
+	replacement := renderWhichIndex(features)
+	return syncGoCompositeLiteral(path, "var whichIndex = []whichEntry{", replacement)
+}
+
+func renderWhichIndex(features []NovelFeature) string {
+	var b strings.Builder
+	b.WriteString("var whichIndex = []whichEntry{")
+	for _, feature := range features {
+		b.WriteString("\n\t{Command: ")
+		b.WriteString(goStringLiteral(feature.Command))
+		b.WriteString(", Description: ")
+		b.WriteString(goStringLiteral(feature.Description))
+		b.WriteString(", Group: ")
+		b.WriteString(goStringLiteral(feature.Group))
+		b.WriteString(", WhyItMatters: ")
+		b.WriteString(goStringLiteral(feature.WhyItMatters))
+		b.WriteString("},")
+	}
+	b.WriteString("\n}")
+	return b.String()
+}
+
+func syncMCPNovelFeatureContext(path string, features []NovelFeature) (bool, error) {
+	return syncGoFile(path, func(content string) string {
+		return syncMCPMapList(content, `"command_mirror_capabilities": []map[string]string{`, renderMCPCommandMirrorCapabilities(features))
+	})
+}
+
+func renderMCPCommandMirrorCapabilities(features []NovelFeature) string {
+	if len(features) == 0 {
+		// Mirror renderWhichIndex's empty case: emit an empty (but well-formed)
+		// literal rather than "" so syncMCPMapList does a normal in-place replace
+		// (preserving the surrounding indentation) instead of taking its delete
+		// branch, which would strip the leading tabs off the following map entry.
+		return "\"command_mirror_capabilities\": []map[string]string{\n\t\t},"
+	}
+	var b strings.Builder
+	b.WriteString(`"command_mirror_capabilities": []map[string]string{`)
+	for _, feature := range features {
+		b.WriteString("\n\t\t\t{\"name\": ")
+		b.WriteString(goStringLiteral(feature.Name))
+		b.WriteString(", \"command\": ")
+		b.WriteString(goStringLiteral(feature.Command))
+		b.WriteString(", \"description\": ")
+		b.WriteString(goStringLiteral(oneLineForDocSync(feature.Description)))
+		b.WriteString(", \"rationale\": ")
+		b.WriteString(goStringLiteral(oneLineForDocSync(feature.Rationale)))
+		b.WriteString(", \"via\": \"mcp-command-mirror\"},")
+	}
+	b.WriteString("\n\t\t},")
+	return b.String()
+}
+
+func syncMCPMapList(content, key, replacement string) string {
+	start := strings.Index(content, key)
+	if start < 0 {
+		return content
+	}
+	end := findGoCompositeLiteralEnd(content, start+len(key)-1)
+	if end < 0 {
+		return content
+	}
+	if strings.TrimSpace(replacement) == "" {
+		return strings.TrimRight(content[:start], "\n\t ") + "\n" + strings.TrimLeft(content[end:], "\n\t ")
+	}
+	return content[:start] + replacement + content[end:]
+}
+
+func syncGoCompositeLiteral(path, marker, replacement string) (bool, error) {
+	return syncGoFile(path, func(content string) string {
+		start := strings.Index(content, marker)
+		if start < 0 {
+			return content
+		}
+		open := start + len(marker) - 1
+		end := findGoCompositeLiteralEnd(content, open)
+		if end < 0 {
+			return content
+		}
+		return content[:start] + replacement + content[end:]
+	})
+}
+
+func syncGoFile(path string, rewrite func(string) string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading %s: %w", path, err)
+	}
+	content := string(data)
+	updated := rewrite(content)
+	if updated == content {
+		return false, nil
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		return false, fmt.Errorf("writing %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func findGoCompositeLiteralEnd(content string, open int) int {
+	if open < 0 || open >= len(content) || content[open] != '{' {
+		return -1
+	}
+	depth := 0
+	inString := byte(0)
+	escaped := false
+	for i := open; i < len(content); i++ {
+		ch := content[i]
+		if inString != 0 {
+			if inString != '`' && ch == '\\' && !escaped {
+				escaped = true
+				continue
+			}
+			if ch == inString && !escaped {
+				inString = 0
+			}
+			escaped = false
+			continue
+		}
+		switch ch {
+		case '"', '`', '\'':
+			inString = ch
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				end := i + 1
+				if end < len(content) && content[end] == ',' {
+					end++
+				}
+				return end
+			}
+		}
+	}
+	return -1
+}
+
+func goStringLiteral(s string) string {
+	return fmt.Sprintf("%q", s)
+}
+
+func oneLineForDocSync(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func renderNovelFeatureDocSection(heading string, features []NovelFeature) string {
