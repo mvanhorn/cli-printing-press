@@ -3719,8 +3719,10 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 	// the DSN starts with "file:". Without the prefix, ?mode=ro is
 	// silently dropped and writes succeed against the supposedly
 	// read-only handle.
-	assert.Contains(t, storeCode, `"file:"+dbPath+"?mode=ro`,
+	assert.Contains(t, storeCode, `dsn := "file:" + dbPath`,
 		"OpenReadOnly DSN must use the file: URI prefix with mode=ro")
+	assert.Contains(t, storeCode, `?mode=ro`,
+		"OpenReadOnly DSN must request SQLite read-only mode")
 
 	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
