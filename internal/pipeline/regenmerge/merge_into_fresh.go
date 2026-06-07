@@ -11,7 +11,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
@@ -207,6 +209,9 @@ func pruneDeclsFromGoFile(path string, collisions declSet) error {
 				kept = append(kept, decl)
 				continue
 			}
+			if d.Tok == token.CONST && constDeclHasIotaPruneRisk(d, collisions) {
+				break
+			}
 			specs := d.Specs[:0]
 			for _, spec := range d.Specs {
 				next, specChanged := pruneCollidingSpec(spec, collisions)
@@ -229,6 +234,7 @@ func pruneDeclsFromGoFile(path string, collisions declSet) error {
 		return nil
 	}
 	file.Decls = kept
+	pruneUnusedImports(file)
 	var buf bytes.Buffer
 	if err := printer.Fprint(&buf, fset, file); err != nil {
 		return fmt.Errorf("printing %s: %w", path, err)
@@ -241,6 +247,118 @@ func pruneDeclsFromGoFile(path string, collisions declSet) error {
 		return err
 	}
 	return os.Chmod(path, info.Mode().Perm())
+}
+
+func constDeclHasIotaPruneRisk(decl *ast.GenDecl, collisions declSet) bool {
+	usesIota := false
+	for _, spec := range decl.Specs {
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		if len(valueSpec.Values) > 0 && exprListUsesIota(valueSpec.Values) {
+			usesIota = true
+		}
+		if !valueSpecCollides(valueSpec, collisions) {
+			continue
+		}
+		if usesIota || len(valueSpec.Values) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func exprListUsesIota(exprs []ast.Expr) bool {
+	for _, expr := range exprs {
+		found := false
+		ast.Inspect(expr, func(n ast.Node) bool {
+			if ident, ok := n.(*ast.Ident); ok && ident.Name == "iota" {
+				found = true
+				return false
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func valueSpecCollides(spec *ast.ValueSpec, collisions declSet) bool {
+	for _, name := range spec.Names {
+		if _, ok := collisions[name.Name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func pruneUnusedImports(file *ast.File) {
+	used := selectorPackageNames(file)
+	var decls []ast.Decl
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.IMPORT {
+			decls = append(decls, decl)
+			continue
+		}
+		specs := gen.Specs[:0]
+		for _, spec := range gen.Specs {
+			importSpec, ok := spec.(*ast.ImportSpec)
+			if !ok || importIsUsed(importSpec, used) {
+				specs = append(specs, spec)
+			}
+		}
+		if len(specs) == 0 {
+			continue
+		}
+		gen.Specs = specs
+		decls = append(decls, gen)
+	}
+	file.Decls = decls
+}
+
+func selectorPackageNames(file *ast.File) map[string]struct{} {
+	used := map[string]struct{}{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if ok && gen.Tok == token.IMPORT {
+			continue
+		}
+		ast.Inspect(decl, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if ident, ok := sel.X.(*ast.Ident); ok {
+				used[ident.Name] = struct{}{}
+			}
+			return true
+		})
+	}
+	return used
+}
+
+func importIsUsed(spec *ast.ImportSpec, used map[string]struct{}) bool {
+	name := importLocalName(spec)
+	if name == "" || name == "_" || name == "." {
+		return true
+	}
+	_, ok := used[name]
+	return ok
+}
+
+func importLocalName(spec *ast.ImportSpec) string {
+	if spec.Name != nil {
+		return spec.Name.Name
+	}
+	importPath, err := strconv.Unquote(spec.Path.Value)
+	if err != nil || importPath == "" {
+		return ""
+	}
+	return path.Base(importPath)
 }
 
 func pruneCollidingSpec(spec ast.Spec, collisions declSet) (ast.Spec, bool) {
