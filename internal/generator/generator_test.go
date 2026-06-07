@@ -16623,6 +16623,127 @@ func TestLiveCommandPrefersAPIOverLocalStore(t *testing.T) {
 	assert.Greater(t, requestCount.Load(), int32(0), "generated command should call the live API in auto mode")
 }
 
+func TestGeneratedLocalSearchIndexesMeaningfulContent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	apiSpec.Name = "localsearch"
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"testing"
+
+	"localsearch-pp-cli/internal/store"
+)
+
+func TestLocalSearchIndexesMeaningfulContent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dbPath := defaultDBPath("localsearch-pp-cli")
+
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for _, seed := range []struct {
+		resourceType string
+		id           string
+		data         json.RawMessage
+	}{
+		{"campaigns", "camp_1", json.RawMessage(` + "`" + `{"id":"camp_1","description":"Blue taxi hotel transfer","currency":"USD","cost":"120.50","created_at":"2026-06-07","account_id":"acct_1","url":"https://example.com/taxi"}` + "`" + `)},
+		{"campaigns", "camp_2", json.RawMessage(` + "`" + `{"id":"camp_2","description":"Airport rail pass","currency":"USD","account_id":"acct_1"}` + "`" + `)},
+		{"transactions", "tx_1", json.RawMessage(` + "`" + `{"id":"tx_1","description":"Taxi hotel receipt","note":"yellow cab","currency":"USD","account_id":"acct_2"}` + "`" + `)},
+		{"transactions", "tx_2", json.RawMessage(` + "`" + `{"id":"tx_2","description":"Museum pass","currency":"USD","account_id":"acct_2"}` + "`" + `)},
+	} {
+		if err := db.Upsert(seed.resourceType, seed.id, seed.data); err != nil {
+			t.Fatalf("upsert %s/%s: %v", seed.resourceType, seed.id, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	fieldNameHits := runLocalSearch(t, dbPath, "description")
+	if len(fieldNameHits) != 0 {
+		t.Fatalf("searching JSON field name returned %d hits, want 0: %#v", len(fieldNameHits), fieldNameHits)
+	}
+
+	punctuatedHits := runLocalSearch(t, dbPath, "taxi-hotel")
+	if got := ids(punctuatedHits); !sameIDs(got, []string{"camp_1", "tx_1"}) {
+		t.Fatalf("punctuated search ids = %#v, want camp_1 and tx_1", got)
+	}
+
+	transactionHits := runLocalSearch(t, dbPath, "taxi-hotel", "--type", "transactions")
+	if got := ids(transactionHits); !sameIDs(got, []string{"tx_1"}) {
+		t.Fatalf("--type transactions ids = %#v, want tx_1 only", got)
+	}
+
+	multiTermHits := runLocalSearch(t, dbPath, "taxi receipt")
+	if got := ids(multiTermHits); !sameIDs(got, []string{"tx_1"}) {
+		t.Fatalf("multi-term search ids = %#v, want tx_1 only", got)
+	}
+}
+
+func runLocalSearch(t *testing.T, dbPath, query string, extra ...string) []map[string]any {
+	t.Helper()
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	args := append([]string{"search", query, "--data-source", "local", "--json", "--db", dbPath}, extra...)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr.String())
+	}
+	var payload struct {
+		Results []map[string]any ` + "`" + `json:"results"` + "`" + `
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("parse search output: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	return payload.Results
+}
+
+func ids(rows []map[string]any) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if id, ok := row["id"].(string); ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func sameIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[string]int, len(got))
+	for _, id := range got {
+		seen[id]++
+	}
+	for _, id := range want {
+		seen[id]--
+		if seen[id] < 0 {
+			return false
+		}
+	}
+	return true
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "local_search_test.go"), []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestLocalSearchIndexesMeaningfulContent", "./internal/cli")
+}
+
 // TestSearchTemplateEmptyTypeQueriesGenericFTS pins #1390 — the
 // no-type branch must include a generic db.Search(query, limit) call
 // alongside the per-table typed Search<Resource> loop. Rows indexed
