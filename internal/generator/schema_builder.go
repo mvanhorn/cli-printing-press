@@ -19,6 +19,11 @@ type TableDef struct {
 	FTS5Fields   []string
 	FTS5Triggers bool
 
+	// ParentKeyColumn is set for dependent resource tables whose rows carry
+	// parent context. Store upserts use it to keep one row per child-parent
+	// pair instead of collapsing many-to-many relations onto the child id.
+	ParentKeyColumn string
+
 	JSONOnlyFallback    bool
 	OriginalColumnCount int
 }
@@ -397,9 +402,10 @@ func buildSubResourceTable(name string, r spec.Resource, parentTable string) Tab
 	columns = append(columns, baseTableColumns[1:]...) // data, synced_at
 
 	return TableDef{
-		Name:     tableName,
-		Resource: tableName,
-		Columns:  columns,
+		Name:            tableName,
+		Resource:        tableName,
+		Columns:         columns,
+		ParentKeyColumn: parentCol,
 		Indexes: []IndexDef{
 			{
 				Name:      "idx_" + tableName + "_" + parentCol,
