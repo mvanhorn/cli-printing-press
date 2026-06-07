@@ -5245,11 +5245,11 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 		t.Fatalf("iterate contacts: %v", err)
 	}
 
-	if got["contact-injected"] != "list-A" {
-		t.Fatalf("injected contact lists_id = %q, want list-A", got["contact-injected"])
+	if got["contact-injected\x00list-A"] != "list-A" {
+		t.Fatalf("injected contact lists_id = %q, want list-A", got["contact-injected\x00list-A"])
 	}
-	if got["contact-preserved"] != "api-list" {
-		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved"])
+	if got["contact-preserved\x00api-list"] != "api-list" {
+		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved\x00api-list"])
 	}
 }
 `
