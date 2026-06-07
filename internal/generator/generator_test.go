@@ -14551,6 +14551,7 @@ func TestGenerateMCPMainSmallAPIDefaultsHTTP(t *testing.T) {
 	} {
 		assert.Contains(t, body, want, "small-API auto-http default should emit %q", want)
 	}
+	assertMCPMainUsesVersionVar(t, body)
 }
 
 // TestGenerateMCPMainExplicitStdioOnlyHonored covers the negative half of
@@ -14577,6 +14578,7 @@ func TestGenerateMCPMainExplicitStdioOnlyHonored(t *testing.T) {
 	assert.NotContains(t, body, "flag.String", "explicit stdio-only spec must not pull in the flag package")
 	assert.NotContains(t, body, "NewStreamableHTTPServer", "explicit stdio-only spec must not reference the HTTP transport")
 	assert.NotContains(t, body, "PP_MCP_TRANSPORT", "explicit stdio-only spec must not reference the transport env override")
+	assertMCPMainUsesVersionVar(t, body)
 }
 
 // TestGenerateMCPMainLargeAPIDefaultsCodeOrchestration confirms that large
@@ -14705,6 +14707,16 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 	} {
 		assert.Contains(t, body, want, "remote-opt-in main should contain %q", want)
 	}
+	assertMCPMainUsesVersionVar(t, body)
+}
+
+func assertMCPMainUsesVersionVar(t *testing.T, body string) {
+	t.Helper()
+
+	assert.Contains(t, body, `var version = "1.0.0"`)
+	assert.Contains(t, body, "server.NewMCPServer(")
+	assert.Contains(t, body, "\n\t\tversion,\n\t\tserver.WithToolCapabilities(false),")
+	assert.NotContains(t, body, "\n\t\t\"1.0.0\",\n\t\tserver.WithToolCapabilities(false),")
 }
 
 // TestGenerateMCPCodeOrchestrationEmitsSearchExecute proves that when the
