@@ -2391,6 +2391,78 @@ paths:
 	assert.Equal(t, "api_token", parsed.Auth.Scheme, "selected scheme name must surface for downstream env-var derivation")
 }
 
+func TestSelectSecuritySchemeAPIKeyHeaderBeatsOAuth2Alternative(t *testing.T) {
+	t.Parallel()
+
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: Pipedrive
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - oauth: []
+  - api_key: []
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth/authorize
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            read: read access
+    api_key:
+      type: apiKey
+      in: header
+      name: x-api-token
+paths:
+  /v1/deals:
+    get:
+      operationId: listDeals
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type, "standalone header apiKey must be preferred over OAuth2 alternatives")
+	assert.Equal(t, "api_key", parsed.Auth.Scheme)
+	assert.Equal(t, "header", parsed.Auth.In)
+	assert.Equal(t, "x-api-token", parsed.Auth.Header)
+	assert.Equal(t, []string{"PIPEDRIVE_API_KEY"}, parsed.Auth.EnvVars)
+
+	if testing.Short() {
+		t.Skip("generated CLI runtime coverage runs outside short mode")
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	gen := generator.New(parsed, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientContent := string(clientSrc)
+	require.Contains(t, clientContent, `req.Header.Set("x-api-token", authHeader)`)
+	require.NotContains(t, clientContent, `req.Header.Set("Authorization", authHeader)`)
+
+	const runtimeTest = `package config
+
+import "testing"
+
+func TestHeaderAPIKeyAuthHeaderIsRaw(t *testing.T) {
+	cfg := &Config{PipedriveApiKey: "raw-token"}
+	if got := cfg.AuthHeader(); got != "raw-token" {
+		t.Fatalf("AuthHeader() = %q, want raw-token", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "header_apikey_test.go"), []byte(runtimeTest), 0o644))
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "test", "./internal/config", "-run", "TestHeaderAPIKeyAuthHeaderIsRaw")
+}
+
 func TestSelectSecuritySchemeRespectsRootSecurityFilter(t *testing.T) {
 	t.Parallel()
 
