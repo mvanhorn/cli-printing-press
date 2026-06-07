@@ -2408,8 +2408,7 @@ components:
     oauth:
       type: oauth2
       flows:
-        authorizationCode:
-          authorizationUrl: https://api.example.com/oauth/authorize
+        clientCredentials:
           tokenUrl: https://api.example.com/oauth/token
           scopes:
             read: read access
@@ -2638,6 +2637,51 @@ paths:
 
 	assert.Equal(t, "bearer_token", parsed.Auth.Type, "well-formed ROPC oauth2 must outrank co-declared apiKey")
 	assert.Equal(t, "ropcAuth", parsed.Auth.Scheme)
+}
+
+func TestSelectSecuritySchemeOAuth2ClientCredentialsBeatsOAuth2Password(t *testing.T) {
+	t.Parallel()
+
+	// When a spec offers separate OAuth2 machine and user-password schemes, keep
+	// the non-interactive client_credentials scheme ahead of deprecated ROPC.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: OAuth2FlowPriority
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ccAuth: []
+  - ropcAuth: []
+components:
+  securitySchemes:
+    ccAuth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            read: read access
+    ropcAuth:
+      type: oauth2
+      flows:
+        password:
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            read: read access
+paths:
+  /v1/items:
+    get:
+      operationId: listItems
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, "ccAuth", parsed.Auth.Scheme)
+	assert.Equal(t, spec.OAuth2GrantClientCredentials, parsed.Auth.OAuth2Grant)
 }
 
 func TestSkipUnderscoreFields(t *testing.T) {
