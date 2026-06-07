@@ -1938,12 +1938,19 @@ func depluralizeResourceStem(r string) string {
 	switch {
 	case strings.HasSuffix(r, "ies") && len(r) > 3:
 		return strings.TrimSuffix(r, "ies") + "y" // currencies -> currency
-	case strings.HasSuffix(r, "ses") || strings.HasSuffix(r, "xes") ||
+	// Plurals formed by adding "es" to a base ending in s/x/z/ch/sh. The
+	// double-s "sses" guard (not bare "ses") keeps soft-e plurals — where the
+	// singular already ends in a silent "e" (cases, databases, licenses,
+	// purchases) — out of this branch; they fall through to the "-s" case below
+	// (cases -> case, not cas). Trade-off: a genuine "-es" plural of an s-ending
+	// singular (buses, statuses) depluralizes imperfectly, but those are rare as
+	// resource names and this stem only feeds best-effort id-field probing.
+	case strings.HasSuffix(r, "sses") || strings.HasSuffix(r, "xes") ||
 		strings.HasSuffix(r, "zes") || strings.HasSuffix(r, "ches") ||
 		strings.HasSuffix(r, "shes"):
-		return strings.TrimSuffix(r, "es") // boxes -> box
+		return strings.TrimSuffix(r, "es") // classes -> class, boxes -> box, dishes -> dish
 	case strings.HasSuffix(r, "s") && !strings.HasSuffix(r, "ss") && len(r) > 1:
-		return strings.TrimSuffix(r, "s") // languages -> language
+		return strings.TrimSuffix(r, "s") // languages -> language, cases -> case
 	}
 	return r
 }

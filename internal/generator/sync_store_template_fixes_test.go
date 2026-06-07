@@ -122,6 +122,28 @@ func TestCurrencyCodeSuffixExtractsResourceID(t *testing.T) {
 		}
 	}
 
+	// Soft-e plurals (#2713): the singular ends in a silent "e", so the plural
+	// adds only "s" (cases->case, databases->database, licenses->license). The
+	// id-base depluralizer must strip just "s", not "es", or the <singular>_id
+	// probe misses and the row is silently dropped.
+	if got := ExtractResourceID("cases", map[string]any{"case_id": "C-1"}); got != "C-1" {
+		t.Fatalf("soft-e plural cases: id = %q, want C-1", got)
+	}
+	if got := ExtractResourceID("databases", map[string]any{"database_id": "DB-1"}); got != "DB-1" {
+		t.Fatalf("soft-e plural databases: id = %q, want DB-1", got)
+	}
+	if got := ExtractResourceID("licenses", map[string]any{"license_key": "LK-1"}); got != "LK-1" {
+		t.Fatalf("soft-e plural licenses: id = %q, want LK-1", got)
+	}
+	// Genuine "-es" plurals of a sibilant base still strip "es": classes->class
+	// (sses), boxes->box (xes).
+	if got := ExtractResourceID("classes", map[string]any{"class_id": "CL-1"}); got != "CL-1" {
+		t.Fatalf("sses plural classes: id = %q, want CL-1", got)
+	}
+	if got := ExtractResourceID("boxes", map[string]any{"box_code": "BX-1"}); got != "BX-1" {
+		t.Fatalf("xes plural boxes: id = %q, want BX-1", got)
+	}
+
 	db, err := Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -196,6 +218,14 @@ func TestSyncExtractIDSuffixFallbackIsGuarded(t *testing.T) {
 	}
 	if got := extractID("currencies", map[string]any{"currency_code": map[string]any{"nested": "USD"}}); got != "" {
 		t.Fatalf("non-scalar suffix fallback id = %q, want empty", got)
+	}
+	// Soft-e plural depluralization on the sync side too (#2713): cases->case,
+	// not cas — otherwise case_id never resolves and items are dropped.
+	if got := extractID("cases", map[string]any{"case_id": "C-1"}); got != "C-1" {
+		t.Fatalf("soft-e plural cases: extractID = %q, want C-1", got)
+	}
+	if got := extractID("databases", map[string]any{"database_id": "DB-1"}); got != "DB-1" {
+		t.Fatalf("soft-e plural databases: extractID = %q, want DB-1", got)
 	}
 }
 
