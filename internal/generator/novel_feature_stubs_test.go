@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -91,6 +92,111 @@ func TestNovelFeatureStubsResolveAtRuntime(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_stub_runtime_test.go"), []byte(runtimeTest.String()), 0o644))
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/cli")
+}
+
+func TestGeneratorSkipsNovelFeatureWiringForAbsorbedEndpointCollisions(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("make")
+	apiSpec.Resources = map[string]spec.Resource{
+		"scenarios": {
+			Description: "Manage scenarios",
+			Endpoints: map[string]spec.Endpoint{
+				"get-qrcode": {Method: "GET", Path: "/scenarios/{id}/qrcode", Description: "Get scenario QR code"},
+				"list":       {Method: "GET", Path: "/scenarios", Description: "List scenarios"},
+				"run":        {Method: "POST", Path: "/scenarios/{id}/run", Description: "Run scenario"},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Blocking scenario run",
+			Command:     "scenarios run --wait",
+			Description: "Run a scenario and wait for completion.",
+			Example:     "make-pp-cli scenarios run scenario-123 --wait",
+		},
+		{
+			Name:        "Cross-team scenario list",
+			Command:     "scenarios list --all-teams",
+			Description: "List scenarios across every team.",
+			Example:     "make-pp-cli scenarios list --all-teams",
+		},
+		{
+			Name:        "Scenario QR watcher",
+			Command:     "scenarios get-qrcode --watch",
+			Description: "Watch a scenario QR code until it changes.",
+			Example:     "make-pp-cli scenarios get-qrcode scenario-123 --watch",
+		},
+		{
+			Name:        "Scenario health",
+			Command:     "scenarios health --limit 10",
+			Description: "Summarize scenario health.",
+			Example:     "make-pp-cli scenarios health --limit 10",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	parent := readGeneratedFile(t, outputDir, "internal", "cli", "scenarios.go")
+	assert.Contains(t, parent, "cmd.AddCommand(newScenariosListCmd(flags))")
+	assert.Contains(t, parent, "cmd.AddCommand(newScenariosRunCmd(flags))")
+	assert.Contains(t, parent, "cmd.AddCommand(newNovelScenariosHealthCmd(flags))")
+	assert.NotContains(t, parent, "newNovelScenariosGetQrcodeCmd")
+	assert.NotContains(t, parent, "newNovelScenariosListCmd")
+	assert.NotContains(t, parent, "newNovelScenariosRunCmd")
+
+	health := readGeneratedFile(t, outputDir, "internal", "cli", "scenarios_health.go")
+	assert.Contains(t, health, `TODO: implement novel feature %q", "scenarios health"`)
+	requireGeneratedCompiles(t, outputDir)
+
+	require.NoError(t, gen.Generate())
+	parent = readGeneratedFile(t, outputDir, "internal", "cli", "scenarios.go")
+	assert.Contains(t, parent, "cmd.AddCommand(newNovelScenariosHealthCmd(flags))")
+	assert.NotContains(t, parent, "newNovelScenariosGetQrcodeCmd")
+	assert.NotContains(t, parent, "newNovelScenariosListCmd")
+	assert.NotContains(t, parent, "newNovelScenariosRunCmd")
+}
+
+func TestGeneratorWiresNovelChildrenUnderPromotedResource(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("promonovel")
+	apiSpec.Resources = map[string]spec.Resource{
+		"qr": {
+			Description: "Manage QR codes",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {Method: "GET", Path: "/qr/{id}", Description: "Get QR code"},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "QR watcher",
+			Command:     "qr --watch",
+			Description: "Watch the promoted QR command.",
+			Example:     "promonovel-pp-cli qr qr-123 --watch",
+		},
+		{
+			Name:        "QR health",
+			Command:     "qr health --limit 10",
+			Description: "Summarize QR health.",
+			Example:     "promonovel-pp-cli qr health --limit 10",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, "rootCmd.AddCommand(newQrPromotedCmd(flags))")
+	assert.NotContains(t, root, "newNovelQrCmd")
+
+	promoted := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_qr.go")
+	assert.Contains(t, promoted, "cmd.AddCommand(newNovelQrHealthCmd(flags))")
+	health := readGeneratedFile(t, outputDir, "internal", "cli", "qr_health.go")
+	assert.Contains(t, health, `TODO: implement novel feature %q", "qr health"`)
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratorSkipsNovelFeatureStubsWhenNoCommandPath(t *testing.T) {
