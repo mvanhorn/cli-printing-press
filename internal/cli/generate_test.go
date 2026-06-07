@@ -1320,6 +1320,312 @@ func TestMergeSpecsPreservesPerSpecBaseURLPrefixes(t *testing.T) {
 	)
 }
 
+func TestMergeSpecsDeduplicatesSameEndpointResourceCollision(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+			"reports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/reports"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "analytics-admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+			"metadata": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/metadata"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "ga4")
+
+	assert.Contains(t, merged.Resources, "accounts")
+	assert.NotContains(t, merged.Resources, "analytics-admin-accounts")
+	assert.Equal(t, "/v1beta/accounts", merged.Resources["accounts"].Endpoints["list"].Path)
+}
+
+func TestMergeSpecsPrefixesDistinctEndpointResourceCollision(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+			"reports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/reports"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "analytics-admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1alpha/accounts"},
+				},
+			},
+			"metadata": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1alpha/metadata"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "ga4")
+
+	assert.Contains(t, merged.Resources, "accounts")
+	assert.Contains(t, merged.Resources, "analytics-admin-accounts")
+	assert.Equal(t, "/v1beta/accounts", merged.Resources["accounts"].Endpoints["list"].Path)
+	assert.Equal(t, "/v1alpha/accounts", merged.Resources["analytics-admin-accounts"].Endpoints["list"].Path)
+}
+
+func TestMergeSpecsDeduplicatesTrailingSlashEndpointResourceCollision(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+			"reports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/reports"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "analytics-admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts/"},
+				},
+			},
+			"metadata": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/metadata"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "ga4")
+
+	assert.Contains(t, merged.Resources, "accounts")
+	assert.NotContains(t, merged.Resources, "analytics-admin-accounts")
+	assert.Equal(t, "/v1beta/accounts", merged.Resources["accounts"].Endpoints["list"].Path)
+}
+
+func TestMergeSpecsNamePrefixOptInKeepsNamespacedResourceForm(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+			"reports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/reports"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "analytics-admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+			"metadata": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/metadata"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecsWithOptions([]*spec.APISpec{specA, specB}, "ga4", mergeSpecOptions{NamePrefix: true})
+
+	assert.NotContains(t, merged.Resources, "accounts")
+	assert.Contains(t, merged.Resources, "admin-accounts")
+	assert.Contains(t, merged.Resources, "analytics-admin-accounts")
+	assert.Equal(t, "/v1beta/accounts", merged.Resources["admin-accounts"].Endpoints["list"].Path)
+	assert.Equal(t, "/v1beta/accounts", merged.Resources["analytics-admin-accounts"].Endpoints["list"].Path)
+}
+
+func TestMergeSpecsNamePrefixDisambiguatesSameSpecNameCollision(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1beta/accounts"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "admin",
+		Version: "0.1.0",
+		BaseURL: "https://analytics.example.com",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v1alpha/accounts"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecsWithOptions([]*spec.APISpec{specA, specB}, "ga4", mergeSpecOptions{NamePrefix: true})
+
+	assert.Contains(t, merged.Resources, "admin-accounts")
+	assert.Contains(t, merged.Resources, "admin-accounts-2")
+	assert.Equal(t, "/v1beta/accounts", merged.Resources["admin-accounts"].Endpoints["list"].Path)
+	assert.Equal(t, "/v1alpha/accounts", merged.Resources["admin-accounts-2"].Endpoints["list"].Path)
+}
+
+func TestGenerateMultiSpecDeduplicatesSameEndpointResourceCollision(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specAPath := filepath.Join(dir, "admin.yaml")
+	specBPath := filepath.Join(dir, "analytics-admin.yaml")
+	outputDir := filepath.Join(dir, "ga4")
+	specA := `name: admin
+description: Admin API
+version: 0.1.0
+base_url: https://analytics.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/admin-pp-cli/config.toml
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /v1beta/accounts
+        description: List accounts
+  reports:
+    description: Reports
+    endpoints:
+      list:
+        method: GET
+        path: /v1beta/reports
+        description: List reports
+`
+	specB := `name: analytics-admin
+description: Analytics Admin API
+version: 0.1.0
+base_url: https://analytics.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/analytics-admin-pp-cli/config.toml
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /v1beta/accounts
+        description: List accounts
+  metadata:
+    description: Metadata
+    endpoints:
+      list:
+        method: GET
+        path: /v1beta/metadata
+        description: List metadata
+`
+	require.NoError(t, os.WriteFile(specAPath, []byte(specA), 0o644))
+	require.NoError(t, os.WriteFile(specBPath, []byte(specB), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specAPath,
+		"--spec", specBPath,
+		"--name", "ga4",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+
+	require.NoError(t, cmd.Execute())
+	root, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), "newAccountsPromotedCmd(flags)")
+	assert.NotContains(t, string(root), "newAnalyticsAdminAccountsPromotedCmd(flags)")
+}
+
 func TestMergeSpecsUnionsAuthScopesAndAdditionalHeaders(t *testing.T) {
 	t.Parallel()
 

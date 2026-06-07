@@ -136,6 +136,7 @@ func newGenerateCmd() *cobra.Command {
 	var planFile string
 	var trafficAnalysisPath string
 	var authPreference string
+	var namePrefix bool
 	var mcpOrchestration string
 	var mcpTransport []string
 	var mcpEndpointTools string
@@ -456,7 +457,7 @@ func newGenerateCmd() *cobra.Command {
 				if cliName == "" {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--name is required when using multiple specs")}
 				}
-				apiSpec = mergeSpecs(specs, cliName)
+				apiSpec = mergeSpecsWithOptions(specs, cliName, mergeSpecOptions{NamePrefix: namePrefix})
 			}
 
 			if err := applyGenerateSpecFlags(apiSpec, specSource, "", category, clientPattern, httpTransport, owner, generateMCPFlagOverrides{
@@ -597,6 +598,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&planFile, "plan", "", "Path to a markdown plan document for plan-driven generation (instead of --spec)")
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
 	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection and any catalog auth_preference; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one). When omitted, a matching embedded catalog entry's auth_preference applies for OpenAPI parsing.")
+	cmd.Flags().BoolVar(&namePrefix, "name-prefix", false, "Prefix resource command names with their source spec name when merging multiple specs")
 
 	return cmd
 }
@@ -1169,6 +1171,14 @@ func archiveSpecBytes(apiSpec *spec.APISpec, specs []*spec.APISpec, specRawBytes
 }
 
 func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
+	return mergeSpecsWithOptions(specs, name, mergeSpecOptions{})
+}
+
+type mergeSpecOptions struct {
+	NamePrefix bool
+}
+
+func mergeSpecsWithOptions(specs []*spec.APISpec, name string, opts mergeSpecOptions) *spec.APISpec {
 	if len(specs) == 1 {
 		return specs[0]
 	}
@@ -1221,8 +1231,15 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
 			}
 			key := multiSpecResourceName(s, resourceName, sharedPathPrefix)
-			if _, exists := merged.Resources[key]; exists {
-				key = s.Name + "-" + resourceName
+			if opts.NamePrefix {
+				key = prefixedMultiSpecResourceName(s, resourceName)
+			}
+			if existing, exists := merged.Resources[key]; exists {
+				if !opts.NamePrefix && resourceEndpointsCoveredBy(existing, resource) {
+					continue
+				}
+				key = prefixedMultiSpecResourceName(s, resourceName)
+				key = uniqueMultiSpecResourceName(merged.Resources, key)
 			}
 			resource = rewriteDefaultResourceDescription(resource, resourceName, key)
 			if key != resourceName {
@@ -1245,6 +1262,27 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	return merged
+}
+
+func prefixedMultiSpecResourceName(s *spec.APISpec, resourceName string) string {
+	specName := strings.Trim(strings.TrimSpace(s.Name), "-")
+	resourceName = strings.Trim(strings.TrimSpace(resourceName), "-")
+	if specName == "" || resourceName == "" || specName == resourceName || strings.HasPrefix(resourceName, specName+"-") {
+		return resourceName
+	}
+	return specName + "-" + resourceName
+}
+
+func uniqueMultiSpecResourceName(resources map[string]spec.Resource, preferred string) string {
+	if _, exists := resources[preferred]; !exists {
+		return preferred
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", preferred, i)
+		if _, exists := resources[candidate]; !exists {
+			return candidate
+		}
+	}
 }
 
 func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
@@ -1471,6 +1509,48 @@ func rewriteEndpointResourceRef(ref string, resourceRenames map[string]string) s
 		return renamed + "." + rest
 	}
 	return ref
+}
+
+func resourceEndpointsCoveredBy(existing, incoming spec.Resource) bool {
+	existingSignatures := resourceEndpointSignatures(existing)
+	incomingSignatures := resourceEndpointSignatures(incoming)
+	if len(existingSignatures) == 0 || len(incomingSignatures) == 0 {
+		return false
+	}
+	for signature := range incomingSignatures {
+		if _, ok := existingSignatures[signature]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func resourceEndpointSignatures(resource spec.Resource) map[string]struct{} {
+	signatures := map[string]struct{}{}
+	addResourceEndpointSignatures(signatures, resource)
+	return signatures
+}
+
+func addResourceEndpointSignatures(signatures map[string]struct{}, resource spec.Resource) {
+	for _, endpoint := range resource.Endpoints {
+		signatures[endpointSignature(resource, endpoint)] = struct{}{}
+	}
+	for _, sub := range resource.SubResources {
+		if sub.BaseURL == "" {
+			sub.BaseURL = resource.BaseURL
+		}
+		addResourceEndpointSignatures(signatures, sub)
+	}
+}
+
+func endpointSignature(resource spec.Resource, endpoint spec.Endpoint) string {
+	baseURL := strings.TrimRight(strings.TrimSpace(endpoint.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(resource.BaseURL), "/")
+	}
+	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
+	path := strings.TrimRight(strings.TrimSpace(endpoint.Path), "/")
+	return method + " " + baseURL + " " + path
 }
 
 func multiSpecResourceName(s *spec.APISpec, resourceName string, sharedPathPrefix []string) string {
