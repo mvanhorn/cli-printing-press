@@ -11,10 +11,13 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// version is the printed MCP server's version, overridable at build time via ldflags.
+var version = "1.0.0"
+
 func main() {
 	s := server.NewMCPServer(
 		"BLE Temperature Sensor",
-		"1.0.0",
+		version,
 		server.WithToolCapabilities(false),
 	)
 	mcptools.RegisterTools(s)

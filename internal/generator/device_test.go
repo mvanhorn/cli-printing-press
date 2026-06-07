@@ -163,6 +163,15 @@ func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {
 	assert.FileExists(t, filepath.Join(outputDir, "cmd", naming.MCP(ds.Name), "main.go"))
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "mcp", "cobratree", "walker.go"))
 
+	mcpMainSrc, err := os.ReadFile(filepath.Join(outputDir, "cmd", naming.MCP(ds.Name), "main.go"))
+	require.NoError(t, err)
+	mcpMain := string(mcpMainSrc)
+	// The MCP server version must be an ldflag-overridable var, not a hardcoded
+	// literal — the device .goreleaser injects -X main.version at release time, so
+	// a bare "1.0.0" in NewMCPServer would make that injection a silent no-op.
+	assert.Contains(t, mcpMain, `var version = "1.0.0"`)
+	assert.NotContains(t, mcpMain, "\n\t\t\"1.0.0\",\n\t\tserver.WithToolCapabilities(false),")
+
 	toolsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	tools := string(toolsSrc)
