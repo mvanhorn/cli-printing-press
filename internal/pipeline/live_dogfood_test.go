@@ -791,6 +791,80 @@ exit 1
 	assert.Equal(t, "2", string(count), "persistent auth-shaped 401 should retry once before skip classification")
 }
 
+func TestRunLiveDogfoodRefreshesStageBinaryBeforeResolving(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the stale staged binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/live-dogfood-test\n\ngo 1.23\n"), 0o644))
+	cmdDir := filepath.Join(dir, "cmd", binaryName)
+	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	mainPath := filepath.Join(cmdDir, "main.go")
+	agentContext := `{"commands":[{"name":"widgets","subcommands":[{"name":"list"}]}]}`
+	help := `List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list
+
+Flags:
+      --json    Output JSON
+`
+	mainSource := fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	switch strings.Join(args, " ") {
+	case "agent-context":
+		fmt.Print(%q)
+	case "widgets list --help":
+		fmt.Print(%q)
+	case "widgets list", "widgets list --json":
+		fmt.Print(%q)
+	default:
+		fmt.Fprintf(os.Stderr, "unexpected args: %%v\n", args)
+		os.Exit(2)
+	}
+}
+`, agentContext, help, `{"ok":true}`)
+	require.NoError(t, os.WriteFile(mainPath, []byte(mainSource), 0o644))
+
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stagedPath := filepath.Join(stagedBinDir, binaryName)
+	require.NoError(t, os.WriteFile(stagedPath, []byte("#!/bin/sh\necho 'stale staged binary' >&2\nexit 2\n"), 0o755))
+	oldTime := time.Now().Add(-2 * time.Hour)
+	newTime := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, os.Chtimes(stagedPath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(mainPath, newTime, newTime))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "quick",
+		Timeout:    5 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Zero(t, report.Failed)
+	wantBinary, err := filepath.Abs(stagedPath)
+	require.NoError(t, err)
+	assert.Equal(t, wantBinary, report.Binary)
+	happy := findResultByCommandKind(report, "widgets list", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status)
+}
+
 func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -1616,6 +1690,44 @@ func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "your credentials are valid but lack access"}))
 	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: `HTTP 401: {"error":"Couldn't authenticate you"}`}))
 	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 404 NotFound"}))
+}
+
+func TestLiveDogfoodAuth401OutputMatchesGooglePhrases(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name: "login required",
+			output: `Error: GET /youtube/v3/videoAbuseReportReasons returned HTTP 401: {
+  "error": {"message": "Login Required."}
+}`,
+			want: true,
+		},
+		{
+			name: "missing required authentication credential",
+			output: `Error: GET /youtube/v3/videoAbuseReportReasons returned HTTP 401: {
+  "error": {"message": "Request is missing required authentication credential."}
+}`,
+			want: true,
+		},
+		{
+			name:   "non 401",
+			output: `Error: GET /widgets returned HTTP 404: {"error":"not found"}`,
+			want:   false,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, liveDogfoodAuth401Output(strings.ToLower(tt.output)))
+		})
+	}
 }
 
 func TestLiveDogfoodRequiredParamFixtureReason(t *testing.T) {
