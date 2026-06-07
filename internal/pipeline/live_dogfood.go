@@ -85,13 +85,14 @@ type LiveDogfoodReport struct {
 }
 
 type LiveDogfoodTestResult struct {
-	Command      string              `json:"command"`
-	Kind         LiveDogfoodTestKind `json:"kind"`
-	Args         []string            `json:"args"`
-	Status       LiveDogfoodStatus   `json:"status"`
-	ExitCode     int                 `json:"exit_code,omitempty"`
-	Reason       string              `json:"reason,omitempty"`
-	OutputSample string              `json:"output_sample,omitempty"`
+	Command       string              `json:"command"`
+	Kind          LiveDogfoodTestKind `json:"kind"`
+	Args          []string            `json:"args"`
+	Status        LiveDogfoodStatus   `json:"status"`
+	ExitCode      int                 `json:"exit_code,omitempty"`
+	Reason        string              `json:"reason,omitempty"`
+	FixtureSource string              `json:"fixture_source,omitempty"`
+	OutputSample  string              `json:"output_sample,omitempty"`
 }
 
 type liveDogfoodCommand struct {
@@ -180,7 +181,9 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		timeout:          timeout,
 		authTier:         resolveLiveDogfoodAuthTier(opts.AuthTier),
 		allowDestructive: opts.AllowDestructive,
+		storeDBPath:      liveDogfoodDefaultDBPath(liveDogfoodCLINameForStore(binaryPath, opts.BinaryName)),
 	}
+	runLiveDogfoodPreSync(commands, ctx)
 
 	for _, command := range commands {
 		commandName := strings.Join(command.Path, " ")
@@ -536,6 +539,7 @@ type resolveCtx struct {
 	timeout          time.Duration
 	authTier         string
 	allowDestructive bool
+	storeDBPath      string
 }
 
 func newCompanionCache() *companionCache {
@@ -543,6 +547,51 @@ func newCompanionCache() *companionCache {
 		results: map[string]string{},
 		helps:   map[string]string{},
 	}
+}
+
+func liveDogfoodCLINameForStore(binaryPath, requestedName string) string {
+	name := strings.TrimSpace(requestedName)
+	if name == "" {
+		name = filepath.Base(binaryPath)
+	}
+	name = strings.TrimSuffix(name, ".exe")
+	name = strings.TrimSuffix(name, "-dogfood")
+	return name
+}
+
+func liveDogfoodDefaultDBPath(cliName string) string {
+	if cliName == "" {
+		return ""
+	}
+	home := currentSubprocessHome()
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+	}
+	return filepath.Join(home, ".local", "share", cliName, "data.db")
+}
+
+func runLiveDogfoodPreSync(commands []liveDogfoodCommand, ctx resolveCtx) {
+	if ctx.binaryPath == "" {
+		return
+	}
+	for _, command := range commands {
+		if len(command.Path) == 1 && command.Path[0] == "sync" {
+			_ = runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, []string{"sync"}, liveDogfoodPreSyncTimeout(ctx.timeout))
+			return
+		}
+	}
+}
+
+func liveDogfoodPreSyncTimeout(timeout time.Duration) time.Duration {
+	const maxPreSyncTimeout = 5 * time.Second
+	if timeout <= 0 || timeout > maxPreSyncTimeout {
+		return maxPreSyncTimeout
+	}
+	return timeout
 }
 
 // buildSiblingMap groups commands by their joined parent path so the chain
@@ -581,20 +630,21 @@ func findListCompanion(candidates []liveDogfoodCommand) *liveDogfoodCommand {
 // nested resources (projects/tasks/update <pid> <tid>) work end-to-end.
 //
 // Returns:
-//   - (newArgs, false, "")   — placeholders substituted; run happy_path with newArgs
-//   - (nil, true, reason)    — chain broke; caller must skip happy_path + json_fidelity
-//   - (happyArgs, false, "") — no positionals at all; pass-through unchanged
-func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, ctx resolveCtx) ([]string, bool, string) {
+//   - (newArgs, false, "", source)   - placeholders substituted; run happy_path with newArgs
+//   - (happyArgs, false, "", source) - store was empty; run the synthetic example unchanged
+//   - (nil, true, reason, "")        - chain broke before an ID fixture source was available
+//   - (happyArgs, false, "", "")     - no positionals at all; pass-through unchanged
+func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, ctx resolveCtx) ([]string, bool, string, string) {
 	// pp:happy-args already supplies real positional values, so the args are
 	// authoritative — skip placeholder re-resolution, which would otherwise
 	// overwrite them via the list companion or skip the command when no
 	// companion is reachable.
 	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) != "" {
-		return happyArgs, false, ""
+		return happyArgs, false, "", ""
 	}
 	placeholders := extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))
 	if len(placeholders) == 0 {
-		return happyArgs, false, ""
+		return happyArgs, false, "", ""
 	}
 
 	pathLen := len(command.Path)
@@ -603,10 +653,11 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 		// More placeholders than path segments before the verb. Unusual
 		// shape (top-level command with multiple positionals); skip.
 		return nil, true, fmt.Sprintf(
-			"command path %v has fewer segments than placeholders (%d)", command.Path, nPlaceholders)
+			"command path %v has fewer segments than placeholders (%d)", command.Path, nPlaceholders), ""
 	}
 
 	resolved := make([]string, 0, nPlaceholders)
+	storeResolved := 0
 	for i, name := range placeholders {
 		nameLower := strings.ToLower(name)
 		// id-shape covers: bare "id", snake_case "*_id", or camelCase "*id"
@@ -616,14 +667,22 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 		isIDShape := nameLower == "id" ||
 			(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2)
 		if !isIDShape {
-			return nil, true, fmt.Sprintf("non-id positional %q at depth %d", name, i)
+			return nil, true, fmt.Sprintf("non-id positional %q at depth %d", name, i), ""
 		}
 
 		// parent path of the verb that expects this placeholder.
-		siblingKey := strings.Join(command.Path[:pathLen-nPlaceholders+i], " ")
+		parentPath := command.Path[:pathLen-nPlaceholders+i]
+		siblingKey := strings.Join(parentPath, " ")
 		listCmd := findListCompanion(ctx.siblings[siblingKey])
 		if listCmd == nil {
-			return nil, true, fmt.Sprintf("no list companion at depth %d for %q", i, name)
+			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
+				storeResolved++
+				resolved = append(resolved, id)
+				continue
+			} else if storeAvailable {
+				return happyArgs, false, "", "synthetic"
+			}
+			return nil, true, fmt.Sprintf("no list companion at depth %d for %q", i, name), ""
 		}
 
 		listArgs := append([]string{}, listCmd.Path...)
@@ -639,8 +698,15 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 				// Negative-cache sentinel: this companion already failed in this
 				// run. Skip immediately so sibling get-shape commands sharing
 				// the same companion don't each block on the same 30s timeout.
+				if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
+					storeResolved++
+					resolved = append(resolved, id)
+					continue
+				} else if storeAvailable {
+					return happyArgs, false, "", "synthetic"
+				}
 				return nil, true, fmt.Sprintf(
-					"list companion previously failed at depth %d for %q", i, name)
+					"list companion previously failed at depth %d for %q", i, name), ""
 			}
 			resolved = append(resolved, id)
 			continue
@@ -649,22 +715,140 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 		run := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, listArgs, ctx.timeout)
 		if run.exitCode != 0 {
 			ctx.cache.results[cacheKey] = "" // negative-cache sentinel
+			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
+				storeResolved++
+				resolved = append(resolved, id)
+				continue
+			} else if storeAvailable {
+				return happyArgs, false, "", "synthetic"
+			}
 			return nil, true, fmt.Sprintf(
-				"list companion failed at depth %d: exit %d", i, run.exitCode)
+				"list companion failed at depth %d: exit %d", i, run.exitCode), ""
 		}
 
 		id, ok := extractFirstIDFromJSON(run.stdout)
 		if !ok {
 			ctx.cache.results[cacheKey] = "" // negative-cache sentinel
+			if id, ok, storeAvailable := resolveStoreFixtureID(name, parentPath, ctx); ok {
+				storeResolved++
+				resolved = append(resolved, id)
+				continue
+			} else if storeAvailable {
+				return happyArgs, false, "", "synthetic"
+			}
 			return nil, true, fmt.Sprintf(
-				"no id parseable from companion at depth %d", i)
+				"no id parseable from companion at depth %d", i), ""
 		}
 
 		ctx.cache.results[cacheKey] = id
 		resolved = append(resolved, id)
 	}
 
-	return substitutePositionals(happyArgs, command.Path, resolved), false, ""
+	fixtureSource := ""
+	if storeResolved == nPlaceholders {
+		fixtureSource = "store"
+	}
+	return substitutePositionals(happyArgs, command.Path, resolved), false, "", fixtureSource
+}
+
+func resolveStoreFixtureID(placeholder string, parentPath []string, ctx resolveCtx) (string, bool, bool) {
+	return liveDogfoodStoreFixtureID(ctx.storeDBPath, storeResourceCandidates(placeholder, parentPath), ctx.timeout)
+}
+
+func liveDogfoodStoreFixtureID(dbPath string, candidates []string, timeout time.Duration) (string, bool, bool) {
+	if dbPath == "" || len(candidates) == 0 {
+		return "", false, false
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		return "", false, false
+	}
+	sqlite, err := exec.LookPath("sqlite3")
+	if err != nil {
+		return "", false, false
+	}
+	table, err := runSQLiteScalar(sqlite, dbPath, `SELECT name FROM sqlite_master WHERE type='table' AND name='resources'`, timeout)
+	if err != nil {
+		return "", false, false
+	}
+	if strings.TrimSpace(table) == "" {
+		return "", false, true
+	}
+	query := fmt.Sprintf(
+		"SELECT id FROM resources WHERE resource_type IN (%s) ORDER BY updated_at DESC LIMIT 1",
+		sqlLiteralList(candidates),
+	)
+	id, err := runSQLiteScalar(sqlite, dbPath, query, timeout)
+	if err != nil {
+		return "", false, true
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", false, true
+	}
+	if line, _, ok := strings.Cut(id, "\n"); ok {
+		id = strings.TrimSpace(line)
+	}
+	return id, true, true
+}
+
+func runSQLiteScalar(sqlite, dbPath, query string, timeout time.Duration) (string, error) {
+	if timeout <= 0 || timeout > 2*time.Second {
+		timeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, sqlite, "-batch", "-noheader", dbPath, query)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", ctx.Err()
+	}
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func storeResourceCandidates(placeholder string, parentPath []string) []string {
+	var out []string
+	add := func(v string) {
+		v = strings.Trim(strings.ToLower(v), " <>{}[]()")
+		v = strings.TrimSuffix(v, "_id")
+		v = strings.TrimSuffix(v, "-id")
+		if strings.HasSuffix(v, "id") && len(v) > 2 {
+			v = strings.TrimSuffix(v, "id")
+			v = strings.TrimRight(v, "-_")
+		}
+		v = strings.Trim(v, "-_ ")
+		if v == "" {
+			return
+		}
+		variants := []string{v, strings.ReplaceAll(v, "_", "-"), strings.ReplaceAll(v, "-", "_")}
+		for _, variant := range variants {
+			if variant == "" || slices.Contains(out, variant) {
+				continue
+			}
+			out = append(out, variant)
+			if !strings.HasSuffix(variant, "s") {
+				plural := variant + "s"
+				if !slices.Contains(out, plural) {
+					out = append(out, plural)
+				}
+			}
+		}
+	}
+	if len(parentPath) > 0 {
+		add(parentPath[len(parentPath)-1])
+	}
+	add(placeholder)
+	return out
+}
+
+func sqlLiteralList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, "'"+strings.ReplaceAll(value, "'", "''")+"'")
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // substitutePositionals replaces the first len(resolved) non-flag args in
@@ -960,7 +1144,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
-	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
+	resolvedArgs, resolveSkipped, resolveReason, fixtureSource := resolveCommandPositionals(command, happyArgs, ctx)
 	switch {
 	case fixtureSkip != "":
 		results = append(results,
@@ -982,6 +1166,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 
 		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun)
+		happyResult.FixtureSource = fixtureSource
 		if happyRun.exitCode == 0 {
 			happyResult.Status = LiveDogfoodStatusPass
 			happyResult.Reason = ""
@@ -996,11 +1181,14 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 
 		if happyResult.Status == LiveDogfoodStatusSkip &&
 			(happyResult.Reason == reasonUnavailableRunnerCredentials || happyResult.Reason == reasonRequiredParamFixture) {
-			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason))
+			jsonResult := skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason)
+			jsonResult.FixtureSource = fixtureSource
+			results = append(results, jsonResult)
 		} else if commandSupportsJSON(command.Help) {
 			jsonArgs := appendJSONArg(runArgs)
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
+			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
 				if jsonRun.stdoutTruncated || !validLiveDogfoodJSONOutput(jsonRun.stdout) {
 					jsonResult.Status = LiveDogfoodStatusFail
