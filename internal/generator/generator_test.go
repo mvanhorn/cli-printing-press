@@ -15379,27 +15379,27 @@ func TestGenerateMCPCodeOrchestrationSkippedByDefault(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "code_orch.go must not be emitted without orchestration: code")
 }
 
-// TestGenerateMCPNewClientSkipsCache proves that newMCPClient sets
+// TestGenerateMCPNewClientUsesPoliteRateLimitAndSkipsCache proves that
+// newMCPClient keeps MCP calls on the adaptive limiter path and sets
 // c.NoCache = true. Agents calling through MCP need fresh data every call;
 // the on-disk response cache survives across MCP server invocations, so
 // without this the next GET after a DELETE/PATCH returns the pre-mutation
 // snapshot for up to the cache TTL. Interactive CLI commands construct
 // their own client and are unaffected.
-func TestGenerateMCPNewClientSkipsCache(t *testing.T) {
+func TestGenerateMCPNewClientUsesPoliteRateLimitAndSkipsCache(t *testing.T) {
 	t.Parallel()
 
 	t.Run("default spec source", func(t *testing.T) {
 		t.Parallel()
-		assertNewMCPClientSkipsCache(t, "")
+		assertNewMCPClientUsesPoliteRateLimitAndSkipsCache(t, "")
 	})
 
-	// SpecSource=sniffed takes the rate-limited branch in the template
-	// (client.New(cfg, 30*time.Second, 2) instead of ..., 0). The cache
-	// bypass must apply on both branches; this guards against a future
-	// edit moving NoCache=true inside one of the if/else arms.
+	// SpecSource=sniffed already defaulted to a paced client. Keep it on the
+	// same MCP default path as other specs so future edits cannot reintroduce
+	// an unpaced branch.
 	t.Run("sniffed spec source", func(t *testing.T) {
 		t.Parallel()
-		assertNewMCPClientSkipsCache(t, "sniffed")
+		assertNewMCPClientUsesPoliteRateLimitAndSkipsCache(t, "sniffed")
 	})
 
 	t.Run("interactive CLI client is not statically NoCache=true", func(t *testing.T) {
@@ -15419,10 +15419,10 @@ func TestGenerateMCPNewClientSkipsCache(t *testing.T) {
 	})
 }
 
-// assertNewMCPClientSkipsCache generates a CLI from loops.yaml with the
-// given SpecSource and asserts the MCP server's newMCPClient bypasses the
-// response cache.
-func assertNewMCPClientSkipsCache(t *testing.T, specSource string) {
+// assertNewMCPClientUsesPoliteRateLimitAndSkipsCache generates a CLI from
+// loops.yaml with the given SpecSource and asserts the MCP server's
+// newMCPClient is paced and bypasses the response cache.
+func assertNewMCPClientUsesPoliteRateLimitAndSkipsCache(t *testing.T, specSource string) {
 	t.Helper()
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
 	require.NoError(t, err)
@@ -15433,8 +15433,16 @@ func assertNewMCPClientSkipsCache(t *testing.T, specSource string) {
 
 	toolsData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(toolsData), "c.NoCache = true",
+	toolsBody := string(toolsData)
+	assert.Contains(t, toolsBody, "defaultMCPRateLimit = 2",
+		"newMCPClient must use a non-zero MCP rate limit so agent fan-out stays paced")
+	assert.Contains(t, toolsBody, "client.New(cfg, 60*time.Second, defaultMCPRateLimit)",
+		"newMCPClient must pass the MCP rate limit to the generated client")
+	assert.NotContains(t, toolsBody, "client.New(cfg, 60*time.Second, 0)",
+		"newMCPClient must not disable rate limiting for MCP-driven calls")
+	assert.Contains(t, toolsBody, "c.NoCache = true",
 		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestGenerateWaitForJobBypassesResponseCache proves that the polling loop

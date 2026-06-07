@@ -41,6 +41,10 @@ import (
 const (
 	mcpToolResultMaxBytes = 60000
 	mcpToolResultMaxItems = 50
+	// MCP hosts can fan out tool calls faster than a human CLI session.
+	// Keep them on the same polite-client limiter path instead of disabling
+	// pacing with rate=0; users can still tune human CLI calls with --rate-limit.
+	defaultMCPRateLimit = 2
 )
 
 // RegisterTools registers all API operations as MCP tools.
@@ -818,11 +822,7 @@ func newMCPConfig() (*config.Config, error) {
 
 func newMCPClientFromConfig(cfg *config.Config) *client.Client {
 {{- end}}
-{{- if eq .SpecSource "sniffed"}}
-	c := client.New(cfg, 60*time.Second, 2)
-{{- else}}
-	c := client.New(cfg, 60*time.Second, 0)
-{{- end}}
+	c := client.New(cfg, 60*time.Second, defaultMCPRateLimit)
 	// Agents calling through MCP need fresh data every call. The on-disk
 	// response cache survives across MCP server invocations, so a
 	// DELETE/PATCH followed by a GET would otherwise return the
