@@ -121,7 +121,7 @@ func TestHasTrailingSQLStatement(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := hasTrailingSQLStatement(c.query); got != c.want {
-			t.Errorf("hasTrailingSQLStatement(%s, %q) = %v, want %v", c.name, c.query, got, c.want)
+			t.Errorf("hasTrailingSQLStatement(%q) [%s] = %v, want %v", c.query, c.name, got, c.want)
 		}
 	}
 }

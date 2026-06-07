@@ -625,7 +625,7 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 func validateReadOnlyQuery(query string) error {
 	stripped := stripLeadingSQLNoise(query)
 	if hasTrailingSQLStatement(stripped) {
-		return fmt.Errorf("only a single SELECT statement is allowed")
+		return fmt.Errorf("only a single SELECT or WITH statement is allowed")
 	}
 	upper := strings.ToUpper(stripped)
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
