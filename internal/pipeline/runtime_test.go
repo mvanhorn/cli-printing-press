@@ -261,7 +261,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("warns when sync command is absent", func(t *testing.T) {
 		binary := buildNoSyncDataPipelineProbeBinary(t)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.True(t, pass)
 		assert.Equal(t, "WARN: no sync command — data-pipeline check skipped", detail)
@@ -270,7 +270,7 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	t.Run("fails when sync command exists but crashes", func(t *testing.T) {
 		binary := buildFailingSyncDataPipelineProbeBinary(t)
 
-		pass, detail := runDataPipelineTest(binary, "mock", os.Environ, 2)
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
 
 		assert.False(t, pass)
 		assert.Equal(t, "FAIL: sync crashed", detail)
@@ -718,26 +718,6 @@ func dbArg(args []string) string {
 	return ""
 }
 `, rowCount))
-	binaryPath := filepath.Join(dir, "test-cli")
-	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
-	out, err := buildCmd.CombinedOutput()
-	require.NoError(t, err, "building test binary: %s", string(out))
-	return binaryPath
-}
-
-func buildNoSyncDataPipelineProbeBinary(t *testing.T) string {
-	t.Helper()
-
-	dir := t.TempDir()
-	mainFile := filepath.Join(dir, "main.go")
-	writeTestFile(t, mainFile, `package main
-
-import "os"
-
-func main() {
-	os.Exit(1)
-}
-`)
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
