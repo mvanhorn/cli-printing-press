@@ -80,7 +80,8 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// api_name, manifest.json's name/entry_point, and
 	// cmd/<slug>-pp-{cli,mcp}/ directories under the title-derived slug
 	// — silently flipping a "telegram" CLI to "telegram-bot" mid-sync.
-	if prior := applyManifestNameOverride(cliDir, parsed); prior != "" {
+	prior, manifestNameAuthoritative := applyManifestNameOverride(cliDir, parsed)
+	if prior != "" {
 		fmt.Fprintf(os.Stderr, "mcp-sync: using manifest api_name %q over spec-derived slug %q\n", parsed.Name, prior)
 	}
 	applyCatalogMetadata(parsed)
@@ -97,12 +98,14 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// spec with a stale top-level `name:` field) by rewriting the line in
 	// place. For OpenAPI/GraphQL specs the fix is too invasive, so it
 	// falls through to the validator's --force-required error.
-	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
-	if err != nil && !opts.Force {
-		return Result{}, err
-	}
-	if renamedFrom != "" {
-		fmt.Fprintf(os.Stderr, "mcp-sync: rewrote spec.yaml name from %q to %q to match directory-derived slug\n", renamedFrom, parsed.Name)
+	if !manifestNameAuthoritative {
+		renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+		if err != nil && !opts.Force {
+			return Result{}, err
+		}
+		if renamedFrom != "" {
+			fmt.Fprintf(os.Stderr, "mcp-sync: rewrote spec.yaml name from %q to %q to match directory-derived slug\n", renamedFrom, parsed.Name)
+		}
 	}
 	// Preserve the existing manifest.json's display_name onto the parsed
 	// spec when the spec itself doesn't carry one. Library CLIs printed
@@ -492,13 +495,17 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 // roots) are left alone.
 const defaultConfigPathFormat = "~/.config/%s/config.toml"
 
-// applyManifestNameOverride replaces parsed.Name with the existing
-// CLI manifest's api_name when the two diverge. Returns the prior
-// parsed.Name when an override happened, "" otherwise (manifest
-// missing, api_name empty, or values already agreed).
-func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) string {
+// applyManifestNameOverride aligns parsed.Name with the existing CLI manifest's
+// api_name (the operator's chosen identity). It returns the prior parsed.Name
+// when an override actually happened ("" otherwise: manifest missing, api_name
+// empty, or the values already agreed) and authoritative=true when the manifest
+// api_name is the identity of record — i.e. it either overrode parsed.Name or
+// already matched it. The manifest is read exactly once, and the trimmed
+// api_name is used for both the comparison and the assignment so a hand-edited
+// manifest with stray whitespace can't leak a padded name downstream.
+func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) (prior string, authoritative bool) {
 	if parsed == nil {
-		return ""
+		return "", false
 	}
 	m, err := pipeline.ReadCLIManifest(cliDir)
 	if err != nil {
@@ -510,18 +517,22 @@ func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) string {
 		if !errors.Is(err, fs.ErrNotExist) {
 			fmt.Fprintf(os.Stderr, "mcp-sync: could not read .printing-press.json (%v); falling back to spec-derived slug\n", err)
 		}
-		return ""
+		return "", false
 	}
-	if m.APIName == "" || m.APIName == parsed.Name {
-		return ""
+	apiName := strings.TrimSpace(m.APIName)
+	if apiName == "" {
+		return "", false
 	}
-	prior := parsed.Name
+	if apiName == parsed.Name {
+		return "", true
+	}
+	prior = parsed.Name
 	if parsed.Config.Path == fmt.Sprintf(defaultConfigPathFormat, naming.CLI(prior)) {
-		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(m.APIName))
+		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(apiName))
 	}
-	catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, m.APIName)
-	parsed.Name = m.APIName
-	return prior
+	catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, apiName)
+	parsed.Name = apiName
+	return prior, true
 }
 
 func applyCatalogMetadata(parsed *spec.APISpec) {
@@ -656,10 +667,21 @@ var internalSpecNameLine = regexp.MustCompile(`(?m)^name:[ \t]*.*$`)
 // silently. The non-empty renamedFrom return signals the caller to
 // log the rename.
 func reconcileSpecNameWithDir(cliDir string, parsed *spec.APISpec) (renamedFrom string, err error) {
-	if parsed == nil || parsed.Name == "" {
+	if parsed == nil {
 		return "", nil
 	}
 	expected := naming.TrimCLISuffix(filepath.Base(cliDir))
+	if parsed.Name == "" {
+		specPath, data, ok := findInternalYAMLSpec(cliDir)
+		if ok && !internalSpecNameLine.Match(data) {
+			rewritten := append([]byte("name: "+expected+"\n"), data...)
+			if err := writeFileAtomic(specPath, rewritten); err != nil {
+				return "", fmt.Errorf("rewriting %s: %w", specPath, err)
+			}
+		}
+		parsed.Name = expected
+		return "", nil
+	}
 	if expected == parsed.Name {
 		return "", nil
 	}
