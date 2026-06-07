@@ -2057,7 +2057,7 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 						Path:     "/v1/events",
 						Response: spec.ResponseDef{Type: "array"},
 						Params: []spec.Param{
-							{Name: "since", Type: "string"},
+							{Name: "since", Type: "string", Format: "date-time"},
 						},
 					},
 				},
@@ -2069,7 +2069,7 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 						Path:     "/v1/audit",
 						Response: spec.ResponseDef{Type: "array"},
 						Params: []spec.Param{
-							{Name: "updated_after", Type: "string"},
+							{Name: "updated_after", Type: "string", Format: "date"},
 						},
 					},
 				},
@@ -2119,9 +2119,11 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 
 	require.Contains(t, byName, "events")
 	assert.Equal(t, "since", byName["events"].SinceParam, "literal since param should propagate verbatim")
+	assert.Equal(t, "date-time", byName["events"].SinceParamFormat, "date-time format should propagate for RFC3339 temporal filters")
 
 	require.Contains(t, byName, "audit")
 	assert.Equal(t, "updated_after", byName["audit"].SinceParam, "spec-declared name (not the profile-wide guess) wins")
+	assert.Equal(t, "date", byName["audit"].SinceParamFormat, "date format should propagate so sync can send YYYY-MM-DD")
 
 	require.Contains(t, byName, "posts")
 	assert.Equal(t, "modified_since", byName["posts"].SinceParam, "modified_since heuristic branch")
