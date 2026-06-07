@@ -190,6 +190,12 @@ type Options struct {
 	// Off by default.
 	Force bool
 
+	// BaseDir optionally points at the original template emission for the
+	// snapshot tree. When a snapshot file is byte-identical to BaseDir's copy,
+	// any difference from fresh is template version drift, not a hand edit, so
+	// fresh is authoritative.
+	BaseDir string
+
 	// NovelOnly restricts MergeIntoFreshTree to preserve only NOVEL and
 	// NOVEL-COLLISION files; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT,
 	// and TEMPLATED-VALUE-DRIFT are left as fresh emitted them, and lost
@@ -218,6 +224,13 @@ func Classify(publishedDir, freshDir string, opts Options) (*MergeReport, error)
 	if err != nil {
 		return nil, fmt.Errorf("resolving fresh dir: %w", err)
 	}
+	baseAbs := ""
+	if opts.BaseDir != "" {
+		baseAbs, err = filepath.Abs(opts.BaseDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolving base dir: %w", err)
+		}
+	}
 
 	// CWD-prefix containment is checked only on the published tree; that's
 	// the destructive target. fresh is read-only input — no Apply step
@@ -232,7 +245,7 @@ func Classify(publishedDir, freshDir string, opts Options) (*MergeReport, error)
 		FreshDir: freshAbs,
 	}
 
-	files, err := classifyFiles(pubAbs, freshAbs)
+	files, err := classifyFiles(pubAbs, freshAbs, baseAbs)
 	if err != nil {
 		return nil, fmt.Errorf("classifying files: %w", err)
 	}
