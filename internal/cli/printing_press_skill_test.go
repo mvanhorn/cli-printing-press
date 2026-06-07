@@ -73,3 +73,25 @@ func TestPrintingPressSkillReachabilityGateAllowsLANOnlyCarveout(t *testing.T) {
 	require.Contains(t, content, "do not use this carve-out for normal public/cloud origins such as `https://api.example.com`")
 	require.Contains(t, content, "those still run the reachability probe and decision matrix below")
 }
+
+func TestPrintingPressSkillRebuildsStaleRepoLocalBinary(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("../../skills/printing-press/SKILL.md")
+	require.NoError(t, err)
+	setupChecks, err := os.ReadFile("../../skills/printing-press/references/setup-checks.md")
+	require.NoError(t, err)
+
+	content := string(data)
+	require.Contains(t, content, "_source_press_version()")
+	require.Contains(t, content, "_rebuild_local_press_bin_if_stale()")
+	require.Contains(t, content, "[local-binary-stale] local build v$_local_v is older than source v$_source_v")
+	require.Contains(t, content, "go build -o ./cli-printing-press ./cmd/cli-printing-press")
+	require.Contains(t, content, "[local-binary-rebuilt] rebuilt $_scope_dir/cli-printing-press")
+	require.Contains(t, content, "hooks can be absent or")
+	require.NotContains(t, content, "always newer than the go-install version")
+
+	setupContent := string(setupChecks)
+	require.Contains(t, setupContent, "[local-binary-stale]` / `[local-binary-rebuilt]")
+	require.Contains(t, setupContent, "The repo-mode local binary was older than the checked-out source version")
+}
