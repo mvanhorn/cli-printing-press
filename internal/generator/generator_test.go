@@ -12182,10 +12182,11 @@ import (
 )
 
 type gqlLatestChoiceHandler struct {
-	forward  []map[string]any
-	backward []map[string]any
-	after    []map[string]any
-	calls    []string
+	forward              []map[string]any
+	backward             []map[string]any
+	after                []map[string]any
+	omitBackwardPageInfo bool
+	calls                []string
 }
 
 func (h *gqlLatestChoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -12200,10 +12201,12 @@ func (h *gqlLatestChoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	nodes := h.forward
 	hasNextPage := true
 	endCursor := "forward-end"
+	includePageInfo := true
 	if _, ok := req.Variables["last"]; ok {
 		h.calls = append(h.calls, "last")
 		nodes = h.backward
 		endCursor = "latest-end"
+		includePageInfo = !h.omitBackwardPageInfo
 	} else if _, ok := req.Variables["after"]; ok {
 		h.calls = append(h.calls, "after")
 		nodes = h.after
@@ -12213,15 +12216,18 @@ func (h *gqlLatestChoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		h.calls = append(h.calls, "first")
 	}
 
+	conn := map[string]any{
+		"nodes": nodes,
+	}
+	if includePageInfo {
+		conn["pageInfo"] = map[string]any{
+			"hasNextPage": hasNextPage,
+			"endCursor":   endCursor,
+		}
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"data": map[string]any{
-			"issues": map[string]any{
-				"nodes": nodes,
-				"pageInfo": map[string]any{
-					"hasNextPage": hasNextPage,
-					"endCursor":   endCursor,
-				},
-			},
+			"issues": conn,
 		},
 	})
 }
@@ -12234,6 +12240,11 @@ func runGraphQLLatestOnlyChoice(t *testing.T, forward, backward []map[string]any
 func runGraphQLLatestOnlyChoiceWithMaxPages(t *testing.T, forward, backward, after []map[string]any, maxPages int, wantCalls []string) (*gqlLatestChoiceHandler, *store.Store) {
 	t.Helper()
 	handler := &gqlLatestChoiceHandler{forward: forward, backward: backward, after: after}
+	return runGraphQLLatestOnlyChoiceWithHandler(t, handler, maxPages, wantCalls)
+}
+
+func runGraphQLLatestOnlyChoiceWithHandler(t *testing.T, handler *gqlLatestChoiceHandler, maxPages int, wantCalls []string) (*gqlLatestChoiceHandler, *store.Store) {
+	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
@@ -12333,19 +12344,19 @@ func TestGraphQLLatestOnlyReadsNestedTimestampFields(t *testing.T) {
 }
 
 func TestGraphQLLatestOnlyCanContinueAfterBackwardPageWins(t *testing.T) {
-	_, db := runGraphQLLatestOnlyChoiceWithMaxPages(t,
-		[]map[string]any{
+	handler := &gqlLatestChoiceHandler{
+		forward: []map[string]any{
 			{"id": "old-1", "title": "oldest first", "createdAt": "2021-08-02T00:00:00Z"},
 		},
-		[]map[string]any{
+		backward: []map[string]any{
 			{"id": "new-1", "title": "newest page", "createdAt": "2026-06-02T00:00:00Z"},
 		},
-		[]map[string]any{
+		after: []map[string]any{
 			{"id": "after-1", "title": "after latest", "createdAt": "2026-06-03T00:00:00Z"},
 		},
-		2,
-		[]string{"first", "last", "after"},
-	)
+		omitBackwardPageInfo: true,
+	}
+	_, db := runGraphQLLatestOnlyChoiceWithHandler(t, handler, 2, []string{"first", "last", "after"})
 	assertGraphQLLatestOnlyStored(t, db, "new-1", "old-1")
 	if _, err := db.Get("issues", "after-1"); err != nil {
 		t.Fatalf("wanted issue after-1 to be stored after latest page pagination: %v", err)

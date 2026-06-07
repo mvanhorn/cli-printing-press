@@ -474,9 +474,65 @@ func chooseGraphQLLatestPage(fieldPath string, forwardData, backwardData json.Ra
 	forwardTime, forwardOK := newestGraphQLConnectionTimestamp(fieldPath, forwardData)
 	backwardTime, backwardOK := newestGraphQLConnectionTimestamp(fieldPath, backwardData)
 	if forwardOK && backwardOK && backwardTime.After(forwardTime) {
+		if mergedData, ok := graphQLConnectionWithForwardPageInfo(fieldPath, forwardData, backwardData); ok {
+			return mergedData
+		}
 		return backwardData
 	}
 	return forwardData
+}
+
+func graphQLConnectionWithForwardPageInfo(fieldPath string, forwardData, chosenData json.RawMessage) (json.RawMessage, bool) {
+	var forwardRoot map[string]json.RawMessage
+	if err := json.Unmarshal(forwardData, &forwardRoot); err != nil {
+		return nil, false
+	}
+	forwardKey, forwardConnRaw := graphQLConnectionRaw(fieldPath, forwardRoot)
+	if forwardKey == "" || forwardConnRaw == nil {
+		return nil, false
+	}
+	var forwardConn map[string]json.RawMessage
+	if err := json.Unmarshal(forwardConnRaw, &forwardConn); err != nil {
+		return nil, false
+	}
+	pageInfo, ok := forwardConn["pageInfo"]
+	if !ok {
+		return nil, false
+	}
+
+	var chosenRoot map[string]json.RawMessage
+	if err := json.Unmarshal(chosenData, &chosenRoot); err != nil {
+		return nil, false
+	}
+	chosenKey, chosenConnRaw := graphQLConnectionRaw(fieldPath, chosenRoot)
+	if chosenKey == "" || chosenConnRaw == nil {
+		return nil, false
+	}
+	var chosenConn map[string]json.RawMessage
+	if err := json.Unmarshal(chosenConnRaw, &chosenConn); err != nil {
+		return nil, false
+	}
+	chosenConn["pageInfo"] = pageInfo
+	connData, err := json.Marshal(chosenConn)
+	if err != nil {
+		return nil, false
+	}
+	chosenRoot[chosenKey] = connData
+	mergedData, err := json.Marshal(chosenRoot)
+	if err != nil {
+		return nil, false
+	}
+	return mergedData, true
+}
+
+func graphQLConnectionRaw(fieldPath string, root map[string]json.RawMessage) (string, json.RawMessage) {
+	if connRaw, ok := root[fieldPath]; ok {
+		return fieldPath, connRaw
+	}
+	for key, connRaw := range root {
+		return key, connRaw
+	}
+	return "", nil
 }
 
 func newestGraphQLConnectionTimestamp(fieldPath string, data json.RawMessage) (time.Time, bool) {
@@ -484,13 +540,7 @@ func newestGraphQLConnectionTimestamp(fieldPath string, data json.RawMessage) (t
 	if err := json.Unmarshal(data, &root); err != nil {
 		return time.Time{}, false
 	}
-	connRaw, ok := root[fieldPath]
-	if !ok {
-		for _, v := range root {
-			connRaw = v
-			break
-		}
-	}
+	_, connRaw := graphQLConnectionRaw(fieldPath, root)
 	if connRaw == nil {
 		return time.Time{}, false
 	}
