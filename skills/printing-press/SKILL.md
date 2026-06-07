@@ -931,16 +931,18 @@ Before new research:
 
    If no CLI exists in the local library and no lock is active, run the **Public-library check** below before proceeding to Phase 1.
 
-   #### Public-library check (registry.json)
+   #### Public-library check (registry.json + blocked-apis.json)
 
    The local library check above only sees CLIs this machine has already printed. A user on a fresh checkout — or one who typed a slightly different name than the published slug (`Slack` vs `slack-bot`, `Cal` vs `cal-com`), or who described what they wanted in their own words (`Hacker News reader`, `Notion clone`, `prediction market`) — will miss CLIs that already exist in the public library. Scan `mvanhorn/printing-press-library/registry.json` to catch those cases before Phase 1 research begins (the expensive 30-60-minute portion of the pipeline).
+
+   The public library also carries `blocked-apis.json`, a shared journal of APIs that were attempted and put on hold for reachability or buildability reasons. Scan it in the same Phase 0 window so a user does not repeat an already-known dead-end run before the blocking issue is fixed.
 
    **Skip this check entirely when:**
    - The local-library check above already prompted (mutual exclusion — do not double-ask).
    - `BROWSER_SNIFF_TARGET_URL` is set (the user is building a from-website CLI; the registry indexes API CLIs and naming collisions are unlikely and intentional).
    - The user passed `--har <path>` with an explicit `--name <api>` for a private capture.
 
-   **Fetch the registry.** Match the pattern `/printing-press-import` and `/printing-press-reprint` already use:
+   **Fetch the registry and blocked journal.** Match the pattern `/printing-press-import` and `/printing-press-reprint` already use:
 
    ```bash
    REGISTRY=$(mktemp)
@@ -951,9 +953,51 @@ Before new research:
      rm -f "$REGISTRY"
      REGISTRY=""
    fi
+
+   BLOCKED_APIS=$(mktemp)
+   if ! gh api -H "Accept: application/vnd.github.v3.raw" \
+        repos/mvanhorn/printing-press-library/contents/blocked-apis.json \
+        > "$BLOCKED_APIS" 2>/dev/null; then
+     echo "Blocked-API journal check skipped: blocked-apis.json unreachable or absent. Proceeding with the registry check."
+     rm -f "$BLOCKED_APIS"
+     BLOCKED_APIS=""
+   fi
    ```
 
-   Do not block on a network failure. After step 4 finishes, clean up the tempfile only if the fetch succeeded: `[ -n "$REGISTRY" ] && rm -f "$REGISTRY"`. The failure branch above already removed it and set `REGISTRY=""`, so an unconditional `rm -f "$REGISTRY"` would run `rm -f ""`.
+   Do not block on a network failure or on a missing `blocked-apis.json` file. After step 4 finishes, clean up tempfiles only if the fetch succeeded: `[ -n "$REGISTRY" ] && rm -f "$REGISTRY"` and `[ -n "$BLOCKED_APIS" ] && rm -f "$BLOCKED_APIS"`. The failure branches above already removed each file and set its variable to empty, so an unconditional `rm -f "$REGISTRY"` or `rm -f "$BLOCKED_APIS"` would run `rm -f ""`.
+
+   **Read the blocked journal before reasoning about registry matches.** If `BLOCKED_APIS` is non-empty, read it directly. Expected shape:
+
+   ```json
+   [
+     {
+       "slug": "1001tracklists",
+       "attempted_at": "2026-05-25",
+       "verdict": "hold",
+       "reason": "Cloudflare Turnstile clearance gate; pure-HTTP cannot mint fsuid",
+       "blocking_issue": 2140,
+       "permanent": false
+     }
+   ]
+   ```
+
+   Entries are API-slug records, not printed-CLI registry entries. Match the user's requested API against `slug` using the same slug-normalization judgment as the registry check (`<api>`, `<api>-cli`, `<api>-pp-cli`, punctuation and case variants). Do not use vague category or description matching for the blocked journal. A false positive here stops a potentially valid run; only prompt when the entry appears to be the same API under a slug or brand spelling variant.
+
+   If a blocked entry matches, prompt before reading registry matches:
+
+   > "`<entry.slug>` was attempted on `<entry.attempted_at>` and held — `<entry.reason>`<tracking suffix>. The shared blocked-API journal exists so users do not repeat known unreachable or unbuildable runs before the blocker changes. Proceed anyway?"
+
+   Where `<tracking suffix>` is:
+   - ` (tracking #<entry.blocking_issue>; marked permanent)` when `blocking_issue` is non-null and `permanent` is `true`.
+   - ` (tracking #<entry.blocking_issue>)` when `blocking_issue` is non-null and `permanent` is `false`.
+   - ` (marked permanent)` when `permanent` is `true` and `blocking_issue` is `null`.
+   - empty when neither applies.
+
+   Options:
+   1. **Stop here (recommended)** — end this run. If a tracking issue is present, tell the user to re-attempt only after that issue closes or the journal entry is updated.
+   2. **Proceed anyway** — continue to the registry check and then Phase 1. Use this only when the user has new evidence that the blocker no longer applies or wants a deliberate fresh attempt.
+
+   If multiple blocked entries somehow match, pick the most recent `attempted_at` value and mention that additional older journal entries exist. If `blocked-apis.json` is malformed, print "Blocked-API journal check skipped: blocked-apis.json is malformed. Proceeding with the registry check." and continue; do not let a bad journal file block fresh prints.
 
    **Read the registry and reason about matches** — do not gate on string equality alone. The file is small (~88 KB, ~135 entries today); read it directly and use judgment. Each entry has fields `name` (slug), `category`, `api` (brand display), `description`, `path`, `printer`.
 
@@ -4520,13 +4564,16 @@ End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printi
 
 The CLI did not promote to library. The working copy is at `$CLI_WORK_DIR`; manuscripts and proofs are archived. Hold runs are the highest-value retro signal — something blocked the machine from reaching ship, and that signal is most valuable while session context is fresh.
 
+Before rendering the menu, decide whether this hold should offer a blocked-API journal entry. Offer journaling only when the one-line hold reason is a reachability or buildability blocker that would likely repeat for another user before a machine or upstream change, for example browser-clearance barriers, Cloudflare Turnstile, login/session surfaces that a pure-HTTP printed CLI cannot replay, unreachable official specs, or an upstream API that cannot be called from generated code. Do not offer journaling for ordinary fix-loop failures, local setup problems, missing credentials, temporary network outages, test flakes, or quality issues that polish can plausibly fix.
+
 Present via `AskUserQuestion`:
 
 > "<api> couldn't pass shipcheck — <one-line reason from the shipcheck report or polish result>. The working copy is at <expanded $CLI_WORK_DIR path> and was not added to the library. What do you want to do?"
 >
 > 1. **Run retro** (recommended) — capture what blocked ship so the Printing Press maintainers can fix it for the next CLI you generate
 > 2. **Polish to retry** — run another polish pass and try again to reach ship
-> 3. **Done for now**
+> 3. **Add to blocked-API journal** — open a public-library PR that appends or updates `blocked-apis.json` so future `/printing-press <api>` runs warn before repeating this held attempt. Include this option only for repeatable reachability/buildability holds as described above.
+> 4. **Done for now**
 
 Default the recommendation to **Run retro**. Override to **Polish to retry** when the polish result block specifically says another pass is likely to close the gap (`further_polish_recommended: yes`) — that signal means the CLI is on hold not because the machine is structurally short, but because the last polish pass ran out of time on issues it can plausibly close.
 
@@ -4552,6 +4599,21 @@ Three reasons for this exact form, all mirroring Phase 5.5:
 2. **Use the Skill tool (forked context), not the `/printing-press-polish` slash command.** This matches Phase 5.5's invocation pattern — same shape, same expectations. Slash-command invocations auto-enable polish's standalone mode (Publish Offer fires); the Skill tool form defers to the parent unless `--standalone` is passed explicitly. Main SKILL owns the menu on this path.
 3. **Do not include `--standalone` in `args`.** The flag is what polish gates its Publish Offer on (see polish SKILL.md "Publish Offer"). On the hold path the CLI has not been promoted; firing the offer would open a public PR for an un-promoted, un-shipped working copy.
 4. **Pass `printing_press_bin`.** Use the absolute path captured by the parent setup preflight so this forked polish pass cannot downgrade the CLI by resolving an older global binary.
+
+#### If "Add to blocked-API journal"
+
+Invoke `/printing-press-publish --blocked-api-journal <api>`. The publish skill owns public-library writes and will append or update only `blocked-apis.json`, not `registry.json`, README catalog cells, generated skill mirrors, or a printed CLI package.
+
+Pass the journal fields from the current run context:
+
+- `slug`: the canonical API slug (`<api>`), not the CLI binary name.
+- `attempted_at`: today's date in `YYYY-MM-DD` form.
+- `verdict`: always `hold`.
+- `reason`: one concise sentence from the hold reason. Do not include secrets, local paths, cookies, tokens, or user-specific account details.
+- `blocking_issue`: the Printing Press issue number that would unblock this API if known, otherwise `null`.
+- `permanent`: `true` only when the API is fundamentally incompatible with a replayable printed CLI, such as a resident-browser-only product surface with no API or stable replayable HTTP path. Use `false` for machine gaps that could be fixed.
+
+If the current hold also warrants a retro, tell the user after the journal PR opens that a retro is still useful for the machine-level fix. Do not run retro automatically from this branch; the user chose the journal action.
 
 After polish returns, parse the result block and act on the new `ship_recommendation`:
 
