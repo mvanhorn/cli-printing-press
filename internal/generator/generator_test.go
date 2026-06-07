@@ -15244,7 +15244,7 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 func assertMCPMainUsesVersionVar(t *testing.T, body string) {
 	t.Helper()
 
-	assert.Contains(t, body, `var version = "1.0.0"`)
+	assert.Contains(t, body, `var version = "0.0.0-dev"`)
 	assert.Contains(t, body, "server.NewMCPServer(")
 	assert.Contains(t, body, "\n\t\tversion,\n\t\tserver.WithToolCapabilities(false),")
 	assert.NotContains(t, body, "\n\t\t\"1.0.0\",\n\t\tserver.WithToolCapabilities(false),")

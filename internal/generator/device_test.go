@@ -169,7 +169,7 @@ func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {
 	// The MCP server version must be an ldflag-overridable var, not a hardcoded
 	// literal — the device .goreleaser injects -X main.version at release time, so
 	// a bare "1.0.0" in NewMCPServer would make that injection a silent no-op.
-	assert.Contains(t, mcpMain, `var version = "1.0.0"`)
+	assert.Contains(t, mcpMain, `var version = "0.0.0-dev"`)
 	assert.NotContains(t, mcpMain, "\n\t\t\"1.0.0\",\n\t\tserver.WithToolCapabilities(false),")
 
 	toolsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
