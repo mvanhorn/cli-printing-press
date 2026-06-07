@@ -814,7 +814,7 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 		 WHERE resources_fts MATCH ?
 		 ORDER BY rank
 		 LIMIT ?`,
-		query, limit,
+		ftsMatchQuery(query), limit,
 	)
 	if err != nil {
 		return nil, err
@@ -830,6 +830,19 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 		results = append(results, json.RawMessage(data))
 	}
 	return results, rows.Err()
+}
+
+func ftsMatchQuery(query string) string {
+	terms := strings.Fields(query)
+	if len(terms) == 0 {
+		return `""`
+	}
+
+	quoted := make([]string, 0, len(terms))
+	for _, term := range terms {
+		quoted = append(quoted, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
+	}
+	return strings.Join(quoted, " AND ")
 }
 
 func extractObjectID(obj map[string]any) string {

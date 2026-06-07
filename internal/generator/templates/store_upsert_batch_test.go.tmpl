@@ -317,6 +317,48 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 	}
 }
 
+func TestSearchQuotesFTSQuerySyntax(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"id": "ip", "value": "10.0.0.1"}`),
+		json.RawMessage(`{"id": "cidr", "value": "172.16.192.0/18"}`),
+		json.RawMessage(`{"id": "host", "value": "host.example.com"}`),
+		json.RawMessage(`{"id": "email", "value": "user@example.com"}`),
+		json.RawMessage(`{"id": "mac", "value": "aa:bb:cc:dd:ee:ff"}`),
+		json.RawMessage(`{"id": "hyphen", "value": "some-name"}`),
+		json.RawMessage(`{"id": "multi", "value": "error with extra words before timeout"}`),
+	}
+	if stored, failed, err := s.UpsertBatch("search-regression", items); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	} else if failed != 0 || stored != len(items) {
+		t.Fatalf("UpsertBatch stored=%d failed=%d, want stored=%d failed=0", stored, failed, len(items))
+	}
+
+	for _, query := range []string{
+		"10.0.0.1",
+		"172.16.192.0/18",
+		"host.example.com",
+		"user@example.com",
+		"aa:bb:cc:dd:ee:ff",
+		"some-name",
+		"error timeout",
+	} {
+		results, err := s.Search(query, 10)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", query, err)
+		}
+		if len(results) == 0 {
+			t.Fatalf("Search(%q) returned no results", query)
+		}
+	}
+}
+
 {{- $hasDomainTable := false }}
 {{- range .Tables}}
 {{- if emitsDomainTable .}}
@@ -509,6 +551,43 @@ func TestUpsertBatch_{{pascal .Name}}SearchableViaGenericFTS(t *testing.T) {
 	}
 	if len(results) == 0 {
 		t.Fatalf("dependent resource %q stored but not searchable via generic resources_fts (issue #2629)", "{{.Resource}}")
+	}
+}
+{{- end}}
+{{- if .FTS5}}
+{{- $ftsField := index .FTS5Fields 0 }}
+
+func TestSearch{{pascal .Name}}QuotesFTSQuerySyntax(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"id": "typed-ip", "{{$ftsField}}": "10.0.0.1"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}}`),
+		json.RawMessage(`{"id": "typed-host", "{{$ftsField}}": "host.example.com"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}}`),
+		json.RawMessage(`{"id": "typed-multi", "{{$ftsField}}": "error with extra words before timeout"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}}`),
+	}
+	if stored, failed, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	} else if failed != 0 || stored != len(items) {
+		t.Fatalf("UpsertBatch stored=%d failed=%d, want stored=%d failed=0", stored, failed, len(items))
+	}
+
+	for _, query := range []string{
+		"10.0.0.1",
+		"host.example.com",
+		"error timeout",
+	} {
+		results, err := s.Search{{pascal .Name}}(query, 10)
+		if err != nil {
+			t.Fatalf("Search{{pascal .Name}}(%q): %v", query, err)
+		}
+		if len(results) == 0 {
+			t.Fatalf("Search{{pascal .Name}}(%q) returned no results", query)
+		}
 	}
 }
 {{- end}}
