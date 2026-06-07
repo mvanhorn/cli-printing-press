@@ -493,10 +493,10 @@ func (p *syncUserParams) setGlobalDefault(key, value string) {
 	if _, ok := p.trueGlobal[key]; ok {
 		return
 	}
-	if p.trueGlobal == nil {
-		p.trueGlobal = map[string]string{}
+	if p.flatGlobal == nil {
+		p.flatGlobal = map[string]string{}
 	}
-	p.trueGlobal[key] = value
+	p.flatGlobal[key] = value
 }
 {{- end}}
 

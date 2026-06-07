@@ -96,6 +96,51 @@ func TestGenerateGlobalScopeParamDefaultsFromEnv(t *testing.T) {
 	assert.Contains(t, syncContent, `userParams.setGlobalDefault("TenantFilter", v)`)
 	assert.Contains(t, syncContent, `"users": "/users"`)
 
+	helperTest := `package cli
+
+import "testing"
+
+func TestSyncGlobalScopeEnvDefaultsUseFlatGlobal(t *testing.T) {
+	params := &syncUserParams{
+		flatGlobal:  map[string]string{},
+		trueGlobal:  map[string]string{},
+		perResource: map[string]map[string]string{},
+	}
+	params.setGlobalDefault("TenantFilter", "tenant-a")
+
+	flatParams := map[string]string{}
+	params.applyTo("users", flatParams, false)
+	if got := flatParams["TenantFilter"]; got != "tenant-a" {
+		t.Fatalf("flat request TenantFilter = %q, want tenant-a", got)
+	}
+
+	dependentParams := map[string]string{}
+	params.applyTo("tasks", dependentParams, true)
+	if _, ok := dependentParams["TenantFilter"]; ok {
+		t.Fatalf("dependent request unexpectedly received TenantFilter from env default: %#v", dependentParams)
+	}
+
+	params.trueGlobal["TenantFilter"] = "tenant-global"
+	dependentParams = map[string]string{}
+	params.applyTo("tasks", dependentParams, true)
+	if got := dependentParams["TenantFilter"]; got != "tenant-global" {
+		t.Fatalf("explicit trueGlobal TenantFilter = %q, want tenant-global", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_global_scope_env_test.go"), []byte(helperTest), 0o644))
+
+	listCmd := exec.Command("go", "test", "-mod=mod", "-list", "^TestSyncGlobalScopeEnvDefaultsUseFlatGlobal$", "./internal/cli")
+	listCmd.Dir = outputDir
+	cacheDir, err := goBuildCacheDir(outputDir)
+	require.NoError(t, err)
+	listCmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	listOut, err := listCmd.CombinedOutput()
+	require.NoError(t, err, string(listOut))
+	assert.Contains(t, string(listOut), "TestSyncGlobalScopeEnvDefaultsUseFlatGlobal")
+
+	runGoCommandRequired(t, outputDir, "test", "-v", "-run", "^TestSyncGlobalScopeEnvDefaultsUseFlatGlobal$", "./internal/cli")
+
 	binaryPath := filepath.Join(outputDir, "cipp-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/cipp-pp-cli")
 
