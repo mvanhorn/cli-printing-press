@@ -527,6 +527,28 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	require.NotEqual(t, -1, copyIntoLibrary)
 }
 
+func TestPrintingPressSkillChecksBlockedAPIJournal(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+
+	assert.Contains(t, skill, "blocked-apis.json")
+	assert.Contains(t, skill, "Blocked-API journal check skipped")
+	assert.Contains(t, skill, "Read the blocked journal before reasoning about registry matches")
+	assert.Contains(t, skill, "Add to blocked-API journal")
+	assert.Contains(t, skill, "/printing-press-publish --blocked-api-journal <api>")
+	assert.Contains(t, skill, "Offer journaling only when the one-line hold reason is a reachability or buildability blocker")
+}
+
+func TestPublishSkillDocumentsBlockedAPIJournalMode(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+
+	assert.Contains(t, skill, "Blocked API Journal Mode")
+	assert.Contains(t, skill, "git add blocked-apis.json")
+	assert.Contains(t, skill, "Do not continue into normal")
+	assert.Contains(t, skill, "printed-CLI package, live-test, registry, or skill-mirror steps")
+	assert.Contains(t, skill, "Journal-only PRs may edit `blocked-apis.json`")
+	assert.NotContains(t, skill, "git add library/ blocked-apis.json")
+}
+
 func TestPublishSkillDocumentsPatchesIndexContract(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
