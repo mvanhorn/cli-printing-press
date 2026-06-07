@@ -90,11 +90,11 @@ build_one() {
 }
 
 build_replay_target() {
-  build_one replay "$1" "$2" ble_replay_only
+  build_one replay "$1" "$2" ""
 }
 
 build_live_target() {
-  build_one live "$1" "$2" ""
+  build_one live "$1" "$2" ble_live
 }
 
 if [[ -n "$target" ]]; then
