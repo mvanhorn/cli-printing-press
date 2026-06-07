@@ -410,6 +410,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// Surfaced by hackernews retro #350 finding F6.
 		"endpointNeedsClientLimit":  endpointNeedsClientLimit,
 		"endpointClientSideFilters": endpointClientSideFilters,
+		"globalScopeParams":         globalScopeParams,
 		"envName":                   naming.EnvPrefix,
 		// endpointTemplateEnvName resolves the env-var name for a
 		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
@@ -420,6 +421,11 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointTemplateEnvName": func(placeholder string) string {
 			return s.EndpointTemplateEnvName(placeholder)
 		},
+		"globalScopeEnvName": func(param spec.Param) string {
+			return globalScopeEnvName(s.Name, param)
+		},
+		"globalScopeFallbackValue": globalScopeFallbackValue,
+		"paramHasEnvDefault":       paramHasEnvDefault,
 		// endpointTemplateDefault returns the spec-declared default value for
 		// a placeholder (e.g. server-URL variables' `default:` value), or ""
 		// when none. Templates branch on the empty case to skip the runtime
@@ -4584,6 +4590,66 @@ func paramHasDefault(p spec.Param) bool {
 	return p.Default != nil
 }
 
+func paramHasEnvDefault(p spec.Param) bool {
+	return p.GlobalScope && primitiveKind(p.Type) == "string"
+}
+
+func globalScopeFallbackValue(p spec.Param) string {
+	if p.Default == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", p.Default)
+}
+
+func globalScopeEnvName(apiName string, p spec.Param) string {
+	name := p.PublicInputName()
+	if name == "" {
+		name = p.Name
+	}
+	placeholder := strings.ToUpper(strings.ReplaceAll(naming.FlagName(name), "-", "_"))
+	if placeholder == "" {
+		placeholder = "SCOPE"
+	}
+	return naming.EnvPrefix(apiName) + "_" + placeholder
+}
+
+func globalScopeParams(resources map[string]spec.Resource) []spec.Param {
+	resourceNames := make([]string, 0, len(resources))
+	for name := range resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	seen := map[string]struct{}{}
+	var out []spec.Param
+	for _, resourceName := range resourceNames {
+		resource := resources[resourceName]
+		endpointNames := make([]string, 0, len(resource.Endpoints))
+		for endpointName := range resource.Endpoints {
+			endpointNames = append(endpointNames, endpointName)
+		}
+		sort.Strings(endpointNames)
+		for _, endpointName := range endpointNames {
+			endpoint := resource.Endpoints[endpointName]
+			for _, param := range endpoint.Params {
+				if !paramHasEnvDefault(param) {
+					continue
+				}
+				key := param.WireName()
+				if key == "" {
+					key = param.Name
+				}
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				out = append(out, param)
+			}
+		}
+	}
+	return out
+}
+
 // paramIsConstDefault holds for single-value-enum params whose default
 // equals the only enum value. Templates emit MarkHidden for these so
 // --help does not list a flag whose only valid value is the default,
@@ -5534,6 +5600,9 @@ func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
 // param does not falsely trip the guard.
 func endpointHasRequiredInput(endpoint spec.Endpoint) bool {
 	for _, p := range endpoint.Params {
+		if paramHasEnvDefault(p) {
+			continue
+		}
 		if p.Required && !p.Positional {
 			if truth, _ := template.IsTrue(p.Default); !truth {
 				return true

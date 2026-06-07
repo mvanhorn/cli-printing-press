@@ -863,6 +863,9 @@ func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bo
 	}
 	for _, param := range endpoint.Params {
 		if param.Required && !param.Positional && !param.PathParam {
+			if param.GlobalScope && strings.EqualFold(param.Type, "string") {
+				continue
+			}
 			lower := strings.ToLower(param.Name)
 			if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || temporalOrFormatParams[lower] {
 				continue

@@ -394,6 +394,15 @@ func syncWarningJSON(resource, parent string, status int, reason, message string
 	return string(out)
 }
 
+{{- if globalScopeParams .Resources}}
+func globalScopeParamDefault(envName, fallback string) string {
+	if v := os.Getenv(envName); v != "" {
+		return v
+	}
+	return fallback
+}
+{{- end}}
+
 // syncUserParams carries user-supplied query parameters injected into sync
 // HTTP requests. flatGlobal entries come from --param and inject into
 // flat-list requests only; trueGlobal entries come from --global-param and
@@ -483,6 +492,24 @@ func (p *syncUserParams) applyTo(resource string, params map[string]string, isDe
 		params[k] = v
 	}
 }
+
+{{- if globalScopeParams .Resources}}
+func (p *syncUserParams) setGlobalDefault(key, value string) {
+	if p == nil || key == "" || value == "" {
+		return
+	}
+	if _, ok := p.flatGlobal[key]; ok {
+		return
+	}
+	if _, ok := p.trueGlobal[key]; ok {
+		return
+	}
+	if p.flatGlobal == nil {
+		p.flatGlobal = map[string]string{}
+	}
+	p.flatGlobal[key] = value
+}
+{{- end}}
 
 // validateResourceNames returns a usage-shaped error when any --resource-param
 // key targets a resource not in known. Without this check a typo
