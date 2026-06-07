@@ -10,7 +10,6 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 )
 
 // MCPB-bundle constants. Promoted from string literals so a typo here can't
@@ -201,11 +200,10 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 		ManifestVersion: MCPBManifestVersion,
 		Name:            m.MCPBinary,
 		DisplayName:     displayName,
-		// Bundle version tracks the printing-press release that produced
-		// it so Claude Desktop's update detection sees a fresh value on
-		// regeneration. A hardcoded "1.0.0" would defeat the host's
-		// "newer bundle available" prompt.
-		Version:     bundleVersion(m),
+		// The generated on-disk manifest does not know the printed CLI's
+		// release tag yet. Release packaging can stamp the bundle version
+		// into the ZIP without mutating this generate-time manifest.
+		Version:     bundleVersion(),
 		Description: manifestDescription(existing, m, displayName),
 		Author:      MCPBAuthor{Name: "CLI Printing Press"},
 		License:     "Apache-2.0",
@@ -226,17 +224,10 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	}
 }
 
-// bundleVersion returns a semver-shaped version for the manifest. Prefers
-// the manifest's recorded printing-press version (so two bundles built
-// from different generator releases differ), falls back to the linker-
-// stamped version when the manifest field is empty (older runs).
-func bundleVersion(m CLIManifest) string {
-	if m.PrintingPressVersion != "" {
-		return m.PrintingPressVersion
-	}
-	if version.Version != "" {
-		return version.Version
-	}
+// bundleVersion returns a semver-shaped generate-time placeholder. The MCPB
+// manifest's version is the printed CLI bundle version, which is not known
+// until release packaging passes it to BuildMCPBBundle.
+func bundleVersion() string {
 	return "0.0.0"
 }
 
