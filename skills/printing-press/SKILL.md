@@ -3282,7 +3282,7 @@ import (
 	// add: "encoding/json", "fmt", "<module>/internal/store", etc. as needed
 )
 
-func newXxxCmd(flags *rootFlags) *cobra.Command {
+func newNovelXxxCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "<leaf-of-Command>",                    // e.g. "stale" for "issues stale"
 		Short:   "<NovelFeature.Description, one line>", // truncate to ~70 chars
@@ -3308,14 +3308,14 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 // a child of the matching spec-resource parent (newIssuesCmd) — wire the
 // AddCommand call inside root.go via local-variable capture:
 //   issuesCmd := newIssuesCmd(flags)
-//   issuesCmd.AddCommand(newIssuesStaleCmd(flags))
+//   issuesCmd.AddCommand(newNovelIssuesStaleCmd(flags))
 //   rootCmd.AddCommand(issuesCmd)
 // Leaf commands must declare every non-root flag used in their examples.
 // Use kebab-case flag names, such as --max-age instead of --maxAge, so the
 // generated CLI convention and verify-skill flag scanner stay aligned.
 // Do not rely on parent-local flags like --org or --project being accepted by
 // child commands unless the parent registered them with PersistentFlags().
-// Single-word Commands register directly: rootCmd.AddCommand(newXxxCmd(flags)).
+// Single-word Commands register directly: rootCmd.AddCommand(newNovelXxxCmd(flags)).
 ```
 
 **RunE skeleton — API-call shape** (live data via the generated client):
