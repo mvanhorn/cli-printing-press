@@ -3114,6 +3114,7 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 
 type visionRenderData struct {
 	*spec.APISpec
+	VisionSet                    VisionTemplateSet
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
 	PaginationSupportedResources []string
@@ -3271,6 +3272,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 
 	return visionRenderData{
 		APISpec:                      g.Spec,
+		VisionSet:                    g.VisionSet,
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
 		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),

@@ -449,6 +449,30 @@ func looksLikeAccessDenial(body string) bool {
 	return false
 }
 
+// argumentMissingPatterns matches API error bodies that indicate the endpoint
+// requires a filter or identifier the vendor spec did not mark as required.
+// Each pattern keeps the missing/required/not-provided signal adjacent to an
+// argument noun so an unrelated 400 (e.g. "required field 'email' format is
+// invalid and the avatar is missing", "no results were provided") is not
+// demoted from a hard failure to a warning.
+var argumentMissingPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\bargument(?:\s+is)?\s+missing\b`),
+	regexp.MustCompile(`\bmissing\s+(?:a\s+|an\s+|the\s+)?(?:required\s+)?(?:argument|parameter|param|field|filter|identifier|id)\b`),
+	regexp.MustCompile(`\brequired\s+(?:argument|parameter|param|filter|identifier|id)\b[^.\n]*\b(?:is\s+)?(?:missing|not\s+provided|not\s+supplied)\b`),
+	regexp.MustCompile(`\b(?:argument|parameter|param|filter)\s+(?:is\s+)?required\b`),
+	regexp.MustCompile(`\bno\s+(?:argument|parameter|param|filter|identifier|id)\b[^.\n]*\bprovided\b`),
+}
+
+func looksLikeArgumentMissing(body string) bool {
+	lower := strings.ToLower(body)
+	for _, p := range argumentMissingPatterns {
+		if p.MatchString(lower) {
+			return true
+		}
+	}
+	return false
+}
+
 // isSyncAccessWarning classifies err as an access-denial warning suitable for
 // sync's warn-and-continue path. It returns nil, false for any error that
 // should remain a hard sync failure: HTTP 401 (token-level auth failure
@@ -458,6 +482,7 @@ func looksLikeAccessDenial(body string) bool {
 // Recognized warning shapes:
 //   - HTTP 403 (per-resource ACL rejection)
 //   - HTTP 400 + access-denial body keyword (insufficient scope, etc.)
+//   - HTTP 400 + missing required argument body keyword
 //   - GraphQL response carrying only access-denial extension codes
 func isSyncAccessWarning(err error) (*accessWarning, bool) {
 	if err == nil {
@@ -472,6 +497,9 @@ func isSyncAccessWarning(err error) (*accessWarning, bool) {
 		case 400:
 			if looksLikeAccessDenial(apiErr.Body) {
 				return &accessWarning{Status: 400, Reason: "insufficient_access", Message: apiErr.Body}, true
+			}
+			if looksLikeArgumentMissing(apiErr.Body) {
+				return &accessWarning{Status: 400, Reason: "argument_missing", Message: apiErr.Body}, true
 			}
 		}
 	}
