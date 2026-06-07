@@ -20,6 +20,20 @@ const {{pascal $rName}}ListQuery = {{backtick}}query{{if $params}}({{- range $i,
     pageInfo { hasNextPage endCursor }
   }
 }{{backtick}}
+{{- if hasGraphQLParam $endpoint "last"}}
+{{- $latestParams := graphqlLatestParams $endpoint}}
+
+const {{pascal $rName}}ListLatestQuery = {{backtick}}query{{if $latestParams}}({{- range $i, $p := $latestParams}}{{if $i}}, {{end}}${{$p.Name}}: {{graphqlVariableType $p}}{{- end}}){{end}} {
+  {{$queryField}}{{if $latestParams}}({{- range $i, $p := $latestParams}}{{if $i}}, {{end}}{{$p.Name}}: ${{$p.Name}}{{- end}}){{end}} {
+    nodes {
+{{- range graphqlFieldSelection $endpoint.Response.Item $.Types}}
+      {{.}}
+{{- end}}
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}{{backtick}}
+{{- end}}
 {{- end}}
 {{- if eq $eName "get"}}
 {{- $queryField := graphqlQueryField $endpoint.ResponsePath}}

@@ -12132,6 +12132,273 @@ func TestGraphQLSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGeneratedGraphQLLatestOnlyChoosesNewestPage(t *testing.T) {
+	t.Parallel()
+
+	const sdl = `
+type Query {
+  issues(first: Int, after: String, last: Int, before: String, query: String): IssueConnection
+}
+
+type IssueConnection {
+  nodes: [Issue]
+  pageInfo: PageInfo
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type Issue {
+  id: ID!
+  title: String!
+  createdAt: String
+}
+`
+
+	gqlSpec, err := graphql.ParseSDLBytes("latest-choice.graphql", []byte(sdl))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(gqlSpec.Name))
+	gen := New(gqlSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	queriesGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "queries.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(queriesGo), "pageInfo { hasNextPage endCursor }")
+	require.NotContains(t, string(queriesGo), "ListLatestQuery = `query($last: Int!, $query")
+
+	behaviorTest := `package cli
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+
+	"` + naming.CLI(gqlSpec.Name) + `/internal/client"
+	"` + naming.CLI(gqlSpec.Name) + `/internal/config"
+	"` + naming.CLI(gqlSpec.Name) + `/internal/store"
+)
+
+type gqlLatestChoiceHandler struct {
+	forward              []map[string]any
+	backward             []map[string]any
+	after                []map[string]any
+	omitBackwardPageInfo bool
+	calls                []string
+}
+
+func (h *gqlLatestChoiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Variables map[string]any ` + "`json:\"variables\"`" + `
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	nodes := h.forward
+	hasNextPage := true
+	endCursor := "forward-end"
+	includePageInfo := true
+	if _, ok := req.Variables["last"]; ok {
+		h.calls = append(h.calls, "last")
+		nodes = h.backward
+		endCursor = "latest-end"
+		includePageInfo = !h.omitBackwardPageInfo
+	} else if _, ok := req.Variables["after"]; ok {
+		h.calls = append(h.calls, "after")
+		nodes = h.after
+		hasNextPage = false
+		endCursor = ""
+	} else {
+		h.calls = append(h.calls, "first")
+	}
+
+	conn := map[string]any{
+		"nodes": nodes,
+	}
+	if includePageInfo {
+		conn["pageInfo"] = map[string]any{
+			"hasNextPage": hasNextPage,
+			"endCursor":   endCursor,
+		}
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"data": map[string]any{
+			"issues": conn,
+		},
+	})
+}
+
+func runGraphQLLatestOnlyChoice(t *testing.T, forward, backward []map[string]any) (*gqlLatestChoiceHandler, *store.Store) {
+	t.Helper()
+	return runGraphQLLatestOnlyChoiceWithMaxPages(t, forward, backward, nil, 1, []string{"first", "last"})
+}
+
+func runGraphQLLatestOnlyChoiceWithMaxPages(t *testing.T, forward, backward, after []map[string]any, maxPages int, wantCalls []string) (*gqlLatestChoiceHandler, *store.Store) {
+	t.Helper()
+	handler := &gqlLatestChoiceHandler{forward: forward, backward: backward, after: after}
+	return runGraphQLLatestOnlyChoiceWithHandler(t, handler, maxPages, wantCalls)
+}
+
+func runGraphQLLatestOnlyChoiceWithHandler(t *testing.T, handler *gqlLatestChoiceHandler, maxPages int, wantCalls []string) (*gqlLatestChoiceHandler, *store.Store) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	c := client.New(&config.Config{BaseURL: server.URL}, time.Second, 0)
+	res := syncResource(context.Background(), c, db, "issues", "", false, maxPages, true)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if !reflect.DeepEqual(handler.calls, wantCalls) {
+		t.Fatalf("query calls = %#v, want %#v", handler.calls, wantCalls)
+	}
+	return handler, db
+}
+
+func assertGraphQLLatestOnlyStored(t *testing.T, db *store.Store, wantID, rejectID string) {
+	t.Helper()
+	if _, err := db.Get("issues", wantID); err != nil {
+		t.Fatalf("wanted issue %s to be stored: %v", wantID, err)
+	}
+	if _, err := db.Get("issues", rejectID); err == nil {
+		t.Fatalf("issue %s should not have been stored", rejectID)
+	} else if err != sql.ErrNoRows {
+		t.Fatalf("checking rejected issue %s: %v", rejectID, err)
+	}
+}
+
+func TestGraphQLLatestOnlyChoosesBackwardPageForOldestFirst(t *testing.T) {
+	_, db := runGraphQLLatestOnlyChoice(t,
+		[]map[string]any{
+			{"id": "old-1", "title": "oldest first", "createdAt": "2021-08-02T00:00:00Z"},
+			{"id": "old-2", "title": "oldest second", "createdAt": "2021-08-03T00:00:00Z"},
+		},
+		[]map[string]any{
+			{"id": "new-1", "title": "newest page", "createdAt": "2026-06-01T00:00:00Z"},
+			{"id": "new-2", "title": "newer page", "createdAt": "2026-06-02T00:00:00Z"},
+		},
+	)
+	assertGraphQLLatestOnlyStored(t, db, "new-1", "old-1")
+}
+
+func TestGraphQLLatestOnlyKeepsForwardPageForNewestFirst(t *testing.T) {
+	_, db := runGraphQLLatestOnlyChoice(t,
+		[]map[string]any{
+			{"id": "new-1", "title": "newest first", "createdAt": "2026-06-02T00:00:00Z"},
+			{"id": "new-2", "title": "newest second", "createdAt": "2026-06-01T00:00:00Z"},
+		},
+		[]map[string]any{
+			{"id": "old-1", "title": "oldest tail", "createdAt": "2021-08-02T00:00:00Z"},
+			{"id": "old-2", "title": "oldest tail second", "createdAt": "2021-08-03T00:00:00Z"},
+		},
+	)
+	assertGraphQLLatestOnlyStored(t, db, "new-1", "old-1")
+}
+
+func TestGraphQLLatestOnlyKeepsForwardPageWithoutTimestampEvidence(t *testing.T) {
+	_, db := runGraphQLLatestOnlyChoice(t,
+		[]map[string]any{
+			{"id": "forward-1", "title": "forward page"},
+			{"id": "forward-2", "title": "forward second"},
+		},
+		[]map[string]any{
+			{"id": "backward-1", "title": "backward page"},
+			{"id": "backward-2", "title": "backward second"},
+		},
+	)
+	assertGraphQLLatestOnlyStored(t, db, "forward-1", "backward-1")
+}
+
+func TestGraphQLLatestOnlyIgnoresDateLikeNonTimestampFields(t *testing.T) {
+	_, db := runGraphQLLatestOnlyChoice(t,
+		[]map[string]any{
+			{"id": "forward-1", "title": "newest first", "createdAt": "2026-06-02T00:00:00Z"},
+		},
+		[]map[string]any{
+			{
+				"id":         "backward-1",
+				"title":      "2027-01-01",
+				"lastUpdate": "2027-01-01T00:00:00Z",
+				"candidate":  "2027-01-02",
+				"uptime":     "2027-01-03T00:00:00Z",
+				"runtime":    "2027-01-04T00:00:00Z",
+			},
+		},
+	)
+	assertGraphQLLatestOnlyStored(t, db, "forward-1", "backward-1")
+}
+
+func TestGraphQLLatestOnlyReadsNestedTimestampFields(t *testing.T) {
+	_, db := runGraphQLLatestOnlyChoice(t,
+		[]map[string]any{
+			{"id": "old-1", "title": "oldest first", "createdAt": "2021-08-02T00:00:00Z"},
+		},
+		[]map[string]any{
+			{"id": "new-1", "title": "newest nested", "meta": map[string]any{"updatedAt": "2026-06-02T00:00:00Z"}},
+		},
+	)
+	assertGraphQLLatestOnlyStored(t, db, "new-1", "old-1")
+}
+
+func TestGraphQLLatestOnlyCanContinueAfterBackwardPageWins(t *testing.T) {
+	handler := &gqlLatestChoiceHandler{
+		forward: []map[string]any{
+			{"id": "old-1", "title": "oldest first", "createdAt": "2021-08-02T00:00:00Z"},
+		},
+		backward: []map[string]any{
+			{"id": "new-1", "title": "newest page", "createdAt": "2026-06-02T00:00:00Z"},
+		},
+		after: []map[string]any{
+			{"id": "after-1", "title": "after latest", "createdAt": "2026-06-03T00:00:00Z"},
+		},
+		omitBackwardPageInfo: true,
+	}
+	_, db := runGraphQLLatestOnlyChoiceWithHandler(t, handler, 2, []string{"first", "last", "after"})
+	assertGraphQLLatestOnlyStored(t, db, "new-1", "old-1")
+	if _, err := db.Get("issues", "after-1"); err != nil {
+		t.Fatalf("wanted issue after-1 to be stored after latest page pagination: %v", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "graphql_sync_latest_only_test.go"), []byte(behaviorTest), 0o644))
+	selector := "^TestGraphQLLatestOnly(ChoosesBackwardPageForOldestFirst|KeepsForwardPageForNewestFirst|KeepsForwardPageWithoutTimestampEvidence|IgnoresDateLikeNonTimestampFields|ReadsNestedTimestampFields|CanContinueAfterBackwardPageWins)$"
+	listCmd := exec.Command("go", "test", "-mod=mod", "./internal/cli", "-list", selector)
+	listCmd.Dir = outputDir
+	cacheDir, err := goBuildCacheDir(outputDir)
+	require.NoError(t, err)
+	listCmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	listOut, err := listCmd.CombinedOutput()
+	require.NoError(t, err, string(listOut))
+	for _, name := range []string{
+		"TestGraphQLLatestOnlyChoosesBackwardPageForOldestFirst",
+		"TestGraphQLLatestOnlyKeepsForwardPageForNewestFirst",
+		"TestGraphQLLatestOnlyKeepsForwardPageWithoutTimestampEvidence",
+		"TestGraphQLLatestOnlyIgnoresDateLikeNonTimestampFields",
+		"TestGraphQLLatestOnlyReadsNestedTimestampFields",
+		"TestGraphQLLatestOnlyCanContinueAfterBackwardPageWins",
+	} {
+		require.Contains(t, string(listOut), name)
+	}
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", selector)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedGraphQLSyncConcurrencyDefaultHonorsRateClass(t *testing.T) {
 	t.Parallel()
 
@@ -13897,6 +14164,7 @@ func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
 						Params: []spec.Param{
 							{Name: "first", Type: "integer", Default: 100},
 							{Name: "after", Type: "string"},
+							{Name: "last", Type: "integer"},
 							{Name: "before", Type: "string"},
 						},
 						Pagination: &spec.Pagination{
@@ -13947,6 +14215,7 @@ func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
 	assert.Contains(t, queriesContent, "query($first: Int!, $after: String, $query: String)")
 	assert.Contains(t, queriesContent, "orders(first: $first, after: $after, query: $query)")
 	assert.Contains(t, queriesContent, "query($first: Int!, $after: String) {\n  fulfillmentOrders(first: $first, after: $after)")
+	assert.Contains(t, queriesContent, "query($last: Int!) {\n  fulfillmentOrders(last: $last)")
 	assert.NotContains(t, queriesContent, "before: $before")
 	assert.NotContains(t, queriesContent, "fulfillmentOrders(first: $first, after: $after, query: $query)")
 	assert.Contains(t, queriesContent, "query {\n  customers {\n")
