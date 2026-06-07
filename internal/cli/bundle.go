@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -75,6 +77,9 @@ from another build pipeline.`,
 			if manifest.Name == "" {
 				return fmt.Errorf("manifest.name is empty; cannot determine binary name")
 			}
+			if err := validateBundleVersion(bundleVersion); err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
 
 			goos, goarch, err := resolvePlatform(platform)
 			if err != nil {
@@ -123,6 +128,18 @@ from another build pipeline.`,
 	cmd.Flags().StringVar(&cliBinaryPath, "cli-binary", "", "Pre-built CLI binary path (only meaningful with --cli-skip-build)")
 	cmd.Flags().StringVar(&bundleVersion, "version", "", "Printed CLI release version to stamp into the bundled manifest")
 	return cmd
+}
+
+var bundleVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+func validateBundleVersion(version string) error {
+	if version == "" {
+		return nil
+	}
+	if strings.HasPrefix(version, "v") || !bundleVersionPattern.MatchString(version) || !semver.IsValid("v"+version) {
+		return fmt.Errorf("--version must be a semantic version without a v prefix (got %q)", version)
+	}
+	return nil
 }
 
 // autoBundleForHost packages a host-platform .mcpb after generate.

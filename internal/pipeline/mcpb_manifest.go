@@ -203,7 +203,7 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 		// The generated on-disk manifest does not know the printed CLI's
 		// release tag yet. Release packaging can stamp the bundle version
 		// into the ZIP without mutating this generate-time manifest.
-		Version:     bundleVersion(m),
+		Version:     bundleVersion(),
 		Description: manifestDescription(existing, m, displayName),
 		Author:      MCPBAuthor{Name: "CLI Printing Press"},
 		License:     "Apache-2.0",
@@ -227,7 +227,7 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 // bundleVersion returns a semver-shaped generate-time placeholder. The MCPB
 // manifest's version is the printed CLI bundle version, which is not known
 // until release packaging passes it to BuildMCPBBundle.
-func bundleVersion(m CLIManifest) string {
+func bundleVersion() string {
 	return "0.0.0"
 }
 

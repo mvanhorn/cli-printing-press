@@ -196,6 +196,32 @@ func TestNewBundleCmdVersionStampsBundledManifest(t *testing.T) {
 	assert.Contains(t, string(diskData), `"version":"0.0.0"`)
 }
 
+func TestNewBundleCmdRejectsInvalidBundleVersion(t *testing.T) {
+	for _, version := range []string{"v0.1.4", "latest", "0.1"} {
+		t.Run(version, func(t *testing.T) {
+			dir := t.TempDir()
+			writeBundleManifest(t, dir, pipeline.MCPBManifest{
+				ManifestVersion: pipeline.MCPBManifestVersion,
+				Name:            "demo-pp-mcp",
+				Version:         "0.0.0",
+				Server: pipeline.MCPBServer{
+					Type:       "binary",
+					EntryPoint: "bin/demo-pp-mcp",
+					MCPConfig:  pipeline.MCPBLaunchSpec{Command: "${__dirname}/bin/demo-pp-mcp"},
+				},
+			})
+
+			cmd := newBundleCmd()
+			cmd.SilenceUsage = true
+			cmd.SetArgs([]string{dir, "--version", version})
+
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--version must be a semantic version")
+		})
+	}
+}
+
 func TestNewBundleCmdWindowsPlatformBuildsToExeStagingPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake go shim uses POSIX shell")
