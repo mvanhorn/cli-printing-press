@@ -41,6 +41,46 @@ func TestAPIKeyAuthHeaderPrefix(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/config")
 }
 
+func TestGeneratedAPIKeyAuthHeaderORCaseAppliesPrefix(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("api-key-prefix-or")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "api_key",
+		In:     "header",
+		Header: "Authorization",
+		Prefix: "Token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "OR_PREFIX_PRIMARY_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true, Description: "Set this OR OR_PREFIX_FALLBACK_TOKEN."},
+			{Name: "OR_PREFIX_FALLBACK_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true, Description: "Set this OR OR_PREFIX_PRIMARY_TOKEN."},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "api-key-prefix-or-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const inlineTest = `package config
+
+import "testing"
+
+func TestAPIKeyAuthHeaderORCasePrefix(t *testing.T) {
+	cfg := &Config{OrPrefixPrimaryToken: "primary"}
+	if got := cfg.AuthHeader(); got != "Token primary" {
+		t.Fatalf("AuthHeader() with primary token = %q", got)
+	}
+
+	cfg = &Config{OrPrefixFallbackToken: "fallback"}
+	if got := cfg.AuthHeader(); got != "Token fallback" {
+		t.Fatalf("AuthHeader() with fallback token = %q", got)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "config", "auth_header_prefix_or_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/config")
+}
+
 func TestGeneratedAPIKeyAuthHeaderWithoutPrefixKeepsRawToken(t *testing.T) {
 	t.Parallel()
 
