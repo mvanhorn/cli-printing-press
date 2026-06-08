@@ -35,7 +35,7 @@ func TestProfilePetstore(t *testing.T) {
 	assert.False(t, profile.HighVolume)
 	assert.False(t, profile.NeedsSearch)
 	assert.False(t, profile.HasRealtime)
-	assert.Equal(t, []string{"export", "import"}, profile.RecommendedFeatures())
+	assert.ElementsMatch(t, []string{"sync", "search", "store", "export", "import"}, profile.RecommendedFeatures())
 }
 
 func TestProfileDiscord(t *testing.T) {
@@ -76,6 +76,16 @@ func TestProfileMinimal(t *testing.T) {
 	assert.False(t, profile.HasChronological)
 	assert.False(t, profile.HasDependencies)
 	assert.Zero(t, profile.CRUDResources)
+	assert.True(t, profile.hasSyncableStoreResources())
+	assert.ElementsMatch(t, []string{"sync", "search", "store", "export", "import"}, profile.RecommendedFeatures())
+}
+
+func TestProfilePostOnlyHasNoLocalStoreFeatures(t *testing.T) {
+	profile := Profile(postOnlySpec())
+
+	assert.False(t, profile.HighVolume)
+	assert.False(t, profile.NeedsSearch)
+	assert.False(t, profile.hasSyncableStoreResources())
 	assert.Equal(t, []string{"export", "import"}, profile.RecommendedFeatures())
 }
 
@@ -287,6 +297,30 @@ func TestToVisionaryPlan(t *testing.T) {
 	assert.Equal(t, []string{"analytics.go.tmpl"}, featureTemplates["analytics"])
 }
 
+func TestToVisionaryPlanSyncableResourceDrivesLocalDataLayer(t *testing.T) {
+	profile := Profile(smallReadWriteSyncableSpec())
+	require.False(t, profile.HighVolume)
+	require.False(t, profile.OfflineValuable)
+	require.False(t, profile.NeedsSearch)
+	require.True(t, profile.hasSyncableStoreResources())
+
+	plan := profile.ToVisionaryPlan("parcel")
+	areas := make(map[string]string)
+	for _, decision := range plan.Architecture {
+		areas[decision.Area] = decision.NeedLevel
+	}
+	assert.Equal(t, "high", areas["persistence"])
+	assert.Equal(t, "high", areas["search"])
+
+	featureTemplates := make(map[string][]string)
+	for _, feature := range plan.Features {
+		featureTemplates[feature.Name] = feature.TemplateNames
+	}
+	assert.Equal(t, []string{"sync.go.tmpl"}, featureTemplates["sync"])
+	assert.Equal(t, []string{"search.go.tmpl"}, featureTemplates["search"])
+	assert.Equal(t, []string{"store.go.tmpl"}, featureTemplates["store"])
+}
+
 func petstoreSpec() *spec.APISpec {
 	return &spec.APISpec{
 		Name: "petstore",
@@ -367,6 +401,75 @@ func petstoreSpec() *spec.APISpec {
 							{Name: "username", Type: "string"},
 						},
 					},
+				},
+			},
+		},
+	}
+}
+
+func postOnlySpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name: "post-only",
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/widgets",
+						Body: []spec.Param{
+							{Name: "name", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func smallReadWriteSyncableSpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name: "parcel",
+		Resources: map[string]spec.Resource{
+			"deliveries": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/deliveries",
+						Response: spec.ResponseDef{Type: "object", Item: "DeliveriesResponse"},
+					},
+					"add": {
+						Method: "POST",
+						Path:   "/add-delivery",
+						Body: []spec.Param{
+							{Name: "tracking_number", Type: "string"},
+							{Name: "carrier_code", Type: "string"},
+							{Name: "description", Type: "string"},
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "SuccessResponse"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Delivery": {
+				Fields: []spec.TypeField{
+					{Name: "carrier_code", Type: "string"},
+					{Name: "description", Type: "string"},
+					{Name: "status_code", Type: "integer"},
+					{Name: "tracking_number", Type: "string"},
+				},
+			},
+			"DeliveriesResponse": {
+				Fields: []spec.TypeField{
+					{Name: "success", Type: "boolean"},
+					{Name: "error_message", Type: "string"},
+					{Name: "deliveries", Type: "array"},
+				},
+			},
+			"SuccessResponse": {
+				Fields: []spec.TypeField{
+					{Name: "success", Type: "boolean"},
+					{Name: "error_message", Type: "string"},
 				},
 			},
 		},

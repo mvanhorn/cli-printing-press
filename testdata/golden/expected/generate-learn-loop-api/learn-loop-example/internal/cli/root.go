@@ -243,6 +243,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newWhichCmd(flags))
 	rootCmd.AddCommand(newExportCmd(flags))
 	rootCmd.AddCommand(newImportCmd(flags))
+	rootCmd.AddCommand(newSearchCmd(flags))
 	rootCmd.AddCommand(newSyncCmd(flags))
 	rootCmd.AddCommand(newWorkflowCmd(flags))
 	rootCmd.AddCommand(newAPICmd(flags))
