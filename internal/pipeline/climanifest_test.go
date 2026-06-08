@@ -62,6 +62,47 @@ func TestWriteCLIManifest(t *testing.T) {
 	assert.Equal(t, "nl", got.APILanguage)
 	assert.Equal(t, "Notion workspace API", got.Description)
 	assert.Equal(t, m.GeneratedAt, got.GeneratedAt)
+
+	releaseData, err := os.ReadFile(filepath.Join(dir, CLIReleaseManifestFilename))
+	require.NoError(t, err)
+	var release CLIReleaseManifest
+	require.NoError(t, json.Unmarshal(releaseData, &release))
+	assert.Equal(t, 1, release.SchemaVersion)
+	assert.Equal(t, "notion", release.Slug)
+	assert.Equal(t, "notion-pp-cli", release.CLIName)
+	assert.Equal(t, "", release.Version)
+	assert.Equal(t, "", release.ReleasedAt)
+	assert.Equal(t, "", release.SourceCommit)
+	assert.Equal(t, "0.4.0", release.PrintingPressVersion)
+	assert.Equal(t, "20260328T150405Z-abcd1234", release.RunID)
+	assert.NotContains(t, string(releaseData), `"changes"`)
+
+	changelog, err := os.ReadFile(filepath.Join(dir, CLIChangelogFilename))
+	require.NoError(t, err)
+	assert.Contains(t, string(changelog), "printing-press-library release automation")
+}
+
+func TestWriteCLIManifestPreservesExistingReleaseLedger(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIReleaseManifestFilename), []byte(`{"schema_version":1,"version":"2026.6.2"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIChangelogFilename), []byte("# Changelog\n\n## 2026.6.2 - 2026-06-08\n\n- Existing history.\n"), 0o644))
+
+	err := WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion:        1,
+		PrintingPressVersion: "4.23.1",
+		APIName:              "notion",
+		CLIName:              "notion-pp-cli",
+		RunID:                "20260608-000000",
+	})
+	require.NoError(t, err)
+
+	releaseData, err := os.ReadFile(filepath.Join(dir, CLIReleaseManifestFilename))
+	require.NoError(t, err)
+	assert.Contains(t, string(releaseData), `"version":"2026.6.2"`)
+
+	changelog, err := os.ReadFile(filepath.Join(dir, CLIChangelogFilename))
+	require.NoError(t, err)
+	assert.Contains(t, string(changelog), "Existing history")
 }
 
 func TestWriteCLIManifestSchemaVersionAlwaysOne(t *testing.T) {
@@ -245,6 +286,10 @@ func TestWriteManifestForGenerateEmitsPatchesIndex(t *testing.T) {
 	// siblings cover MCPB-emit cases.)
 	_, err = os.Stat(filepath.Join(dir, CLIManifestFilename))
 	assert.NoError(t, err, "expected %s to exist after WriteManifestForGenerate", CLIManifestFilename)
+	_, err = os.Stat(filepath.Join(dir, CLIReleaseManifestFilename))
+	assert.NoError(t, err, "expected %s to exist after WriteManifestForGenerate", CLIReleaseManifestFilename)
+	_, err = os.Stat(filepath.Join(dir, CLIChangelogFilename))
+	assert.NoError(t, err, "expected %s to exist after WriteManifestForGenerate", CLIChangelogFilename)
 	_, err = os.Stat(filepath.Join(dir, PatchesDirName, PatchesGitKeepName))
 	assert.NoError(t, err, "expected %s/%s to exist after WriteManifestForGenerate", PatchesDirName, PatchesGitKeepName)
 	_, err = os.Stat(filepath.Join(dir, PatchesIndexFilename))

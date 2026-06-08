@@ -67,6 +67,14 @@ workflows. The library's `Fail on changes to generated artifacts` check in
 diff against base touches `registry.json` or `cli-skills/pp-*/SKILL.md`, so a
 publish that includes either is pre-rejected before review.
 
+The public library also owns per-CLI release accounting. Do not manually bump
+`CHANGELOG.md`, `.printing-press-release.json`, or runtime `var version = ...`
+for a publish PR. Fresh printed CLIs may include blank release-ledger skeletons;
+the library's post-merge workflow assigns the final `YYYY.M.N` release and
+stamps the runtime version after merge. When replacing an existing public
+library CLI, preserve its existing release-ledger files so changelog history is
+not lost in the reprint PR.
+
 `blocked-apis.json` is different: it is a hand-maintained public-library journal,
 not a generated registry surface. Journal-only PRs may edit `blocked-apis.json`
 and must not stage `library/`, `registry.json`, README catalog cells, or
@@ -680,14 +688,52 @@ Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_includ
 
 `publish package` performs the mandatory vendor-prefix secret scan over the staged CLI, including copied manuscripts, before returning success. If it reports `vendor-prefix tokens detected`, stop and remove or redact the reported file:line findings before retrying. This is a hard gate and does not depend on `gitleaks`, `trufflehog`, or destination-repo push protection.
 
-Then copy the staged CLI into the publish repo, replacing any existing version:
+Then copy the staged CLI into the publish repo, replacing any existing version
+while preserving the public library's release ledger files when this is a
+reprint:
 
 ```bash
-# Remove existing version (handles category changes)
-rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
+STAGED_CLI_DIR="$STAGING_DIR/library/<category>/<api-slug>"
+DEST_CATEGORY_DIR="$PUBLISH_REPO_DIR/library/<category>"
+DEST_CLI_DIR="$DEST_CATEGORY_DIR/<api-slug>"
 
-# Copy staged CLI into publish repo (slug-keyed directory)
-cp -r "$STAGING_DIR/library/<category>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
+if [ ! -d "$STAGED_CLI_DIR" ]; then
+  echo "missing staged CLI directory: $STAGED_CLI_DIR" >&2
+  exit 1
+fi
+mkdir -p "$DEST_CATEGORY_DIR"
+
+# Preserve release-ledger files from the current public-library entry before
+# removing it. New CLIs keep the blank skeletons produced by publish package;
+# reprints keep existing changelog history and release metadata until the
+# library's post-merge workflow stamps the next release.
+RELEASE_LEDGER_TMP="$(mktemp -d)"
+PUBLISH_SWAP_DIR="$(mktemp -d "$DEST_CATEGORY_DIR/.<api-slug>.XXXXXX")"
+trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT
+for LEDGER_FILE in CHANGELOG.md .printing-press-release.json; do
+  EXISTING_LEDGER="$(find "$PUBLISH_REPO_DIR/library" -mindepth 3 -maxdepth 3 -path "*/<api-slug>/$LEDGER_FILE" -print -quit)"
+  if [ -n "$EXISTING_LEDGER" ]; then
+    cp "$EXISTING_LEDGER" "$RELEASE_LEDGER_TMP/$LEDGER_FILE"
+  fi
+done
+
+# Copy staged CLI into a same-category swap dir before deleting the current
+# public-library entry. This keeps a failed copy from leaving the publish repo
+# with the old CLI removed.
+cp -R "$STAGED_CLI_DIR/." "$PUBLISH_SWAP_DIR/"
+
+for LEDGER_FILE in CHANGELOG.md .printing-press-release.json; do
+  if [ -f "$RELEASE_LEDGER_TMP/$LEDGER_FILE" ]; then
+    cp "$RELEASE_LEDGER_TMP/$LEDGER_FILE" "$PUBLISH_SWAP_DIR/$LEDGER_FILE"
+  fi
+done
+
+# Remove existing version (handles category changes), then atomically install
+# the prepared replacement within the destination category.
+rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
+mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"
+rm -rf "$RELEASE_LEDGER_TMP"
+trap - EXIT
 
 # Remove root-level binaries (should not be committed). publish package
 # already strips these before the copy; this rm -f is belt-and-suspenders
@@ -720,7 +766,9 @@ fi
 # artifacts` check in `verify-library-conventions.yml` hard-fails any PR
 # whose diff against base touches these files, regardless of fork vs
 # same-repo origin. The library no longer has an in-PR auto-fix path;
-# do not re-introduce a mirror or registry regen here.
+# do not re-introduce a mirror or registry regen here. Also do NOT hand-update
+# CHANGELOG.md, .printing-press-release.json, or runtime version strings for
+# release accounting; the library release-ledger workflow owns those post-merge.
 
 # Verify this changed/new CLI builds and has no reachable Go vulnerabilities from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
