@@ -4,6 +4,7 @@
   "auth_env_vars": [
     "PRINTING_PRESS_GOLDEN_API_KEY"
   ],
+  "auth_preference": "ApiKeyAuth",
   "auth_type": "api_key",
   "cli_name": "printing-press-golden-pp-cli",
   "creator": {

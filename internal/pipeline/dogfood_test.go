@@ -1204,6 +1204,48 @@ func (c *Config) AuthHeader() string {
 	assert.Equal(t, "Bearer ", result.GeneratedFmt)
 }
 
+func TestCheckAuthRecognizesHeaderAPIKey(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func (c *Client) do() {
+	authHeader := c.Config.AuthHeader()
+	req.Header.Set("x-api-key", authHeader)
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string { return c.APIKey }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", In: "header", Header: "x-api-key", Scheme: "ApiKeyAuth"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "x-api-key", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, "x-api-key")
+}
+
+func TestCheckAuthRecognizesHeaderAPIKeyFromChainedAuthHeaderCall(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func (c *Client) do() {
+	req.Header.Set("x-api-key", c.GetConfig().AuthHeader())
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string { return c.APIKey }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", In: "header", Header: "x-api-key", Scheme: "ApiKeyAuth"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "x-api-key", result.GeneratedFmt)
+}
+
 func TestCheckAuthRejectsBearerApplyAuthFormatWithoutTokenPlaceholder(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1412,6 +1454,47 @@ func (c *Config) AuthHeader() string {
 	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", Format: "Basic {username}:{password}"})
 	assert.True(t, result.Match)
 	assert.Equal(t, "Basic ", result.GeneratedFmt)
+}
+
+func TestLoadDogfoodOpenAPISpecUsesAuthPreference(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Multi Auth
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+`)
+
+	defaultSpec, err := loadDogfoodOpenAPISpec(specPath, "")
+	require.NoError(t, err)
+	require.Equal(t, "bearer_token", defaultSpec.Auth.Type)
+
+	preferred, err := loadDogfoodOpenAPISpec(specPath, "ApiKeyAuth")
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", preferred.Auth.Type)
+	assert.Equal(t, "ApiKeyAuth", preferred.Auth.Scheme)
+	assert.Equal(t, "x-api-key", preferred.Auth.Header)
 }
 
 func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {

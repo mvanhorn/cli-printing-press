@@ -1,9 +1,9 @@
 {
   "auth_check": {
-    "detail": "no bot/bearer/basic scheme detected",
-    "generated_format": "unknown",
+    "detail": "spec and generated client both use api key header \"X-API-Key\"",
+    "generated_format": "X-API-Key",
     "match": true,
-    "spec_scheme": ""
+    "spec_scheme": "api key header \"X-API-Key\""
   },
   "browser_session_check": {
     "detail": "browser-session auth not required",

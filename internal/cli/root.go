@@ -397,7 +397,8 @@ func newGenerateCmd() *cobra.Command {
 				openapi.SetMaxEndpointsPerResource(maxEndpointsPerResource)
 			}
 
-			openAPIParseAuthPref := openAPIAuthPreferenceForGenerate(authPreference, cliName, specFiles, specURL)
+			authPreferenceManifestDir := openAPIAuthPreferenceManifestDir(outputDir, cliName, specFiles, researchDir, singleSpecData)
+			openAPIParseAuthPref := openAPIAuthPreferenceForGenerate(authPreference, cliName, specFiles, specURL, authPreferenceManifestDir)
 
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
@@ -525,20 +526,21 @@ func newGenerateCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it")
 			}
 			if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
-				APIName:       apiSpec.Name,
-				SpecSrcs:      specFiles,
-				SpecURL:       specURL,
-				OutputDir:     absOut,
-				Description:   generateResult.CatalogDescription,
-				DisplayName:   generateResult.DisplayName,
-				Creator:       apiSpec.Creator,
-				Contributors:  apiSpec.Contributors,
-				Owner:         apiSpec.Owner,
-				Printer:       apiSpec.Printer,
-				PrinterName:   apiSpec.PrinterName,
-				RunID:         runID,
-				Spec:          apiSpec,
-				NovelFeatures: generateResult.NovelFeatures,
+				APIName:        apiSpec.Name,
+				SpecSrcs:       specFiles,
+				SpecURL:        specURL,
+				OutputDir:      absOut,
+				Description:    generateResult.CatalogDescription,
+				DisplayName:    generateResult.DisplayName,
+				Creator:        apiSpec.Creator,
+				Contributors:   apiSpec.Contributors,
+				Owner:          apiSpec.Owner,
+				Printer:        apiSpec.Printer,
+				PrinterName:    apiSpec.PrinterName,
+				RunID:          runID,
+				Spec:           apiSpec,
+				AuthPreference: openAPIParseAuthPref,
+				NovelFeatures:  generateResult.NovelFeatures,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
@@ -1121,17 +1123,46 @@ func parseOpenAPISpec(specFile string, data []byte, opts openapi.ParseOptions) (
 }
 
 // openAPIAuthPreferenceForGenerate resolves AuthPreference for openapi.ParseWithOptions.
-// Explicit --auth-preference wins; otherwise a matching catalog entry's auth_preference
-// is used so catalog-driven generates pick the intended scheme before spec enrichment.
-func openAPIAuthPreferenceForGenerate(cliAuthPref, cliName string, specFiles []string, specURL string) string {
+// Explicit --auth-preference wins; otherwise a matching catalog entry's
+// auth_preference is used so catalog-driven generates pick the intended scheme
+// before spec enrichment. Existing same-directory manifests are the final
+// durable fallback for reprints of non-catalog CLIs.
+func openAPIAuthPreferenceForGenerate(cliAuthPref, cliName string, specFiles []string, specURL string, outputDir string) string {
 	if s := strings.TrimSpace(cliAuthPref); s != "" {
 		return s
 	}
 	entry := lookupCatalogEntryForGenerateSpec(strings.TrimSpace(cliName), catalogSpecLookupRefs(specFiles, specURL))
-	if entry == nil {
+	if entry != nil {
+		if pref := strings.TrimSpace(entry.AuthPreference); pref != "" {
+			return pref
+		}
+	}
+	if strings.TrimSpace(outputDir) == "" {
 		return ""
 	}
-	return strings.TrimSpace(entry.AuthPreference)
+	if manifest, err := pipeline.ReadCLIManifest(outputDir); err == nil {
+		return strings.TrimSpace(manifest.AuthPreference)
+	}
+	return ""
+}
+
+func openAPIAuthPreferenceManifestDir(outputDir, cliName string, specFiles []string, researchDir string, singleSpecData []byte) string {
+	if strings.TrimSpace(outputDir) != "" {
+		return outputDir
+	}
+	name := strings.TrimSpace(cliName)
+	if name == "" {
+		name = pipeline.LoadAPINameFromResearchDir(researchDir)
+	}
+	if name == "" && len(specFiles) == 1 && len(singleSpecData) > 0 && openapi.IsOpenAPI(singleSpecData) {
+		if parsed, err := parseOpenAPISpec(specFiles[0], singleSpecData, openapi.ParseOptions{Lenient: true}); err == nil {
+			name = parsed.Name
+		}
+	}
+	if name == "" {
+		return ""
+	}
+	return pipeline.DefaultOutputDir(name)
 }
 
 // archiveSpecBytes picks the bytes and filename for the spec snapshot that

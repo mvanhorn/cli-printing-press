@@ -370,7 +370,7 @@ components:
             pagination:
               type: object
 `)
-	spec, err := loadDogfoodOpenAPISpec(specPath)
+	spec, err := loadDogfoodOpenAPISpec(specPath, "")
 	require.NoError(t, err)
 
 	server, baseURL := startMockServer(spec)
@@ -421,7 +421,7 @@ paths:
                         items:
                           type: object
 `)
-	spec, err := loadDogfoodOpenAPISpec(specPath)
+	spec, err := loadDogfoodOpenAPISpec(specPath, "")
 	require.NoError(t, err)
 	assert.Empty(t, spec.NestedDataEnvelopes)
 

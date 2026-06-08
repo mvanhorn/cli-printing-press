@@ -73,7 +73,7 @@ func NewVerifier(dir, specPath string) (*Verifier, error) {
 		SpecPath: specPath,
 	}
 	if specPath != "" {
-		loaded, err := loadDogfoodOpenAPISpec(specPath)
+		loaded, err := loadDogfoodOpenAPISpec(specPath, "")
 		if err != nil {
 			return nil, fmt.Errorf("loading spec: %w", err)
 		}

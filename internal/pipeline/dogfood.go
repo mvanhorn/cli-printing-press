@@ -282,7 +282,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 
 	var spec *openAPISpec
 	if specPath != "" {
-		loaded, err := loadDogfoodOpenAPISpec(specPath)
+		loaded, err := loadDogfoodOpenAPISpec(specPath, dogfoodAuthPreferenceFromManifest(dir))
 		if err != nil {
 			return nil, err
 		}
@@ -1138,7 +1138,7 @@ func specSourceLabel(source DogfoodSpecSource) string {
 	return "--spec"
 }
 
-func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
+func loadDogfoodOpenAPISpec(specPath string, authPreference string) (*openAPISpec, error) {
 	data, err := openapiparser.LoadSpecBytes(specPath, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("reading spec: %w", err)
@@ -1154,7 +1154,11 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 
 	summary, summaryErr := loadOpenAPISpecData(data, specPath)
 	nestedDataEnvelopes := detectNestedDataEnvelopeFixtures(data)
-	parsed, parseErr := openapiparser.ParseWithPathLenient(data, specPath)
+	parsed, parseErr := openapiparser.ParseWithOptions(data, openapiparser.ParseOptions{
+		Path:           specPath,
+		Lenient:        true,
+		AuthPreference: strings.TrimSpace(authPreference),
+	})
 	if parseErr == nil {
 		var scopeRequirements []oauthScopeRequirement
 		if summary != nil {
@@ -1174,7 +1178,7 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 
 	return &openAPISpec{
 		Paths:                  summary.Paths,
-		Auth:                   deriveDogfoodAuth(summary),
+		Auth:                   deriveDogfoodAuth(summary, authPreference),
 		OAuthScopeRequirements: summary.OAuthScopeRequirements,
 		NestedDataEnvelopes:    nestedDataEnvelopes,
 	}, nil
@@ -1199,9 +1203,27 @@ func collectDogfoodResourcePaths(resource apispec.Resource, paths *[]string) {
 	}
 }
 
-func deriveDogfoodAuth(spec *openAPISpecInfo) apispec.AuthConfig {
+func dogfoodAuthPreferenceFromManifest(dir string) string {
+	manifest, err := ReadCLIManifest(dir)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(manifest.AuthPreference)
+}
+
+func deriveDogfoodAuth(spec *openAPISpecInfo, authPreference string) apispec.AuthConfig {
 	if spec == nil {
 		return apispec.AuthConfig{Type: "none"}
+	}
+
+	if authPreference := strings.TrimSpace(authPreference); authPreference != "" {
+		for key, scheme := range spec.SecuritySchemes {
+			if strings.EqualFold(key, authPreference) || strings.EqualFold(scheme.Key, authPreference) {
+				if auth, ok := dogfoodAuthConfigForScheme(scheme); ok {
+					return auth
+				}
+			}
+		}
 	}
 
 	candidateKeys := referencedDogfoodSecurityKeys(spec.SecurityRequirements)
@@ -1346,6 +1368,7 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	}
 
 	expectedPrefix := ""
+	expectedHeader := ""
 	switch {
 	case strings.Contains(strings.ToLower(auth.Format), "bot "):
 		result.SpecScheme = `bot token format (expects "Bot " prefix)`
@@ -1356,6 +1379,9 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	case strings.Contains(strings.ToLower(auth.Format), "basic "):
 		result.SpecScheme = `basic auth format (expects "Basic " prefix)`
 		expectedPrefix = "Basic "
+	case strings.EqualFold(auth.Type, "api_key") && strings.EqualFold(auth.In, "header") && strings.TrimSpace(auth.Header) != "":
+		expectedHeader = strings.TrimSpace(auth.Header)
+		result.SpecScheme = fmt.Sprintf(`api key header %q`, expectedHeader)
 	}
 
 	clientData, err := os.ReadFile(filepath.Join(dir, "internal", "client", "client.go"))
@@ -1398,6 +1424,17 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 		default:
 			result.Match = false
 			result.Detail = fmt.Sprintf(`spec expects %q but composed auth format classifies as %q`, strings.TrimSpace(expectedPrefix), literalFmt)
+		}
+		return result
+	}
+
+	if expectedHeader != "" {
+		result.GeneratedFmt = detectGeneratedAPIKeyHeader(combinedSource, expectedHeader)
+		result.Match = strings.EqualFold(result.GeneratedFmt, expectedHeader)
+		if result.Match {
+			result.Detail = fmt.Sprintf(`spec and generated client both use api key header %q`, expectedHeader)
+		} else {
+			result.Detail = fmt.Sprintf(`spec expects api key header %q but generated client uses %q`, expectedHeader, strings.TrimSpace(result.GeneratedFmt))
 		}
 		return result
 	}
@@ -1679,6 +1716,21 @@ func composedAuthLabelFor(prefix string) string {
 var applyAuthFormatInlineMapCallRe = regexp.MustCompile(`(?s)applyAuthFormat\("([^"]*)",\s*map\[string\]string\{(.*?)\}\)`)
 var applyAuthFormatCallRe = regexp.MustCompile(`applyAuthFormat\("([^"]*)"`)
 var authFormatPlaceholderRe = regexp.MustCompile(`\{([^}]+)\}`)
+var requestHeaderSetLiteralRe = regexp.MustCompile(`req\.Header\.Set\("([^"]+)",\s*(?:authHeader|h|(?:[^()]*|\([^()]*\))*AuthHeader\(\))\)`)
+
+func detectGeneratedAPIKeyHeader(source string, expectedHeader string) string {
+	expectedHeader = strings.TrimSpace(expectedHeader)
+	if expectedHeader == "" {
+		return "unknown"
+	}
+	for _, match := range requestHeaderSetLiteralRe.FindAllStringSubmatch(source, -1) {
+		header := strings.TrimSpace(match[1])
+		if strings.EqualFold(header, expectedHeader) {
+			return header
+		}
+	}
+	return "unknown"
+}
 
 func detectGeneratedAuthFormat(source string, expectedPrefix string) (string, bool, string) {
 	candidates := authCandidatesForPrefix(expectedPrefix)

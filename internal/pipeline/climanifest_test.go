@@ -689,6 +689,60 @@ func TestWriteManifestForGenerateWithSpecURL(t *testing.T) {
 	assert.False(t, got.GeneratedAt.IsZero())
 }
 
+func TestWriteManifestForGenerateRecordsAuthPreference(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:        "multi-auth",
+		OutputDir:      dir,
+		AuthPreference: "ApiKeyAuth",
+		Spec: &spec.APISpec{
+			Name: "multi-auth",
+			Auth: spec.AuthConfig{
+				Type:   "api_key",
+				Scheme: "ApiKeyAuth",
+				In:     "header",
+				Header: "x-api-key",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "api_key", got.AuthType)
+	assert.Equal(t, "ApiKeyAuth", got.AuthPreference)
+}
+
+func TestWriteManifestForGenerateClearsStaleAuthPreference(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, CLIManifest{
+		APIName:        "multi-auth",
+		CLIName:        "multi-auth-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "ApiKeyAuth",
+	})
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "multi-auth",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name: "multi-auth",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.NotContains(t, raw, "auth_preference")
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "none", got.AuthType)
+	assert.Empty(t, got.AuthPreference)
+}
+
 func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
 	dir := t.TempDir()
 

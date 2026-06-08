@@ -3317,14 +3317,89 @@ func TestOpenAPIAuthPreferenceForGenerateFromJiraCatalogEntry(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "basicAuth", jira.AuthPreference)
 
-	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, ""),
+	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "", ""),
 		"catalog spec_url match should forward auth_preference without --auth-preference")
-	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{jira.SpecURL}, ""),
+	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{jira.SpecURL}, "", ""),
 		"explicit --auth-preference must override catalog")
 
 	localSpec := filepath.Join(t.TempDir(), "swagger.json")
-	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "jira", []string{localSpec}, ""),
+	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "jira", []string{localSpec}, "", ""),
 		"catalog slug via --name should resolve auth_preference without https spec refs")
+}
+
+func TestOpenAPIAuthPreferenceForGenerateFromPriorManifest(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, pipeline.WriteCLIManifest(dir, pipeline.CLIManifest{
+		APIName:        "custom-api",
+		CLIName:        "custom-api-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "ApiKeyAuth",
+	}))
+
+	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", "", []string{filepath.Join(dir, "spec.yaml")}, "", dir),
+		"prior manifest auth_preference should be the fallback below flag and catalog")
+	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{filepath.Join(dir, "spec.yaml")}, "", dir),
+		"explicit --auth-preference must override prior manifest")
+}
+
+func TestOpenAPIAuthPreferenceForGenerateSkipsPriorManifestWhenDirUnknown(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	require.NoError(t, pipeline.WriteCLIManifest(dir, pipeline.CLIManifest{
+		APIName:        "unrelated-api",
+		CLIName:        "unrelated-api-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "UnrelatedAuth",
+	}))
+
+	assert.Empty(t, openAPIAuthPreferenceForGenerate("", "", []string{filepath.Join(t.TempDir(), "spec.yaml")}, "", ""),
+		"unknown manifest dir must not fall back to the current working directory")
+}
+
+func TestOpenAPIAuthPreferenceForGenerateFromDefaultPriorManifest(t *testing.T) {
+	pressHome := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", pressHome)
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Custom Service
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses: {"200": {description: ok}}
+`)
+	specPath := filepath.Join(t.TempDir(), "openapi.yaml")
+	require.NoError(t, os.WriteFile(specPath, specBytes, 0o644))
+
+	defaultDir := pipeline.DefaultOutputDir("custom-service")
+	require.NoError(t, os.MkdirAll(defaultDir, 0o755))
+	require.NoError(t, pipeline.WriteCLIManifest(defaultDir, pipeline.CLIManifest{
+		APIName:        "custom-service",
+		CLIName:        "custom-service-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "ApiKeyAuth",
+	}))
+
+	manifestDir := openAPIAuthPreferenceManifestDir("", "", []string{specPath}, "", specBytes)
+	require.Equal(t, defaultDir, manifestDir)
+	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", "", []string{specPath}, "", manifestDir),
+		"default-output regen should find the prior manifest before full OpenAPI parsing")
 }
 
 func TestOpenAPIAuthPreferenceForGenerateParsesJiraLikeSpecWithCatalogDefault(t *testing.T) {
@@ -3364,7 +3439,7 @@ paths:
 	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
 	require.NoError(t, err)
 
-	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "")
+	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "", "")
 	require.Equal(t, "basicAuth", pref)
 
 	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, openapi.ParseOptions{AuthPreference: pref})

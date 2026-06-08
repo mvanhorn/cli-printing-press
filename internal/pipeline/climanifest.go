@@ -129,6 +129,7 @@ type CLIManifest struct {
 	MCPReady           string            `json:"mcp_ready,omitempty"`
 	APIVersion         string            `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
 	AuthType           string            `json:"auth_type,omitempty"`
+	AuthPreference     string            `json:"auth_preference,omitempty"`
 	AuthEnvVars        []string          `json:"auth_env_vars,omitempty"`
 	AuthEnvVarSpecs    []spec.AuthEnvVar `json:"auth_env_var_specs,omitempty"`
 	// AuthAdditionalHeaders mirrors AuthConfig.AdditionalHeaders so the MCPB
@@ -581,6 +582,7 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"mcp_ready",
 		"api_version",
 		"auth_type",
+		"auth_preference",
 		"auth_env_vars",
 		"auth_env_var_specs",
 		"endpoint_template_vars",
@@ -687,6 +689,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPPublicToolCount = public
 	m.MCPReady = computeMCPReady(parsed.Auth.Type)
 	m.AuthType = parsed.Auth.Type
+	m.AuthPreference = strings.TrimSpace(parsed.Auth.Scheme)
 	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
 	m.AuthEnvVars = manifestAuthEnvVarNames(parsed, envVarSpecs)
 	if !spec.AllAuthEnvVarSpecsInferred(envVarSpecs) {
@@ -800,21 +803,22 @@ func manifestAuthEnvVarSpecs(parsed *spec.APISpec) []spec.AuthEnvVar {
 // PipelineState), the standalone generate command only knows the spec
 // sources and output directory.
 type GenerateManifestParams struct {
-	APIName       string
-	SpecSrcs      []string // --spec args (URLs or file paths)
-	SpecURL       string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
-	DocsURL       string   // --docs URL, if used
-	OutputDir     string
-	Description   string                 // best generated user-facing catalog description
-	DisplayName   string                 // best generated user-facing catalog display name
-	Creator       spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
-	Contributors  []spec.Person          // resolved contributors, preserved from the existing manifest
-	Owner         string                 // legacy, derived from Creator.Handle (dual-write)
-	Printer       string                 // legacy, derived from Creator.Handle (dual-write)
-	PrinterName   string                 // legacy, derived from Creator.Name (dual-write)
-	RunID         string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
-	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
-	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)
+	APIName        string
+	SpecSrcs       []string // --spec args (URLs or file paths)
+	SpecURL        string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
+	DocsURL        string   // --docs URL, if used
+	OutputDir      string
+	Description    string                 // best generated user-facing catalog description
+	DisplayName    string                 // best generated user-facing catalog display name
+	Creator        spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
+	Contributors   []spec.Person          // resolved contributors, preserved from the existing manifest
+	Owner          string                 // legacy, derived from Creator.Handle (dual-write)
+	Printer        string                 // legacy, derived from Creator.Handle (dual-write)
+	PrinterName    string                 // legacy, derived from Creator.Name (dual-write)
+	RunID          string                 // from --research-dir/state.json when available, legacy basename fallback otherwise
+	Spec           *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
+	AuthPreference string                 // resolved OpenAPI securityScheme preference selected for this generate
+	NovelFeatures  []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 }
 
 // runIDPattern matches legacy and skill-allocated pipeline run_id basenames.
@@ -1002,6 +1006,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if p.Spec != nil {
 		populateMCPMetadata(&m, p.Spec)
 	}
+	if authPreference := strings.TrimSpace(p.AuthPreference); authPreference != "" {
+		m.AuthPreference = authPreference
+	}
 	if displayName := strings.TrimSpace(p.DisplayName); displayName != "" {
 		m.DisplayName = displayName
 	}
@@ -1061,6 +1068,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// would otherwise leave the persisted list in place).
 	if preserveExisting && p.Contributors != nil && len(p.Contributors) == 0 {
 		clearFields["contributors"] = struct{}{}
+	}
+	if preserveExisting && strings.TrimSpace(m.AuthPreference) == "" {
+		clearFields["auth_preference"] = struct{}{}
 	}
 	if preserveExisting {
 		if m.SpecURL != "" && m.SpecPath == "" {
