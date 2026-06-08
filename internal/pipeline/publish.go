@@ -400,12 +400,23 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		// succeeds with whatever was carried forward from the existing
 		// manifest; publish validate will surface the
 		// transcendence-check failure separately if relevant.
-		fmt.Fprintf(os.Stderr,
-			"debug: research.json not found at %s or %s; skipping novel_features enrichment "+
-				"(state.RunID=%q)\n",
-			filepath.Join(state.RunRoot(), "research.json"),
-			filepath.Join(state.PipelineDir(), "research.json"),
-			state.RunID)
+		canonicalRunResearch := filepath.Join(state.RunRoot(), "research.json")
+		canonicalPipelineResearch := filepath.Join(state.PipelineDir(), "research.json")
+		if len(m.NovelFeatures) == 0 {
+			fmt.Fprintf(os.Stderr,
+				"warning: could not locate originating run's research.json at %s or %s; "+
+					"manifest will require manual enrichment before publish (state.RunID=%q)\n",
+				canonicalRunResearch,
+				canonicalPipelineResearch,
+				state.RunID)
+		} else {
+			fmt.Fprintf(os.Stderr,
+				"debug: research.json not found at %s or %s; preserving existing novel_features "+
+					"(state.RunID=%q)\n",
+				canonicalRunResearch,
+				canonicalPipelineResearch,
+				state.RunID)
+		}
 	}
 
 	return WriteCLIManifest(dir, m)
