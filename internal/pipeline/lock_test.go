@@ -674,6 +674,47 @@ func TestPromoteWorkingCLI_RejectsManualPhase5Marker(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestPromoteWorkingCLI_AllowsSyntheticExternalCredentialPhase5Skip(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "aws-billing-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module aws-billing-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+	require.NoError(t, WriteCLIManifest(workDir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion,
+		APIName:       "aws-billing",
+		CLIName:       "aws-billing-pp-cli",
+		RunID:         "run-synthetic-skip",
+		AuthType:      "none",
+		SpecKind:      spec.KindSynthetic,
+	}))
+
+	state := NewStateWithRun("aws-billing", workDir, "run-synthetic-skip", "test-scope")
+	writePhase5GateMarker(t, state.ProofsDir(), Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       state.APIName,
+		RunID:         state.RunID,
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonExternalCredentialsUnavailable,
+		AuthContext:   Phase5AuthContext{Type: "oauth2", APIKeyAvailable: false},
+	})
+
+	err := PromoteWorkingCLI("aws-billing-pp-cli", workDir, state)
+	require.NoError(t, err)
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "aws-billing")
+	data, err := os.ReadFile(filepath.Join(libDir, CLIManifestFilename))
+	require.NoError(t, err)
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "synthetic", got.SpecKind)
+}
+
 func TestPromoteWorkingCLI_MinimalStateNoRunstate(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)
