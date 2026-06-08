@@ -321,6 +321,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"copyrightHolder": func() string {
 			return copyrightHolderString(g.Spec.Creator, g.Spec.OwnerName, g.Spec.Owner)
 		},
+		"endsSentence": endsSentence,
 		"modulePath": func() string {
 			if g.ModulePath != "" {
 				return g.ModulePath
@@ -908,15 +909,16 @@ func (g *Generator) readmeData() *readmeTemplateData {
 }
 
 func (g *Generator) compactDescription() string {
-	candidates := []string{}
 	if g.Narrative != nil {
-		candidates = append(candidates, g.Narrative.Headline)
+		if desc := naming.AuthoredDescription(g.Narrative.Headline); desc != "" {
+			return desc
+		}
 	}
 	if g.Spec != nil {
-		candidates = append(candidates, g.Spec.CLIDescription, g.Spec.Description)
-	}
-	for _, candidate := range candidates {
-		if desc := naming.CompactDescription(candidate); desc != "" {
+		if desc := naming.AuthoredDescription(g.Spec.CLIDescription); desc != "" {
+			return desc
+		}
+		if desc := naming.CompactDescription(g.Spec.Description); desc != "" {
 			return desc
 		}
 	}
@@ -966,9 +968,9 @@ func (g *Generator) CatalogDisplayName() string {
 func (g *Generator) skillDescription() string {
 	switch {
 	case g.Narrative != nil && strings.TrimSpace(g.Narrative.Headline) != "":
-		return naming.CompactDescription(g.Narrative.Headline)
+		return naming.AuthoredDescription(g.Narrative.Headline)
 	case g.Spec != nil && strings.TrimSpace(g.Spec.CLIDescription) != "":
-		return naming.CompactDescription(g.Spec.CLIDescription)
+		return naming.AuthoredDescription(g.Spec.CLIDescription)
 	case g.Spec != nil && strings.TrimSpace(g.Spec.Description) != "":
 		return fmt.Sprintf("Printing Press CLI for %s. %s", g.proseName(), naming.CompactDescription(g.Spec.Description))
 	default:

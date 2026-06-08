@@ -87,6 +87,16 @@ func TestIsThinCommandShort(t *testing.T) {
 	}
 }
 
+func TestAuthoredDescriptionPreservesAuthoredOneLiner(t *testing.T) {
+	in := "The first CLI for Scrape.do: requests, browsers, proxies, retries, and local SQLite analytics that keep agent workflows grounded without losing the brand dot or clause richness."
+
+	got := AuthoredDescription(in)
+
+	if got != in {
+		t.Fatalf("AuthoredDescription() = %q, want full authored one-liner %q", got, in)
+	}
+}
+
 func TestEnvPrefix(t *testing.T) {
 	tests := map[string]string{
 		"pokeapi":       "POKEAPI",
