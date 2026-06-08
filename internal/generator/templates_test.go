@@ -204,11 +204,11 @@ func TestAuthStatusHintsOnlyRequestCredentialEnvVars(t *testing.T) {
 	require.NoError(t, err)
 	content := string(authSrc)
 
-	start := strings.Index(content, `fmt.Fprintln(w, "Set your token:")`)
+	start := strings.Index(content, `fmt.Fprintln(w, "Set your credentials:")`)
 	require.NotEqual(t, -1, start, "auth status hint block should be emitted:\n%s", content)
 	hintBlock := content[start:]
-	end := strings.Index(hintBlock, `auth set-token <token>`)
-	require.NotEqual(t, -1, end, "auth set-token fallback should terminate status hint block:\n%s", hintBlock)
+	end := strings.Index(hintBlock, `return authErr(fmt.Errorf("no credentials configured"))`)
+	require.NotEqual(t, -1, end, "auth status hint block should terminate before returning auth error:\n%s", hintBlock)
 	hintBlock = hintBlock[:end]
 
 	require.Contains(t, hintBlock, `export STATUS_AUTH_TOKEN=\"your-token-here\"`)
@@ -216,6 +216,7 @@ func TestAuthStatusHintsOnlyRequestCredentialEnvVars(t *testing.T) {
 	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_ID`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_SECRET`)
 	require.NotContains(t, hintBlock, `STATUS_AUTH_SESSION_COOKIE`)
+	require.Contains(t, hintBlock, `auth set-token <token>`)
 }
 
 func TestAuthStatusHintsUseDescriptionAndNameShapePlaceholders(t *testing.T) {
