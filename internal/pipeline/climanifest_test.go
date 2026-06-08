@@ -654,6 +654,7 @@ resources:
 	assert.Equal(t, 1, got.MCPPublicToolCount)
 	assert.Equal(t, "full", got.MCPReady)
 	assert.Equal(t, "bearer_token", got.AuthType)
+	assert.Empty(t, got.SpecKind)
 	assert.Equal(t, []string{"INTERNAL_SPEC_TOKEN"}, got.AuthEnvVars)
 }
 
@@ -736,6 +737,32 @@ func TestWriteManifestForGenerateStampsLocalSQLiteSpecFormat(t *testing.T) {
 	assert.Equal(t, spec.SourceLocalSQLite, got.SpecFormat)
 	assert.True(t, got.IsLocalDatastore())
 	assert.Equal(t, "local-data.yaml", got.SpecPath)
+}
+
+func TestWriteManifestForGenerateStampsSyntheticSpecKind(t *testing.T) {
+	dir := t.TempDir()
+	syntheticSpec := &spec.APISpec{
+		Name: "aws-billing",
+		Kind: spec.KindSynthetic,
+		Auth: spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"costs": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/costs"}}},
+		},
+	}
+
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "aws-billing",
+		OutputDir: dir,
+		Spec:      syntheticSpec,
+	}))
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, spec.KindSynthetic, got.SpecKind)
+	assert.True(t, got.IsSyntheticSpec())
 }
 
 func TestWriteManifestForGenerateMCPBManifestUsesResolvedMCPBinarySlug(t *testing.T) {
