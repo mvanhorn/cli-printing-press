@@ -297,6 +297,14 @@ func CompactDescription(s string) string {
 	return truncateOneLine(s)
 }
 
+// AuthoredDescription produces one-line human-facing copy for agent-authored
+// narrative and cli_description fields. It preserves the authored sentence
+// instead of truncating at punctuation, since brand dots, commas, and colons
+// are common in product headlines.
+func AuthoredDescription(s string) string {
+	return CatalogDescription(s)
+}
+
 // CatalogDescription produces single-line prose for durable catalog metadata.
 // It normalizes markdown and whitespace without applying compact-surface
 // truncation, since this value becomes the canonical description in generated

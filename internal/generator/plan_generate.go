@@ -620,6 +620,19 @@ func yamlDoubleQuoted(s string) string {
 	return s
 }
 
+func endsSentence(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	switch s[len(s)-1] {
+	case '.', '!', '?':
+		return true
+	default:
+		return false
+	}
+}
+
 func copyrightHolderString(creator spec.Person, ownerName, ownerSlug string) string {
 	holder := creator.Name
 	if holder == "" {
