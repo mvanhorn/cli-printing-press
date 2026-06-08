@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.24.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.23.1...v4.24.0) (2026-06-08)
+
+
+### Features
+
+* **pipeline:** emit CLI release ledger skeletons ([#2859](https://github.com/mvanhorn/cli-printing-press/issues/2859)) ([e13b00d](https://github.com/mvanhorn/cli-printing-press/commit/e13b00d2481415eca53daedb81ade007b776f821))
+
 ## [4.23.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.23.0...v4.23.1) (2026-06-08)
 
 
