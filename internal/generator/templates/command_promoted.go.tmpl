@@ -292,13 +292,13 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			data, err := c.Get(cmd.Context(), path, params)
 {{- end}}
 {{- end}}
-{{- if and .HasStore (ne (upper .Endpoint.Method) "GET")}}
-			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
-{{- end}}
 {{- end}}
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
+{{- if and .HasStore (ne (upper .Endpoint.Method) "GET") (not $supportsAllPagination)}}
+			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
+{{- end}}
 {{- if $canWriteBack}}
 			var partialFailure *partialFailureReport
 			if !flags.dryRun && statusCode >= 200 && statusCode < 300 {

@@ -310,7 +310,7 @@ func TestToVisionaryPlanSyncableResourceDrivesLocalDataLayer(t *testing.T) {
 		areas[decision.Area] = decision.NeedLevel
 	}
 	assert.Equal(t, "high", areas["persistence"])
-	assert.Equal(t, "low", areas["search"])
+	assert.Equal(t, "high", areas["search"])
 
 	featureTemplates := make(map[string][]string)
 	for _, feature := range plan.Features {

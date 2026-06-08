@@ -660,7 +660,7 @@ func (p *APIProfile) ToVisionaryPlan(apiName string) *vision.VisionaryPlan {
 		},
 		vision.ArchitectureDecision{
 			Area:               "search",
-			NeedLevel:          lowHigh(p.NeedsSearch),
+			NeedLevel:          lowHigh(p.NeedsSearch || p.hasSyncableStoreResources()),
 			Decision:           "full-text indexing",
 			Rationale:          "Multi-resource list-heavy APIs need a fast local search surface when no dedicated endpoint exists.",
 			ImplementationHint: "Index string fields in FTS5 tables keyed by resource type.",
