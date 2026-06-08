@@ -296,8 +296,8 @@ func TestValidateEntry(t *testing.T) {
 func TestAllPublicCategoriesAreValid(t *testing.T) {
 	publicCategories := []string{
 		"ai", "auth", "cloud", "commerce", "developer-tools", "devices",
-		"food-and-dining", "maps", "marketing", "media-and-entertainment", "monitoring",
-		"payments", "productivity", "project-management", "sales-and-crm",
+		"food-and-dining", "health", "maps", "marketing", "media-and-entertainment",
+		"monitoring", "payments", "productivity", "project-management", "sales-and-crm",
 		"social-and-messaging", "travel", "other",
 	}
 	base := Entry{
@@ -565,11 +565,13 @@ func TestPublicCategoriesExcludeExample(t *testing.T) {
 	categories := PublicCategories()
 	assert.NotContains(t, categories, "example")
 	assert.Contains(t, categories, "developer-tools")
+	assert.Contains(t, categories, "health")
 	assert.Contains(t, categories, "other")
 }
 
 func TestIsPublicCategory(t *testing.T) {
 	assert.True(t, IsPublicCategory("developer-tools"))
+	assert.True(t, IsPublicCategory("health"))
 	assert.True(t, IsPublicCategory("other"))
 	assert.False(t, IsPublicCategory("example"))
 	assert.False(t, IsPublicCategory("banana"))

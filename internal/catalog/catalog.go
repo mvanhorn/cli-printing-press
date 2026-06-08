@@ -36,6 +36,7 @@ var validCategories = map[string]struct{}{
 	"developer-tools":         {},
 	"devices":                 {},
 	"food-and-dining":         {},
+	"health":                  {},
 	"maps":                    {},
 	"marketing":               {},
 	"media-and-entertainment": {},
