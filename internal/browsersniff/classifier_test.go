@@ -148,6 +148,50 @@ func TestClassifyEntries(t *testing.T) {
 			},
 		},
 		{
+			name: "known telemetry hosts with json post bodies are noise",
+			entries: []EnrichedEntry{
+				{
+					Method:              "POST",
+					URL:                 "https://vortex.data.microsoft.com/collect/v1",
+					RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+					RequestBody:         `{"name":"Microsoft.ApplicationInsights.PageView"}`,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"itemsReceived":1,"itemsAccepted":1}`,
+				},
+				{
+					Method:              "POST",
+					URL:                 "https://dc.services.visualstudio.com/v2/track",
+					RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+					RequestBody:         `[{"name":"Microsoft.ApplicationInsights.Event"}]`,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"itemsReceived":1,"itemsAccepted":1}`,
+				},
+				{
+					Method:              "POST",
+					URL:                 "https://analytics.google.com/g/collect",
+					RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+					RequestBody:         `{"client_id":"abc"}`,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{}`,
+				},
+			},
+			wantNoiseURLs: []string{
+				"https://vortex.data.microsoft.com/collect/v1",
+				"https://dc.services.visualstudio.com/v2/track",
+				"https://analytics.google.com/g/collect",
+			},
+			wantClassByURL: map[string]string{
+				"https://vortex.data.microsoft.com/collect/v1":  "noise",
+				"https://dc.services.visualstudio.com/v2/track": "noise",
+				"https://analytics.google.com/g/collect":        "noise",
+			},
+			wantIsNoiseByURL: map[string]bool{
+				"https://vortex.data.microsoft.com/collect/v1":  true,
+				"https://dc.services.visualstudio.com/v2/track": true,
+				"https://analytics.google.com/g/collect":        true,
+			},
+		},
+		{
 			name: "first-party intake path without telemetry query remains api",
 			entries: []EnrichedEntry{
 				{
