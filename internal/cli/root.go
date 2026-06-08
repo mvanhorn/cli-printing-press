@@ -1136,6 +1136,9 @@ func openAPIAuthPreferenceForGenerate(cliAuthPref, cliName string, specFiles []s
 			return pref
 		}
 	}
+	if strings.TrimSpace(outputDir) == "" {
+		return ""
+	}
 	if manifest, err := pipeline.ReadCLIManifest(outputDir); err == nil {
 		return strings.TrimSpace(manifest.AuthPreference)
 	}

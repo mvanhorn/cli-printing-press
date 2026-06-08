@@ -1716,7 +1716,7 @@ func composedAuthLabelFor(prefix string) string {
 var applyAuthFormatInlineMapCallRe = regexp.MustCompile(`(?s)applyAuthFormat\("([^"]*)",\s*map\[string\]string\{(.*?)\}\)`)
 var applyAuthFormatCallRe = regexp.MustCompile(`applyAuthFormat\("([^"]*)"`)
 var authFormatPlaceholderRe = regexp.MustCompile(`\{([^}]+)\}`)
-var requestHeaderSetLiteralRe = regexp.MustCompile(`req\.Header\.Set\("([^"]+)",\s*(?:authHeader|h|[^)]*AuthHeader\(\))\)`)
+var requestHeaderSetLiteralRe = regexp.MustCompile(`req\.Header\.Set\("([^"]+)",\s*(?:authHeader|h|(?:[^()]*|\([^()]*\))*AuthHeader\(\))\)`)
 
 func detectGeneratedAPIKeyHeader(source string, expectedHeader string) string {
 	expectedHeader = strings.TrimSpace(expectedHeader)

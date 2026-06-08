@@ -3344,6 +3344,21 @@ func TestOpenAPIAuthPreferenceForGenerateFromPriorManifest(t *testing.T) {
 		"explicit --auth-preference must override prior manifest")
 }
 
+func TestOpenAPIAuthPreferenceForGenerateSkipsPriorManifestWhenDirUnknown(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	require.NoError(t, pipeline.WriteCLIManifest(dir, pipeline.CLIManifest{
+		APIName:        "unrelated-api",
+		CLIName:        "unrelated-api-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "UnrelatedAuth",
+	}))
+
+	assert.Empty(t, openAPIAuthPreferenceForGenerate("", "", []string{filepath.Join(t.TempDir(), "spec.yaml")}, "", ""),
+		"unknown manifest dir must not fall back to the current working directory")
+}
+
 func TestOpenAPIAuthPreferenceForGenerateFromDefaultPriorManifest(t *testing.T) {
 	pressHome := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", pressHome)

@@ -1226,6 +1226,26 @@ func (c *Config) AuthHeader() string { return c.APIKey }
 	assert.Contains(t, result.SpecScheme, "x-api-key")
 }
 
+func TestCheckAuthRecognizesHeaderAPIKeyFromChainedAuthHeaderCall(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func (c *Client) do() {
+	req.Header.Set("x-api-key", c.GetConfig().AuthHeader())
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string { return c.APIKey }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", In: "header", Header: "x-api-key", Scheme: "ApiKeyAuth"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "x-api-key", result.GeneratedFmt)
+}
+
 func TestCheckAuthRejectsBearerApplyAuthFormatWithoutTokenPlaceholder(t *testing.T) {
 	dir := t.TempDir()
 
