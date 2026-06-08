@@ -186,7 +186,7 @@ Greptile feedback is not limited to GitHub review threads. It also edits top-lev
 python3 .github/scripts/pr-review-state/greptile_feedback.py <PR_NUMBER>
 ```
 
-`PR_NUMBER` is the GitHub pull request number, for example `2492` - not a branch name, URL, issue number, or commit SHA. The helper defaults to `mvanhorn/cli-printing-press` and exits non-zero until all of these are true: Greptile Review passes, the `All conversations resolved` check passes, there are no unresolved non-outdated review threads, the latest `greptile-apps` top-level comment reviewed the current PR head SHA, and that latest comment has no actionable markers such as `Issue 1 of`, `Fix the following`, `Comments Outside Diff`, `remaining open item`, or `Safe to merge after fixing/reviewing`.
+`PR_NUMBER` is the GitHub pull request number, for example `2492` - not a branch name, URL, issue number, or commit SHA. The helper defaults to `mvanhorn/cli-printing-press` and exits non-zero until all of these are true: Greptile Review passes, the `All conversations resolved` check passes, there are no unresolved non-outdated review threads, the latest `greptile-apps` top-level comment reviewed the current PR head SHA, and that latest comment has no actionable markers such as `Issue 1 of`, `Fix the following`, `Comments Outside Diff`, `remaining open item`, `needs attention`, or `Safe to merge after fixing/reviewing`.
 
 ## Versioning
 Releases are automated by release-please. Never manually edit version numbers.

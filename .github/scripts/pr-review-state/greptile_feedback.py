@@ -42,15 +42,34 @@ def split_repo(repo: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def fetch_pr(repo: str, pr_number: int) -> dict[str, Any]:
+def parse_graphql_response(stdout: str) -> dict[str, Any]:
+    data = json.loads(stdout)
+    errors = data.get("errors") or []
+    if errors:
+        messages = "; ".join(error.get("message", str(error)) for error in errors)
+        raise SystemExit(f"GitHub GraphQL error: {messages}")
+    return data
+
+
+def pull_request_from_response(data: dict[str, Any], repo: str, pr_number: int) -> dict[str, Any]:
+    repository = (data.get("data") or {}).get("repository")
+    if repository is None:
+        raise SystemExit(f"Repository {repo} not found or inaccessible")
+    pr = repository.get("pullRequest")
+    if pr is None:
+        raise SystemExit(f"PR #{pr_number} not found in {repo}")
+    return pr
+
+
+def fetch_review_threads(repo: str, pr_number: int) -> tuple[str, str, list[dict[str, Any]]]:
     owner, name = split_repo(repo)
     query = """
-query($owner: String!, $repo: String!, $number: Int!) {
+query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       url
       headRefOid
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $cursor) {
         nodes {
           id
           isResolved
@@ -66,23 +85,21 @@ query($owner: String!, $repo: String!, $number: Int!) {
             }
           }
         }
-      }
-      comments(first: 100) {
-        nodes {
-          id
-          body
-          createdAt
-          updatedAt
-          author { login }
-          url
+        pageInfo {
+          hasNextPage
+          endCursor
         }
       }
     }
   }
 }
 """
-    proc = run(
-        [
+    cursor: str | None = None
+    threads: list[dict[str, Any]] = []
+    pr_url = ""
+    head_sha = ""
+    while True:
+        cmd = [
             "gh",
             "api",
             "graphql",
@@ -95,12 +112,81 @@ query($owner: String!, $repo: String!, $number: Int!) {
             "-F",
             f"number={pr_number}",
         ]
-    )
-    data = json.loads(proc.stdout)
-    pr = data["data"]["repository"]["pullRequest"]
-    if pr is None:
-        raise SystemExit(f"PR #{pr_number} not found in {repo}")
-    return pr
+        if cursor:
+            cmd.extend(["-f", f"cursor={cursor}"])
+        proc = run(cmd)
+        pr = pull_request_from_response(parse_graphql_response(proc.stdout), repo, pr_number)
+        pr_url = pr["url"]
+        head_sha = pr["headRefOid"]
+        page = pr["reviewThreads"]
+        threads.extend(page["nodes"])
+        page_info = page["pageInfo"]
+        if not page_info["hasNextPage"]:
+            return pr_url, head_sha, threads
+        cursor = page_info["endCursor"]
+
+
+def fetch_comments(repo: str, pr_number: int) -> list[dict[str, Any]]:
+    owner, name = split_repo(repo)
+    query = """
+query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      comments(first: 100, after: $cursor) {
+        nodes {
+          id
+          body
+          createdAt
+          updatedAt
+          author { login }
+          url
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+"""
+    cursor: str | None = None
+    comments: list[dict[str, Any]] = []
+    while True:
+        cmd = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"number={pr_number}",
+        ]
+        if cursor:
+            cmd.extend(["-f", f"cursor={cursor}"])
+        proc = run(cmd)
+        pr = pull_request_from_response(parse_graphql_response(proc.stdout), repo, pr_number)
+        page = pr["comments"]
+        comments.extend(page["nodes"])
+        page_info = page["pageInfo"]
+        if not page_info["hasNextPage"]:
+            return comments
+        cursor = page_info["endCursor"]
+
+
+def fetch_pr(repo: str, pr_number: int) -> dict[str, Any]:
+    pr_url, head_sha, threads = fetch_review_threads(repo, pr_number)
+    comments = fetch_comments(repo, pr_number)
+    return {
+        "url": pr_url,
+        "headRefOid": head_sha,
+        "reviewThreads": {"nodes": threads},
+        "comments": {"nodes": comments},
+    }
 
 
 def fetch_checks(repo: str, pr_number: int) -> list[dict[str, Any]]:
