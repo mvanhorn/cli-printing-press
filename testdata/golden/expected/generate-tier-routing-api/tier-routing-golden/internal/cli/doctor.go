@@ -173,7 +173,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				header := cfg.AuthHeader()
 				if header == "" {
 					report["auth"] = "not configured"
-					report["auth_hint"] = "export TIER_GLOBAL_TOKEN=<your-key>"
+					report["auth_hint"] = "Set it with: tier-routing-golden-pp-cli auth set-token <token> or export TIER_GLOBAL_TOKEN=\"your-token-here\""
 				} else {
 					authConfigured = true
 					report["auth"] = "configured"
