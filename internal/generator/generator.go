@@ -6242,7 +6242,7 @@ func exampleValue(p spec.Param) string {
 	}
 
 	if p.Default != nil {
-		if s, ok := defaultSliceExampleValue(p.Default); ok && strings.TrimSpace(s) != "" {
+		if s, ok := defaultSliceExampleValue(p.Default); ok && strings.TrimSpace(s) != "" && firstShellSafeDescriptionToken(s) == s {
 			return s
 		}
 	}

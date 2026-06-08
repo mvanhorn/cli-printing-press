@@ -146,6 +146,7 @@ func TestExampleValuePrefersSchemaHintsBeforeGenericFallback(t *testing.T) {
 		{"enum wins over default", spec.Param{Name: "status", Type: "string", Enum: []string{"active"}, Default: "archived"}, "active"},
 		{"scalar default falls through for non-dispatch params", spec.Param{Name: "query", Type: "string", Default: "recent"}, "example-value"},
 		{"array default picks first item", spec.Param{Name: "part", Type: "array", Default: []any{"snippet"}}, "snippet"},
+		{"object array default falls through to placeholder", spec.Param{Name: "filters", Type: "array", Default: []any{map[string]any{"status": "active"}}}, "example-value"},
 		{"description eg token beats generic fallback", spec.Param{Name: "app", Type: "string", Description: "App name, e.g. INSTANTLY, SMARTLEAD"}, "INSTANTLY"},
 		{"description eg marker ignores word suffix", spec.Param{Name: "data", Type: "string", Description: "Data peg. TOKEN"}, "example-value"},
 		{"description eg marker finds later valid marker", spec.Param{Name: "data", Type: "string", Description: "Data peg. Use e.g. TOKEN"}, "TOKEN"},
