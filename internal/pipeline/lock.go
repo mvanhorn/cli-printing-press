@@ -423,6 +423,7 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 			manifest.CLIName = existing.CLIName
 		}
 		manifest.AuthType = existing.AuthType
+		manifest.SpecKind = existing.SpecKind
 	}
 
 	result := ValidatePhase5Gate(state.ProofsDir(), manifest)
