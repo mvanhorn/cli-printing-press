@@ -1,5 +1,31 @@
 # Changelog
 
+## [4.23.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.23.0...v4.23.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* **cli:** add timeout helper for novel commands ([#2808](https://github.com/mvanhorn/cli-printing-press/issues/2808)) ([2767cf3](https://github.com/mvanhorn/cli-printing-press/commit/2767cf3ba0747140db9652bc6b1508e8c870c7e5))
+* **cli:** allow adaptive limiter backoff to floor ([#2814](https://github.com/mvanhorn/cli-printing-press/issues/2814)) ([eac5598](https://github.com/mvanhorn/cli-printing-press/commit/eac5598e24cb6ea1c623b34ddbce8909ba2ce0ad))
+* **cli:** dedupe multi-spec duplicate endpoint commands ([#2828](https://github.com/mvanhorn/cli-printing-press/issues/2828)) ([69a8327](https://github.com/mvanhorn/cli-printing-press/commit/69a83275029d200d0e3663602918eb27b5b8897d))
+* **cli:** derive live dogfood fixtures from store ([#2826](https://github.com/mvanhorn/cli-printing-press/issues/2826)) ([b2f47e5](https://github.com/mvanhorn/cli-printing-press/commit/b2f47e54b5d280c332040600069f01903a0e51df))
+* **cli:** fail dogfood on missing data-source strategy ([#2805](https://github.com/mvanhorn/cli-printing-press/issues/2805)) ([0f3d988](https://github.com/mvanhorn/cli-printing-press/commit/0f3d9887c9c10914ed083547631e36c83778bb17))
+* **cli:** harden force regen merge ([#2812](https://github.com/mvanhorn/cli-printing-press/issues/2812)) ([cc3692f](https://github.com/mvanhorn/cli-printing-press/commit/cc3692ff27195ac37e90ef7f72228c27041e8b03))
+* **cli:** make graphql latest-only choose newest page ([#2823](https://github.com/mvanhorn/cli-printing-press/issues/2823)) ([c3e044b](https://github.com/mvanhorn/cli-printing-press/commit/c3e044ba0bc3ddc1de75b27e0abd45398e13d667))
+* **cli:** pace generated MCP clients ([#2809](https://github.com/mvanhorn/cli-printing-press/issues/2809)) ([477ed2f](https://github.com/mvanhorn/cli-printing-press/commit/477ed2f458232d938f775e163d6374570bb0b0fe))
+* **cli:** reject multi-statement sql mcp queries ([#2811](https://github.com/mvanhorn/cli-printing-press/issues/2811)) ([c3d4e1e](https://github.com/mvanhorn/cli-printing-press/commit/c3d4e1e646c5b8d0e3737ca50f62ccebf714e355))
+* **cli:** route shipcheck verify for HTML sync stubs ([#2825](https://github.com/mvanhorn/cli-printing-press/issues/2825)) ([59f3574](https://github.com/mvanhorn/cli-printing-press/commit/59f3574c5e500d4b4ac302c4b68c1e09548052d5))
+* **cli:** scope global params from env ([#2827](https://github.com/mvanhorn/cli-printing-press/issues/2827)) ([95b099e](https://github.com/mvanhorn/cli-printing-press/commit/95b099e530c075fd2333309eec509a5c958e9692))
+* **cli:** skip idless resources in default sync ([#2830](https://github.com/mvanhorn/cli-printing-press/issues/2830)) ([50054e1](https://github.com/mvanhorn/cli-printing-press/commit/50054e1ebb03f74aab70f51df28cdae53c4f8206))
+* **cli:** skip required-query dependent sync ([#2831](https://github.com/mvanhorn/cli-printing-press/issues/2831)) ([4d28f0f](https://github.com/mvanhorn/cli-printing-press/commit/4d28f0ff1d62a7c0a6c28b1e73e74a2adc74a6aa))
+* **cli:** stamp printed MCP versions in bundles ([#2817](https://github.com/mvanhorn/cli-printing-press/issues/2817)) ([e4bc665](https://github.com/mvanhorn/cli-printing-press/commit/e4bc6654dfc33ffc8a3ac5b540f68c3c6ee0b65e))
+* **cli:** support local sqlite specs without base urls ([#2807](https://github.com/mvanhorn/cli-printing-press/issues/2807)) ([b36e7bc](https://github.com/mvanhorn/cli-printing-press/commit/b36e7bcca3a3223cfd4cec795075117ded79a467))
+* **cli:** support next_token sync pagination ([#2818](https://github.com/mvanhorn/cli-printing-press/issues/2818)) ([d0a5d24](https://github.com/mvanhorn/cli-printing-press/commit/d0a5d243af188f32edba40b16d4c54cc1b8d951d))
+* **cli:** synthesize html page sync ids ([#2835](https://github.com/mvanhorn/cli-printing-press/issues/2835)) ([88617bb](https://github.com/mvanhorn/cli-printing-press/commit/88617bb94d0271bc031af50b49935bda8cfe5fff))
+* **skills:** add blocked API journal flow ([#2806](https://github.com/mvanhorn/cli-printing-press/issues/2806)) ([7d445b1](https://github.com/mvanhorn/cli-printing-press/commit/7d445b1f5bb95c5ec54486c7ab07760ffa59a632))
+* **skills:** add sqlite missing-mirror guard guidance ([#2819](https://github.com/mvanhorn/cli-printing-press/issues/2819)) ([393347a](https://github.com/mvanhorn/cli-printing-press/commit/393347a2449a24dbc2f0aae71609df1a35b37a22))
+* **skills:** rebuild stale repo preflight binary ([#2810](https://github.com/mvanhorn/cli-printing-press/issues/2810)) ([cfe9e8f](https://github.com/mvanhorn/cli-printing-press/commit/cfe9e8ffda9516181e7faaec48fadb2d8646cdb9))
+
 ## [4.23.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.22.1...v4.23.0) (2026-06-07)
 
 
