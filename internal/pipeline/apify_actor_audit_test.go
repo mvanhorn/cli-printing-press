@@ -101,6 +101,42 @@ const ownerRepo = "someone~not-an-apify-actor"
 	assert.Contains(t, report.Issues[0], "no Apify actor references found")
 }
 
+func TestRunApifyActorAuditOnlyExtractsActorIDsFromActPaths(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "research"), 0o755))
+	writeTestFile(t, filepath.Join(cliDir, "research", "research.json"), `{
+  "timeRange": "2022~2024",
+  "notes": "Fetched https://api.apify.com/v2/acts/apify~instagram-scraper and https://api.apify.com/v2/acts/apify~tiktok-scraper/runs"
+}`)
+
+	var requested []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		switch r.URL.Path {
+		case "/v2/acts/apify~instagram-scraper", "/v2/acts/apify~tiktok-scraper":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	report, err := RunApifyActorAudit(context.Background(), ApifyActorAuditOptions{
+		Dir:     cliDir,
+		BaseURL: server.URL,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, ApifyActorAuditPass, report.Verdict)
+	assert.Equal(t, []string{
+		"/v2/acts/apify~instagram-scraper",
+		"/v2/acts/apify~tiktok-scraper",
+	}, requested)
+	require.Len(t, report.Actors, 2)
+	assert.Equal(t, "apify~instagram-scraper", report.Actors[0].ID)
+	assert.Equal(t, "apify~tiktok-scraper", report.Actors[1].ID)
+}
+
 func TestRunApifyActorAuditReportsAuthBlockedAsUnverified(t *testing.T) {
 	cliDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))

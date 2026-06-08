@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -57,8 +58,7 @@ type ApifyActorAuditReport struct {
 	Issues      []string               `json:"issues,omitempty"`
 }
 
-var apifyActorIDRe = regexp.MustCompile(`\b[A-Za-z0-9][A-Za-z0-9_-]*~[A-Za-z0-9][A-Za-z0-9_-]*\b`)
-var apifyActPathRe = regexp.MustCompile(`/acts/([A-Za-z0-9][A-Za-z0-9_-]*~[A-Za-z0-9][A-Za-z0-9_-]*)(?:/|%2[Ff])`)
+var apifyActPathRe = regexp.MustCompile(`/acts/([A-Za-z0-9][A-Za-z0-9_-]*~[A-Za-z0-9][A-Za-z0-9_-]*)(?:/|%2[Ff]|[?#"'\s),;\]}]|$)`)
 
 func RunApifyActorAudit(ctx context.Context, opts ApifyActorAuditOptions) (*ApifyActorAuditReport, error) {
 	if strings.TrimSpace(opts.Dir) == "" {
@@ -218,9 +218,6 @@ func apifyActorIDsInContent(content string) []string {
 	for _, m := range apifyActPathRe.FindAllStringSubmatch(content, -1) {
 		seen[m[1]] = struct{}{}
 	}
-	for _, id := range apifyActorIDRe.FindAllString(content, -1) {
-		seen[id] = struct{}{}
-	}
 	out := make([]string, 0, len(seen))
 	for id := range seen {
 		out = append(out, id)
@@ -242,7 +239,10 @@ func probeApifyActor(ctx context.Context, client *http.Client, baseURL, token, a
 	if err != nil {
 		return ApifyActorStatusUnverified, err.Error()
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
