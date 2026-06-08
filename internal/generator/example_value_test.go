@@ -140,12 +140,14 @@ func TestExampleValuePrefersSchemaHintsBeforeGenericFallback(t *testing.T) {
 		want  string
 	}{
 		{"explicit example wins", spec.Param{Name: "status", Type: "string", Example: "archived", Enum: []string{"active"}}, "archived"},
+		{"dotted explicit example wins", spec.Param{Name: "version", Type: "string", Example: "v1.0"}, "v1.0"},
 		{"array example picks first item", spec.Param{Name: "part", Type: "array", Example: []any{"snippet"}}, "snippet"},
 		{"object example falls through to placeholder", spec.Param{Name: "filter", Type: "object", Example: map[string]any{"status": "active"}}, "example-value"},
 		{"unsafe object example still lets enum win", spec.Param{Name: "status", Type: "object", Example: map[string]any{"status": "archived"}, Enum: []string{"active"}}, "active"},
 		{"enum wins over default", spec.Param{Name: "status", Type: "string", Enum: []string{"active"}, Default: "archived"}, "active"},
 		{"scalar default falls through for non-dispatch params", spec.Param{Name: "query", Type: "string", Default: "recent"}, "example-value"},
 		{"array default picks first item", spec.Param{Name: "part", Type: "array", Default: []any{"snippet"}}, "snippet"},
+		{"dotted array default picks first item", spec.Param{Name: "version", Type: "array", Default: []any{"2.0.1"}}, "2.0.1"},
 		{"object array default falls through to placeholder", spec.Param{Name: "filters", Type: "array", Default: []any{map[string]any{"status": "active"}}}, "example-value"},
 		{"description eg token beats generic fallback", spec.Param{Name: "app", Type: "string", Description: "App name, e.g. INSTANTLY, SMARTLEAD"}, "INSTANTLY"},
 		{"description eg marker ignores word suffix", spec.Param{Name: "data", Type: "string", Description: "Data peg. TOKEN"}, "example-value"},

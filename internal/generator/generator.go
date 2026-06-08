@@ -6226,7 +6226,7 @@ func exampleValue(p spec.Param) string {
 	}
 
 	if p.Example != nil {
-		if s := stringifyDefault(p.Example); strings.TrimSpace(s) != "" && firstShellSafeDescriptionToken(s) == s {
+		if s := stringifyDefault(p.Example); shellSafeSchemaExampleValue(s) {
 			return s
 		}
 	}
@@ -6242,7 +6242,7 @@ func exampleValue(p spec.Param) string {
 	}
 
 	if p.Default != nil {
-		if s, ok := defaultSliceExampleValue(p.Default); ok && strings.TrimSpace(s) != "" && firstShellSafeDescriptionToken(s) == s {
+		if s, ok := defaultSliceExampleValue(p.Default); ok && shellSafeSchemaExampleValue(s) {
 			return s
 		}
 	}
@@ -6371,6 +6371,20 @@ func firstShellSafeDescriptionToken(s string) string {
 		return ""
 	}
 	return s
+}
+
+func shellSafeSchemaExampleValue(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, " \t\n\r") {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == ':' || r == '/' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func exampleNeedsTODO(line string) bool {
