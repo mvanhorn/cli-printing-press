@@ -4155,6 +4155,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 			Enum:        schemaEnum(schema),
 			Format:      schemaFormat(schema),
 		}
+		param.Example = parameterExample(parameter, schema)
 		if parameter.In == openapi3.ParameterInQuery {
 			if !urlNameOverridesRead {
 				urlNameOverrides = readParamURLNameOverrides(pathItem, op)
@@ -4589,6 +4590,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 			Fields:      mapBodyFields(paramSchema, inferCSVArrays),
 			Enum:        schemaEnum(paramSchema),
 			Format:      schemaFormat(paramSchema),
+			Example:     schemaExample(paramSchema),
 		}
 		if inferCSVArrays && isStringArraySchema(paramSchema) {
 			param.ItemType = "string"
@@ -5857,6 +5859,44 @@ func schemaFormat(schema *openapi3.Schema) string {
 		return ""
 	}
 	return strings.TrimSpace(schema.Format)
+}
+
+func schemaExample(schema *openapi3.Schema) any {
+	if schema == nil {
+		return nil
+	}
+	if schema.Example != nil {
+		return schema.Example
+	}
+	for _, example := range schema.Examples {
+		if example != nil {
+			return example
+		}
+	}
+	return nil
+}
+
+func parameterExample(parameter *openapi3.Parameter, schema *openapi3.Schema) any {
+	if parameter == nil {
+		return schemaExample(schema)
+	}
+	if parameter.Example != nil {
+		return parameter.Example
+	}
+	if len(parameter.Examples) > 0 {
+		names := make([]string, 0, len(parameter.Examples))
+		for name := range parameter.Examples {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			ref := parameter.Examples[name]
+			if ref != nil && ref.Value != nil && ref.Value.Value != nil {
+				return ref.Value.Value
+			}
+		}
+	}
+	return schemaExample(schema)
 }
 
 func schemaDescription(schema *openapi3.Schema) string {

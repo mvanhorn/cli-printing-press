@@ -2186,6 +2186,7 @@ type Param struct {
 	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
 	GlobalScope bool     `yaml:"global_scope,omitempty" json:"global_scope,omitempty"`
 	Default     any      `yaml:"default" json:"default"`
+	Example     any      `yaml:"example,omitempty" json:"example,omitempty"`
 	Description string   `yaml:"description" json:"description"`
 	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
 	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
@@ -2480,6 +2481,12 @@ func bodyParamFromSchemaNode(name string, node *yaml.Node) (Param, error) {
 		Description: schemaDescriptionFromNode(node, name),
 		Enum:        schemaStringSlice(yamlMappingValue(node, "enum")),
 		Format:      strings.TrimSpace(schemaScalarValue(yamlMappingValue(node, "format"))),
+	}
+	if exampleNode := yamlMappingValue(node, "example"); exampleNode != nil {
+		var exampleValue any
+		if err := exampleNode.Decode(&exampleValue); err == nil {
+			param.Example = exampleValue
+		}
 	}
 	if required := yamlMappingValue(node, "required"); required != nil && required.Kind == yaml.ScalarNode {
 		var requiredBool bool

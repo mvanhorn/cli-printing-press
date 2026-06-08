@@ -8441,6 +8441,45 @@ func TestGeneratedCommandExampleKeepsDispatchParamDefault(t *testing.T) {
 	assert.Contains(t, string(listSrc), `dispatch-default-pp-cli domain list --limit 50`)
 }
 
+func TestGeneratedCommandExampleUsesSchemaHintsForRequiredParams(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("schema-hints")
+	apiSpec.Resources["reports"] = spec.Resource{
+		Description: "Reports",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/reports",
+				Description: "Create report",
+				Params: []spec.Param{
+					{Name: "exampleParam", Type: "string", Required: true, Example: "from-example", Description: "Explicit example"},
+					{Name: "enumParam", Type: "string", Required: true, Enum: []string{"snippet"}, Description: "Enum parameter"},
+					{Name: "defaultParam", Type: "string", Required: true, Default: []any{"from-default"}, Description: "Default parameter"},
+					{Name: "app", Type: "string", Required: true, Description: "App name, e.g. INSTANTLY, SMARTLEAD"},
+					{Name: "fallback", Type: "string", Required: true, Description: "Fallback parameter"},
+				},
+				Body: []spec.Param{
+					{Name: "kind", Type: "string", Required: true, Example: "summary", Description: "Report kind"},
+				},
+			},
+			"list": {
+				Method:      "GET",
+				Path:        "/reports",
+				Description: "List reports",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	source := readGeneratedFile(t, outputDir, "internal", "cli", "reports_create.go")
+	assert.Contains(t, source, `schema-hints-pp-cli reports create --example-param from-example --enum-param snippet --default-param from-default --app INSTANTLY --fallback example-value --kind summary`)
+	assert.Contains(t, source, `// TODO: replace placeholder example values before relying on this for live dogfood.`)
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedCommandExamplePrefersNarrativeQuickStart(t *testing.T) {
 	t.Parallel()
 
