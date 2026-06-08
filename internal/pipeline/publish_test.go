@@ -584,12 +584,18 @@ func TestWriteCLIManifestForPublish_NovelFeaturesPreservedFromCarryForward(t *te
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, CLIManifestFilename), existingData, 0o644))
 
-	// No research.json anywhere. Publish should preserve the carry-forward value.
-	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+	// No research.json anywhere. Publish should preserve the carry-forward value
+	// without warning that manual enrichment is required.
+	var stderr string
+	require.NoError(t, captureStderr(t, &stderr, func() error {
+		return writeCLIManifestForPublish(state, state.WorkingDir)
+	}))
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	require.Len(t, m.NovelFeatures, 1, "carry-forward should preserve generate-time novel_features")
 	assert.Equal(t, "today", m.NovelFeatures[0].Command)
+	assert.NotContains(t, stderr, "manifest will require manual enrichment before publish")
+	assert.Contains(t, stderr, "preserving existing novel_features")
 }
 
 func TestWriteCLIManifestForPublish_AuthEnvVarSpecsPreservedFromCarryForward(t *testing.T) {
@@ -701,9 +707,10 @@ func TestWriteCLIManifestForPublish_NoResearchNoExistingManifest(t *testing.T) {
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	assert.Empty(t, m.NovelFeatures, "no novel_features when neither research nor prior manifest has any")
-	assert.Contains(t, stderr, "debug: research.json not found at "+
+	assert.Contains(t, stderr, "warning: could not locate originating run's research.json at "+
 		filepath.Join(state.RunRoot(), "research.json")+" or "+
 		filepath.Join(state.PipelineDir(), "research.json"))
+	assert.Contains(t, stderr, "manifest will require manual enrichment before publish")
 	assert.NotContains(t, stderr, "read failed")
 	assert.NotContains(t, stderr, "failed to parse")
 }
