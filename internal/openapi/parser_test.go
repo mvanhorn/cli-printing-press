@@ -3266,6 +3266,62 @@ func TestReclassifyPathParamDefaults(t *testing.T) {
 	assert.Equal(t, "PICK", params[2].Default, "enum default should be first value")
 }
 
+func TestParseParameterExamples(t *testing.T) {
+	parsed, err := Parse([]byte(`
+openapi: 3.1.0
+info:
+  title: Parameter Examples
+  version: 1.0.0
+paths:
+  /reports:
+    get:
+      operationId: listReports
+      parameters:
+        - name: parameterExample
+          in: query
+          required: true
+          example: from-parameter
+          schema:
+            type: string
+        - name: namedExample
+          in: query
+          required: true
+          examples:
+            beta:
+              value: from-named
+          schema:
+            type: string
+        - name: schemaExample
+          in: query
+          required: true
+          schema:
+            type: string
+            example: from-schema
+        - name: schemaExamples
+          in: query
+          required: true
+          schema:
+            type: string
+            examples:
+              - from-schema-list
+      responses:
+        '200':
+          description: ok
+`))
+	require.NoError(t, err)
+
+	params := parsed.Resources["reports"].Endpoints["list"].Params
+	byName := map[string]spec.Param{}
+	for _, param := range params {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "from-parameter", byName["parameterExample"].Example)
+	assert.Equal(t, "from-named", byName["namedExample"].Example)
+	assert.Equal(t, "from-schema", byName["schemaExample"].Example)
+	assert.Equal(t, "from-schema-list", byName["schemaExamples"].Example)
+}
+
 func TestParsePreservesDefaultedPathParamsDuringGlobalFilter(t *testing.T) {
 	data := []byte(`
 openapi: 3.0.0

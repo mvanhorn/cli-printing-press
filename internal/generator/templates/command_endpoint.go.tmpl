@@ -66,7 +66,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 		Aliases: []string{"{{.Endpoint.Alias}}"},
 {{- end}}
 		Short: "{{oneline .Endpoint.Description}}",
-		Example: {{printf "%q" (exampleLine .CommandPath .EndpointName .Endpoint)}},
+{{- $example := exampleLine .CommandPath .EndpointName .Endpoint}}
+{{- if exampleNeedsTODO $example}}
+		// TODO: replace placeholder example values before relying on this for live dogfood.
+{{- end}}
+		Example: {{printf "%q" $example}},
 		Annotations: map[string]string{"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, "pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- if endpointHasRequiredInput .Endpoint}}

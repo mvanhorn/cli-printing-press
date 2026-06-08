@@ -219,6 +219,16 @@ func stringifyDefault(v any) string {
 		return ""
 	case string:
 		return t
+	case []string:
+		if len(t) == 0 {
+			return ""
+		}
+		return stringifyDefault(t[0])
+	case []any:
+		if len(t) == 0 {
+			return ""
+		}
+		return stringifyDefault(t[0])
 	default:
 		return fmt.Sprintf("%v", t)
 	}

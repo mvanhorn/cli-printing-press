@@ -323,6 +323,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"exampleLine":         g.exampleLine,
 		"promotedExampleLine": g.promotedExampleLine,
+		"exampleNeedsTODO":    exampleNeedsTODO,
 		"commandExampleArgs":  commandExampleArgs,
 		"currentYear":         func() string { return strconv.Itoa(time.Now().Year()) },
 		"copyrightHolder": func() string {
@@ -6359,6 +6360,12 @@ func exampleValue(p spec.Param) string {
 		return value
 	}
 
+	if p.Example != nil {
+		if s := stringifyDefault(p.Example); shellSafeSchemaExampleValue(s) {
+			return s
+		}
+	}
+
 	// Enum-constrained params: the API rejects anything outside the set,
 	// so prefer the first declared value over name-shape heuristics.
 	// This wins over name-based branches because a hypothetical
@@ -6367,6 +6374,16 @@ func exampleValue(p spec.Param) string {
 		if strings.TrimSpace(v) != "" {
 			return v
 		}
+	}
+
+	if p.Default != nil {
+		if s, ok := defaultSliceExampleValue(p.Default); ok && shellSafeSchemaExampleValue(s) {
+			return s
+		}
+	}
+
+	if value, ok := descriptionExampleValue(p.Description); ok {
+		return value
 	}
 
 	nameLower := strings.ToLower(p.Name)
@@ -6418,6 +6435,95 @@ func exampleValue(p spec.Param) string {
 		return "42"
 	}
 	return "example-value"
+}
+
+func descriptionExampleValue(description string) (string, bool) {
+	lower := strings.ToLower(description)
+	for _, marker := range []string{"e.g.", "eg.", "for example"} {
+		idx := descriptionExampleMarkerIndex(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(description[idx+len(marker):])
+		rest = strings.TrimLeft(rest, ": \t")
+		if value := firstShellSafeDescriptionToken(rest); value != "" {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func descriptionExampleMarkerIndex(lower, marker string) int {
+	searchFrom := 0
+	for {
+		idx := strings.Index(lower[searchFrom:], marker)
+		if idx < 0 {
+			return -1
+		}
+		idx += searchFrom
+		if idx == 0 {
+			return idx
+		}
+		prev := rune(lower[idx-1])
+		if !unicode.IsLetter(prev) && !unicode.IsDigit(prev) {
+			return idx
+		}
+		searchFrom = idx + len(marker)
+	}
+}
+
+func defaultSliceExampleValue(v any) (string, bool) {
+	switch t := v.(type) {
+	case []string:
+		if len(t) == 0 {
+			return "", false
+		}
+		return stringifyDefault(t[0]), true
+	case []any:
+		if len(t) == 0 {
+			return "", false
+		}
+		return stringifyDefault(t[0]), true
+	default:
+		return "", false
+	}
+}
+
+func firstShellSafeDescriptionToken(s string) string {
+	for _, delimiter := range []string{",", ";", ".", "\n", "\r", " or ", " and "} {
+		if idx := strings.Index(s, delimiter); idx >= 0 {
+			s = s[:idx]
+		}
+	}
+	s = strings.Trim(s, " \t`'\"()[]{}")
+	if s == "" || strings.ContainsAny(s, " \t") {
+		return ""
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == ':' || r == '/' || r == '.' {
+			continue
+		}
+		return ""
+	}
+	return s
+}
+
+func shellSafeSchemaExampleValue(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, " \t\n\r") {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == ':' || r == '/' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func exampleNeedsTODO(line string) bool {
+	return strings.Contains(line, "example-value")
 }
 
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
