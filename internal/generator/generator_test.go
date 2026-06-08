@@ -10927,6 +10927,58 @@ func TestGenerateMCPContextEscapesDomainStrings(t *testing.T) {
 	assert.Contains(t, src, `filter=\"active\"`)
 }
 
+func TestGeneratePreservesDescriptionHeadlinesAcrossAgentSurfaces(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("headlinecopy")
+	headline := "The first CLI for Scrape.do: requests, browsers, proxies, retries, webhook replay, license seats, churn analytics, and local SQLite workflows no other tool ships"
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet.MCP = true
+	gen.Narrative = &ReadmeNarrative{
+		Headline:       headline,
+		TriggerPhrases: []string{"check Scrape.do usage"},
+	}
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skill), headline+". Trigger phrases: `check Scrape.do usage`.")
+	assert.NotContains(t, string(skill), "Scrape. Trigger phrases")
+	assert.NotContains(t, string(skill), "ships.. Trigger phrases")
+
+	goreleaser, err := os.ReadFile(filepath.Join(outputDir, ".goreleaser.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(goreleaser), `description: "`+headline+`"`)
+
+	agentContext, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "agent_context.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(agentContext), `Description: "`+headline+`"`)
+
+	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(mcpTools), `"description": "`+headline+`"`)
+}
+
+func TestGenerateSkillTriggerPhraseTailDoesNotDoublePunctuate(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("punctuatedheadline")
+	headline := "Search routes, compare prices, and track reliability."
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		Headline:       headline,
+		TriggerPhrases: []string{"track route reliability"},
+	}
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skill), headline+" Trigger phrases: `track route reliability`.")
+	assert.NotContains(t, string(skill), "reliability.. Trigger phrases")
+}
+
 func TestGenerateMCPCompactsRepeatedParamDescriptions(t *testing.T) {
 	t.Parallel()
 
