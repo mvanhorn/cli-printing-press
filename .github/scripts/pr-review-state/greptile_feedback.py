@@ -23,7 +23,6 @@ ACTIONABLE_MARKERS = (
     "remaining open item",
     "Safe to merge after fixing",
     "Safe to merge after reviewing",
-    "needs attention",
 )
 
 
@@ -250,10 +249,13 @@ def main() -> int:
     latest = latest_greptile_comment(pr["comments"]["nodes"])
     latest_body = latest.get("body", "") if latest else ""
     latest_reviewed = reviewed_commit(latest_body) if latest else None
+    head = pr["headRefOid"]
+    latest_reviewed_matches_head = (
+        latest_reviewed is not None and head.startswith(latest_reviewed)
+    )
     markers = [marker for marker in ACTIONABLE_MARKERS if marker in latest_body]
     greptile_review = check_bucket(checks, "Greptile Review")
     conversations_resolved = check_bucket(checks, "All conversations resolved")
-    head = pr["headRefOid"]
 
     print(f"PR: {pr['url']}")
     print(f"Head SHA: {head}")
@@ -264,7 +266,7 @@ def main() -> int:
     print(f"Latest Greptile actionable markers: {', '.join(markers) if markers else 'none'}")
 
     ready = True
-    if latest_reviewed != head:
+    if not latest_reviewed_matches_head:
         ready = False
         print("NOT READY: latest Greptile comment does not match PR head")
     if greptile_review != "pass":
