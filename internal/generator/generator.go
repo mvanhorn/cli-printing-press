@@ -6226,7 +6226,7 @@ func exampleValue(p spec.Param) string {
 	}
 
 	if p.Example != nil {
-		if s := stringifyDefault(p.Example); strings.TrimSpace(s) != "" {
+		if s := stringifyDefault(p.Example); strings.TrimSpace(s) != "" && firstShellSafeDescriptionToken(s) == s {
 			return s
 		}
 	}
@@ -6305,7 +6305,7 @@ func exampleValue(p spec.Param) string {
 func descriptionExampleValue(description string) (string, bool) {
 	lower := strings.ToLower(description)
 	for _, marker := range []string{"e.g.", "eg.", "for example"} {
-		idx := strings.Index(lower, marker)
+		idx := descriptionExampleMarkerIndex(lower, marker)
 		if idx < 0 {
 			continue
 		}
@@ -6316,6 +6316,25 @@ func descriptionExampleValue(description string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func descriptionExampleMarkerIndex(lower, marker string) int {
+	searchFrom := 0
+	for {
+		idx := strings.Index(lower[searchFrom:], marker)
+		if idx < 0 {
+			return -1
+		}
+		idx += searchFrom
+		if idx == 0 {
+			return idx
+		}
+		prev := rune(lower[idx-1])
+		if !unicode.IsLetter(prev) && !unicode.IsDigit(prev) {
+			return idx
+		}
+		searchFrom = idx + len(marker)
+	}
 }
 
 func defaultSliceExampleValue(v any) (string, bool) {

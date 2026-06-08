@@ -141,10 +141,14 @@ func TestExampleValuePrefersSchemaHintsBeforeGenericFallback(t *testing.T) {
 	}{
 		{"explicit example wins", spec.Param{Name: "status", Type: "string", Example: "archived", Enum: []string{"active"}}, "archived"},
 		{"array example picks first item", spec.Param{Name: "part", Type: "array", Example: []any{"snippet"}}, "snippet"},
+		{"object example falls through to placeholder", spec.Param{Name: "filter", Type: "object", Example: map[string]any{"status": "active"}}, "example-value"},
+		{"unsafe object example still lets enum win", spec.Param{Name: "status", Type: "object", Example: map[string]any{"status": "archived"}, Enum: []string{"active"}}, "active"},
 		{"enum wins over default", spec.Param{Name: "status", Type: "string", Enum: []string{"active"}, Default: "archived"}, "active"},
 		{"scalar default falls through for non-dispatch params", spec.Param{Name: "query", Type: "string", Default: "recent"}, "example-value"},
 		{"array default picks first item", spec.Param{Name: "part", Type: "array", Default: []any{"snippet"}}, "snippet"},
 		{"description eg token beats generic fallback", spec.Param{Name: "app", Type: "string", Description: "App name, e.g. INSTANTLY, SMARTLEAD"}, "INSTANTLY"},
+		{"description eg marker ignores word suffix", spec.Param{Name: "data", Type: "string", Description: "Data peg. TOKEN"}, "example-value"},
+		{"description eg marker finds later valid marker", spec.Param{Name: "data", Type: "string", Description: "Data peg. Use e.g. TOKEN"}, "TOKEN"},
 		{"description hint with spaced prose falls through", spec.Param{Name: "app", Type: "string", Description: "App name, e.g. any active workspace"}, "example-value"},
 	}
 
