@@ -236,7 +236,10 @@ func TestMCPCobraTreeSiblingCLIPathUsesWindowsExecutableSuffix(t *testing.T) {
 	var testSrc strings.Builder
 	testSrc.WriteString(`package cobratree
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestCLIExecutableNameUsesWindowsSuffix(t *testing.T) {
 	if got := cliExecutableName("windows"); got != "pathcheck-pp-cli.exe" {
@@ -247,6 +250,28 @@ func TestCLIExecutableNameUsesWindowsSuffix(t *testing.T) {
 	}
 	if got := cliExecutableName("darwin"); got != "pathcheck-pp-cli" {
 		t.Fatalf("cliExecutableName(darwin) = %q, want pathcheck-pp-cli", got)
+	}
+}
+
+func TestSiblingCLICandidatesUseWindowsSuffixThenFallback(t *testing.T) {
+	exePath := filepath.Join("tmp", "bin", "pathcheck-pp-mcp.exe")
+	windowsCandidates := siblingCLICandidates("windows", exePath)
+	if len(windowsCandidates) != 2 {
+		t.Fatalf("windows candidates length = %d, want 2: %#v", len(windowsCandidates), windowsCandidates)
+	}
+	if got, want := filepath.Base(windowsCandidates[0]), "pathcheck-pp-cli.exe"; got != want {
+		t.Fatalf("windows candidates[0] = %q, want %q", got, want)
+	}
+	if got, want := filepath.Base(windowsCandidates[1]), "pathcheck-pp-cli"; got != want {
+		t.Fatalf("windows candidates[1] = %q, want %q", got, want)
+	}
+
+	linuxCandidates := siblingCLICandidates("linux", filepath.Join("tmp", "bin", "pathcheck-pp-mcp"))
+	if len(linuxCandidates) != 1 {
+		t.Fatalf("linux candidates length = %d, want 1: %#v", len(linuxCandidates), linuxCandidates)
+	}
+	if got, want := filepath.Base(linuxCandidates[0]), "pathcheck-pp-cli"; got != want {
+		t.Fatalf("linux candidates[0] = %q, want %q", got, want)
 	}
 }
 `)
