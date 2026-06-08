@@ -621,7 +621,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- else}}
 					"\nhint: check your API credentials." +
 {{- end}}
-{{- if $authSetupHint}}
+{{- if and $authSetupHint (ne .Auth.Type "oauth2")}}
 					{{printf "%q" (printf "\n      %s" $authSetupHint)}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
@@ -642,7 +642,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- else}}
 					"\nhint: your credentials are valid but lack access to this resource. Check that they have the required permissions and match the API's expected auth scheme." +
 {{- end}}
-{{- if $authSetupHint}}
+{{- if and $authSetupHint (ne .Auth.Type "oauth2")}}
 					{{printf "%q" (printf "\n      %s" $authSetupHint)}} +
 {{- end}}
 {{- if .Auth.KeyURL}}

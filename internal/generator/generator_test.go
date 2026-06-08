@@ -9634,6 +9634,75 @@ func TestGeneratedHelpers_BearerTokenAuth(t *testing.T) {
 	assert.Contains(t, content, "cliutil.LooksLikeAuthError")
 }
 
+func TestGeneratedAuthHints_DoNotDuplicateRecoveryCommands(t *testing.T) {
+	t.Run("oauth2 error branches keep a single auth login hint", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := minimalSpec("oauth2hints")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "oauth2",
+			EnvVars: []string{"OAUTH2HINTS_TOKEN"},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "oauth2hints-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+		helpers401 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
+		assert.Equal(t, 1, strings.Count(helpers401, "auth login"), helpers401)
+		helpers403 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 403"):`, `case strings.Contains(msg, "HTTP 404"):`)
+		assert.Equal(t, 1, strings.Count(helpers403, "auth login"), helpers403)
+
+		tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+		tools401 := generatedSourceBlock(t, tools, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
+		assert.Equal(t, 1, strings.Count(tools401, "auth login"), tools401)
+		tools403 := generatedSourceBlock(t, tools, `case strings.Contains(msg, "HTTP 403"):`, `default:`)
+		assert.Equal(t, 1, strings.Count(tools403, "auth login"), tools403)
+
+		doctor := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+		assert.Contains(t, doctor, `report["auth_hint"] = "Run 'oauth2hints-pp-cli auth login' to re-authenticate."`)
+
+		requireGeneratedCompiles(t, outputDir)
+	})
+
+	t.Run("bearer token 401 branches keep a single set-token hint", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := minimalSpec("bearerhints")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"BEARERHINTS_TOKEN"},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "bearerhints-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+		helpers401 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
+		assert.Equal(t, 1, strings.Count(helpers401, "auth set-token <token>"), helpers401)
+		assert.Contains(t, helpers401, `or export BEARERHINTS_TOKEN=\"your-token-here\"`)
+
+		tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+		tools401 := generatedSourceBlock(t, tools, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
+		assert.Equal(t, 1, strings.Count(tools401, "auth set-token <token>"), tools401)
+
+		requireGeneratedCompiles(t, outputDir)
+	})
+}
+
+func generatedSourceBlock(t *testing.T, body, start, end string) string {
+	t.Helper()
+
+	startIdx := strings.Index(body, start)
+	require.NotEqual(t, -1, startIdx, "missing start marker %q", start)
+	body = body[startIdx:]
+	endIdx := strings.Index(body[len(start):], end)
+	require.NotEqual(t, -1, endIdx, "missing end marker %q", end)
+	return body[:len(start)+endIdx]
+}
+
 func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
 	t.Parallel()
 

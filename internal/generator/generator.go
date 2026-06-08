@@ -1411,12 +1411,16 @@ func requestAuthEnvVarCount(auth spec.AuthConfig) int {
 }
 
 func authSetTokenAvailable(auth spec.AuthConfig) bool {
+	return authSetTokenAvailableForRequiredCount(auth, requiredRequestAuthEnvVarCount(auth))
+}
+
+func authSetTokenAvailableForRequiredCount(auth spec.AuthConfig, requiredCount int) bool {
 	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
 		return false
 	}
 	switch auth.Type {
 	case "api_key", "bearer_token":
-		return requiredRequestAuthEnvVarCount(auth) == 1
+		return requiredCount == 1
 	default:
 		return false
 	}
@@ -1469,7 +1473,7 @@ func authSetupHint(auth spec.AuthConfig, cliName string) string {
 	if len(envVars) == 1 {
 		switch auth.Type {
 		case "bearer_token", "oauth2_refresh":
-			if authSetTokenAvailable(auth) {
+			if authSetTokenAvailableForRequiredCount(auth, len(envVars)) {
 				return fmt.Sprintf("Set it with: %s-pp-cli auth set-token <token> or export %s", cliName, exports[0])
 			}
 			return fmt.Sprintf("Set it with: export %s", exports[0])
