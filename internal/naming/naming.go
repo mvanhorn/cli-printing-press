@@ -302,8 +302,7 @@ func CompactDescription(s string) string {
 // instead of truncating at punctuation, since brand dots, commas, and colons
 // are common in product headlines.
 func AuthoredDescription(s string) string {
-	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
-	return collapseWhitespace(s)
+	return CatalogDescription(s)
 }
 
 // CatalogDescription produces single-line prose for durable catalog metadata.
