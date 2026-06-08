@@ -14,7 +14,7 @@ Add entries when they broaden or sharpen the blueprint set: official OpenAPI, do
 
 The catalog is embedded into the printing-press binary via `catalog.FS`, so a bad entry is not a local typo; it becomes part of every rebuilt binary. The inline `AGENTS.md` rule keeps the write-time fence close to the edit, while this doc carries the longer rationale and the wrapper-only shape.
 
-`category` and `tier` are deliberately finite enums because they drive catalog browsing, risk expectations, and downstream copy. `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `maps`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other` (the public catch-all). `tier` must be `official` or `community`. `example` is accepted only as a test-only bucket for fixtures such as `catalog/petstore.yaml`; do not use it for real catalog entries.
+`category` and `tier` are deliberately finite enums because they drive catalog browsing, risk expectations, and downstream copy. `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `health`, `maps`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other` (the public catch-all). `tier` must be `official` or `community`. `example` is accepted only as a test-only bucket for fixtures such as `catalog/petstore.yaml`; do not use it for real catalog entries.
 
 ## Inclusion rubric
 
