@@ -65,6 +65,9 @@ var (
 		"amplitude.com",
 		"pendo.io",
 		"hotjar.com",
+		"vortex.data.microsoft.com",
+		"dc.services.visualstudio.com",
+		"analytics.google.com",
 	}
 	telemetryPathMarkers = []string{"/sentry/envelope/", "/intake/v1/", "/intercom/"}
 	telemetryQueryKeys   = []string{"sentry_key", "dd-api-key", "dd-client-token", "ddsource", "intercom-device-id"}
