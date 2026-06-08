@@ -262,14 +262,14 @@ type graphqlSyncDef struct {
 func graphqlSyncDefs() map[string]graphqlSyncDef {
 	return map[string]graphqlSyncDef{
 {{- range .SyncableResources}}
-		"{{.Name}}": {
+		{{printf "%q" .Name}}: {
 			Query:       client.{{pascal .Name}}ListQuery,
 {{- $resource := index $.Resources .Name}}
 {{- $endpoint := index $resource.Endpoints "list"}}
 {{- if hasGraphQLParam $endpoint "last"}}
 			LatestQuery: client.{{pascal .Name}}ListLatestQuery,
 {{- end}}
-			FieldPath:   "{{index $.GraphQLFieldPaths .Name}}",
+			FieldPath:   {{printf "%q" (index $.GraphQLFieldPaths .Name)}},
 			PageSize:    50,
 		},
 {{- end}}
@@ -653,7 +653,7 @@ func defaultSyncResources() []string {
 	return []string{
 {{- range .SyncableResources}}
 {{- if not .SkipDefaultSync}}
-		"{{.Name}}",
+		{{printf "%q" .Name}},
 {{- end}}
 {{- end}}
 	}

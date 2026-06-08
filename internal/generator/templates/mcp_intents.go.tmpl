@@ -42,10 +42,10 @@ import (
 func RegisterIntents(s *server.MCPServer) {
 {{- range .MCP.Intents}}
 	s.AddTool(
-		mcplib.NewTool("{{.Name}}",
+		mcplib.NewTool({{printf "%q" .Name}},
 			mcplib.WithDescription({{printf "%q" .Description}}),
 {{- range .Params}}
-			mcplib.{{mcpBindingFunc .Type}}("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
+			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
 {{- end}}
 		),
 		handle{{pascal .Name}},
@@ -53,10 +53,10 @@ func RegisterIntents(s *server.MCPServer) {
 {{- end}}
 {{- range .RecipeIntents}}
 	s.AddTool(
-		mcplib.NewTool("{{.Name}}",
+		mcplib.NewTool({{printf "%q" .Name}},
 			mcplib.WithDescription({{printf "%q" .Description}}),
 {{- range .Params}}
-			mcplib.{{mcpBindingFunc (recipeParamTypeString .Type)}}("{{.InputName}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
+			mcplib.{{mcpBindingFunc (recipeParamTypeString .Type)}}({{printf "%q" .InputName}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
 {{- end}}
 {{- if .TakesArgs}}
 			mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the recipe command. Flag-like arguments are rejected; use structured parameters for flags.")),

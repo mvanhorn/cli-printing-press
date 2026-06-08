@@ -102,7 +102,7 @@ execute command an operator can approve later.`,
 				if purpose != "" {
 					body["purpose"] = map[string]any{"simple": purpose}
 				}
-				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, "{{.}}"{{end}}}
+				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, {{printf "%q" .}}{{end}}}
 {{- if .HasAccountIDPosition}}
 				base = append(base, accountID)
 {{- end}}
@@ -142,7 +142,7 @@ execute command an operator can approve later.`,
 				if externalMemo != "" {
 					body["externalMemo"] = externalMemo
 				}
-				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, "{{.}}"{{end}}}
+				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, {{printf "%q" .}}{{end}}}
 {{- if .HasAccountIDPosition}}
 				base = append(base, accountID)
 {{- end}}
@@ -179,7 +179,7 @@ execute command an operator can approve later.`,
 				}
 				body["sourceAccountId"] = sourceAccountID
 				body["destinationAccountId"] = destinationAccountID
-				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, "{{.}}"{{end}}}
+				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, {{printf "%q" .}}{{end}}}
 {{- if .HasAccountIDPosition}}
 				base = append(base, accountID)
 {{- end}}
@@ -277,7 +277,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 			defer s.Close()
 
-			resources := []string{ {{- range .SyncableResources}}{{if not .SkipDefaultSync}}"{{.Name}}", {{end}}{{end}} }
+			resources := []string{ {{- range .SyncableResources}}{{if not .SkipDefaultSync}}{{printf "%q" .Name}}, {{end}}{{end}} }
 			totalSynced := 0
 {{- if not (isGraphQL .APISpec)}}
 			syncEventWriter := cmd.OutOrStdout()

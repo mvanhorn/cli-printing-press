@@ -115,7 +115,7 @@ native streaming instead of polling.`,
 func tailKnownResources() []string {
 	return []string{
 {{- range $name, $resource := .Resources}}
-		"{{$name}}",
+		{{printf "%q" $name}},
 {{- end}}
 	}
 }

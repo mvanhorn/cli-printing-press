@@ -65,8 +65,180 @@ func TestGoTemplatesEscapeSpecTextInStringLiterals(t *testing.T) {
 	require.Empty(t, violations, "spec-controlled prose inside Go string literals must use oneline/printf %%q; unsafe template sites:\n%s", strings.Join(violations, "\n"))
 }
 
+// dangerousSpecValueLeaf names the spec-derived field families that, when
+// emitted as a bare reference inside a Go double-quoted string literal, are a
+// code-injection vector: text/template does not escape, so a value containing a
+// quote can break out of the literal and compile to live Go. URL/auth/header/
+// path/method fields are attacker-influenced for domain-import (recovered from
+// an untrusted HAR or fetched domain) and are not validated for Go-literal
+// safety. The emit must go through printf %q / goLiteral / oneline.
+var dangerousSpecValueLeaf = regexp.MustCompile(`(?:URL|Path|Method|Framing|Param|Field|Format|Prefix|Branch|Addr|Domain|Endpoint|Resource|Scheme|Host|Query)$`)
+
+func isDangerousSpecValueLeaf(leaf string) bool {
+	switch leaf {
+	case "TokenParamName", "Header", "Value", "DefaultRepo", "Type":
+		return true
+	}
+	return dangerousSpecValueLeaf.MatchString(leaf)
+}
+
+// rawSpecFieldLeaf returns the leaf identifier of a template action that is a
+// bare field reference (e.g. "{{.Auth.TokenURL}}" -> "TokenURL"), and false for
+// helper calls ("{{kebab .Name}}"), pipelines ("{{.X | y}}"), template vars
+// ("{{$c}}"), and control actions ("{{if ...}}"). Helper-wrapped values are
+// assumed sanitized by the helper and are out of scope for this guard.
+func rawSpecFieldLeaf(action string) (string, bool) {
+	inner := strings.TrimSpace(action)
+	inner = strings.TrimPrefix(inner, "{{")
+	inner = strings.TrimSuffix(inner, "}}")
+	inner = strings.TrimSpace(inner)
+	inner = strings.TrimPrefix(inner, "-")
+	inner = strings.TrimSuffix(inner, "-")
+	inner = strings.TrimSpace(inner)
+	if strings.ContainsRune(inner, '|') {
+		return "", false // piped through a function — out of scope here
+	}
+	if !strings.HasPrefix(inner, ".") {
+		return "", false // helper call, $var, or control action
+	}
+	if strings.ContainsAny(inner, " \t") {
+		return "", false // a bare field reference has no arguments
+	}
+	leaf := inner[strings.LastIndex(inner, ".")+1:]
+	if leaf == "" {
+		return "", false // bare "." (the dot) — not a field
+	}
+	return leaf, true
+}
+
+// nonSanitizingHelpers are template helpers that pass their input's characters
+// through unchanged (case/concat/lookup only) — so a spec value with a quote
+// survives and can break out of a Go string literal. When one of these is the
+// OUTERMOST command of an action inside a Go double-quoted string, the action
+// must be wrapped in an escaper (printf %q / oneline). Normalizing helpers that
+// emit identifier-only output (kebab, snake, envName, …) are not listed.
+var nonSanitizingHelpers = map[string]bool{
+	"upper": true, "lower": true, "title": true,
+	"join": true, "index": true, "paramWireName": true,
+	"authParameterName": true, "graphqlQueryField": true,
+	"endpointTemplateEnvName": true,
+	// Note: enumDescriptionHint is intentionally NOT listed — it sanitizes its
+	// own enum values via OneLine internally, so a raw {{enumDescriptionHint}}
+	// in a string literal is safe (and must stay un-%q'd to keep its leading
+	// space).
+}
+
+// outerTemplateCommand returns the leading token of an action's outermost
+// pipeline stage: "printf" for `{{printf "%q" .X}}`, "upper" for
+// `{{upper .X}}`, "" for a bare ref / $var / control action.
+func outerTemplateCommand(action string) string {
+	inner := strings.TrimSpace(action)
+	inner = strings.TrimPrefix(inner, "{{")
+	inner = strings.TrimSuffix(inner, "}}")
+	inner = strings.TrimSpace(inner)
+	inner = strings.TrimSpace(strings.TrimPrefix(inner, "-"))
+	inner = strings.TrimSpace(strings.TrimSuffix(inner, "-"))
+	if i := strings.LastIndex(inner, "|"); i >= 0 {
+		inner = strings.TrimSpace(inner[i+1:])
+	}
+	if inner == "" || strings.HasPrefix(inner, ".") || strings.HasPrefix(inner, "$") {
+		return ""
+	}
+	for j, r := range inner {
+		if r == ' ' || r == '\t' || r == '(' {
+			return inner[:j]
+		}
+	}
+	return inner
+}
+
+func actionEscapesValue(action string) bool {
+	return strings.Contains(action, `printf "%q"`) ||
+		strings.Contains(action, "oneline ") ||
+		strings.Contains(action, "goLiteral ")
+}
+
+// TestGoTemplatesEscapeSpecValuesInStringLiterals guards the Go-code-injection
+// class for spec-derived values emitted into generated Go double-quoted string
+// literals (the supply-chain RCE vector for printed CLIs built from untrusted
+// sniffed/imported specs). It flags three shapes that let a quote-bearing value
+// break out of the literal into executable Go:
+//  1. a bare field reference that is the entire literal ("{{.X}}") — must be %q;
+//  2. a bare reference to a high-risk field embedded mid-literal — must be oneline;
+//  3. a non-sanitizing helper (upper/lower/join/index/…) as the outermost command,
+//     not already wrapped in an escaper.
+//
+// Sibling to TestGoTemplatesEscapeSpecTextInStringLiterals, which covers prose.
+func TestGoTemplatesEscapeSpecValuesInStringLiterals(t *testing.T) {
+	t.Parallel()
+
+	var violations []string
+	err := fs.WalkDir(templateFS, "templates", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go.tmpl") {
+			return nil
+		}
+		data, err := templateFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for lineNo, line := range strings.Split(string(data), "\n") {
+			for start := strings.Index(line, "{{"); start >= 0; {
+				end := strings.Index(line[start+2:], "}}")
+				if end < 0 {
+					break
+				}
+				end += start + 2
+				action := line[start : end+2]
+				if isInsideGoDoubleQuotedString(line[:start]) {
+					prev := byte(0)
+					if start > 0 {
+						prev = line[start-1]
+					}
+					next := byte(0)
+					if end+2 < len(line) {
+						next = line[end+2]
+					}
+					wholeLiteral := prev == '"' && next == '"'
+
+					unsafe := false
+					if leaf, ok := rawSpecFieldLeaf(action); ok {
+						// bare field reference: %q when it is the whole literal,
+						// oneline when a high-risk field is embedded mid-literal.
+						unsafe = wholeLiteral || isDangerousSpecValueLeaf(leaf)
+					} else if cmd := outerTemplateCommand(action); cmd == "" {
+						// $var, lone-dot, or parenthesized field access ((index x 0).Name):
+						// flag when it is the whole literal and not escaped.
+						unsafe = wholeLiteral && !actionEscapesValue(action)
+					} else if nonSanitizingHelpers[cmd] && !actionEscapesValue(action) {
+						unsafe = true
+					}
+					if unsafe {
+						violations = append(violations, path+":"+strconv.Itoa(lineNo+1)+": "+strings.TrimSpace(line))
+					}
+				}
+				next := end + 2
+				if next >= len(line) {
+					break
+				}
+				if rel := strings.Index(line[next:], "{{"); rel >= 0 {
+					start = next + rel
+				} else {
+					break
+				}
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Empty(t, violations, "spec-derived values inside Go string literals must use printf %%q / oneline / goLiteral; unsafe template sites:\n%s", strings.Join(violations, "\n"))
+}
+
 func isInsideGoDoubleQuotedString(prefix string) bool {
 	inString := false
+	inRaw := false // inside a Go `...` raw string literal (e.g. a struct tag)
 	escaped := false
 	for i := 0; i < len(prefix); {
 		if strings.HasPrefix(prefix[i:], "{{") {
@@ -77,18 +249,30 @@ func isInsideGoDoubleQuotedString(prefix string) bool {
 			i += 2 + end + 2
 			continue
 		}
+		if !inString && !inRaw && strings.HasPrefix(prefix[i:], "//") {
+			// Rest of the line is a Go comment — not a string context.
+			return false
+		}
 		r := prefix[i]
 		i++
 		if escaped {
 			escaped = false
 			continue
 		}
-		switch r {
-		case '\\':
+		switch {
+		case r == '`':
+			// Backtick toggles a raw string, where " is a literal, not a
+			// double-quoted-string delimiter (this is how struct tags appear).
+			if !inString {
+				inRaw = !inRaw
+			}
+		case inRaw:
+			// nothing toggles while inside a raw string
+		case r == '\\':
 			if inString {
 				escaped = true
 			}
-		case '"':
+		case r == '"':
 			inString = !inString
 		}
 	}

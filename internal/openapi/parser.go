@@ -714,6 +714,11 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
 	}
 
+	// Data-layer Go-code-injection guard (see spec.GuardStructuralStrings).
+	if err := spec.GuardStructuralStrings(result); err != nil {
+		return nil, err
+	}
+
 	return result, nil
 }
 

@@ -260,7 +260,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().StringVar(&flags.throttleMode, "throttle-mode", "strict", "Cost-based throttle mode: strict (block when bucket is low), lenient (warn but proceed), off (bypass)")
 {{- end}}
 {{- range .GlobalPathTemplateVars}}
-	rootCmd.PersistentFlags().StringVar(&flags.templateVar{{camel .}}, "{{kebab .}}", "", "Set { {{- . -}} } path template value (env: {{endpointTemplateEnvName .}})")
+	rootCmd.PersistentFlags().StringVar(&flags.templateVar{{camel .}}, "{{kebab .}}", "", "Set { {{- . -}} } path template value (env: {{oneline (endpointTemplateEnvName .)}})")
 {{- end}}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
@@ -486,7 +486,7 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	}
 {{- range .GlobalPathTemplateVars}}
 	if f.templateVar{{camel .}} != "" {
-		cfg.TemplateVars["{{.}}"] = f.templateVar{{camel .}}
+		cfg.TemplateVars[{{printf "%q" .}}] = f.templateVar{{camel .}}
 	}
 {{- end}}
 {{- end}}

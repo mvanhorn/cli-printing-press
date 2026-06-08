@@ -253,7 +253,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					authConfigured = true
 					report["auth"] = "configured (browser session)"
 					report["auth_source"] = cfg.AuthSource
-					report["auth_domain"] = "{{.Auth.CookieDomain}}"
+					report["auth_domain"] = {{printf "%q" .Auth.CookieDomain}}
 {{- if .Auth.RequiresBrowserSession}}
 					if proofOK, proofDetail := browserSessionProofStatus(cfg, header); proofOK {
 						report["browser_session_proof"] = "valid"
@@ -293,9 +293,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth_hint"] = "export {{.Name}}=<your-oauth-refresh-value>"
 {{- end}}
 {{- if .Auth.KeyURL}}
-					report["auth_key_url"] = "{{.Auth.KeyURL}}"
+					report["auth_key_url"] = {{printf "%q" .Auth.KeyURL}}
 {{- else if .WebsiteURL}}
-					report["auth_docs_url"] = "{{.WebsiteURL}}"
+					report["auth_docs_url"] = {{printf "%q" .WebsiteURL}}
 {{- end}}
 {{- if .Auth.Instructions}}
 					report["auth_instructions"] = {{printf "%q" .Auth.Instructions}}
@@ -324,9 +324,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
-					report["auth_key_url"] = "{{.Auth.KeyURL}}"
+					report["auth_key_url"] = {{printf "%q" .Auth.KeyURL}}
 {{- else if .WebsiteURL}}
-					report["auth_docs_url"] = "{{.WebsiteURL}}"
+					report["auth_docs_url"] = {{printf "%q" .WebsiteURL}}
 {{- end}}
 {{- if .Auth.Instructions}}
 					report["auth_instructions"] = {{printf "%q" .Auth.Instructions}}
@@ -377,8 +377,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- range .Auth.EnvVarSpecs}}
 {{- if eq .Kind "per_call"}}
 {{- if .Required}}
-			if os.Getenv("{{.Name}}") != "" {
-				authEnvSet = append(authEnvSet, "{{.Name}}")
+			if os.Getenv({{printf "%q" .Name}}) != "" {
+				authEnvSet = append(authEnvSet, {{printf "%q" .Name}})
 			} else if authConfigured {
 				authSource, _ := report["auth_source"].(string)
 				if authSource == "" {
@@ -386,30 +386,30 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				}
 				authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
 			} else {
-				authEnvRequiredMissing = append(authEnvRequiredMissing, "{{.Name}}")
+				authEnvRequiredMissing = append(authEnvRequiredMissing, {{printf "%q" .Name}})
 			}
 {{- else}}
 			if strings.Contains({{printf "%q" .Description}}, " OR ") {
-				authEnvOptionalNames = append(authEnvOptionalNames, "{{.Name}}")
-				if os.Getenv("{{.Name}}") != "" {
-					authEnvSet = append(authEnvSet, "{{.Name}}")
+				authEnvOptionalNames = append(authEnvOptionalNames, {{printf "%q" .Name}})
+				if os.Getenv({{printf "%q" .Name}}) != "" {
+					authEnvSet = append(authEnvSet, {{printf "%q" .Name}})
 					authEnvOptionalSatisfied = true
 				}
-			} else if os.Getenv("{{.Name}}") != "" {
-				authEnvSet = append(authEnvSet, "{{.Name}}")
+			} else if os.Getenv({{printf "%q" .Name}}) != "" {
+				authEnvSet = append(authEnvSet, {{printf "%q" .Name}})
 			} else {
 				authEnvInfo = append(authEnvInfo, "{{.Name}} optional")
 			}
 {{- end}}
 {{- else if eq .Kind "auth_flow_input"}}
-			if os.Getenv("{{.Name}}") != "" {
-				authEnvSet = append(authEnvSet, "{{.Name}}")
+			if os.Getenv({{printf "%q" .Name}}) != "" {
+				authEnvSet = append(authEnvSet, {{printf "%q" .Name}})
 			} else {
 				authEnvInfo = append(authEnvInfo, "{{.Name}} set during auth login")
 			}
 {{- else if eq .Kind "harvested"}}
-			if os.Getenv("{{.Name}}") != "" || authHeader != "" {
-				authEnvSet = append(authEnvSet, "{{.Name}}")
+			if os.Getenv({{printf "%q" .Name}}) != "" || authHeader != "" {
+				authEnvSet = append(authEnvSet, {{printf "%q" .Name}})
 			} else {
 				authEnvInfo = append(authEnvInfo, {{printf "%q" (printf "%s %s" .Name (authHarvestedEnvHint $.Auth))}})
 			}
@@ -421,7 +421,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				if cfg != nil {
 					configuredValue = cfg.{{resolveEnvVarField .EnvVar.Name}}
 				}
-				recordAdditionalAuthEnv("{{.EnvVar.Name}}", configuredValue)
+				recordAdditionalAuthEnv({{printf "%q" .EnvVar.Name}}, configuredValue)
 			}
 {{- end}}
 			switch {
@@ -441,7 +441,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvSet := 0
 {{- range .Auth.EnvVars}}
 			authEnvChecked++
-			if os.Getenv("{{.}}") != "" {
+			if os.Getenv({{printf "%q" .}}) != "" {
 				authEnvSet++
 			}
 {{- end}}
@@ -466,11 +466,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				set := 0
 {{- range $tier.Auth.EnvVarSpecs}}
 				checked++
-				if os.Getenv("{{.Name}}") != "" {
+				if os.Getenv({{printf "%q" .Name}}) != "" {
 					set++
 				}
 {{- end}}
-				tierEnvStatus["{{$tierName}}"] = fmt.Sprintf("%d/%d set", set, checked)
+				tierEnvStatus[{{printf "%q" $tierName}}] = fmt.Sprintf("%d/%d set", set, checked)
 			}
 {{- else if $tier.Auth.EnvVars}}
 			{
@@ -478,11 +478,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				set := 0
 {{- range $tier.Auth.EnvVars}}
 				checked++
-				if os.Getenv("{{.}}") != "" {
+				if os.Getenv({{printf "%q" .}}) != "" {
 					set++
 				}
 {{- end}}
-				tierEnvStatus["{{$tierName}}"] = fmt.Sprintf("%d/%d set", set, checked)
+				tierEnvStatus[{{printf "%q" $tierName}}] = fmt.Sprintf("%d/%d set", set, checked)
 			}
 {{- end}}
 {{- end}}
@@ -508,7 +508,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				} else {
 					// Step 1: Basic reachability via the configured transport.
 {{- if .HealthCheckPath}}
-					healthPath := "{{.HealthCheckPath}}"
+					healthPath := {{printf "%q" .HealthCheckPath}}
 					if !strings.HasPrefix(healthPath, "/") {
 						healthPath = "/" + healthPath
 					}
@@ -569,12 +569,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						authParams := map[string]string{}
 						authHeaders := map[string]string{}
 {{- if and .Auth .Auth.In (eq .Auth.In "query")}}
-						authParams["{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}"] = authHeader
+						authParams["{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}api_key{{end}}"] = authHeader
 {{- else}}
-						authHeaders["{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}"] = authHeader
+						authHeaders["{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}Authorization{{end}}"] = authHeader
 {{- end}}
 {{- range .RequiredHeaders}}
-						authHeaders["{{.Name}}"] = "{{.Value}}"
+						authHeaders[{{printf "%q" .Name}}] = {{printf "%q" .Value}}
 {{- end}}
 {{- /*
 	Emit the hardcoded User-Agent fallback only when no other code path has
@@ -594,7 +594,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if .Auth.VerifyPath}}
-						verifyPath := "{{.Auth.VerifyPath}}"
+						verifyPath := {{printf "%q" .Auth.VerifyPath}}
 						if !strings.HasPrefix(verifyPath, "/") {
 							verifyPath = "/" + verifyPath
 						}
@@ -668,7 +668,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Surfaces rows + last_synced_at per resource, schema version,
 			// and a fresh/stale/unknown verdict so agents can introspect
 			// whether to trust the cached data before issuing queries.
-			report["cache"] = collectCacheReport(cmd.Context(), {{if .Cache.StaleAfter}}"{{.Cache.StaleAfter}}"{{else}}""{{end}})
+			report["cache"] = collectCacheReport(cmd.Context(), {{if .Cache.StaleAfter}}{{printf "%q" .Cache.StaleAfter}}{{else}}""{{end}})
 {{- end}}
 
 			// Verify mode state. Surfaced so an operator who unintentionally
@@ -910,13 +910,13 @@ func browserSessionProofStatus(cfg *config.Config, authHeader string) (bool, str
 	if err := json.Unmarshal(data, &proof); err != nil {
 		return false, "proof is not valid JSON; re-run {{.Name}}-pp-cli auth login --chrome"
 	}
-	if proof.APIName != "{{.Name}}" {
+	if proof.APIName != {{printf "%q" .Name}} {
 		return false, "proof belongs to a different CLI"
 	}
-	if proof.CookieDomain != "{{.Auth.CookieDomain}}" {
+	if proof.CookieDomain != {{printf "%q" .Auth.CookieDomain}} {
 		return false, "proof belongs to a different cookie domain"
 	}
-	if proof.ValidationPath != "{{.Auth.BrowserSessionValidationPath}}" {
+	if proof.ValidationPath != {{printf "%q" .Auth.BrowserSessionValidationPath}} {
 		return false, "proof was captured for a different validation endpoint"
 	}
 	if authHeader != "" && proof.CredentialFingerprint != doctorFingerprintCredential(authHeader) {

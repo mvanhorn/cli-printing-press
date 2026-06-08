@@ -63,7 +63,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 	cmd := &cobra.Command{
 		Use:   "{{kebab .EndpointName}}{{positionalArgs .Endpoint}}",
 {{- if .Endpoint.Alias}}
-		Aliases: []string{"{{.Endpoint.Alias}}"},
+		Aliases: []string{ {{printf "%q" .Endpoint.Alias}} },
 {{- end}}
 		Short: "{{oneline .Endpoint.Description}}",
 		Example: {{printf "%q" (exampleLine .CommandPath .EndpointName .Endpoint)}},
@@ -156,23 +156,23 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			c = c.WithTier({{printf "%q" .EffectiveTier}})
 {{- end}}
 
-			path := "{{.EffectivePath}}"
+			path := {{printf "%q" .EffectivePath}}
 {{- range .Endpoint.Params}}
 {{- if .Positional}}
 {{- $pi := positionalIndex $.Endpoint .Name}}
 {{- if gt $pi 0}}
 			if len(args) < {{add $pi 1}} {
-				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s <%s>", cmd.CommandPath(), "{{.Name}}"))
+				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s <%s>", cmd.CommandPath(), {{printf "%q" .Name}}))
 			}
 {{- end}}
 {{- if pathContainsParam $.Endpoint.Path .Name}}
-			path = replacePathParam(path, "{{.Name}}", args[{{$pi}}])
+			path = replacePathParam(path, {{printf "%q" .Name}}, args[{{$pi}}])
 {{- end}}
 {{- end}}
 {{- end}}
 {{- range .Endpoint.Params}}
 {{- if and .PathParam (not .Positional)}}
-			path = replacePathParam(path, "{{.Name}}", formatCLIParamValue(flag{{camel (paramIdent .)}}))
+			path = replacePathParam(path, {{printf "%q" .Name}}, formatCLIParamValue(flag{{camel (paramIdent .)}}))
 {{- end}}
 {{- end}}
 {{- if $isGraphQLEndpoint}}
@@ -183,11 +183,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			htmlRequestParams := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			htmlRequestParams["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			htmlRequestParams[{{printf "%q" .Name}}] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
-				htmlRequestParams["{{.Name}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+				htmlRequestParams[{{printf "%q" .Name}}] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -196,7 +196,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			headerOverrides := map[string]string{
 {{- range .Endpoint.HeaderOverrides}}
-				"{{.Name}}": "{{.Value}}",
+				{{printf "%q" .Name}}: {{printf "%q" .Value}},
 {{- end}}
 {{- if .Endpoint.UsesBinaryResponse}}
 				"X-Printing-Press-Binary-Response": "true",
@@ -207,13 +207,13 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if and $isGraphQLEndpoint (eq .EndpointName "list")}}
 {{- if .HasStore}}
-			if err := validateDataSourceStrategy(flags, "{{$dataSourceStrategy}}"); err != nil {
+			if err := validateDataSourceStrategy(flags, {{printf "%q" $dataSourceStrategy}}); err != nil {
 				return err
 			}
 			var data json.RawMessage
 			var prov DataProvenance
-			if flags.dataSource == "local" || "{{$dataSourceStrategy}}" == "local" {
-				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", true, path, nil, "user_requested")
+			if flags.dataSource == "local" || {{printf "%q" $dataSourceStrategy}} == "local" {
+				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), {{printf "%q" (lower .ResourceName)}}, true, path, nil, "user_requested")
 			} else {
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
@@ -227,10 +227,10 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			variables := map[string]any{}
 {{- range graphqlListParams .Endpoint}}
 {{- if or .Required .Default (eq .Name "first")}}
-			variables["{{.Name}}"] = flag{{camel (paramIdent .)}}
+			variables[{{printf "%q" .Name}}] = flag{{camel (paramIdent .)}}
 {{- else}}
 			if {{flagChangedExpr .}} {
-				variables["{{.Name}}"] = flag{{camel (paramIdent .)}}
+				variables[{{printf "%q" .Name}}] = flag{{camel (paramIdent .)}}
 			}
 {{- end}}
 {{- end}}
@@ -240,14 +240,14 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 			if flagAll && !flags.dryRun {
 				var items []json.RawMessage
-				items, err = c.PaginatedQuery(cmd.Context(), client.{{pascal .ResourceName}}ListQuery, variables, "{{graphqlQueryField .Endpoint.ResponsePath}}", flagFirst)
+				items, err = c.PaginatedQuery(cmd.Context(), client.{{pascal .ResourceName}}ListQuery, variables, {{printf "%q" (graphqlQueryField .Endpoint.ResponsePath)}}, flagFirst)
 				if err == nil {
 					data, err = json.Marshal(items)
 				}
 			} else {
 				data, err = c.Query(cmd.Context(), client.{{pascal .ResourceName}}ListQuery, variables)
 				if err == nil && !flags.dryRun {
-					data, err = extractGraphQLConnection(data, "{{graphqlQueryField .Endpoint.ResponsePath}}")
+					data, err = extractGraphQLConnection(data, {{printf "%q" (graphqlQueryField .Endpoint.ResponsePath)}})
 				}
 			}
 {{- else}}
@@ -257,12 +257,12 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			data, err := c.Query(cmd.Context(), client.{{pascal .ResourceName}}ListQuery, variables)
 {{- end}}
 			if err == nil && !flags.dryRun {
-				data, err = extractGraphQLConnection(data, "{{graphqlQueryField .Endpoint.ResponsePath}}")
+				data, err = extractGraphQLConnection(data, {{printf "%q" (graphqlQueryField .Endpoint.ResponsePath)}})
 			}
 {{- end}}
 {{- if .HasStore}}
-				if err != nil && flags.dataSource == "auto" && "{{$dataSourceStrategy}}" == "auto" && isNetworkError(err) {
-					data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", true, path, nil, networkFallbackReason)
+				if err != nil && flags.dataSource == "auto" && {{printf "%q" $dataSourceStrategy}} == "auto" && isNetworkError(err) {
+					data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), {{printf "%q" (lower .ResourceName)}}, true, path, nil, networkFallbackReason)
 				} else if err == nil {
 					prov = attachFreshness(DataProvenance{Source: "live"}, flags)
 				}
@@ -270,17 +270,17 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- else if and $isGraphQLEndpoint (eq .EndpointName "get")}}
 {{- if .HasStore}}
-			if err := validateDataSourceStrategy(flags, "{{$dataSourceStrategy}}"); err != nil {
+			if err := validateDataSourceStrategy(flags, {{printf "%q" $dataSourceStrategy}}); err != nil {
 				return err
 			}
 			var data json.RawMessage
 			var prov DataProvenance
-			if flags.dataSource == "local" || "{{$dataSourceStrategy}}" == "local" {
+			if flags.dataSource == "local" || {{printf "%q" $dataSourceStrategy}} == "local" {
 				localReason := "user_requested"
-				if "{{$dataSourceStrategy}}" == "local" {
+				if {{printf "%q" $dataSourceStrategy}} == "local" {
 					localReason = "strategy_local"
 				}
-				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), "{{lower .ResourceName}}", false, path+"/"+args[0], nil, localReason)
+				data, prov, err = resolveLocal(cmd.Context(), flags, cmd.ErrOrStderr(), {{printf "%q" (lower .ResourceName)}}, false, path+"/"+args[0], nil, localReason)
 			} else {
 				data, err = c.Query(cmd.Context(), client.{{pascal .ResourceName}}GetQuery, map[string]any{
 {{- else}}
@@ -296,7 +296,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				"id": args[0],
 			})
 			if err == nil && !flags.dryRun {
-				data, err = extractGraphQLObject(data, "{{graphqlQueryField .Endpoint.ResponsePath}}")
+				data, err = extractGraphQLObject(data, {{printf "%q" (graphqlQueryField .Endpoint.ResponsePath)}})
 			}
 {{- if .HasStore}}
 				if err == nil {
@@ -306,16 +306,16 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- else if $supportsAllPagination}}
 {{- if .HasStore}}
-			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", path, map[string]string{
+			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, {{printf "%q" $dataSourceStrategy}}, {{printf "%q" (lower .ResourceName)}}, path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
+				{{printf "%q" (paramWireName .)}}: args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
-				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
+				{{printf "%q" (paramWireName .)}}: formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", cmd.ErrOrStderr())
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, {{printf "%q" .Endpoint.Pagination.CursorParam}}, {{printf "%q" .Endpoint.Pagination.Type}}, {{printf "%q" .Endpoint.Pagination.LimitParam}}, {{printf "%q" .Endpoint.Pagination.NextCursorPath}}, {{printf "%q" .Endpoint.Pagination.HasMoreField}}, cmd.ErrOrStderr())
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")
@@ -327,28 +327,28 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			data, err := paginatedGet(cmd.Context(), c, path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
+				{{printf "%q" (paramWireName .)}}: args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
-				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
+				{{printf "%q" (paramWireName .)}}: formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, {{printf "%q" .Endpoint.Pagination.CursorParam}}, {{printf "%q" .Endpoint.Pagination.Type}}, {{printf "%q" .Endpoint.Pagination.LimitParam}}, {{printf "%q" .Endpoint.Pagination.NextCursorPath}}, {{printf "%q" .Endpoint.Pagination.HasMoreField}})
 {{- end}}
 {{- else}}
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params[{{printf "%q" (paramWireName .)}}] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
-				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+				params[{{printf "%q" (paramWireName .)}}] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, {{printf "%q" $dataSourceStrategy}}, {{printf "%q" (lower .ResourceName)}}, {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")
@@ -368,11 +368,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params[{{printf "%q" (paramWireName .)}}] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
-				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+				params[{{printf "%q" (paramWireName .)}}] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -427,11 +427,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params[{{printf "%q" (paramWireName .)}}] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
-				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+				params[{{printf "%q" (paramWireName .)}}] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -475,11 +475,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params[{{printf "%q" (paramWireName .)}}] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
-				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+				params[{{printf "%q" (paramWireName .)}}] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -525,11 +525,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params[{{printf "%q" (paramWireName .)}}] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
-				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
+				params[{{printf "%q" (paramWireName .)}}] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -632,29 +632,29 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 
 {{- if .IsAsync}}
-			if asyncJobID := ExtractJobID(data, "{{.Async.JobIDField}}"); asyncJobID != "" {
+			if asyncJobID := ExtractJobID(data, {{printf "%q" .Async.JobIDField}}); asyncJobID != "" {
 				_ = RecordJob(JobRow{
 					JobID:          asyncJobID,
-					Resource:       "{{.ResourceName}}",
-					Endpoint:       "{{.EndpointName}}",
+					Resource:       {{printf "%q" .ResourceName}},
+					Endpoint:       {{printf "%q" .EndpointName}},
 					Status:         "submitted",
-					StatusResource: "{{.Async.StatusResource}}",
-					StatusEndpoint: "{{.Async.StatusEndpoint}}",
+					StatusResource: {{printf "%q" .Async.StatusResource}},
+					StatusEndpoint: {{printf "%q" .Async.StatusEndpoint}},
 				})
 				if flagWait {
 					ctx := cmd.Context()
 					if ctx == nil {
 						ctx = context.Background()
 					}
-					final, werr := WaitForJob(ctx, c, "{{.Async.StatusPath}}", asyncJobID, WaitOptions{
+					final, werr := WaitForJob(ctx, c, {{printf "%q" .Async.StatusPath}}, asyncJobID, WaitOptions{
 						Interval: flagWaitInterval,
 						Timeout:  flagWaitTimeout,
 					})
 					if werr != nil {
 						_ = RecordJob(JobRow{
 							JobID:    asyncJobID,
-							Resource: "{{.ResourceName}}",
-							Endpoint: "{{.EndpointName}}",
+							Resource: {{printf "%q" .ResourceName}},
+							Endpoint: {{printf "%q" .EndpointName}},
 							Status:   "errored",
 							Error:    werr.Error(),
 						})
@@ -666,8 +666,8 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 					if st, _ := final["status"].(string); st != "" {
 						_ = RecordJob(JobRow{
 							JobID:    asyncJobID,
-							Resource: "{{.ResourceName}}",
-							Endpoint: "{{.EndpointName}}",
+							Resource: {{printf "%q" .ResourceName}},
+							Endpoint: {{printf "%q" .EndpointName}},
 							Status:   st,
 						})
 					}
@@ -688,7 +688,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			if !flags.dryRun && statusCode >= 200 && statusCode < 300 {
 				partialFailure = detectPartialFailure(data)
 				if partialFailure != nil {
-					fmt.Fprintf(os.Stderr, "warning: partial failure detected in %s response: %s\n", "{{.ResourceName}}", partialFailure.Message)
+					fmt.Fprintf(os.Stderr, "warning: partial failure detected in %s response: %s\n", {{printf "%q" .ResourceName}}, partialFailure.Message)
 					if len(partialFailure.ResourceNames) > 0 {
 						fmt.Fprintf(os.Stderr, "         succeeded: %d operation(s)\n", len(partialFailure.ResourceNames))
 					}
@@ -696,7 +696,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			}
 	{{- if and .HasStore (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse) (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH"))}}
 			if !flags.dryRun && statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure) {
-				writeMutationResponseToStore(cmd.Context(), "{{lower .ResourceName}}", data, {{printf "%q" .Endpoint.ResponsePath}})
+				writeMutationResponseToStore(cmd.Context(), {{printf "%q" (lower .ResourceName)}}, data, {{printf "%q" .Endpoint.ResponsePath}})
 			}
 	{{- end}}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
@@ -707,7 +707,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 						fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
 					} else {
 						if partialFailure != nil && !flags.allowPartialFailure {
-							return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "{{.ResourceName}}", partialFailure.Message))
+							return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", {{printf "%q" .ResourceName}}, partialFailure.Message))
 						}
 						return nil
 					}
@@ -718,7 +718,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 							fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
 						} else {
 							if partialFailure != nil && !flags.allowPartialFailure {
-								return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "{{.ResourceName}}", partialFailure.Message))
+								return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", {{printf "%q" .ResourceName}}, partialFailure.Message))
 							}
 							return nil
 						}
@@ -728,13 +728,13 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain) {
 				if flags.quiet {
 					if partialFailure != nil && !flags.allowPartialFailure {
-						return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "{{.ResourceName}}", partialFailure.Message))
+						return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", {{printf "%q" .ResourceName}}, partialFailure.Message))
 					}
 					return nil
 				}
 				envelope := map[string]any{
-					"action":   "{{lower .Endpoint.Method}}",
-					"resource": "{{.ResourceName}}",
+					"action":   {{printf "%q" (lower .Endpoint.Method)}},
+					"resource": {{printf "%q" .ResourceName}},
 					"path":     path,
 					"status":   statusCode,
 					"success":  statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure),
@@ -788,7 +788,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 					return perr
 				}
 				if partialFailure != nil && !flags.allowPartialFailure {
-					return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "{{.ResourceName}}", partialFailure.Message))
+					return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", {{printf "%q" .ResourceName}}, partialFailure.Message))
 				}
 				return nil
 			}
@@ -850,7 +850,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				return perr
 			}
 			if partialFailure != nil && !flags.allowPartialFailure {
-				return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "{{.ResourceName}}", partialFailure.Message))
+				return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", {{printf "%q" .ResourceName}}, partialFailure.Message))
 			}
 			return nil
 {{- else}}
@@ -873,11 +873,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- range publicFlagAliases $param}}
 {{- if paramHasEnvDefault $param}}
-	cmd.Flags().StringVar(&flag{{camel (paramIdent $param)}}, "{{.}}", globalScopeParamDefault("{{globalScopeEnvName $param}}", {{printf "%q" (globalScopeFallbackValue $param)}}), "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}} (env: {{globalScopeEnvName $param}})")
+	cmd.Flags().StringVar(&flag{{camel (paramIdent $param)}}, {{printf "%q" .}}, globalScopeParamDefault({{printf "%q" (globalScopeEnvName $param)}}, {{printf "%q" (globalScopeFallbackValue $param)}}), "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}} (env: {{globalScopeEnvName $param}})")
 {{- else}}
-	cmd.Flags().{{cobraFlagFuncForParamRequired $param.Name $param.Type $param.Required (hasDefault $param)}}(&flag{{camel (paramIdent $param)}}, "{{.}}", {{defaultValForParamRequired $param $param.Required (hasDefault $param)}}, "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}}")
+	cmd.Flags().{{cobraFlagFuncForParamRequired $param.Name $param.Type $param.Required (hasDefault $param)}}(&flag{{camel (paramIdent $param)}}, {{printf "%q" .}}, {{defaultValForParamRequired $param $param.Required (hasDefault $param)}}, "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}}")
 {{- end}}
-	_ = cmd.Flags().MarkHidden("{{.}}")
+	_ = cmd.Flags().MarkHidden({{printf "%q" .}})
 {{- end}}
 {{- end}}
 {{- end}}
@@ -908,7 +908,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- $propCamel := camel .Property}}
 
 // fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}} returns every item
-// in the "{{.Property}}" sub-resource of GET {{$parentPath}}. The parent
+// in the {{printf "%q" .Property}} sub-resource of GET {{$parentPath}}. The parent
 // response embeds at most the first page of this sub-resource, so any
 // caller that treats the embed as complete silently truncates; this
 // companion calls the dedicated child endpoint and paginates until
@@ -917,11 +917,11 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 func fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}}(ctx context.Context, c interface {
 	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, pathParams map[string]string) ([]json.RawMessage, error) {
-	childPath := "{{.ChildPath}}"
+	childPath := {{printf "%q" .ChildPath}}
 	for name, val := range pathParams {
 		childPath = replacePathParam(childPath, name, val)
 	}
-	return fetchEmbeddedPagedSubresource(ctx, c, childPath, "{{.NextField}}", {{if .NextIsURL}}true{{else}}false{{end}}, {{if .NextIsBoolean}}true{{else}}false{{end}})
+	return fetchEmbeddedPagedSubresource(ctx, c, childPath, {{printf "%q" .NextField}}, {{if .NextIsURL}}true{{else}}false{{end}}, {{if .NextIsBoolean}}true{{else}}false{{end}})
 }
 {{- end}}
 {{- end}}

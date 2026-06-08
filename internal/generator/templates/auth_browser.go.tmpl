@@ -101,7 +101,7 @@ type chromeProfile struct {
 }
 
 func requiredAuthCookies() []string {
-	raw := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+	raw := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}{{printf "%q" $c}}{{- end}} }
 	out := raw[:0]
 	for _, name := range raw {
 		name = strings.TrimSpace(name)
@@ -141,14 +141,14 @@ profile by name when the installed backend supports it.`,
 
 {{- with $canonicalEnvVar}}
 			// Check if already authenticated via env var
-			if v := os.Getenv("{{.Name}}"); v != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Already authenticated via %s env var.\n", "{{.Name}}")
+			if v := os.Getenv({{printf "%q" .Name}}); v != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Already authenticated via %s env var.\n", {{printf "%q" .Name}})
 				return nil
 			}
 {{- end}}
 
 			w := cmd.OutOrStdout()
-			domain := "{{.Auth.CookieDomain}}"
+			domain := {{printf "%q" .Auth.CookieDomain}}
 
 			// Step 0: Try press-auth, the dedicated cookie capture companion.
 			// press-auth spawns its own controlled Chrome window so users do
@@ -237,7 +237,7 @@ profile by name when the installed backend supports it.`,
 {{- if eq .Auth.Type "composed"}}
 			// Step 4: Compose auth header from named cookies
 			cookieMap := parseCookieString(cookies)
-			requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+			requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}{{printf "%q" $c}}{{- end}} }
 
 			// Check if all required cookies were found on disk
 			allFound := true
@@ -290,7 +290,7 @@ profile by name when the installed backend supports it.`,
 				fmt.Fprintf(w, "%s Found session cookies via live Chrome.\n", green("OK"))
 			}
 
-			composed := "{{.Auth.Format}}"
+			composed := {{printf "%q" .Auth.Format}}
 			for _, name := range requiredCookies {
 				composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
 			}
@@ -357,7 +357,7 @@ profile by name when the installed backend supports it.`,
 			// Cookie header on every request, which routinely trips upstream
 			// WAFs and shadows the real credential.
 			cookieMap := parseCookieString(cookies)
-			requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+			requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}{{printf "%q" $c}}{{- end}} }
 			kept := make([]string, 0, len(requiredCookies))
 			for _, name := range requiredCookies {
 				v, ok := cookieMap[name]
@@ -634,7 +634,7 @@ Use auth refresh-queries when the site rotates GraphQL persisted-query hashes.
 			fmt.Fprintln(w, green("Auth: not required"))
 {{- else}}
 {{- with $canonicalEnvVar}}
-			fmt.Fprintf(w, "Set %s before making live calls.\n", "{{.Name}}")
+			fmt.Fprintf(w, "Set %s before making live calls.\n", {{printf "%q" .Name}})
 {{- else}}
 			fmt.Fprintln(w, "No interactive login flow is configured for this CLI.")
 {{- end}}
@@ -693,11 +693,11 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 func browserSessionTargetURL(cfg *config.Config) string {
-	baseURL := strings.TrimRight("{{.BaseURL}}", "/")
+	baseURL := strings.TrimRight({{printf "%q" .BaseURL}}, "/")
 	if cfg != nil && cfg.BaseURL != "" {
 		baseURL = strings.TrimRight(cfg.BaseURL, "/")
 	}
-	validationPath := strings.TrimSpace("{{.Auth.BrowserSessionValidationPath}}")
+	validationPath := strings.TrimSpace({{printf "%q" .Auth.BrowserSessionValidationPath}})
 	if validationPath == "" {
 		return baseURL
 	}
@@ -860,7 +860,7 @@ func waitForCookieRefreshBrowser(cmd *cobra.Command, flags *rootFlags, targetURL
 
 {{- if $hasCookieBrowserAuth}}
 func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
-	domain := "{{.Auth.CookieDomain}}"
+	domain := {{printf "%q" .Auth.CookieDomain}}
 	if domain == "" {
 		return fmt.Errorf("no cookie domain configured")
 	}
@@ -885,13 +885,13 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 
 {{- if eq .Auth.Type "composed"}}
 	cookieMap := parseCookieString(cookies)
-	requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+	requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}{{printf "%q" $c}}{{- end}} }
 	for _, name := range requiredCookies {
 		if _, ok := cookieMap[name]; !ok {
 			return fmt.Errorf("cookie %q not found for %s", name, domain)
 		}
 	}
-	composed := "{{.Auth.Format}}"
+	composed := {{printf "%q" .Auth.Format}}
 	for _, name := range requiredCookies {
 		composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
 	}
@@ -919,7 +919,7 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	// overwrite the filtered token that login just persisted. Apply the same
 	// allowlist filter as newAuthLoginCmd's non-composed branch.
 	cookieMap := parseCookieString(cookies)
-	requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+	requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}{{printf "%q" $c}}{{- end}} }
 	kept := make([]string, 0, len(requiredCookies))
 	for _, name := range requiredCookies {
 		v, ok := cookieMap[name]
@@ -1187,9 +1187,9 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				return nil
 {{- else}}
 {{- with $canonicalEnvVar}}
-				if v := os.Getenv("{{.Name}}"); v != "" {
+				if v := os.Getenv({{printf "%q" .Name}}); v != "" {
 					fmt.Fprintln(w, green("Authenticated"))
-					fmt.Fprintf(w, "  Source: %s env var\n", "{{.Name}}")
+					fmt.Fprintf(w, "  Source: %s env var\n", {{printf "%q" .Name}})
 					return nil
 				}
 {{- end}}
@@ -1203,7 +1203,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 			fmt.Fprintln(w, green("Authenticated"))
 			fmt.Fprintf(w, "  Source: %s\n", cfg.AuthSource)
-			fmt.Fprintf(w, "  Domain: {{.Auth.CookieDomain}}\n")
+			fmt.Fprintf(w, "  Domain: {{oneline .Auth.CookieDomain}}\n")
 			fmt.Fprintf(w, "  Config: %s\n", cfg.Path)
 			return nil
 		},
@@ -1301,8 +1301,8 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 {{- with $canonicalEnvVar}}
-			if os.Getenv("{{.Name}}") != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Config cleared. Note: %s env var is still set.\n", "{{.Name}}")
+			if os.Getenv({{printf "%q" .Name}}) != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Config cleared. Note: %s env var is still set.\n", {{printf "%q" .Name}})
 				return nil
 			}
 {{- end}}
@@ -1891,14 +1891,14 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 // A non-auth error (404, 500, timeout) is treated as "can't validate, assume OK" to avoid
 // blocking auth on unrelated API issues.
 func validateComposedAuth(authHeader string) error {
-	testURL := "{{.BaseURL}}"
+	testURL := {{printf "%q" .BaseURL}}
 	req, err := http.NewRequest("HEAD", testURL, nil)
 	if err != nil {
 		return nil // can't validate, assume OK
 	}
-	req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+	req.Header.Set("{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- range .RequiredHeaders}}
-	req.Header.Set("{{.Name}}", "{{.Value}}")
+	req.Header.Set({{printf "%q" .Name}}, {{printf "%q" .Value}})
 {{- end}}
 {{- if not .UsesBrowserManagedUserAgent}}
 	if req.Header.Get("User-Agent") == "" {
@@ -1986,7 +1986,7 @@ func browserSessionProofStatusForAuth(cfg *config.Config, authHeader string) (bo
 	if err := json.Unmarshal(data, &proof); err != nil {
 		return false, "proof is not valid JSON; re-run {{.Name}}-pp-cli auth login --chrome"
 	}
-	if proof.APIName != "{{.Name}}" || proof.CookieDomain != "{{.Auth.CookieDomain}}" || proof.ValidationPath != "{{.Auth.BrowserSessionValidationPath}}" {
+	if proof.APIName != {{printf "%q" .Name}} || proof.CookieDomain != {{printf "%q" .Auth.CookieDomain}} || proof.ValidationPath != {{printf "%q" .Auth.BrowserSessionValidationPath}} {
 		return false, "proof does not match this CLI"
 	}
 	if authHeader != "" && proof.CredentialFingerprint != fingerprintCredential(authHeader) {
@@ -1999,11 +1999,11 @@ func browserSessionProofStatusForAuth(cfg *config.Config, authHeader string) (bo
 }
 
 func validateAndWriteBrowserSessionProof(ctx context.Context, cfg *config.Config, flags *rootFlags) error {
-	validationPath := strings.TrimSpace("{{.Auth.BrowserSessionValidationPath}}")
+	validationPath := strings.TrimSpace({{printf "%q" .Auth.BrowserSessionValidationPath}})
 	if validationPath == "" {
 		return fmt.Errorf("no browser-session validation endpoint configured in this CLI")
 	}
-	method := strings.ToUpper(strings.TrimSpace("{{.Auth.BrowserSessionValidationMethod}}"))
+	method := strings.ToUpper(strings.TrimSpace({{printf "%q" .Auth.BrowserSessionValidationMethod}}))
 	if method == "" {
 		method = "GET"
 	}
@@ -2027,8 +2027,8 @@ func validateAndWriteBrowserSessionProof(ctx context.Context, cfg *config.Config
 	}
 
 	proof := browserSessionProof{
-		APIName:               "{{.Name}}",
-		CookieDomain:          "{{.Auth.CookieDomain}}",
+		APIName:               {{printf "%q" .Name}},
+		CookieDomain:          {{printf "%q" .Auth.CookieDomain}},
 		ValidationMethod:      method,
 		ValidationPath:        validationPath,
 		StatusCode:            status,

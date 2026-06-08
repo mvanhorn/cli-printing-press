@@ -211,7 +211,7 @@ type APISpec struct {
 	// Description describes the API itself ("REST API for ordering pizza").
 	// It flows into generated docs and SKILL.md but is intentionally NOT used
 	// as the printed CLI's --help text; that's CLIDescription's job.
-	Description string `yaml:"description" json:"description"`
+	Description string `yaml:"description" json:"description" pp:"prose"`
 	// CLIDescription, when set, becomes the printed CLI's root cobra command
 	// `Short:` text. Spec authors should phrase it as what the CLI does
 	// ("Order Seattle pizza from the terminal"), not what the API is. When
@@ -219,7 +219,7 @@ type APISpec struct {
 	// then to a generic "Manage <api> resources via the <api> API". Adding
 	// this field eliminates a recurring manual rewrite step that the main
 	// skill used to instruct Claude to perform after every generation.
-	CLIDescription string `yaml:"cli_description,omitempty" json:"cli_description,omitempty"`
+	CLIDescription string `yaml:"cli_description,omitempty" json:"cli_description,omitempty" pp:"prose"`
 	Version        string `yaml:"version" json:"version"`
 	BaseURL        string `yaml:"base_url" json:"base_url"`
 	BasePath       string `yaml:"base_path,omitempty" json:"base_path,omitempty"`
@@ -270,7 +270,7 @@ type APISpec struct {
 	// has a real URL to probe. Path-positional templates (x-tenant-env-var
 	// style) leave this empty; there is no spec-level default for a
 	// tenant ID.
-	EndpointTemplateVarDefaults map[string]string `yaml:"endpoint_template_var_defaults,omitempty" json:"endpoint_template_var_defaults,omitempty"`
+	EndpointTemplateVarDefaults map[string]string `yaml:"endpoint_template_var_defaults,omitempty" json:"endpoint_template_var_defaults,omitempty" pp:"prose"`
 	// Creator is the permanent original author of the CLI (the human who
 	// first got it accepted into the library). Top-billed on every
 	// attribution surface; never reassigned by a reprint or later
@@ -301,7 +301,7 @@ type APISpec struct {
 	Regions         []string            `yaml:"regions,omitempty" json:"regions,omitempty"`              // geographic availability/scope tokens (ISO 3166-1 alpha-2 like NL, EU, or * for global)
 	APILanguage     string              `yaml:"api_language,omitempty" json:"api_language,omitempty"`    // BCP 47 language tag for the API's native/domain language
 	Auth            AuthConfig          `yaml:"auth" json:"auth"`
-	AuthWarnings    []string            `yaml:"auth_warnings,omitempty" json:"auth_warnings,omitempty"`
+	AuthWarnings    []string            `yaml:"auth_warnings,omitempty" json:"auth_warnings,omitempty" pp:"prose"`
 	Roles           []string            `yaml:"roles,omitempty" json:"roles,omitempty"` // per-spec authenticated persona labels that endpoints may require (e.g. parent, teacher, admin)
 	TierRouting     TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
 	RequiredHeaders []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
@@ -357,7 +357,7 @@ func (s *APISpec) SyncDefaultConcurrency() int {
 type StreamingConfig struct {
 	Transport      string                  `yaml:"transport,omitempty" json:"transport,omitempty"`
 	URL            string                  `yaml:"url,omitempty" json:"url,omitempty"`
-	SubscribeShape string                  `yaml:"subscribe_shape,omitempty" json:"subscribe_shape,omitempty"`
+	SubscribeShape string                  `yaml:"subscribe_shape,omitempty" json:"subscribe_shape,omitempty" pp:"rawstring"`
 	Framing        string                  `yaml:"framing,omitempty" json:"framing,omitempty"`
 	Metadata       StreamingMetadataConfig `yaml:"metadata,omitempty" json:"metadata,omitzero"`
 }
@@ -780,9 +780,9 @@ func resourceHasRequiredRoles(resource Resource) bool {
 // template only sees .Resources and silently omits hand-written
 // commands, which is the drift class that motivated this field.
 type ExtraCommand struct {
-	Name        string `yaml:"name" json:"name"`                     // command path, e.g. "boxscore" or "tv airing-today"
-	Description string `yaml:"description" json:"description"`       // one-line description rendered after a dash
-	Args        string `yaml:"args,omitempty" json:"args,omitempty"` // optional positional arg signature, e.g. "<event_id>" or "<team1> <team2>"
+	Name        string `yaml:"name" json:"name"`                                // command path, e.g. "boxscore" or "tv airing-today"
+	Description string `yaml:"description" json:"description" pp:"prose"`       // one-line description rendered after a dash
+	Args        string `yaml:"args,omitempty" json:"args,omitempty" pp:"prose"` // optional positional arg signature, e.g. "<event_id>" or "<team1> <team2>"
 }
 
 // IsSynthetic reports whether this spec declares a multi-source / combo CLI
@@ -1013,13 +1013,13 @@ type AuthConfig struct {
 	Format                 string       `yaml:"format" json:"format"`
 	EnvVars                []string     `yaml:"env_vars" json:"env_vars"`
 	EnvVarSpecs            []AuthEnvVar `yaml:"env_var_specs,omitempty" json:"env_var_specs,omitempty"`
-	Optional               bool         `yaml:"optional,omitempty" json:"optional,omitempty"`         // true when the key enhances a subset of features (e.g., USDA nutrition backfill) rather than gating core functionality; doctor treats unconfigured optional auth as INFO not FAIL and README frames the section as "Optional"
-	Scheme                 string       `yaml:"scheme,omitempty" json:"scheme,omitempty"`             // OpenAPI security scheme name
-	In                     string       `yaml:"in,omitempty" json:"in,omitempty"`                     // header, query, cookie
-	KeyURL                 string       `yaml:"key_url,omitempty" json:"key_url,omitempty"`           // URL where users can register for an API key
-	Instructions           string       `yaml:"instructions,omitempty" json:"instructions,omitempty"` // one-line guidance shown alongside KeyURL, e.g. "Settings → Personal access tokens → Generate new"
-	Title                  string       `yaml:"title,omitempty" json:"title,omitempty"`               // user-facing credential field title for install/config surfaces
-	Description            string       `yaml:"description,omitempty" json:"description,omitempty"`
+	Optional               bool         `yaml:"optional,omitempty" json:"optional,omitempty"`                    // true when the key enhances a subset of features (e.g., USDA nutrition backfill) rather than gating core functionality; doctor treats unconfigured optional auth as INFO not FAIL and README frames the section as "Optional"
+	Scheme                 string       `yaml:"scheme,omitempty" json:"scheme,omitempty"`                        // OpenAPI security scheme name
+	In                     string       `yaml:"in,omitempty" json:"in,omitempty"`                                // header, query, cookie
+	KeyURL                 string       `yaml:"key_url,omitempty" json:"key_url,omitempty"`                      // URL where users can register for an API key
+	Instructions           string       `yaml:"instructions,omitempty" json:"instructions,omitempty" pp:"prose"` // one-line guidance shown alongside KeyURL, e.g. "Settings → Personal access tokens → Generate new"
+	Title                  string       `yaml:"title,omitempty" json:"title,omitempty" pp:"prose"`               // user-facing credential field title for install/config surfaces
+	Description            string       `yaml:"description,omitempty" json:"description,omitempty" pp:"prose"`
 	AuthorizationURL       string       `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
 	DeviceAuthorizationURL string       `yaml:"device_authorization_url,omitempty" json:"device_authorization_url,omitempty"`
 	TokenURL               string       `yaml:"token_url,omitempty" json:"token_url,omitempty"`
@@ -1065,7 +1065,7 @@ type AuthConfig struct {
 	// happy path. The generator emits validation and proof handling, and the
 	// shipcheck pipeline treats a missing proof as a blocker.
 	RequiresBrowserSession         bool   `yaml:"requires_browser_session,omitempty" json:"requires_browser_session,omitempty"`
-	BrowserSessionReason           string `yaml:"browser_session_reason,omitempty" json:"browser_session_reason,omitempty"`
+	BrowserSessionReason           string `yaml:"browser_session_reason,omitempty" json:"browser_session_reason,omitempty" pp:"prose"`
 	BrowserSessionValidationPath   string `yaml:"browser_session_validation_path,omitempty" json:"browser_session_validation_path,omitempty"`
 	BrowserSessionValidationMethod string `yaml:"browser_session_validation_method,omitempty" json:"browser_session_validation_method,omitempty"`
 
@@ -1186,7 +1186,7 @@ type AuthEnvVar struct {
 	Kind        AuthEnvVarKind `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Required    bool           `yaml:"required" json:"required"`
 	Sensitive   bool           `yaml:"sensitive" json:"sensitive"` // orthogonal to Kind; drives redaction policy
-	Description string         `yaml:"description,omitempty" json:"description,omitempty"`
+	Description string         `yaml:"description,omitempty" json:"description,omitempty" pp:"prose"`
 	Inferred    bool           `yaml:"inferred,omitempty" json:"inferred,omitempty"`
 }
 
@@ -1733,10 +1733,10 @@ type ShareConfig struct {
 // outer map key (e.g., "country", "team"); each value is an ordered list
 // of canonical entities and their aliases.
 type LearnConfig struct {
-	Enabled           bool                    `yaml:"enabled,omitempty" json:"enabled,omitempty"`                         // master switch; when false, the loop's commands and pre-seeding hook are not emitted
-	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty"`         // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile.
-	Stopwords         []string                `yaml:"stopwords,omitempty" json:"stopwords,omitempty"`                     // domain-specific stopwords stripped from queries before recall match; merged with a built-in default set. Whitespace-only entries are dropped at parse time.
-	EntityLookupSeeds map[string][]LookupSeed `yaml:"entity_lookup_seeds,omitempty" json:"entity_lookup_seeds,omitempty"` // canonical-name + aliases table keyed by seed kind (e.g., "country"). Used by the recall path to substitute one entity for another and generalize learned templates.
+	Enabled           bool                    `yaml:"enabled,omitempty" json:"enabled,omitempty"`                                // master switch; when false, the loop's commands and pre-seeding hook are not emitted
+	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty" pp:"rawstring"` // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile.
+	Stopwords         []string                `yaml:"stopwords,omitempty" json:"stopwords,omitempty" pp:"prose"`                 // domain-specific stopwords stripped from queries before recall match; merged with a built-in default set. Whitespace-only entries are dropped at parse time.
+	EntityLookupSeeds map[string][]LookupSeed `yaml:"entity_lookup_seeds,omitempty" json:"entity_lookup_seeds,omitempty"`        // canonical-name + aliases table keyed by seed kind (e.g., "country"). Used by the recall path to substitute one entity for another and generalize learned templates.
 }
 
 // LookupSeed is one canonical entity plus optional aliases inside a
@@ -1744,8 +1744,8 @@ type LearnConfig struct {
 // stores against; Aliases are the alternate strings the recall path
 // recognizes as referring to the same entity.
 type LookupSeed struct {
-	Canonical string   `yaml:"canonical" json:"canonical"`                 // canonical entity name (required, non-empty)
-	Aliases   []string `yaml:"aliases,omitempty" json:"aliases,omitempty"` // alternate strings that resolve to Canonical
+	Canonical string   `yaml:"canonical" json:"canonical" pp:"prose"`                 // canonical entity name (required, non-empty)
+	Aliases   []string `yaml:"aliases,omitempty" json:"aliases,omitempty" pp:"prose"` // alternate strings that resolve to Canonical
 }
 
 // MCPConfig declares how the generated MCP server binary is shaped. When the
@@ -1798,7 +1798,7 @@ type MCPConfig struct {
 // pattern, not here.
 type Intent struct {
 	Name        string        `yaml:"name" json:"name"`                           // MCP tool name; snake_case, unique within the spec
-	Description string        `yaml:"description" json:"description"`             // agent-facing description; should name the *intent*, not the endpoints
+	Description string        `yaml:"description" json:"description" pp:"prose"`  // agent-facing description; should name the *intent*, not the endpoints
 	Params      []IntentParam `yaml:"params,omitempty" json:"params,omitempty"`   // input parameters the intent tool exposes to MCP callers
 	Steps       []IntentStep  `yaml:"steps" json:"steps"`                         // ordered list of endpoint calls; at least one required
 	Returns     string        `yaml:"returns,omitempty" json:"returns,omitempty"` // capture name whose value is returned to the caller; defaults to the last step's capture when blank
@@ -1811,7 +1811,7 @@ type IntentParam struct {
 	Name        string `yaml:"name" json:"name"`
 	Type        string `yaml:"type" json:"type"` // one of: string, integer, boolean
 	Required    bool   `yaml:"required,omitempty" json:"required,omitempty"`
-	Description string `yaml:"description" json:"description"`
+	Description string `yaml:"description" json:"description" pp:"prose"`
 }
 
 // IntentStep declares one endpoint call inside an intent. Endpoint references
@@ -1846,7 +1846,7 @@ func (m MCPConfig) HasTransport(t string) bool {
 }
 
 type Resource struct {
-	Description        string   `yaml:"description" json:"description"`
+	Description        string   `yaml:"description" json:"description" pp:"prose"`
 	DescriptionDerived bool     `yaml:"-" json:"-"`
 	Path               string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
 	Operations         []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
@@ -1923,7 +1923,7 @@ type Endpoint struct {
 	Method      string `yaml:"method" json:"method"`
 	Path        string `yaml:"path" json:"path"`
 	BaseURL     string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
-	Description string `yaml:"description" json:"description"`
+	Description string `yaml:"description" json:"description" pp:"prose"`
 	// DescriptionSynthesized marks descriptions generated by parser fallback
 	// when both summary and description are absent in the source operation.
 	// Internal-only provenance: never serialized.
@@ -1966,7 +1966,7 @@ type Endpoint struct {
 	// probes when generic synthesized args cannot satisfy an endpoint's
 	// conditional input contract. The runtime consumes it from the generated
 	// Cobra annotation `pp:happy-args`.
-	HappyArgs string `yaml:"happy_args,omitempty" json:"happy_args,omitempty"`
+	HappyArgs string `yaml:"happy_args,omitempty" json:"happy_args,omitempty" pp:"prose"`
 	// EmbeddedPagedSubresources names paged-envelope properties nested
 	// inside this endpoint's success response (e.g. GET /<resource>/{id}
 	// where the API caps the embedded sub-resource at the first page
@@ -2185,8 +2185,8 @@ type Param struct {
 	Positional  bool     `yaml:"positional" json:"positional"`
 	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
 	GlobalScope bool     `yaml:"global_scope,omitempty" json:"global_scope,omitempty"`
-	Default     any      `yaml:"default" json:"default"`
-	Description string   `yaml:"description" json:"description"`
+	Default     any      `yaml:"default" json:"default" pp:"prose"`
+	Description string   `yaml:"description" json:"description" pp:"prose"`
 	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
 	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
 	Format      string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
@@ -2199,8 +2199,8 @@ type Param struct {
 	// generator heuristics distinguish an omitted value from an explicit false.
 	DispatchParamSet bool   `yaml:"-" json:"-"`
 	ItemType         string `yaml:"item_type,omitempty" json:"item_type,omitempty"`
-	ItemTemplate     any    `yaml:"item_template,omitempty" json:"item_template,omitempty"`
-	Purpose          string `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	ItemTemplate     any    `yaml:"item_template,omitempty" json:"item_template,omitempty" pp:"prose"`
+	Purpose          string `yaml:"purpose,omitempty" json:"purpose,omitempty" pp:"prose"`
 	// FieldSelectorDefault is a sync-time default for field-selector params
 	// such as opt_fields, fields, expand, include, or select. It stays separate
 	// from Default so generated endpoint commands do not silently change their
@@ -2626,7 +2626,7 @@ type TypeField struct {
 	// is used in a generated GraphQL query. It lets wrapper specs keep the Go
 	// field simple (for example, totalPriceSet as json.RawMessage) while still
 	// issuing valid nested GraphQL selections.
-	Selection string `yaml:"selection,omitempty" json:"selection,omitempty"`
+	Selection string `yaml:"selection,omitempty" json:"selection,omitempty" pp:"rawstring"`
 	// IdentName overrides Name for Go-identifier derivation when two field
 	// names in the same struct sanitize to the same identifier through
 	// camel-casing. Wire-side serialization always reads Name.
@@ -2677,6 +2677,11 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	}
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
+	}
+	// Data-layer Go-code-injection guard — runs even when downstream generation
+	// uses --validate=false, since this is parse-time, not part of Validate().
+	if err := GuardStructuralStrings(&s); err != nil {
+		return nil, err
 	}
 	return &s, nil
 }

@@ -61,7 +61,7 @@ var unresolvedPathKeyRE = regexp.MustCompile(`\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
 // /tenant/{tenant}/<resource> don't trip the "requires parent context" skip.
 var endpointTemplateVarSet = map[string]bool{
 {{- range .EndpointTemplateVars}}
-	"{{.}}": true,
+	{{printf "%q" .}}: true,
 {{- end}}
 }
 {{- end}}
@@ -79,7 +79,7 @@ type syncResult struct {
 func applySyncGlobalScopeEnvDefaults(userParams *syncUserParams) {
 {{- range globalScopeParams .Resources}}
 	if v := globalScopeParamDefault("{{globalScopeEnvName .}}", {{printf "%q" (globalScopeFallbackValue .)}}); v != "" {
-		userParams.setGlobalDefault("{{paramWireName .}}", v)
+		userParams.setGlobalDefault({{printf "%q" (paramWireName .)}}, v)
 	}
 {{- end}}
 }
@@ -496,7 +496,7 @@ Resource scoping:
 	cmd.Flags().StringArrayVar(&pathContextFlags, "path-context", nil, "Fill a {key} placeholder in BaseURL or request paths from a supplied value (repeatable, key=value). Wins over env-resolved Config.TemplateVars values, so it doubles as a one-off override at the call site. Use it when an env variable already holds a different value, or when the spec did not annotate the placeholder with an env var.")
 {{- end}}
 {{- if .Pagination.DateRangeParam}}
-	cmd.Flags().StringVar(&dates, "dates", "", "Date or date range to sync (passed as {{.Pagination.DateRangeParam}} query parameter)")
+	cmd.Flags().StringVar(&dates, "dates", "", "Date or date range to sync (passed as {{oneline .Pagination.DateRangeParam}} query parameter)")
 {{- end}}
 
 	return cmd
@@ -985,9 +985,9 @@ type paginationDefaults struct {
 // Values are detected from the API spec by the profiler at generation time.
 func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
-		cursorParam: "{{if .Pagination.CursorParam}}{{.Pagination.CursorParam}}{{else}}after{{end}}",
-		cursorType:  "{{.Pagination.CursorType}}",
-		limitParam:  "{{if .Pagination.PageSizeParam}}{{.Pagination.PageSizeParam}}{{else}}limit{{end}}",
+		cursorParam: "{{if .Pagination.CursorParam}}{{oneline .Pagination.CursorParam}}{{else}}after{{end}}",
+		cursorType:  {{printf "%q" .Pagination.CursorType}},
+		limitParam:  "{{if .Pagination.PageSizeParam}}{{oneline .Pagination.PageSizeParam}}{{else}}limit{{end}}",
 		limit:       {{if .Pagination.DefaultPageSize}}{{.Pagination.DefaultPageSize}}{{else}}100{{end}},
 	}
 }
@@ -995,7 +995,7 @@ func determinePaginationDefaults() paginationDefaults {
 func resourceSupportsPagination(resource string) bool {
 	switch resource {
 {{- range .PaginationSupportedResources}}
-	case "{{.}}":
+	case {{printf "%q" .}}:
 		return true
 {{- end}}
 	}
@@ -1015,14 +1015,14 @@ func syncResourceIDWalkConfig(resource string) (idWalkConfig, bool) {
 	switch resource {
 {{- range .SyncableResources}}
 {{- if .IDWalkFilterParam}}
-	case "{{.Name}}":
-		return idWalkConfig{filterParam: "{{.IDWalkFilterParam}}", idField: syncResourceIDField(resource), limitParam: "{{.IDWalkLimitParam}}", limit: {{if .IDWalkPageSize}}{{.IDWalkPageSize}}{{else}}100{{end}}}, true
+	case {{printf "%q" .Name}}:
+		return idWalkConfig{filterParam: {{printf "%q" .IDWalkFilterParam}}, idField: syncResourceIDField(resource), limitParam: {{printf "%q" .IDWalkLimitParam}}, limit: {{if .IDWalkPageSize}}{{.IDWalkPageSize}}{{else}}100{{end}}}, true
 {{- end}}
 {{- end}}
 {{- range .DependentSyncResources}}
 {{- if .IDWalkFilterParam}}
-	case "{{.Name}}":
-		return idWalkConfig{filterParam: "{{.IDWalkFilterParam}}", idField: syncResourceIDField(resource), limitParam: "{{.IDWalkLimitParam}}", limit: {{if .IDWalkPageSize}}{{.IDWalkPageSize}}{{else}}100{{end}}}, true
+	case {{printf "%q" .Name}}:
+		return idWalkConfig{filterParam: {{printf "%q" .IDWalkFilterParam}}, idField: syncResourceIDField(resource), limitParam: {{printf "%q" .IDWalkLimitParam}}, limit: {{if .IDWalkPageSize}}{{.IDWalkPageSize}}{{else}}100{{end}}}, true
 {{- end}}
 {{- end}}
 	}
@@ -1136,13 +1136,13 @@ func syncResourceMethod(resource string) string {
 	switch resource {
 {{- range .SyncableResources}}
 {{- if eq .Method "POST"}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return "POST"
 {{- end}}
 {{- end}}
 {{- range .DependentSyncResources}}
 {{- if eq .Method "POST"}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return "POST"
 {{- end}}
 {{- end}}
@@ -1154,20 +1154,20 @@ func syncResourceBodyParamTypes(resource string) map[string]string {
 	switch resource {
 {{- range .SyncableResources}}
 {{- if .BodyFields}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return map[string]string{
 {{- range .BodyFields}}
-			"{{.Name}}": "{{.Type}}",
+			{{printf "%q" .Name}}: {{printf "%q" .Type}},
 {{- end}}
 		}
 {{- end}}
 {{- end}}
 {{- range .DependentSyncResources}}
 {{- if .BodyFields}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return map[string]string{
 {{- range .BodyFields}}
-			"{{.Name}}": "{{.Type}}",
+			{{printf "%q" .Name}}: {{printf "%q" .Type}},
 {{- end}}
 		}
 {{- end}}
@@ -1180,20 +1180,20 @@ func syncResourceBodyParamWireNames(resource string) map[string]string {
 	switch resource {
 {{- range .SyncableResources}}
 {{- if .BodyFields}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return map[string]string{
 {{- range .BodyFields}}
-			"{{.Name}}": "{{.BodyWireName}}",
+			{{printf "%q" .Name}}: {{printf "%q" .BodyWireName}},
 {{- end}}
 		}
 {{- end}}
 {{- end}}
 {{- range .DependentSyncResources}}
 {{- if .BodyFields}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return map[string]string{
 {{- range .BodyFields}}
-			"{{.Name}}": "{{.BodyWireName}}",
+			{{printf "%q" .Name}}: {{printf "%q" .BodyWireName}},
 {{- end}}
 		}
 {{- end}}
@@ -1227,11 +1227,11 @@ func syncResourceStaticBody(resource string) map[string]any {
 {{- $hasDefaults := false}}
 {{- range .BodyFields}}{{if .HasDefault}}{{- $hasDefaults = true}}{{end}}{{end}}
 {{- if $hasDefaults}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return map[string]any{
 {{- range .BodyFields}}
 {{- if .HasDefault}}
-			"{{.BodyWireName}}": {{goLiteral .Default}},
+			{{printf "%q" .BodyWireName}}: {{goLiteral .Default}},
 {{- end}}
 {{- end}}
 		}
@@ -1243,11 +1243,11 @@ func syncResourceStaticBody(resource string) map[string]any {
 {{- $hasDefaults := false}}
 {{- range .BodyFields}}{{if .HasDefault}}{{- $hasDefaults = true}}{{end}}{{end}}
 {{- if $hasDefaults}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return map[string]any{
 {{- range .BodyFields}}
 {{- if .HasDefault}}
-			"{{.BodyWireName}}": {{goLiteral .Default}},
+			{{printf "%q" .BodyWireName}}: {{goLiteral .Default}},
 {{- end}}
 {{- end}}
 		}
@@ -1268,14 +1268,14 @@ func syncResourceSinceParam(resource string) string {
 	switch resource {
 {{- range .SyncableResources}}
 {{- if .SinceParam}}
-	case "{{.Name}}":
-		return "{{.SinceParam}}"
+	case {{printf "%q" .Name}}:
+		return {{printf "%q" .SinceParam}}
 {{- end}}
 {{- end}}
 {{- range .DependentSyncResources}}
 {{- if .SinceParam}}
-	case "{{.Name}}":
-		return "{{.SinceParam}}"
+	case {{printf "%q" .Name}}:
+		return {{printf "%q" .SinceParam}}
 {{- end}}
 {{- end}}
 	}
@@ -1286,14 +1286,14 @@ func syncResourceSinceParamFormat(resource string) string {
 	switch resource {
 {{- range .SyncableResources}}
 {{- if .SinceParamFormat}}
-	case "{{.Name}}":
-		return "{{.SinceParamFormat}}"
+	case {{printf "%q" .Name}}:
+		return {{printf "%q" .SinceParamFormat}}
 {{- end}}
 {{- end}}
 {{- range .DependentSyncResources}}
 {{- if .SinceParamFormat}}
-	case "{{.Name}}":
-		return "{{.SinceParamFormat}}"
+	case {{printf "%q" .Name}}:
+		return {{printf "%q" .SinceParamFormat}}
 {{- end}}
 {{- end}}
 	}
@@ -1318,7 +1318,7 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 
 // determineDateRangeParam returns the query parameter name for date-range sync filtering.
 func determineDateRangeParam() string {
-	return "{{.Pagination.DateRangeParam}}"
+	return {{printf "%q" .Pagination.DateRangeParam}}
 }
 {{- end}}
 
@@ -2070,7 +2070,7 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	switch resource {
 {{- range .Tables}}
 {{- if emitsDomainTable .}}
-	case "{{.Resource}}":
+	case {{printf "%q" .Resource}}:
 {{- if $hasHTMLPageModeSync}}
 		typedData, err := typedSingleObjectData(data, obj, id, forceTypedID)
 		if err != nil {
@@ -2120,7 +2120,7 @@ func defaultSyncResources() []string {
 	return []string{
 {{- range .SyncableResources}}
 {{- if not .SkipDefaultSync}}
-		"{{.Name}}",
+		{{printf "%q" .Name}},
 {{- end}}
 {{- end}}
 	}
@@ -2132,7 +2132,7 @@ func defaultSyncResources() []string {
 func knownSyncResourceNames() []string {
 	names := []string{
 {{- range .SyncableResources}}
-		"{{.Name}}",
+		{{printf "%q" .Name}},
 {{- end}}
 	}
 {{- if .DependentSyncResources}}
@@ -2149,7 +2149,7 @@ func knownSyncResourceNames() []string {
 func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{
 {{- range .SyncableResources}}
-		"{{.Name}}": "{{.Path}}",
+		{{printf "%q" .Name}}: {{printf "%q" .Path}},
 {{- end}}
 	}
 	if p, ok := paths[resource]; ok {
@@ -2168,7 +2168,7 @@ func syncHTMLExtractionOptions(resource string, parentResource string, baseURL s
 	switch key {
 {{- range .SyncableResources}}
 {{- if .UsesHTMLResponse}}
-	case "{{.Name}}":
+	case {{printf "%q" .Name}}:
 		return htmlExtractionOptions{
 			Mode: "{{with .HTMLExtract}}{{.EffectiveMode}}{{else}}page{{end}}",
 			BaseURL: htmlExtractionRequestURL(baseURL, path, params),
@@ -2188,7 +2188,7 @@ func syncHTMLExtractionOptions(resource string, parentResource string, baseURL s
 {{- end}}
 {{- range .DependentSyncResources}}
 {{- if .UsesHTMLResponse}}
-	case "{{.ParentResource}}.{{.Name}}":
+	case "{{oneline .ParentResource}}.{{oneline .Name}}":
 		return htmlExtractionOptions{
 			Mode: "{{with .HTMLExtract}}{{.EffectiveMode}}{{else}}page{{end}}",
 			BaseURL: htmlExtractionRequestURL(baseURL, path, params),
@@ -2218,12 +2218,12 @@ func syncHTMLExtractionOptions(resource string, parentResource string, baseURL s
 var syncResourceTiers = map[string]string{
 {{- range .SyncableResources}}
 {{- if .Tier}}
-	"{{.Name}}": {{printf "%q" .Tier}},
+	{{printf "%q" .Name}}: {{printf "%q" .Tier}},
 {{- end}}
 {{- end}}
 {{- range .DependentSyncResources}}
 {{- if .Tier}}
-	"{{.Name}}": {{printf "%q" .Tier}},
+	{{printf "%q" .Name}}: {{printf "%q" .Tier}},
 {{- end}}
 {{- end}}
 }
@@ -2262,9 +2262,9 @@ type dependentPathParamDef struct {
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
 {{- range .DependentSyncResources}}
-		{Name: "{{.Name}}", ParentTable: "{{.ParentResource}}", ParentIDParam: "{{.ParentIDParam}}", PathTemplate: "{{.Path}}", KeyField: "{{.KeyField}}"{{if .PathParams}}, PathParams: []dependentPathParamDef{
+		{Name: {{printf "%q" .Name}}, ParentTable: {{printf "%q" .ParentResource}}, ParentIDParam: {{printf "%q" .ParentIDParam}}, PathTemplate: {{printf "%q" .Path}}, KeyField: {{printf "%q" .KeyField}}{{if .PathParams}}, PathParams: []dependentPathParamDef{
 {{- range .PathParams}}
-			{Param: "{{.Param}}", Field: "{{.Field}}"},
+			{Param: {{printf "%q" .Param}}, Field: {{printf "%q" .Field}}},
 {{- end}}
 		}{{end}}},
 {{- end}}

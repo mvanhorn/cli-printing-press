@@ -1062,7 +1062,7 @@ func TestMigrate_AddsColumnsOnUpgrade_{{pascal $table.Name}}(t *testing.T) {
 	for _, want := range []string{
 {{- range $col := $table.Columns}}
 {{- if isBackfillColumn $col}}
-		"{{$col.Name}}",
+		{{printf "%q" $col.Name}},
 {{- end}}
 {{- end}}
 	} {

@@ -22,7 +22,7 @@ import (
 // guidance that production agents need a remote option.
 
 const (
-	defaultHTTPAddr = "{{if .MCP.Addr}}{{.MCP.Addr}}{{else}}:7777{{end}}"
+	defaultHTTPAddr = "{{if .MCP.Addr}}{{oneline .MCP.Addr}}{{else}}:7777{{end}}"
 )
 
 // version is the printed MCP server's version, overridable at build time via ldflags.
@@ -30,7 +30,7 @@ var version = "0.0.0-dev"
 
 func main() {
 	s := server.NewMCPServer(
-		"{{.EffectiveDisplayName}}",
+		{{printf "%q" .EffectiveDisplayName}},
 		version,
 		server.WithToolCapabilities(false),
 	)
@@ -86,7 +86,7 @@ var version = "0.0.0-dev"
 
 func main() {
 	s := server.NewMCPServer(
-		"{{.EffectiveDisplayName}}",
+		{{printf "%q" .EffectiveDisplayName}},
 		version,
 		server.WithToolCapabilities(false),
 	)

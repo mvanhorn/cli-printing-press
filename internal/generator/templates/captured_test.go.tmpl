@@ -33,11 +33,11 @@ func TestCaptured_{{.EndpointName}}_RequestShape(t *testing.T) {
 	// The generated client should accept a configurable base URL.
 	// Test validates: method, path, and parameter presence.
 	if capturedReq != nil {
-		if capturedReq.Method != "{{.Method}}" {
-			t.Errorf("expected method {{.Method}}, got %s", capturedReq.Method)
+		if capturedReq.Method != {{printf "%q" .Method}} {
+			t.Errorf("expected method {{oneline .Method}}, got %s", capturedReq.Method)
 		}
-		if capturedReq.URL.Path != "{{.Path}}" {
-			t.Errorf("expected path {{.Path}}, got %s", capturedReq.URL.Path)
+		if capturedReq.URL.Path != {{printf "%q" .Path}} {
+			t.Errorf("expected path {{oneline .Path}}, got %s", capturedReq.URL.Path)
 		}
 	}
 }

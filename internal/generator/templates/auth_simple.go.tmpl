@@ -47,9 +47,9 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
 {{- if .Auth.KeyURL}}
-			fmt.Fprintln(w, "Get a key at: {{.Auth.KeyURL}}")
+			fmt.Fprintln(w, "Get a key at: {{oneline .Auth.KeyURL}}")
 {{- else if .WebsiteURL}}
-			fmt.Fprintln(w, "See API docs: {{.WebsiteURL}}")
+			fmt.Fprintln(w, "See API docs: {{oneline .WebsiteURL}}")
 {{- else}}
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 {{- end}}
@@ -84,7 +84,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 				return nil
 			}
 {{- if or .Auth.KeyURL .WebsiteURL}}
-			launchURL := {{if .Auth.KeyURL}}"{{.Auth.KeyURL}}"{{else}}"{{.WebsiteURL}}"{{end}}
+			launchURL := {{if .Auth.KeyURL}}{{printf "%q" .Auth.KeyURL}}{{else}}{{printf "%q" .WebsiteURL}}{{end}}
 			if cliutil.IsVerifyEnv() {
 				fmt.Fprintf(w, "would launch: %s\n", launchURL)
 				return nil
@@ -254,8 +254,8 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			// JSON envelope and the human prose can both surface it.
 			envStillSet := ""
 {{- range .Auth.EnvVars}}
-			if envStillSet == "" && os.Getenv("{{.}}") != "" {
-				envStillSet = "{{.}}"
+			if envStillSet == "" && os.Getenv({{printf "%q" .}}) != "" {
+				envStillSet = {{printf "%q" .}}
 			}
 {{- end}}
 

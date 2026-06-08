@@ -122,15 +122,15 @@ In local mode: searches locally synced data only.`,
 					return err
 				}
 {{- if eq .SearchEndpointMethod "POST"}}
-				data, _, getErr := c.Post(cmd.Context(), "{{.SearchEndpointPath}}", map[string]any{
-					"{{.SearchQueryParam}}": query,
+				data, _, getErr := c.Post(cmd.Context(), {{printf "%q" .SearchEndpointPath}}, map[string]any{
+					{{printf "%q" .SearchQueryParam}}: query,
 {{- range .SearchBodyFields}}
-					"{{.Name}}": {{goLiteral .Default}},
+					{{printf "%q" .Name}}: {{goLiteral .Default}},
 {{- end}}
 				})
 {{- else}}
-				data, getErr := c.Get(cmd.Context(), "{{.SearchEndpointPath}}", map[string]string{
-					"{{.SearchQueryParam}}": query,
+				data, getErr := c.Get(cmd.Context(), {{printf "%q" .SearchEndpointPath}}, map[string]string{
+					{{printf "%q" .SearchQueryParam}}: query,
 				})
 {{- end}}
 				if getErr == nil {
@@ -173,7 +173,7 @@ In local mode: searches locally synced data only.`,
 			switch resourceType {
 {{- range .Tables}}
 {{- if .FTS5}}
-			case "{{.Resource}}":
+			case {{printf "%q" .Resource}}:
 				results, err = db.Search{{pascal .Name}}(query, limit)
 {{- end}}
 {{- end}}

@@ -96,7 +96,7 @@ human-readable dimensions.`,
 
 			statuses := parseLiveStatuses(metadataStatuses)
 			var storeMu sync.Mutex
-			if "{{.Streaming.Metadata.Endpoint}}" != "" {
+			if {{printf "%q" .Streaming.Metadata.Endpoint}} != "" {
 				if _, err := refreshLiveMetadata(ctx, apiClient, st, &storeMu, statuses); err != nil {
 					_ = st.RecordRebaseEvent("metadata_error", "refresh_failed", err.Error())
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: metadata refresh failed: %v\n", err)
@@ -125,9 +125,9 @@ human-readable dimensions.`,
 
 			frameCount := 0
 			ws := wsclient.Client{
-				URL:              "{{.Streaming.URL}}",
+				URL:              {{printf "%q" .Streaming.URL}},
 				SubscribePayload: subscribePayload,
-				Framing:          "{{.Streaming.EffectiveFraming}}",
+				Framing:          {{printf "%q" .Streaming.EffectiveFraming}},
 				MinBackoff:       time.Second,
 				MaxBackoff:       30 * time.Second,
 			}
@@ -158,8 +158,8 @@ human-readable dimensions.`,
 
 	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database path (default: user cache)")
 	cmd.Flags().StringVar(&subscribePayload, "subscribe", `{{.Streaming.SubscribeShape}}`, "WebSocket subscribe payload")
-	cmd.Flags().DurationVar(&metadataCadence, "metadata-cadence", mustDuration("{{.Streaming.EffectiveMetadataRefreshCadence}}"), "REST metadata refresh cadence")
-	cmd.Flags().StringVar(&metadataStatuses, "metadata-statuses", "{{join .Streaming.EffectiveMetadataStatuses ","}}", "Comma-separated metadata statuses to poll")
+	cmd.Flags().DurationVar(&metadataCadence, "metadata-cadence", mustDuration({{printf "%q" .Streaming.EffectiveMetadataRefreshCadence}}), "REST metadata refresh cadence")
+	cmd.Flags().StringVar(&metadataStatuses, "metadata-statuses", {{printf "%q" (join .Streaming.EffectiveMetadataStatuses ",")}}, "Comma-separated metadata statuses to poll")
 	cmd.Flags().BoolVar(&metadataOnce, "metadata-once", false, "Refresh REST metadata once instead of on a background cadence")
 	cmd.Flags().IntVar(&maxFrames, "max-frames", 0, "Stop after storing this many WebSocket frames (0 = unlimited)")
 	return cmd
@@ -172,7 +172,7 @@ func refreshLiveMetadata(ctx context.Context, apiClient *client.Client, st *stor
 		if status != "" {
 			params["status"] = status
 		}
-		data, err := apiClient.GetNoCache(ctx, "{{.Streaming.Metadata.Endpoint}}", params)
+		data, err := apiClient.GetNoCache(ctx, {{printf "%q" .Streaming.Metadata.Endpoint}}, params)
 		if err != nil {
 			return total, err
 		}
@@ -182,7 +182,7 @@ func refreshLiveMetadata(ctx context.Context, apiClient *client.Client, st *stor
 		}
 		storeMu.Lock()
 		for _, item := range items {
-			if err := st.UpsertStreamMetadata("{{.Streaming.Metadata.EffectivePrimaryKey}}", status, item); err != nil {
+			if err := st.UpsertStreamMetadata({{printf "%q" .Streaming.Metadata.EffectivePrimaryKey}}, status, item); err != nil {
 				storeMu.Unlock()
 				return total, err
 			}

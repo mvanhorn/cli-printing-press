@@ -64,7 +64,7 @@ func isGraphQLAccessDenialCode(code string) bool {
 // GraphQL POST. It is rendered from APISpec.GraphQLEndpointPath at generate
 // time so per-tenant or versioned endpoints (e.g.,
 // "/admin/api/{version}/graphql.json") work without editing the client.
-const graphqlEndpointPath = "{{.GraphQLEndpointPath}}"
+const graphqlEndpointPath = {{printf "%q" .GraphQLEndpointPath}}
 
 {{- if .HasCostThrottling}}
 

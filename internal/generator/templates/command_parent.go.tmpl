@@ -10,7 +10,7 @@ import (
 func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "{{kebab .ResourceName}}",
-		Short: "{{.Short}}",
+		Short: {{printf "%q" .Short}},
 {{- if .Hidden}}
 		Hidden: true,
 {{- end}}

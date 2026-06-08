@@ -102,9 +102,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- range $eName, $endpoint := $resource.Endpoints}}
 {{- $path := effectiveEndpointPath $resource $endpoint}}
 	{
-		ID:      "{{$name}}.{{$eName}}",
-		Method:  "{{upper $endpoint.Method}}",
-		Path:    "{{$path}}",
+		ID:      {{printf "%q" (printf "%s.%s" $name $eName)}},
+		Method:  {{printf "%q" (upper $endpoint.Method)}},
+		Path:    {{printf "%q" $path}},
 {{- if $.HasRequiredRoles}}
 		RequiredRole: {{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}},
 {{- end}}
@@ -112,14 +112,14 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Tier:    {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}},
 {{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
-		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}{{printf "%q" .Name}},{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}}{{end}} },
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
 {{- end}}
 {{- if $endpoint.HeaderOverrides}}
-		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} },
 {{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
@@ -128,9 +128,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- range $eName, $endpoint := $subResource.Endpoints}}
 {{- $path := effectiveSubEndpointPath $resource $subResource $endpoint}}
 	{
-		ID:      "{{$name}}.{{$subName}}.{{$eName}}",
-		Method:  "{{upper $endpoint.Method}}",
-		Path:    "{{$path}}",
+		ID:      {{printf "%q" (printf "%s.%s.%s" $name $subName $eName)}},
+		Method:  {{printf "%q" (upper $endpoint.Method)}},
+		Path:    {{printf "%q" $path}},
 {{- if $.HasRequiredRoles}}
 		RequiredRole: {{if $endpoint.RequiresRole}}cli.Persona{{pascal $endpoint.RequiresRole}}{{else}}cli.Persona(""){{end}},
 {{- end}}
@@ -138,14 +138,14 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Tier:    {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}},
 {{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
-		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}{{printf "%q" .Name}},{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
 		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}}{{end}} },
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
 {{- end}}
 {{- if $endpoint.HeaderOverrides}}
-		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}{{printf "%q" .Name}}: {{printf "%q" .Value}},{{end}} },
 {{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},

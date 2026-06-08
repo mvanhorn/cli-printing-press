@@ -395,18 +395,18 @@ func TestUpsertBatch_Populates{{pascal .Name}}Table(t *testing.T) {
 	defer s.Close()
 
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "test-001"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
-		json.RawMessage(`{"id": "test-002"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
-		json.RawMessage(`{"id": "test-003"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
+		json.RawMessage(`{"id": "test-001"{{if $parentFKCol}}, {{printf "%q" $parentFKCol}}: "test-parent-001"{{end}}}`),
+		json.RawMessage(`{"id": "test-002"{{if $parentFKCol}}, {{printf "%q" $parentFKCol}}: "test-parent-001"{{end}}}`),
+		json.RawMessage(`{"id": "test-003"{{if $parentFKCol}}, {{printf "%q" $parentFKCol}}: "test-parent-001"{{end}}}`),
 	}
-	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
+	if _, _, err := s.UpsertBatch({{printf "%q" .Resource}}, items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
 
 	db := s.DB()
 
 	var generic int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, "{{.Resource}}").Scan(&generic); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, {{printf "%q" .Resource}}).Scan(&generic); err != nil {
 		t.Fatalf("count resources: %v", err)
 	}
 	if generic != len(items) {
@@ -414,7 +414,7 @@ func TestUpsertBatch_Populates{{pascal .Name}}Table(t *testing.T) {
 	}
 
 	var typed int
-	typedQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, "{{.Name}}")
+	typedQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, {{printf "%q" .Name}})
 	if err := db.QueryRow(typedQuery).Scan(&typed); err != nil {
 		t.Fatalf("count {{.Name}}: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestUpsertBatch_TypedFailureDoesNotStrand{{pascal .Name}}Generic(t *testing
 		json.RawMessage(`{"id": "orphan-002"}`),
 		json.RawMessage(`{"id": "orphan-003"}`),
 	}
-	stored, extractFailures, err := s.UpsertBatch("{{.Resource}}", items)
+	stored, extractFailures, err := s.UpsertBatch({{printf "%q" .Resource}}, items)
 	if err != nil {
 		t.Fatalf("UpsertBatch: %v (typed-table failure must not propagate)", err)
 	}
@@ -460,7 +460,7 @@ func TestUpsertBatch_TypedFailureDoesNotStrand{{pascal .Name}}Generic(t *testing
 	db := s.DB()
 
 	var generic int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, "{{.Resource}}").Scan(&generic); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, {{printf "%q" .Resource}}).Scan(&generic); err != nil {
 		t.Fatalf("count resources: %v", err)
 	}
 	if generic != len(items) {
@@ -468,12 +468,12 @@ func TestUpsertBatch_TypedFailureDoesNotStrand{{pascal .Name}}Generic(t *testing
 	}
 
 	var typed int
-	typedQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, "{{.Name}}")
+	typedQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, {{printf "%q" .Name}})
 	if err := db.QueryRow(typedQuery).Scan(&typed); err != nil {
 		t.Fatalf("count {{.Name}}: %v", err)
 	}
 	if typed != 0 {
-		t.Fatalf("{{.Name}} count = %d, want 0 (typed insert violated NOT NULL on %q)", typed, "{{$parentFKCol}}")
+		t.Fatalf("{{.Name}} count = %d, want 0 (typed insert violated NOT NULL on %q)", typed, {{printf "%q" $parentFKCol}})
 	}
 }
 {{- end}}
@@ -497,7 +497,7 @@ func TestUpsertBatch_Keys{{pascal .Name}}ByChildAndParent(t *testing.T) {
 		json.RawMessage(`{"id": "shared_child", "{{$parentFKCol}}": "parent_B"}`),
 		json.RawMessage(`{"id": "other_child", "{{$parentFKCol}}": "parent_A"}`),
 	}
-	stored, extractFailures, err := s.UpsertBatch("{{.Resource}}", items)
+	stored, extractFailures, err := s.UpsertBatch({{printf "%q" .Resource}}, items)
 	if err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestUpsertBatch_Keys{{pascal .Name}}ByChildAndParent(t *testing.T) {
 	db := s.DB()
 
 	var generic int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, "{{.Resource}}").Scan(&generic); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, {{printf "%q" .Resource}}).Scan(&generic); err != nil {
 		t.Fatalf("count resources: %v", err)
 	}
 	if generic != len(items) {
@@ -519,7 +519,7 @@ func TestUpsertBatch_Keys{{pascal .Name}}ByChildAndParent(t *testing.T) {
 	}
 
 	var typed int
-	typedQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, "{{.Name}}")
+	typedQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, {{printf "%q" .Name}})
 	if err := db.QueryRow(typedQuery).Scan(&typed); err != nil {
 		t.Fatalf("count {{.Name}}: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestUpsertBatch_Keys{{pascal .Name}}ByChildAndParent(t *testing.T) {
 	}
 
 	var parentMatches int
-	parentQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "{{$parentFKCol}}" = ?`, "{{.Name}}")
+	parentQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "{{$parentFKCol}}" = ?`, {{printf "%q" .Name}})
 	if err := db.QueryRow(parentQuery, "parent_A").Scan(&parentMatches); err != nil {
 		t.Fatalf("count by {{$parentFKCol}}: %v", err)
 	}
@@ -551,18 +551,18 @@ func TestUpsertBatch_Sets{{pascal .Name}}ParentID(t *testing.T) {
 	defer s.Close()
 
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "child-001"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}, "parent_id": "parent-A"}`),
-		json.RawMessage(`{"id": "child-002"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}, "parent_id": "parent-A"}`),
-		json.RawMessage(`{"id": "child-003"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-B"{{end}}, "parent_id": "parent-B"}`),
+		json.RawMessage(`{"id": "child-001"{{if $parentFKCol}}, {{printf "%q" $parentFKCol}}: "parent-A"{{end}}, "parent_id": "parent-A"}`),
+		json.RawMessage(`{"id": "child-002"{{if $parentFKCol}}, {{printf "%q" $parentFKCol}}: "parent-A"{{end}}, "parent_id": "parent-A"}`),
+		json.RawMessage(`{"id": "child-003"{{if $parentFKCol}}, {{printf "%q" $parentFKCol}}: "parent-B"{{end}}, "parent_id": "parent-B"}`),
 	}
-	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
+	if _, _, err := s.UpsertBatch({{printf "%q" .Resource}}, items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
 
 	db := s.DB()
 
 	var matchedA int
-	parentQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE parent_id = ?`, "{{.Name}}")
+	parentQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE parent_id = ?`, {{printf "%q" .Name}})
 	if err := db.QueryRow(parentQuery, "parent-A").Scan(&matchedA); err != nil {
 		t.Fatalf("count by parent_id: %v", err)
 	}
@@ -592,9 +592,9 @@ func TestUpsertBatch_{{pascal .Name}}SearchableViaGenericFTS(t *testing.T) {
 	// field is matchable regardless of which columns {{.Name}} declares.
 	const probe = "zqxjpp2629probe"
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "search-001", "pp_fts_probe": "` + probe + `"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}, "parent_id": "parent-A"}`),
+		json.RawMessage(`{"id": "search-001", "pp_fts_probe": "` + probe + `"{{if $parentFKCol}}, {{printf "%q" $parentFKCol}}: "parent-A"{{end}}, "parent_id": "parent-A"}`),
 	}
-	stored, _, err := s.UpsertBatch("{{.Resource}}", items)
+	stored, _, err := s.UpsertBatch({{printf "%q" .Resource}}, items)
 	if err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestUpsertBatch_{{pascal .Name}}SearchableViaGenericFTS(t *testing.T) {
 		t.Fatalf("Search: %v", err)
 	}
 	if len(results) == 0 {
-		t.Fatalf("dependent resource %q stored but not searchable via generic resources_fts (issue #2629)", "{{.Resource}}")
+		t.Fatalf("dependent resource %q stored but not searchable via generic resources_fts (issue #2629)", {{printf "%q" .Resource}})
 	}
 }
 {{- end}}
@@ -630,7 +630,7 @@ func TestSearch{{pascal .Name}}QuotesFTSQuerySyntax(t *testing.T) {
 		json.RawMessage(`{"id": "typed-host", "{{$ftsField}}": "host.example.com"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}}`),
 		json.RawMessage(`{"id": "typed-multi", "{{$ftsField}}": "error with extra words before timeout"{{if $parentFKCol}}, "{{$parentFKCol}}": "parent-A"{{end}}}`),
 	}
-	if stored, failed, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
+	if stored, failed, err := s.UpsertBatch({{printf "%q" .Resource}}, items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	} else if failed != 0 || stored != len(items) {
 		t.Fatalf("UpsertBatch stored=%d failed=%d, want stored=%d failed=0", stored, failed, len(items))

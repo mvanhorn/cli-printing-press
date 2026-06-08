@@ -35,7 +35,7 @@ create commands instead.`,
 			return fmt.Errorf(
 				"import is not supported for %q on this GraphQL API (no REST create endpoint); "+
 					"use the typed create command instead, e.g. '%s-pp-cli %s create --help'",
-				resource, "{{.Name}}", resource,
+				resource, {{printf "%q" .Name}}, resource,
 			)
 		},
 	}

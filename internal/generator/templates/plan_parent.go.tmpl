@@ -9,7 +9,7 @@ import (
 
 func new{{pascal .Name}}Cmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "{{.Name}}",
+		Use:   {{printf "%q" .Name}},
 		Short: {{printf "%q" .Description}},
 	}
 

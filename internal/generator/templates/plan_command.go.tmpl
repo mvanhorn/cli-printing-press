@@ -11,7 +11,7 @@ import (
 
 func new{{pascal .CommandName}}Cmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "{{.CommandName}}",
+		Use:   {{printf "%q" .CommandName}},
 		Short: {{printf "%q" .Description}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("{{.CommandName}}: not implemented")

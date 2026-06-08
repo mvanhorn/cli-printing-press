@@ -281,7 +281,7 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 {{- range $table := .Tables}}
 {{- range $col := $table.Columns}}
 {{- if isBackfillColumn $col}}
-		{table: "{{$table.Name}}", column: "{{$col.Name}}", decl: "{{backfillDecl $col}}"},
+		{table: {{printf "%q" $table.Name}}, column: {{printf "%q" $col.Name}}, decl: "{{backfillDecl $col}}"},
 {{- end}}
 {{- end}}
 {{- end}}
@@ -1226,7 +1226,7 @@ func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]a
 {{- else if eq .Name "synced_at"}}
 		time.Now().UTC().Format(time.RFC3339),
 {{- else}}
-		lookupFieldValue(obj, "{{.Name}}"),
+		lookupFieldValue(obj, {{printf "%q" .Name}}),
 {{- end}}
 {{- end}}
 	); err != nil {
@@ -1236,14 +1236,14 @@ func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]a
 
 	// Standalone FTS: manually sync since content-sync triggers aren't used.
 	// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
-	ftsRowid := ftsRowID("{{.Name}}", id)
+	ftsRowid := ftsRowID({{printf "%q" .Name}}, id)
 	_, _ = tx.Exec(`DELETE FROM {{safeNameSuffix .Name "_fts"}} WHERE rowid = ?`, ftsRowid)
 	_, _ = tx.Exec(
 		`INSERT INTO {{safeNameSuffix .Name "_fts"}} (rowid, id, {{safeJoin .FTS5Fields ", "}}) VALUES (?{{- range .FTS5Fields}}, ?{{- end}}, ?)`,
 		ftsRowid,
 		id,
 {{- range .FTS5Fields}}
-		lookupFieldValue(obj, "{{.}}"),
+		lookupFieldValue(obj, {{printf "%q" .}}),
 {{- end}}
 	)
 {{- end}}
@@ -1262,7 +1262,7 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 	if id == "" {
 		return fmt.Errorf("missing id for {{.Name}}")
 	}
-	storageID := resourceStorageID("{{.Resource}}", id, obj)
+	storageID := resourceStorageID({{printf "%q" .Resource}}, id, obj)
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -1272,7 +1272,7 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.upsertGenericResourceTx(tx, "{{.Resource}}", storageID, data); err != nil {
+	if err := s.upsertGenericResourceTx(tx, {{printf "%q" .Resource}}, storageID, data); err != nil {
 		return err
 	}
 	if err := s.upsert{{pascal .Name}}Tx(tx, storageID, obj, data); err != nil {
@@ -1525,7 +1525,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		switch resourceType {
 {{- range .Tables}}
 {{- if emitsDomainTable .}}
-		case "{{.Resource}}":
+		case {{printf "%q" .Resource}}:
 			typedErr = s.upsert{{pascal .Name}}Tx(tx, storageID, obj, item)
 {{- end}}
 {{- end}}

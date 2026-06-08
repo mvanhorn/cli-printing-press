@@ -227,13 +227,13 @@ func (c *Client) authForRequest(ctx context.Context) (requestAuth, error) {
 		{{- end}}
 		})
 	{{- else if eq $tier.Auth.Type "bearer_token"}}
-		value := "{{$tier.Auth.HeaderPrefix}} " + tierValue0
+		value := "{{oneline $tier.Auth.HeaderPrefix}} " + tierValue0
 	{{- else}}
 		value := tierValue0
 	{{- end}}
 		auth := requestAuth{Value: value, In: {{printf "%q" $placement}}, Name: {{printf "%q" $name}}}
 		if authHeaderLooksLikePlaceholderCredential(auth.Value) {
-			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{index $tier.Auth.EnvVars 0}}=<your-token>")
+			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{oneline (index $tier.Auth.EnvVars 0)}}=<your-token>")
 		}
 		return auth, nil
 	{{- else}}
@@ -246,7 +246,7 @@ func (c *Client) authForRequest(ctx context.Context) (requestAuth, error) {
 		if err != nil {
 			return requestAuth{}, err
 		}
-		return requestAuth{Value: value, In: "{{authPlacement .Auth}}", Name: "{{authParameterName .Auth}}"}, nil
+		return requestAuth{Value: value, In: "{{authPlacement .Auth}}", Name: {{printf "%q" (authParameterName .Auth)}}}, nil
 	}
 }
 
@@ -303,7 +303,7 @@ func serviceForPath(path string) string {
 	bestService := ""
 	for prefix, svc := range map[string]string{
 	{{- range $prefix, $svc := .ProxyRoutes}}
-		"{{$prefix}}": "{{$svc}}",
+		{{printf "%q" $prefix}}: {{printf "%q" $svc}},
 	{{- end}}
 	} {
 		if strings.HasPrefix(path, prefix) && len(prefix) > len(bestMatch) {
@@ -315,7 +315,7 @@ func serviceForPath(path string) string {
 		return bestService
 	}
 {{- end}}
-	return "{{.Name}}" // default: API name slug
+	return {{printf "%q" .Name}} // default: API name slug
 }
 {{end}}
 
@@ -474,12 +474,12 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// CheckRedirect where Go's automatic stripping has already run.
 		if req.URL.Host == via[0].URL.Host {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
-				req.Header.Set("{{.Auth.TokenParamName}}", h)
+				req.Header.Set({{printf "%q" .Auth.TokenParamName}}, h)
 			}
 		} else {
 			// Cross-host hop: delete the custom auth header so the credential
 			// is not forwarded to the redirect target.
-			req.Header.Del("{{.Auth.TokenParamName}}")
+			req.Header.Del({{printf "%q" .Auth.TokenParamName}})
 		}
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
@@ -497,7 +497,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			preserved := req.Cookies()
 			req.Header.Del("Cookie")
 			for _, ck := range preserved {
-				if ck.Name != "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}" {
+				if ck.Name != "{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}api_key{{end}}" {
 					req.AddCookie(ck)
 				}
 			}
@@ -514,13 +514,13 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		// CheckRedirect where Go's automatic stripping has already run.
 		if req.URL.Host == via[0].URL.Host {
 			if h, err := c.authHeader(req.Context()); err == nil && h != "" {
-				req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
+				req.Header.Set("{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}Authorization{{end}}", h)
 			}
 		} else {
 			// Cross-host hop: Go strips standard auth headers (Authorization,
 			// Cookie) but not custom ones, so a custom API-key header would be
 			// forwarded verbatim to the redirect target. Delete it explicitly.
-			req.Header.Del("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}")
+			req.Header.Del("{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}Authorization{{end}}")
 		}
 {{- end}}
 		return nil
@@ -688,7 +688,7 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	if c.Config != nil {
 		for _, name := range []string{
 		{{- range .EndpointTemplateVars}}
-			"{{.}}",
+			{{printf "%q" .}},
 		{{- end}}
 		} {
 			key += "|" + name + "=" + c.Config.TemplateVars[name]
@@ -1334,19 +1334,19 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			}
 {{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
-			req.Header.Set("{{.Auth.TokenParamName}}", authHeader)
+			req.Header.Set({{printf "%q" .Auth.TokenParamName}}, authHeader)
 {{- else}}
 			q := req.URL.Query()
-			q.Set("{{.Auth.TokenParamName}}", authHeader)
+			q.Set({{printf "%q" .Auth.TokenParamName}}, authHeader)
 			req.URL.RawQuery = q.Encode()
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 			// API key goes in query parameter
 			q := req.URL.Query()
-			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
+			q.Set("{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}api_key{{end}}", authHeader)
 			req.URL.RawQuery = q.Encode()
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
-			req.AddCookie(&http.Cookie{Name: "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", Value: authHeader})
+			req.AddCookie(&http.Cookie{Name: "{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}api_key{{end}}", Value: authHeader})
 {{- else if eq .Auth.Type "cookie"}}
 			// Cookie-auth: LoadCookieJar is the sole source of outbound
 			// cookies. net/http's Client.send calls jar.Cookies + AddCookie
@@ -1358,7 +1358,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// signing paths above; intentionally not consumed on the live
 			// wire here.
 {{- else}}
-			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+			req.Header.Set("{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- end}}
 		}
 {{- if .Auth.AdditionalHeaders}}
@@ -1373,17 +1373,17 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				}
 {{- if eq .In "query"}}
 				q := req.URL.Query()
-				q.Set("{{.Header}}", v)
+				q.Set({{printf "%q" .Header}}, v)
 				req.URL.RawQuery = q.Encode()
 {{- else}}
-				req.Header.Set("{{.Header}}", v)
+				req.Header.Set({{printf "%q" .Header}}, v)
 {{- end}}
 			}
 {{- end}}
 		}
 {{- end}}
 {{- range .RequiredHeaders}}
-		req.Header.Set("{{.Name}}", "{{.Value}}")
+		req.Header.Set({{printf "%q" .Name}}, {{printf "%q" .Value}})
 {{- end}}
 		if c.Config != nil {
 			for k, v := range c.Config.Headers {
@@ -1615,7 +1615,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 		if queryPrinted {
 			sep = "&"
 		}
-		fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, "{{.Auth.TokenParamName}}", maskToken(authHeader))
+		fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, {{printf "%q" .Auth.TokenParamName}}, maskToken(authHeader))
 		queryPrinted = true
 	}
 {{- end}}
@@ -1627,7 +1627,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 		if queryPrinted {
 			sep = "&"
 		}
-		fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
+		fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, "{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
 		queryPrinted = true
 	}
 {{- end}}
@@ -1649,18 +1649,18 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 {{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
 	if authHeader != "" {
-		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{.Auth.TokenParamName}}", maskToken(authHeader))
+		fmt.Fprintf(os.Stderr, "  %s: %s\n", {{printf "%q" .Auth.TokenParamName}}, maskToken(authHeader))
 	}
 {{- end}}
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
 	if authHeader != "" {
 		// in:cookie auth ships on the Cookie header; preview it as such so the
 		// dry run matches the live wire format.
-		fmt.Fprintf(os.Stderr, "  Cookie: %s=%s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
+		fmt.Fprintf(os.Stderr, "  Cookie: %s=%s\n", "{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
 	}
 {{- else if not (and .Auth .Auth.In (eq .Auth.In "query"))}}
 	if authHeader != "" {
-		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", maskToken(authHeader))
+		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{if .Auth.Header}}{{oneline .Auth.Header}}{{else}}Authorization{{end}}", maskToken(authHeader))
 	}
 {{- end}}
 	fmt.Fprintf(os.Stderr, "\n(dry run - no request sent)\n")
@@ -1958,11 +1958,11 @@ func resolveClientCredentials(cfg *config.Config) (string, string) {
 	secret := cfg.ClientSecret
 {{- if $ccEnvVars}}
 	if id == "" {
-		id = os.Getenv("{{(index $ccEnvVars 0).Name}}")
+		id = os.Getenv({{printf "%q" (index $ccEnvVars 0).Name}})
 	}
 {{- if gt (len $ccEnvVars) 1}}
 	if secret == "" {
-		secret = os.Getenv("{{(index $ccEnvVars 1).Name}}")
+		secret = os.Getenv({{printf "%q" (index $ccEnvVars 1).Name}})
 	}
 {{- end}}
 {{- end}}
@@ -2006,7 +2006,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 		tokenURL = c.Config.TokenURL
 	}
 	if tokenURL == "" {
-		tokenURL = "{{.Auth.TokenURL}}"
+		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
 {{- end}}
 	if tokenURL == "" {
@@ -2081,7 +2081,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 
 	tokenURL := c.Config.TokenURL
 	if tokenURL == "" {
-		tokenURL = "{{.Auth.TokenURL}}"
+		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
 
 	params := url.Values{

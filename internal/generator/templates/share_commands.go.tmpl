@@ -169,8 +169,8 @@ Runs idempotently — an unchanged snapshot produces no commit.`,
 		},
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Local repo checkout path (default: runstate dir)")
-	cmd.Flags().StringVar(&remote, "remote", "{{.Share.DefaultRepo}}", "Git remote URL")
-	cmd.Flags().StringVar(&branch, "branch", "{{if .Share.DefaultBranch}}{{.Share.DefaultBranch}}{{else}}main{{end}}", "Git branch to push to")
+	cmd.Flags().StringVar(&remote, "remote", {{printf "%q" .Share.DefaultRepo}}, "Git remote URL")
+	cmd.Flags().StringVar(&branch, "branch", "{{if .Share.DefaultBranch}}{{oneline .Share.DefaultBranch}}{{else}}main{{end}}", "Git branch to push to")
 	cmd.Flags().StringVar(&message, "message", "", "Override the commit message")
 	return cmd
 }
@@ -223,8 +223,8 @@ cache.enabled is set in the spec.`,
 		},
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Local repo checkout path (default: runstate dir)")
-	cmd.Flags().StringVar(&remote, "remote", "{{.Share.DefaultRepo}}", "Git remote URL (required)")
-	cmd.Flags().StringVar(&branch, "branch", "{{if .Share.DefaultBranch}}{{.Share.DefaultBranch}}{{else}}main{{end}}", "Git branch to pull from")
+	cmd.Flags().StringVar(&remote, "remote", {{printf "%q" .Share.DefaultRepo}}, "Git remote URL (required)")
+	cmd.Flags().StringVar(&branch, "branch", "{{if .Share.DefaultBranch}}{{oneline .Share.DefaultBranch}}{{else}}main{{end}}", "Git branch to pull from")
 	return cmd
 }
 

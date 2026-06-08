@@ -204,6 +204,11 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 		return nil, fmt.Errorf("validating parsed SDL: %w", err)
 	}
 
+	// Data-layer Go-code-injection guard (see spec.GuardStructuralStrings).
+	if err := spec.GuardStructuralStrings(apiSpec); err != nil {
+		return nil, err
+	}
+
 	return apiSpec, nil
 }
 

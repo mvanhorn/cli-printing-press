@@ -31,11 +31,11 @@ import (
 )
 
 const (
-	sessionBootstrapURL  = "{{.Auth.BootstrapURL}}"
-	sessionTokenURL      = "{{.Auth.SessionTokenURL}}"
-	sessionDataBaseURL   = "{{.BaseURL}}"
-	sessionTokenFormat   = "{{if .Auth.TokenFormat}}{{.Auth.TokenFormat}}{{else}}text{{end}}"
-	sessionTokenJSONPath = "{{.Auth.TokenJSONPath}}"
+	sessionBootstrapURL  = {{printf "%q" .Auth.BootstrapURL}}
+	sessionTokenURL      = {{printf "%q" .Auth.SessionTokenURL}}
+	sessionDataBaseURL   = {{printf "%q" .BaseURL}}
+	sessionTokenFormat   = "{{if .Auth.TokenFormat}}{{oneline .Auth.TokenFormat}}{{else}}text{{end}}"
+	sessionTokenJSONPath = {{printf "%q" .Auth.TokenJSONPath}}
 	sessionUserAgent     = "Mozilla/5.0 (compatible; {{.Name}}-pp-cli)"
 )
 

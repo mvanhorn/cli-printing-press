@@ -56,7 +56,7 @@ const maxShardBytes int64 = 40 * 1024 * 1024
 // denylist so tokens and per-user state never travel in a shared repo.
 var SnapshotTables = []string{
 {{- range .Share.SnapshotTables}}
-	"{{.}}",
+	{{printf "%q" .}},
 {{- end}}
 }
 

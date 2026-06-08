@@ -363,10 +363,18 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"enumDescriptionHint": func(values []string) string {
 			// Appends " (one of: a, b, c)" to a flag description when the param
 			// has enum constraints. Returns empty string when the slice is empty.
+			// Enum values are spec-derived and land inside a Go double-quoted
+			// string literal, so each is run through OneLine (strips quotes,
+			// backslashes, newlines) so a hostile value cannot break out of the
+			// literal. Identity on benign values, so generated output is stable.
 			if len(values) == 0 {
 				return ""
 			}
-			return " (one of: " + strings.Join(values, ", ") + ")"
+			safe := make([]string, len(values))
+			for i, v := range values {
+				safe[i] = naming.OneLine(v)
+			}
+			return " (one of: " + strings.Join(safe, ", ") + ")"
 		},
 		"jsonStringParam":              isJSONStringParam,
 		"jsonEnumSuggestion":           jsonEnumSuggestion,

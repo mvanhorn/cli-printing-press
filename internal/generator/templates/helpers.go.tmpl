@@ -137,7 +137,7 @@ type Persona string
 
 const (
 {{- range .Roles}}
-	Persona{{pascal .}} Persona = "{{.}}"
+	Persona{{pascal .}} Persona = {{printf "%q" .}}
 {{- end}}
 )
 
@@ -736,9 +736,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			"\n      Get a key at: {{oneline .Auth.KeyURL}}"+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			"\n      See API docs: {{oneline .WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -755,9 +755,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			"\n      Get a key at: {{oneline .Auth.KeyURL}}"+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			"\n      See API docs: {{oneline .WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -771,9 +771,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			"\n      Get a key at: {{oneline .Auth.KeyURL}}"+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			"\n      See API docs: {{oneline .WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -787,9 +787,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			"\n      Get a key at: {{oneline .Auth.KeyURL}}"+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			"\n      See API docs: {{oneline .WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -803,9 +803,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			"\n      Get a key at: {{oneline .Auth.KeyURL}}"+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			"\n      See API docs: {{oneline .WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -821,9 +821,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			"\n      Get a key at: {{oneline .Auth.KeyURL}}"+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			"\n      See API docs: {{oneline .WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -841,9 +841,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			"\n      Get a key at: {{oneline .Auth.KeyURL}}"+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			"\n      See API docs: {{oneline .WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+

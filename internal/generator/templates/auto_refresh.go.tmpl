@@ -22,15 +22,15 @@ import (
 // command-path coverage declared in spec.Cache.Commands.
 var readCommandResources = map[string][]string{
 {{- range .SyncableResources}}
-	"{{$.Name}}-pp-cli {{.Name}}":        {"{{.Name}}"},
-	"{{$.Name}}-pp-cli {{.Name}} list":   {"{{.Name}}"},
-	"{{$.Name}}-pp-cli {{.Name}} get":    {"{{.Name}}"},
-	"{{$.Name}}-pp-cli {{.Name}} search": {"{{.Name}}"},
+	"{{$.Name}}-pp-cli {{.Name}}":        { {{printf "%q" .Name}} },
+	"{{$.Name}}-pp-cli {{.Name}} list":   { {{printf "%q" .Name}} },
+	"{{$.Name}}-pp-cli {{.Name}} get":    { {{printf "%q" .Name}} },
+	"{{$.Name}}-pp-cli {{.Name}} search": { {{printf "%q" .Name}} },
 {{- end}}
 {{- range .Cache.Commands}}
 	"{{$.Name}}-pp-cli {{.Name}}": {
 {{- range .Resources}}
-		"{{.}}",
+		{{printf "%q" .}},
 {{- end}}
 	},
 {{- end}}
@@ -43,12 +43,12 @@ func cachePolicy() cliutil.Policy {
 	staleAfter := {{staleAfterExpr .Cache.StaleAfter}}
 	perResource := map[string]time.Duration{}
 {{- range $resource, $dur := .Cache.Resources}}
-	if d, err := time.ParseDuration("{{$dur}}"); err == nil {
-		perResource["{{$resource}}"] = d
+	if d, err := time.ParseDuration({{printf "%q" $dur}}); err == nil {
+		perResource[{{printf "%q" $resource}}] = d
 	}
 {{- end}}
 {{- if .Cache.EnvOptOut}}
-	envOptOut := "{{.Cache.EnvOptOut}}"
+	envOptOut := {{printf "%q" .Cache.EnvOptOut}}
 {{- else}}
 	// Default env opt-out name is the CLI name normalized with the same
 	// ASCII-safe convention used in generated docs and config env vars.
@@ -67,7 +67,7 @@ func cachePolicy() cliutil.Policy {
 // instead of blocking the agent or user indefinitely.
 func refreshTimeout() time.Duration {
 {{- if .Cache.RefreshTimeout}}
-	if d, err := time.ParseDuration("{{.Cache.RefreshTimeout}}"); err == nil {
+	if d, err := time.ParseDuration({{printf "%q" .Cache.RefreshTimeout}}); err == nil {
 		return d
 	}
 {{- end}}
