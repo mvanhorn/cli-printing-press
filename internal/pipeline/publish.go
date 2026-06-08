@@ -261,6 +261,9 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			if existing.APIVersion != "" {
 				m.APIVersion = existing.APIVersion
 			}
+			if existing.SpecKind != "" {
+				m.SpecKind = existing.SpecKind
+			}
 			m.MCPBinary = existing.MCPBinary
 			m.MCPToolCount = existing.MCPToolCount
 			m.MCPPublicToolCount = existing.MCPPublicToolCount

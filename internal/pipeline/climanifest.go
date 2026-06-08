@@ -114,6 +114,7 @@ type CLIManifest struct {
 	SpecURL            string            `json:"spec_url,omitempty"`
 	SpecPath           string            `json:"spec_path,omitempty"`
 	SpecFormat         string            `json:"spec_format,omitempty"`
+	SpecKind           string            `json:"spec_kind,omitempty"`
 	SpecSource         string            `json:"spec_source,omitempty"`
 	SpecChecksum       string            `json:"spec_checksum,omitempty"`
 	RunID              string            `json:"run_id,omitempty"`
@@ -188,6 +189,12 @@ func (m CLIManifest) IsLocalDatastore() bool {
 		return true
 	}
 	return strings.Contains(source, "local") && strings.Contains(source, "sqlite")
+}
+
+// IsSyntheticSpec reports whether the manifest came from a spec marked
+// `kind: synthetic`, which relaxes gates that assume HTTP API reachability.
+func (m CLIManifest) IsSyntheticSpec() bool {
+	return strings.EqualFold(strings.TrimSpace(m.SpecKind), spec.KindSynthetic)
 }
 
 // NovelFeatureManifest is a compact representation of a transcendence feature
@@ -669,6 +676,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	if parsed == nil {
 		return
 	}
+	m.SpecKind = parsed.Kind
 	total, public := parsed.CountMCPTools()
 	mcpName := m.APIName
 	if mcpName == "" {
