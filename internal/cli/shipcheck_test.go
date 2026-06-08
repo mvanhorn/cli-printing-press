@@ -216,8 +216,8 @@ func TestShipcheck_AllLegsPass(t *testing.T) {
 		t.Fatalf("expected %d leg invocations; got %d: %v", len(shipcheckLegs), len(invocations), invocations)
 	}
 
-	// Confirm canonical order: verify, validate-narrative, dogfood, workflow-verify, verify-skill, scorecard.
-	wantOrder := []string{"verify", "validate-narrative", "dogfood", "workflow-verify", "verify-skill", "scorecard"}
+	// Confirm canonical order: verify, validate-narrative, dogfood, workflow-verify, apify-audit, verify-skill, scorecard.
+	wantOrder := []string{"verify", "validate-narrative", "dogfood", "workflow-verify", "apify-audit", "verify-skill", "scorecard"}
 	for i, want := range wantOrder {
 		// argv[0] is the stub binary path; argv[1] is the leg name.
 		if len(invocations[i]) < 2 {
@@ -230,7 +230,7 @@ func TestShipcheck_AllLegsPass(t *testing.T) {
 }
 
 // TestShipcheck_OneLegFails: verify-skill exits 1, umbrella returns
-// ExitError with code 1; all six legs still ran (no fail-fast).
+// ExitError with code 1; all legs still ran (no fail-fast).
 func TestShipcheck_OneLegFails(t *testing.T) {
 	h := newShipcheckHarness(t)
 	t.Setenv("STUB_EXIT_VERIFY_SKILL", "1")
@@ -352,6 +352,11 @@ func TestShipcheck_PassesSpecAndResearchDir(t *testing.T) {
 	}
 	if !argvHas(scorecardArgs, "--research-dir") || !argvHas(scorecardArgs, researchDir) {
 		t.Errorf("scorecard argv missing --research-dir: %v", scorecardArgs)
+	}
+
+	apifyArgs := findInvocation(invocations, "apify-audit")
+	if !argvHas(apifyArgs, "--research-dir") || !argvHas(apifyArgs, researchDir) {
+		t.Errorf("apify-audit argv missing --research-dir: %v", apifyArgs)
 	}
 
 	// workflow-verify, verify-skill, and validate-narrative don't take --spec or --research-dir;
@@ -556,7 +561,7 @@ func TestShipcheck_PassesAuthFlagsToVerify(t *testing.T) {
 	}
 
 	// Other legs must NOT receive these flags — they don't accept them.
-	for _, leg := range []string{"dogfood", "workflow-verify", "verify-skill", "scorecard"} {
+	for _, leg := range []string{"dogfood", "workflow-verify", "apify-audit", "verify-skill", "scorecard"} {
 		args := findInvocation(invocations, leg)
 		if argvHas(args, "--api-key") {
 			t.Errorf("%s argv should not include --api-key; got %v", leg, args)
@@ -581,7 +586,7 @@ func TestShipcheck_StrictPassesToVerifySkill(t *testing.T) {
 	if !argvHas(vsArgs, "--strict") {
 		t.Errorf("verify-skill argv missing --strict: %v", vsArgs)
 	}
-	for _, leg := range []string{"dogfood", "verify", "workflow-verify", "scorecard"} {
+	for _, leg := range []string{"dogfood", "verify", "workflow-verify", "apify-audit", "scorecard"} {
 		args := findInvocation(invocations, leg)
 		if argvHas(args, "--strict") {
 			t.Errorf("%s argv should not include --strict; got %v", leg, args)
