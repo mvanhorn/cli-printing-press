@@ -176,6 +176,18 @@ Every commit and PR title must include one of the allowed scopes. GitHub squash-
 - If unsure whether a PR is exempt, keep the template.
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the human-facing contributor guide and AI / automation disclosure definitions.
 
+## Automated code review with Greptile
+
+Every PR gets automated Greptile review alongside CI. Resolve every Greptile finding before calling a PR ready: P0 and P1 comments block merge, and P2 comments need either a fix or a concrete reply explaining why the deferral is intentional. Do not use the score alone as the gate.
+
+Greptile feedback is not limited to GitHub review threads. It also edits top-level PR summary comments, and those summaries can contain actionable issue blocks, including `Comments Outside Diff`, even when the thread list has zero unresolved comments. Before saying a PR is ready, run the repo-owned review-state helper:
+
+```bash
+python3 .github/scripts/pr-review-state/greptile_feedback.py <PR_NUMBER>
+```
+
+`PR_NUMBER` is the GitHub pull request number, for example `2492` - not a branch name, URL, issue number, or commit SHA. The helper defaults to `mvanhorn/cli-printing-press` and exits non-zero until all of these are true: Greptile Review passes, the `All conversations resolved` check passes, there are no unresolved non-outdated review threads, the latest `greptile-apps` top-level comment reviewed the current PR head SHA, and that latest comment has no actionable markers such as `Issue 1 of`, `Fix the following`, `Comments Outside Diff`, `remaining open item`, or `Safe to merge after fixing/reviewing`.
+
 ## Versioning
 Releases are automated by release-please. Never manually edit version numbers.
 - Normal feature/fix PRs land through the Mergify queue: add the `ready-to-merge` label when the PR is ready to merge, and let Mergify rebase/test/merge it. Do not use the GitHub merge button for normal PRs once `Mergify Merge Protections` is required on `main`.
