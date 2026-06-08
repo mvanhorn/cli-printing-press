@@ -118,7 +118,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// 1. Load spec for command classification
 	var spec *openAPISpec
 	if cfg.SpecPath != "" {
-		loaded, err := loadDogfoodOpenAPISpec(cfg.SpecPath)
+		loaded, err := loadDogfoodOpenAPISpec(cfg.SpecPath, "")
 		if err != nil {
 			return nil, fmt.Errorf("loading spec: %w", err)
 		}
