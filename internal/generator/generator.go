@@ -285,6 +285,13 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authAgentEnvVars":                   authAgentEnvVars,
 		"hasAuthEnvVarKind":                  hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":                isRequestAuthEnvVar,
+		"requiredRequestAuthEnvVars":         requiredRequestAuthEnvVars,
+		"optionalRequestAuthEnvVars":         optionalRequestAuthEnvVars,
+		"requiredRequestAuthEnvVarCount":     requiredRequestAuthEnvVarCount,
+		"requestAuthEnvVarCount":             requestAuthEnvVarCount,
+		"authSetTokenAvailable":              authSetTokenAvailable,
+		"authErrorCheckHint":                 authErrorCheckHint,
+		"authSetupHint":                      authSetupHint,
 		"authEnvPlaceholder":                 authEnvPlaceholder,
 		"authEnvPlaceholderByName":           authEnvPlaceholderByName,
 		"authEnvHintComment":                 authEnvHintComment,
@@ -1353,6 +1360,8 @@ func authEnvPlaceholderByName(envVarName string) string {
 		return "us-east-1"
 	case placeholder == "username" || strings.HasSuffix(placeholder, "_username"):
 		return "your-username"
+	case placeholder == "password" || strings.HasSuffix(placeholder, "_password"):
+		return "your-password"
 	case placeholder == "user_agent" || strings.HasSuffix(placeholder, "_user_agent"):
 		return "you@example.com (Your Tool Name)"
 	case placeholder == "cookies" || strings.HasSuffix(placeholder, "_cookies"):
@@ -1360,6 +1369,130 @@ func authEnvPlaceholderByName(envVarName string) string {
 	default:
 		return "your-token-here"
 	}
+}
+
+func requestAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	auth.NormalizeEnvVarSpecs("")
+	out := make([]spec.AuthEnvVar, 0, len(auth.EnvVarSpecs))
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.IsRequestCredential() {
+			out = append(out, envVar)
+		}
+	}
+	return out
+}
+
+func requiredRequestAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	envVars := requestAuthEnvVars(auth)
+	out := make([]spec.AuthEnvVar, 0, len(envVars))
+	for _, envVar := range envVars {
+		if envVar.Required {
+			out = append(out, envVar)
+		}
+	}
+	return out
+}
+
+func optionalRequestAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	envVars := requestAuthEnvVars(auth)
+	out := make([]spec.AuthEnvVar, 0, len(envVars))
+	for _, envVar := range envVars {
+		if !envVar.Required {
+			out = append(out, envVar)
+		}
+	}
+	return out
+}
+
+func requiredRequestAuthEnvVarCount(auth spec.AuthConfig) int {
+	return len(requiredRequestAuthEnvVars(auth))
+}
+
+func requestAuthEnvVarCount(auth spec.AuthConfig) int {
+	return len(requestAuthEnvVars(auth))
+}
+
+func authSetTokenAvailable(auth spec.AuthConfig) bool {
+	return authSetTokenAvailableForRequiredCount(auth, requiredRequestAuthEnvVarCount(auth))
+}
+
+func authSetTokenAvailableForRequiredCount(auth spec.AuthConfig, requiredCount int) bool {
+	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+		return false
+	}
+	switch auth.Type {
+	case "api_key", "bearer_token":
+		return requiredCount == 1
+	default:
+		return false
+	}
+}
+
+func authErrorCheckHint(auth spec.AuthConfig) string {
+	switch auth.Type {
+	case "bearer_token", "oauth2", "oauth2_refresh":
+		return "check your token."
+	case "api_key":
+		if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+			return "check your Basic credentials."
+		}
+		return "check your API key."
+	default:
+		return "check your API credentials."
+	}
+}
+
+func authSetupHint(auth spec.AuthConfig, cliName string) string {
+	switch auth.Type {
+	case "", "none":
+		return ""
+	case "cookie", "composed":
+		return fmt.Sprintf("Run '%s-pp-cli auth login --chrome' to refresh browser-session credentials.", cliName)
+	case "oauth2":
+		return fmt.Sprintf("Run '%s-pp-cli auth login' to re-authenticate.", cliName)
+	}
+
+	envVars := requiredRequestAuthEnvVars(auth)
+	if len(envVars) == 0 && auth.IsAuthEnvVarORCase() {
+		envVars = requestAuthEnvVars(auth)
+		exports := make([]string, 0, len(envVars))
+		for _, envVar := range envVars {
+			exports = append(exports, fmt.Sprintf(`export %s="%s"`, envVar.Name, authEnvPlaceholder(envVar)))
+		}
+		if len(exports) > 0 {
+			return "Set one of: " + strings.Join(exports, " or ")
+		}
+	}
+	if len(envVars) == 0 {
+		return fmt.Sprintf("Run '%s-pp-cli auth setup' for credential setup steps.", cliName)
+	}
+
+	exports := make([]string, 0, len(envVars))
+	for _, envVar := range envVars {
+		exports = append(exports, fmt.Sprintf(`%s="%s"`, envVar.Name, authEnvPlaceholder(envVar)))
+	}
+
+	if len(envVars) == 1 {
+		switch auth.Type {
+		case "bearer_token", "oauth2_refresh":
+			if authSetTokenAvailableForRequiredCount(auth, len(envVars)) {
+				return fmt.Sprintf("Set it with: %s-pp-cli auth set-token <token> or export %s", cliName, exports[0])
+			}
+			return fmt.Sprintf("Set it with: export %s", exports[0])
+		case "api_key":
+			if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+				return fmt.Sprintf("Set the Basic credential with: export %s", exports[0])
+			}
+			return fmt.Sprintf("Set your API key with: export %s", exports[0])
+		default:
+			return fmt.Sprintf("Set credentials with: export %s", exports[0])
+		}
+	}
+
+	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+		return "Set Basic credentials with: export " + strings.Join(exports, " ")
+	}
+	return "Set credentials with: export " + strings.Join(exports, " ")
 }
 
 func authEnvDomainVendor(envNameUpper, placeholder string) string {

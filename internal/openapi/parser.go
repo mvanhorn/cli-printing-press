@@ -547,6 +547,9 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if websiteURL == "" && doc.ExternalDocs != nil && doc.ExternalDocs.URL != "" {
 		websiteURL = doc.ExternalDocs.URL
 	}
+	if isPlaceholderURL(websiteURL) {
+		websiteURL = ""
+	}
 
 	// Extract x-proxy-routes extension for proxy-envelope client pattern
 	var proxyRoutes map[string]string
@@ -1560,11 +1563,21 @@ func firstHTTPSURL(s string) string {
 	}
 	m := httpsURLPattern.FindString(s)
 	m = strings.TrimRight(m, ".,;:!?)")
-	if m == "" || strings.ContainsAny(m, "<>{}[]") {
+	if m == "" || strings.ContainsAny(m, "<>{}[]") || isPlaceholderURL(m) {
 		// Reject templated placeholders (e.g. https://<your-dashboard>/...).
 		return ""
 	}
 	return m
+}
+
+func isPlaceholderURL(u string) bool {
+	normalized := strings.TrimRight(strings.ToLower(strings.TrimSpace(u)), "/")
+	switch normalized {
+	case "https://en.wikipedia.org/wiki/hateoas":
+		return true
+	default:
+		return false
+	}
 }
 
 // firstAuthRelatedURL returns the first HTTPS URL in s, but only when s also
