@@ -5069,6 +5069,29 @@ paths:
 `,
 			expected: "",
 		},
+		{
+			name: "HATEOAS placeholder URL in scheme description is rejected",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+      description: "Get your API key at https://en.wikipedia.org/wiki/HATEOAS"
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "",
+		},
 	}
 
 	for _, tc := range tests {
@@ -5103,6 +5126,11 @@ func TestFirstHTTPSURLRejectsPlaceholders(t *testing.T) {
 			in:   "https://api.example.com/v1/{tenant}/keys",
 			want: "",
 		},
+		{
+			name: "HATEOAS placeholder",
+			in:   "Get your key at https://en.wikipedia.org/wiki/HATEOAS",
+			want: "",
+		},
 	}
 
 	for _, tc := range tests {
@@ -5111,6 +5139,37 @@ func TestFirstHTTPSURLRejectsPlaceholders(t *testing.T) {
 			assert.Equal(t, tc.want, firstHTTPSURL(tc.in))
 		})
 	}
+}
+
+func TestOpenAPIWebsiteURLRejectsHATEOASPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+externalDocs:
+  url: https://en.wikipedia.org/wiki/HATEOAS
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+paths:
+  /ping:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, parsed.WebsiteURL)
+	assert.Empty(t, parsed.Auth.KeyURL)
 }
 
 func TestOpenAPIAuthEnvVarsPopulateRichDefaults(t *testing.T) {
