@@ -330,7 +330,7 @@ Read `.printing-press.json` from the resolved CLI directory.
 3. If neither provides a category, present the full list via AskUserQuestion:
    - developer-tools, monitoring, cloud, project-management
    - productivity, social-and-messaging, sales-and-crm, marketing
-   - payments, auth, commerce, ai, media-and-entertainment, devices, other
+   - payments, auth, commerce, ai, media-and-entertainment, devices, health, other
 
 ## Step 4: Validate
 
