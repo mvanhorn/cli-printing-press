@@ -226,17 +226,17 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
-					"\n      Set your API key: export MCP_CLOUDFLARE_API_KEY=<your-key>" +
+					"\n      Set your API key with: export MCP_CLOUDFLARE_API_KEY=\"your-token-here\"" +
 					"\n      Run 'mcp-cloudflare-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 401"):
 				return mcplib.NewToolResultError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: check your API key." +
-					"\n      Set it with: export MCP_CLOUDFLARE_API_KEY=<your-key>" +
+					"\n      Set your API key with: export MCP_CLOUDFLARE_API_KEY=\"your-token-here\"" +
 					"\n      Run 'mcp-cloudflare-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 403"):
 				return mcplib.NewToolResultError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
-					"\nhint: your credentials are valid but lack access to this resource." +
-					"\n      Set it with: export MCP_CLOUDFLARE_API_KEY=<your-key>" +
+					"\nhint: your credentials are valid but lack access to this resource. Check that they have the required permissions and match the API's expected auth scheme." +
+					"\n      Set your API key with: export MCP_CLOUDFLARE_API_KEY=\"your-token-here\"" +
 					"\n      Run 'mcp-cloudflare-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {

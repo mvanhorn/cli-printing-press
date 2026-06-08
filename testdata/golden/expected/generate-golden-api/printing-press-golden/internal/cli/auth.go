@@ -39,7 +39,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Then set:")
-			fmt.Fprintln(w, "  export PRINTING_PRESS_GOLDEN_API_KEY=\"<your-token>\"")
+			fmt.Fprintln(w, "  export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\"")
 			fmt.Fprintln(w, "  printing-press-golden-pp-cli auth set-token <token>")
 			if !launch {
 				return nil
