@@ -59,6 +59,7 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 		Short: "Sync API data to local SQLite for offline search and analysis",
 		Long: `Sync data from the API into a local SQLite database. Supports resumable
 incremental sync (only fetches new data since last sync) and full resync.
+Once synced, use the 'search' command for instant full-text search.
 
 Exit codes & warnings:
   Resources the API denies access to (HTTP 403, or HTTP 400 with an

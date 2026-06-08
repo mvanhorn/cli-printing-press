@@ -653,14 +653,14 @@ func (p *APIProfile) ToVisionaryPlan(apiName string) *vision.VisionaryPlan {
 	plan.Architecture = append(plan.Architecture,
 		vision.ArchitectureDecision{
 			Area:               "persistence",
-			NeedLevel:          lowHigh(p.HighVolume || p.OfflineValuable),
+			NeedLevel:          lowHigh(p.HighVolume || p.OfflineValuable || p.hasSyncableStoreResources()),
 			Decision:           "local store",
-			Rationale:          "Read-heavy or high-volume APIs benefit from local persistence for repeat access and offline workflows.",
+			Rationale:          "Read-heavy, high-volume, or profiler-confirmed syncable APIs benefit from local persistence for repeat access and offline workflows.",
 			ImplementationHint: "Use SQLite-backed storage and cache frequently accessed resources.",
 		},
 		vision.ArchitectureDecision{
 			Area:               "search",
-			NeedLevel:          lowHigh(p.NeedsSearch),
+			NeedLevel:          lowHigh(p.NeedsSearch || p.hasSyncableStoreResources()),
 			Decision:           "full-text indexing",
 			Rationale:          "Multi-resource list-heavy APIs need a fast local search surface when no dedicated endpoint exists.",
 			ImplementationHint: "Index string fields in FTS5 tables keyed by resource type.",
@@ -689,13 +689,14 @@ func (p *APIProfile) RecommendedFeatures() []string {
 	}
 
 	var features []string
-	if p.HighVolume {
+	hasSyncableStoreResources := p.hasSyncableStoreResources()
+	if p.HighVolume || hasSyncableStoreResources {
 		features = append(features, "sync")
 	}
-	if p.NeedsSearch {
+	if p.NeedsSearch || hasSyncableStoreResources {
 		features = append(features, "search")
 	}
-	if p.HighVolume || p.NeedsSearch || p.HasDependencies {
+	if p.HighVolume || p.NeedsSearch || p.HasDependencies || hasSyncableStoreResources {
 		features = append(features, "store")
 	}
 
@@ -709,6 +710,13 @@ func (p *APIProfile) RecommendedFeatures() []string {
 	}
 
 	return features
+}
+
+func (p *APIProfile) hasSyncableStoreResources() bool {
+	if p == nil {
+		return false
+	}
+	return len(p.SyncableResources) > 0 || len(p.DependentSyncResources) > 0
 }
 
 // SyncableResourceNames returns the names of the syncable resources.
