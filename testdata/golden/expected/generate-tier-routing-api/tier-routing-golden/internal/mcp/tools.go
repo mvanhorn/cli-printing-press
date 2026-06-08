@@ -251,17 +251,17 @@ func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResp
 			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
-					"\n      Set your API key: export TIER_GLOBAL_TOKEN=<your-key>" +
+					"\n      Set it with: tier-routing-golden-pp-cli auth set-token <token> or export TIER_GLOBAL_TOKEN=\"your-token-here\"" +
 					"\n      Run 'tier-routing-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 401"):
 				return mcplib.NewToolResultError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: check your token." +
-					"\n      Set it with: export TIER_GLOBAL_TOKEN=<your-key>" +
+					"\n      Set it with: tier-routing-golden-pp-cli auth set-token <token> or export TIER_GLOBAL_TOKEN=\"your-token-here\"" +
 					"\n      Run 'tier-routing-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 403"):
 				return mcplib.NewToolResultError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
-					"\nhint: your credentials are valid but lack access to this resource." +
-					"\n      Set it with: export TIER_GLOBAL_TOKEN=<your-key>" +
+					"\nhint: your credentials are valid but lack access to this resource. Check that they have the required permissions and match the API's expected auth scheme." +
+					"\n      Set it with: tier-routing-golden-pp-cli auth set-token <token> or export TIER_GLOBAL_TOKEN=\"your-token-here\"" +
 					"\n      Run 'tier-routing-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {

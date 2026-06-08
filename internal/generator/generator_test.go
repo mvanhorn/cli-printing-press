@@ -2202,15 +2202,16 @@ func TestGenerate403HintsFollowAuthMode(t *testing.T) {
 			helpers: snippetCheck{
 				want: []string{
 					"Your credentials are valid but lack access",
-					"Check that your API key has the required permissions",
-					"Set it with: export MYAPI_TOKEN=<your-key>",
+					"Check that your credentials have the required permissions and match the API's expected auth scheme.",
+					`Set your API key with: export MYAPI_TOKEN=\"your-token-here\"`,
 				},
 				reject: []string{"This API is configured without credentials"},
 			},
 			mcp: snippetCheck{
 				want: []string{
 					"your credentials are valid but lack access",
-					"Set it with: export MYAPI_TOKEN=<your-key>",
+					"match the API's expected auth scheme",
+					`Set your API key with: export MYAPI_TOKEN=\"your-token-here\"`,
 				},
 				reject: []string{"this API is configured without credentials"},
 			},
@@ -9633,6 +9634,84 @@ func TestGeneratedHelpers_BearerTokenAuth(t *testing.T) {
 	assert.Contains(t, content, "cliutil.LooksLikeAuthError")
 }
 
+func TestGeneratedAuthHints_BasicCredentialsAreSchemeAware(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "basicauth",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "Authorization",
+			Format: "Basic {username}:{password}",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "BASICAUTH_USERNAME", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+				{Name: "BASICAUTH_PASSWORD", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/basicauth-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "basicauth-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	helpers := string(helpersGo)
+	assert.Contains(t, helpers, `Set Basic credentials with: export BASICAUTH_USERNAME=\"your-username\" BASICAUTH_PASSWORD=\"your-password\"`)
+	assert.Contains(t, helpers, "check your Basic credentials")
+	assert.NotContains(t, helpers, "hint: check your API key")
+	assert.NotContains(t, helpers, "Set your API key: export BASICAUTH_USERNAME=<your-key>")
+	assert.Contains(t, helpers, `Response: "+cliutil.SanitizeErrorBody(msg)`)
+
+	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcp := string(mcpGo)
+	assert.Contains(t, mcp, `Set Basic credentials with: export BASICAUTH_USERNAME=\"your-username\" BASICAUTH_PASSWORD=\"your-password\"`)
+	assert.Contains(t, mcp, "check your Basic credentials")
+	assert.NotContains(t, mcp, "hint: check your API key")
+	assert.NotContains(t, mcp, "Set your API key: export BASICAUTH_USERNAME=<your-key>")
+	assert.Contains(t, mcp, `"authentication failed: " + cliutil.SanitizeErrorBody(msg)`)
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctor := string(doctorGo)
+	assert.Contains(t, doctor, `report["auth_hint"] = "Set Basic credentials with: export BASICAUTH_USERNAME=\"your-username\" BASICAUTH_PASSWORD=\"your-password\""`)
+	assert.NotContains(t, doctor, `report["auth_hint"] = "export BASICAUTH_USERNAME=<your-key>"`)
+
+	authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	auth := string(authGo)
+	assert.Contains(t, auth, `export BASICAUTH_USERNAME=\"your-username\"`)
+	assert.Contains(t, auth, `export BASICAUTH_PASSWORD=\"your-password\"`)
+	setupStart := strings.Index(auth, "func newAuthSetupCmd")
+	require.NotEqual(t, -1, setupStart)
+	setupEnd := strings.Index(auth[setupStart:], "func newAuthStatusCmd")
+	require.NotEqual(t, -1, setupEnd)
+	assert.NotContains(t, auth[setupStart:setupStart+setupEnd], `basicauth-pp-cli auth set-token <token>`)
+	statusStart := strings.Index(auth, "func newAuthStatusCmd")
+	require.NotEqual(t, -1, statusStart)
+	statusEnd := strings.Index(auth[statusStart:], "func newAuthSetTokenCmd")
+	require.NotEqual(t, -1, statusEnd)
+	statusBlock := auth[statusStart : statusStart+statusEnd]
+	assert.Contains(t, statusBlock, "Set your credentials:")
+	assert.NotContains(t, statusBlock, `basicauth-pp-cli auth set-token <token>`)
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratedHelpers_NoAuth_No400Branch(t *testing.T) {
 	t.Parallel()
 
@@ -9790,7 +9869,7 @@ func TestGeneratedDoctor_AuthHintsWithKeyURL(t *testing.T) {
 	content := string(doctorGo)
 
 	// Should contain the env var hint
-	assert.Contains(t, content, `export STEAM_API_KEY=<your-key>`)
+	assert.Contains(t, content, `Set your API key with: export STEAM_API_KEY=\"your-token-here\"`)
 	// Should contain the key URL
 	assert.Contains(t, content, `https://steamcommunity.com/dev/apikey`)
 }
@@ -9832,7 +9911,7 @@ func TestGeneratedDoctor_AuthHintsWithoutKeyURL(t *testing.T) {
 	content := string(doctorGo)
 
 	// Should contain the env var hint
-	assert.Contains(t, content, `export NOURL_API_KEY=<your-key>`)
+	assert.Contains(t, content, `Set your API key with: export NOURL_API_KEY=\"your-token-here\"`)
 	// Should NOT contain any key URL line
 	assert.NotContains(t, content, "auth_key_url")
 }
