@@ -96,6 +96,7 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newPublishCmd())
 	rootCmd.AddCommand(newPolishCmd())
 	rootCmd.AddCommand(newWorkflowVerifyCmd())
+	rootCmd.AddCommand(newApifyActorAuditCmd())
 	rootCmd.AddCommand(newShipcheckCmd())
 	rootCmd.AddCommand(newLockCmd())
 	rootCmd.AddCommand(newMCPAuditCmd())

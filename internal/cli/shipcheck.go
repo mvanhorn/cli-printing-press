@@ -17,7 +17,7 @@ import (
 )
 
 // shipcheck is the canonical Phase 4 verification umbrella. It runs each
-// of the six legs as a subprocess of the same printing-press binary,
+// leg as a subprocess of the same printing-press binary,
 // aggregates exit codes, and prints a per-leg summary. Legs remain
 // callable standalone — this command is purely additive orchestration.
 //
@@ -67,7 +67,7 @@ type shipcheckLeg struct {
 	args func(*shipcheckOpts) []string
 }
 
-// shipcheckLegs enumerates the six legs in canonical execution order.
+// shipcheckLegs enumerates the legs in canonical execution order.
 // Order matters: verify builds the binary; validate-narrative checks
 // research.json command paths against the binary BEFORE dogfood synthesizes
 // README/SKILL from those commands.
@@ -122,6 +122,16 @@ var shipcheckLegs = []shipcheckLeg{
 		name: "workflow-verify",
 		args: func(o *shipcheckOpts) []string {
 			return []string{"workflow-verify", "--dir", o.dir}
+		},
+	},
+	{
+		name: "apify-audit",
+		args: func(o *shipcheckOpts) []string {
+			a := []string{"apify-audit", "--dir", o.dir}
+			if o.researchDir != "" {
+				a = append(a, "--research-dir", o.researchDir)
+			}
+			return a
 		},
 	},
 	{
@@ -410,7 +420,7 @@ func newShipcheckCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "shipcheck",
-		Short: "Run all six verification legs (verify, validate-narrative, dogfood, workflow-verify, verify-skill, scorecard) as one canonical Phase 4 sweep",
+		Short: "Run all verification legs as one canonical Phase 4 sweep",
 		Long: `shipcheck runs every Phase 4 verification leg in sequence and aggregates their
 exit codes into a single verdict. It is the canonical local invocation that
 matches what the public-library CI runs.
@@ -420,6 +430,7 @@ Legs (in canonical order):
   validate-narrative — README/SKILL narrative commands against the built CLI
   dogfood          — structural validation against the source spec
   workflow-verify  — primary workflow end-to-end against the verification manifest
+  apify-audit      — Apify actor reachability checks for actor-backed CLIs
   verify-skill     — SKILL.md flag/positional/command consistency with the shipped CLI
   scorecard        — Steinberger quality bar (with --live-check sampled output probes)
 
