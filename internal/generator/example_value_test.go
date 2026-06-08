@@ -132,3 +132,26 @@ func TestExampleValueEnumWinsOverNameHeuristics(t *testing.T) {
 		})
 	}
 }
+
+func TestExampleValuePrefersSchemaHintsBeforeGenericFallback(t *testing.T) {
+	tests := []struct {
+		name  string
+		param spec.Param
+		want  string
+	}{
+		{"explicit example wins", spec.Param{Name: "status", Type: "string", Example: "archived", Enum: []string{"active"}}, "archived"},
+		{"array example picks first item", spec.Param{Name: "part", Type: "array", Example: []any{"snippet"}}, "snippet"},
+		{"enum wins over default", spec.Param{Name: "status", Type: "string", Enum: []string{"active"}, Default: "archived"}, "active"},
+		{"scalar default falls through for non-dispatch params", spec.Param{Name: "query", Type: "string", Default: "recent"}, "example-value"},
+		{"array default picks first item", spec.Param{Name: "part", Type: "array", Default: []any{"snippet"}}, "snippet"},
+		{"description eg token beats generic fallback", spec.Param{Name: "app", Type: "string", Description: "App name, e.g. INSTANTLY, SMARTLEAD"}, "INSTANTLY"},
+		{"description hint with spaced prose falls through", spec.Param{Name: "app", Type: "string", Description: "App name, e.g. any active workspace"}, "example-value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := exampleValue(tt.param)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
