@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -338,6 +339,42 @@ func TestValidatePhase5Gate_NoAuthRequiresPassMarker(t *testing.T) {
 		Level:         "none",
 		SkipReason:    phase5SkipReasonAuthRequiredNoCredential,
 		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "no-auth")
+}
+
+func TestValidatePhase5Gate_SyntheticNoAuthAllowsExternalCredentialSkip(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "aws-billing", CLIName: "aws-billing-pp-cli", RunID: "run-1", AuthType: "none", SpecKind: spec.KindSynthetic}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "aws-billing",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonExternalCredentialsUnavailable,
+		AuthContext:   Phase5AuthContext{Type: "oauth2", APIKeyAvailable: false},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "skip", result.Status)
+}
+
+func TestValidatePhase5Gate_StandardNoAuthRejectsExternalCredentialSkip(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "public-data", CLIName: "public-data-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "public-data",
+		RunID:         "run-1",
+		Status:        "skip",
+		Level:         "none",
+		SkipReason:    phase5SkipReasonExternalCredentialsUnavailable,
+		AuthContext:   Phase5AuthContext{Type: "none", APIKeyAvailable: false},
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
