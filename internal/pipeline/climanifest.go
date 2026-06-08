@@ -28,6 +28,14 @@ import (
 // published CLI directory.
 const CLIManifestFilename = ".printing-press.json"
 
+// CLIReleaseManifestFilename is the public-library release ledger manifest.
+// The generator writes a skeleton only; printing-press-library assigns the
+// actual per-CLI release version after the publish PR merges.
+const CLIReleaseManifestFilename = ".printing-press-release.json"
+
+// CLIChangelogFilename is the public-library per-CLI changelog.
+const CLIChangelogFilename = "CHANGELOG.md"
+
 // CurrentCLIManifestSchemaVersion is the public-library provenance contract.
 const CurrentCLIManifestSchemaVersion = 1
 
@@ -153,6 +161,21 @@ type CLIManifest struct {
 	NovelFeatures []NovelFeatureManifest `json:"novel_features,omitempty"`
 }
 
+// CLIReleaseManifest is the skeleton shape consumed by the public library's
+// release-ledger workflow. Version fields are intentionally blank at print
+// time: the library owns final release accounting to avoid PR-time conflicts.
+type CLIReleaseManifest struct {
+	SchemaVersion        int      `json:"schema_version"`
+	Slug                 string   `json:"slug"`
+	CLIName              string   `json:"cli_name,omitempty"`
+	Version              string   `json:"version"`
+	ReleasedAt           string   `json:"released_at"`
+	SourceCommit         string   `json:"source_commit"`
+	PrintingPressVersion string   `json:"printing_press_version,omitempty"`
+	RunID                string   `json:"run_id,omitempty"`
+	Changes              []string `json:"changes,omitempty"`
+}
+
 // IsLocalDatastore reports whether the manifest describes a local-datastore
 // CLI rather than an HTTP API wrapper. These CLIs read operator-local stores
 // such as SQLite databases and should not be scored or dogfooded through
@@ -242,7 +265,9 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 }
 
 // WriteCLIManifest marshals m as indented JSON and writes it to
-// dir/.printing-press.json.
+// dir/.printing-press.json. It also ensures the release-ledger skeleton files
+// exist so fresh published CLIs have the same shape the public library assigns
+// to older entries after merge.
 func WriteCLIManifest(dir string, m CLIManifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -250,6 +275,49 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 	}
 	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
 		return fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WriteReleaseLedgerSkeleton writes the public-library release skeleton files
+// without assigning a release version. Existing files are preserved because the
+// library workflow owns updating them after merge.
+func WriteReleaseLedgerSkeleton(dir string, m CLIManifest) error {
+	releasePath := filepath.Join(dir, CLIReleaseManifestFilename)
+	if _, err := os.Stat(releasePath); errors.Is(err, os.ErrNotExist) {
+		release := CLIReleaseManifest{
+			SchemaVersion:        1,
+			Slug:                 m.APIName,
+			CLIName:              m.CLIName,
+			Version:              "",
+			ReleasedAt:           "",
+			SourceCommit:         "",
+			PrintingPressVersion: m.PrintingPressVersion,
+			RunID:                m.RunID,
+		}
+		data, err := json.MarshalIndent(release, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshaling CLI release manifest skeleton: %w", err)
+		}
+		data = append(data, '\n')
+		if err := os.WriteFile(releasePath, data, 0o644); err != nil {
+			return fmt.Errorf("writing CLI release manifest skeleton: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking CLI release manifest skeleton: %w", err)
+	}
+
+	changelogPath := filepath.Join(dir, CLIChangelogFilename)
+	if _, err := os.Stat(changelogPath); errors.Is(err, os.ErrNotExist) {
+		data := []byte("# Changelog\n\nThis file is maintained by printing-press-library release automation. Do not hand-edit release sections in normal PRs.\n\n")
+		if err := os.WriteFile(changelogPath, data, 0o644); err != nil {
+			return fmt.Errorf("writing CLI changelog skeleton: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("checking CLI changelog skeleton: %w", err)
 	}
 	return nil
 }

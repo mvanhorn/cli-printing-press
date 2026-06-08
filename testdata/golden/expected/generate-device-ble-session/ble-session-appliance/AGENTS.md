@@ -31,6 +31,10 @@ ble-session-appliance-pp-cli <command> --dry-run --json
 
 Commands with a `physical-effect` or `configuration-risk` safety class require `--confirm-physical-effect` (or `--dry-run` to preview). Add `--json` for machine-readable output.
 
+## Release Ledger
+
+`CHANGELOG.md` and `.printing-press-release.json` are the public library's per-CLI release ledger. Fresh prints may carry blank skeletons, but the final `YYYY.M.N` CLI release version is assigned only after a publish PR merges in `mvanhorn/printing-press-library`. Do not hand-bump those files or edit `var version = ...` for release bookkeeping; preserve existing ledger files on reprint and let the library workflow stamp the next release.
+
 ## Local Customizations
 
 The default (no-codec) runtime is Tier-1: it writes captured command payloads verbatim and surfaces raw telemetry frames. To drive a device whose protocol needs framing, scaling, checksums, or parameterized values, extend the CLI **without editing generated files**:

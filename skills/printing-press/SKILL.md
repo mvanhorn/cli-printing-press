@@ -885,6 +885,7 @@ Before new research:
    CLI_DIR="$PRESS_LIBRARY/<api>"
    HAS_LIBRARY=false
    HAS_GOMOD=false
+   CLI_RELEASE_VERSION=""
    PRIOR_STEINBERGER_SCORE=""
    PRIOR_SUB60_REPRINT=false
    if [ -d "$CLI_DIR" ]; then
@@ -901,6 +902,10 @@ Before new research:
        if [ -n "$PRIOR_STEINBERGER_SCORE" ] && awk "BEGIN { exit !($PRIOR_STEINBERGER_SCORE < 60) }"; then
          PRIOR_SUB60_REPRINT=true
        fi
+     fi
+     RELEASE_MANIFEST="$CLI_DIR/.printing-press-release.json"
+     if [ -f "$RELEASE_MANIFEST" ]; then
+       CLI_RELEASE_VERSION=$(jq -r '.version // empty' "$RELEASE_MANIFEST" 2>/dev/null || true)
      fi
      # Get directory modification time as fallback
      CLI_MTIME=$(stat -f "%Sm" -t "%Y-%m-%d" "$CLI_DIR" 2>/dev/null || stat -c "%y" "$CLI_DIR" 2>/dev/null | cut -d' ' -f1)
@@ -928,6 +933,7 @@ Before new research:
    > Found existing `<api>` in library (last modified `<date>`).
 
    If `PRESS_VERSION` is available, append: `Built with printing-press v<version>.`
+   If `CLI_RELEASE_VERSION` is available, append: `Published CLI release: <version>.` This is the public-library per-CLI CalVer release, not the generator version; do not use it for the generator staleness comparison below.
    If `PRIOR_SUB60_REPRINT=true`, append: `Prior Steinberger score: <score>%. Reprint will require all approved transcendence rows to ship unless you explicitly accept partial coverage.`
 
    If prior research was also found (step 2), include the research summary alongside the library info.

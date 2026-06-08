@@ -568,8 +568,10 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	assert.NotContains(t, skill, "seed one registry")
 	assert.NotContains(t, skill, "go run ./tools/generate-skills/main.go")
 
-	copyIntoLibrary := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<api-slug>"`)
+	copyIntoLibrary := strings.Index(skill, `cp -R "$STAGED_CLI_DIR/." "$PUBLISH_SWAP_DIR/"`)
 	require.NotEqual(t, -1, copyIntoLibrary)
+	assert.Contains(t, skill, `trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT`)
+	assert.Contains(t, skill, `mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"`)
 }
 
 func TestPrintingPressSkillChecksBlockedAPIJournal(t *testing.T) {
@@ -785,7 +787,7 @@ func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
 	snapshotState := strings.Index(skill, "PREEXISTING_MERGED_PATHS=$(ls")
-	packageCopy := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<api-slug>"`)
+	packageCopy := strings.Index(skill, `cp -R "$STAGED_CLI_DIR/." "$PUBLISH_SWAP_DIR/"`)
 	require.NotEqual(t, -1, snapshotState)
 	require.NotEqual(t, -1, packageCopy)
 	assert.Less(t, snapshotState, packageCopy)
