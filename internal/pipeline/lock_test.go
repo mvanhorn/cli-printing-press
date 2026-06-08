@@ -690,7 +690,7 @@ func TestPromoteWorkingCLI_AllowsSyntheticExternalCredentialPhase5Skip(t *testin
 		CLIName:       "aws-billing-pp-cli",
 		RunID:         "run-synthetic-skip",
 		AuthType:      "none",
-		SpecKind:      "synthetic",
+		SpecKind:      spec.KindSynthetic,
 	}))
 
 	state := NewStateWithRun("aws-billing", workDir, "run-synthetic-skip", "test-scope")

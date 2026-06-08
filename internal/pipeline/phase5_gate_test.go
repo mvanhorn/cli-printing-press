@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -347,7 +348,7 @@ func TestValidatePhase5Gate_NoAuthRequiresPassMarker(t *testing.T) {
 
 func TestValidatePhase5Gate_SyntheticNoAuthAllowsExternalCredentialSkip(t *testing.T) {
 	proofsDir := t.TempDir()
-	manifest := CLIManifest{APIName: "aws-billing", CLIName: "aws-billing-pp-cli", RunID: "run-1", AuthType: "none", SpecKind: "synthetic"}
+	manifest := CLIManifest{APIName: "aws-billing", CLIName: "aws-billing-pp-cli", RunID: "run-1", AuthType: "none", SpecKind: spec.KindSynthetic}
 	writePhase5GateMarker(t, proofsDir, Phase5SkipFilename, Phase5GateMarker{
 		SchemaVersion: 1,
 		APIName:       "aws-billing",
