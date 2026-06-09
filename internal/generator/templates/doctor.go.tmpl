@@ -301,6 +301,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- if .Auth.Instructions}}
 					report["auth_instructions"] = {{printf "%q" .Auth.Instructions}}
 {{- end}}
+				} else if strings.TrimSpace(cfg.ClientID) == "" {
+					report["auth"] = "misconfigured (oauth2 refresh)"
+					cfg.AuthSource = "oauth2_refresh"
+					report["auth_source"] = cfg.AuthSource
+					report["auth_hint"] = "refresh token is configured but OAuth2 client ID is missing; set client_id in config or the client ID environment variable"
 				} else {
 					authConfigured = true
 					report["auth"] = "configured (oauth2 refresh)"

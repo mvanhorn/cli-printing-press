@@ -756,6 +756,9 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	if c.Config.RefreshToken == "" {
 		return nil
 	}
+	if strings.TrimSpace(c.Config.ClientID) == "" {
+		return fmt.Errorf("refreshing access token: OAuth2 client ID is required when a refresh token is configured; set client_id in config or the client ID environment variable")
+	}
 
 	tokenURL := c.Config.TokenURL
 	if tokenURL == "" {
