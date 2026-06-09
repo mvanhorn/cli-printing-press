@@ -41,6 +41,8 @@ Hand-written novel commands that perform visible actions (open browser tabs, sen
 1. Print by default; require explicit opt-in (`--launch`, `--send`, `--play`, etc.) to actually act.
 2. Short-circuit when `cliutil.IsVerifyEnv()` is true. The verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; this env-var check is the floor that catches any side-effect command the verifier's heuristic classifier misses.
 
+OAuth browser authorization flows must also avoid impossible machine-mode combinations. If `--json` or another machine-output mode suppresses the authorize URL and `--no-open` or equivalent disables browser launch, either emit a deliberate structured continuation protocol (`authorize_url`, state handle, expiry, next command) or fail fast with an actionable usage error. Do not wait for a callback that no user or machine can initiate. See `skills/printing-press/references/oauth2-pkce-cli-checklist.md`.
+
 Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PUT/PATCH) at the transport layer (`internal/client/client.go`): under `PRINTING_PRESS_VERIFY=1` they short-circuit to a synthetic noop and never dial, while reads that ride a mutating verb (GraphQL/JSON-RPC reads, POST search; codegen-marked `mcp:read-only`) route through `doRead()` and bypass the gate. The command envelope reports `verify_noop: true` / `success: false`. `cli-printing-press verify` re-enables real HTTP to its mock server via `PRINTING_PRESS_VERIFY_LIVE_HTTP=1`; agents and ad-hoc runs leave it unset (mutations no-op), and live verifiers (`live_dogfood`, `workflow_verify`) strip both vars.
 
 
