@@ -39,7 +39,11 @@ func TestGenerateOAuth2RefreshAuth(t *testing.T) {
 	assert.Contains(t, configSrc, `return "Bearer " + c.AccessToken`)
 	assert.NotContains(t, configSrc, `c.AuthSource = "bearer_refresh"`)
 	assert.Contains(t, clientSrc, `"grant_type":    {"refresh_token"}`)
+	assert.Contains(t, clientSrc, `OAuth2 client ID is required when a refresh token is configured`)
 	assert.Contains(t, clientSrc, `tokenURL = "https://auth.example.com/oauth/token"`)
+	assert.Contains(t, doctorSrc, `report["auth"] = "misconfigured (oauth2 refresh)"`)
+	assert.Contains(t, doctorSrc, "cfg.AuthSource = \"oauth2_refresh\"\n					report[\"auth_source\"] = cfg.AuthSource\n					report[\"auth_hint\"] = \"refresh token is configured but OAuth2 client ID is missing")
+	assert.Contains(t, doctorSrc, `refresh token is configured but OAuth2 client ID is missing`)
 	assert.Contains(t, doctorSrc, `report["auth"] = "configured (oauth2 refresh)"`)
 	assert.Contains(t, doctorSrc, `report["auth_source"] = cfg.AuthSource`)
 	assert.Contains(t, doctorSrc, `report["auth_hint"] = "export OAUTH_REFRESH_REFRESH_TOKEN=<your-oauth-refresh-value>"`)
@@ -225,4 +229,74 @@ func TestOAuth2RefreshTokenUsedBeforeRequest(t *testing.T) {
 `, "__MODULE_PATH__", modulePath)
 
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "oauth2_refresh_test.go"), []byte(runtimeTest), 0o644))
+}
+
+func TestOAuth2RefreshFailsBeforeNetworkWithoutClientID(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth2-refresh-missing-client")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:     spec.AuthTypeOAuth2Refresh,
+		Header:   "Authorization",
+		TokenURL: "https://auth.example.com/oauth/token",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth2-refresh-missing-client-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	writeOAuth2RefreshMissingClientRuntimeTest(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestOAuth2RefreshFailsBeforeNetworkWithoutClientID$")
+}
+
+func writeOAuth2RefreshMissingClientRuntimeTest(t *testing.T, outputDir string) {
+	t.Helper()
+
+	goMod := readGeneratedFile(t, outputDir, "go.mod")
+	modulePath := strings.TrimSpace(strings.TrimPrefix(strings.SplitN(goMod, "\n", 2)[0], "module "))
+	require.NotEmpty(t, modulePath)
+
+	runtimeTest := strings.ReplaceAll(`package client
+
+import (
+	"context"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"__MODULE_PATH__/internal/config"
+)
+
+func TestOAuth2RefreshFailsBeforeNetworkWithoutClientID(t *testing.T) {
+	called := false
+	cfg := &config.Config{
+		BaseURL:      "https://api.example.com",
+		TokenURL:     "https://auth.example.com/oauth/token",
+		RefreshToken: "refresh-123",
+		TokenExpiry:  time.Now().Add(-time.Minute),
+		Path:         filepath.Join(t.TempDir(), "config.toml"),
+	}
+	c := New(cfg, time.Second, 0)
+	c.HTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		t.Fatalf("refresh should fail before network when client ID is missing")
+		return nil, nil
+	})}
+
+	_, err := c.authHeader(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "OAuth2 client ID is required") {
+		t.Fatalf("authHeader err = %v", err)
+	}
+	if called {
+		t.Fatalf("token endpoint was called")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+`, "__MODULE_PATH__", modulePath)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "oauth2_refresh_missing_client_test.go"), []byte(runtimeTest), 0o644))
 }
