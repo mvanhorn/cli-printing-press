@@ -2945,6 +2945,14 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			if promotedEndpointNames[name] == eName {
 				continue
 			}
+			// Skip OPTIONS endpoints. These are CORS preflight requests captured
+			// from browser-sniffed HARs, not real API features that the site
+			// exposes to callers. The command_endpoint.go.tmpl branch table
+			// (GET/POST/PUT/PATCH/DELETE) has no OPTIONS handler, so emitting
+			// one produces broken Go that references undefined statusCode/data.
+			if strings.EqualFold(endpoint.Method, "OPTIONS") {
+				continue
+			}
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
 				ResourceName:  name,
@@ -2994,6 +3002,10 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}
 
 			for eName, endpoint := range subResource.Endpoints {
+				// Skip OPTIONS endpoints — see note on the top-level loop above.
+				if strings.EqualFold(endpoint.Method, "OPTIONS") {
+					continue
+				}
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
 				effectiveResource := subResource
