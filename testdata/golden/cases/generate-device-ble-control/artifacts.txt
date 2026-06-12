@@ -7,6 +7,7 @@ ble-desk-lamp/internal/device/transport.go
 ble-desk-lamp/README.md
 ble-desk-lamp/SKILL.md
 ble-desk-lamp/AGENTS.md
+ble-desk-lamp/CLAUDE.md
 ble-desk-lamp/LICENSE
 ble-desk-lamp/NOTICE
 ble-desk-lamp/.goreleaser.yaml

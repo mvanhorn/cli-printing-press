@@ -2007,6 +2007,7 @@ func (g *Generator) renderSingleFiles() error {
 		"golangci.yml.tmpl":                        ".golangci.yml",
 		"readme.md.tmpl":                           "README.md",
 		"agents.md.tmpl":                           "AGENTS.md",
+		"claude.md.tmpl":                           "CLAUDE.md",
 		"skill.md.tmpl":                            "SKILL.md",
 		"LICENSE.tmpl":                             "LICENSE",
 		"NOTICE.tmpl":                              "NOTICE",

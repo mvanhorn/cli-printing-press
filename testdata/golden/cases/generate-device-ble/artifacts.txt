@@ -15,6 +15,7 @@ ble-temperature-sensor/internal/mcp/cobratree/walker.go
 ble-temperature-sensor/README.md
 ble-temperature-sensor/SKILL.md
 ble-temperature-sensor/AGENTS.md
+ble-temperature-sensor/CLAUDE.md
 ble-temperature-sensor/LICENSE
 ble-temperature-sensor/NOTICE
 ble-temperature-sensor/.goreleaser.yaml

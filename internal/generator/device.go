@@ -123,6 +123,10 @@ func (g *DeviceGenerator) Generate() error {
 		"NOTICE":           "NOTICE.tmpl",
 		".goreleaser.yaml": "goreleaser.yaml.tmpl",
 		"AGENTS.md":        "agents_device.md.tmpl",
+		// Claude Code auto-loads CLAUDE.md, not AGENTS.md (codex/agy read AGENTS.md
+		// natively). Emit a CLAUDE.md that just imports it so a Claude session in the
+		// printed CLI loads the contract. Body is variant-agnostic (shared template).
+		"CLAUDE.md": "claude.md.tmpl",
 		// MCP surface: a stdio MCP server that mirrors the Cobra tree via the
 		// API-agnostic cobratree walker. The walker respects mcp:read-only and
 		// mcp:hidden annotations, so each device CLI's own commands decide what an
