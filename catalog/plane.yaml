@@ -10,7 +10,7 @@ spec_source: official
 verified_date: "2026-05-11"
 homepage: https://developers.plane.so/api-reference/introduction
 auth_key_url: https://app.plane.so/profile/api-tokens
-auth_instructions: "Plane Cloud: Profile → API tokens. Self-hosted: Workspace settings → API tokens. Send as header `X-API-Key: <token>` (NOT `Authorization: Bearer`). Self-hosted base/server URL must be the full workspace prefix `https://<host>/api/v1/workspaces/<slug>`, not the bare host."
+auth_instructions: "Plane Cloud: Profile → API tokens. Self-hosted: Workspace settings → API tokens. Send as header `X-API-Key: <token>` (NOT `Authorization: Bearer`). Self-hosted base/server URL must carry the workspace prefix `https://<host>/api/v1/workspaces/{slug}` (keep `{slug}` templated — do not bake in one workspace), not the bare host; select the workspace per command with `--workspace <slug>` or `PLANE_SLUG`, or persist a default via `plane-pp-cli workspaces use <slug>` or `plane-pp-cli init`."
 auth_env_vars:
   - PLANE_API_KEY
 notes: >
@@ -25,8 +25,13 @@ notes: >
   sync model with project fan-out, plus an `updated_at__gt` incremental
   since-param — a stock `generate` reproduces a working `sync` with no post-print
   annotation. Because the workspace scope lives in the server URL, self-hosted
-  users must set the base/server URL to the full workspace prefix
-  `https://<host>/api/v1/workspaces/<slug>` (NOT the bare `https://<host>`); a
+  users must set the base/server URL to the workspace prefix
+  `https://<host>/api/v1/workspaces/{slug}` (NOT the bare `https://<host>`); a
   bare host resolves the relative workspace paths to the web app, which answers
   with the SPA `index.html` at HTTP 200 instead of JSON, making `sync` silently
-  store 0 rows. Rate limit: 60 req/min per token.
+  store 0 rows. Keep `{slug}` as a literal template variable rather than baking
+  in one workspace: it is supplied at runtime via `--workspace <slug>`,
+  `PLANE_SLUG`, or a saved default (`plane-pp-cli workspaces use <slug>` or
+  `plane-pp-cli init`). Plane's public API cannot enumerate a user's workspaces by API key, so
+  the slug is user-supplied (from the browser URL, `app.plane.so/<slug>/`).
+  Rate limit: 60 req/min per token.
