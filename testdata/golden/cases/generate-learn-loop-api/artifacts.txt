@@ -60,3 +60,4 @@ learn-loop-example/internal/learn/patterns/apply.go
 learn-loop-example/SKILL.md
 learn-loop-example/README.md
 learn-loop-example/AGENTS.md
+learn-loop-example/CLAUDE.md

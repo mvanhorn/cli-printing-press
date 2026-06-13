@@ -79,9 +79,13 @@ func TestGeneratedBLEDeviceEmitsPublishArtifacts(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "ble-temperature-sensor")
 	require.NoError(t, NewDevice(ds, outputDir).Generate())
 
-	for _, name := range []string{"AGENTS.md", "LICENSE", "NOTICE", ".goreleaser.yaml"} {
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md", "LICENSE", "NOTICE", ".goreleaser.yaml"} {
 		assert.FileExists(t, filepath.Join(outputDir, name))
 	}
+
+	// Claude Code auto-loads CLAUDE.md, not AGENTS.md; the device variant emits a
+	// CLAUDE.md that imports the contract.
+	assert.Equal(t, "@AGENTS.md", strings.TrimSpace(readFileString(t, filepath.Join(outputDir, "CLAUDE.md"))))
 
 	// None of the four may contain an unrendered Go-template directive. The
 	// goreleaser file legitimately carries goreleaser's own `{{ .Version }}`

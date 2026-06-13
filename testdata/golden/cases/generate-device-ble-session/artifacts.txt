@@ -9,6 +9,7 @@ ble-session-appliance/internal/device/store.go
 ble-session-appliance/README.md
 ble-session-appliance/SKILL.md
 ble-session-appliance/AGENTS.md
+ble-session-appliance/CLAUDE.md
 ble-session-appliance/LICENSE
 ble-session-appliance/NOTICE
 ble-session-appliance/.goreleaser.yaml
