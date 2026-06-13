@@ -2007,6 +2007,7 @@ func (g *Generator) renderSingleFiles() error {
 		"golangci.yml.tmpl":                        ".golangci.yml",
 		"readme.md.tmpl":                           "README.md",
 		"agents.md.tmpl":                           "AGENTS.md",
+		"claude.md.tmpl":                           "CLAUDE.md",
 		"skill.md.tmpl":                            "SKILL.md",
 		"LICENSE.tmpl":                             "LICENSE",
 		"NOTICE.tmpl":                              "NOTICE",
@@ -2019,7 +2020,7 @@ func (g *Generator) renderSingleFiles() error {
 		}
 		var data any
 		switch tmplName {
-		case "readme.md.tmpl", "agents.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
+		case "readme.md.tmpl", "agents.md.tmpl", "claude.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
 			data = g.readmeData()
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
