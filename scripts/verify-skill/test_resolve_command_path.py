@@ -381,6 +381,21 @@ func newRrCmd() *cobra.Command {
 
             self.assertEqual([(["issuances", "cited-by"], ["rr", "7-2003"], [])], recipes)
 
+    def test_trailing_quote_is_stripped_from_flag_token(self):
+        """Prose that quotes a full command (`'cli cmd --refresh'`) glues the
+        closing quote onto the flag token; the declaration lookup must see
+        `--refresh`, not `--refresh'`. A genuinely undeclared flag still keeps
+        its real name after the quote is trimmed."""
+        _path, _positional, flags = _cli_invocation_from_tokens(
+            ["entitlements", "--refresh'", "to", "map"], None,
+        )
+        self.assertEqual(["--refresh"], flags)
+
+        _path, _positional, flags = _cli_invocation_from_tokens(
+            ["get", "--bogus')."], None,
+        )
+        self.assertEqual(["--bogus"], flags)
+
     def test_space_separated_long_flag_value_is_not_positional(self):
         cmd_path, positional, flags = _cli_invocation_from_tokens(
             ["search", "--filter", "status=active", "item-123"],
