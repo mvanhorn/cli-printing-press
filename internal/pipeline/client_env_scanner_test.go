@@ -443,6 +443,34 @@ func u() string { return os.Getenv("X_USERNAME") }
 	assert.Equal(t, string(first), string(second), "reconcile must be idempotent across consecutive writer runs")
 }
 
+// TestScanClientEnvReadsExcludesSystemEnvVarsFromUserConfig guards the
+// platform-convention denylist: XDG_CACHE_HOME, XDG_CONFIG_HOME, etc. are
+// read by the generated client (e.g. cache root selection) but must never
+// be promoted to user_config — they are user-global settings, not
+// per-CLI credentials, and surfacing them as Required+Sensitive would
+// break install prompts on every printed CLI.
+func TestScanClientEnvReadsExcludesSystemEnvVarsFromUserConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeClientFile(t, dir, "client.go", `package client
+
+import "os"
+
+func cachePath() string {
+	base := os.Getenv("XDG_CACHE_HOME")
+	_ = os.Getenv("XDG_CONFIG_HOME")
+	_ = os.Getenv("XDG_DATA_HOME")
+	_ = os.Getenv("XDG_STATE_HOME")
+	_ = os.Getenv("HOME")
+	_ = os.Getenv("USERPROFILE")
+	return base + os.Getenv("REAL_API_KEY")
+}
+`)
+	got, err := scanClientEnvReads(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"REAL_API_KEY"}, got,
+		"system env vars (XDG_*, HOME, USERPROFILE) must never reach user_config; only the credential REAL_API_KEY should survive")
+}
+
 // TestScanClientEnvReadsBacktickLiteral guards against a regression that
 // would drop backtick-quoted env var names. strconv.Unquote handles both
 // forms, but the integration is worth a fixture in case the parser path

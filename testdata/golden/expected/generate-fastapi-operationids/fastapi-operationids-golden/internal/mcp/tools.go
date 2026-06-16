@@ -672,7 +672,7 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	}
 	defer db.Close()
 
-	rows, err := db.Query(query)
+	rows, err := db.DB().QueryContext(ctx, query)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("query failed: %v", err)), nil
 	}
