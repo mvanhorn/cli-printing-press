@@ -1,0 +1,61 @@
+name: query-endpoint-golden
+description: |
+  Golden fixture for the SQL-query-endpoint sync shape (QuickBooks Online /
+  Salesforce SOQL): every list resource is read through ONE shared `/query`
+  endpoint with an injected SELECT-style query, results wrapped in an
+  entity-named envelope (`QueryResponse.<Entity>`), and paging carried inside
+  the query text via STARTPOSITION/MAXRESULTS-style offset stride.
+
+  The `query_sync` block declares the cross-cutting query mechanics; each
+  resource's list endpoint declares `path: /query` and
+  `response_path: QueryResponse.<Entity>`, from which the generator derives the
+  per-resource entity (Widget, Gadget). `page_size: 2` keeps the runtime
+  multi-page sync test cheap (a full first page of 2 advances STARTPOSITION; a
+  short second page ends the loop).
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [QUERY_ENDPOINT_GOLDEN_TOKEN]
+query_sync:
+  path: /query
+  query_param: query
+  query_template: "select * from {entity} startposition {start} maxresults {limit}"
+  version_param: minorversion
+  version_value: "75"
+  envelope_key: QueryResponse
+  page_size: 2
+resources:
+  widgets:
+    description: Widgets, read through the shared /query endpoint.
+    endpoints:
+      list:
+        method: GET
+        path: /query
+        description: List/query widgets (SQL-like SELECT against the query endpoint)
+        params:
+          - {name: query, type: string, default: "select * from Widget maxresults 100", description: "Query string. Add WHERE/ORDERBY/STARTPOSITION/MAXRESULTS clauses inline."}
+          - {name: minorversion, type: int, default: 75, description: "API minor version"}
+        response: {type: array, item: Widget}
+        response_path: "QueryResponse.Widget"
+  gadgets:
+    description: Gadgets, read through the shared /query endpoint.
+    endpoints:
+      list:
+        method: GET
+        path: /query
+        description: List/query gadgets
+        params:
+          - {name: query, type: string, default: "select * from Gadget maxresults 100", description: "Query string."}
+          - {name: minorversion, type: int, default: 75, description: "API minor version"}
+        response: {type: array, item: Gadget}
+        response_path: "QueryResponse.Gadget"
+types:
+  Widget:
+    fields:
+      - {name: id, type: string, description: Widget identifier}
+      - {name: name, type: string, description: Widget display name}
+  Gadget:
+    fields:
+      - {name: id, type: string, description: Gadget identifier}
+      - {name: name, type: string, description: Gadget display name}

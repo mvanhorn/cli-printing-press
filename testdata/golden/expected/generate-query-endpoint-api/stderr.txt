@@ -1,0 +1,2 @@
+warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
+Generated query-endpoint-golden at <ARTIFACT_DIR>/generate-query-endpoint-api/query-endpoint-golden

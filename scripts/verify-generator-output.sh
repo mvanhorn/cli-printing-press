@@ -41,6 +41,7 @@ default_cases=(
   generate-mcp-api
   generate-graphql-shared-endpoint
   generate-learn-loop-api
+  generate-query-endpoint-api
   generate-device-ble
   generate-device-ble-control
   generate-device-ble-session

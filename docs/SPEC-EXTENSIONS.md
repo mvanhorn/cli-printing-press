@@ -22,6 +22,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
 | `x-cache` | root or `info` | `APISpec.Cache` | No |
+| `x-pp-query` | root | `APISpec.QuerySync` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -323,6 +324,51 @@ x-cache:
   commands:
     - name: dashboard
       resources: [quotes]
+```
+
+### `x-pp-query`
+
+Declares the SQL-query-endpoint sync shape (QuickBooks Online, Salesforce SOQL):
+an API where every list resource is read through one shared endpoint with an
+injected `SELECT`-style query, results wrapped in an entity-named envelope, and
+paging carried inside the query text. Mirrors the internal YAML spec's top-level
+`query_sync:` block. When present, the sync generator emits the query injection,
+the response-envelope unwrap, and the in-query offset-paging loop **by
+construction** — gated so a normal REST list API's generated output is
+byte-identical to today.
+
+Parsed field: `APISpec.QuerySync` (`spec.QuerySyncConfig`)
+
+Rules:
+- Optional. Specs without `x-pp-query` keep today's REST sync behavior exactly.
+- Declared at the OpenAPI root (the internal YAML form lives in the top-level
+  `query_sync:` block). All query dialect text lives in the hint, never the
+  generator — the template substitutes the `{entity}`, `{start}`, and `{limit}`
+  placeholders at runtime.
+- A resource participates only when its list endpoint's path equals `path` AND
+  it declares a `response_path` (e.g. `QueryResponse.<Entity>`); the per-resource
+  entity name is taken from that endpoint's response item (e.g. `Invoice`). Raw
+  passthrough resources on the same path with no `response_path` are skipped.
+- Fields: `path` (required, the shared query endpoint, e.g. `/query`);
+  `query_param` (the param carrying the SELECT, default `query`);
+  `query_template` (required, the SELECT + paging clause with
+  `{entity}`/`{start}`/`{limit}` placeholders); `version_param` + `version_value`
+  (an optional extra param sent on every query call); `envelope_key` (the
+  result-envelope object key joined to the runtime extractor list, e.g.
+  `QueryResponse`); `page_size` (in-query page size and offset stride, default
+  `1000`).
+
+Example:
+
+```yaml
+x-pp-query:
+  path: /query
+  query_param: query
+  query_template: "select * from {entity} startposition {start} maxresults {limit}"
+  version_param: minorversion
+  version_value: "75"
+  envelope_key: QueryResponse
+  page_size: 1000
 ```
 
 ### `x-tenant-env-var`
