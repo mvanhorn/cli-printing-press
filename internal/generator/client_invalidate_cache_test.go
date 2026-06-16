@@ -112,8 +112,8 @@ func TestGenerateCacheDirIsHTTPSubdir(t *testing.T) {
 		"client.go must fall back to ~/.cache when XDG_CACHE_HOME is unset")
 	assert.NotContains(t, clientGo, wantOldShape,
 		"client.go must root cacheDir via cacheBase, not a hardcoded homeDir/.cache")
-	// A bare-root literal would short-circuit the `, "http"` suffix; pin
-	// the same #1126 guard against accidentally regressing the subdir.
-	assert.False(t, strings.Contains(clientGo, wantBareRoot+`)`),
+	// Pin the #1126 subdir guard against accidentally regressing to the
+	// bare <cache-root>/<api>/ root (no "http" suffix).
+	assert.NotContains(t, clientGo, wantBareRoot,
 		"client.go must not point cacheDir at the bare <cache-root>/<api>/ root (#1126)")
 }
