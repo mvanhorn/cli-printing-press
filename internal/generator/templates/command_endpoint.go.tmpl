@@ -28,6 +28,9 @@ import (
 {{- if .IsAsync}}
 	"time"
 {{- end}}
+{{- if substackPublicationIDTemplatePath .APISpec .EffectivePath}}
+	"strings"
+{{- end}}
 {{ if $isGraphQLEndpoint}}
 	"{{modulePath}}/internal/client"
 
@@ -161,6 +164,12 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 
 			path := "{{.EffectivePath}}"
+{{- if substackPublicationIDTemplatePath .APISpec .EffectivePath}}
+			if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
+				return err
+			}
+			path = strings.ReplaceAll(path, "{publication_id}", c.Config.TemplateVars["publication_id"])
+{{- end}}
 {{- range .Endpoint.Params}}
 {{- if .Positional}}
 {{- $pi := positionalIndex $.Endpoint .Name}}
