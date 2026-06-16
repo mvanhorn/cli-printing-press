@@ -738,6 +738,33 @@ func validateStreaming(c StreamingConfig) error {
 	return nil
 }
 
+// validateQuerySync guards the SQL-query-endpoint hint. A query_template that
+// omits a placeholder generates a sync that sends a malformed query — the exact
+// silent-failure mode the hint exists to prevent — so the placeholders are
+// required up front rather than discovered against a live tenant. Absent hint
+// is a benign no-op.
+func validateQuerySync(q *QuerySyncConfig) error {
+	if q == nil {
+		return nil
+	}
+	if strings.TrimSpace(q.Path) == "" {
+		return fmt.Errorf("query_sync.path is required when query_sync is declared")
+	}
+	tmpl := strings.TrimSpace(q.QueryTemplate)
+	if tmpl == "" {
+		return fmt.Errorf("query_sync.query_template is required when query_sync is declared")
+	}
+	for _, placeholder := range []string{"{entity}", "{start}", "{limit}"} {
+		if !strings.Contains(tmpl, placeholder) {
+			return fmt.Errorf("query_sync.query_template must contain the %s placeholder for offset paging to work (got %q)", placeholder, q.QueryTemplate)
+		}
+	}
+	if (strings.TrimSpace(q.VersionParam) == "") != (strings.TrimSpace(q.VersionValue) == "") {
+		return fmt.Errorf("query_sync.version_param and query_sync.version_value must be set together")
+	}
+	return nil
+}
+
 // HasCostThrottling reports whether the spec opts into cost-based throttling
 // primitives. Used by the generator to gate emission of throttle.go and the
 // related conditional blocks in client.go / graphql_client.go / root.go.
@@ -3692,6 +3719,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateStreaming(s.Streaming); err != nil {
+		return err
+	}
+	if err := validateQuerySync(s.QuerySync); err != nil {
 		return err
 	}
 	if err := validateBearerRefresh(s); err != nil {

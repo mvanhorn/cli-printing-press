@@ -471,9 +471,11 @@ func syncResource(ctx context.Context, c interface {
 		// query endpoint that REQUIRES an injected SELECT (a bare path answers
 		// 200 with a fault envelope, not rows). Build the per-entity query with
 		// the current STARTPOSITION offset carried in cursor and the in-query
-		// page size, replacing any spec-default params. The {entity}/{start}/
-		// {limit} placeholders and the query text all come from the query_sync
-		// hint, so no API dialect lives in the generator.
+		// page size. The {entity}/{start}/{limit} placeholders and the query
+		// text all come from the query_sync hint, so no API dialect lives in
+		// the generator. The query + version params are set on top of any
+		// user-supplied --param overrides applied above (which are preserved);
+		// sync owns the query string itself so paging stays correct.
 		if entity, ok := queryEntity[resource]; ok && path == queryPath {
 			start := 1
 			if cursor != "" {
@@ -484,7 +486,6 @@ func syncResource(ctx context.Context, c interface {
 			q := strings.ReplaceAll("select * from {entity} startposition {start} maxresults {limit}", "{entity}", entity)
 			q = strings.ReplaceAll(q, "{start}", strconv.Itoa(start))
 			q = strings.ReplaceAll(q, "{limit}", strconv.Itoa(queryPageSize))
-			params = map[string]string{}
 			params["query"] = q
 			params["minorversion"] = "75"
 		}
@@ -662,7 +663,14 @@ func syncResource(ctx context.Context, c interface {
 		// sync_error output in the same stream.
 		if maxPages > 0 && pagesFetched >= maxPages {
 			truncatedByCap := resourceSupportsPagination(resource) && hasMore
-			truncatedByCap = truncatedByCap && len(items) >= pageSize.limit
+			if _, ok := queryEntity[resource]; ok && path == queryPath {
+				// Query resources page via STARTPOSITION, so resourceSupportsPagination
+				// is false for them; a full page (== queryPageSize) means rows remain,
+				// so the cap truncated and the STARTPOSITION resume cursor must persist.
+				truncatedByCap = hasMore && len(items) >= queryPageSize
+			} else {
+				truncatedByCap = truncatedByCap && len(items) >= pageSize.limit
+			}
 			if truncatedByCap {
 				capExitCursor = nextCursor
 			}
