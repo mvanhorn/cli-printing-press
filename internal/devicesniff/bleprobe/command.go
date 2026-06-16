@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicesniff/ble"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
@@ -60,6 +62,16 @@ func AddProbeCommands(cmd *cobra.Command, commandPrefix string) {
 	cmd.AddCommand(newDoctorCmd(commandPrefix))
 }
 
+// liveCommandContext wraps the command context with signal-aware cancellation
+// when the --live flag is active. Replay operations (--input) and non-BLE
+// commands don't need signal handling — they return the bare command context.
+func liveCommandContext(cmd *cobra.Command, live bool) (context.Context, context.CancelFunc) {
+	if live {
+		return signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	}
+	return cmd.Context(), func() {}
+}
+
 func newDoctorCmd(name string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
@@ -101,11 +113,13 @@ func newScanCmd() *cobra.Command {
 		Use:   "scan",
 		Short: "Emit BLE advertisements as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := liveCommandContext(cmd, opts.live)
+			defer cancel()
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
-			devices, err := adapter.Scan(cmd.Context(), ble.ScanOptions{ServiceUUIDs: opts.serviceUUIDs, DurationMillis: liveDurationMillis(opts)})
+			devices, err := adapter.Scan(ctx, ble.ScanOptions{ServiceUUIDs: opts.serviceUUIDs, DurationMillis: liveDurationMillis(opts)})
 			if err != nil {
 				return err
 			}
@@ -135,11 +149,13 @@ func newInspectCmd() *cobra.Command {
 		Use:   "inspect",
 		Short: "Emit BLE discovery and traffic for one device",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := liveCommandContext(cmd, opts.live)
+			defer cancel()
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
-			events, err := adapter.Inspect(cmd.Context(), ble.InspectRequest{Address: opts.address})
+			events, err := adapter.Inspect(ctx, ble.InspectRequest{Address: opts.address})
 			if err != nil {
 				return err
 			}
@@ -157,11 +173,13 @@ func newReadCmd() *cobra.Command {
 		Use:   "read",
 		Short: "Emit a BLE characteristic read as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := liveCommandContext(cmd, opts.live)
+			defer cancel()
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
-			event, err := adapter.Read(cmd.Context(), ble.CharacteristicRequest{
+			event, err := adapter.Read(ctx, ble.CharacteristicRequest{
 				Address:            opts.address,
 				ServiceUUID:        opts.serviceUUID,
 				CharacteristicUUID: opts.characteristicUUID,
@@ -183,11 +201,13 @@ func newWriteCmd() *cobra.Command {
 		Use:   "write",
 		Short: "Emit a BLE characteristic write as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := liveCommandContext(cmd, opts.live)
+			defer cancel()
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
-			event, err := adapter.Write(cmd.Context(), ble.WriteRequest{
+			event, err := adapter.Write(ctx, ble.WriteRequest{
 				Address:            opts.address,
 				ServiceUUID:        opts.serviceUUID,
 				CharacteristicUUID: opts.characteristicUUID,
@@ -211,11 +231,13 @@ func newSubscribeCmd() *cobra.Command {
 		Use:   "subscribe",
 		Short: "Emit BLE notifications as normalized evidence",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, cancel := liveCommandContext(cmd, opts.live)
+			defer cancel()
 			input, adapter, err := loadBackend(opts)
 			if err != nil {
 				return err
 			}
-			events, err := adapter.Subscribe(cmd.Context(), ble.CharacteristicRequest{
+			events, err := adapter.Subscribe(ctx, ble.CharacteristicRequest{
 				Address:            opts.address,
 				ServiceUUID:        opts.serviceUUID,
 				CharacteristicUUID: opts.characteristicUUID,
