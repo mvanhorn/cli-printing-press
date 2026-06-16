@@ -38,7 +38,13 @@ func TestGenerateSubstackGlobalWriterRoutes(t *testing.T) {
 	helpersSrc := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	assert.Contains(t, helpersSrc, `func resolveSubstackPublicationIDTemplate(ctx context.Context, c *client.Client, flags *rootFlags) error`)
 	assert.Contains(t, helpersSrc, `c.Get(ctx, "/user/profile/self", nil)`)
-	assert.Contains(t, helpersSrc, `dryRunPublicationIDPlaceholder = "<resolved-at-runtime>"`)
+	assert.Contains(t, helpersSrc, `dryRunPublicationIDPlaceholder`)
+	assert.Contains(t, helpersSrc, `"<resolved-at-runtime>"`)
+	assert.Contains(t, helpersSrc, `dryRunPublicationIDResolvedMarker`)
+	assert.Contains(t, helpersSrc, `"__pp_substack_publication_id_dry_run_resolved"`)
+	assert.Contains(t, helpersSrc, `dec := json.NewDecoder(bytes.NewReader(raw))`)
+	assert.Contains(t, helpersSrc, `dec.UseNumber()`)
+	assert.Contains(t, helpersSrc, `case json.Number:`)
 
 	writeSubstackWriterGeneratedRuntimeTest(t, outputDir)
 	runGoCommand(t, outputDir, "test", "./internal/cli")
@@ -119,6 +125,53 @@ func TestDraftCreateDryRunWithoutPublicationIDDoesNotLookupLiveProfile(t *testin
 	}
 }
 
+func TestDraftCreateDryRunRejectsExplicitPlaceholderPublicationID(t *testing.T) {
+	t.Setenv("SUBSTACK_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{
+		"--publication", "trevinsays",
+		"--publication-id", "<resolved-at-runtime>",
+		"drafts", "create",
+		"--title", "CLI verification dry-run",
+		"--body", "Verification only.",
+		"--dry-run",
+		"--agent",
+	})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("explicit placeholder publication id should be rejected")
+	}
+	if got := err.Error(); !bytes.Contains([]byte(got), []byte(` + "`invalid publication_id \"<resolved-at-runtime>\"`" + `)) {
+		t.Fatalf("error = %q, want invalid publication_id", got)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no request envelope", stdout.String())
+	}
+}
+
+func TestPublicationIDResolverDryRunPlaceholderIsIdempotent(t *testing.T) {
+	t.Setenv("SUBSTACK_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
+	flags := &rootFlags{dryRun: true}
+	c, err := flags.newClient()
+	if err != nil {
+		t.Fatalf("newClient: %v", err)
+	}
+	if err := resolveSubstackPublicationIDTemplate(t.Context(), c, flags); err != nil {
+		t.Fatalf("first resolveSubstackPublicationIDTemplate: %v", err)
+	}
+	if err := resolveSubstackPublicationIDTemplate(t.Context(), c, flags); err != nil {
+		t.Fatalf("second resolveSubstackPublicationIDTemplate: %v", err)
+	}
+	if got, want := c.Config.TemplateVars["publication_id"], "<resolved-at-runtime>"; got != want {
+		t.Fatalf("publication_id = %q, want %q", got, want)
+	}
+}
+
 func TestPublicationIDResolverLooksUpProfileWhenNotDryRun(t *testing.T) {
 	t.Setenv("SUBSTACK_CONFIG", filepath.Join(t.TempDir(), "missing.toml"))
 	var sawProfile bool
@@ -127,7 +180,7 @@ func TestPublicationIDResolverLooksUpProfileWhenNotDryRun(t *testing.T) {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		sawProfile = true
-		_, _ = w.Write([]byte(` + "`" + `{"primaryPublication":{"id":7019888,"subdomain":"trevinsays"}}` + "`" + `))
+		_, _ = w.Write([]byte(` + "`" + `{"primaryPublication":{"id":9007199254740993,"subdomain":"trevinsays"}}` + "`" + `))
 	}))
 	defer server.Close()
 	t.Setenv("SUBSTACK_BASE_URL", server.URL)
@@ -144,7 +197,7 @@ func TestPublicationIDResolverLooksUpProfileWhenNotDryRun(t *testing.T) {
 	if !sawProfile {
 		t.Fatalf("profile endpoint was not queried")
 	}
-	if got, want := c.Config.TemplateVars["publication_id"], "7019888"; got != want {
+	if got, want := c.Config.TemplateVars["publication_id"], "9007199254740993"; got != want {
 		t.Fatalf("publication_id = %q, want %q", got, want)
 	}
 }
