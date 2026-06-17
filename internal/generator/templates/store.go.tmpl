@@ -164,9 +164,23 @@ func ensureSQLiteDriverInitialized(ctx context.Context, dsn string) error {
 	}
 	defer db.Close()
 
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("initializing sqlite driver: %w", err)
+	// Acquiring the first physical connection runs the DSN _pragma directives,
+	// including the journal_mode(WAL) conversion for a read-write DSN. On a
+	// fresh DB opened concurrently — e.g. the scorecard live-check probing
+	// sampled commands in parallel — that conversion can return SQLITE_BUSY
+	// before the DSN's busy_timeout engages, so retry the acquisition against a
+	// bounded deadline. SQLITE_BUSY here is always transient.
+	deadline := time.Now().Add(migrationLockTimeout)
+	var conn *sql.Conn
+	if err := retryOnBusy(ctx, deadline, "initializing sqlite driver", func() error {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		conn = c
+		return nil
+	}); err != nil {
+		return err
 	}
 	if err := conn.Close(); err != nil {
 		return fmt.Errorf("closing sqlite initialization connection: %w", err)
