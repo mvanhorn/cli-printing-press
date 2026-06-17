@@ -29,6 +29,17 @@ func TestRedactPIIText_RedactsJSONPII(t *testing.T) {
 	require.Contains(t, got, `"status":"active"`)
 }
 
+func TestRedactPIIText_RedactsJSONCredentialsAndPII(t *testing.T) {
+	token := strings.Repeat("a", 40)
+	got := RedactPIIText(`{"token":"` + token + `","email":"a@b.com","status":"ok"}`)
+
+	require.NotContains(t, got, token)
+	require.NotContains(t, got, "a@b.com")
+	require.Contains(t, got, `"token":"<redacted>"`)
+	require.Contains(t, got, `"email":"<redacted>"`)
+	require.Contains(t, got, `"status":"ok"`)
+}
+
 func TestRedactPIIText_LeavesStructuralJSONUnchanged(t *testing.T) {
 	input := `{"id":42,"status":"active"}`
 
@@ -43,6 +54,44 @@ func TestRedactPIIJSONKeys_RedactsWithoutPatternSweep(t *testing.T) {
 	require.Contains(t, got, `"name":"<redacted>"`)
 	require.Contains(t, got, "jane@example.com")
 	require.Contains(t, got, `"id":42`)
+}
+
+func TestRedactPIIJSONKeys_RedactsCredentialKeys(t *testing.T) {
+	for _, key := range []string{
+		"token",
+		"api_token",
+		"api-key",
+		"api key",
+		"apikey",
+		"access_token",
+		"refresh_token",
+		"client_secret",
+		"secret",
+		"password",
+		"session",
+		"session_token",
+		"csrf",
+		"csrf_token",
+		"csrfToken",
+		"websocket_url",
+	} {
+		t.Run(key, func(t *testing.T) {
+			got, changed := RedactPIIJSONKeys(`{"` + key + `":"credential-value","status":"ok"}`)
+
+			require.True(t, changed)
+			require.NotContains(t, got, "credential-value")
+			require.Contains(t, got, `"`+key+`":"<redacted>"`)
+			require.Contains(t, got, `"status":"ok"`)
+		})
+	}
+}
+
+func TestRedactPIIJSONKeys_LeavesCredentialCountersUnchanged(t *testing.T) {
+	input := `{"token_count":5,"status":"ok"}`
+	got, changed := RedactPIIJSONKeys(input)
+
+	require.False(t, changed)
+	require.Equal(t, input, got)
 }
 
 func TestRedactPIIJSONKeys_RedactsNDJSON(t *testing.T) {
