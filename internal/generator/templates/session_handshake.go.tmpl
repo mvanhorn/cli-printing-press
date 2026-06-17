@@ -307,7 +307,7 @@ func (m *SessionManager) saveToDisk() {
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = os.MkdirAll(filepath.Dir(path), 0o700)
 	_ = os.WriteFile(path, data, 0o600)
 }
 
