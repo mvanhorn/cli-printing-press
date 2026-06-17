@@ -379,6 +379,7 @@ findings_suppressed:
   - id: F3
     reason: "Duplicate of PR #571 (merged 2026-05-13)"
 target_binary_check: { local: "1.0.0", published: "1.0.0", status: "current" }
+published_status: published
 ```
 
 ## Phase 3 — Scope Confirmation Checkpoint (User-in-Loop #1)
@@ -463,6 +464,7 @@ If Phase 2 suppressed every finding (everything was a duplicate), Phase 3 report
 Phase 3 emits to Phase 4:
 
 ```yaml
+published_status: published
 scope_tier: bugs+features            # or bugs|all|custom
 findings_active: [...]               # the user-confirmed subset
 findings_deferred_path: <path>       # where the deferred file landed

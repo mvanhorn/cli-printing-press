@@ -654,8 +654,12 @@ func TestAmendSkillResolvesPublishedStatusByPublicLibrarySlug(t *testing.T) {
 	assert.Contains(t, skill, "Do not infer publish status from the local working copy's git remotes")
 	assert.Contains(t, skill, "do not treat a missing `$PRESS_LIBRARY/<slug>` working copy as unpublished")
 	assert.Contains(t, skill, "Only use `published_status: local-only` when the slug is absent from the public library")
+	assert.Contains(t, skill, "target_binary_check: { local: \"1.0.0\", published: \"1.0.0\", status: \"current\" }\npublished_status: published")
+	assert.Contains(t, skill, "published_status: published\nscope_tier: bugs+features")
 
 	assert.Contains(t, transcript, "resolve publish status by slug lookup in the public library before consulting local working-copy state")
+	assert.Contains(t, transcript, "First enumerate top-level categories with `gh api repos/mvanhorn/printing-press-library/contents/library")
+	assert.Contains(t, transcript, "then iterate those category names with `gh api repos/mvanhorn/printing-press-library/contents/library/<category>/<slug>`")
 	assert.Contains(t, transcript, "Do not infer publish status from the local CLI working copy's git remotes")
 	assert.Contains(t, transcript, "a remote-less local checkout may still correspond to a published CLI")
 	assert.Contains(t, transcript, "do not treat a missing `$PRESS_LIBRARY/<slug>` working copy as unpublished")

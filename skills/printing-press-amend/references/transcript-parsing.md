@@ -77,7 +77,7 @@ Accept any of:
 After normalizing the slug, resolve publish status by slug lookup in the public library before consulting local working-copy state:
 
 1. If a local public-library clone exists, search `~/printing-press-library/library/*/<slug>` for a matching directory.
-2. If that clone is absent or stale enough to miss the slug, query GitHub for the same public-library path, for example `gh api repos/mvanhorn/printing-press-library/contents/library/<category>/<slug>` after finding candidate category directories.
+2. If that clone is absent or stale enough to miss the slug, query GitHub for the same public-library path. First enumerate top-level categories with `gh api repos/mvanhorn/printing-press-library/contents/library --jq '.[] | select(.type == "dir") | .name'`, then iterate those category names with `gh api repos/mvanhorn/printing-press-library/contents/library/<category>/<slug>` until the slug is found or every category has been checked.
 3. If the slug is found, set `published_status: published`, set `target_category` from the matched parent directory, and route all edits through the managed clone opened later in the amend flow.
 4. Only set `published_status: local-only` when the slug is absent from the public library.
 
