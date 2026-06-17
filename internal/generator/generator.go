@@ -168,6 +168,7 @@ type Generator struct {
 
 func New(s *spec.APISpec, outputDir string) *Generator {
 	s.InferEndpointTemplateVarsFromBaseURLs()
+	s.EnrichPathParams()
 	s.PromoteGlobalPathTemplateVars()
 	// Resolve the creator + contributors (the canonical attribution model),
 	// preserving persisted values across regens so a regen never flips the
