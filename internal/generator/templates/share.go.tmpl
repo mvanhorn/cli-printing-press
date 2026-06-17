@@ -106,7 +106,7 @@ func EnsureRepo(ctx context.Context, opts Options) error {
 		return nil
 	}
 	if strings.TrimSpace(opts.Remote) != "" {
-		if err := os.MkdirAll(filepath.Dir(opts.RepoPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(opts.RepoPath), 0o700); err != nil {
 			return fmt.Errorf("mkdir share parent: %w", err)
 		}
 		if err := runGit(ctx, "", "clone", opts.Remote, opts.RepoPath); err != nil {
@@ -119,7 +119,7 @@ func EnsureRepo(ctx context.Context, opts Options) error {
 		}
 		return nil
 	}
-	if err := os.MkdirAll(opts.RepoPath, 0o755); err != nil {
+	if err := os.MkdirAll(opts.RepoPath, 0o700); err != nil {
 		return fmt.Errorf("mkdir share repo: %w", err)
 	}
 	if err := runGit(ctx, opts.RepoPath, "init"); err != nil {
@@ -215,7 +215,7 @@ func Export(ctx context.Context, s *store.Store, opts Options) (Manifest, error)
 	if err := os.RemoveAll(dataDir); err != nil {
 		return Manifest{}, fmt.Errorf("reset tables dir: %w", err)
 	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return Manifest{}, fmt.Errorf("mkdir tables dir: %w", err)
 	}
 	schemaVersion, err := s.SchemaVersion()
