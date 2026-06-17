@@ -4709,6 +4709,10 @@ func TestHappyArgsContainSyntheticFlagPlaceholder(t *testing.T) {
 		[]string{"users", "get-by-ids", "--ids=example-value"},
 		[]string{"users", "get-by-ids"},
 	))
+	assert.True(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"keys", "list", "--api-key", "your-token-here"},
+		[]string{"keys", "list"},
+	))
 	assert.False(t, happyArgsContainSyntheticFlagPlaceholder(
 		[]string{"widgets", "search", "--query", "example-value"},
 		[]string{"widgets", "search"},

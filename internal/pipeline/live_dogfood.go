@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 )
 
 type LiveDogfoodStatus string
@@ -807,7 +809,7 @@ func liveDogfoodSyntheticFixtureFlagValue(flag, value string) bool {
 func liveDogfoodSyntheticExampleValue(value string) bool {
 	value = strings.Trim(strings.TrimSpace(value), `"'`)
 	switch value {
-	case "example-value", "550e8400-e29b-41d4-a716-446655440000", "your-token-here":
+	case "example-value", piiplaceholders.SyntheticUUID, "your-token-here":
 		return true
 	default:
 		return false

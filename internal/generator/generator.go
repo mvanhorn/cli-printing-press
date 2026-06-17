@@ -22,6 +22,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -6442,7 +6443,7 @@ func exampleValue(p spec.Param) string {
 	if nameLower == "id" ||
 		strings.HasSuffix(nameLower, "_id") ||
 		(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2 && !isNumericOrBool) {
-		return "550e8400-e29b-41d4-a716-446655440000"
+		return piiplaceholders.SyntheticUUID
 	}
 	if strings.Contains(nameLower, "email") {
 		return "user@example.com"
