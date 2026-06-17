@@ -119,7 +119,7 @@ func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 			return "", true
 		}
 		for _, t := range tokens {
-			if strings.HasPrefix(t, "-") {
+			if t != "-" && strings.HasPrefix(t, "-") {
 				return t, false
 			}
 		}
@@ -143,6 +143,7 @@ func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 		// the CLI is invoked via exec.CommandContext (no /bin/sh), so
 		// $VAR / && / | are inert. Pin that they don't trip the guard.
 		{"shell metachars in positional", `name with $VAR && pipe|stuff`, true, ""},
+		{"lone dash allowed as stdout escape", "-", true, ""},
 	}
 	for _, tc := range cases {
 		tc := tc
