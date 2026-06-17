@@ -58,7 +58,7 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
-func rejectUnresolvedPathParams(path string) error {
+func rejectUnresolvedPathParams(path string, allowedTemplateVars map[string]string) error {
 	for {
 		start := strings.IndexByte(path, '{')
 		if start < 0 {
@@ -70,6 +70,10 @@ func rejectUnresolvedPathParams(path string) error {
 			return nil
 		}
 		name := rest[:end]
+		if _, ok := allowedTemplateVars[name]; ok {
+			path = rest[end+1:]
+			continue
+		}
 		if isPathPlaceholderName(name) {
 			return fmt.Errorf("unresolved path parameter {%s}", name)
 		}
@@ -87,8 +91,7 @@ func isPathPlaceholderName(name string) bool {
 		}
 		return false
 	}
-	first := name[0]
-	return first == '_' || first >= 'A' && first <= 'Z' || first >= 'a' && first <= 'z'
+	return true
 }
 
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
@@ -463,7 +466,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
 	}
-	if err := rejectUnresolvedPathParams(path); err != nil {
+	if err := rejectUnresolvedPathParams(path, nil); err != nil {
 		return nil, 0, err
 	}
 	targetURL := c.BaseURL + path
