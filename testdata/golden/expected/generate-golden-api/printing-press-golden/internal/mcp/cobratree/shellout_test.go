@@ -60,6 +60,11 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"deliver":  "fd:3",
 		"profile":  "attacker",
 		"token":    "stolen-token",
+		// Keys containing "=" must not be emitted verbatim as flag=value.
+		"base-url=https://evil.example.com": true,
+		"config=/tmp/evil.yaml":             true,
+		"limit=99":                          float64(42),
+		"token=stolen-token":                true,
 		// Allowed per-command flag passes through.
 		"limit": float64(10),
 	}
