@@ -214,6 +214,55 @@ func TestGeneratorSkipsNovelFeatureWiringForAbsorbedEndpointCollisions(t *testin
 	assert.NotContains(t, parent, "newNovelScenariosRunCmd")
 }
 
+func TestGeneratorSkipsNovelFeatureWiringForExistingCommandFileCollisions(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("existingnovel")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, os.MkdirAll(filepath.Join(outputDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "items_audit.go"), []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{Use: "audit"}
+}
+`), 0o644))
+
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Bulk export",
+			Command:     "export --format json",
+			Description: "Export data with extra filtering.",
+			Example:     "existingnovel-pp-cli export --format json",
+		},
+		{
+			Name:        "Item audit",
+			Command:     "items audit --dry-run",
+			Description: "Audit items from a hand-authored child command.",
+			Example:     "existingnovel-pp-cli items audit --dry-run",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, "rootCmd.AddCommand(newExportCmd(flags))")
+	assert.NotContains(t, root, "newNovelExportCmd")
+
+	parent := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
+	assert.NotContains(t, parent, "newNovelItemsAuditCmd")
+	requireGeneratedCompiles(t, outputDir)
+
+	require.NoError(t, gen.Generate())
+	root = readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, "rootCmd.AddCommand(newExportCmd(flags))")
+	assert.NotContains(t, root, "newNovelExportCmd")
+	parent = readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
+	assert.NotContains(t, parent, "newNovelItemsAuditCmd")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGeneratorWiresNovelChildrenUnderPromotedResource(t *testing.T) {
 	t.Parallel()
 
