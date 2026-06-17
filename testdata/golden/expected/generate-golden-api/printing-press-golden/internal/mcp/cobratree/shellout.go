@@ -62,7 +62,8 @@ var blockedRootFlags = map[string]bool{
 func cliArgsFromMCP(args map[string]any) []string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
-		if !blockedRootFlags[k] {
+		base, _, hasEquals := strings.Cut(k, "=")
+		if !hasEquals && !blockedRootFlags[base] {
 			keys = append(keys, k)
 		}
 	}
