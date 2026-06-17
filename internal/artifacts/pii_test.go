@@ -71,6 +71,8 @@ func TestRedactPIIJSONKeys_RedactsCredentialKeys(t *testing.T) {
 		"session",
 		"session_token",
 		"csrf",
+		"csrf_token",
+		"csrfToken",
 		"websocket_url",
 	} {
 		t.Run(key, func(t *testing.T) {

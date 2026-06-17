@@ -170,6 +170,7 @@ var piiJSONScalarKeys = map[string]bool{
 	"cardlast4":       true,
 	"clientsecret":    true,
 	"csrf":            true,
+	"csrftoken":       true,
 	"customeremail":   true,
 	"customername":    true,
 	"email":           true,
@@ -197,7 +198,7 @@ var piiJSONScalarKeys = map[string]bool{
 	"zip":             true,
 }
 
-var piiJSONKeyNeedleRE = regexp.MustCompile(`(?i)"(?:access[_ -]?token|address1?|address2|api[_ -]?key|api[_ -]?token|apikey|billing[_ -]?address|card[_ -]?last[_ -]?4|client[_ -]?secret|csrf|customer[_ -]?(?:email|name)|email|first[_ -]?name|full[_ -]?name|invoice(?:[_ -]?number)?|last[_ -]?name|last[_ -]?4|mobile|name|password|phone(?:[_ -]?number)?|postal[_ -]?code|refresh[_ -]?token|secret|session(?:[_ -]?token)?|shipping[_ -]?address|street(?:[_ -]?address)?|token|websocket[_ -]?url|zip)"\s*:`)
+var piiJSONKeyNeedleRE = regexp.MustCompile(`(?i)"(?:access[_ -]?token|address1?|address2|api[_ -]?key|api[_ -]?token|billing[_ -]?address|card[_ -]?last[_ -]?4|client[_ -]?secret|csrf(?:[_ -]?token)?|customer[_ -]?(?:email|name)|email|first[_ -]?name|full[_ -]?name|invoice(?:[_ -]?number)?|last[_ -]?name|last[_ -]?4|mobile|name|password|phone(?:[_ -]?number)?|postal[_ -]?code|refresh[_ -]?token|secret|session(?:[_ -]?token)?|shipping[_ -]?address|street(?:[_ -]?address)?|token|websocket[_ -]?url|zip)"\s*:`)
 
 // RedactPIIText returns text with customer-PII shapes replaced before the
 // text is written to durable artifacts. JSON input preserves non-PII fields
