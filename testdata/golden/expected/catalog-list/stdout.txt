@@ -26,6 +26,7 @@ marketing:
   producthunt          Find, monitor, and export Product Hunt launches for launch research, scouting, and competitive tracking without requiring a Product Hunt API application.
 
 media-and-entertainment:
+  metacritic           Browse, search, and compare Metascores and user scores for games, movies, and TV shows, plus critic and user reviews, without a Metacritic account.
   supercut             AI video recording and clipping platform API for recordings, stacks, transcripts, frames, comments, and reactions
 
 monitoring:
