@@ -102,9 +102,19 @@ func Open(dbPath string) (*Store, error) {
 // PRAGMA journal_mode=WAL on a read-only handle to a DB still in the default
 // delete mode (e.g. a pre-WAL database opened by an old binary before its
 // first read-write open) errors with "attempt to write a readonly database".
+//
+// OpenReadOnly uses context.Background(); callers holding a context should use
+// OpenReadOnlyContext so a cancelled command (SIGINT, deadline) interrupts the
+// SQLITE_BUSY retry during driver init instead of waiting out the full timeout.
 func OpenReadOnly(dbPath string) (*Store, error) {
+	return OpenReadOnlyContext(context.Background(), dbPath)
+}
+
+// OpenReadOnlyContext is OpenReadOnly with a caller-supplied context honored by
+// the driver-init SQLITE_BUSY retry.
+func OpenReadOnlyContext(ctx context.Context, dbPath string) (*Store, error) {
 	dsn := "file:" + dbPath + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)"
-	if err := ensureSQLiteDriverInitialized(context.Background(), dsn); err != nil {
+	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
 		return nil, err
 	}
 
@@ -163,9 +173,23 @@ func ensureSQLiteDriverInitialized(ctx context.Context, dsn string) error {
 	}
 	defer db.Close()
 
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("initializing sqlite driver: %w", err)
+	// Acquiring the first physical connection runs the DSN _pragma directives,
+	// including the journal_mode(WAL) conversion for a read-write DSN. On a
+	// fresh DB opened concurrently — e.g. the scorecard live-check probing
+	// sampled commands in parallel — that conversion can return SQLITE_BUSY
+	// before the DSN's busy_timeout engages, so retry the acquisition against a
+	// bounded deadline. SQLITE_BUSY here is always transient.
+	deadline := time.Now().Add(migrationLockTimeout)
+	var conn *sql.Conn
+	if err := retryOnBusy(ctx, deadline, "initializing sqlite driver", func() error {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		conn = c
+		return nil
+	}); err != nil {
+		return err
 	}
 	if err := conn.Close(); err != nil {
 		return fmt.Errorf("closing sqlite initialization connection: %w", err)
