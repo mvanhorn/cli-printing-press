@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -639,14 +640,24 @@ func CopyDir(src, dst string) error {
 
 const publishableManuscriptMaxCaptureBytes int64 = 100 * 1024 * 1024
 
-// CopyPublishableManuscriptDir copies manuscript artifacts that may be bundled
-// into published CLIs. Raw HAR captures and huge capture files stay in local
-// runstate only because they can carry cookies, session identifiers, and PII.
-func CopyPublishableManuscriptDir(src, dst string) error {
-	return copyDirFiltered(src, dst, shouldSkipPublishableManuscriptFile)
+type PublishableManuscriptCopyOptions struct {
+	IncludeRawCaptures bool
 }
 
-func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo) bool {
+// CopyPublishableManuscriptDir copies manuscript artifacts that may be bundled
+// into published CLIs. Raw browser-sniff captures stay in local runstate by
+// default because they can carry cookies, session identifiers, and PII.
+func CopyPublishableManuscriptDir(src, dst string) error {
+	return CopyPublishableManuscriptDirWithOptions(src, dst, PublishableManuscriptCopyOptions{})
+}
+
+func CopyPublishableManuscriptDirWithOptions(src, dst string, opts PublishableManuscriptCopyOptions) error {
+	return copyDirFiltered(src, dst, func(path string, info fs.FileInfo) bool {
+		return shouldSkipPublishableManuscriptFile(path, info, opts)
+	})
+}
+
+func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts PublishableManuscriptCopyOptions) bool {
 	// A `sources/` directory holds downloaded third-party reference repos — local
 	// research INPUT, not authored manuscript OUTPUT. Never publish copies of other
 	// projects' code: it is a licensing problem and a secret/PII vector (the only
@@ -657,10 +668,42 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo) bool {
 	if info.IsDir() && filepath.Base(path) == "sources" {
 		return true
 	}
+	if !info.IsDir() && info.Size() >= publishableManuscriptMaxCaptureBytes {
+		return true
+	}
+	if opts.IncludeRawCaptures {
+		return false
+	}
+	if isRawBrowserSniffCapture(path, info) {
+		return true
+	}
 	if strings.EqualFold(filepath.Ext(path), ".har") {
 		return true
 	}
-	return info.Size() >= publishableManuscriptMaxCaptureBytes
+	return false
+}
+
+func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
+	clean := filepath.Clean(path)
+	base := filepath.Base(clean)
+	parentPath := filepath.Dir(clean)
+
+	if pathHasComponent(parentPath, "discovery") {
+		if matched, _ := filepath.Match("probe-*.json", base); matched {
+			return true
+		}
+	}
+	if info.IsDir() && pathHasComponent(parentPath, "discovery") && base == "bundles" {
+		return true
+	}
+	if info.IsDir() && pathHasComponent(parentPath, "research") && strings.HasSuffix(base, "-browser-sniff-spec-samples") {
+		return true
+	}
+	return false
+}
+
+func pathHasComponent(path, component string) bool {
+	return slices.Contains(strings.Split(filepath.ToSlash(filepath.Clean(path)), "/"), component)
 }
 
 func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInfo) bool) error {
