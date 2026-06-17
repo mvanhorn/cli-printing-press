@@ -64,6 +64,10 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 
 	testSrc := readGeneratedFile(t, outputDir, "internal", "cli", "call_test.go")
 	assert.Contains(t, testSrc, `t.Skip("TODO: implement table-driven tests for call")`)
+	// New smoke test exercises --help on the wired command path so a missing
+	// AddCommand or panicking RunE is caught before review.
+	assert.Contains(t, testSrc, `func TestNovelCallHelpWires(t *testing.T)`)
+	assert.Contains(t, testSrc, `cmd.SetArgs([]string{"call", "--help"})`)
 
 	var runtimeTest strings.Builder
 	runtimeTest.WriteString(`package cli

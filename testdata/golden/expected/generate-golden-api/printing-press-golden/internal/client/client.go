@@ -100,8 +100,12 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
-	homeDir, _ := os.UserHomeDir()
-	cacheDir := filepath.Join(homeDir, ".cache", "printing-press-golden-pp-cli", "http")
+	cacheBase := os.Getenv("XDG_CACHE_HOME")
+	if cacheBase == "" {
+		homeDir, _ := os.UserHomeDir()
+		cacheBase = filepath.Join(homeDir, ".cache")
+	}
+	cacheDir := filepath.Join(cacheBase, "printing-press-golden-pp-cli", "http")
 	httpClient := newHTTPClient(timeout, nil)
 	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
