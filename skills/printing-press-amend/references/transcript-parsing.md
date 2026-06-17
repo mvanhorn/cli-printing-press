@@ -70,17 +70,24 @@ When the user explicitly passed a target as the skill argument, skip auto-detect
 ### Path resolution for the chosen target
 
 Accept any of:
-- short name: `superhuman` → `$PRESS_LIBRARY/superhuman/`
-- full name: `superhuman-pp-cli` → strip `-pp-cli`, resolve as short name
-- absolute path: `$PRESS_LIBRARY/superhuman` → use as-is
+- short name: `superhuman` -> slug `superhuman`
+- full name: `superhuman-pp-cli` -> strip `-pp-cli`, slug `superhuman`
+- absolute path: `$PRESS_LIBRARY/superhuman` -> basename slug `superhuman`
 
-If the resolved path doesn't exist locally, search `~/printing-press-library/library/*/` for a directory whose name matches the slug, and fall back to that as the target. The skill operates on the managed clone (per the Pre-Implementation Decisions in the plan), so the local-library path is informational; the actual edits land in the managed clone created in U7.
+After normalizing the slug, resolve publish status by slug lookup in the public library before consulting local working-copy state:
+
+1. If a local public-library clone exists, search `~/printing-press-library/library/*/<slug>` for a matching directory.
+2. If that clone is absent or stale enough to miss the slug, query GitHub for the same public-library path. First enumerate top-level categories with `gh api repos/mvanhorn/printing-press-library/contents/library --jq '.[] | select(.type == "dir") | .name'`, then iterate those category names with `gh api repos/mvanhorn/printing-press-library/contents/library/<category>/<slug>` until the slug is found or every category has been checked.
+3. If the slug is found, set `published_status: published`, set `target_category` from the matched parent directory, and route all edits through the managed clone opened later in the amend flow.
+4. Only set `published_status: local-only` when the slug is absent from the public library.
+
+Do not infer publish status from the local CLI working copy's git remotes. Printed-library CLIs can intentionally have no `origin`, and a remote-less local checkout may still correspond to a published CLI. Likewise, do not treat a missing `$PRESS_LIBRARY/<slug>` working copy as unpublished; the local-library path is only informational once the public-library slug lookup succeeds. The skill operates on the managed clone (per the Pre-Implementation Decisions in the plan), so the actual edits land in the managed clone created in U7.
 
 ## Edge cases
 
 - **Empty / unreadable transcript** — emit "no active session transcript found at `<path>`; pass an explicit `<cli-name-or-path>` argument and re-run, or use `--transcript <path>` to point at a saved session" and exit cleanly.
 - **Transcript with zero `<slug>-pp-cli` invocations** — emit "no `<slug>-pp-cli` invocations found in this session; if you dogfooded a CLI in a different session, point me at that transcript" and exit.
-- **Transcript references a CLI that's not in the public library** — emit a warning and ask the user to confirm; the CLI may be local-only (pre-publish) or under a different slug.
+- **Transcript references a CLI that's not in the public library by slug** — emit a warning and ask the user to confirm; the CLI may be local-only (pre-publish) or under a different slug. This warning must be based on the public-library slug lookup, not on local git remotes or `$PRESS_LIBRARY/<slug>` presence.
 - **Signal extraction returns < 2 candidates** — proceed but note in the user-facing summary that the signal yield was low; the user may want to resume after more dogfooding.
 
 ## Output shape
@@ -91,6 +98,7 @@ Phase 1 emits a structured finding list to the next phase:
 target_cli: superhuman-pp-cli
 target_dir: $PRESS_LIBRARY/superhuman   # may be informational; managed-clone path resolved later
 target_category: productivity                      # resolved from the public library, used by U7
+published_status: published
 findings:
   - id: F1
     category: missing-folder-coverage
