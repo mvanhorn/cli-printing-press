@@ -149,10 +149,11 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 		return nil, nil
 	}
 	if exists, hasConstructor := g.novelFeatureStubExistingFileConstructorStatus(node.path); exists {
-		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s; leaving existing file unchanged\n", data.CommandPath, outPath)
 		if !hasConstructor {
+			fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s without expected constructor %s; skipping novel stub\n", data.CommandPath, outPath, novelFeatureStubConstructorName(node.path))
 			return nil, nil
 		}
+		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s; leaving existing file unchanged\n", data.CommandPath, outPath)
 		return &data, nil
 	}
 	if err := g.renderTemplate("novel_feature_command.go.tmpl", outPath, data); err != nil {
@@ -192,8 +193,12 @@ func (g *Generator) novelFeatureStubExistingFileConstructorStatus(parts []string
 	if err != nil {
 		return false, false
 	}
-	constructor := "func newNovel" + novelFeatureStubIdent(parts) + "Cmd("
+	constructor := "func " + novelFeatureStubConstructorName(parts) + "("
 	return true, strings.Contains(string(data), constructor)
+}
+
+func novelFeatureStubConstructorName(parts []string) string {
+	return "newNovel" + novelFeatureStubIdent(parts) + "Cmd"
 }
 
 func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFeatureCommandRender {

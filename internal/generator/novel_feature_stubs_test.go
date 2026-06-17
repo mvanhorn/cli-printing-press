@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,8 +216,6 @@ func TestGeneratorSkipsNovelFeatureWiringForAbsorbedEndpointCollisions(t *testin
 }
 
 func TestGeneratorSkipsNovelFeatureWiringForExistingCommandFileCollisions(t *testing.T) {
-	t.Parallel()
-
 	apiSpec := minimalSpec("existingnovel")
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, os.MkdirAll(filepath.Join(outputDir, "internal", "cli"), 0o755))
@@ -244,7 +243,10 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 			Example:     "existingnovel-pp-cli items audit --dry-run",
 		},
 	}
-	require.NoError(t, gen.Generate())
+	stderr, err := captureNovelFeatureStderr(t, gen.Generate)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, `warning: novel feature command "items audit" maps to existing internal/cli/items_audit.go without expected constructor newNovelItemsAuditCmd; skipping novel stub`)
+	assert.NotContains(t, stderr, `warning: novel feature command "items audit" maps to existing internal/cli/items_audit.go; leaving existing file unchanged`)
 
 	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	assert.Contains(t, root, "rootCmd.AddCommand(newExportCmd(flags))")
@@ -254,13 +256,32 @@ func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
 	assert.NotContains(t, parent, "newNovelItemsAuditCmd")
 	requireGeneratedCompiles(t, outputDir)
 
-	require.NoError(t, gen.Generate())
+	stderr, err = captureNovelFeatureStderr(t, gen.Generate)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, `warning: novel feature command "items audit" maps to existing internal/cli/items_audit.go without expected constructor newNovelItemsAuditCmd; skipping novel stub`)
+	assert.NotContains(t, stderr, `warning: novel feature command "items audit" maps to existing internal/cli/items_audit.go; leaving existing file unchanged`)
 	root = readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	assert.Contains(t, root, "rootCmd.AddCommand(newExportCmd(flags))")
 	assert.NotContains(t, root, "newNovelExportCmd")
 	parent = readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
 	assert.NotContains(t, parent, "newNovelItemsAuditCmd")
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func captureNovelFeatureStderr(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+
+	oldErr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	callErr := fn()
+	os.Stderr = oldErr
+	require.NoError(t, w.Close())
+	data, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	return string(data), callErr
 }
 
 func TestGeneratorWiresNovelChildrenUnderPromotedResource(t *testing.T) {
