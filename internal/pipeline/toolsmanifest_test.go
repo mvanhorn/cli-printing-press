@@ -126,6 +126,44 @@ func TestWriteToolsManifest_MultipleResources(t *testing.T) {
 	assert.Equal(t, "/store/inventory", got.Tools[3].Path)
 }
 
+func TestWriteToolsManifest_OpenAPIDanglingOperationSecurityUsesRootAPIKey(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Custom Key
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Custom-Key
+paths:
+  /v1/apps:
+    get:
+      operationId: listApps
+      security:
+        - Authorization: []
+      responses: {"200": {description: ok}}
+`))
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", got.Auth.Type)
+	assert.Equal(t, "X-Custom-Key", got.Auth.Header)
+	assert.Equal(t, "header", got.Auth.In)
+	assert.Equal(t, []string{"CUSTOM_KEY_API_KEY"}, got.Auth.EnvVars)
+}
+
 func TestWriteToolsManifestWithDescriptionUsesCanonicalManifestDescription(t *testing.T) {
 	dir := t.TempDir()
 	parsed := &spec.APISpec{
