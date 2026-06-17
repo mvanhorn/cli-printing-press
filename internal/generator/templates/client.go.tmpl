@@ -1469,6 +1469,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				}
 				return env, resp.StatusCode, nil
 			}
+{{- if .HasXMLResponse}}
+			// XML-only endpoints (response_format: xml) are normalized to a
+			// generic JSON document so --json, --select, and table output work
+			// unchanged. Non-XML responses pass through untouched; a decode
+			// failure returns the raw bytes rather than corrupting the body.
+			if isXMLResponseContentType(resp.Header.Get("Content-Type")) {
+				return cliutil.XMLToJSON(json.RawMessage(respBody)), resp.StatusCode, nil
+			}
+{{- end}}
 			return json.RawMessage(sanitizeJSONResponse(respBody)), resp.StatusCode, nil
 		}
 
@@ -2215,6 +2224,22 @@ func isBinaryResponseContentType(ct string) bool {
 	}
 	return true
 }
+{{- if .HasXMLResponse}}
+
+// isXMLResponseContentType reports whether a success response should be
+// normalized from XML to JSON. application/xhtml+xml is excluded: it is
+// HTML-shaped and belongs to the html response path.
+func isXMLResponseContentType(ct string) bool {
+	mt := strings.ToLower(strings.TrimSpace(ct))
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
+	if mt == "" || mt == "application/xhtml+xml" {
+		return false
+	}
+	return mt == "application/xml" || mt == "text/xml" || strings.HasSuffix(mt, "+xml")
+}
+{{- end}}
 
 // wrapBinaryResponse marshals body into a self-describing base64 envelope.
 func wrapBinaryResponse(ct string, body []byte) (json.RawMessage, error) {
