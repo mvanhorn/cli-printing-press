@@ -2835,6 +2835,9 @@ func effectiveSecurityRequirements(op *openapi3.Operation, doc *openapi3.T) open
 		if len(requirements) > 0 || securityRequirementsAllowAnonymous(*op.Security) {
 			return requirements
 		}
+		if securityRequirementsReferenceDefinedScheme(doc, *op.Security) {
+			return nil
+		}
 		return definedSecurityRequirements(doc, doc.Security)
 	}
 	if doc == nil {
@@ -2858,17 +2861,33 @@ func definedSecurityRequirements(doc *openapi3.T, requirements openapi3.Security
 			continue
 		}
 		defined := openapi3.SecurityRequirement{}
+		hasUndefined := false
 		for name, scopes := range requirement {
 			if securitySchemeValue(doc.Components.SecuritySchemes[name]) == nil {
-				continue
+				hasUndefined = true
+				break
 			}
 			defined[name] = scopes
 		}
-		if len(defined) > 0 {
+		if !hasUndefined && len(defined) > 0 {
 			filtered = append(filtered, defined)
 		}
 	}
 	return filtered
+}
+
+func securityRequirementsReferenceDefinedScheme(doc *openapi3.T, requirements openapi3.SecurityRequirements) bool {
+	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
+		return false
+	}
+	for _, requirement := range requirements {
+		for name := range requirement {
+			if securitySchemeValue(doc.Components.SecuritySchemes[name]) != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Ordering rationale: Bearer is the simplest already-minted token shape and

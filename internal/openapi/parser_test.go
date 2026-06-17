@@ -2523,6 +2523,60 @@ paths:
 	runGo(t, outputDir, "test", "./...")
 }
 
+func TestEffectiveSecurityRequirementsDropsMixedDanglingRequirement(t *testing.T) {
+	t.Parallel()
+
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: Mixed Dangling Security
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /v1/apps:
+    get:
+      operationId: listApps
+      security:
+        - BearerAuth: []
+          DanglingAuth: []
+      responses: {"200": {description: ok}}
+  /v1/widgets:
+    get:
+      operationId: listWidgets
+      security:
+        - BearerAuth: []
+          DanglingAuth: []
+        - ApiKeyAuth: []
+      responses: {"200": {description: ok}}
+`)
+
+	loader := openapi3.NewLoader()
+	loader.IsExternalRefsAllowed = true
+	doc, err := loader.LoadFromData(spec)
+	require.NoError(t, err)
+
+	appsOp := doc.Paths.Find("/v1/apps").Get
+	assert.Empty(t, effectiveSecurityRequirements(appsOp, doc), "mixed defined/dangling AND requirement must not degrade to single-scheme auth")
+
+	widgetsOp := doc.Paths.Find("/v1/widgets").Get
+	assert.Equal(t, openapi3.SecurityRequirements{{"ApiKeyAuth": []string{}}}, effectiveSecurityRequirements(widgetsOp, doc), "valid alternatives should remain after dropping malformed composites")
+
+	counts := securitySchemeOperationUsageCounts(doc)
+	assert.NotContains(t, counts, "BearerAuth")
+	assert.Equal(t, 1, counts["ApiKeyAuth"])
+}
+
 func TestSelectSecuritySchemeRespectsRootSecurityFilter(t *testing.T) {
 	t.Parallel()
 
