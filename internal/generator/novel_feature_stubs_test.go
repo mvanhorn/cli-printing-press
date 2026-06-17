@@ -275,8 +275,10 @@ func captureNovelFeatureStderr(t *testing.T, fn func() error) (string, error) {
 	r, w, err := os.Pipe()
 	require.NoError(t, err)
 	os.Stderr = w
+	defer func() {
+		os.Stderr = oldErr
+	}()
 	callErr := fn()
-	os.Stderr = oldErr
 	require.NoError(t, w.Close())
 	data, err := io.ReadAll(r)
 	require.NoError(t, err)
