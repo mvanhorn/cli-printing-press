@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -702,12 +703,7 @@ func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
 }
 
 func pathHasComponent(path, component string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(filepath.Clean(path)), "/") {
-		if part == component {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(filepath.ToSlash(filepath.Clean(path)), "/"), component)
 }
 
 func copyDirFiltered(src, dst string, skipFile func(path string, info fs.FileInfo) bool) error {
