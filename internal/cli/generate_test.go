@@ -714,7 +714,7 @@ capabilities:
 
 func writeInternalReadinessSpec(t *testing.T, path, name, baseURL, resource string) {
 	t.Helper()
-	require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf(`name: %s
+	data := fmt.Appendf(nil, `name: %s
 description: %s API
 version: 0.1.0
 base_url: %s
@@ -736,7 +736,8 @@ types:
   Item:
     fields:
       - {name: id, type: string}
-`, name, name, baseURL, name, resource, resource, resource, resource)), 0o644))
+`, name, name, baseURL, name, resource, resource, resource, resource)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
 }
 
 func findingCodes(findings []readinessFinding) []string {
