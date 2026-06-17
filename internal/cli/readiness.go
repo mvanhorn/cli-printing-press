@@ -116,7 +116,8 @@ func buildReadinessReport(apiSpec *spec.APISpec, opts readinessReportOptions) re
 	auth := readinessAuthSummary(apiSpec.Auth)
 	syncable := profile.SyncableResourceNames()
 	dependent := readinessDependentResourceNames(profile.DependentSyncResources)
-	findings := readinessFindings(apiSpec, opts, auth, endpointCount, readCount, writeCount, syncable, dependent)
+	typedEndpointCount := apiSpec.TypedEndpointCount()
+	findings := readinessFindings(apiSpec, opts, auth, endpointCount, typedEndpointCount, readCount, writeCount, syncable, dependent)
 
 	report := readinessReport{
 		SchemaVersion: readinessSchemaVersion,
@@ -146,8 +147,8 @@ func buildReadinessReport(apiSpec *spec.APISpec, opts readinessReportOptions) re
 		},
 		MCP: readinessMCP{
 			EffectiveTransports: apiSpec.EffectiveMCPTransports(),
-			TypedEndpointCount:  apiSpec.TypedEndpointCount(),
-			LargeSurface:        apiSpec.TypedEndpointCount() > spec.DefaultRemoteTransportEndpointThreshold,
+			TypedEndpointCount:  typedEndpointCount,
+			LargeSurface:        typedEndpointCount > spec.DefaultRemoteTransportEndpointThreshold,
 		},
 		Findings:  findings,
 		NextSteps: readinessNextSteps(apiSpec, opts, findings),
@@ -227,7 +228,7 @@ func readinessAuthSummary(auth spec.AuthConfig) readinessAuth {
 	}
 }
 
-func readinessFindings(apiSpec *spec.APISpec, opts readinessReportOptions, auth readinessAuth, endpointCount, readCount, writeCount int, syncable, dependent []string) []readinessFinding {
+func readinessFindings(apiSpec *spec.APISpec, opts readinessReportOptions, auth readinessAuth, endpointCount, typedEndpointCount, readCount, writeCount int, syncable, dependent []string) []readinessFinding {
 	var findings []readinessFinding
 	add := func(severity, category, code, message, recommendation string) {
 		findings = append(findings, readinessFinding{
@@ -261,7 +262,7 @@ func readinessFindings(apiSpec *spec.APISpec, opts readinessReportOptions, auth 
 	if readCount > 0 && len(syncable) == 0 && len(dependent) == 0 {
 		add("warning", "data_layer", "no_syncable_resources", "No syncable resources were detected for the local data layer.", "Confirm list endpoints return arrays or envelopes with stable item IDs.")
 	}
-	if apiSpec.TypedEndpointCount() > spec.DefaultRemoteTransportEndpointThreshold && len(apiSpec.MCP.Transport) == 0 && !apiSpec.HasMCPTransport("http") {
+	if typedEndpointCount > spec.DefaultRemoteTransportEndpointThreshold && len(apiSpec.MCP.Transport) == 0 && !apiSpec.HasMCPTransport("http") {
 		add("warning", "mcp", "large_mcp_surface_stdio_only", "The typed endpoint surface is large and defaults to stdio-only MCP transport.", "Add explicit mcp.transport or MCP intents if remote agent access is important.")
 	}
 	if apiSpec.EffectiveHTTPTransport() != spec.HTTPTransportStandard || apiSpec.SpecSource == "sniffed" {
@@ -323,6 +324,9 @@ func readinessGenerateCommand(apiSpec *spec.APISpec, opts readinessReportOptions
 	}
 	if apiSpec != nil && apiSpec.Name != "" {
 		parts = append(parts, "--name", readinessShellArg(apiSpec.Name))
+	}
+	if opts.OutputDir != "" {
+		parts = append(parts, "--output", readinessShellArg(opts.OutputDir))
 	}
 	return strings.Join(parts, " ")
 }
@@ -403,11 +407,10 @@ func renderReadinessMarkdown(report readinessReport) string {
 		fmt.Fprintf(&b, "- none\n")
 	} else {
 		for _, finding := range report.Findings {
-			fmt.Fprintf(&b, "- %s [%s/%s]: %s", strings.ToUpper(finding.Severity), finding.Category, finding.Code, finding.Message)
+			fmt.Fprintf(&b, "- %s [%s/%s]: %s\n", strings.ToUpper(finding.Severity), finding.Category, finding.Code, finding.Message)
 			if finding.Recommendation != "" {
-				fmt.Fprintf(&b, " Recommendation: %s", finding.Recommendation)
+				fmt.Fprintf(&b, "  Recommendation: %s\n", finding.Recommendation)
 			}
-			fmt.Fprintf(&b, "\n")
 		}
 	}
 	fmt.Fprintf(&b, "\n")

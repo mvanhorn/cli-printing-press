@@ -514,6 +514,7 @@ types:
 	assert.Contains(t, got, "Verdict: WARN")
 	assert.Contains(t, got, "## Auth Readiness")
 	assert.Contains(t, got, "READYAPP_TOKEN")
+	assert.Contains(t, got, "--output "+outputDir)
 	assert.Contains(t, got, "auth_verify_missing")
 }
 

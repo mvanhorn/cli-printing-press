@@ -126,7 +126,7 @@ func newGenerateCmd() *cobra.Command {
 	var polish bool
 	var asJSON bool
 	var dryRun bool
-	var readinessReport bool
+	var readinessReportFlag bool
 	var specSource string
 	var category string
 	var clientPattern string
@@ -162,14 +162,14 @@ func newGenerateCmd() *cobra.Command {
   # Multiple specs merged into one CLI
   cli-printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if readinessReport && dryRun {
+			if readinessReportFlag && dryRun {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--readiness-report cannot be combined with --dry-run")}
 			}
 			if dryRun && docsURL != "" {
 				return fmt.Errorf("--dry-run cannot be used with --docs (doc scraping has unavoidable side effects)")
 			}
 			if docsURL != "" {
-				if readinessReport {
+				if readinessReportFlag {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--readiness-report is not supported with --docs in v1; provide a spec with --spec")}
 				}
 				apiName := cliName
@@ -269,7 +269,7 @@ func newGenerateCmd() *cobra.Command {
 			}
 
 			if planFile != "" {
-				if readinessReport {
+				if readinessReportFlag {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--readiness-report is not supported with --plan in v1; provide a spec with --spec")}
 				}
 				if (generateMCPFlagOverrides{Orchestration: mcpOrchestration, Transport: mcpTransport, EndpointTools: mcpEndpointTools, IntentsPath: mcpIntentsPath}).hasAny() {
@@ -342,7 +342,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 				singleSpecData = data
 				if devicespec.LooksLikeDeviceSpec(data) {
-					if readinessReport {
+					if readinessReportFlag {
 						return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--readiness-report is not supported with BLE device specs in v1; provide an API spec with --spec")}
 					}
 					deviceSpec, err := devicespec.ParseBytes(data)
@@ -450,7 +450,7 @@ func newGenerateCmd() *cobra.Command {
 
 				enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(specFiles, specURL)...)
 				if apiSpec.BaseURLIsPlaceholder {
-					if readinessReport {
+					if readinessReportFlag {
 						placeholderBaseURLSpecFiles = append(placeholderBaseURLSpecFiles, specFile)
 						specs = append(specs, apiSpec)
 						continue
@@ -498,11 +498,11 @@ func newGenerateCmd() *cobra.Command {
 			}
 			applyLibraryAttributionForGenerate(apiSpec, reprintContributor)
 
-			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun && !readinessReport)
+			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun && !readinessReportFlag)
 			if err != nil {
 				return err
 			}
-			if readinessReport {
+			if readinessReportFlag {
 				trafficAnalysis, err := loadTrafficAnalysisForGenerate(trafficAnalysisPath, specFiles, apiSpec.SpecSource)
 				if err != nil {
 					return &ExitError{Code: ExitInputError, Err: err}
@@ -623,7 +623,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
-	cmd.Flags().BoolVar(&readinessReport, "readiness-report", false, "Analyze whether the parsed spec is ready to generate a useful CLI without writing files")
+	cmd.Flags().BoolVar(&readinessReportFlag, "readiness-report", false, "Analyze whether the parsed spec is ready to generate a useful CLI without writing files")
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed/browser-sniffed, docs (affects generated client defaults like rate limiting)")
 	cmd.Flags().StringVar(&category, "category", "", "Public-library category for non-catalog generation")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
