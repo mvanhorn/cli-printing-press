@@ -58,6 +58,42 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
+func rejectUnresolvedPathParams(path string, allowedTemplateVars map[string]string) error {
+	for {
+		start := strings.IndexByte(path, '{')
+		if start < 0 {
+			return nil
+		}
+		rest := path[start+1:]
+		end := strings.IndexByte(rest, '}')
+		if end < 0 {
+			return nil
+		}
+		name := rest[:end]
+		if _, ok := allowedTemplateVars[name]; ok {
+			path = rest[end+1:]
+			continue
+		}
+		if isPathPlaceholderName(name) {
+			return fmt.Errorf("unresolved path parameter {%s}", name)
+		}
+		path = rest[end+1:]
+	}
+}
+
+func isPathPlaceholderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 	return &http.Client{Timeout: timeout, Jar: jar}
 }
@@ -429,6 +465,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	// client_credentials mint happens unnecessarily.
 	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
+	}
+	if err := rejectUnresolvedPathParams(path, nil); err != nil {
+		return nil, 0, err
 	}
 	targetURL := c.BaseURL + path
 
