@@ -1363,6 +1363,16 @@ func TestRunLiveDogfoodSkipsHappyPathOnRequiredParam4xx(t *testing.T) {
 	require.NotNil(t, summaryJSON, "expected reports summary json_fidelity result")
 	assert.Equal(t, LiveDogfoodStatusSkip, summaryJSON.Status)
 	assert.Equal(t, reasonRequiredParamFixture, summaryJSON.Reason)
+
+	eventsHappy := findResultByCommandKind(report, "events list", LiveDogfoodTestHappy)
+	require.NotNil(t, eventsHappy, "expected events list happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, eventsHappy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, eventsHappy.Reason)
+
+	eventsJSON := findResultByCommandKind(report, "events list", LiveDogfoodTestJSON)
+	require.NotNil(t, eventsJSON, "expected events list json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, eventsJSON.Status)
+	assert.Equal(t, reasonRequiredParamFixture, eventsJSON.Reason)
 }
 
 func TestRunLiveDogfoodSkipsMutatingCommandsWithoutRunnableExample(t *testing.T) {
@@ -1495,6 +1505,9 @@ if [ "$1" = "agent-context" ]; then
     {"name":"reports","subcommands":[
       {"name":"prospects"},
       {"name":"summary"}
+    ]},
+    {"name":"events","subcommands":[
+      {"name":"list","annotations":{"pp:method":"GET","mcp:read-only":"true"}}
     ]}
   ]
 }
@@ -1552,6 +1565,31 @@ fi
 if [ "$1" = "reports" ] && [ "$2" = "summary" ]; then
   echo 'summary'
   exit 0
+fi
+
+if [ "$1" = "events" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List calendar events.
+
+Usage:
+  fixture-pp-cli events list [flags]
+
+Examples:
+  fixture-pp-cli events list --account-id 550e8400-e29b-41d4-a716-446655440000 --calendar-ids example-value --start 2026-01-15T09:00:00Z --end 2026-01-15T10:00:00Z
+
+Flags:
+      --account-id string     Account id
+      --calendar-ids string   Calendar ids
+      --end string            End time
+      --json                  Output JSON
+      --start string          Start time
+HELP
+  exit 0
+fi
+
+if [ "$1" = "events" ] && [ "$2" = "list" ]; then
+  echo 'unexpected events list invocation with synthetic required query params' >&2
+  exit 9
 fi
 
 echo "unexpected args: $*" >&2
@@ -3916,15 +3954,19 @@ func TestRunLiveDogfoodStoreFixtureSourceUsesSyncedResourceID(t *testing.T) {
 	assert.Equal(t, "store", jsonResult.FixtureSource)
 }
 
-func TestRunLiveDogfoodStoreFixtureSourceMarksSyntheticWhenStoreEmpty(t *testing.T) {
+func TestRunLiveDogfoodStoreFixtureSourceSkipsWhenStoreEmpty(t *testing.T) {
 	dir, binaryName := writeLiveDogfoodStoreFixture(t, false)
 	report := runRichFixtureMatrix(t, dir, binaryName)
 
 	happy := findResultByCommandKind(report, "tasks get-task", LiveDogfoodTestHappy)
 	require.NotNil(t, happy, "expected tasks get-task happy_path result")
-	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
-	assert.Equal(t, []string{"tasks", "get-task", "example-id"}, happy.Args)
-	assert.Equal(t, "synthetic", happy.FixtureSource)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "tasks get-task", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult, "expected tasks get-task json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonRequiredParamFixture, jsonResult.Reason)
 }
 
 func TestRunLiveDogfoodResolveSuccessSinglePositional(t *testing.T) {
@@ -4656,4 +4698,23 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "example-value"}, args,
 		"empty pp:happy-args must fall through to Example derivation")
+}
+
+func TestHappyArgsContainSyntheticFlagPlaceholder(t *testing.T) {
+	assert.True(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"events", "list", "--account-id", "550e8400-e29b-41d4-a716-446655440000", "--calendar-ids", "example-value"},
+		[]string{"events", "list"},
+	))
+	assert.True(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"users", "get-by-ids", "--ids=example-value"},
+		[]string{"users", "get-by-ids"},
+	))
+	assert.True(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"keys", "list", "--api-key", "your-token-here"},
+		[]string{"keys", "list"},
+	))
+	assert.False(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"widgets", "search", "--query", "example-value"},
+		[]string{"widgets", "search"},
+	))
 }
