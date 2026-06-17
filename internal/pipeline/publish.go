@@ -667,6 +667,9 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 	if info.IsDir() && filepath.Base(path) == "sources" {
 		return true
 	}
+	if !info.IsDir() && info.Size() >= publishableManuscriptMaxCaptureBytes {
+		return true
+	}
 	if opts.IncludeRawCaptures {
 		return false
 	}
@@ -676,24 +679,33 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 	if strings.EqualFold(filepath.Ext(path), ".har") {
 		return true
 	}
-	return info.Size() >= publishableManuscriptMaxCaptureBytes
+	return false
 }
 
 func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
 	clean := filepath.Clean(path)
 	base := filepath.Base(clean)
-	parent := filepath.Base(filepath.Dir(clean))
+	parentPath := filepath.Dir(clean)
 
-	if parent == "discovery" {
+	if pathHasComponent(parentPath, "discovery") {
 		if matched, _ := filepath.Match("probe-*.json", base); matched {
 			return true
 		}
 	}
-	if info.IsDir() && parent == "discovery" && base == "bundles" {
+	if info.IsDir() && pathHasComponent(parentPath, "discovery") && base == "bundles" {
 		return true
 	}
-	if info.IsDir() && parent == "research" && strings.HasSuffix(base, "-browser-sniff-spec-samples") {
+	if info.IsDir() && pathHasComponent(parentPath, "research") && strings.HasSuffix(base, "-browser-sniff-spec-samples") {
 		return true
+	}
+	return false
+}
+
+func pathHasComponent(path, component string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(filepath.Clean(path)), "/") {
+		if part == component {
+			return true
+		}
 	}
 	return false
 }
