@@ -208,7 +208,7 @@ Read `references/transcript-parsing.md` for the full procedure. Summary of what 
 
 4. **Auto-detect target CLI** — count occurrences of each `<slug>-pp-cli` in the signals, propose the most-touched CLI as the default. Confirm with `AskUserQuestion` (single CLI: simple yes/no; multiple close: pick from list). When the user passed an explicit `<cli-name-or-path>` argument, skip auto-detect.
 
-5. **Resolve target paths** — accept short name, full name, or absolute path (per R4). Look up the public-library category by walking `~/printing-press-library/library/*/` for a matching directory. The category is needed by U7's PR open phase and is captured here so it doesn't have to be re-derived.
+5. **Resolve target paths and publish status** — accept short name, full name, or absolute path (per R4). Normalize the input to the bare CLI slug, then resolve publish status by looking up that slug in the public library (`~/printing-press-library/library/*/<slug>` when a local clone exists, otherwise the same path via `gh api`). Do not infer publish status from the local working copy's git remotes, and do not treat a missing `$PRESS_LIBRARY/<slug>` working copy as unpublished. If the slug is found in the public library, record `target_category`, `published_status: published`, and route the run through the managed-clone upstream PR path. Only use `published_status: local-only` when the slug is absent from the public library. The category is needed by U7's PR open phase and is captured here so it doesn't have to be re-derived.
 
 Each finding emitted by 1a carries `provenance: transcript`. Output flows into Phase 2 as the structured finding list documented in `references/transcript-parsing.md`.
 
@@ -379,6 +379,7 @@ findings_suppressed:
   - id: F3
     reason: "Duplicate of PR #571 (merged 2026-05-13)"
 target_binary_check: { local: "1.0.0", published: "1.0.0", status: "current" }
+published_status: published
 ```
 
 ## Phase 3 — Scope Confirmation Checkpoint (User-in-Loop #1)
@@ -463,6 +464,7 @@ If Phase 2 suppressed every finding (everything was a duplicate), Phase 3 report
 Phase 3 emits to Phase 4:
 
 ```yaml
+published_status: published
 scope_tier: bugs+features            # or bugs|all|custom
 findings_active: [...]               # the user-confirmed subset
 findings_deferred_path: <path>       # where the deferred file landed
