@@ -1,0 +1,464 @@
+openapi: "3.0.3"
+info:
+  title: Metacritic API
+  description: |
+    Undocumented internal JSON API powering metacritic.com (a Fandom property).
+    Reverse-engineered from the site's public web client. Every request carries a
+    shared public `apiKey` that the site embeds in its own JavaScript bundle, so no
+    user credentials are required for read access.
+
+    One backend (`backend.metacritic.com`) serves every media type. The `mcoTypeId`
+    query parameter selects the medium on the browse endpoint: 1 = TV shows,
+    2 = movies, 13 = games. The `{mediaType}` path segment (`games`, `movies`,
+    `shows`) selects the medium on the title-detail, filters, and review endpoints.
+
+    The non-obvious insight: Metacritic is not just a review aggregator, it is a
+    cross-media taste graph. Every gap between a title's Metascore (critics) and
+    user score is a signal about critic-audience divergence.
+
+    Scope: this spec covers games, movies, and TV shows plus search, filters, title
+    detail, and critic/user reviews. Music (albums) is intentionally excluded: it has
+    no backend.metacritic.com API surface — its pages are legacy server-rendered HTML
+    behind Cloudflare — so it needs a browser-chrome / clearance-cookie scrape pattern
+    rather than this clean REST client. Tracked as a follow-up.
+  version: "1.0.0"
+  contact:
+    name: Metacritic (Community, reverse-engineered)
+
+servers:
+  - url: https://backend.metacritic.com
+    description: Metacritic / Fandom content backend
+
+tags:
+  - name: browse
+    description: Browse and rank titles by Metascore across games, movies, and TV
+  - name: search
+    description: Cross-media full-text search
+  - name: filters
+    description: Available filter facets (genres, platforms, networks) per medium
+  - name: titles
+    description: Full detail for a single title
+  - name: reviews
+    description: Critic and user reviews for a title
+
+paths:
+  /finder/metacritic/web:
+    get:
+      operationId: browseTitles
+      summary: Browse and rank titles by Metascore
+      description: |
+        Paginated, sortable list of titles for one medium. `mcoTypeId` selects the
+        medium (1 = TV shows, 2 = movies, 13 = games). Powers the /browse/ pages.
+      tags: [browse]
+      parameters:
+        - $ref: "#/components/parameters/ApiKey"
+        - name: mcoTypeId
+          in: query
+          required: true
+          description: "Media type: 1 = TV shows, 2 = movies, 13 = games"
+          schema:
+            type: integer
+            enum: [1, 2, 13]
+            default: 13
+        - name: offset
+          in: query
+          description: Pagination offset (0-based)
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: limit
+          in: query
+          description: Number of results per page
+          schema:
+            type: integer
+            default: 24
+            minimum: 1
+            maximum: 100
+        - name: sortBy
+          in: query
+          description: "Sort field; prefix with '-' for descending (e.g. -metaScore)"
+          schema:
+            type: string
+            default: "-metaScore"
+        - name: releaseYearMin
+          in: query
+          description: Earliest release year to include
+          schema:
+            type: integer
+        - name: releaseYearMax
+          in: query
+          description: Latest release year to include
+          schema:
+            type: integer
+        - name: componentName
+          in: query
+          description: Fixed component identifier required by the backend
+          schema:
+            type: string
+            default: results
+        - name: componentType
+          in: query
+          description: Fixed component type required by the backend
+          schema:
+            type: string
+            default: ResultList
+      responses:
+        "200":
+          description: Paginated list of titles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TitleListResponse"
+
+  /finder/metacritic/search/{query}/web:
+    get:
+      operationId: searchTitles
+      summary: Search titles across all media
+      description: Full-text search spanning games, movies, TV, and people.
+      tags: [search]
+      parameters:
+        - name: query
+          in: path
+          required: true
+          description: Search text
+          schema:
+            type: string
+        - $ref: "#/components/parameters/ApiKey"
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 24
+            minimum: 1
+            maximum: 100
+        - name: componentName
+          in: query
+          schema:
+            type: string
+            default: search
+        - name: componentType
+          in: query
+          schema:
+            type: string
+            default: SearchResults
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TitleListResponse"
+
+  /finder/metacritic/filters/{mediaType}/web:
+    get:
+      operationId: listFilters
+      summary: List available filter facets for a medium
+      description: |
+        Returns the filter facets (genres, platforms, streaming networks, product
+        types) valid for the given medium.
+      tags: [filters]
+      parameters:
+        - $ref: "#/components/parameters/MediaType"
+        - $ref: "#/components/parameters/ApiKey"
+        - name: componentName
+          in: query
+          schema:
+            type: string
+            default: finder-filters
+        - name: componentType
+          in: query
+          schema:
+            type: string
+            default: FilterList
+      responses:
+        "200":
+          description: Filter facets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FilterListResponse"
+
+  /composer/metacritic/pages/{mediaType}/{slug}/web:
+    get:
+      operationId: getTitle
+      summary: Get full detail for a single title
+      description: |
+        Returns the full composed detail payload for a title, including Metascore,
+        user score, summary, release data, and platform/genre metadata.
+      tags: [titles]
+      parameters:
+        - $ref: "#/components/parameters/MediaType"
+        - $ref: "#/components/parameters/Slug"
+        - $ref: "#/components/parameters/ApiKey"
+      responses:
+        "200":
+          description: Title detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TitleDetailResponse"
+        "404":
+          description: Title not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /reviews/metacritic/critic/{mediaType}/{slug}/web:
+    get:
+      operationId: listCriticReviews
+      summary: List critic reviews for a title
+      tags: [reviews]
+      parameters:
+        - $ref: "#/components/parameters/MediaType"
+        - $ref: "#/components/parameters/Slug"
+        - $ref: "#/components/parameters/ApiKey"
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+        - name: componentName
+          in: query
+          schema:
+            type: string
+            default: critic-reviews
+        - name: componentType
+          in: query
+          schema:
+            type: string
+            default: ReviewList
+      responses:
+        "200":
+          description: Critic reviews
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewListResponse"
+
+  /reviews/metacritic/user/{mediaType}/{slug}/web:
+    get:
+      operationId: listUserReviews
+      summary: List user reviews for a title
+      tags: [reviews]
+      parameters:
+        - $ref: "#/components/parameters/MediaType"
+        - $ref: "#/components/parameters/Slug"
+        - $ref: "#/components/parameters/ApiKey"
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+        - name: componentName
+          in: query
+          schema:
+            type: string
+            default: user-reviews
+        - name: componentType
+          in: query
+          schema:
+            type: string
+            default: ReviewList
+      responses:
+        "200":
+          description: User reviews
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewListResponse"
+
+components:
+  parameters:
+    ApiKey:
+      name: apiKey
+      in: query
+      required: true
+      description: |
+        Shared public web key embedded in the metacritic.com client bundle.
+        Required on every request; no user account or private credential needed.
+      schema:
+        type: string
+        default: "1MOZgmNFxvmljaQR1X9KAij9Mo4xAY3u"
+    MediaType:
+      name: mediaType
+      in: path
+      required: true
+      description: "Medium: games, movies, or shows"
+      schema:
+        type: string
+        enum: [games, movies, shows]
+    Slug:
+      name: slug
+      in: path
+      required: true
+      description: URL slug of the title (e.g. the-legend-of-zelda-ocarina-of-time-1998)
+      schema:
+        type: string
+
+  schemas:
+    TitleListResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+            totalResults:
+              type: integer
+              description: Total number of matching titles across all pages
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/TitleSummary"
+
+    TitleSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          description: "Entity type, e.g. game-title, movie, show"
+        typeId:
+          type: integer
+        title:
+          type: string
+        slug:
+          type: string
+        premiereYear:
+          type: integer
+          nullable: true
+        releaseDate:
+          type: string
+          nullable: true
+        rating:
+          type: string
+          nullable: true
+        metaScore:
+          type: integer
+          nullable: true
+          description: Aggregated critic score (0-100)
+        userScore:
+          type: number
+          nullable: true
+          description: Aggregated user score (0.0-10.0)
+
+    TitleDetailResponse:
+      type: object
+      properties:
+        components:
+          type: array
+          items:
+            type: object
+            properties:
+              data:
+                type: object
+                properties:
+                  item:
+                    $ref: "#/components/schemas/TitleSummary"
+
+    FilterListResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  title:
+                    type: string
+                    description: "Facet name, e.g. genres, platforms, streamingNetworkNames"
+                  options:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        title:
+                          type: string
+                        value:
+                          type: string
+
+    ReviewListResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id:
+              type: string
+            totalResults:
+              type: integer
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/Review"
+
+    Review:
+      type: object
+      properties:
+        id:
+          type: string
+          nullable: true
+        quote:
+          type: string
+        score:
+          type: integer
+          description: Review score (critics 0-100, users 0-10)
+        url:
+          type: string
+          nullable: true
+        date:
+          type: string
+          nullable: true
+        author:
+          type: string
+          nullable: true
+        publicationName:
+          type: string
+          nullable: true
+          description: Outlet name (critic reviews only)
+
+    ErrorResponse:
+      type: object
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: integer
+              reason:
+                type: string
+              message:
+                type: string
