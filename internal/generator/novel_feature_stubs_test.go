@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,6 +213,77 @@ func TestGeneratorSkipsNovelFeatureWiringForAbsorbedEndpointCollisions(t *testin
 	assert.NotContains(t, parent, "newNovelScenariosGetQrcodeCmd")
 	assert.NotContains(t, parent, "newNovelScenariosListCmd")
 	assert.NotContains(t, parent, "newNovelScenariosRunCmd")
+}
+
+func TestGeneratorSkipsNovelFeatureWiringForExistingCommandFileCollisions(t *testing.T) {
+	apiSpec := minimalSpec("existingnovel")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, os.MkdirAll(filepath.Join(outputDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "items_audit.go"), []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func newItemsAuditCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{Use: "audit"}
+}
+`), 0o644))
+
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Bulk export",
+			Command:     "export --format json",
+			Description: "Export data with extra filtering.",
+			Example:     "existingnovel-pp-cli export --format json",
+		},
+		{
+			Name:        "Item audit",
+			Command:     "items audit --dry-run",
+			Description: "Audit items from a hand-authored child command.",
+			Example:     "existingnovel-pp-cli items audit --dry-run",
+		},
+	}
+	stderr, err := captureNovelFeatureStderr(t, gen.Generate)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, `warning: novel feature command "items audit" maps to existing internal/cli/items_audit.go without expected constructor newNovelItemsAuditCmd; skipping novel stub`)
+	assert.NotContains(t, stderr, `warning: novel feature command "items audit" maps to existing internal/cli/items_audit.go; leaving existing file unchanged`)
+
+	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, "rootCmd.AddCommand(newExportCmd(flags))")
+	assert.NotContains(t, root, "newNovelExportCmd")
+
+	parent := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
+	assert.NotContains(t, parent, "newNovelItemsAuditCmd")
+	requireGeneratedCompiles(t, outputDir)
+
+	stderr, err = captureNovelFeatureStderr(t, gen.Generate)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, `warning: novel feature command "items audit" maps to existing internal/cli/items_audit.go without expected constructor newNovelItemsAuditCmd; skipping novel stub`)
+	assert.NotContains(t, stderr, `warning: novel feature command "items audit" maps to existing internal/cli/items_audit.go; leaving existing file unchanged`)
+	root = readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, root, "rootCmd.AddCommand(newExportCmd(flags))")
+	assert.NotContains(t, root, "newNovelExportCmd")
+	parent = readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
+	assert.NotContains(t, parent, "newNovelItemsAuditCmd")
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func captureNovelFeatureStderr(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+
+	oldErr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	defer func() {
+		os.Stderr = oldErr
+	}()
+	callErr := fn()
+	require.NoError(t, w.Close())
+	data, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	return string(data), callErr
 }
 
 func TestGeneratorWiresNovelChildrenUnderPromotedResource(t *testing.T) {
