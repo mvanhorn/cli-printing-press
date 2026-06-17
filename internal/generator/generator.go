@@ -1682,6 +1682,13 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 	return !bodyIsAllFilterShape(endpoint.Body)
 }
 
+// EndpointIsWriteCommand reports whether an endpoint mutates external state.
+// It exposes the generator's command classifier to pre-generation diagnostics
+// so reports can match the generated CLI/MCP safety annotations.
+func EndpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
+	return endpointIsWriteCommand(endpoint, opName)
+}
+
 // endpointIsReadCommand is the inverse of endpointIsWriteCommand.
 // Templates use this through the IsReadOnly field on their data
 // structs to decide whether to emit Annotations["mcp:read-only"].

@@ -126,6 +126,7 @@ func newGenerateCmd() *cobra.Command {
 	var polish bool
 	var asJSON bool
 	var dryRun bool
+	var readinessReport bool
 	var specSource string
 	var category string
 	var clientPattern string
@@ -149,6 +150,9 @@ func newGenerateCmd() *cobra.Command {
 		Example: `  # Generate from a local OpenAPI spec
   cli-printing-press generate --spec ./openapi.yaml
 
+  # Inspect readiness before generating files
+  cli-printing-press generate --spec ./openapi.yaml --readiness-report
+
   # Generate from a URL and recreate output while preserving hand-authored CLI files
   cli-printing-press generate --spec https://api.example.com/openapi.json --force
 
@@ -158,10 +162,16 @@ func newGenerateCmd() *cobra.Command {
   # Multiple specs merged into one CLI
   cli-printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if readinessReport && dryRun {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--readiness-report cannot be combined with --dry-run")}
+			}
 			if dryRun && docsURL != "" {
 				return fmt.Errorf("--dry-run cannot be used with --docs (doc scraping has unavoidable side effects)")
 			}
 			if docsURL != "" {
+				if readinessReport {
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--readiness-report is not supported with --docs in v1; provide a spec with --spec")}
+				}
 				apiName := cliName
 				if apiName == "" {
 					apiName = "myapi"
@@ -259,6 +269,9 @@ func newGenerateCmd() *cobra.Command {
 			}
 
 			if planFile != "" {
+				if readinessReport {
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--readiness-report is not supported with --plan in v1; provide a spec with --spec")}
+				}
 				if (generateMCPFlagOverrides{Orchestration: mcpOrchestration, Transport: mcpTransport, EndpointTools: mcpEndpointTools, IntentsPath: mcpIntentsPath}).hasAny() {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--mcp-* flags cannot be used with --plan")}
 				}
@@ -329,6 +342,9 @@ func newGenerateCmd() *cobra.Command {
 				}
 				singleSpecData = data
 				if devicespec.LooksLikeDeviceSpec(data) {
+					if readinessReport {
+						return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--readiness-report is not supported with BLE device specs in v1; provide an API spec with --spec")}
+					}
 					deviceSpec, err := devicespec.ParseBytes(data)
 					if err != nil {
 						return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing device spec %s: %w", specFiles[0], err)}
@@ -402,6 +418,7 @@ func newGenerateCmd() *cobra.Command {
 
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
+			var placeholderBaseURLSpecFiles []string
 			for i, specFile := range specFiles {
 				var data []byte
 				var err error
@@ -433,6 +450,11 @@ func newGenerateCmd() *cobra.Command {
 
 				enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(specFiles, specURL)...)
 				if apiSpec.BaseURLIsPlaceholder {
+					if readinessReport {
+						placeholderBaseURLSpecFiles = append(placeholderBaseURLSpecFiles, specFile)
+						specs = append(specs, apiSpec)
+						continue
+					}
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("spec %s declares no `servers:` block and no per-operation servers; the generator cannot resolve a real base URL and refuses to ship a CLI whose `doctor` would DNS-fail on every call. Add a `servers:` block with the real API host, or run via crowd-sniff with `--base-url` to supply one", specFile)}
 				}
 
@@ -476,9 +498,24 @@ func newGenerateCmd() *cobra.Command {
 			}
 			applyLibraryAttributionForGenerate(apiSpec, reprintContributor)
 
-			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
+			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun && !readinessReport)
 			if err != nil {
 				return err
+			}
+			if readinessReport {
+				trafficAnalysis, err := loadTrafficAnalysisForGenerate(trafficAnalysisPath, specFiles, apiSpec.SpecSource)
+				if err != nil {
+					return &ExitError{Code: ExitInputError, Err: err}
+				}
+				browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
+				applyHTTPTransportDefault(apiSpec, trafficAnalysis)
+				return printReadinessReport(cmd.OutOrStdout(), apiSpec, readinessReportOptions{
+					SpecFiles:                   specFiles,
+					OutputDir:                   absOut,
+					TrafficAnalysis:             trafficAnalysis,
+					PlaceholderBaseURLSpecFiles: placeholderBaseURLSpecFiles,
+					AsJSON:                      asJSON,
+				})
 			}
 			if dryRun {
 				return printDryRun(apiSpec, absOut, specFiles)
@@ -586,6 +623,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
+	cmd.Flags().BoolVar(&readinessReport, "readiness-report", false, "Analyze whether the parsed spec is ready to generate a useful CLI without writing files")
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed/browser-sniffed, docs (affects generated client defaults like rate limiting)")
 	cmd.Flags().StringVar(&category, "category", "", "Public-library category for non-catalog generation")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
