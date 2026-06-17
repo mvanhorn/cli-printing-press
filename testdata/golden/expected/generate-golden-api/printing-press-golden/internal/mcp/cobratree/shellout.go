@@ -16,7 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-func shellOutToCLI(cliPath func() (string, error), commandPath []string) server.ToolHandlerFunc {
+func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
 	lookupPath, lookupErr := cliPath()
 	prefixArgs := append([]string{}, commandPath...)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -28,10 +28,8 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string) server.
 		finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
 			tokens := SplitShellArgs(raw)
-			for _, t := range tokens {
-				if strings.HasPrefix(t, "-") {
-					return mcplib.NewToolResultError(fmt.Sprintf("flag-like argument %q not allowed in positional args field; use structured tool parameters instead", t)), nil
-				}
+			if err := validatePositionalArgsForMCP(tokens, readOnly, positionalWriteSinks); err != nil {
+				return mcplib.NewToolResultError(err.Error()), nil
 			}
 			finalArgs = append(finalArgs, tokens...)
 		}
@@ -41,6 +39,27 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string) server.
 		}
 		return mcplib.NewToolResultText(out), nil
 	}
+}
+
+func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWriteSinks map[int]bool) error {
+	for _, t := range tokens {
+		if t != "-" && strings.HasPrefix(t, "-") {
+			return fmt.Errorf("flag-like argument %q not allowed in positional args field; use structured tool parameters instead", t)
+		}
+	}
+	if !readOnly || len(positionalWriteSinks) == 0 {
+		return nil
+	}
+	for i, t := range tokens {
+		if !positionalWriteSinks[i] {
+			continue
+		}
+		if strings.TrimSpace(t) == "" || t == "-" {
+			continue
+		}
+		return fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", i+1, t)
+	}
+	return nil
 }
 
 // blockedRootFlags are root-level CLI flags that an MCP client must not be
