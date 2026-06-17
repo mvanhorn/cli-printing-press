@@ -12,6 +12,11 @@ import (
 )
 
 // runWithCapturedStdout executes fn while capturing os.Stdout via a pipe.
+//
+// The pipe is drained by a background goroutine that starts before fn runs, so
+// fn never blocks on a full OS pipe buffer. Draining only after fn returned
+// would deadlock once fn writes more than the buffer holds (notably smaller on
+// Windows), so the reader must run concurrently with the writer.
 func runWithCapturedStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -19,13 +24,19 @@ func runWithCapturedStdout(t *testing.T, fn func() error) (string, error) {
 	origStdout := os.Stdout
 	os.Stdout = w
 
+	outCh := make(chan string, 1)
+	go func() {
+		out, _ := io.ReadAll(r)
+		outCh <- string(out)
+	}()
+
 	execErr := fn()
 	w.Close()
 	os.Stdout = origStdout
 
-	out, _ := io.ReadAll(r)
+	out := <-outCh
 	r.Close()
-	return string(out), execErr
+	return out, execErr
 }
 
 func captureStdout(t *testing.T, fn func()) string {
