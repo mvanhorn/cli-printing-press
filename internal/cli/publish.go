@@ -219,6 +219,7 @@ func newPublishPackageCmd() *cobra.Command {
 	var dest string
 	var modulePath string
 	var allowMirrorDeletions bool
+	var includeRawCaptures bool
 	var asJSON bool
 
 	cmd := &cobra.Command{
@@ -439,7 +440,8 @@ func newPublishPackageCmd() *cobra.Command {
 				result.RunID = runID
 				srcMsDir := filepath.Join(msDir, runID)
 				dstMsDir := filepath.Join(outCLIDir, ".manuscripts", runID)
-				if err := pipeline.CopyPublishableManuscriptDir(srcMsDir, dstMsDir); err != nil {
+				manuscriptCopyOptions := pipeline.PublishableManuscriptCopyOptions{IncludeRawCaptures: includeRawCaptures}
+				if err := pipeline.CopyPublishableManuscriptDirWithOptions(srcMsDir, dstMsDir, manuscriptCopyOptions); err != nil {
 					cleanupOnFailure()
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying manuscripts: %w", err)}
 				} else {
@@ -496,6 +498,7 @@ func newPublishPackageCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dest, "dest", "", "Publish repo to write into directly (mutually exclusive with --target)")
 	cmd.Flags().StringVar(&modulePath, "module-path", "", "Go module path to set (e.g., github.com/org/repo/library/category/cli-name)")
 	cmd.Flags().BoolVar(&allowMirrorDeletions, "allow-mirror-deletions", false, "Allow the overlay to delete mirror files that have no source counterpart (use only after manual reconciliation)")
+	cmd.Flags().BoolVar(&includeRawCaptures, "include-raw-captures", false, "Include raw browser-sniff captures in bundled manuscripts (private use only)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
