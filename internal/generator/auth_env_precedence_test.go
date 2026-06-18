@@ -300,6 +300,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"oauth-user-context-refresh-pp-cli/internal/cliutil"
 )
 
 func TestRefreshedAccessTokenWinsOverStalePerCallToken(t *testing.T) {
@@ -352,12 +354,21 @@ func TestRefreshedAccessTokenWinsOverStalePerCallToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
-	text := string(after)
-	if !strings.Contains(text, "new-refresh-token") {
-		t.Fatalf("config did not persist rotated refresh token:\n%s", text)
+	if text := string(after); strings.Contains(text, "new-refresh-token") || strings.Contains(text, "new-access-token") {
+		t.Fatalf("config file should not retain rotated OAuth secrets after credentials split:\n%s", text)
 	}
-	if !strings.Contains(text, "new-access-token") {
-		t.Fatalf("config did not persist refreshed access token:\n%s", text)
+	creds, ok, err := cliutil.LoadCredentials()
+	if err != nil {
+		t.Fatalf("LoadCredentials() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("LoadCredentials() ok = false, want true")
+	}
+	if creds.RefreshToken != "new-refresh-token" {
+		t.Fatalf("credentials refresh token = %q, want new-refresh-token", creds.RefreshToken)
+	}
+	if creds.AccessToken != "new-access-token" {
+		t.Fatalf("credentials access token = %q, want new-access-token", creds.AccessToken)
 	}
 }
 `
