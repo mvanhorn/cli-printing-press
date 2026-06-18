@@ -73,6 +73,10 @@ COMMON_FLAGS = {"help", "home", "version"}
 CODEBLOCK_BASH = re.compile(r"^[ \t]*```bash[^\n]*\n(.*?)\n[ \t]*```[ \t]*$", re.DOTALL | re.MULTILINE)
 FENCED_CODE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
+# Trailing punctuation that prose glues onto a token: quotes/brackets that wrap
+# a quoted command span (`'cli cmd --flag'`) and sentence punctuation. Cobra
+# flag names are `[a-z0-9-]`, so trimming these can never truncate a real name.
+TOKEN_TRAILING_PUNCT = "'\")].,;:"
 SHELL_VAR_RE = re.compile(r"\$(?:\{[^}\n]+\}|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?])")
 COMMAND_REFERENCE_SECTION_RE = re.compile(
     r"^##\s+Command\s+Reference\s*$(.*?)(?=^##\s+|\Z)",
@@ -729,7 +733,7 @@ def _cli_invocation_from_tokens(
             i += 1
             continue
         if t.startswith("--"):
-            flag_name = t.split("=", 1)[0]
+            flag_name = t.split("=", 1)[0].rstrip(TOKEN_TRAILING_PUNCT)
             flags.append(flag_name)
             # Skip a space-separated value (`--flag value`), but NOT when:
             #  - the value is inline (`--flag=value`) — the next token is a
