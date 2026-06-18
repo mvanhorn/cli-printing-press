@@ -417,14 +417,12 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
-	cacheBase := os.Getenv("XDG_CACHE_HOME")
-	if cacheBase == "" {
-		homeDir, _ := os.UserHomeDir()
-		cacheBase = filepath.Join(homeDir, ".cache")
+	cacheDir := ""
+	if dir, err := cliutil.CacheDir(); err == nil {
+		cacheDir = filepath.Join(dir, "http")
 	}
-	cacheDir := filepath.Join(cacheBase, "{{.Name}}-pp-cli", "http")
 {{- if eq .Auth.Type "session_handshake"}}
-	sess := newSessionManager(timeout)
+	sess := newSessionManager(timeout, cfg.Path)
 	httpClient := newHTTPClient(timeout, sess.CookieJar())
 	sess.AttachTo(httpClient)
 	c := &Client{
@@ -1792,7 +1790,15 @@ func (c *Client) persistedQueryHashes() map[string]string {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		if c != nil && c.Config != nil && c.Config.Path != "" {
+			legacyPath := filepath.Join(filepath.Dir(c.Config.Path), "persisted-queries.json")
+			if legacyPath != path {
+				data, err = os.ReadFile(legacyPath)
+			}
+		}
+		if err != nil {
+			return nil
+		}
 	}
 	var entries []persistedQueryRegistryEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
@@ -1808,14 +1814,10 @@ func (c *Client) persistedQueryHashes() map[string]string {
 }
 
 func (c *Client) persistedQueryRegistryPath() string {
-	if c != nil && c.Config != nil && c.Config.Path != "" {
-		return filepath.Join(filepath.Dir(c.Config.Path), "persisted-queries.json")
+	if dir, err := cliutil.StateDir(); err == nil {
+		return filepath.Join(dir, "persisted-queries.json")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".config", "{{.Name}}-pp-cli", "persisted-queries.json")
+	return ""
 }
 
 func rewritePersistedQueryPayload(payload any, hashes map[string]string) bool {
@@ -2054,7 +2056,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 		tokenURL = c.Config.TokenURL
 	}
 	if tokenURL == "" {
-		tokenURL = "{{.Auth.TokenURL}}"
+		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
 {{- end}}
 	if tokenURL == "" {
@@ -2132,7 +2134,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 
 	tokenURL := c.Config.TokenURL
 	if tokenURL == "" {
-		tokenURL = "{{.Auth.TokenURL}}"
+		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
 
 	params := url.Values{

@@ -107,6 +107,33 @@ Commands that read from the local store or the API wrap output in a provenance e
 
 Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal AND no machine-format flag (`--json`, `--csv`, `--compact`, `--quiet`, `--plain`, `--select`) is set — piped/agent consumers and explicit-format runs get pure JSON on stdout.
 
+## Paths and state
+
+Agents should treat the CLI's path resolver as part of the runtime contract:
+
+- Use `--home <dir>` for one invocation, or set `LEARN_LOOP_EXAMPLE_HOME=<dir>` to relocate all four path kinds under one root.
+- Use per-kind env vars only when a specific kind must diverge: `LEARN_LOOP_EXAMPLE_CONFIG_DIR`, `LEARN_LOOP_EXAMPLE_DATA_DIR`, `LEARN_LOOP_EXAMPLE_STATE_DIR`, `LEARN_LOOP_EXAMPLE_CACHE_DIR`.
+- Resolution order is per-kind env var, `--home`, `LEARN_LOOP_EXAMPLE_HOME`, XDG (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`), then platform defaults.
+- `config` contains settings like `config.toml` and profiles. `data` contains `credentials.toml`, `data.db`, cookies, and auth sidecars. `state` contains persisted queries, jobs, and `teach.log`. `cache` contains regenerable HTTP/cache files.
+- Stored secrets live in `credentials.toml` under the data dir. Existing legacy `config.toml` secrets are read for compatibility and leave `config.toml` on the first auth write.
+- Run `learn-loop-example-pp-cli doctor --fail-on warn` to surface path and credential-location warnings. `agent-context` exposes a schema v4 `paths` block for agents that need the resolved dirs.
+- For MCP, pass relocation through the MCP host config. The MCP binary does not inherit CLI flags:
+
+  ```json
+  {
+    "mcpServers": {
+      "learn-loop-example": {
+        "command": "learn-loop-example-pp-mcp",
+        "env": {
+          "LEARN_LOOP_EXAMPLE_HOME": "/srv/learn-loop-example"
+        }
+      }
+    }
+  }
+  ```
+
+Fleet precedence: an inherited per-kind env var overrides an explicit `--home` for that kind. Use `LEARN_LOOP_EXAMPLE_HOME` or per-kind vars as durable fleet levers, and use `--home` only for a single invocation. Relocation is not reversible by unsetting env vars; move files manually before clearing `LEARN_LOOP_EXAMPLE_HOME`, or `doctor` will not find credentials left under the former root.
+
 ## Automatic learning
 
 This CLI ships a self-learning loop: agents `recall` before doing discovery walks, fire `teach` in the background after answering, and record playbooks when discovery is expensive. Repeat questions skip discovery; structurally similar questions get answered via entity substitution; a `playbook amend` call lets future-you fix observed CLI gotchas.
@@ -203,7 +230,7 @@ learn-loop-example-pp-cli teach --query "<user's question>" --resource-type <typ
 # (append shell `&` to background it)
 ```
 
-Silent on success. Teach the **most specific** resource — if the user asked a broad question and you walked through parent records to find the specific answer, teach the leaf id, not the parent. The CLI uses seeded `entity_lookups` for cross-alias resolution at recall time, so a teach under one alias (e.g., "Niners") satisfies future queries under another alias (e.g., "49ers", "San Francisco") automatically.
+Silent on success. Errors only land in `teach.log` under the resolved state dir. Teach the **most specific** resource — if the user asked a broad question and you walked through parent records to find the specific answer, teach the leaf id, not the parent. The CLI uses seeded `entity_lookups` for cross-alias resolution at recall time, so a teach under one alias (e.g., "Niners") satisfies future queries under another alias (e.g., "49ers", "San Francisco") automatically.
 
 ### Step 5: record a playbook when discovery took >5 calls
 
@@ -278,7 +305,7 @@ learn-loop-example-pp-cli feedback --stdin < notes.txt
 learn-loop-example-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.local/share/learn-loop-example-pp-cli/feedback.jsonl`. They are never POSTed unless `LEARN_LOOP_EXAMPLE_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `LEARN_LOOP_EXAMPLE_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally as `feedback.jsonl` under the resolved data dir. They are never POSTed unless `LEARN_LOOP_EXAMPLE_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `LEARN_LOOP_EXAMPLE_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 

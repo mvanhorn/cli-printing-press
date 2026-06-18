@@ -9,7 +9,7 @@
 //   3. Attach token to every request via {{if eq .Auth.TokenParamIn "header"}}header {{.Auth.TokenParamName}}{{else}}query param {{.Auth.TokenParamName}}{{end}}
 //   4. On {{range .Auth.InvalidateOnStatus}}{{.}} {{end}}responses, invalidate and re-fetch
 //
-// The manager persists to ~/.config/{{.Name}}-pp-cli/session.json so the token
+// The manager persists to the CLI data directory so the token
 // survives across invocations (TTL: {{if .Auth.SessionTTLHours}}{{.Auth.SessionTTLHours}}{{else}}24{{end}} hours).
 // Cookies from the jar are scoped to the requesting host automatically via
 // net/http/cookiejar.
@@ -28,6 +28,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"{{modulePath}}/internal/cliutil"
 )
 
 const (
@@ -58,10 +60,11 @@ var sessionInvalidationStatuses = map[int]bool{
 // SessionManager owns the cookie jar + cached token and coordinates the
 // handshake. Safe for concurrent use by the client's retry loop.
 type SessionManager struct {
-	mu     sync.Mutex
-	client *http.Client
-	jar    http.CookieJar
-	token  string
+	mu         sync.Mutex
+	client     *http.Client
+	jar        http.CookieJar
+	token      string
+	configPath string
 }
 
 // newSessionManager constructs a SessionManager with a cookie jar attached to
@@ -72,11 +75,12 @@ type SessionManager struct {
 // applied to the handshake itself — otherwise the very calls that establish
 // the session run as a vanilla net/http client and get rate-limited away
 // even when the data client would have cleared the bot wall.
-func newSessionManager(timeout time.Duration) *SessionManager {
+func newSessionManager(timeout time.Duration, configPath string) *SessionManager {
 	jar, _ := cookiejar.New(nil)
 	m := &SessionManager{
-		jar:    jar,
-		client: newHTTPClient(timeout, jar),
+		jar:        jar,
+		client:     newHTTPClient(timeout, jar),
+		configPath: configPath,
 	}
 	m.loadFromDisk()
 	return m
@@ -207,11 +211,11 @@ func (m *SessionManager) ImportSession(cookieDomain string, cookies []*http.Cook
 // --- Persistence helpers ---
 
 func (m *SessionManager) sessionFilePath() string {
-	home, err := os.UserHomeDir()
+	dir, err := cliutil.DataDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "{{.Name}}-pp-cli", "session.json")
+	return filepath.Join(dir, "session.json")
 }
 
 type sessionRecord struct {
@@ -233,7 +237,11 @@ func (m *SessionManager) loadFromDisk() {
 	if path == "" {
 		return
 	}
-	data, err := os.ReadFile(path)
+	legacy := ""
+	if m.configPath != "" {
+		legacy = filepath.Join(filepath.Dir(m.configPath), "session.json")
+	}
+	data, _, err := cliutil.ReadFileWithLegacyFallback(path, legacy)
 	if err != nil {
 		return
 	}

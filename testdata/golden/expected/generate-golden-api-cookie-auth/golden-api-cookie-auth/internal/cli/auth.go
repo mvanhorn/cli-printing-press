@@ -220,12 +220,12 @@ profile by name when the installed backend supports it.`,
 				}
 			}
 			if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
-				fmt.Fprintf(w, "warning: persisting cookie jar: %v (cookies still saved to config)\n", err)
+				fmt.Fprintf(w, "warning: persisting cookie jar: %v (credentials still saved)\n", err)
 			}
 
 			count := len(strings.Split(cookies, ";"))
 			fmt.Fprintf(w, "%s Found %d cookies for %s\n", green("OK"), count, domain)
-			fmt.Fprintf(w, "Session saved to %s\n", cfg.Path)
+			fmt.Fprintf(w, "Session saved to %s\n", credentialSavePath(cfg))
 			return nil
 		},
 	}
@@ -333,17 +333,35 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 
-			// JSON envelope: {saved, config_path}.
+			savePath := credentialSavePath(cfg)
+			// JSON envelope: {saved, config_path, credentials_path}.
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				out := map[string]any{
 					"saved":       true,
 					"config_path": cfg.Path,
-				}, flags)
+				}
+				if !cfg.AgentcookieManagedByExternalStore() {
+					out["credentials_path"] = savePath
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", cfg.Path)
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", savePath)
 			return nil
 		},
 	}
+}
+
+func credentialSavePath(cfg *config.Config) string {
+	if cfg != nil && cfg.AgentcookieManagedByExternalStore() {
+		return cfg.Path
+	}
+	if path, err := cliutil.CredentialsFilePath(); err == nil {
+		return path
+	}
+	if cfg != nil {
+		return cfg.Path
+	}
+	return ""
 }
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {

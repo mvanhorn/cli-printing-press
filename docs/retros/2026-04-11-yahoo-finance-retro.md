@@ -53,7 +53,7 @@
     invalidate_on_status: [401, 403]              # codes that trigger re-handshake
     ttl_hours: 24                                 # persist session this long
   ```
-  The generator's client template then emits the cookie jar, session.json persistence under `~/.config/<cli>/session.json`, an `ensureToken()` method, and invalidation retry logic. Zero hand-patching.
+  The generator's client template then emits the cookie jar, session.json persistence through the data-kind resolver, an `ensureToken()` method, and invalidation retry logic. Zero hand-patching.
 - **Test:**
   - positive: generate with `type: session_handshake` and observe the client has cookie jar + ensureToken() + crumb query-param injection; dry-run output shows `?crumb=<token>`
   - negative: generate with `type: bearer_token` and confirm no session.json persistence logic appears
@@ -159,7 +159,7 @@ None — all findings apply beyond this one API.
   - Template: `internal/generator/templates/config.go.tmpl` (session file path)
   - Generator: `internal/generator/` (wire the new branch)
 - **Acceptance criteria:**
-  - positive test: spec with `auth.type: session_handshake, token_url: ..., token_param_name: crumb, ttl_hours: 24` generates a client that (a) has a cookie jar, (b) persists `~/.config/<cli>/session.json`, (c) fetches the token before first data call, (d) adds `?crumb=<token>` on every data request, (e) invalidates on 401/403 and retries once
+  - positive test: spec with `auth.type: session_handshake, token_url: ..., token_param_name: crumb, ttl_hours: 24` generates a client that (a) has a cookie jar, (b) persists `session.json` through the data-kind resolver, (c) fetches the token before first data call, (d) adds `?crumb=<token>` on every data request, (e) invalidates on 401/403 and retries once
   - negative test: spec with `auth.type: bearer_token` generates the same client code that exists today (no regression)
   - positive test: generated CLI also includes `auth login-<method>` subcommand for importing a pre-obtained session (Chrome-cookie style)
 - **Scope boundary:** Don't replace `cookie` or `composed` auth types. Don't implement automatic browser cookie harvesting — user brings a JSON file, like the yahoo-finance implementation.

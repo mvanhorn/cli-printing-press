@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/learn"
 	"{{modulePath}}/internal/learn/entities"
 	"{{modulePath}}/internal/store"
@@ -27,6 +28,9 @@ func withTempLearnHome(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv(noLearnEnvVar, "")
+	t.Setenv("{{envPrefix .Name}}_STATE_DIR", "")
+	t.Setenv("{{envPrefix .Name}}_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
 	return dir
 }
 
@@ -97,7 +101,11 @@ func TestTeachCommand_MissingResourceTypeErrors(t *testing.T) {
 	}
 
 	// teach.log should exist with a missing --resource-type line.
-	logPath := filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", teachErrLogFileName)
+	stateDir, stateErr := cliutil.StateDir()
+	if stateErr != nil {
+		t.Fatalf("StateDir() error = %v", stateErr)
+	}
+	logPath := filepath.Join(stateDir, teachErrLogFileName)
 	data, statErr := os.ReadFile(logPath)
 	if statErr != nil {
 		t.Fatalf("teach.log should exist on error: %v", statErr)
@@ -716,7 +724,11 @@ func TestTeachCommand_IntegratedPlaybookErrorDegrades(t *testing.T) {
 	}
 
 	// teach.log should record the upsert failure for diagnosis.
-	logPath := filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", teachErrLogFileName)
+	stateDir, stateErr := cliutil.StateDir()
+	if stateErr != nil {
+		t.Fatalf("StateDir() error = %v", stateErr)
+	}
+	logPath := filepath.Join(stateDir, teachErrLogFileName)
 	data, statErr := os.ReadFile(logPath)
 	if statErr != nil {
 		t.Fatalf("teach.log should exist on degrade: %v", statErr)

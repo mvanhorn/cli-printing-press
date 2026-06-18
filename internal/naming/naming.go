@@ -45,6 +45,10 @@ const (
 	ThinCommandShortMinWords = 4
 )
 
+func PathKindEnvSuffixes() []string {
+	return []string{"HOME", "CONFIG_DIR", "DATA_DIR", "STATE_DIR", "CACHE_DIR"}
+}
+
 // IsThinCommandShort mirrors the agent-facing Short quality floor used
 // by tools-audit and generator fallback emission.
 func IsThinCommandShort(s string) bool {
