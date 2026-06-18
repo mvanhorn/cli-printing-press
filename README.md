@@ -18,15 +18,17 @@ Three CLIs printed by the press, installable today:
 
 Browse the full catalog of printed CLIs at [printingpress.dev](https://printingpress.dev) or in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category, most with full MCP servers.
 
+**Codex users:** see [docs/CODEX.md](docs/CODEX.md) to install the Printing Press skills with `--agent codex`, verify the install, and understand how that differs from `/printing-press <api> codex`.
+
 **Cursor users:** see [docs/CURSOR.md](docs/CURSOR.md) for how to install a printed CLI, attach the matching skill, handle auth, and choose CLI vs MCP when your repo does not already document a workflow.
 
 ## Install
 
-You need both the **binary** and the **Claude Code skills**. The skills (`/printing-press <app>`) are the primary interface; they drive the binary behind the scenes.
+You need both the **binary** and the **Printing Press skills**. The skills (`/printing-press <app>`) are the primary interface; they drive the binary behind the scenes.
 
 The binary alone works (research, generation, verification, scoring) but skips the curated agent loop. The skills alone have nothing to call. Install both.
 
-**Prerequisites:** [Go 1.26.4 or newer](https://go.dev/dl/), [Claude Code](https://claude.ai/code), and Node/npm for `npx`. The skills are tested with Claude Code; other harnesses like Codex may work but aren't tested. **Use Claude Code for the best experience.**
+**Prerequisites:** [Go 1.26.4 or newer](https://go.dev/dl/), [Claude Code](https://claude.ai/code) or another `skills`-supported agent, and Node/npm for `npx`. The skills are tested with Claude Code; install for Codex with `--agent codex` when you want to try the same slash-command workflow there. **Use Claude Code for the best-tested experience.**
 
 ### 1. Install
 
@@ -34,7 +36,7 @@ The binary alone works (research, generation, verification, scoring) but skips t
 curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash
 ```
 
-The installer runs `go install` for the generator binary, then refreshes all Printing Press skills through `skills@latest add --skill '*'`. Restart Claude Code after it completes so the refreshed skills are loaded.
+The installer runs `go install` for the generator binary, then refreshes all Printing Press skills through `skills@latest add --skill '*'`. Restart or reload your agent session after it completes so the refreshed skills are loaded.
 
 Use `--cli-only` or `--skills-only` when you only want one side:
 
@@ -42,6 +44,15 @@ Use `--cli-only` or `--skills-only` when you only want one side:
 curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash -s -- --cli-only
 curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash -s -- --skills-only
 ```
+
+Claude Code is the default install target. To install or refresh the skills for Codex instead, pass `--agent codex`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash -s -- --skills-only --agent codex
+npx -y skills@latest list -g -a codex --json
+```
+
+See [docs/CODEX.md](docs/CODEX.md) for the Codex-specific notes.
 
 Verify with `cli-printing-press --version`. If install fails, confirm Go 1.26.4 or newer is installed, Node/npm is installed for `npx`, and `$GOPATH/bin` is on your `PATH`.
 
@@ -59,10 +70,17 @@ Install or update the binary:
 go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest
 ```
 
-Use Vercel's [open-agent-skills](https://www.npmjs.com/package/skills) CLI to install the Printing Press skills from this repo into Claude Code:
+Use Vercel's [open-agent-skills](https://www.npmjs.com/package/skills) CLI to install the Printing Press skills from this repo into a supported agent. Claude Code is the default and tested path:
 
 ```bash
 npx -y skills@latest add mvanhorn/cli-printing-press/skills --skill '*' -g -a claude-code -y
+```
+
+For Codex:
+
+```bash
+npx -y skills@latest add mvanhorn/cli-printing-press/skills --skill '*' -g -a codex -y
+npx -y skills@latest list -g -a codex --json
 ```
 
 To refresh the skills later without naming individual skills, rerun the installer in skills-only mode:
@@ -71,11 +89,11 @@ To refresh the skills later without naming individual skills, rerun the installe
 curl -fsSL https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/scripts/install.sh | bash -s -- --skills-only
 ```
 
-Restart Claude Code after refreshing skills so the new skill text is loaded.
+Restart or reload the target agent after refreshing skills so the new skill text is loaded.
 
 </details>
 
-Once installed, you can start Claude Code from any folder.
+Once installed, you can start Claude Code from any folder. Codex users should start a fresh Codex session after installing or refreshing skills.
 
 <details>
 <summary><b>Developer path: load skills from a clone</b></summary>
@@ -498,7 +516,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 ## Troubleshooting
 
-**`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the skills. Run `npx -y skills@latest list -g -a claude-code` to verify the install. If you're developing from a clone, confirm `claude --plugin-dir .` was run from the cloned repo root or use the persistent local setup in [Local Plugin Development](docs/PLUGIN-DEV.md).
+**`/printing-press` slash command doesn't appear.** Restart or reload the agent session after installing the skills. For Claude Code, run `npx -y skills@latest list -g -a claude-code` to verify the install. For Codex, run `npx -y skills@latest list -g -a codex --json`. If you're developing from a clone in Claude Code, confirm `claude --plugin-dir .` was run from the cloned repo root or use the persistent local setup in [Local Plugin Development](docs/PLUGIN-DEV.md).
 
 **`cli-printing-press: command not found` after a successful `go install`.** `$GOPATH/bin` (default `~/go/bin`) isn't on your `PATH`. Add it to your shell profile.
 
@@ -511,7 +529,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 ## Limitations
 
 - **Technical capability is not legal permission.** Before generating a CLI for any service, review its Terms of Service. Many services explicitly prohibit automated access. Using this tool against such services may violate their terms or applicable law. You are responsible for ensuring your use is authorized.
-- **Requires Go 1.26.4 or newer and Claude Code.** No standalone distribution today; the slash command is the supported entry point.
+- **Requires Go 1.26.4 or newer and an agent that can load open-agent-skills.** Claude Code is the tested path; Codex installation is documented but may lag Claude Code behavior. No standalone distribution today; the slash command is the supported entry point for Claude Code.
 - **Generated CLIs are domain-shaped, not vendor-replacements.** A `<api>-pp-cli` covers the agent power-user surface, not every back-office knob a vendor's official CLI ships.
 - **Browser-sniff requires manual capture.** You point a browser at the site (or import a HAR); the press doesn't crawl autonomously.
 - **Live verify is read-only.** Phase 5 runs GET only and never mutates. Real write-path coverage lives in unit tests and the dogfood structural checks.
@@ -522,7 +540,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 **Why not Speakeasy, Fern, or openapi-generator?** Those wrap endpoints. We wrap endpoints AND generate the discrawl-style data layer (SQLite, FTS5, sync, compound commands) AND the MCP server AND the agent-native UX (typed exit codes, `--compact`, auto-JSON-when-piped). The output is shaped for an agent that will call it thousands of times a day.
 
-**Does it work without Claude?** The binary works standalone (research, generation, verification, scoring), but the curated agent loop — research absorption, novel-feature suggestion, ship cycle — runs through the `/printing-press` slash command in Claude Code. Bring your own agent loop if you want to skip it.
+**Does it work without Claude?** The binary works standalone (research, generation, verification, scoring), and the skills can be installed for Codex with `--agent codex`. The curated agent loop is tested in Claude Code first, so bring your own review discipline if you use another harness.
 
 **Does it require an OpenAPI spec?** No. Three input modes: a spec (`--spec`), a HAR file (`--har`), or just a URL. The browser-sniff gate launches a browser, captures traffic, and reverse-engineers the spec for sites that don't publish one.
 

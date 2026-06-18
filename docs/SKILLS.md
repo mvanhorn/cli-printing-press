@@ -2,6 +2,10 @@
 
 Conventions for the skills shipped from this repo (under `skills/`) and any internal skills under `.claude/skills/`. Loaded on-demand when working on skill content; not needed on every interaction.
 
+## Install Targets
+
+The shipped Printing Press skills are installed through the `skills` CLI. Claude Code is the default and tested target (`--agent claude-code`), but the installer can target other supported agents, including Codex (`--agent codex`). Keep install instructions agent-neutral unless the step truly depends on Claude Code behavior, and link Codex-specific setup notes to [CODEX.md](CODEX.md).
+
 ## Workflow Parity
 
 When a machine change alters what an agent should do, what a command now guarantees, or where source-of-truth data lives, update the relevant `SKILL.md` in the same change. Don't leave the skill as a stale manual workaround for behavior the machine now owns.
