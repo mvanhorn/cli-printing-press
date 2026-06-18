@@ -697,6 +697,24 @@ func TestVerifySkill_CanonicalSectionsPassesOnFreshFixture(t *testing.T) {
 	require.Contains(t, string(out), "canonical-sections passed")
 }
 
+// TestVerifySkill_CanonicalSectionsAllowsCRLFLineEndings guards against the
+// Windows false drift from issue #3035: a generator-owned SKILL.md install
+// section must not fail solely because the file was written or checked out
+// with CRLF line endings.
+func TestVerifySkill_CanonicalSectionsAllowsCRLFLineEndings(t *testing.T) {
+	t.Parallel()
+	bin := buildPrintingPressBinary(t)
+	crlfInstallSection := strings.ReplaceAll(
+		generator.CanonicalSkillInstallSection("myapi", "productivity"),
+		"\n",
+		"\r\n",
+	)
+	dir := writeCanonicalFixture(t, "myapi", "productivity", crlfInstallSection)
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
+	require.NoError(t, err, "CRLF-only install section drift must pass canonical-sections: %s", string(out))
+	require.Contains(t, string(out), "canonical-sections passed")
+}
+
 // TestVerifySkill_CanonicalSectionsCatchesFlagStrip is the regression
 // guard for the trigger-dev SKILL slip — an automation loop stripped
 // `--cli-only` from the npx installer line to silence a verify-skill
