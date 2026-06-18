@@ -261,6 +261,121 @@ func TestConfigSaveRoundTripWithoutEnvIsStable(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestEnvSourcedCredentialsStayOutOfConfigSave|TestConfigSaveRoundTripWithoutEnvIsStable")
 }
 
+func TestAuthorizationCodeBearerUsesRefreshedAccessTokenOverStalePerCallToken(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth-user-context-refresh")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "bearer_token",
+		Header:           "Authorization",
+		Format:           "Bearer {token}",
+		OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+		AuthorizationURL: "https://example.com/oauth/authorize",
+		TokenURL:         "https://example.com/oauth/token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "OAUTH_USER_CONTEXT_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth-user-context-refresh-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	body := authHeaderBody(t, string(cfgSrc))
+	accessIdx := strings.Index(body, `if c.AccessToken != ""`)
+	perCallIdx := strings.Index(body, `if c.OauthUserContextToken != ""`)
+	require.NotEqual(t, -1, accessIdx, "authorization_code bearer auth must consult OAuth access tokens")
+	assert.Equal(t, -1, perCallIdx, "authorization_code bearer auth must not send stale per-call fields instead of refreshed OAuth access tokens")
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(clientSrc), `"grant_type":    {"refresh_token"}`, "client must emit refresh-token exchange")
+
+	const runtimeTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"oauth-user-context-refresh-pp-cli/internal/cliutil"
+)
+
+func TestRefreshedAccessTokenWinsOverStalePerCallToken(t *testing.T) {
+	// CI and parallel generator tests can carry API-shaped environment variables
+	// for unrelated jobs. This test is about disk-persisted OAuth refresh
+	// precedence, so run the generated config package with a sterile environment
+	// before loading config from disk.
+	oldEnv := os.Environ()
+	os.Clearenv()
+	if err := os.Setenv("HOME", t.TempDir()); err != nil {
+		t.Fatalf("Setenv(HOME) error = %v", err)
+	}
+	defer func() {
+		os.Clearenv()
+		for _, kv := range oldEnv {
+			parts := strings.SplitN(kv, "=", 2)
+			if len(parts) == 2 {
+				_ = os.Setenv(parts[0], parts[1])
+			}
+		}
+	}()
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	initial := strings.Join([]string{
+		"oauth_user_context_token = \"stale-user-context-token\"",
+		"access_token = \"old-access-token\"",
+		"refresh_token = \"old-refresh-token\"",
+		"client_id = \"client-id\"",
+		"client_secret = \"client-secret\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer old-access-token" {
+		t.Fatalf("AuthHeader() before refresh = %q, want Bearer old-access-token", got)
+	}
+	expiry := time.Date(2035, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, "new-access-token", "new-refresh-token", expiry); err != nil {
+		t.Fatalf("SaveTokens() error = %v", err)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer new-access-token" {
+		t.Fatalf("AuthHeader() after refresh = %q, want Bearer new-access-token", got)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if text := string(after); strings.Contains(text, "new-refresh-token") || strings.Contains(text, "new-access-token") {
+		t.Fatalf("config file should not retain rotated OAuth secrets after credentials split:\n%s", text)
+	}
+	creds, ok, err := cliutil.LoadCredentials()
+	if err != nil {
+		t.Fatalf("LoadCredentials() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("LoadCredentials() ok = false, want true")
+	}
+	if creds.RefreshToken != "new-refresh-token" {
+		t.Fatalf("credentials refresh token = %q, want new-refresh-token", creds.RefreshToken)
+	}
+	if creds.AccessToken != "new-access-token" {
+		t.Fatalf("credentials access token = %q, want new-access-token", creds.AccessToken)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "oauth_refresh_precedence_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestRefreshedAccessTokenWinsOverStalePerCallToken")
+}
+
 func TestConfigSaveBearerTokenPersistsBuiltinEnvCollisionWrite(t *testing.T) {
 	t.Parallel()
 

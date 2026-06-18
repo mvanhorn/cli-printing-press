@@ -572,34 +572,31 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						report["credentials"] = "skipped (API unreachable)"
 					} else {
 {{- if or .Auth.VerifyPath .Auth.VerifyQuery}}
-						// Shared auth-header setup for both probe variants below.
-						// Kept hoisted out of the per-probe branches because the
-						// per-API auth-placement, RequiredHeaders, and User-Agent
-						// fallback logic is independent of which verb the probe
-						// dials.
+						// Shared probe-header setup for both probe variants below.
+						// The client's request path injects auth so OAuth refresh-on-401 can
+						// retry with the newly persisted token instead of replaying a stale
+						// header/query override captured before the refresh.
 						authParams := map[string]string{}
 						authHeaders := map[string]string{}
-{{- if and .Auth .Auth.In (eq .Auth.In "query")}}
-						authParams["{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}"] = authHeader
-{{- else}}
-						authHeaders["{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}"] = authHeader
-{{- end}}
 {{- range .RequiredHeaders}}
 						authHeaders["{{.Name}}"] = "{{.Value}}"
 {{- end}}
 {{- /*
-	Emit the hardcoded User-Agent fallback only when no other code path has
-	already populated authHeaders["User-Agent"]. Three cases skip the fallback:
+	Emit the hardcoded User-Agent fallback only when no other code path owns
+	authHeaders["User-Agent"]. Three cases skip the fallback:
 	  1. UsesBrowserManagedUserAgent — the browser transport sets the UA.
 	  2. HasRequiredHeader "User-Agent" — the RequiredHeaders range above set it.
 	  3. Auth.In is "header" (or empty default) AND Auth.Header is "User-Agent" —
 	     the API uses the User-Agent header itself as the auth credential
-	     (NWS-style), so the "authHeaders[Auth.Header] = authHeader" line above
-	     already set it to the configured value. The hardcoded fallback would
-	     overwrite the operator's configured UA and make the credential probe
-	     test the wrong identity.
+	     (NWS-style), so doctor must pass the configured credential through as
+	     a User-Agent header override. The hardcoded fallback would overwrite
+	     that credential before the probe reaches the client and make the
+	     credential probe test the wrong identity.
 */}}
 {{- $authUsesUA := and .Auth (or (eq .Auth.In "") (eq .Auth.In "header")) (eq (lower .Auth.Header) "user-agent")}}
+{{- if $authUsesUA}}
+						authHeaders["User-Agent"] = authHeader
+{{- end}}
 {{- if and (not .UsesBrowserManagedUserAgent) (not (.HasRequiredHeader "User-Agent")) (not $authUsesUA)}}
 						authHeaders["User-Agent"] = "{{.Name}}-pp-cli"
 {{- end}}

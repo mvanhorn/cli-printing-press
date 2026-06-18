@@ -1144,6 +1144,9 @@ func oauth2AccessTokenAuth(auth spec.AuthConfig) bool {
 	if auth.Type != "bearer_token" {
 		return false
 	}
+	if auth.AuthorizationURL != "" && auth.TokenURL != "" && auth.EffectiveOAuth2Grant() == spec.OAuth2GrantAuthorizationCode {
+		return true
+	}
 	switch auth.EffectiveOAuth2Grant() {
 	case spec.OAuth2GrantClientCredentials, spec.OAuth2GrantDeviceCode:
 		return true
