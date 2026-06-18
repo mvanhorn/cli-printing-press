@@ -1,0 +1,96 @@
+name: Ready-to-merge guard
+
+# Mergify's CODEOWNERS mirror in .mergify.yml requires an explicit GitHub
+# Approve from tmchow or mvanhorn when a PR touches scripts/, .github/
+# workflows/, .github/scripts/, or CODEOWNERS — even after ready-to-merge
+# is applied. The label alone does not satisfy that gate; without Approve,
+# Mergify Merge Protections stays red and the PR never enters the queue.
+#
+# This workflow posts a single actionable comment when that mismatch is
+# detected so maintainers see the fix immediately instead of waiting on
+# Mergify's dashboard.
+
+on:
+  pull_request_target:
+    types:
+      - labeled
+      - unlabeled
+      - synchronize
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  guard:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: ready-to-merge-guard-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Check codeowner approval for protected paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          marker='<!-- ready-to-merge-guard -->'
+          existing="$(
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+              --jq '.[] | select(.body | contains("'"${marker}"'")) | .id' | head -1
+          )"
+          clear_existing() {
+            if [ -n "${existing}" ]; then
+              gh api --method DELETE "repos/${REPO}/issues/comments/${existing}"
+            fi
+          }
+
+          pr_json="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"
+          labels="$(jq -r '[.labels[].name] | join(",")' <<<"${pr_json}")"
+          if ! grep -q 'ready-to-merge' <<<"${labels}"; then
+            echo "ready-to-merge not set; removing any stale guard comment"
+            clear_existing
+            exit 0
+          fi
+
+          files="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename')"
+          if ! grep -Eq '^(\.github/workflows/|\.github/scripts/|scripts/|\.github/CODEOWNERS$)' <<<"${files}"; then
+            echo "no protected-path files; removing any stale guard comment"
+            clear_existing
+            exit 0
+          fi
+
+          reviews_json="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate)"
+          approved="$(
+            jq -r '
+              [ .[]
+                | select(.state == "APPROVED")
+                | .user.login
+              ] | unique | join(",")
+            ' <<<"${reviews_json}"
+          )"
+          if grep -q 'tmchow' <<<"${approved}" || grep -q 'mvanhorn' <<<"${approved}"; then
+            echo "codeowner approval present: ${approved}; removing any stale guard comment"
+            clear_existing
+            exit 0
+          fi
+
+          if [ -n "${existing}" ]; then
+            echo "guard comment already posted (${existing})"
+            exit 0
+          fi
+
+          body="${marker}
+          **Mergify will not queue this PR yet.** \`ready-to-merge\` is set, but this PR changes protected paths (\`scripts/\`, \`.github/workflows/\`, \`.github/scripts/\`, or \`CODEOWNERS\`) and still needs an explicit GitHub **Approve** from \`@tmchow\` or \`@mvanhorn\`.
+
+          The label signals intent to queue; Mergify's \`approved-reviews-by\` gate still requires a formal approval review on the PR. After approving, comment \`@Mergifyio refresh\` if \`Mergify Merge Protections\` does not update within a minute."
+
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -f body="${body}"
