@@ -583,10 +583,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	  2. HasRequiredHeader "User-Agent" — the RequiredHeaders range above set it.
 	  3. Auth.In is "header" (or empty default) AND Auth.Header is "User-Agent" —
 	     the API uses the User-Agent header itself as the auth credential
-	     (NWS-style), so the client request path must inject the configured
-	     credential. The hardcoded fallback would overwrite that header override
-	     before the probe reaches the client and make the credential probe test
-	     the wrong identity.
+	     (NWS-style), so doctor must pass the configured credential through as
+	     a User-Agent header override. The hardcoded fallback would overwrite
+	     that credential before the probe reaches the client and make the
+	     credential probe test the wrong identity.
 */}}
 {{- $authUsesUA := and .Auth (or (eq .Auth.In "") (eq .Auth.In "header")) (eq (lower .Auth.Header) "user-agent")}}
 {{- if $authUsesUA}}
