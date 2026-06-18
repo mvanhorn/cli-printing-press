@@ -71,9 +71,16 @@ jobs:
           approved="$(
             jq -r '
               [ .[]
-                | select(.state == "APPROVED")
-                | .user.login
-              ] | unique | join(",")
+                | select(.user.login == "tmchow" or .user.login == "mvanhorn")
+                | select(.state != "COMMENTED")
+                | {user: .user.login, state, submitted_at}
+              ]
+              | sort_by(.submitted_at)
+              | reduce .[] as $review ({}; .[$review.user] = $review.state)
+              | to_entries
+              | map(select(.value == "APPROVED") | .key)
+              | unique
+              | join(",")
             ' <<<"${reviews_json}"
           )"
           if grep -q 'tmchow' <<<"${approved}" || grep -q 'mvanhorn' <<<"${approved}"; then
