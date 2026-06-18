@@ -83,7 +83,7 @@
 - **Fallback if machine doesn't fix it:** Claude changes one line in one file (low cost, <1 min).
 - **Tradeoff:** freq(4) x fallback(1) / effort(1) + risk(0) = 4.0. Trivial fix, no regression risk.
 - **Inherent or fixable:** Fixable. Emit one `defaultDBPath()` in `helpers.go.tmpl` and reference it from both templates.
-- **Durable fix:** Add `defaultDBPath()` to `helpers.go.tmpl`. Remove inline path construction from `sync.go.tmpl` and `channel_workflow.go.tmpl`. Use `~/.local/share/<cli>/data.db` as canonical path.
+- **Durable fix:** Add `defaultDBPath()` to `helpers.go.tmpl`. Remove inline path construction from `sync.go.tmpl` and `channel_workflow.go.tmpl`. Route `data.db` through the data-kind resolver so the platform default remains `~/.local/share/<cli>/data.db` but relocation stays centralized.
 - **Test:** Generate a CLI -> grep for `UserHomeDir` in all files -> only one definition of DB path.
 - **Evidence:** Manual fix to channel_workflow.go; trending returned "No data" until path aligned.
 

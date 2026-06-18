@@ -202,8 +202,10 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
-	homeDir, _ := os.UserHomeDir()
-	cacheDir := filepath.Join(homeDir, ".cache", "tier-routing-golden-pp-cli", "http")
+	cacheDir := ""
+	if dir, err := cliutil.CacheDir(); err == nil {
+		cacheDir = filepath.Join(dir, "http")
+	}
 	httpClient := newHTTPClient(timeout, nil)
 	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),

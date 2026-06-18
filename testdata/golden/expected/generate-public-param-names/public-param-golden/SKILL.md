@@ -69,6 +69,33 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Non-interactive** — never prompts, every input is a flag
 - **Explicit retries** — use `--idempotent` only when an already-existing create should count as success
 
+## Paths and state
+
+Agents should treat the CLI's path resolver as part of the runtime contract:
+
+- Use `--home <dir>` for one invocation, or set `PUBLIC_PARAM_GOLDEN_HOME=<dir>` to relocate all four path kinds under one root.
+- Use per-kind env vars only when a specific kind must diverge: `PUBLIC_PARAM_GOLDEN_CONFIG_DIR`, `PUBLIC_PARAM_GOLDEN_DATA_DIR`, `PUBLIC_PARAM_GOLDEN_STATE_DIR`, `PUBLIC_PARAM_GOLDEN_CACHE_DIR`.
+- Resolution order is per-kind env var, `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, XDG (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`), then platform defaults.
+- `config` contains settings like `config.toml` and profiles. `data` contains `credentials.toml`, `data.db`, cookies, and auth sidecars. `state` contains persisted queries, jobs, and `teach.log`. `cache` contains regenerable HTTP/cache files.
+- Stored secrets live in `credentials.toml` under the data dir. Existing legacy `config.toml` secrets are read for compatibility and leave `config.toml` on the first auth write.
+- Run `public-param-golden-pp-cli doctor --fail-on warn` to surface path and credential-location warnings. `agent-context` exposes a schema v4 `paths` block for agents that need the resolved dirs.
+- For MCP, pass relocation through the MCP host config. The MCP binary does not inherit CLI flags:
+
+  ```json
+  {
+    "mcpServers": {
+      "public-param-golden": {
+        "command": "public-param-golden-pp-mcp",
+        "env": {
+          "PUBLIC_PARAM_GOLDEN_HOME": "/srv/public-param-golden"
+        }
+      }
+    }
+  }
+  ```
+
+Fleet precedence: an inherited per-kind env var overrides an explicit `--home` for that kind. Use `PUBLIC_PARAM_GOLDEN_HOME` or per-kind vars as durable fleet levers, and use `--home` only for a single invocation. Relocation is not reversible by unsetting env vars; move files manually before clearing `PUBLIC_PARAM_GOLDEN_HOME`, or `doctor` will not find credentials left under the former root.
+
 ## Agent Feedback
 
 When you (or the agent) notice something off about this CLI, record it:
@@ -79,7 +106,7 @@ public-param-golden-pp-cli feedback --stdin < notes.txt
 public-param-golden-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.local/share/public-param-golden-pp-cli/feedback.jsonl`. They are never POSTed unless `PUBLIC_PARAM_GOLDEN_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PUBLIC_PARAM_GOLDEN_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally as `feedback.jsonl` under the resolved data dir. They are never POSTed unless `PUBLIC_PARAM_GOLDEN_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PUBLIC_PARAM_GOLDEN_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 

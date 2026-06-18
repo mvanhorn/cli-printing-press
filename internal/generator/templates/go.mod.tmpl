@@ -31,3 +31,17 @@ require modernc.org/sqlite v1.37.0
 {{- if .VisionSet.MCP}}
 require github.com/mark3labs/mcp-go v0.47.0
 {{- end}}
+
+// Floor x/sys above the vulnerable v0.31.0. It is pulled only transitively
+// (modernc.org/sqlite, golang.org/x/net, ...), so MVS needs this explicit
+// floor; tidy drops it for CLIs that pull no x/sys at all.
+require golang.org/x/sys v0.46.0 // indirect
+{{- if .UsesBrowserHTTPTransport}}
+
+// Floor the HTTP/3 transitive deps pulled in only via github.com/enetx/surf
+// above their vulnerable versions (osv flags module presence; govulncheck
+// reachability = 0 for these REST CLIs). Emitted only when the surf transport
+// is present, so MVS keeps the floor; tidy drops it for CLIs without surf.
+require golang.org/x/crypto v0.53.0 // indirect
+require github.com/quic-go/quic-go v0.60.0 // indirect
+{{- end}}

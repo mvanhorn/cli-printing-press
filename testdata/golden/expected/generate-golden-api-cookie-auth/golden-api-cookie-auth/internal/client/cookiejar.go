@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golden-api-cookie-auth-pp-cli/internal/cliutil"
 )
 
 // cookieJar wraps an http.CookieJar so writes (server Set-Cookie response
@@ -46,8 +48,11 @@ func LoadCookieJar() http.CookieJar {
 }
 
 func cookieJarPath() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".local", "share", "golden-api-cookie-auth-pp-cli", "cookies.json")
+	dir, err := cliutil.DataDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "cookies.json")
 }
 
 // sanitizeCookieValue strips bytes that net/http's cookie jar rejects per

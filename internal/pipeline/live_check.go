@@ -166,19 +166,18 @@ type LiveCheckOptions struct {
 // check doesn't penalize the CLI.
 func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 	out := &LiveCheckResult{RanAt: time.Now().UTC()}
-	releaseHome, err := scopeSubprocessHome()
+	if opts.CLIDir == "" {
+		out.Unable = true
+		out.Reason = "CLIDir is required"
+		return out
+	}
+	releaseHome, err := scopeSubprocessHome(findCLINames(opts.CLIDir)...)
 	if err != nil {
 		out.Unable = true
 		out.Reason = err.Error()
 		return out
 	}
 	defer releaseHome()
-
-	if opts.CLIDir == "" {
-		out.Unable = true
-		out.Reason = "CLIDir is required"
-		return out
-	}
 
 	researchDir := opts.ResearchDir
 	if researchDir == "" {

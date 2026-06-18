@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"public-param-golden-pp-cli/internal/cli"
 	"public-param-golden-pp-cli/internal/client"
+	"public-param-golden-pp-cli/internal/cliutil"
 	"public-param-golden-pp-cli/internal/config"
 	"public-param-golden-pp-cli/internal/mcp/cobratree"
 )
@@ -384,12 +384,22 @@ func mcpOversizedPreviewEnvelope(data json.RawMessage) []byte {
 }
 
 func newMCPClient() (*client.Client, error) {
-	home, _ := os.UserHomeDir()
-	cfgPath := filepath.Join(home, ".config", "public-param-golden-pp-cli", "config.toml")
-	cfg, err := config.Load(cfgPath)
+	cfg, err := newMCPConfig()
+	if err != nil {
+		return nil, err
+	}
+	return newMCPClientFromConfig(cfg), nil
+}
+
+func newMCPConfig() (*config.Config, error) {
+	cfg, err := config.Load("")
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
+	return cfg, nil
+}
+
+func newMCPClientFromConfig(cfg *config.Config) *client.Client {
 	c := client.New(cfg, 60*time.Second, defaultMCPRateLimit)
 	// Agents calling through MCP need fresh data every call. The on-disk
 	// response cache survives across MCP server invocations, so a
@@ -397,16 +407,16 @@ func newMCPClient() (*client.Client, error) {
 	// pre-mutation snapshot for up to the cache TTL. The interactive CLI
 	// constructs its own client and is unaffected.
 	c.NoCache = true
-	return c, nil
+	return c
 }
 
-func dbPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "public-param-golden-pp-cli", "data.db")
+func mcpDBPath() (string, error) {
+	dir, err := cliutil.DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "data.db"), nil
 }
-
-// Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
-// The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
 // toolResultJSON renders v as the indented JSON body of an MCP text result,
 // surfacing a marshal failure as a tool error instead of empty content.
@@ -419,11 +429,25 @@ func toolResultJSON(v any) (*mcplib.CallToolResult, error) {
 }
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	paths := map[string]string{}
+	if dir, err := cliutil.ConfigDir(); err == nil {
+		paths["config_dir"] = dir
+	}
+	if dir, err := cliutil.DataDir(); err == nil {
+		paths["data_dir"] = dir
+	}
+	if dir, err := cliutil.StateDir(); err == nil {
+		paths["state_dir"] = dir
+	}
+	if dir, err := cliutil.CacheDir(); err == nil {
+		paths["cache_dir"] = dir
+	}
 	ctx := map[string]any{
 		"api":         "public-param-golden",
 		"description": "Public parameter name golden fixture",
 		"archetype":   "generic",
 		"tool_count":  2,
+		"paths":       paths,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion public-param-golden-pp-cli binary.",
 		"resources": []map[string]any{

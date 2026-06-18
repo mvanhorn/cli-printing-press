@@ -39,6 +39,8 @@ type novelFeatureChildRender struct {
 type novelFeatureTestRender struct {
 	Owner       string
 	Ident       string
+	CommandPath string
+	CommandArgs []string
 	SkipMessage string
 }
 
@@ -164,6 +166,8 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 		testData := novelFeatureTestRender{
 			Owner:       g.Spec.Owner,
 			Ident:       data.Ident,
+			CommandPath: data.CommandPath,
+			CommandArgs: strings.Fields(data.CommandPath),
 			SkipMessage: "TODO: implement table-driven tests for " + data.CommandPath,
 		}
 		if err := g.renderTemplate("novel_feature_command_test.go.tmpl", testPath, testData); err != nil {

@@ -1893,7 +1893,15 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 }
 
 // defaultDBPath returns the canonical path for the local SQLite database.
+// The resolver already knows the app name on the happy path; name is only
+// used for the conservative fallback when the resolved data directory fails.
 func defaultDBPath(name string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", name, "data.db")
+	dir, err := cliutil.DataDir()
+	if err != nil {
+		if home, homeErr := os.UserHomeDir(); homeErr == nil {
+			return filepath.Join(home, ".local", "share", name, "data.db")
+		}
+		return "data.db"
+	}
+	return filepath.Join(dir, "data.db")
 }

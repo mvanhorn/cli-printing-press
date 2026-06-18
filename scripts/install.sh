@@ -10,7 +10,7 @@ umask 022
 #
 # Options:
 #   --cli-only          Install or update only the Go generator binary.
-#   --skills-only       Install or refresh only the Claude Code skills.
+#   --skills-only       Install or refresh only the Printing Press skills.
 #   -a, --agent NAME    Install skills for an agent supported by `skills`.
 #                       May be repeated. Defaults to claude-code.
 #   --dry-run           Print commands without executing them.
@@ -60,7 +60,7 @@ Usage:
 
 Options:
   --cli-only          Install or update only the Go generator binary.
-  --skills-only       Install or refresh only the Claude Code skills.
+  --skills-only       Install or refresh only the Printing Press skills.
   -a, --agent NAME    Install skills for an agent supported by `skills`.
                        May be repeated. Defaults to claude-code.
   --dry-run           Print commands without executing them.
@@ -430,10 +430,10 @@ print_header() {
       --border normal --border-foreground 39 \
       --padding "0 1" --margin "1 0" \
       "$(gum style --foreground 42 --bold "$PROJECT_NAME installer")" \
-      "$(gum style --foreground 245 "Install the generator binary and Claude Code skills")"
+      "$(gum style --foreground 245 "Install the generator binary and Printing Press skills")"
   else
     printf '\033[1;32m%s installer\033[0m\n' "$PROJECT_NAME"
-    printf '\033[0;90mInstall the generator binary and Claude Code skills\033[0m\n\n'
+    printf '\033[0;90mInstall the generator binary and Printing Press skills\033[0m\n\n'
   fi
 }
 
@@ -443,7 +443,7 @@ print_summary() {
   lines+=("Skills: $SKILLS_STATUS")
   if [[ "$INSTALL_SKILLS" -eq 1 ]]; then
     lines+=("Agents: ${AGENTS[*]}")
-    lines+=("Restart Claude Code so refreshed skills are loaded.")
+    lines+=("Restart or reload the target agent so refreshed skills are loaded.")
   fi
   draw_box 42 "${lines[@]}"
 }

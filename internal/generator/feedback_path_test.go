@@ -21,19 +21,19 @@ func TestFeedbackPath_UsesLocalShareDir(t *testing.T) {
 	feedbackSrc := string(feedbackContent)
 
 	require.Contains(t, feedbackSrc,
-		`dir := filepath.Join(home, ".local", "share", "feedback-path-pp-cli")`,
-		"feedbackFilePath should use ~/.local/share/<name> like defaultDBPath")
+		`dir, err := cliutil.DataDir()`,
+		"feedbackFilePath should route through the generated data-dir resolver")
 	require.NotContains(t, feedbackSrc,
 		`dir := filepath.Join(home, ".feedback-path-pp-cli")`,
 		"feedbackFilePath must not use the legacy ~/.<name> dotdir")
 	require.Contains(t, feedbackSrc,
-		"Feedback is captured locally first at ~/.local/share/feedback-path-pp-cli/feedback.jsonl.",
-		"feedback command help text should reference the new local ledger path")
+		"Feedback is captured locally first in the CLI data directory's feedback.jsonl.",
+		"feedback command help text should reference the resolved data directory")
 
 	skillPath := filepath.Join(outputDir, "SKILL.md")
 	skillContent, err := os.ReadFile(skillPath)
 	require.NoError(t, err)
 	require.Contains(t, string(skillContent),
-		"Entries are stored locally at `~/.local/share/feedback-path-pp-cli/feedback.jsonl`.",
-		"generated SKILL.md should reference the new local ledger path")
+		"Entries are stored locally as `feedback.jsonl` under the resolved data dir.",
+		"generated SKILL.md should reference the resolved data directory")
 }

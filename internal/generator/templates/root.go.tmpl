@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"{{modulePath}}/internal/client"
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -46,6 +47,7 @@ type rootFlags struct {
 {{- end}}
 	selectFields string
 	configPath   string
+	homePath     string
 	profileName  string
 	deliverSpec  string
 	timeout      time.Duration
@@ -219,6 +221,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().BoolVar(&flags.plain, "plain", false, "Output as plain tab-separated text")
 	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Bare output, one value per line")
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
+	rootCmd.PersistentFlags().StringVar(&flags.homePath, "home", "", "Root directory for config, data, state, and cache files")
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 60*time.Second, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
@@ -264,6 +267,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- end}}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
+			return err
+		}
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)
 			if err != nil {

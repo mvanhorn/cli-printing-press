@@ -130,6 +130,55 @@ public-param-golden-pp-cli stores create --store-code example-value
 
 Run `public-param-golden-pp-cli --help` for the full command reference and flag list.
 
+## Paths & environment variables
+
+This CLI separates local files into four path kinds:
+
+| Kind | Contents |
+|------|----------|
+| `config` | User-editable settings such as `config.toml` and saved profiles |
+| `data` | Durable local data such as `data.db` |
+| `state` | Runtime state such as persisted queries, jobs, and `teach.log` |
+| `cache` | Regenerable HTTP/cache files |
+
+Each kind resolves independently. The ladder is:
+
+1. Per-kind env var: `PUBLIC_PARAM_GOLDEN_CONFIG_DIR`, `PUBLIC_PARAM_GOLDEN_DATA_DIR`, `PUBLIC_PARAM_GOLDEN_STATE_DIR`, or `PUBLIC_PARAM_GOLDEN_CACHE_DIR`
+2. `--home <dir>` for this invocation
+3. `PUBLIC_PARAM_GOLDEN_HOME` for a flat relocated root
+4. XDG env vars: `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`
+5. Platform defaults matching existing installs
+
+For containers and agent sandboxes, prefer a single relocated root:
+
+```bash
+export PUBLIC_PARAM_GOLDEN_HOME=/srv/public-param-golden
+public-param-golden-pp-cli doctor
+```
+
+Under `PUBLIC_PARAM_GOLDEN_HOME=/srv/public-param-golden`, the four dirs resolve to `/srv/public-param-golden/config`, `/srv/public-param-golden/data`, `/srv/public-param-golden/state`, and `/srv/public-param-golden/cache`.
+
+MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
+
+```json
+{
+  "mcpServers": {
+    "public-param-golden": {
+      "command": "public-param-golden-pp-mcp",
+      "env": {
+        "PUBLIC_PARAM_GOLDEN_HOME": "/srv/public-param-golden"
+      }
+    }
+  }
+}
+```
+
+Precedence matters in fleets: an ambient per-kind variable such as `PUBLIC_PARAM_GOLDEN_DATA_DIR` overrides an explicit `--home` for that kind. Use `PUBLIC_PARAM_GOLDEN_HOME` or the per-kind variables for durable fleet relocation; treat `--home` as the weaker per-invocation lever.
+
+Relocation is one-way. Unsetting `PUBLIC_PARAM_GOLDEN_HOME` does not move files back to platform defaults, and `doctor` cannot find files left under a former root. Move the files manually before unsetting relocation variables.
+
+Existing installs keep working because the platform-default rung matches the legacy layout. Run `public-param-golden-pp-cli doctor --fail-on warn` to check path warnings in automation.
+
 ## Commands
 
 ### stores
@@ -184,7 +233,7 @@ Verifies configuration and connectivity to the API.
 
 ## Configuration
 
-Config file: ``
+Run `public-param-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is ``; `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

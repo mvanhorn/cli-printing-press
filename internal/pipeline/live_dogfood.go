@@ -236,10 +236,15 @@ func scopeLiveDogfoodSubprocessHome(cliDir, binaryName string) (*liveDogfoodHome
 		cliName = findCLIName(cliDir)
 	}
 	syncConfigBack := strings.EqualFold(strings.TrimSpace(manifest.AuthType), "oauth2_refresh")
-	return scopeSubprocessHomeWithCredentialMirror(cliName, syncConfigBack)
+	// Scrub every cmd/ variant's relocation env vars, not just the resolved
+	// canonical name: the scoped env strip is name-driven, so an operator's
+	// <PREFIX>_HOME / <PREFIX>_<KIND>_DIR for any variant would otherwise
+	// leak through the scoped home into the live-dogfood subprocesses.
+	scrubNames := append([]string{cliName}, findCLINames(cliDir)...)
+	return scopeSubprocessHomeWithCredentialMirror(cliName, syncConfigBack, scrubNames)
 }
 
-func scopeSubprocessHomeWithCredentialMirror(cliName string, syncConfigBack bool) (*liveDogfoodHomeScope, error) {
+func scopeSubprocessHomeWithCredentialMirror(cliName string, syncConfigBack bool, scrubCLINames []string) (*liveDogfoodHomeScope, error) {
 	homeDir, removeHome, err := newScopedConfigHome()
 	if err != nil {
 		return nil, err
@@ -249,7 +254,10 @@ func scopeSubprocessHomeWithCredentialMirror(cliName string, syncConfigBack bool
 		removeHome()
 		return nil, err
 	}
-	restore := installScopedSubprocessHome(homeDir)
+	if len(scrubCLINames) == 0 {
+		scrubCLINames = []string{cliName}
+	}
+	restore := installScopedSubprocessHome(homeDir, scrubCLINames...)
 	return &liveDogfoodHomeScope{
 		release: func() {
 			restore()

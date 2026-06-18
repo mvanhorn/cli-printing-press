@@ -17,9 +17,7 @@ import (
 	"os"
 {{- end}}
 
-{{- if or .Auth.KeyURL .WebsiteURL}}
 	"{{modulePath}}/internal/cliutil"
-{{- end}}
 	"{{modulePath}}/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -51,9 +49,9 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
 {{- if .Auth.KeyURL}}
-			fmt.Fprintln(w, "Get a key at: {{.Auth.KeyURL}}")
+			fmt.Fprintln(w, {{printf "%q" (printf "Get a key at: %s" .Auth.KeyURL)}})
 {{- else if .WebsiteURL}}
-			fmt.Fprintln(w, "See API docs: {{.WebsiteURL}}")
+			fmt.Fprintln(w, {{printf "%q" (printf "See API docs: %s" .WebsiteURL)}})
 {{- else}}
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 {{- end}}
@@ -106,7 +104,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 				return nil
 			}
 {{- if or .Auth.KeyURL .WebsiteURL}}
-			launchURL := {{if .Auth.KeyURL}}"{{.Auth.KeyURL}}"{{else}}"{{.WebsiteURL}}"{{end}}
+			launchURL := {{if .Auth.KeyURL}}{{printf "%q" .Auth.KeyURL}}{{else}}{{printf "%q" .WebsiteURL}}{{end}}
 			if cliutil.IsVerifyEnv() {
 				fmt.Fprintf(w, "would launch: %s\n", launchURL)
 				return nil
@@ -229,7 +227,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "set-token <token>",
-		Short: "Save an API token to the config file",
+		Short: "Save an API token to the credentials file",
 		Example: "  {{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -260,17 +258,35 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 
-			// JSON envelope: {saved, config_path}.
+			savePath := credentialSavePath(cfg)
+			// JSON envelope: {saved, config_path, credentials_path}.
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				out := map[string]any{
 					"saved":       true,
 					"config_path": cfg.Path,
-				}, flags)
+				}
+				if !cfg.AgentcookieManagedByExternalStore() {
+					out["credentials_path"] = savePath
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", cfg.Path)
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", savePath)
 			return nil
 		},
 	}
+}
+
+func credentialSavePath(cfg *config.Config) string {
+	if cfg != nil && cfg.AgentcookieManagedByExternalStore() {
+		return cfg.Path
+	}
+	if path, err := cliutil.CredentialsFilePath(); err == nil {
+		return path
+	}
+	if cfg != nil {
+		return cfg.Path
+	}
+	return ""
 }
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
