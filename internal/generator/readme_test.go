@@ -664,3 +664,59 @@ func TestOutputFormatsUsesRealCommandExample(t *testing.T) {
 	assert.False(t, strings.Contains(content, "realexample-pp-cli autocomplete list"),
 		"Output Formats should not hallucinate a 'list' endpoint that doesn't exist in the spec")
 }
+
+// TestGeneratedREADMEPathsSectionFollowsAuthSurface asserts the "Paths &
+// environment variables" docs describe only files the CLI actually emits:
+// auth CLIs document credentials.toml, auth sidecars, and the
+// first-auth-write migration; no-auth CLIs must not mention credential
+// files, cookies, or migration steps that don't exist in their output.
+func TestGeneratedREADMEPathsSectionFollowsAuthSurface(t *testing.T) {
+	t.Parallel()
+
+	authOnlyMentions := []string{
+		"credentials.toml",
+		"cookies",
+		"browser-session proof",
+		"auth sidecars",
+		"On the first auth write",
+		"credential-location warnings",
+	}
+
+	t.Run("auth surface documents credential files", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("paths-docs-auth")
+		outputDir := filepath.Join(t.TempDir(), "paths-docs-auth-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		content := string(readme)
+
+		require.Contains(t, content, "## Paths & environment variables")
+		for _, mention := range authOnlyMentions {
+			assert.Contains(t, content, mention,
+				"auth CLI paths docs should describe the credential surface")
+		}
+	})
+
+	t.Run("no-auth surface omits credential prose", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("paths-docs-noauth")
+		apiSpec.Auth = spec.AuthConfig{Type: "none"}
+		outputDir := filepath.Join(t.TempDir(), "paths-docs-noauth-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		content := string(readme)
+
+		require.Contains(t, content, "## Paths & environment variables",
+			"paths docs must still be emitted for no-auth CLIs")
+		for _, mention := range authOnlyMentions {
+			assert.NotContains(t, content, mention,
+				"no-auth CLI paths docs must not describe files the CLI never writes")
+		}
+		assert.Contains(t, content, "check path warnings in automation",
+			"no-auth migration paragraph keeps the doctor automation hint")
+	})
+}

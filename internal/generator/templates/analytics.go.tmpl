@@ -90,7 +90,7 @@ Data must be synced first with the sync command.`,
 
 	cmd.Flags().StringVar(&resourceType, "type", "", "Resource type to analyze")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "Field to group by")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	cmd.Flags().IntVar(&limit, "limit", 25, "Max groups to show")
 
 	return cmd

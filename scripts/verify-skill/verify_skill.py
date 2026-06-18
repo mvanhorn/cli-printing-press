@@ -68,7 +68,7 @@ def read_utf8(path: Path) -> str:
 # Cobra supplies these without explicit source-level flag declarations. Other
 # generated/global flags must still be discovered in source so command-scoped
 # copy-paste examples cannot hide missing flags behind this whitelist.
-COMMON_FLAGS = {"help", "version"}
+COMMON_FLAGS = {"help", "home", "version"}
 
 CODEBLOCK_BASH = re.compile(r"^[ \t]*```bash[^\n]*\n(.*?)\n[ \t]*```[ \t]*$", re.DOTALL | re.MULTILINE)
 FENCED_CODE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)

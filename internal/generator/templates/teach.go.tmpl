@@ -27,6 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/learn"
 	"{{modulePath}}/internal/learn/entities"
 	"{{modulePath}}/internal/learn/lookups"
@@ -66,11 +67,10 @@ func noLearnActive(flags *rootFlags) bool {
 // error log. Created on first use with 0o700 so a multi-user machine
 // doesn't accidentally expose one user's learned queries.
 func learningsStateDir() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := cliutil.StateDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -173,7 +173,7 @@ query that matches surfaces the right resources without re-running discovery.
 
 This command is designed to be backgrounded by an LLM right before it
 emits the user-facing response: silent on success, errors only to
-~/.local/share/{{.Name}}-pp-cli/teach.log, safe to fire-and-forget.
+the CLI state directory's teach.log, safe to fire-and-forget.
 
 Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 		Example: `  {{.Name}}-pp-cli teach --query "<question>" --resource-type <type> \
@@ -289,7 +289,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 	cmd.Flags().StringVar(&venueArg, "venue", "", "Optional venue scope tag stored with the learning")
 	cmd.Flags().StringVar(&resourceType, "resource-type", "", "Resource type (required; e.g. matches a row in the local resources table)")
 	cmd.Flags().BoolVar(&quiet, "quiet", true, "Silent on success (default true — designed for background invocation)")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	cmd.Flags().StringVar(&notes, "notes", "", "Optional free-form note recorded in the audit log")
 	cmd.Flags().BoolVar(&noValidate, "no-validate", false, "Suppress teach-time resource-shape validation (warnings to teach.log)")
 	cmd.Flags().StringVar(&playbookFile, "playbook-file", "", "Optional path to a JSON playbook recording the CLI choreography for this query family")
@@ -446,7 +446,7 @@ when learnings exist.`,
 	}
 	cmd.Flags().IntVar(&minConf, "min-confidence", 1, "Minimum confidence to include in results")
 	cmd.Flags().IntVar(&limit, "limit", 10, "Maximum number of learnings to return")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	cmd.Flags().BoolVar(&debugMismatches, "debug-mismatches", false, "Include cross-entity mismatches in the envelope under mismatches[]")
 	return cmd
 }
@@ -640,7 +640,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&actionFilter, "action", "", "Filter by action (boost | hide | alias_of)")
 	cmd.Flags().IntVar(&minConf, "min-confidence", 0, "Filter by minimum confidence")
 	cmd.Flags().IntVar(&limit, "limit", 200, "Maximum rows to return")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	cmd.Flags().BoolVar(&warningsOnly, "warnings", false, "Return teach-time warnings from teach.log instead of stored learning rows")
 	return cmd
 }
@@ -718,7 +718,7 @@ Requires at least one of --resource, --action, or --all.`,
 	cmd.Flags().StringVar(&resourceArg, "resource", "", "Delete only the rule for this resource_id")
 	cmd.Flags().StringVar(&actionArg, "action", "", "Delete only rules with this action (boost | hide | alias_of)")
 	cmd.Flags().BoolVar(&all, "all", false, "Delete every rule for the supplied query")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	return cmd
 }
 
@@ -808,7 +808,7 @@ a whole family.`,
 	cmd.Flags().StringVar(&venue, "venue", "", "Optional venue scope tag")
 	cmd.Flags().StringVar(&strategy, "strategy", "", "Substitution strategy: substitute | substitute-then-search-prefix (default substitute)")
 	cmd.Flags().StringVar(&entityKind, "entity-kind", "", "Entity kind name registered in entity_lookups (required)")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	return cmd
 }
 
@@ -867,6 +867,6 @@ cannot be taught — they are derived from the canonical input.`,
 	cmd.Flags().StringVar(&kind, "kind", "", "Entity kind, e.g. country, team (required, must not be a computed kind)")
 	cmd.Flags().StringVar(&canonical, "canonical", "", "Canonical entity name (required)")
 	cmd.Flags().StringVar(&value, "value", "", "Value/alias that should resolve to the canonical (required)")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	return cmd
 }

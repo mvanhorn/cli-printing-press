@@ -59,7 +59,7 @@ Run `printing-press-rich-pp-cli auth setup` to print the URL and steps for getti
 export RICH_AUTH_API_KEY="<your-key>"
 ```
 
-Or persist it in `~/.config/printing-press-rich-pp-cli/config.toml`.
+To persist credentials, use `printing-press-rich-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data dir, not in `config.toml`.
 
 Run `printing-press-rich-pp-cli doctor` to verify setup.
 
@@ -91,6 +91,33 @@ Commands that read from the local store or the API wrap output in a provenance e
 
 Parse `.results` for data and `.meta.source` to know whether it's live or local. A human-readable `N results (live)` summary is printed to stderr only when stdout is a terminal AND no machine-format flag (`--json`, `--csv`, `--compact`, `--quiet`, `--plain`, `--select`) is set — piped/agent consumers and explicit-format runs get pure JSON on stdout.
 
+## Paths and state
+
+Agents should treat the CLI's path resolver as part of the runtime contract:
+
+- Use `--home <dir>` for one invocation, or set `PRINTING_PRESS_RICH_HOME=<dir>` to relocate all four path kinds under one root.
+- Use per-kind env vars only when a specific kind must diverge: `PRINTING_PRESS_RICH_CONFIG_DIR`, `PRINTING_PRESS_RICH_DATA_DIR`, `PRINTING_PRESS_RICH_STATE_DIR`, `PRINTING_PRESS_RICH_CACHE_DIR`.
+- Resolution order is per-kind env var, `--home`, `PRINTING_PRESS_RICH_HOME`, XDG (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`), then platform defaults.
+- `config` contains settings like `config.toml` and profiles. `data` contains `credentials.toml`, `data.db`, cookies, and auth sidecars. `state` contains persisted queries, jobs, and `teach.log`. `cache` contains regenerable HTTP/cache files.
+- Stored secrets live in `credentials.toml` under the data dir. Existing legacy `config.toml` secrets are read for compatibility and leave `config.toml` on the first auth write.
+- Run `printing-press-rich-pp-cli doctor --fail-on warn` to surface path and credential-location warnings. `agent-context` exposes a schema v4 `paths` block for agents that need the resolved dirs.
+- For MCP, pass relocation through the MCP host config. The MCP binary does not inherit CLI flags:
+
+  ```json
+  {
+    "mcpServers": {
+      "printing-press-rich": {
+        "command": "printing-press-rich-pp-mcp",
+        "env": {
+          "PRINTING_PRESS_RICH_HOME": "/srv/printing-press-rich"
+        }
+      }
+    }
+  }
+  ```
+
+Fleet precedence: an inherited per-kind env var overrides an explicit `--home` for that kind. Use `PRINTING_PRESS_RICH_HOME` or per-kind vars as durable fleet levers, and use `--home` only for a single invocation. Relocation is not reversible by unsetting env vars; move files manually before clearing `PRINTING_PRESS_RICH_HOME`, or `doctor` will not find credentials left under the former root.
+
 ## Agent Feedback
 
 When you (or the agent) notice something off about this CLI, record it:
@@ -101,7 +128,7 @@ printing-press-rich-pp-cli feedback --stdin < notes.txt
 printing-press-rich-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.local/share/printing-press-rich-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_RICH_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_RICH_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally as `feedback.jsonl` under the resolved data dir. They are never POSTed unless `PRINTING_PRESS_RICH_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_RICH_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 

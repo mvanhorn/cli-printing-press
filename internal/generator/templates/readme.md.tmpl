@@ -242,7 +242,7 @@ Get your API key from your API provider's developer portal. The key typically lo
 export {{.Name}}="<paste-your-key>"
 ```
 
-You can also persist this in your config file at `{{$.Config.Path}}`.
+To persist credentials, use `{{$.Name}}-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
 {{- end}}
 {{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
 
@@ -407,6 +407,59 @@ These capabilities aren't available in any other tool for this API.
 
 Run `{{.Name}}-pp-cli --help` for the full command reference and flag list.
 
+## Paths & environment variables
+
+This CLI separates local files into four path kinds:
+
+| Kind | Contents |
+|------|----------|
+| `config` | User-editable settings such as `config.toml` and saved profiles |
+| `data` | Durable local data{{if .HasAuthCommand}}: `credentials.toml`, `data.db`, cookies, browser-session proof files, and other auth sidecars{{else}} such as `data.db`{{end}} |
+| `state` | Runtime state such as persisted queries, jobs, and `teach.log` |
+| `cache` | Regenerable HTTP/cache files |
+
+Each kind resolves independently. The ladder is:
+
+1. Per-kind env var: `{{envName .Name}}_CONFIG_DIR`, `{{envName .Name}}_DATA_DIR`, `{{envName .Name}}_STATE_DIR`, or `{{envName .Name}}_CACHE_DIR`
+2. `--home <dir>` for this invocation
+3. `{{envName .Name}}_HOME` for a flat relocated root
+4. XDG env vars: `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`
+5. Platform defaults matching existing installs
+
+For containers and agent sandboxes, prefer a single relocated root:
+
+```bash
+export {{envName .Name}}_HOME=/srv/{{.Name}}
+{{.Name}}-pp-cli doctor
+```
+
+Under `{{envName .Name}}_HOME=/srv/{{.Name}}`, the four dirs resolve to `/srv/{{.Name}}/config`, `/srv/{{.Name}}/data`, `/srv/{{.Name}}/state`, and `/srv/{{.Name}}/cache`.
+
+MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
+
+```json
+{
+  "mcpServers": {
+    "{{.Name}}": {
+      "command": "{{.Name}}-pp-mcp",
+      "env": {
+        "{{envName .Name}}_HOME": "/srv/{{.Name}}"
+      }
+    }
+  }
+}
+```
+
+Precedence matters in fleets: an ambient per-kind variable such as `{{envName .Name}}_DATA_DIR` overrides an explicit `--home` for that kind. Use `{{envName .Name}}_HOME` or the per-kind variables for durable fleet relocation; treat `--home` as the weaker per-invocation lever.
+
+Relocation is one-way. Unsetting `{{envName .Name}}_HOME` does not move files back to platform defaults, and `doctor` cannot find {{if .HasAuthCommand}}credentials{{else}}files{{end}} left under a former root. Move the files manually before unsetting relocation variables.
+
+{{if .HasAuthCommand -}}
+Existing installs keep working because the platform-default rung matches the legacy layout. On the first auth write, stored secrets leave `config.toml` and are consolidated into `credentials.toml` under the data directory. Run `{{.Name}}-pp-cli doctor --fail-on warn` to check path and credential-location warnings in automation.
+{{- else -}}
+Existing installs keep working because the platform-default rung matches the legacy layout. Run `{{.Name}}-pp-cli doctor --fail-on warn` to check path warnings in automation.
+{{- end}}
+
 ## Commands
 {{range $name, $resource := .Resources}}
 ### {{$name}}
@@ -532,7 +585,7 @@ Verifies configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}, cred
 
 ## Configuration
 
-Config file: `{{.Config.Path}}`
+Run `{{.Name}}-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `{{.Config.Path}}`; `--home`, `{{envName .Name}}_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 {{- if or .Auth.EnvVarSpecs .Auth.EnvVars}}

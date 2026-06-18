@@ -156,7 +156,7 @@ human-readable dimensions.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database path (default: user cache)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	cmd.Flags().StringVar(&subscribePayload, "subscribe", `{{.Streaming.SubscribeShape}}`, "WebSocket subscribe payload")
 	cmd.Flags().DurationVar(&metadataCadence, "metadata-cadence", mustDuration("{{.Streaming.EffectiveMetadataRefreshCadence}}"), "REST metadata refresh cadence")
 	cmd.Flags().StringVar(&metadataStatuses, "metadata-statuses", "{{join .Streaming.EffectiveMetadataStatuses ","}}", "Comma-separated metadata statuses to poll")

@@ -11,28 +11,40 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"printing-press-rich-pp-cli/internal/cliutil"
 )
 
 type Config struct {
-	BaseURL               string            `toml:"base_url"`
-	AuthHeaderVal         string            `toml:"auth_header"`
-	Headers               map[string]string `toml:"headers,omitempty"`
-	AuthSource            string            `toml:"-"`
-	AccessToken           string            `toml:"access_token"`
-	RefreshToken          string            `toml:"refresh_token"`
-	TokenExpiry           time.Time         `toml:"token_expiry"`
-	ClientID              string            `toml:"client_id"`
-	ClientSecret          string            `toml:"client_secret"`
-	Path                  string            `toml:"-"`
-	envOverrides          map[string]bool   `toml:"-"`
-	fileConfig            *Config           `toml:"-"`
-	RichAuthApiKey        string            `toml:"auth_api_key"`
-	RichAuthClientId      string            `toml:"auth_client_id"`
-	RichAuthClientSecret  string            `toml:"auth_client_secret"`
-	RichAuthSessionCookie string            `toml:"auth_session_cookie"`
-	RichAuthOptionalToken string            `toml:"auth_optional_token"`
-	RichAuthBotToken      string            `toml:"auth_bot_token"`
-	RichAuthUserToken     string            `toml:"auth_user_token"`
+	BaseURL            string            `toml:"base_url"`
+	AuthHeaderVal      string            `toml:"auth_header"`
+	Headers            map[string]string `toml:"headers,omitempty"`
+	AuthSource         string            `toml:"-"`
+	CredentialSource   string            `toml:"-"`
+	AgentcookieManaged bool              `toml:"-"`
+	// configOwner records which on-disk file parseConfigData populated this
+	// config from ("config-kind path" or "legacy config path") so the
+	// credential-source fallback below reports where config-stored
+	// credentials actually live. Unexported: never persisted.
+	configOwner string
+	// legacySourcePath records the legacy config path when Load fell
+	// back to it. Used by save() to scrub credential fields from the
+	// old location after relocation. Unexported: never persisted.
+	legacySourcePath      string
+	AccessToken           string          `toml:"access_token"`
+	RefreshToken          string          `toml:"refresh_token"`
+	TokenExpiry           time.Time       `toml:"token_expiry"`
+	ClientID              string          `toml:"client_id"`
+	ClientSecret          string          `toml:"client_secret"`
+	Path                  string          `toml:"-"`
+	envOverrides          map[string]bool `toml:"-"`
+	fileConfig            *Config         `toml:"-"`
+	RichAuthApiKey        string          `toml:"auth_api_key"`
+	RichAuthClientId      string          `toml:"auth_client_id"`
+	RichAuthClientSecret  string          `toml:"auth_client_secret"`
+	RichAuthSessionCookie string          `toml:"auth_session_cookie"`
+	RichAuthOptionalToken string          `toml:"auth_optional_token"`
+	RichAuthBotToken      string          `toml:"auth_bot_token"`
+	RichAuthUserToken     string          `toml:"auth_user_token"`
 }
 
 func Load(configPath string) (*Config, error) {
@@ -41,21 +53,61 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Resolve config path
-	path := configPath
-	if path == "" {
-		path = os.Getenv("PRINTING_PRESS_RICH_CONFIG")
-	}
-	if path == "" {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".config", "printing-press-rich-pp-cli", "config.toml")
+	path, explicitConfigFile, err := resolveConfigPath(configPath)
+	if err != nil {
+		return nil, err
 	}
 	cfg.Path = path
 
-	// Try to load config file
-	data, err := os.ReadFile(path)
-	if err == nil {
-		if err := toml.Unmarshal(data, cfg); err != nil {
-			return nil, fmt.Errorf("parsing config %s: %w", path, err)
+	if explicitConfigFile {
+		if err := readConfigFile(path, cfg, "config-kind path"); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+	} else {
+		legacyPath, err := LegacyConfigPath()
+		if err != nil {
+			return nil, err
+		}
+		data, sourcePath, err := cliutil.ReadFileWithLegacyFallback(path, legacyPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+		} else {
+			owner := "config-kind path"
+			if sourcePath == legacyPath {
+				owner = "legacy config path"
+			}
+			parsed := *cfg
+			if err := parseConfigData(data, &parsed, sourcePath, owner); err != nil {
+				if sourcePath == legacyPath {
+					fmt.Fprintf(os.Stderr, "warning: legacy config parse skipped for %s: %v\n", sourcePath, err)
+				} else {
+					return nil, err
+				}
+			} else {
+				*cfg = parsed
+				if sourcePath == legacyPath {
+					cfg.legacySourcePath = legacyPath
+				}
+			}
+		}
+	}
+	cfg.Path = path
+	if cfg.AgentcookieManagedByExternalStore() {
+		cfg.markAgentcookieManaged()
+	} else {
+		creds, ok, err := cliutil.LoadCredentials()
+		if err != nil {
+			return nil, err
+		}
+		if ok && creds.HasValues() {
+			cfg.clearCredentialFields()
+			cfg.applyCredentials(creds)
+			if cfg.hasCredentialFields() {
+				cfg.AuthSource = "config"
+				cfg.CredentialSource = "credentials file"
+			}
 		}
 	}
 
@@ -66,38 +118,44 @@ func Load(configPath string) (*Config, error) {
 		cfg.RichAuthApiKey = v
 		cfg.markEnvOverride("RichAuthApiKey")
 		cfg.AuthSource = "env:RICH_AUTH_API_KEY"
+		cfg.CredentialSource = "env:RICH_AUTH_API_KEY"
 	}
 	if v := os.Getenv("RICH_AUTH_CLIENT_ID"); v != "" {
 		cfg.RichAuthClientId = v
 		cfg.markEnvOverride("RichAuthClientId")
 		cfg.AuthSource = "env:RICH_AUTH_CLIENT_ID"
+		cfg.CredentialSource = "env:RICH_AUTH_CLIENT_ID"
 	}
 	if v := os.Getenv("RICH_AUTH_CLIENT_SECRET"); v != "" {
 		cfg.RichAuthClientSecret = v
 		cfg.markEnvOverride("RichAuthClientSecret")
 		cfg.AuthSource = "env:RICH_AUTH_CLIENT_SECRET"
+		cfg.CredentialSource = "env:RICH_AUTH_CLIENT_SECRET"
 	}
 	if v := os.Getenv("RICH_AUTH_SESSION_COOKIE"); v != "" {
 		cfg.RichAuthSessionCookie = v
 		cfg.markEnvOverride("RichAuthSessionCookie")
 		cfg.AuthSource = "env:RICH_AUTH_SESSION_COOKIE"
+		cfg.CredentialSource = "env:RICH_AUTH_SESSION_COOKIE"
 	}
 	if v := os.Getenv("RICH_AUTH_OPTIONAL_TOKEN"); v != "" {
 		cfg.RichAuthOptionalToken = v
 		cfg.markEnvOverride("RichAuthOptionalToken")
 		cfg.AuthSource = "env:RICH_AUTH_OPTIONAL_TOKEN"
+		cfg.CredentialSource = "env:RICH_AUTH_OPTIONAL_TOKEN"
 	}
 	if v := os.Getenv("RICH_AUTH_BOT_TOKEN"); v != "" {
 		cfg.RichAuthBotToken = v
 		cfg.markEnvOverride("RichAuthBotToken")
 		cfg.AuthSource = "env:RICH_AUTH_BOT_TOKEN"
+		cfg.CredentialSource = "env:RICH_AUTH_BOT_TOKEN"
 	}
 	if v := os.Getenv("RICH_AUTH_USER_TOKEN"); v != "" {
 		cfg.RichAuthUserToken = v
 		cfg.markEnvOverride("RichAuthUserToken")
 		cfg.AuthSource = "env:RICH_AUTH_USER_TOKEN"
+		cfg.CredentialSource = "env:RICH_AUTH_USER_TOKEN"
 	}
-
 	// Label config-file-derived credentials so doctor can distinguish
 	// "credentials persisted on disk" from "no credentials at all" — without
 	// this, users who saved via set-token without an env var see a blank
@@ -106,29 +164,18 @@ func Load(configPath string) (*Config, error) {
 	// config file path is exposed separately as report["config_path"], and
 	// embedding it in auth_source leaks the user's home directory through
 	// doctor's JSON envelope.
-	if cfg.AuthSource == "" && (cfg.AuthHeaderVal != "" || cfg.AccessToken != "") {
+	if cfg.AuthSource == "" && cfg.hasCredentialFields() {
 		cfg.AuthSource = "config"
 	}
-	if cfg.AuthSource == "" && cfg.RichAuthApiKey != "" {
-		cfg.AuthSource = "config"
-	}
-	if cfg.AuthSource == "" && cfg.RichAuthClientId != "" {
-		cfg.AuthSource = "config"
-	}
-	if cfg.AuthSource == "" && cfg.RichAuthClientSecret != "" {
-		cfg.AuthSource = "config"
-	}
-	if cfg.AuthSource == "" && cfg.RichAuthSessionCookie != "" {
-		cfg.AuthSource = "config"
-	}
-	if cfg.AuthSource == "" && cfg.RichAuthOptionalToken != "" {
-		cfg.AuthSource = "config"
-	}
-	if cfg.AuthSource == "" && cfg.RichAuthBotToken != "" {
-		cfg.AuthSource = "config"
-	}
-	if cfg.AuthSource == "" && cfg.RichAuthUserToken != "" {
-		cfg.AuthSource = "config"
+	if cfg.CredentialSource == "" && cfg.AuthSource == "config" {
+		// Label config-stored credentials with the file they were parsed
+		// from: the resolved config-kind path (covers --home and per-kind
+		// env relocation as well as explicit --config files) or the legacy
+		// config path when the read fell back to the pre-paths layout.
+		cfg.CredentialSource = cfg.configOwner
+		if cfg.CredentialSource == "" {
+			cfg.CredentialSource = "legacy config path"
+		}
 	}
 
 	// Soft agentcookie integration: if the agentcookie daemon manages this
@@ -143,6 +190,7 @@ func Load(configPath string) (*Config, error) {
 		marker := filepath.Join(filepath.Dir(cfg.Path), ".agentcookie-managed")
 		if _, err := os.Stat(marker); err == nil {
 			cfg.AuthSource = "agentcookie"
+			cfg.markAgentcookieManaged()
 		}
 	}
 
@@ -151,6 +199,51 @@ func Load(configPath string) (*Config, error) {
 		cfg.BaseURL = v
 	}
 	return cfg, nil
+}
+
+func resolveConfigPath(configPath string) (string, bool, error) {
+	if strings.TrimSpace(configPath) != "" {
+		return configPath, true, nil
+	}
+	if path := os.Getenv("PRINTING_PRESS_RICH_CONFIG"); path != "" {
+		return path, true, nil
+	}
+	dir, err := cliutil.ConfigDir()
+	if err != nil {
+		return "", false, err
+	}
+	return filepath.Join(dir, "config.toml"), false, nil
+}
+
+func LegacyConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve legacy config path: %w", err)
+	}
+	return filepath.Join(home, ".config", "printing-press-rich-pp-cli", "config.toml"), nil
+}
+
+func readConfigFile(path string, cfg *Config, owner string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return parseConfigData(data, cfg, path, owner)
+}
+
+func parseConfigData(data []byte, cfg *Config, path string, owner string) error {
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		return fmt.Errorf("parsing %s %s: %w", owner, path, err)
+	}
+	cfg.configOwner = owner
+	return nil
+}
+func FileHasCredentialFields(path string) (bool, error) {
+	var cfg Config
+	if err := readConfigFile(path, &cfg, "credential probe"); err != nil {
+		return false, err
+	}
+	return cfg.hasCredentialFields(), nil
 }
 
 func (c *Config) AuthHeader() string {
@@ -180,6 +273,123 @@ func applyAuthFormat(format string, replacements map[string]string) string {
 	return format
 }
 
+func (c *Config) AgentcookieManagedByExternalStore() bool {
+	if c.AgentcookieManaged || c.AuthSource == "agentcookie" || c.CredentialSource == "agentcookie" {
+		return true
+	}
+	if c.Path == "" {
+		return false
+	}
+	marker := filepath.Join(filepath.Dir(c.Path), ".agentcookie-managed")
+	if _, err := os.Stat(marker); err == nil {
+		return true
+	}
+	return false
+}
+
+func (c *Config) markAgentcookieManaged() {
+	c.AgentcookieManaged = true
+	c.CredentialSource = "agentcookie"
+}
+
+func (c *Config) hasCredentialFields() bool {
+	if c.AuthHeaderVal != "" ||
+		c.AccessToken != "" ||
+		c.RefreshToken != "" ||
+		c.ClientID != "" ||
+		c.ClientSecret != "" {
+		return true
+	}
+	if c.RichAuthApiKey != "" {
+		return true
+	}
+	if c.RichAuthClientId != "" {
+		return true
+	}
+	if c.RichAuthClientSecret != "" {
+		return true
+	}
+	if c.RichAuthSessionCookie != "" {
+		return true
+	}
+	if c.RichAuthOptionalToken != "" {
+		return true
+	}
+	if c.RichAuthBotToken != "" {
+		return true
+	}
+	if c.RichAuthUserToken != "" {
+		return true
+	}
+	return false
+}
+
+func (c *Config) clearCredentialFields() {
+	c.AuthHeaderVal = ""
+	c.AccessToken = ""
+	c.RefreshToken = ""
+	c.TokenExpiry = time.Time{}
+	c.ClientID = ""
+	c.ClientSecret = ""
+	c.RichAuthApiKey = ""
+	c.RichAuthClientId = ""
+	c.RichAuthClientSecret = ""
+	c.RichAuthSessionCookie = ""
+	c.RichAuthOptionalToken = ""
+	c.RichAuthBotToken = ""
+	c.RichAuthUserToken = ""
+}
+
+func (c *Config) credentials() *cliutil.Credentials {
+	return &cliutil.Credentials{
+		AuthHeaderVal:         c.AuthHeaderVal,
+		AccessToken:           c.AccessToken,
+		RefreshToken:          c.RefreshToken,
+		TokenExpiry:           c.TokenExpiry,
+		ClientID:              c.ClientID,
+		ClientSecret:          c.ClientSecret,
+		RichAuthApiKey:        c.RichAuthApiKey,
+		RichAuthClientId:      c.RichAuthClientId,
+		RichAuthClientSecret:  c.RichAuthClientSecret,
+		RichAuthSessionCookie: c.RichAuthSessionCookie,
+		RichAuthOptionalToken: c.RichAuthOptionalToken,
+		RichAuthBotToken:      c.RichAuthBotToken,
+		RichAuthUserToken:     c.RichAuthUserToken,
+	}
+}
+
+func (c *Config) applyCredentials(creds *cliutil.Credentials) {
+	if creds == nil {
+		return
+	}
+	c.AuthHeaderVal = creds.AuthHeaderVal
+	c.AccessToken = creds.AccessToken
+	c.RefreshToken = creds.RefreshToken
+	c.TokenExpiry = creds.TokenExpiry
+	c.ClientID = creds.ClientID
+	c.ClientSecret = creds.ClientSecret
+	c.RichAuthApiKey = creds.RichAuthApiKey
+	c.RichAuthClientId = creds.RichAuthClientId
+	c.RichAuthClientSecret = creds.RichAuthClientSecret
+	c.RichAuthSessionCookie = creds.RichAuthSessionCookie
+	c.RichAuthOptionalToken = creds.RichAuthOptionalToken
+	c.RichAuthBotToken = creds.RichAuthBotToken
+	c.RichAuthUserToken = creds.RichAuthUserToken
+}
+
+func (c *Config) saveCredentialsFirst() error {
+	if c.AgentcookieManagedByExternalStore() {
+		c.markAgentcookieManaged()
+		return nil
+	}
+	persisted := c.configForSave()
+	if err := cliutil.SaveCredentials(persisted.credentials()); err != nil {
+		return err
+	}
+	c.CredentialSource = "credentials file"
+	return nil
+}
+
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
 	c.ClientID = clientID
 	c.ClientSecret = clientSecret
@@ -196,6 +406,9 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	c.updateFileConfigField("AccessToken")
 	c.updateFileConfigField("RefreshToken")
 	c.updateFileConfigField("TokenExpiry")
+	if err := c.saveCredentialsFirst(); err != nil {
+		return err
+	}
 	return c.save()
 }
 
@@ -221,6 +434,9 @@ func (c *Config) SaveCredential(token string) error {
 	c.RichAuthApiKey = token
 	delete(c.envOverrides, "RichAuthApiKey")
 	c.updateFileConfigField("RichAuthApiKey")
+	if err := c.saveCredentialsFirst(); err != nil {
+		return err
+	}
 	return c.save()
 }
 
@@ -251,18 +467,35 @@ func (c *Config) ClearTokens() error {
 	c.updateFileConfigField("ClientSecret")
 	c.RichAuthApiKey = ""
 	delete(c.envOverrides, "RichAuthApiKey")
+	c.updateFileConfigField("RichAuthApiKey")
 	c.RichAuthClientId = ""
 	delete(c.envOverrides, "RichAuthClientId")
+	c.updateFileConfigField("RichAuthClientId")
 	c.RichAuthClientSecret = ""
 	delete(c.envOverrides, "RichAuthClientSecret")
+	c.updateFileConfigField("RichAuthClientSecret")
 	c.RichAuthSessionCookie = ""
 	delete(c.envOverrides, "RichAuthSessionCookie")
+	c.updateFileConfigField("RichAuthSessionCookie")
 	c.RichAuthOptionalToken = ""
 	delete(c.envOverrides, "RichAuthOptionalToken")
+	c.updateFileConfigField("RichAuthOptionalToken")
 	c.RichAuthBotToken = ""
 	delete(c.envOverrides, "RichAuthBotToken")
+	c.updateFileConfigField("RichAuthBotToken")
 	c.RichAuthUserToken = ""
 	delete(c.envOverrides, "RichAuthUserToken")
+	c.updateFileConfigField("RichAuthUserToken")
+	if c.AgentcookieManagedByExternalStore() {
+		c.markAgentcookieManaged()
+		// save() persists the full config (credential fields included) for
+		// agentcookie-managed stores, so the zeroed fields must be written
+		// back; returning early would leave the secrets on disk.
+		return c.save()
+	}
+	if err := cliutil.RemoveCredentials(); err != nil {
+		return err
+	}
 	return c.save()
 }
 
@@ -363,17 +596,21 @@ func (c *Config) updateFileConfigField(field string) {
 }
 
 func (c *Config) save() error {
-	dir := filepath.Dir(c.Path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("creating config dir: %w", err)
-	}
 	persisted := c.configForSave()
-	data, err := toml.Marshal(persisted)
+	var persist any = persisted
+	if !c.AgentcookieManagedByExternalStore() {
+		persist = persisted.persisted()
+	}
+	data, err := toml.Marshal(persist)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
-	if err := os.WriteFile(c.Path, data, 0o600); err != nil {
+	if err := cliutil.AtomicWritePrivateFile(c.Path, data, 0o600, 0o700); err != nil {
 		return err
+	}
+	c.scrubLegacyCredentials()
+	if !c.AgentcookieManagedByExternalStore() {
+		persisted.clearCredentialFields()
 	}
 	c.fileConfig = &persisted
 	c.fileConfig.envOverrides = nil
@@ -383,6 +620,48 @@ func (c *Config) save() error {
 	// otherwise later mutations to c's maps leak into the on-disk snapshot.
 	c.fileConfig.Headers = cloneStringMap(c.fileConfig.Headers)
 	return nil
+}
+func (c *Config) scrubLegacyCredentials() {
+	if c.legacySourcePath == "" || c.legacySourcePath == c.Path {
+		return
+	}
+	if c.AgentcookieManagedByExternalStore() {
+		return
+	}
+	data, err := os.ReadFile(c.legacySourcePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "warning: cannot read legacy config to scrub credentials: %v\n", err)
+		}
+		return
+	}
+	var legacy Config
+	if err := toml.Unmarshal(data, &legacy); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot parse legacy config to scrub credentials: %v\n", err)
+		return
+	}
+	legacy.clearCredentialFields()
+	scrubbed := legacy.persisted()
+	scrubbedData, err := toml.Marshal(scrubbed)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot marshal scrubbed legacy config: %v\n", err)
+		return
+	}
+	if err := cliutil.AtomicWritePrivateFile(c.legacySourcePath, scrubbedData, 0o600, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot write scrubbed legacy config: %v\n", err)
+	}
+}
+
+type persistedConfig struct {
+	BaseURL string            `toml:"base_url"`
+	Headers map[string]string `toml:"headers,omitempty"`
+}
+
+func (c *Config) persisted() persistedConfig {
+	return persistedConfig{
+		BaseURL: c.BaseURL,
+		Headers: c.Headers,
+	}
 }
 
 // Ensure strings import is used

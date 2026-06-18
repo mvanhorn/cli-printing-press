@@ -185,7 +185,7 @@ work items, tickets, or tasks.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/{{.Name}}-pp-cli/data.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	cmd.Flags().IntVar(&limit, "limit", 10, "Maximum number of similar items to show")
 	cmd.Flags().StringVar(&resourceType, "type", "", "Resource type for the source item when IDs overlap")
 

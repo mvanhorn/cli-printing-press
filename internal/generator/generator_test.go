@@ -66,6 +66,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/probe.go",
 		"internal/cliutil/ratelimit.go",
 		"internal/cliutil/verifyenv.go",
+		"internal/cliutil/paths.go",
+		"internal/cliutil/paths_test.go",
 		"internal/cliutil/extractnumber.go",
 		"internal/cliutil/extractnumber_test.go",
 		"internal/cliutil/jwtshape.go",
@@ -98,9 +100,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 74},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 78},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 76},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 78},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 82},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 80},
 	}
 
 	for _, tt := range tests {
@@ -765,9 +767,15 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(out, &payload), "agent-context must emit valid JSON")
-	assert.Equal(t, "3", payload["schema_version"], "schema_version must be present")
+	assert.Equal(t, "4", payload["schema_version"], "schema_version must be present")
 	assert.Contains(t, payload, "cli")
 	assert.Contains(t, payload, "auth")
+	paths, ok := payload["paths"].(map[string]any)
+	require.True(t, ok, "agent-context must expose resolved paths")
+	for _, key := range []string{"config_dir", "data_dir", "state_dir", "cache_dir"} {
+		value, ok := paths[key].(string)
+		require.Truef(t, ok && value != "", "agent-context paths.%s must be populated", key)
+	}
 	assert.Contains(t, payload, "commands")
 
 	annotatedEndpoint := findAgentContextCommand(payload["commands"], func(command map[string]any) bool {
@@ -2527,11 +2535,10 @@ func TestGenerateCookieAuthEmitsSetTokenSubcommand(t *testing.T) {
 }
 
 // TestGenerateNoAuthPersistedQueryOmitsSetToken verifies that the
-// auth_browser template does NOT emit set-token (or import cliutil) when
+// auth_browser template does NOT emit set-token when
 // Auth.Type == "none" + a graphql_persisted_query hint routes the spec
 // through auth_browser purely for the query-refresh flow. Saving a token
-// has no meaning when there are no credentials to save; emitting the
-// subcommand would also produce an unused cliutil import and break build.
+// has no meaning when there are no credentials to save.
 func TestGenerateNoAuthPersistedQueryOmitsSetToken(t *testing.T) {
 	t.Parallel()
 
@@ -2552,8 +2559,8 @@ func TestGenerateNoAuthPersistedQueryOmitsSetToken(t *testing.T) {
 		"auth.type=none should not emit a set-token subcommand")
 	assert.NotContains(t, authGo, "cliutil.LooksLikeJWT",
 		"auth.type=none should not reference the JWT-shape helper")
-	assert.NotContains(t, authGo, "internal/cliutil\"",
-		"auth.type=none must not import cliutil — would trigger unused-import")
+	assert.Contains(t, authGo, "cliutil.StateDir",
+		"auth.type=none persisted-query refresh still uses cliutil for the state-dir registry path")
 }
 
 func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
@@ -10335,6 +10342,8 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "validateAndWriteBrowserSessionProof")
 	assert.Contains(t, content, "validateAndWriteBrowserSessionProofWithRetry")
 	assert.Contains(t, content, "browser-session-proof.json")
+	assert.Contains(t, content, "legacyPath != proofPath")
+	assert.Contains(t, content, "os.Remove(legacyPath)")
 	assert.Contains(t, content, "newAuthRefreshCmd")
 	assert.Contains(t, content, "auth refresh")
 	assert.Contains(t, content, "openBrowserForCookieRefresh")
