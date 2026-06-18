@@ -65,6 +65,11 @@ func TestGeneratedSyncDryRunDoesNotMutateSyncState(t *testing.T) {
 	// The --full and --latest-only cursor clears must skip under --dry-run.
 	require.Contains(t, syncSrc, "if full && !c.DryRun {",
 		"--full cursor clear must be guarded by !c.DryRun")
-	require.Contains(t, syncSrc, "if !c.DryRun {",
+	latestOnlyIdx := strings.Index(syncSrc, "if latestOnly {")
+	require.NotEqual(t, -1, latestOnlyIdx, "expected latestOnly block in generated sync")
+	latestOnlyBlock := syncSrc[latestOnlyIdx:]
+	require.Contains(t, latestOnlyBlock, "Skip under --dry-run:",
+		"--latest-only cursor clear must document the dry-run guard")
+	require.Contains(t, latestOnlyBlock, "if !c.DryRun {",
 		"--latest-only cursor clear must be guarded by !c.DryRun")
 }
