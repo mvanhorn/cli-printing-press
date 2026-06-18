@@ -51,8 +51,9 @@ func TestSplitShellArgs(t *testing.T) {
 // flag in the structured args map (instead of the free-form "args"
 // string), the root flags listed in blockedRootFlags must be dropped
 // before they reach exec.CommandContext. A regression here would let a
-// caller redirect --base-url, swap --token, switch --client filesystems, or
-// load a malicious --config.
+// caller redirect --base-url, swap --token, switch --client filesystems,
+// relocate the CLI's filesystem roots via --home, or load a malicious
+// --config.
 func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	in := map[string]any{
 		"args":     "contacts",
@@ -60,6 +61,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"client":   "attacker-client",
 		"config":   "/tmp/evil.yaml",
 		"deliver":  "fd:3",
+		"home":     "/tmp/evil-home",
 		"profile":  "attacker",
 		"token":    "stolen-token",
 		// Keys containing "=" must not be emitted verbatim as flag=value.
@@ -75,7 +77,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
-	for _, blocked := range []string{"--base-url", "--client", "--config", "--deliver", "--profile", "--token", "--args"} {
+	for _, blocked := range []string{"--base-url", "--client", "--config", "--deliver", "--home", "--profile", "--token", "--args"} {
 		for _, tok := range got {
 			if tok == blocked {
 				t.Errorf("blocked flag %q leaked through cliArgsFromMCP", blocked)

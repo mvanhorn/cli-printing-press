@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
 func TestApplyScopedConfigHomeRewritesHomeVars(t *testing.T) {
@@ -26,6 +28,7 @@ func TestApplyScopedConfigHomeRewritesHomeVars(t *testing.T) {
 	assertEnv(t, got, "HOME", home)
 	assertEnv(t, got, "XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	assertEnv(t, got, "XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	assertEnv(t, got, "XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
 	assertEnv(t, got, "USERPROFILE", home)
 	assertEnv(t, got, "APPDATA", filepath.Join(home, ".config"))
 	assertEnv(t, got, "UNRELATED", "keepme")
@@ -58,7 +61,7 @@ func TestNewScopedConfigHomeCreatesXDGSubdirs(t *testing.T) {
 	}
 	defer cleanup()
 
-	for _, sub := range []string{".config", ".cache", filepath.Join(".local", "share")} {
+	for _, sub := range []string{".config", ".cache", filepath.Join(".local", "share"), filepath.Join(".local", "state")} {
 		path := filepath.Join(home, sub)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -134,6 +137,120 @@ func TestSubprocessEnvPreservesAPICredentialsAfterScopedHome(t *testing.T) {
 	env := subprocessEnv()
 	assertEnv(t, env, "FOO_API_TOKEN", "secret-token")
 	assertEnv(t, env, "BAR_API_KEY", "secret-key")
+}
+
+func TestSubprocessEnvScrubsScopedCLIRelocationVars(t *testing.T) {
+	poisoned := t.TempDir()
+	t.Setenv("PRINTING_PRESS_RICH_HOME", filepath.Join(poisoned, "home"))
+	t.Setenv("PRINTING_PRESS_RICH_CONFIG_DIR", filepath.Join(poisoned, "config"))
+	t.Setenv("PRINTING_PRESS_RICH_DATA_DIR", filepath.Join(poisoned, "data"))
+	t.Setenv("PRINTING_PRESS_RICH_STATE_DIR", filepath.Join(poisoned, "state"))
+	t.Setenv("PRINTING_PRESS_RICH_CACHE_DIR", filepath.Join(poisoned, "cache"))
+	t.Setenv("PRINTING_PRESS_RICH_API_TOKEN", "secret-token")
+
+	cleanup, err := scopeSubprocessHome("printing-press-rich-pp-cli")
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
+	defer cleanup()
+	home := currentSubprocessHome()
+
+	env := subprocessEnv()
+	for _, suffix := range naming.PathKindEnvSuffixes() {
+		name := "PRINTING_PRESS_RICH_" + suffix
+		if envValue(env, name) != "" {
+			t.Fatalf("%s leaked into scoped subprocess env: %v", name, env)
+		}
+	}
+	assertEnv(t, env, "PRINTING_PRESS_RICH_API_TOKEN", "secret-token")
+	assertEnv(t, env, "XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+}
+
+// TestSubprocessEnvKeepsUnrelatedRelocationShapedVars pins the scrub's
+// scope: only the active CLI's relocation vars and the standard HOME/XDG
+// set are stripped. Operator setup that merely looks relocation-shaped
+// (JAVA_HOME, CARGO_HOME, ANDROID_HOME, CHROME_USER_DATA_DIR, another
+// API's *_DATA_DIR) must survive into verify/dogfood subprocesses, even
+// while the target CLI's own relocation vars are removed.
+func TestSubprocessEnvKeepsUnrelatedRelocationShapedVars(t *testing.T) {
+	unrelated := map[string]string{
+		"JAVA_HOME":            filepath.Join(t.TempDir(), "jdk"),
+		"CARGO_HOME":           filepath.Join(t.TempDir(), "cargo"),
+		"ANDROID_HOME":         filepath.Join(t.TempDir(), "android-sdk"),
+		"CHROME_USER_DATA_DIR": filepath.Join(t.TempDir(), "chrome-profile"),
+		"OTHERAPI_DATA_DIR":    filepath.Join(t.TempDir(), "otherapi-data"),
+		"FOO_CONFIG_DIR":       filepath.Join(t.TempDir(), "foo-config"),
+	}
+	for name, value := range unrelated {
+		t.Setenv(name, value)
+	}
+	t.Setenv("PRINTING_PRESS_RICH_DATA_DIR", filepath.Join(t.TempDir(), "poisoned-data"))
+
+	cleanup, err := scopeSubprocessHome("printing-press-rich-pp-cli")
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
+	defer cleanup()
+
+	env := subprocessEnv()
+	for name, value := range unrelated {
+		assertEnv(t, env, name, value)
+	}
+	if envValue(env, "PRINTING_PRESS_RICH_DATA_DIR") != "" {
+		t.Fatalf("target CLI relocation var leaked into scoped subprocess env: %v", env)
+	}
+}
+
+// TestSubprocessEnvKeepsRelocationVarsWhenCLINameUnknown documents the
+// trade-off of the scoped scrub: with no CLI names installed there is no
+// prefix to match, so relocation-shaped vars pass through untouched. The
+// production entry points all pass findCLINames(...), so this only arises
+// for sessions scoped before the CLI directory exists.
+func TestSubprocessEnvKeepsRelocationVarsWhenCLINameUnknown(t *testing.T) {
+	fooData := filepath.Join(t.TempDir(), "foo-data")
+	t.Setenv("FOO_DATA_DIR", fooData)
+	t.Setenv("FOO_API_TOKEN", "secret-token")
+
+	cleanup, err := scopeSubprocessHome()
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
+	defer cleanup()
+
+	env := subprocessEnv()
+	assertEnv(t, env, "FOO_DATA_DIR", fooData)
+	assertEnv(t, env, "FOO_API_TOKEN", "secret-token")
+}
+
+func TestFindCLINamesAndScopedEnvCoverMultipleCommandVariants(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"alpha-pp-cli", "beta-pp-cli"} {
+		if err := os.MkdirAll(filepath.Join(dir, "cmd", name), 0o700); err != nil {
+			t.Fatalf("mkdir cmd variant: %v", err)
+		}
+	}
+	names := findCLINames(dir)
+	if len(names) != 2 || names[0] != "alpha-pp-cli" || names[1] != "beta-pp-cli" {
+		t.Fatalf("findCLINames() = %v, want both variants", names)
+	}
+
+	t.Setenv("ALPHA_DATA_DIR", filepath.Join(t.TempDir(), "alpha-data"))
+	t.Setenv("BETA_DATA_DIR", filepath.Join(t.TempDir(), "beta-data"))
+	t.Setenv("ALPHA_API_TOKEN", "alpha-secret")
+	t.Setenv("BETA_API_TOKEN", "beta-secret")
+
+	cleanup, err := scopeSubprocessHome(names...)
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
+	defer cleanup()
+
+	env := subprocessEnv()
+	if envValue(env, "ALPHA_DATA_DIR") != "" || envValue(env, "BETA_DATA_DIR") != "" {
+		t.Fatalf("multi-variant relocation vars leaked into scoped subprocess env: %v", env)
+	}
+	assertEnv(t, env, "ALPHA_API_TOKEN", "alpha-secret")
+	assertEnv(t, env, "BETA_API_TOKEN", "beta-secret")
 }
 
 func TestApplyDefaultSubprocessEnvDogfoodAppendPreservesAPICredential(t *testing.T) {
@@ -280,4 +397,14 @@ func containsEnv(env []string, name, want string) bool {
 		}
 	}
 	return false
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	for _, kv := range env {
+		if value, ok := strings.CutPrefix(kv, prefix); ok {
+			return value
+		}
+	}
+	return ""
 }

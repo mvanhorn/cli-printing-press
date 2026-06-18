@@ -252,7 +252,7 @@ func (s *openAPISpec) IsSynthetic() bool {
 }
 
 func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
-	releaseHome, err := scopeSubprocessHome()
+	releaseHome, err := scopeSubprocessHome(findCLINames(dir)...)
 	if err != nil {
 		return nil, err
 	}
@@ -2808,17 +2808,26 @@ func sampleEvenlyCommandPaths(items [][]string, n int) [][]string {
 }
 
 func findCLIName(dir string) string {
+	names := findCLINames(dir)
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
+func findCLINames(dir string) []string {
 	cmdDir := filepath.Join(dir, "cmd")
 	entries, err := os.ReadDir(cmdDir)
 	if err != nil {
-		return ""
+		return nil
 	}
+	var names []string
 	for _, entry := range entries {
 		if entry.IsDir() && naming.IsCLIDirName(entry.Name()) {
-			return entry.Name()
+			names = append(names, entry.Name())
 		}
 	}
-	return ""
+	return names
 }
 
 func buildDogfoodBinary(dir, cliName string) (string, error) {

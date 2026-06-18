@@ -53,7 +53,7 @@ import (
 {{- if or .Auth.RequiresBrowserSession .Auth.HasCookies}}
 	"{{modulePath}}/internal/client"
 {{- end}}
-{{- if not (eq .Auth.Type "none")}}
+{{- if or (not (eq .Auth.Type "none")) $hasQueryRefresh}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 	"{{modulePath}}/internal/config"
@@ -348,7 +348,7 @@ profile by name when the installed backend supports it.`,
 {{- end}}
 
 			fmt.Fprintf(w, "%s Composed auth header from %d cookies for %s\n", green("OK"), len(requiredCookies), domain)
-			fmt.Fprintf(w, "Session saved to %s\n", cfg.Path)
+			fmt.Fprintf(w, "Session saved to %s\n", credentialSavePath(cfg))
 			return nil
 {{- else}}
 {{- if .Auth.Cookies}}
@@ -397,7 +397,7 @@ profile by name when the installed backend supports it.`,
 				}
 			}
 			if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
-				fmt.Fprintf(w, "warning: persisting cookie jar: %v (cookies still saved to config)\n", err)
+				fmt.Fprintf(w, "warning: persisting cookie jar: %v (credentials still saved)\n", err)
 			}
 {{- end}}
 {{- if .Auth.RequiresBrowserSession}}
@@ -413,7 +413,7 @@ profile by name when the installed backend supports it.`,
 
 			count := len(strings.Split(cookies, ";"))
 			fmt.Fprintf(w, "%s Found %d cookies for %s\n", green("OK"), count, domain)
-			fmt.Fprintf(w, "Session saved to %s\n", cfg.Path)
+			fmt.Fprintf(w, "Session saved to %s\n", credentialSavePath(cfg))
 			return nil
 {{- end}}
 		},
@@ -519,7 +519,7 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 			}
 
 			fmt.Fprintf(w, "%s Captured bearer JWT (%d chars) from Chrome via CDP.\n", green("OK"), len(token))
-			fmt.Fprintf(w, "Token saved to %s\n", cfg.Path)
+			fmt.Fprintf(w, "Token saved to %s\n", credentialSavePath(cfg))
 			return nil
 		},
 	}
@@ -943,7 +943,7 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 		}
 	}
 	if err := client.WriteCookieJarFromMap(domain, jarCookies); err != nil {
-		fmt.Fprintf(w, "warning: persisting cookie jar: %v (cookies still saved to config)\n", err)
+		fmt.Fprintf(w, "warning: persisting cookie jar: %v (credentials still saved)\n", err)
 	}
 {{- end}}
 	count := len(strings.Split(cookies, ";"))
@@ -1009,7 +1009,10 @@ func newAuthRefreshQueriesCmd(flags *rootFlags) *cobra.Command {
 				return authErr(fmt.Errorf("no persisted GraphQL queries captured; exercise the target site and try again"))
 			}
 
-			path := persistedQueryRegistryPath(cfg, outputPath)
+			path, err := persistedQueryRegistryPath(outputPath)
+			if err != nil {
+				return usageErr(err)
+			}
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				return configErr(fmt.Errorf("creating query registry directory: %w", err))
 			}
@@ -1027,19 +1030,23 @@ func newAuthRefreshQueriesCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().DurationVar(&duration, "duration", 30*time.Second, "How long to capture browser GraphQL traffic")
-	cmd.Flags().StringVar(&outputPath, "output", "", "Path for persisted query registry JSON (default: beside the CLI config)")
+	cmd.Flags().StringVar(&outputPath, "output", "", "Absolute path for persisted query registry JSON (default: state directory)")
 	return cmd
 }
 
-func persistedQueryRegistryPath(cfg *config.Config, outputPath string) string {
-	if outputPath != "" {
-		return outputPath
+func persistedQueryRegistryPath(outputPath string) (string, error) {
+	if strings.TrimSpace(outputPath) != "" {
+		clean, ok := cliutil.CleanPathOverride(outputPath)
+		if !ok {
+			return "", fmt.Errorf("invalid --output path %q: must be absolute", outputPath)
+		}
+		return clean, nil
 	}
-	if cfg == nil || cfg.Path == "" {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".config", "{{.Name}}-pp-cli", "persisted-queries.json")
+	dir, err := cliutil.StateDir()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(filepath.Dir(cfg.Path), "persisted-queries.json")
+	return filepath.Join(dir, "persisted-queries.json"), nil
 }
 
 func capturePersistedQueries(capture browserCaptureHandle, duration time.Duration) ([]persistedQueryCapture, error) {
@@ -1266,17 +1273,35 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 
-			// JSON envelope: {saved, config_path}.
+			savePath := credentialSavePath(cfg)
+			// JSON envelope: {saved, config_path, credentials_path}.
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				out := map[string]any{
 					"saved":       true,
 					"config_path": cfg.Path,
-				}, flags)
+				}
+				if !cfg.AgentcookieManagedByExternalStore() {
+					out["credentials_path"] = savePath
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", cfg.Path)
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", savePath)
 			return nil
 		},
 	}
+}
+
+func credentialSavePath(cfg *config.Config) string {
+	if cfg != nil && cfg.AgentcookieManagedByExternalStore() {
+		return cfg.Path
+	}
+	if path, err := cliutil.CredentialsFilePath(); err == nil {
+		return path
+	}
+	if cfg != nil {
+		return cfg.Path
+	}
+	return ""
 }
 {{- end}}
 
@@ -1940,17 +1965,27 @@ type browserSessionProof struct {
 }
 
 func browserSessionProofPath(cfg *config.Config) string {
-	if cfg == nil || cfg.Path == "" {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".config", "{{.Name}}-pp-cli", "browser-session-proof.json")
+	if dir, err := cliutil.DataDir(); err == nil {
+		return filepath.Join(dir, "browser-session-proof.json")
 	}
-	return filepath.Join(filepath.Dir(cfg.Path), "browser-session-proof.json")
+	if cfg != nil && cfg.Path != "" {
+		return filepath.Join(filepath.Dir(cfg.Path), "browser-session-proof.json")
+	}
+	return ""
 }
 
 func clearBrowserSessionProof(cfg *config.Config) error {
 	proofPath := browserSessionProofPath(cfg)
 	if err := os.Remove(proofPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if cfg != nil && cfg.Path != "" {
+		legacyPath := filepath.Join(filepath.Dir(cfg.Path), "browser-session-proof.json")
+		if legacyPath != proofPath {
+			if err := os.Remove(legacyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -1978,7 +2013,11 @@ func browserSessionProofStatusForAuth(cfg *config.Config, authHeader string) (bo
 	if authHeader == "" {
 		return false, "no browser session credentials configured"
 	}
-	data, err := os.ReadFile(browserSessionProofPath(cfg))
+	legacyPath := ""
+	if cfg.Path != "" {
+		legacyPath = filepath.Join(filepath.Dir(cfg.Path), "browser-session-proof.json")
+	}
+	data, _, err := cliutil.ReadFileWithLegacyFallback(browserSessionProofPath(cfg), legacyPath)
 	if err != nil {
 		return false, "proof not found; run {{.Name}}-pp-cli auth login --chrome"
 	}
