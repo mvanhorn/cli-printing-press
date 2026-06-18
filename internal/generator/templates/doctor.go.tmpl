@@ -577,16 +577,16 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						authHeaders["{{.Name}}"] = "{{.Value}}"
 {{- end}}
 {{- /*
-	Emit the hardcoded User-Agent fallback only when no other code path has
-	already populated authHeaders["User-Agent"]. Three cases skip the fallback:
+	Emit the hardcoded User-Agent fallback only when no other code path owns
+	authHeaders["User-Agent"]. Three cases skip the fallback:
 	  1. UsesBrowserManagedUserAgent — the browser transport sets the UA.
 	  2. HasRequiredHeader "User-Agent" — the RequiredHeaders range above set it.
 	  3. Auth.In is "header" (or empty default) AND Auth.Header is "User-Agent" —
 	     the API uses the User-Agent header itself as the auth credential
-	     (NWS-style), so the "authHeaders[Auth.Header] = authHeader" line above
-	     already set it to the configured value. The hardcoded fallback would
-	     overwrite the operator's configured UA and make the credential probe
-	     test the wrong identity.
+	     (NWS-style), so the client request path must inject the configured
+	     credential. The hardcoded fallback would overwrite that header override
+	     before the probe reaches the client and make the credential probe test
+	     the wrong identity.
 */}}
 {{- $authUsesUA := and .Auth (or (eq .Auth.In "") (eq .Auth.In "header")) (eq (lower .Auth.Header) "user-agent")}}
 {{- if and (not .UsesBrowserManagedUserAgent) (not (.HasRequiredHeader "User-Agent")) (not $authUsesUA)}}
