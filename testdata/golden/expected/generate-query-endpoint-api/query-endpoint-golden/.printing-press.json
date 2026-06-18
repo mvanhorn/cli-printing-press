@@ -1,0 +1,29 @@
+{
+  "api_name": "query-endpoint-golden",
+  "api_version": "1.0.0",
+  "auth_env_vars": [
+    "QUERY_ENDPOINT_GOLDEN_TOKEN"
+  ],
+  "auth_type": "bearer_token",
+  "cli_name": "query-endpoint-golden-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
+  "description": "Golden fixture for the SQL-query-endpoint sync shape (QuickBooks Online / Salesforce SOQL)",
+  "display_name": "Query Endpoint Golden",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "query-endpoint-golden-pp-mcp",
+  "mcp_ready": "full",
+  "mcp_tool_count": 2,
+  "owner": "printing-press-golden",
+  "printer": "printing-press-golden",
+  "printer_name": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "run_id": "<RUN_ID>",
+  "schema_version": 1,
+  "spec_checksum": "sha256:c7fe9a113944b6db8073b4650cfb16dc877edda5457e489c0376d939b0ef3704",
+  "spec_format": "internal",
+  "spec_path": "query-endpoint-api.yaml",
+  "spec_url": "file://testdata/golden/fixtures/query-endpoint-api.yaml"
+}

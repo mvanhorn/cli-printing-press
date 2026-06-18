@@ -315,6 +315,7 @@ type APISpec struct {
 	MCP             MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, small APIs (typed-endpoint count <= DefaultRemoteTransportEndpointThreshold) get stdio+http compiled in by APISpec.EffectiveMCPTransports so the same binary can serve cloud-hosted agents. Larger APIs without an explicit orchestration mode default to the Cloudflare MCP pattern during generation. Opting into http explicitly adds a --transport/--addr flag surface regardless of size.
 	Throttling      ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
 	Streaming       StreamingConfig     `yaml:"streaming,omitempty" json:"streaming"`                     // streaming-primary ingest config; when Transport is websocket, emits a live ws sync scaffold plus REST metadata refresh and rebase-log support.
+	QuerySync       *QuerySyncConfig    `yaml:"query_sync,omitempty" json:"query_sync,omitempty"`         // SQL-query-endpoint sync hint (QuickBooks Online / Salesforce SOQL): one shared query endpoint read with an injected SELECT, an entity-named result envelope, and in-query offset paging. When set, the sync generator emits the query injection + envelope unwrap + offset-paging loop by construction.
 }
 
 type TierRoutingConfig struct {
@@ -733,6 +734,33 @@ func validateStreaming(c StreamingConfig) error {
 				return fmt.Errorf("streaming.metadata.statuses cannot contain empty values")
 			}
 		}
+	}
+	return nil
+}
+
+// validateQuerySync guards the SQL-query-endpoint hint. A query_template that
+// omits a placeholder generates a sync that sends a malformed query — the exact
+// silent-failure mode the hint exists to prevent — so the placeholders are
+// required up front rather than discovered against a live tenant. Absent hint
+// is a benign no-op.
+func validateQuerySync(q *QuerySyncConfig) error {
+	if q == nil {
+		return nil
+	}
+	if strings.TrimSpace(q.Path) == "" {
+		return fmt.Errorf("query_sync.path is required when query_sync is declared")
+	}
+	tmpl := strings.TrimSpace(q.QueryTemplate)
+	if tmpl == "" {
+		return fmt.Errorf("query_sync.query_template is required when query_sync is declared")
+	}
+	for _, placeholder := range []string{"{entity}", "{start}", "{limit}"} {
+		if !strings.Contains(tmpl, placeholder) {
+			return fmt.Errorf("query_sync.query_template must contain the %s placeholder for offset paging to work (got %q)", placeholder, q.QueryTemplate)
+		}
+	}
+	if (strings.TrimSpace(q.VersionParam) == "") != (strings.TrimSpace(q.VersionValue) == "") {
+		return fmt.Errorf("query_sync.version_param and query_sync.version_value must be set together")
 	}
 	return nil
 }
@@ -2594,6 +2622,43 @@ type Pagination struct {
 	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`     // response field indicating more pages (has_more)
 }
 
+// QuerySyncConfig declares the SQL-query-endpoint sync shape: an API where every
+// list resource is read through one shared endpoint with an injected SELECT-style
+// query, results wrapped in an entity-named envelope, and paging carried inside
+// the query text (QuickBooks Online's STARTPOSITION/MAXRESULTS; Salesforce SOQL).
+// It is API-level cross-cutting config; the per-resource entity name is sourced
+// from each list endpoint's Response.Item, and a resource is a query resource
+// when its list path equals Path and it declares a ResponsePath. All
+// dialect-specific text lives here (in the spec), never in the generator — the
+// template substitutes the {entity}/{start}/{limit} placeholders at runtime.
+type QuerySyncConfig struct {
+	Path          string `yaml:"path" json:"path"`                                       // shared query endpoint path, e.g. "/query"
+	QueryParam    string `yaml:"query_param,omitempty" json:"query_param,omitempty"`     // query param carrying the SELECT; defaults to "query"
+	QueryTemplate string `yaml:"query_template" json:"query_template"`                   // SELECT + paging clause with {entity}/{start}/{limit} placeholders, e.g. "select * from {entity} startposition {start} maxresults {limit}"
+	VersionParam  string `yaml:"version_param,omitempty" json:"version_param,omitempty"` // optional extra param sent on every query call, e.g. "minorversion"
+	VersionValue  string `yaml:"version_value,omitempty" json:"version_value,omitempty"` // value for VersionParam, e.g. "75"
+	EnvelopeKey   string `yaml:"envelope_key,omitempty" json:"envelope_key,omitempty"`   // result-envelope object key added to the runtime extractor, e.g. "QueryResponse" (unwraps {EnvelopeKey:{<Entity>:[...]}})
+	PageSize      int    `yaml:"page_size,omitempty" json:"page_size,omitempty"`         // in-query page size ({limit}) and offset stride; defaults to 1000
+}
+
+// EffectiveQueryParam returns the configured query param name or the "query"
+// default.
+func (q *QuerySyncConfig) EffectiveQueryParam() string {
+	if q == nil || strings.TrimSpace(q.QueryParam) == "" {
+		return "query"
+	}
+	return q.QueryParam
+}
+
+// EffectivePageSize returns the configured in-query page size or the 1000
+// default (QuickBooks Online's MAXRESULTS hard cap).
+func (q *QuerySyncConfig) EffectivePageSize() int {
+	if q == nil || q.PageSize <= 0 {
+		return 1000
+	}
+	return q.PageSize
+}
+
 // EmbeddedPagedSubresource describes one paged-envelope property nested
 // inside a parent GET response. See Endpoint.EmbeddedPagedSubresources
 // for how this drives fetchFull<X> companion-helper emission.
@@ -3656,6 +3721,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateStreaming(s.Streaming); err != nil {
+		return err
+	}
+	if err := validateQuerySync(s.QuerySync); err != nil {
 		return err
 	}
 	if err := validateBearerRefresh(s); err != nil {
