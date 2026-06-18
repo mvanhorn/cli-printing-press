@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:
@@ -28,6 +29,9 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: ready-to-merge-guard-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     steps:
       - name: Check codeowner approval for protected paths
         env:
@@ -37,26 +41,33 @@ jobs:
         run: |
           set -euo pipefail
 
+          marker='<!-- ready-to-merge-guard -->'
+          existing="$(
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+              --jq '.[] | select(.body | contains("'"${marker}"'")) | .id' | head -1
+          )"
+          clear_existing() {
+            if [ -n "${existing}" ]; then
+              gh api --method DELETE "repos/${REPO}/issues/comments/${existing}"
+            fi
+          }
+
           pr_json="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"
           labels="$(jq -r '[.labels[].name] | join(",")' <<<"${pr_json}")"
           if ! grep -q 'ready-to-merge' <<<"${labels}"; then
-            echo "ready-to-merge not set; nothing to guard"
-            exit 0
-          fi
-
-          author="$(jq -r '.user.login' <<<"${pr_json}")"
-          if [ "${author}" = "tmchow" ] || [ "${author}" = "mvanhorn" ]; then
-            echo "maintainer-authored PR; CODEOWNERS mirror satisfied by author"
+            echo "ready-to-merge not set; removing any stale guard comment"
+            clear_existing
             exit 0
           fi
 
           files="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename')"
           if ! grep -Eq '^(\.github/workflows/|\.github/scripts/|scripts/|\.github/CODEOWNERS$)' <<<"${files}"; then
-            echo "no protected-path files; CODEOWNERS mirror not required"
+            echo "no protected-path files; removing any stale guard comment"
+            clear_existing
             exit 0
           fi
 
-          reviews_json="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews")"
+          reviews_json="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate)"
           approved="$(
             jq -r '
               [ .[]
@@ -66,15 +77,11 @@ jobs:
             ' <<<"${reviews_json}"
           )"
           if grep -q 'tmchow' <<<"${approved}" || grep -q 'mvanhorn' <<<"${approved}"; then
-            echo "codeowner approval present: ${approved}"
+            echo "codeowner approval present: ${approved}; removing any stale guard comment"
+            clear_existing
             exit 0
           fi
 
-          marker='<!-- ready-to-merge-guard -->'
-          existing="$(
-            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
-              --jq '.[] | select(.body | contains("'"${marker}"'")) | .id' | head -1
-          )"
           if [ -n "${existing}" ]; then
             echo "guard comment already posted (${existing})"
             exit 0
