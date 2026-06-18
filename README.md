@@ -510,6 +510,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 ## Limitations
 
+- **Technical capability is not legal permission.** Before generating a CLI for any service, review its Terms of Service. Many services explicitly prohibit automated access. Using this tool against such services may violate their terms or applicable law. You are responsible for ensuring your use is authorized.
 - **Requires Go 1.26.4 or newer and Claude Code.** No standalone distribution today; the slash command is the supported entry point.
 - **Generated CLIs are domain-shaped, not vendor-replacements.** A `<api>-pp-cli` covers the agent power-user surface, not every back-office knob a vendor's official CLI ships.
 - **Browser-sniff requires manual capture.** You point a browser at the site (or import a HAR); the press doesn't crawl autonomously.
