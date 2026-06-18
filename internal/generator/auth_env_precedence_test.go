@@ -295,6 +295,13 @@ import (
 )
 
 func TestRefreshedAccessTokenWinsOverStalePerCallToken(t *testing.T) {
+	// CI can carry token-shaped environment variables for unrelated jobs. This
+	// test is about disk-persisted OAuth refresh precedence, so isolate it from
+	// ambient env overrides before loading the generated config.
+	for _, name := range []string{"OAUTH_USER_CONTEXT_TOKEN", "CLIENT_ID", "CLIENT_SECRET", "ACCESS_TOKEN", "REFRESH_TOKEN"} {
+		t.Setenv(name, "")
+	}
+
 	configPath := filepath.Join(t.TempDir(), "config.toml")
 	initial := strings.Join([]string{
 		"oauth_user_context_token = \"stale-user-context-token\"",
