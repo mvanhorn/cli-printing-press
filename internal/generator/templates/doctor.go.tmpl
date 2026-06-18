@@ -589,6 +589,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	     the wrong identity.
 */}}
 {{- $authUsesUA := and .Auth (or (eq .Auth.In "") (eq .Auth.In "header")) (eq (lower .Auth.Header) "user-agent")}}
+{{- if $authUsesUA}}
+						authHeaders["User-Agent"] = authHeader
+{{- end}}
 {{- if and (not .UsesBrowserManagedUserAgent) (not (.HasRequiredHeader "User-Agent")) (not $authUsesUA)}}
 						authHeaders["User-Agent"] = "{{.Name}}-pp-cli"
 {{- end}}
