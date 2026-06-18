@@ -1,0 +1,3 @@
+query-endpoint-golden/.printing-press.json
+query-endpoint-golden/internal/cli/sync.go
+query-endpoint-golden/internal/store/store.go

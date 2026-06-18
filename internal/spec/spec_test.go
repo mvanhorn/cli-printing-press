@@ -1448,6 +1448,71 @@ func TestThrottlingValidate(t *testing.T) {
 	}
 }
 
+func TestQuerySyncValidate(t *testing.T) {
+	full := func() *QuerySyncConfig {
+		return &QuerySyncConfig{
+			Path:          "/query",
+			QueryTemplate: "select * from {entity} startposition {start} maxresults {limit}",
+			VersionParam:  "minorversion",
+			VersionValue:  "75",
+			EnvelopeKey:   "QueryResponse",
+			PageSize:      1000,
+		}
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*QuerySyncConfig)
+		nilCfg  bool
+		wantErr string
+	}{
+		{name: "absent hint is a no-op", nilCfg: true},
+		{name: "full config is valid", mutate: func(*QuerySyncConfig) {}},
+		{
+			name:    "missing path is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.Path = "" },
+			wantErr: "query_sync.path is required",
+		},
+		{
+			name:    "missing query_template is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.QueryTemplate = "" },
+			wantErr: "query_sync.query_template is required",
+		},
+		{
+			name:    "query_template missing {start} is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.QueryTemplate = "select * from {entity} maxresults {limit}" },
+			wantErr: "{start} placeholder",
+		},
+		{
+			name: "query_template missing {entity} is rejected",
+			mutate: func(q *QuerySyncConfig) {
+				q.QueryTemplate = "select * from Widget startposition {start} maxresults {limit}"
+			},
+			wantErr: "{entity} placeholder",
+		},
+		{
+			name:    "version_param without value is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.VersionValue = "" },
+			wantErr: "must be set together",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg *QuerySyncConfig
+			if !tt.nilCfg {
+				cfg = full()
+				tt.mutate(cfg)
+			}
+			err := validateQuerySync(cfg)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestAuthPrefixValidate(t *testing.T) {
 	tests := []struct {
 		name    string
