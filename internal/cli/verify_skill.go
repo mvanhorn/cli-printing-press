@@ -165,7 +165,9 @@ func runCanonicalSectionsCheck(dir string) (finding canonicalFinding, hasFinding
 			Evidence: fmt.Sprintf("expected canonical block:\n%s", expected),
 		}, true, false, nil
 	}
-	if got == expected {
+	normalizedExpected := normalizeCanonicalSectionLineEndings(expected)
+	normalizedGot := normalizeCanonicalSectionLineEndings(got)
+	if normalizedGot == normalizedExpected {
 		return canonicalFinding{}, false, false, nil
 	}
 	return canonicalFinding{
@@ -173,8 +175,13 @@ func runCanonicalSectionsCheck(dir string) (finding canonicalFinding, hasFinding
 		Severity: "error",
 		Command:  "(file: SKILL.md)",
 		Detail:   "install section drift: hand-edit detected in a generator-owned section. Regenerate the printed CLI to restore the canonical text — do not edit this section by hand.",
-		Evidence: fmt.Sprintf("expected (from generator):\n%s\n\ngot (from SKILL.md):\n%s", expected, got),
+		Evidence: fmt.Sprintf("expected (from generator):\n%s\n\ngot (from SKILL.md):\n%s", normalizedExpected, normalizedGot),
 	}, true, false, nil
+}
+
+func normalizeCanonicalSectionLineEndings(section string) string {
+	section = strings.ReplaceAll(section, "\r\n", "\n")
+	return strings.ReplaceAll(section, "\r", "\n")
 }
 
 // ExtractInstallSectionForTest re-exports the generator's extractor so
