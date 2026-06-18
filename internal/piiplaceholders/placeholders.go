@@ -14,6 +14,7 @@ const (
 	SyntheticMoney          = "12.34"
 	SyntheticDate           = "2026-01-15"
 	SyntheticCookieValue    = "your-cookie-here"
+	SyntheticUUID           = "550e8400-e29b-41d4-a716-446655440000"
 	PrimarySyntheticASIN    = "B0EXAMPLE1"
 )
 

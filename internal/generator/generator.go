@@ -22,6 +22,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -168,6 +169,7 @@ type Generator struct {
 
 func New(s *spec.APISpec, outputDir string) *Generator {
 	s.InferEndpointTemplateVarsFromBaseURLs()
+	s.EnrichPathParams()
 	s.PromoteGlobalPathTemplateVars()
 	// Resolve the creator + contributors (the canonical attribution model),
 	// preserving persisted values across regens so a regen never flips the
@@ -456,12 +458,14 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointTemplateVarsHasUndefaulted": func(vars []string) bool {
 			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v == "" })
 		},
-		"safeName":                       safeSQLName,
-		"resourceIDFieldOverrideEntries": resourceIDFieldOverrideEntries,
-		"criticalResourceEntries":        criticalResourceEntries,
-		"isBackfillColumn":               isStoreBackfillColumn,
-		"hasBackfillColumns":             hasStoreBackfillColumns,
-		"backfillDecl":                   storeBackfillDecl,
+		"hasSubstackPublicationIDTemplateResolver": hasSubstackPublicationIDTemplateResolver,
+		"substackPublicationIDTemplatePath":        substackPublicationIDTemplatePath,
+		"safeName":                                 safeSQLName,
+		"resourceIDFieldOverrideEntries":           resourceIDFieldOverrideEntries,
+		"criticalResourceEntries":                  criticalResourceEntries,
+		"isBackfillColumn":                         isStoreBackfillColumn,
+		"hasBackfillColumns":                       hasStoreBackfillColumns,
+		"backfillDecl":                             storeBackfillDecl,
 		"safeNameSuffix": func(name, suffix string) string {
 			return safeSQLName(name + suffix)
 		},
@@ -632,6 +636,46 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 func endpointTemplateVarsAny(vars []string, s *spec.APISpec, predicate func(string) bool) bool {
 	for _, name := range vars {
 		if predicate(s.EndpointTemplateDefault(name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSubstackPublicationIDTemplateResolver(s *spec.APISpec) bool {
+	if s == nil || !strings.EqualFold(s.Name, "substack") || !s.IsEndpointTemplateVar("publication_id") {
+		return false
+	}
+	return specWalkEndpoints(s, func(_ string, endpoint spec.Endpoint) bool {
+		return substackPublicationIDTemplatePath(s, endpoint.Path)
+	})
+}
+
+func substackPublicationIDTemplatePath(s *spec.APISpec, path string) bool {
+	return s != nil && strings.EqualFold(s.Name, "substack") && strings.Contains(path, "{publication_id}")
+}
+
+func specWalkEndpoints(s *spec.APISpec, visit func(resourceName string, endpoint spec.Endpoint) bool) bool {
+	if s == nil {
+		return false
+	}
+	for resourceName, resource := range s.Resources {
+		if resourceWalkEndpoints(resourceName, resource, visit) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceWalkEndpoints(resourceName string, resource spec.Resource, visit func(resourceName string, endpoint spec.Endpoint) bool) bool {
+	for _, endpoint := range resource.Endpoints {
+		if visit(resourceName, endpoint) {
+			return true
+		}
+	}
+	for subResourceName, subResource := range resource.SubResources {
+		name := resourceName + "." + subResourceName
+		if resourceWalkEndpoints(name, subResource, visit) {
 			return true
 		}
 	}
@@ -6399,7 +6443,7 @@ func exampleValue(p spec.Param) string {
 	if nameLower == "id" ||
 		strings.HasSuffix(nameLower, "_id") ||
 		(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2 && !isNumericOrBool) {
-		return "550e8400-e29b-41d4-a716-446655440000"
+		return piiplaceholders.SyntheticUUID
 	}
 	if strings.Contains(nameLower, "email") {
 		return "user@example.com"

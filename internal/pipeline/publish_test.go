@@ -250,6 +250,65 @@ func TestCopyPublishableManuscriptDirExcludesDownloadedSources(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(dst, "research", "sources", "README.md"))
 }
 
+func TestCopyPublishableManuscriptDirExcludesRawBrowserSniffCaptures(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "discovery", "bundles"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "discovery", "batch-01"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "discovery", "v2", "bundles"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research", "squire-browser-sniff-spec-samples"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "probe-001.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "batch-01", "probe-002.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "capture.har"), []byte("raw har"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "bundles", "app.js"), []byte("window.email='customer@gmail.com'"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "v2", "bundles", "app.js"), []byte("window.email='customer@gmail.com'"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "squire-browser-sniff-spec-samples", "sample.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "traffic-analysis.json"), []byte(`{"auth_stripped":true}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "browser-sniff-report.md"), []byte("# Report"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "brief.md"), []byte("our synthesis"), 0o644))
+
+	require.NoError(t, CopyPublishableManuscriptDir(src, dst))
+
+	assert.NoFileExists(t, filepath.Join(dst, "discovery", "probe-001.json"))
+	assert.NoFileExists(t, filepath.Join(dst, "discovery", "batch-01", "probe-002.json"))
+	assert.NoFileExists(t, filepath.Join(dst, "discovery", "capture.har"))
+	assert.NoDirExists(t, filepath.Join(dst, "discovery", "bundles"))
+	assert.NoDirExists(t, filepath.Join(dst, "discovery", "v2", "bundles"))
+	assert.NoDirExists(t, filepath.Join(dst, "research", "squire-browser-sniff-spec-samples"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "traffic-analysis.json"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "browser-sniff-report.md"))
+	assert.FileExists(t, filepath.Join(dst, "research", "brief.md"))
+}
+
+func TestCopyPublishableManuscriptDirCanIncludeRawBrowserSniffCaptures(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "discovery", "bundles"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research", "squire-browser-sniff-spec-samples"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "research", "sources", "thirdparty"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "probe-001.json"), []byte(`{"status":"sample"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "capture.har"), []byte("raw har"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "bundles", "app.js"), []byte("console.log('sample')"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "squire-browser-sniff-spec-samples", "sample.json"), []byte(`{"status":"sample"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "sources", "thirdparty", "lib.py"), []byte("# third party"), 0o644))
+	largeFile, err := os.Create(filepath.Join(src, "large-authored-artifact.bin"))
+	require.NoError(t, err)
+	require.NoError(t, largeFile.Truncate(publishableManuscriptMaxCaptureBytes))
+	require.NoError(t, largeFile.Close())
+
+	require.NoError(t, CopyPublishableManuscriptDirWithOptions(src, dst, PublishableManuscriptCopyOptions{IncludeRawCaptures: true}))
+
+	assert.FileExists(t, filepath.Join(dst, "discovery", "probe-001.json"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "capture.har"))
+	assert.FileExists(t, filepath.Join(dst, "discovery", "bundles", "app.js"))
+	assert.FileExists(t, filepath.Join(dst, "research", "squire-browser-sniff-spec-samples", "sample.json"))
+	assert.NoDirExists(t, filepath.Join(dst, "research", "sources"))
+	assert.NoFileExists(t, filepath.Join(dst, "large-authored-artifact.bin"))
+}
+
 // publishManifestEnvSetup wires PRINTING_PRESS_HOME/SCOPE/REPO_ROOT to a temp dir
 // so RunRoot()/PipelineDir()/PublishedLibraryRoot() resolve under the test sandbox.
 // Returns the temp root and a state seeded with the given run ID.

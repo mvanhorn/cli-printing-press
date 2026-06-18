@@ -3702,6 +3702,7 @@ If an extension genuinely cannot live in a separate file (a `case` branch in a t
 
 - `cmd.Annotations["mcp:hidden"] = "true"` — exclude the command from the MCP surface entirely. Use only for debug/internal commands that should not become agent tools.
 - `cmd.Annotations["mcp:read-only"] = "true"` — declare that this command does not modify external state. The MCP server attaches `readOnlyHint: true` to the resulting tool, so hosts like Claude Desktop don't bucket it under "write/delete tools" and demand permission per call. Apply this to every novel command whose only effect is reading from the API or the local store: lookups, comparisons, aggregations, render-only views, status checks. Skip it for commands that mutate external state (orders, posts, deletes) or write to user-visible files outside the local cache.
+- `cmd.Annotations["mcp:write-positionals"] = "0"` — mark zero-based positional indexes that write to user-visible files when populated. Use this with `mcp:read-only` only when the command is otherwise read-only and the positional has a stdout-safe escape such as `-`. The MCP shell-out wrapper rejects non-stdout values for those positionals so a read-only-hinted tool cannot write files through the free-form `args` field. Use comma-separated indexes for multiple write sinks.
 
 Endpoint-mirror tools the generator emits from the spec already get the right annotations automatically (`GET` → read-only, `DELETE` → destructive, etc.) — `mcp:read-only` is only needed on hand-authored Cobra commands the spec doesn't cover.
 

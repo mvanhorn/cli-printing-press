@@ -27,6 +27,9 @@ import (
 {{- if and $hasJSONBody (bodyHasStringBackedBool .Endpoint)}}
 	"strconv"
 {{- end}}
+{{- if substackPublicationIDTemplatePath .APISpec .EffectivePath}}
+	"strings"
+{{- end}}
 
 {{ if .Endpoint.RequiresRole}}
 	"{{modulePath}}/internal/config"
@@ -129,6 +132,12 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 			path := "{{.EffectivePath}}"
+{{- if substackPublicationIDTemplatePath .APISpec .EffectivePath}}
+			if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
+				return err
+			}
+			path = strings.ReplaceAll(path, "{publication_id}", c.Config.TemplateVars["publication_id"])
+{{- end}}
 {{- range .Endpoint.Params}}
 {{- if .Positional}}
 {{- $pi := positionalIndex $.Endpoint .Name}}

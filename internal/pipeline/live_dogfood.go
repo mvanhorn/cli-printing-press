@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 )
 
 type LiveDogfoodStatus string
@@ -631,7 +633,6 @@ func findListCompanion(candidates []liveDogfoodCommand) *liveDogfoodCommand {
 //
 // Returns:
 //   - (newArgs, false, "", source)   - placeholders substituted; run happy_path with newArgs
-//   - (happyArgs, false, "", source) - store was empty; run the synthetic example unchanged
 //   - (nil, true, reason, "")        - chain broke before an ID fixture source was available
 //   - (happyArgs, false, "", "")     - no positionals at all; pass-through unchanged
 func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, ctx resolveCtx) ([]string, bool, string, string) {
@@ -680,7 +681,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 				resolved = append(resolved, id)
 				continue
 			} else if storeAvailable {
-				return happyArgs, false, "", "synthetic"
+				return nil, true, reasonRequiredParamFixture, ""
 			}
 			return nil, true, fmt.Sprintf("no list companion at depth %d for %q", i, name), ""
 		}
@@ -703,7 +704,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 					resolved = append(resolved, id)
 					continue
 				} else if storeAvailable {
-					return happyArgs, false, "", "synthetic"
+					return nil, true, reasonRequiredParamFixture, ""
 				}
 				return nil, true, fmt.Sprintf(
 					"list companion previously failed at depth %d for %q", i, name), ""
@@ -720,7 +721,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 				resolved = append(resolved, id)
 				continue
 			} else if storeAvailable {
-				return happyArgs, false, "", "synthetic"
+				return nil, true, reasonRequiredParamFixture, ""
 			}
 			return nil, true, fmt.Sprintf(
 				"list companion failed at depth %d: exit %d", i, run.exitCode), ""
@@ -734,7 +735,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 				resolved = append(resolved, id)
 				continue
 			} else if storeAvailable {
-				return happyArgs, false, "", "synthetic"
+				return nil, true, reasonRequiredParamFixture, ""
 			}
 			return nil, true, fmt.Sprintf(
 				"no id parseable from companion at depth %d", i), ""
@@ -749,6 +750,70 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, c
 		fixtureSource = "store"
 	}
 	return substitutePositionals(happyArgs, command.Path, resolved), false, "", fixtureSource
+}
+
+func happyPathSyntheticParamFixtureSkip(command liveDogfoodCommand, happyArgs []string) string {
+	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) != "" {
+		return ""
+	}
+	if liveDogfoodCommandMutates(command) {
+		return ""
+	}
+	if !happyArgsContainSyntheticFlagPlaceholder(happyArgs, command.Path) {
+		return ""
+	}
+	return reasonRequiredParamFixture
+}
+
+func happyArgsContainSyntheticFlagPlaceholder(happyArgs, commandPath []string) bool {
+	start := min(len(commandPath), len(happyArgs))
+	for i := start; i < len(happyArgs); i++ {
+		arg := happyArgs[i]
+		if arg == "--" {
+			return false
+		}
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if flag, value, ok := strings.Cut(arg, "="); ok {
+			if liveDogfoodSyntheticFixtureFlagValue(flag, value) {
+				return true
+			}
+			continue
+		}
+		if i+1 < len(happyArgs) && !strings.HasPrefix(happyArgs[i+1], "-") && liveDogfoodSyntheticFixtureFlagValue(arg, happyArgs[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func liveDogfoodSyntheticFixtureFlagValue(flag, value string) bool {
+	if !liveDogfoodSyntheticExampleValue(value) {
+		return false
+	}
+	flag = strings.TrimLeft(strings.TrimSpace(flag), "-")
+	if flag == "" {
+		return false
+	}
+	name := strings.ToLower(strings.ReplaceAll(flag, "_", "-"))
+	if name == "id" || name == "ids" || strings.HasSuffix(name, "-id") || strings.HasSuffix(name, "-ids") {
+		return true
+	}
+	if strings.HasSuffix(name, "id") && len(name) > 2 {
+		return true
+	}
+	return strings.Contains(name, "token") || strings.Contains(name, "key")
+}
+
+func liveDogfoodSyntheticExampleValue(value string) bool {
+	value = strings.Trim(strings.TrimSpace(value), `"'`)
+	switch value {
+	case "example-value", piiplaceholders.SyntheticUUID, "your-token-here":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveStoreFixtureID(placeholder string, parentPath []string, ctx resolveCtx) (string, bool, bool) {
@@ -1145,6 +1210,10 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 
 	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
 	resolvedArgs, resolveSkipped, resolveReason, fixtureSource := resolveCommandPositionals(command, happyArgs, ctx)
+	syntheticParamSkip := ""
+	if fixtureSkip == "" && !resolveSkipped {
+		syntheticParamSkip = happyPathSyntheticParamFixtureSkip(command, resolvedArgs)
+	}
 	switch {
 	case fixtureSkip != "":
 		results = append(results,
@@ -1155,6 +1224,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, resolveReason),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, resolveReason),
+		)
+	case syntheticParamSkip != "":
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, syntheticParamSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, syntheticParamSkip),
 		)
 	default:
 		happyArgs = resolvedArgs

@@ -35,10 +35,11 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		if commandTakesArgs(cmd) {
 			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments or raw CLI flags to append to the command.")))
 		}
-		if isMCPReadOnly(cmd) {
+		readOnly := isMCPReadOnly(cmd)
+		if readOnly {
 			options = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
 		}
-		s.AddTool(mcplib.NewTool(toolName, options...), shellOutToCLI(cliPath, path))
+		s.AddTool(mcplib.NewTool(toolName, options...), shellOutToCLI(cliPath, path, readOnly, positionalWriteSinkIndexes(cmd)))
 	})
 }
 

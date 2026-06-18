@@ -2462,6 +2462,121 @@ func TestHeaderAPIKeyAuthHeaderIsRaw(t *testing.T) {
 	runGo(t, outputDir, "test", "./internal/config", "-run", "TestHeaderAPIKeyAuthHeaderIsRaw")
 }
 
+func TestSelectSecuritySchemeDropsDanglingOperationSecurityRef(t *testing.T) {
+	t.Parallel()
+
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: Custom Key
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Custom-Key
+paths:
+  /v1/apps:
+    get:
+      operationId: listApps
+      security:
+        - Authorization: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "ApiKeyAuth", parsed.Auth.Scheme, "dangling operation security refs must not suppress root auth")
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "header", parsed.Auth.In)
+	assert.Equal(t, "X-Custom-Key", parsed.Auth.Header)
+	assert.Equal(t, []string{"CUSTOM_KEY_API_KEY"}, parsed.Auth.EnvVars)
+
+	if testing.Short() {
+		t.Skip("generated CLI compile coverage runs outside short mode")
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	gen := generator.New(parsed, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientContent := string(clientSrc)
+	require.Contains(t, clientContent, `req.Header.Set("X-Custom-Key", authHeader)`)
+	require.NotContains(t, clientContent, `req.Header.Set("Authorization", authHeader)`)
+
+	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(configSrc), "CUSTOM_KEY_API_KEY")
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(authSrc), `"set-token <token>"`)
+
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "test", "./...")
+}
+
+func TestEffectiveSecurityRequirementsDropsMixedDanglingRequirement(t *testing.T) {
+	t.Parallel()
+
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: Mixed Dangling Security
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /v1/apps:
+    get:
+      operationId: listApps
+      security:
+        - BearerAuth: []
+          DanglingAuth: []
+      responses: {"200": {description: ok}}
+  /v1/widgets:
+    get:
+      operationId: listWidgets
+      security:
+        - BearerAuth: []
+          DanglingAuth: []
+        - ApiKeyAuth: []
+      responses: {"200": {description: ok}}
+`)
+
+	loader := openapi3.NewLoader()
+	loader.IsExternalRefsAllowed = true
+	doc, err := loader.LoadFromData(spec)
+	require.NoError(t, err)
+
+	appsOp := doc.Paths.Find("/v1/apps").Get
+	assert.Empty(t, effectiveSecurityRequirements(appsOp, doc), "mixed defined/dangling AND requirement must not degrade to single-scheme auth")
+
+	widgetsOp := doc.Paths.Find("/v1/widgets").Get
+	assert.Equal(t, openapi3.SecurityRequirements{{"ApiKeyAuth": []string{}}}, effectiveSecurityRequirements(widgetsOp, doc), "valid alternatives should remain after dropping malformed composites")
+
+	counts := securitySchemeOperationUsageCounts(doc)
+	assert.NotContains(t, counts, "BearerAuth")
+	assert.Equal(t, 1, counts["ApiKeyAuth"])
+}
+
 func TestSelectSecuritySchemeRespectsRootSecurityFilter(t *testing.T) {
 	t.Parallel()
 

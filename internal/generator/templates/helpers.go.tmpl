@@ -5,7 +5,7 @@
 package cli
 
 import (
-{{- if .HasDataLayer}}
+{{- if or .HasDataLayer (hasSubstackPublicationIDTemplateResolver .APISpec)}}
 	"bytes"
 {{- end}}
 	"context"
@@ -55,6 +55,140 @@ func formatCLIParamValue(v any) string {
 	}
 	return fmt.Sprintf("%v", v)
 }
+
+{{- if hasSubstackPublicationIDTemplateResolver .APISpec}}
+
+const (
+	dryRunPublicationIDPlaceholder = "<resolved-at-runtime>"
+	dryRunPublicationIDResolvedMarker = "__pp_substack_publication_id_dry_run_resolved"
+)
+
+func resolveSubstackPublicationIDTemplate(ctx context.Context, c *client.Client, flags *rootFlags) error {
+	if c == nil || c.Config == nil {
+		return fmt.Errorf("could not resolve publication_id: client is nil")
+	}
+	if c.Config.TemplateVars == nil {
+		c.Config.TemplateVars = map[string]string{}
+	}
+	if id := strings.TrimSpace(c.Config.TemplateVars["publication_id"]); id != "" {
+		if id == dryRunPublicationIDPlaceholder && c.Config.TemplateVars[dryRunPublicationIDResolvedMarker] == "true" {
+			return nil
+		}
+		if !validSubstackPublicationID(id) {
+			return fmt.Errorf("invalid publication_id %q: use the numeric Substack publication_id", id)
+		}
+		c.Config.TemplateVars["publication_id"] = id
+		return nil
+	}
+	delete(c.Config.TemplateVars, dryRunPublicationIDResolvedMarker)
+	if flags != nil && flags.dryRun {
+		c.Config.TemplateVars["publication_id"] = dryRunPublicationIDPlaceholder
+		c.Config.TemplateVars[dryRunPublicationIDResolvedMarker] = "true"
+		return nil
+	}
+	raw, err := c.Get(ctx, "/user/profile/self", nil)
+	if err != nil {
+		return fmt.Errorf("resolving publication_id via /user/profile/self: %w", err)
+	}
+	id, err := substackPublicationIDFromProfile(raw, substackPublicationTemplateVar(c, "publication"))
+	if err != nil {
+		return err
+	}
+	c.Config.TemplateVars["publication_id"] = id
+	return nil
+}
+
+func substackPublicationTemplateVar(c *client.Client, name string) string {
+	if c == nil || c.Config == nil || c.Config.TemplateVars == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Config.TemplateVars[name])
+}
+
+func validSubstackPublicationID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func substackPublicationIDFromProfile(raw []byte, publication string) (string, error) {
+	var profile map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&profile); err != nil {
+		return "", fmt.Errorf("parsing /user/profile/self response: %w", err)
+	}
+	wantPublication := strings.TrimSpace(strings.ToLower(publication))
+	if pub, ok := profile["primaryPublication"].(map[string]any); ok {
+		id := jsonNumberString(pub["id"])
+		if id != "" && substackPublicationMatches(pub, wantPublication) {
+			return id, nil
+		}
+	}
+	for _, key := range []string{"publications", "publicationUsers"} {
+		items, ok := profile[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, item := range items {
+			pub, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			id := jsonNumberString(pub["id"])
+			if id == "" {
+				id = jsonNumberString(pub["publication_id"])
+			}
+			if id != "" && substackPublicationMatches(pub, wantPublication) {
+				return id, nil
+			}
+		}
+	}
+	if wantPublication == "" {
+		return "", fmt.Errorf("could not infer publication_id from /user/profile/self; pass --publication-id or set SUBSTACK_PUBLICATION_ID")
+	}
+	return "", fmt.Errorf("could not infer publication_id for publication %q from /user/profile/self; pass --publication-id or set SUBSTACK_PUBLICATION_ID", publication)
+}
+
+func substackPublicationMatches(pub map[string]any, wantPublication string) bool {
+	if wantPublication == "" {
+		return true
+	}
+	for _, key := range []string{"subdomain", "custom_domain"} {
+		got := strings.TrimSpace(strings.ToLower(jsonNumberString(pub[key])))
+		if got == "" {
+			continue
+		}
+		if got == wantPublication || strings.TrimSuffix(got, ".substack.com") == wantPublication {
+			return true
+		}
+	}
+	return false
+}
+
+func jsonNumberString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x)
+	case json.Number:
+		id := strings.TrimSpace(x.String())
+		if validSubstackPublicationID(id) {
+			return id
+		}
+	case float64:
+		if x == float64(int64(x)) {
+			return fmt.Sprintf("%d", int64(x))
+		}
+	}
+	return ""
+}
+{{- end}}
 
 // noColor is set by the --no-color flag
 var noColor bool

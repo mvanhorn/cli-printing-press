@@ -39,6 +39,8 @@ type novelFeatureChildRender struct {
 type novelFeatureTestRender struct {
 	Owner       string
 	Ident       string
+	CommandPath string
+	CommandArgs []string
 	SkipMessage string
 }
 
@@ -113,7 +115,7 @@ func (g *Generator) novelFeatureChildrenByParent() map[string][]novelFeatureChil
 		if len(children) > 0 && len(node.path) > 0 {
 			parentPath := strings.Join(node.path, " ")
 			for _, child := range children {
-				if novelFeatureStubCollidesWithGeneratedCommand(child.path, generatedPaths) {
+				if g.novelFeatureStubShouldSkip(child.path, generatedPaths) {
 					continue
 				}
 				out[parentPath] = append(out[parentPath], novelFeatureChildRender{Ident: novelFeatureStubIdent(child.path)})
@@ -144,11 +146,15 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 	data := g.novelFeatureCommandData(node)
 	data.Children = renderedChildren
 	outPath := filepath.Join("internal", "cli", novelFeatureStubFileName(node.path))
-	if novelFeatureStubCollidesWithGeneratedCommand(node.path, generatedPaths) {
+	if g.novelFeatureStubShouldSkipGenerated(node.path, generatedPaths) {
 		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to generated command path; skipping novel stub\n", data.CommandPath)
 		return nil, nil
 	}
-	if _, err := os.Stat(filepath.Join(g.OutputDir, outPath)); err == nil {
+	if exists, hasConstructor := g.novelFeatureStubExistingFileConstructorStatus(node.path); exists {
+		if !hasConstructor {
+			fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s without expected constructor %s; skipping novel stub\n", data.CommandPath, outPath, novelFeatureStubConstructorName(node.path))
+			return nil, nil
+		}
 		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s; leaving existing file unchanged\n", data.CommandPath, outPath)
 		return &data, nil
 	}
@@ -160,6 +166,8 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 		testData := novelFeatureTestRender{
 			Owner:       g.Spec.Owner,
 			Ident:       data.Ident,
+			CommandPath: data.CommandPath,
+			CommandArgs: strings.Fields(data.CommandPath),
 			SkipMessage: "TODO: implement table-driven tests for " + data.CommandPath,
 		}
 		if err := g.renderTemplate("novel_feature_command_test.go.tmpl", testPath, testData); err != nil {
@@ -168,6 +176,33 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 	}
 
 	return &data, nil
+}
+
+func (g *Generator) novelFeatureStubShouldSkip(parts []string, generatedPaths map[string]struct{}) bool {
+	return g.novelFeatureStubShouldSkipGenerated(parts, generatedPaths) || g.novelFeatureStubExistingFileMissingConstructor(parts)
+}
+
+func (g *Generator) novelFeatureStubShouldSkipGenerated(parts []string, generatedPaths map[string]struct{}) bool {
+	return novelFeatureStubCollidesWithGeneratedCommand(parts, generatedPaths)
+}
+
+func (g *Generator) novelFeatureStubExistingFileMissingConstructor(parts []string) bool {
+	exists, hasConstructor := g.novelFeatureStubExistingFileConstructorStatus(parts)
+	return exists && !hasConstructor
+}
+
+func (g *Generator) novelFeatureStubExistingFileConstructorStatus(parts []string) (bool, bool) {
+	outPath := filepath.Join("internal", "cli", novelFeatureStubFileName(parts))
+	data, err := os.ReadFile(filepath.Join(g.OutputDir, outPath))
+	if err != nil {
+		return false, false
+	}
+	constructor := "func " + novelFeatureStubConstructorName(parts) + "("
+	return true, strings.Contains(string(data), constructor)
+}
+
+func novelFeatureStubConstructorName(parts []string) string {
+	return "newNovel" + novelFeatureStubIdent(parts) + "Cmd"
 }
 
 func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFeatureCommandRender {

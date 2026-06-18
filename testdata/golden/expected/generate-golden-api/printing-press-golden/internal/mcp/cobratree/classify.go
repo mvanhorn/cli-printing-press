@@ -4,6 +4,7 @@
 package cobratree
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,6 +20,10 @@ const (
 	// Without it, hosts like Claude Desktop default to "could write or
 	// delete" and demand permission per call.
 	ReadOnlyAnnotation = "mcp:read-only"
+	// PositionalWriteSinksAnnotation lists zero-based positional argument
+	// indexes that write to user-visible files when populated. It is enforced
+	// only on commands that also carry ReadOnlyAnnotation.
+	PositionalWriteSinksAnnotation = "mcp:write-positionals"
 )
 
 type commandKind int
@@ -104,6 +109,30 @@ func isMCPHidden(cmd *cobra.Command) bool {
 
 func isMCPReadOnly(cmd *cobra.Command) bool {
 	return annotationIsTrue(cmd, ReadOnlyAnnotation)
+}
+
+func positionalWriteSinkIndexes(cmd *cobra.Command) map[int]bool {
+	if cmd == nil || cmd.Annotations == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(cmd.Annotations[PositionalWriteSinksAnnotation])
+	if raw == "" {
+		return nil
+	}
+	out := map[int]bool{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		idx, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || idx < 0 {
+			continue
+		}
+		out[idx] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func annotationIsTrue(cmd *cobra.Command, key string) bool {

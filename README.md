@@ -528,7 +528,8 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 ## Limitations
 
-- **Requires Go 1.26.4 or newer and an agent that can load open-agent-skills.** Claude Code is the tested path; Codex installation is documented but may lag Claude Code behavior.
+- **Technical capability is not legal permission.** Before generating a CLI for any service, review its Terms of Service. Many services explicitly prohibit automated access. Using this tool against such services may violate their terms or applicable law. You are responsible for ensuring your use is authorized.
+- **Requires Go 1.26.4 or newer and an agent that can load open-agent-skills.** Claude Code is the tested path; Codex installation is documented but may lag Claude Code behavior. No standalone distribution today; the slash command is the supported entry point for Claude Code.
 - **Generated CLIs are domain-shaped, not vendor-replacements.** A `<api>-pp-cli` covers the agent power-user surface, not every back-office knob a vendor's official CLI ships.
 - **Browser-sniff requires manual capture.** You point a browser at the site (or import a HAR); the press doesn't crawl autonomously.
 - **Live verify is read-only.** Phase 5 runs GET only and never mutates. Real write-path coverage lives in unit tests and the dogfood structural checks.

@@ -2765,7 +2765,7 @@ func candidateSecuritySchemeNames(doc *openapi3.T, usageCounts map[string]int) [
 	var names []string
 
 	if doc.Security != nil {
-		for _, requirement := range doc.Security {
+		for _, requirement := range definedSecurityRequirements(doc, doc.Security) {
 			var requirementNames []string
 			for name := range requirement {
 				requirementNames = append(requirementNames, name)
@@ -2831,12 +2831,63 @@ func securitySchemeOperationUsageCounts(doc *openapi3.T) map[string]int {
 
 func effectiveSecurityRequirements(op *openapi3.Operation, doc *openapi3.T) openapi3.SecurityRequirements {
 	if op != nil && op.Security != nil {
-		return *op.Security
+		requirements := definedSecurityRequirements(doc, *op.Security)
+		if len(requirements) > 0 || securityRequirementsAllowAnonymous(*op.Security) {
+			return requirements
+		}
+		if securityRequirementsReferenceDefinedScheme(doc, *op.Security) {
+			return nil
+		}
+		return definedSecurityRequirements(doc, doc.Security)
 	}
 	if doc == nil {
 		return nil
 	}
-	return doc.Security
+	return definedSecurityRequirements(doc, doc.Security)
+}
+
+func definedSecurityRequirements(doc *openapi3.T, requirements openapi3.SecurityRequirements) openapi3.SecurityRequirements {
+	if len(requirements) == 0 {
+		return requirements
+	}
+	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
+		return nil
+	}
+
+	filtered := make(openapi3.SecurityRequirements, 0, len(requirements))
+	for _, requirement := range requirements {
+		if len(requirement) == 0 {
+			filtered = append(filtered, requirement)
+			continue
+		}
+		defined := openapi3.SecurityRequirement{}
+		hasUndefined := false
+		for name, scopes := range requirement {
+			if securitySchemeValue(doc.Components.SecuritySchemes[name]) == nil {
+				hasUndefined = true
+				break
+			}
+			defined[name] = scopes
+		}
+		if !hasUndefined && len(defined) > 0 {
+			filtered = append(filtered, defined)
+		}
+	}
+	return filtered
+}
+
+func securityRequirementsReferenceDefinedScheme(doc *openapi3.T, requirements openapi3.SecurityRequirements) bool {
+	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
+		return false
+	}
+	for _, requirement := range requirements {
+		for name := range requirement {
+			if securitySchemeValue(doc.Components.SecuritySchemes[name]) != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Ordering rationale: Bearer is the simplest already-minted token shape and
@@ -2988,11 +3039,11 @@ func allEffectiveSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequirem
 					continue
 				}
 				if op.Security != nil {
-					requirements = append(requirements, (*op.Security)...)
+					requirements = append(requirements, effectiveSecurityRequirements(op, doc)...)
 					continue
 				}
 				if !rootIncluded {
-					requirements = append(requirements, doc.Security...)
+					requirements = append(requirements, definedSecurityRequirements(doc, doc.Security)...)
 					rootIncluded = true
 				}
 			}
@@ -3001,7 +3052,7 @@ func allEffectiveSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequirem
 	if len(requirements) > 0 {
 		return requirements
 	}
-	return doc.Security
+	return definedSecurityRequirements(doc, doc.Security)
 }
 
 func securitySchemeValue(ref *openapi3.SecuritySchemeRef) *openapi3.SecurityScheme {
