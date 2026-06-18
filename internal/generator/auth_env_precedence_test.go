@@ -301,6 +301,9 @@ func TestRefreshedAccessTokenWinsOverStalePerCallToken(t *testing.T) {
 	// before loading config from disk.
 	oldEnv := os.Environ()
 	os.Clearenv()
+	if err := os.Setenv("HOME", t.TempDir()); err != nil {
+		t.Fatalf("Setenv(HOME) error = %v", err)
+	}
 	defer func() {
 		os.Clearenv()
 		for _, kv := range oldEnv {
