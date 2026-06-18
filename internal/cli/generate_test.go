@@ -462,6 +462,293 @@ components:
 	require.Error(t, runGenerate("--lenient", "--strict-refs"))
 }
 
+func TestGenerateReadinessReportMarkdownDoesNotWriteOutput(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "readyapp")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: readyapp
+description: Ready app API
+version: 0.1.0
+base_url: https://api.readyapp.dev
+auth:
+  type: bearer_token
+  env_vars: [READYAPP_TOKEN]
+  key_url: https://readyapp.dev/keys
+config:
+  format: toml
+  path: ~/.config/readyapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+        response:
+          type: array
+          item: Item
+types:
+  Item:
+    fields:
+      - {name: id, type: string}
+      - {name: name, type: string}
+`), 0o644))
+
+	var stdout bytes.Buffer
+	cmd := newGenerateCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--readiness-report",
+	})
+	require.NoError(t, cmd.Execute())
+
+	assert.NoDirExists(t, outputDir)
+	got := stdout.String()
+	assert.Contains(t, got, "# Print Readiness Report")
+	assert.Contains(t, got, "Verdict: WARN")
+	assert.Contains(t, got, "## Auth Readiness")
+	assert.Contains(t, got, "READYAPP_TOKEN")
+	assert.Contains(t, got, "--output "+outputDir)
+	assert.Contains(t, got, "auth_verify_missing")
+}
+
+func TestGenerateReadinessReportJSON(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "jsonapp")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: jsonapp
+description: JSON app API
+version: 0.1.0
+base_url: https://api.jsonapp.dev
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/jsonapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+        response: {type: array, item: Item}
+      create:
+        method: POST
+        path: /items
+        description: Create item
+        body:
+          - {name: name, type: string, required: true}
+        response: {type: object, item: Item}
+types:
+  Item:
+    fields:
+      - {name: id, type: string}
+      - {name: name, type: string}
+`), 0o644))
+
+	var stdout bytes.Buffer
+	cmd := newGenerateCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--readiness-report",
+		"--json",
+	})
+	require.NoError(t, cmd.Execute())
+	assert.NoDirExists(t, outputDir)
+
+	var report readinessReport
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &report))
+	assert.Equal(t, readinessSchemaVersion, report.SchemaVersion)
+	assert.Equal(t, "ready", report.Verdict)
+	assert.Equal(t, "jsonapp", report.Summary.APIName)
+	assert.Equal(t, 2, report.Summary.EndpointCount)
+	assert.Equal(t, 1, report.Summary.ReadEndpointCount)
+	assert.Equal(t, 1, report.Summary.WriteEndpointCount)
+	assert.Equal(t, []string{"stdio", "http"}, report.MCP.EffectiveTransports)
+	assert.Contains(t, findingCodes(report.Findings), "mutating_commands_present")
+}
+
+func TestGenerateReadinessReportMissingBaseURLIsBlockedFinding(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	outputDir := filepath.Join(dir, "missing-base")
+	require.NoError(t, os.WriteFile(specPath, []byte(`openapi: 3.0.0
+info:
+  title: Missing Base API
+  version: 0.1.0
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+`), 0o644))
+
+	var stdout bytes.Buffer
+	cmd := newGenerateCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--readiness-report",
+		"--json",
+	})
+	require.NoError(t, cmd.Execute())
+	assert.NoDirExists(t, outputDir)
+
+	var report readinessReport
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &report))
+	assert.Equal(t, "blocked", report.Verdict)
+	assert.Contains(t, findingCodes(report.Findings), "missing_base_url")
+}
+
+func TestGenerateReadinessReportMultiSpecRequiresNameAndReportsMergedSurface(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	firstSpec := filepath.Join(dir, "first.yaml")
+	secondSpec := filepath.Join(dir, "second.yaml")
+	outputDir := filepath.Join(dir, "combo")
+	writeInternalReadinessSpec(t, firstSpec, "first", "https://api.firstapp.dev", "users")
+	writeInternalReadinessSpec(t, secondSpec, "second", "https://api.secondapp.dev", "teams")
+
+	var stdout bytes.Buffer
+	cmd := newGenerateCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--spec", firstSpec,
+		"--spec", secondSpec,
+		"--name", "combo",
+		"--output", outputDir,
+		"--readiness-report",
+		"--json",
+	})
+	require.NoError(t, cmd.Execute())
+	assert.NoDirExists(t, outputDir)
+
+	var report readinessReport
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &report))
+	assert.Equal(t, "combo", report.Summary.APIName)
+	assert.Equal(t, 2, report.Summary.EndpointCount)
+
+	cmd = newGenerateCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--spec", firstSpec,
+		"--spec", secondSpec,
+		"--readiness-report",
+	})
+	require.ErrorContains(t, cmd.Execute(), "--name is required when using multiple specs")
+}
+
+func TestGenerateReadinessReportRejectsUnsupportedInputModes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	require.NoError(t, os.WriteFile(planPath, []byte("# Plan\n"), 0o644))
+	devicePath := filepath.Join(dir, "device.yaml")
+	require.NoError(t, os.WriteFile(devicePath, []byte(`version: 1
+name: demo-device
+display_name: Demo Device
+protocol: ble
+ble:
+  services:
+    - uuid: "180a"
+      characteristics:
+        - uuid: "2a29"
+          properties: [read]
+capabilities:
+  telemetry:
+    - name: manufacturer
+      source_characteristic_uuid: "2a29"
+`), 0o644))
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "docs", args: []string{"--docs", "https://docs.example.com", "--readiness-report"}, want: "--readiness-report is not supported with --docs"},
+		{name: "plan", args: []string{"--plan", planPath, "--readiness-report"}, want: "--readiness-report is not supported with --plan"},
+		{name: "device", args: []string{"--spec", devicePath, "--readiness-report"}, want: "--readiness-report is not supported with BLE device specs"},
+		{name: "dry-run", args: []string{"--spec", devicePath, "--readiness-report", "--dry-run"}, want: "--readiness-report cannot be combined with --dry-run"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newGenerateCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+			require.ErrorContains(t, cmd.Execute(), tt.want)
+		})
+	}
+}
+
+func writeInternalReadinessSpec(t *testing.T, path, name, baseURL, resource string) {
+	t.Helper()
+	data := fmt.Appendf(nil, `name: %s
+description: %s API
+version: 0.1.0
+base_url: %s
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/%s-pp-cli/config.toml
+resources:
+  %s:
+    description: Manage %s
+    endpoints:
+      list:
+        method: GET
+        path: /%s
+        description: List %s
+        response: {type: array, item: Item}
+types:
+  Item:
+    fields:
+      - {name: id, type: string}
+`, name, name, baseURL, name, resource, resource, resource, resource)
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+}
+
+func findingCodes(findings []readinessFinding) []string {
+	codes := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		codes = append(codes, finding.Code)
+	}
+	return codes
+}
+
 // TestGenerateCmdForcePreservesIssue907HandEdits exercises the canonical
 // hand-edit shapes that --force must preserve across regen:
 //  1. decl-set additions to a templated client file (added function)
