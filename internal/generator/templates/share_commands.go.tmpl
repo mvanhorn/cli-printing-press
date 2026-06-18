@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/share"
 	"{{modulePath}}/internal/store"
 	"github.com/spf13/cobra"
@@ -239,11 +240,11 @@ func resolveShareOptions(repoPath, remote, branch string) (share.Options, error)
 		Branch:   branch,
 	}
 	if opts.RepoPath == "" {
-		home, err := os.UserHomeDir()
+		dir, err := cliutil.DataDir()
 		if err != nil {
-			return share.Options{}, fmt.Errorf("resolve home for share path: %w", err)
+			return share.Options{}, fmt.Errorf("resolve data dir for share path: %w", err)
 		}
-		opts.RepoPath = filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "share-repo")
+		opts.RepoPath = filepath.Join(dir, "share-repo")
 	}
 	return opts, nil
 }

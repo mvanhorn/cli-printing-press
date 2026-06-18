@@ -97,23 +97,18 @@ func TestGenerateCacheDirIsHTTPSubdir(t *testing.T) {
 	require.NoError(t, err)
 	clientGo := string(clientGoBytes)
 
-	cliName := naming.CLI(apiSpec.Name)
-	wantSubdir := `filepath.Join(cacheBase, "` + cliName + `", "http")`
-	wantXDGAware := `os.Getenv("XDG_CACHE_HOME")`
-	wantHomeFallback := `filepath.Join(homeDir, ".cache")`
-	wantOldShape := `filepath.Join(homeDir, ".cache", "` + cliName + `", "http")`
-	wantBareRoot := `filepath.Join(cacheBase, "` + cliName + `")`
-
-	assert.Contains(t, clientGo, wantSubdir,
+	assert.Contains(t, clientGo, `dir, err := cliutil.CacheDir()`,
+		"client.go must route the cache root through the generated cache-dir resolver")
+	assert.Contains(t, clientGo, `cacheDir = filepath.Join(dir, "http")`,
 		"client.go must place cacheDir under <api>/http so invalidateCache spares siblings (#1126)")
-	assert.Contains(t, clientGo, wantXDGAware,
-		"client.go must consult XDG_CACHE_HOME before falling back to ~/.cache")
-	assert.Contains(t, clientGo, wantHomeFallback,
-		"client.go must fall back to ~/.cache when XDG_CACHE_HOME is unset")
+	cliName := naming.CLI(apiSpec.Name)
+	wantOldShape := `filepath.Join(homeDir, ".cache", "` + cliName + `")`
+	wantInlineXDG := `os.Getenv("XDG_CACHE_HOME")`
+	wantBareRoot := `filepath.Join(dir, "` + cliName + `")`
 	assert.NotContains(t, clientGo, wantOldShape,
-		"client.go must root cacheDir via cacheBase, not a hardcoded homeDir/.cache")
-	// Pin the #1126 subdir guard against accidentally regressing to the
-	// bare <cache-root>/<api>/ root (no "http" suffix).
+		"client.go must not hardcode homeDir/.cache for cache root")
+	assert.NotContains(t, clientGo, wantInlineXDG,
+		"client.go must delegate XDG cache resolution to cliutil.CacheDir()")
 	assert.NotContains(t, clientGo, wantBareRoot,
-		"client.go must not point cacheDir at the bare <cache-root>/<api>/ root (#1126)")
+		"client.go must not point cacheDir at the bare cache root without /http (#1126)")
 }

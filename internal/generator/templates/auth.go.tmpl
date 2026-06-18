@@ -52,9 +52,9 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
 {{- if .Auth.KeyURL}}
-			fmt.Fprintln(w, "Register an app and copy your credentials at: {{.Auth.KeyURL}}")
+			fmt.Fprintln(w, {{printf "%q" (printf "Register an app and copy your credentials at: %s" .Auth.KeyURL)}})
 {{- else if .WebsiteURL}}
-			fmt.Fprintln(w, "See API docs for OAuth app registration: {{.WebsiteURL}}")
+			fmt.Fprintln(w, {{printf "%q" (printf "See API docs for OAuth app registration: %s" .WebsiteURL)}})
 {{- else}}
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 {{- end}}
@@ -72,7 +72,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 				return nil
 			}
 {{- if or .Auth.KeyURL .WebsiteURL}}
-			launchURL := {{if .Auth.KeyURL}}"{{.Auth.KeyURL}}"{{else}}"{{.WebsiteURL}}"{{end}}
+			launchURL := {{if .Auth.KeyURL}}{{printf "%q" .Auth.KeyURL}}{{else}}{{printf "%q" .WebsiteURL}}{{end}}
 			if cliutil.IsVerifyEnv() {
 				fmt.Fprintf(w, "would launch: %s\n", launchURL)
 				return nil
@@ -157,7 +157,7 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 {{- if .Auth.AuthorizationURL}}
 	authURL = cfg.AuthorizationURL
 	if authURL == "" {
-		authURL = "{{.Auth.AuthorizationURL}}"
+		authURL = {{printf "%q" .Auth.AuthorizationURL}}
 	}
 {{- end}}
 {{- $refreshMech := .Auth.ParseRefreshTokenMechanism}}
@@ -250,7 +250,7 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 {{- if .Auth.TokenURL}}
 	tokenURL = cfg.TokenURL
 	if tokenURL == "" {
-		tokenURL = "{{.Auth.TokenURL}}"
+		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
 {{- end}}
 	tokenParams := url.Values{
@@ -347,9 +347,9 @@ func resolveOAuthCredentials(cmd *cobra.Command, flags *rootFlags, cfg *config.C
 
 func printOAuthCredentialHint(w io.Writer) {
 {{- if .Auth.KeyURL}}
-	fmt.Fprintln(w, "Create OAuth credentials at: {{.Auth.KeyURL}}")
+	fmt.Fprintln(w, {{printf "%q" (printf "Create OAuth credentials at: %s" .Auth.KeyURL)}})
 {{- else if .WebsiteURL}}
-	fmt.Fprintln(w, "See API docs for OAuth app registration: {{.WebsiteURL}}")
+	fmt.Fprintln(w, {{printf "%q" (printf "See API docs for OAuth app registration: %s" .WebsiteURL)}})
 {{- else}}
 	fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 {{- end}}

@@ -32,7 +32,7 @@ import (
 {{- end}}
 	"unicode"
 
-{{- if and .Auth.Type (ne .Auth.Type "none")}}
+{{- if or (and .Auth.Type (ne .Auth.Type "none")) .HasDataLayer}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 {{- if .HasRequiredRoles}}
@@ -868,9 +868,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			{{printf "%q" (printf "\n      %s" $authSetupHint)}}+
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}}+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -882,9 +882,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- if eq .Auth.Type "oauth2"}}
 		return authErr(fmt.Errorf("%w\nhint: your token may have expired. Re-run '{{.Name}}-pp-cli auth login' to re-authenticate"+
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}}+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -896,9 +896,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			{{printf "%q" (printf "\n      %s" $authSetupHint)}}+
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}}+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -910,9 +910,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			{{printf "%q" (printf " %s" $authSetupHint)}}+
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}}+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -924,9 +924,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			{{printf "%q" (printf " %s" $authSetupHint)}}+
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}}+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -937,9 +937,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- if eq .Auth.Type "oauth2"}}
 		return authErr(fmt.Errorf("%w\nhint: permission denied. Your token may lack required scopes. Re-run '{{.Name}}-pp-cli auth login' to re-authorize"+
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}}+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -955,9 +955,9 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			{{printf "%q" (printf "\n      %s" $authSetupHint)}}+
 {{- end}}
 {{- if .Auth.KeyURL}}
-			"\n      Get a key at: {{.Auth.KeyURL}}"+
+			{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}}+
 {{- else if .WebsiteURL}}
-			"\n      See API docs: {{.WebsiteURL}}"+
+			{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}}+
 {{- end}}
 {{- if .Auth.Instructions}}
 			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
@@ -2613,8 +2613,16 @@ func normalizeClientSideFilterValue(value string) string {
 {{- end}}
 
 // defaultDBPath returns the canonical path for the local SQLite database.
+// The resolver already knows the app name on the happy path; name is only
+// used for the conservative fallback when the resolved data directory fails.
 func defaultDBPath(name string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", name, "data.db")
+	dir, err := cliutil.DataDir()
+	if err != nil {
+		if home, homeErr := os.UserHomeDir(); homeErr == nil {
+			return filepath.Join(home, ".local", "share", name, "data.db")
+		}
+		return "data.db"
+	}
+	return filepath.Join(dir, "data.db")
 }
 {{- end}}

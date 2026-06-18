@@ -548,7 +548,7 @@ func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
 		"kind: shell is invalid per ClawHub schema; must never appear")
 	assert.NotContains(t, content, `kind: "shell"`,
 		"kind: shell is invalid per ClawHub schema; must never appear")
-	assert.NotContains(t, content, `"command":`,
+	assert.NotContains(t, body, `"command":`,
 		"command field is not in ClawHub schema; must never appear in metadata")
 	assert.NotContains(t, content, `\"openclaw\":`,
 		"metadata must not be a JSON-string blob anymore")

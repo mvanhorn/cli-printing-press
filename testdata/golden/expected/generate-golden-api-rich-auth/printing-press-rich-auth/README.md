@@ -124,7 +124,7 @@ Get your API key from your API provider's developer portal. The key typically lo
 export RICH_AUTH_API_KEY="<paste-your-key>"
 ```
 
-You can also persist this in your config file at `~/.config/printing-press-rich-pp-cli/config.toml`.
+To persist credentials, use `printing-press-rich-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
 
 ### 3. Verify Setup
 
@@ -143,6 +143,55 @@ printing-press-rich-pp-cli items
 ## Usage
 
 Run `printing-press-rich-pp-cli --help` for the full command reference and flag list.
+
+## Paths & environment variables
+
+This CLI separates local files into four path kinds:
+
+| Kind | Contents |
+|------|----------|
+| `config` | User-editable settings such as `config.toml` and saved profiles |
+| `data` | Durable local data: `credentials.toml`, `data.db`, cookies, browser-session proof files, and other auth sidecars |
+| `state` | Runtime state such as persisted queries, jobs, and `teach.log` |
+| `cache` | Regenerable HTTP/cache files |
+
+Each kind resolves independently. The ladder is:
+
+1. Per-kind env var: `PRINTING_PRESS_RICH_CONFIG_DIR`, `PRINTING_PRESS_RICH_DATA_DIR`, `PRINTING_PRESS_RICH_STATE_DIR`, or `PRINTING_PRESS_RICH_CACHE_DIR`
+2. `--home <dir>` for this invocation
+3. `PRINTING_PRESS_RICH_HOME` for a flat relocated root
+4. XDG env vars: `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`
+5. Platform defaults matching existing installs
+
+For containers and agent sandboxes, prefer a single relocated root:
+
+```bash
+export PRINTING_PRESS_RICH_HOME=/srv/printing-press-rich
+printing-press-rich-pp-cli doctor
+```
+
+Under `PRINTING_PRESS_RICH_HOME=/srv/printing-press-rich`, the four dirs resolve to `/srv/printing-press-rich/config`, `/srv/printing-press-rich/data`, `/srv/printing-press-rich/state`, and `/srv/printing-press-rich/cache`.
+
+MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
+
+```json
+{
+  "mcpServers": {
+    "printing-press-rich": {
+      "command": "printing-press-rich-pp-mcp",
+      "env": {
+        "PRINTING_PRESS_RICH_HOME": "/srv/printing-press-rich"
+      }
+    }
+  }
+}
+```
+
+Precedence matters in fleets: an ambient per-kind variable such as `PRINTING_PRESS_RICH_DATA_DIR` overrides an explicit `--home` for that kind. Use `PRINTING_PRESS_RICH_HOME` or the per-kind variables for durable fleet relocation; treat `--home` as the weaker per-invocation lever.
+
+Relocation is one-way. Unsetting `PRINTING_PRESS_RICH_HOME` does not move files back to platform defaults, and `doctor` cannot find credentials left under a former root. Move the files manually before unsetting relocation variables.
+
+Existing installs keep working because the platform-default rung matches the legacy layout. On the first auth write, stored secrets leave `config.toml` and are consolidated into `credentials.toml` under the data directory. Run `printing-press-rich-pp-cli doctor --fail-on warn` to check path and credential-location warnings in automation.
 
 ## Commands
 
@@ -196,7 +245,7 @@ Verifies configuration, credentials, and connectivity to the API.
 
 ## Configuration
 
-Config file: `~/.config/printing-press-rich-pp-cli/config.toml`
+Run `printing-press-rich-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/printing-press-rich-pp-cli/config.toml`; `--home`, `PRINTING_PRESS_RICH_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

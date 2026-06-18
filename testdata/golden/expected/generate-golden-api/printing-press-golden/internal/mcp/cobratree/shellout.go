@@ -65,15 +65,16 @@ func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWrit
 // blockedRootFlags are root-level CLI flags that an MCP client must not be
 // able to override via structured tool parameters. Allowing them lets a
 // caller swap auth credentials, redirect the API base URL, select a different
-// per-client filesystem, load a malicious config file, or change the delivery
-// target, all of which sit outside the per-command surface the agent is
-// supposed to be calling.
+// per-client filesystem, relocate the config/data/state/cache roots, load a
+// malicious config file, or change the delivery target, all of which sit
+// outside the per-command surface the agent is supposed to be calling.
 var blockedRootFlags = map[string]bool{
 	"args":     true,
 	"base-url": true,
 	"client":   true,
 	"config":   true,
 	"deliver":  true,
+	"home":     true,
 	"profile":  true,
 	"token":    true,
 }

@@ -18,7 +18,6 @@ import (
 {{- if $hasFormRequest}}
 	"net/url"
 {{- end}}
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -27,9 +26,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"{{modulePath}}/internal/cli"
-{{- if and .Auth.Type (ne .Auth.Type "none")}}
 	"{{modulePath}}/internal/cliutil"
-{{- end}}
 	"{{modulePath}}/internal/client"
 	"{{modulePath}}/internal/config"
 	"{{modulePath}}/internal/mcp/cobratree"
@@ -800,7 +797,6 @@ func mcpOversizedPreviewEnvelope(data json.RawMessage) []byte {
 }
 
 func newMCPClient() (*client.Client, error) {
-{{- if .HasRequiredRoles}}
 	cfg, err := newMCPConfig()
 	if err != nil {
 		return nil, err
@@ -809,19 +805,14 @@ func newMCPClient() (*client.Client, error) {
 }
 
 func newMCPConfig() (*config.Config, error) {
-{{- end}}
-	home, _ := os.UserHomeDir()
-	cfgPath := filepath.Join(home, ".config", "{{.Name}}-pp-cli", "config.toml")
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.Load("")
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
-{{- if .HasRequiredRoles}}
 	return cfg, nil
 }
 
 func newMCPClientFromConfig(cfg *config.Config) *client.Client {
-{{- end}}
 	c := client.New(cfg, 60*time.Second, defaultMCPRateLimit)
 	// Agents calling through MCP need fresh data every call. The on-disk
 	// response cache survives across MCP server invocations, so a
@@ -829,19 +820,16 @@ func newMCPClientFromConfig(cfg *config.Config) *client.Client {
 	// pre-mutation snapshot for up to the cache TTL. The interactive CLI
 	// constructs its own client and is unaffected.
 	c.NoCache = true
-{{- if .HasRequiredRoles}}
 	return c
-{{- else}}
-	return c, nil
-{{- end}}
 }
 
-func dbPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db")
+func mcpDBPath() (string, error) {
+	dir, err := cliutil.DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "data.db"), nil
 }
-// Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
-// The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
 {{- if .VisionSet.Search}}
 
@@ -857,7 +845,11 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		limit = int(v)
 	}
 
-	db, err := store.OpenReadOnly(dbPath())
+	path, err := mcpDBPath()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("resolving database: %v", err)), nil
+	}
+	db, err := store.OpenReadOnly(path)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
 	}
@@ -1035,7 +1027,11 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 
-	db, err := store.OpenReadOnly(dbPath())
+	path, err := mcpDBPath()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("resolving database: %v", err)), nil
+	}
+	db, err := store.OpenReadOnly(path)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
 	}
@@ -1089,11 +1085,25 @@ func toolResultJSON(v any) (*mcplib.CallToolResult, error) {
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 {{- $authEnvVars := authAgentEnvVars .Auth}}
+	paths := map[string]string{}
+	if dir, err := cliutil.ConfigDir(); err == nil {
+		paths["config_dir"] = dir
+	}
+	if dir, err := cliutil.DataDir(); err == nil {
+		paths["data_dir"] = dir
+	}
+	if dir, err := cliutil.StateDir(); err == nil {
+		paths["state_dir"] = dir
+	}
+	if dir, err := cliutil.CacheDir(); err == nil {
+		paths["cache_dir"] = dir
+	}
 	ctx := map[string]any{
 		"api":         {{printf "%q" .DomainContext.APIName}},
 		"description": {{printf "%q" .DomainContext.Description}},
 		"archetype":   {{printf "%q" .DomainContext.Archetype}},
 		"tool_count":  {{.MCPTotalCount}},
+		"paths":       paths,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion {{.Name}}-pp-cli binary.",
 {{- if and .Auth.Type (ne .Auth.Type "none")}}

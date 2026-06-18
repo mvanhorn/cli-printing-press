@@ -270,6 +270,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"envVarIsBuiltinField":               envVarIsBuiltinField,
 		"envVarBuiltinFieldName":             envVarBuiltinFieldName,
 		"resolveEnvVarField":                 resolveEnvVarField,
+		"pathKindEnvSuffix":                  pathKindEnvSuffix,
 		"authPlacement":                      authPlacement,
 		"authParameterName":                  authParameterName,
 		"authCommandShort":                   authCommandShort,
@@ -823,7 +824,18 @@ type helpersTemplateData struct {
 // knowledge of whether internal/store exists.
 type doctorTemplateData struct {
 	*spec.APISpec
-	HasStore bool
+	HasStore       bool
+	HasAuthCommand bool
+}
+
+type credentialField struct {
+	GoField string
+	Tag     string
+}
+
+type pathsTemplateData struct {
+	*spec.APISpec
+	PathKindEnvSuffixes []string
 }
 
 // authTemplateData wraps APISpec with traffic-analysis generation hints that
@@ -851,7 +863,9 @@ type clientTemplateData struct {
 // predicate the auth-command emission and root.go registration use.
 type configTemplateData struct {
 	*spec.APISpec
-	HasAuthCommand bool
+	HasAuthCommand              bool
+	CredentialFields            []credentialField
+	UsesLegacyEnvVarCredentials bool
 }
 
 // endpointTemplateData is the data passed to command_endpoint.go.tmpl for both
@@ -893,9 +907,15 @@ type readmeTemplateData struct {
 	HasWriteCommands   bool
 	HasDelete          bool
 	HasAuth            bool
-	HasAutoRefresh     bool
-	FreshnessCommands  []string
-	TrafficAnalysis    *trafficAnalysisTemplateData
+	// HasAuthCommand mirrors Generator.shouldEmitAuth() so doc templates can
+	// gate credential-file prose on the same predicate that controls auth
+	// command emission. Distinct from HasAuth: an empty auth type still emits
+	// the auth surface, and docs must follow the emitted surface, not the
+	// spec's declared type.
+	HasAuthCommand    bool
+	HasAutoRefresh    bool
+	FreshnessCommands []string
+	TrafficAnalysis   *trafficAnalysisTemplateData
 	// PromotedResourceNames maps a resource name to true when the generator
 	// collapsed that single-endpoint resource into a leaf command. Templates
 	// (notably skill.md.tmpl's Command Reference) use this to emit `<cli>
@@ -952,6 +972,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
 		HasDelete:             computeHelperFlags(g.Spec).HasDelete,
 		HasAuth:               hasAuth(g.Spec.Auth),
+		HasAuthCommand:        g.shouldEmitAuth(),
 		HasAutoRefresh:        g.hasAutoRefresh(),
 		FreshnessCommands:     g.freshnessCommandPaths(),
 		TrafficAnalysis:       g.trafficAnalysisData(),
@@ -1366,6 +1387,44 @@ func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 		add(header.EnvVar)
 	}
 	return envVars
+}
+
+func credentialFields(auth spec.AuthConfig) []credentialField {
+	var fields []credentialField
+	add := func(name string) {
+		if envVarIsBuiltinField(name) {
+			return
+		}
+		fields = append(fields, credentialField{
+			GoField: envVarField(name),
+			Tag:     naming.EnvVarPlaceholder(name),
+		})
+	}
+	if len(auth.EnvVarSpecs) > 0 {
+		for _, envVar := range auth.EnvVarSpecs {
+			add(envVar.Name)
+		}
+	} else {
+		for _, name := range auth.EnvVars {
+			add(name)
+		}
+	}
+	for _, header := range auth.AdditionalHeaders {
+		add(header.EnvVar.Name)
+	}
+	return fields
+}
+
+func usesLegacyEnvVarCredentials(auth spec.AuthConfig) bool {
+	return len(auth.EnvVarSpecs) == 0 && len(auth.EnvVars) > 0
+}
+
+func pathKindEnvSuffix(index int) string {
+	suffixes := naming.PathKindEnvSuffixes()
+	if index < 0 || index >= len(suffixes) {
+		return ""
+	}
+	return suffixes[index]
 }
 
 func hasAuthEnvVarKind(envVarSpecs []spec.AuthEnvVar, kind string) bool {
@@ -2038,6 +2097,8 @@ func (g *Generator) renderSingleFiles() error {
 		"cliutil_probe.go.tmpl":                    filepath.Join("internal", "cliutil", "probe.go"),
 		"cliutil_ratelimit.go.tmpl":                filepath.Join("internal", "cliutil", "ratelimit.go"),
 		"cliutil_verifyenv.go.tmpl":                filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_paths.go.tmpl":                    filepath.Join("internal", "cliutil", "paths.go"),
+		"cliutil_paths_test.go.tmpl":               filepath.Join("internal", "cliutil", "paths_test.go"),
 		"cliutil_extractnumber.go.tmpl":            filepath.Join("internal", "cliutil", "extractnumber.go"),
 		"cliutil_extractnumber_test.go.tmpl":       filepath.Join("internal", "cliutil", "extractnumber_test.go"),
 		"cliutil_jwtshape.go.tmpl":                 filepath.Join("internal", "cliutil", "jwtshape.go"),
@@ -2077,8 +2138,14 @@ func (g *Generator) renderSingleFiles() error {
 			}
 		case "doctor.go.tmpl":
 			data = &doctorTemplateData{
-				APISpec:  g.Spec,
-				HasStore: g.VisionSet.Store,
+				APISpec:        g.Spec,
+				HasStore:       g.VisionSet.Store,
+				HasAuthCommand: g.shouldEmitAuth(),
+			}
+		case "cliutil_paths.go.tmpl":
+			data = &pathsTemplateData{
+				APISpec:             g.Spec,
+				PathKindEnvSuffixes: naming.PathKindEnvSuffixes(),
 			}
 		case "client.go.tmpl":
 			data = &clientTemplateData{
@@ -2091,8 +2158,10 @@ func (g *Generator) renderSingleFiles() error {
 			}
 		case "config.go.tmpl":
 			data = &configTemplateData{
-				APISpec:        g.Spec,
-				HasAuthCommand: g.shouldEmitAuth(),
+				APISpec:                     g.Spec,
+				HasAuthCommand:              g.shouldEmitAuth(),
+				CredentialFields:            credentialFields(g.Spec.Auth),
+				UsesLegacyEnvVarCredentials: usesLegacyEnvVarCredentials(g.Spec.Auth),
 			}
 		case "agent_context.go.tmpl":
 			data = g.templateData()
@@ -2128,6 +2197,21 @@ func generatedTypesFileHasDeclarations(content string) bool {
 }
 
 func (g *Generator) renderOptionalSupportFiles() error {
+	if g.shouldEmitAuth() {
+		authData := &configTemplateData{
+			APISpec:                     g.Spec,
+			HasAuthCommand:              true,
+			CredentialFields:            credentialFields(g.Spec.Auth),
+			UsesLegacyEnvVarCredentials: usesLegacyEnvVarCredentials(g.Spec.Auth),
+		}
+		if err := g.renderTemplate("cliutil_credentials.go.tmpl", filepath.Join("internal", "cliutil", "credentials.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil credentials: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_credentials_test.go.tmpl", filepath.Join("internal", "cliutil", "credentials_test.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil credentials test: %w", err)
+		}
+	}
+
 	if g.Spec.HasHTMLExtraction() {
 		if err := g.renderTemplate("html_extract.go.tmpl", filepath.Join("internal", "cli", "html_extract.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering HTML extraction helper: %w", err)
@@ -2675,6 +2759,8 @@ func (g *Generator) GenerateMCPSurface() error {
 		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
 		"cliutil_ratelimit.go.tmpl":          filepath.Join("internal", "cliutil", "ratelimit.go"),
 		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_paths.go.tmpl":              filepath.Join("internal", "cliutil", "paths.go"),
+		"cliutil_paths_test.go.tmpl":         filepath.Join("internal", "cliutil", "paths_test.go"),
 		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
 		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
 		"cliutil_jwtshape.go.tmpl":           filepath.Join("internal", "cliutil", "jwtshape.go"),
