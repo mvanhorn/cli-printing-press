@@ -567,18 +567,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						report["credentials"] = "skipped (API unreachable)"
 					} else {
 {{- if or .Auth.VerifyPath .Auth.VerifyQuery}}
-						// Shared auth-header setup for both probe variants below.
-						// Kept hoisted out of the per-probe branches because the
-						// per-API auth-placement, RequiredHeaders, and User-Agent
-						// fallback logic is independent of which verb the probe
-						// dials.
+						// Shared probe-header setup for both probe variants below.
+						// The client's request path injects auth so OAuth refresh-on-401 can
+						// retry with the newly persisted token instead of replaying a stale
+						// header/query override captured before the refresh.
 						authParams := map[string]string{}
 						authHeaders := map[string]string{}
-{{- if and .Auth .Auth.In (eq .Auth.In "query")}}
-						authParams["{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}"] = authHeader
-{{- else}}
-						authHeaders["{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}"] = authHeader
-{{- end}}
 {{- range .RequiredHeaders}}
 						authHeaders["{{.Name}}"] = "{{.Value}}"
 {{- end}}
