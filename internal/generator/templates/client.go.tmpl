@@ -1424,12 +1424,14 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// application/json; specs that need a different content type
 		// (vendor mediatypes, XML, HTML) declare it via RequiredHeaders or
 		// per-endpoint headerOverrides, both of which run before this
-		// if-empty default.
+		// if-empty default. XML-backed specs (response_format: xml) flip
+		// the default to application/xml so direct client calls negotiate
+		// the right representation instead of risking a 406 on XML-only APIs.
 		if req.Header.Get("Accept") == "" {
 			if binaryResponse {
 				req.Header.Set("Accept", "*/*")
 			} else {
-				req.Header.Set("Accept", "application/json")
+				req.Header.Set("Accept", "application/{{if .HasXMLResponse}}xml{{else}}json{{end}}")
 			}
 		}
 {{- end}}
