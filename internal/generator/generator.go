@@ -6168,7 +6168,14 @@ func defaultVal(p spec.Param) string {
 		// Coerce the default value to match the declared param type
 		switch primitiveKind(p.Type) {
 		case "string":
-			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
+			// Trim before emitting so a whitespace-padded default that was
+			// kept by stringDefaultOutsideEnum (which compares trimmed values)
+			// still matches the trimmed enum validator built by enumLiteral —
+			// otherwise the generated CLI rejects its own default. Trimming a
+			// non-enum string default is harmless (surrounding whitespace in a
+			// spec default is noise, like the other sloppy defaults this path
+			// normalizes).
+			return fmt.Sprintf("%q", strings.TrimSpace(fmt.Sprintf("%v", p.Default)))
 		case "bool":
 			switch v := p.Default.(type) {
 			case bool:

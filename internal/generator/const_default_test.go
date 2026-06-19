@@ -119,6 +119,16 @@ func TestDefaultValDropsEmptyDefaults(t *testing.T) {
 			},
 			want: `"no"`,
 		},
+		{
+			name: "string enum padded default trimmed to match validator",
+			p: spec.Param{
+				Name:    "includeTBA",
+				Type:    "string",
+				Default: " no",
+				Enum:    []string{"yes", " no", " only"},
+			},
+			want: `"no"`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
