@@ -5211,6 +5211,17 @@ func mcpParamDefaultValue(p spec.Param) (string, bool) {
 	if p.Default == nil {
 		return "", false
 	}
+	// An array/object param now binds natively (WithArray/WithObject) and its
+	// live values are JSON-encoded; serialize a composite default the same way
+	// so an omitted-arg default isn't injected as Go's "%v" rendering
+	// ("[a b c]" / "map[...]") where the wire expects JSON.
+	switch primitiveKind(p.Type) {
+	case "array", "object":
+		if b, err := json.Marshal(p.Default); err == nil {
+			s := string(b)
+			return s, s != "" && s != "null"
+		}
+	}
 	v := fmt.Sprintf("%v", p.Default)
 	return v, v != ""
 }

@@ -144,6 +144,34 @@ func TestMCPBindingFunc(t *testing.T) {
 	}
 }
 
+// TestMCPParamDefaultValue pins that a composite (array/object) param default is
+// serialized as JSON — matching how native array/object live values are now
+// encoded — while scalar defaults keep their "%v" rendering. Without the JSON
+// branch an array default would be injected on the wire as Go's "[a b c]".
+func TestMCPParamDefaultValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		p      spec.Param
+		want   string
+		wantOK bool
+	}{
+		{"nil default", spec.Param{Type: "array"}, "", false},
+		{"scalar int", spec.Param{Type: "integer", Default: 25}, "25", true},
+		{"scalar string", spec.Param{Type: "string", Default: "later"}, "later", true},
+		{"array default", spec.Param{Type: "array", Default: []any{"a", "b"}}, `["a","b"]`, true},
+		{"object default", spec.Param{Type: "object", Default: map[string]any{"k": "v"}}, `{"k":"v"}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := mcpParamDefaultValue(tt.p)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestDefaultAndZeroValuesAcceptSpecScalarAliases(t *testing.T) {
 	t.Parallel()
 
