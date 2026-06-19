@@ -116,7 +116,8 @@ func TestCobraFlagFuncAcceptsSpecScalarAliases(t *testing.T) {
 
 // TestMCPBindingFunc pins that OpenAPI-parsed shapes ("int", "float",
 // "bool") and internal-spec literals ("integer", "number", "boolean")
-// produce the same MCP binding.
+// produce the same MCP binding, and that array/object params bind to their
+// native MCP type (WithArray/WithObject) rather than the WithString default.
 func TestMCPBindingFunc(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -131,8 +132,8 @@ func TestMCPBindingFunc(t *testing.T) {
 		{"bool", "WithBoolean"},
 		{"string", "WithString"},
 		{"", "WithString"},
-		{"object", "WithString"},
-		{"array", "WithString"},
+		{"object", "WithObject"},
+		{"array", "WithArray"},
 		{"INTEGER", "WithNumber"},
 	}
 	for _, tt := range tests {

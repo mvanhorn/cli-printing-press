@@ -204,13 +204,18 @@ resources:
 	mcpGot := string(mcpSrc)
 	for _, want := range []string{
 		`mcplib.WithString("query", mcplib.Required(), mcplib.Description("GraphQL document"))`,
-		`mcplib.WithString("variables", mcplib.Description("GraphQL variables"))`,
+		`mcplib.WithObject("variables", mcplib.Description("GraphQL variables"))`,
 		`mcplib.WithBoolean("serializer-settings-include-nulls"`,
-		`mcplib.WithString("queries"`,
+		`mcplib.WithArray("queries"`,
 		`PublicName: "serializer-settings-include-nulls", WireName: "includeNulls", Location: "body", BodyPath: []string{"serializerSettings", "includeNulls"}`,
 		`setNestedBodyArg(bodyArgs, binding.BodyPath, v)`,
 	} {
 		require.Containsf(t, mcpGot, want, "expected generated MCP fragment %q", want)
 	}
 	require.NotContains(t, mcpGot, `mcplib.WithString("queries-query"`)
+
+	// formatMCPParamValue must JSON-encode a native composite in its default
+	// branch (a query/path-located array/object param now arrives as []any /
+	// map[string]any instead of a string); Go's "%v" would emit "[a b c]".
+	require.Regexp(t, `(?s)func formatMCPParamValue\(v any\) string \{.*?json\.Marshal\(v\)`, mcpGot)
 }
