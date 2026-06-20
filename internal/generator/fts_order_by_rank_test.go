@@ -71,3 +71,53 @@ func TestGenerateStoreFTSOrderByRankQualified(t *testing.T) {
 	// the fix this failed at query time with "ambiguous column name: rank".
 	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^TestSearchItemsQuotesFTSQuerySyntax$", "-count=1")
 }
+
+// TestGenerateInsightsSimilarFTSOrderByRankQualified is the insights-path
+// regression for issue #2973. The similar-items command joins resources_fts
+// to the data table and orders by the FTS5 special `rank` column; that column
+// must be qualified to the FTS alias (`fts.rank`) so the query stays
+// unambiguous on rank-fielded resources. The existing store.go test does not
+// exercise the insights template, which renders only when VisionSet.Insights
+// is populated.
+func TestGenerateInsightsSimilarFTSOrderByRankQualified(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("fts-rank-insights")
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Item": {Fields: []spec.TypeField{
+			{Name: "id", Type: "string"},
+			{Name: "title", Type: "string"},
+			{Name: "description", Type: "string"},
+			{Name: "rank", Type: "integer"},
+		}},
+	}
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list":   {Method: "GET", Path: "/items", Description: "List items", Response: spec.ResponseDef{Type: "array", Item: "Item"}},
+				"detail": {Method: "GET", Path: "/items/{id}", Description: "Get an item", Response: spec.ResponseDef{Type: "array", Item: "Item"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "fts-rank-insights-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{
+		Store:    true,
+		Insights: []string{"insights/similar.go.tmpl"},
+	}
+	require.NoError(t, gen.Generate())
+
+	similarSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "similar.go"))
+	require.NoError(t, err)
+
+	// The similar-items FTS query must select and order by the FTS-aliased
+	// rank column, not the bare `rank` identifier.
+	assert.Contains(t, string(similarSrc), "r.data, fts.rank",
+		"similar command SELECT must qualify rank to the FTS alias (issue #2973)")
+	assert.Contains(t, string(similarSrc), "ORDER BY fts.rank",
+		"similar command ORDER BY must qualify rank to the FTS alias (issue #2973)")
+	assert.NotContains(t, string(similarSrc), "ORDER BY rank",
+		"unqualified ORDER BY rank is ambiguous on rank-fielded resources (issue #2973)")
+}
