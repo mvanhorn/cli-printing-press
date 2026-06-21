@@ -97,12 +97,12 @@ work items, tickets, or tasks.`,
 			}
 
 			// Use FTS5 to find similar items (exclude the source item)
-			query := `SELECT r.id, r.resource_type, r.data, rank
+			query := `SELECT r.id, r.resource_type, r.data, fts.rank
 				FROM resources_fts fts
 				JOIN resources r ON r.id = fts.id AND r.resource_type = fts.resource_type
 				WHERE resources_fts MATCH ?
 				  AND NOT (r.id = ? AND r.resource_type = ?)
-				ORDER BY rank
+				ORDER BY fts.rank
 				LIMIT ?`
 
 			rows, err := db.DB().Query(query, searchText, itemID, sourceType, limit)
