@@ -81,6 +81,63 @@ func TestParamIsConstDefault(t *testing.T) {
 	}
 }
 
+func TestDefaultValDropsEmptyDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		p    spec.Param
+		want string
+	}{
+		{
+			name: "array empty string default",
+			p:    spec.Param{Name: "classification", Type: "array", Default: ""},
+			want: `""`,
+		},
+		{
+			name: "string empty default",
+			p:    spec.Param{Name: "keyword", Type: "string", Default: ""},
+			want: `""`,
+		},
+		{
+			name: "string enum prose default dropped",
+			p: spec.Param{
+				Name:    "includeTBA",
+				Type:    "string",
+				Default: "no if date parameter sent, yes otherwise",
+				Enum:    []string{"yes", " no", " only"},
+			},
+			want: `""`,
+		},
+		{
+			name: "string enum trimmed member default kept",
+			p: spec.Param{
+				Name:    "includeTBA",
+				Type:    "string",
+				Default: "no",
+				Enum:    []string{"yes", " no", " only"},
+			},
+			want: `"no"`,
+		},
+		{
+			name: "string enum padded default trimmed to match validator",
+			p: spec.Param{
+				Name:    "includeTBA",
+				Type:    "string",
+				Default: " no",
+				Enum:    []string{"yes", " no", " only"},
+			},
+			want: `"no"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, defaultVal(tt.p))
+		})
+	}
+}
+
 // TestGenerateMarksConstDefaultFlagsHidden is the end-to-end check that
 // when an endpoint Param has a single-value enum whose only value equals
 // the default, the generated command registers the flag (so the wire-side
