@@ -2957,6 +2957,41 @@ func humanCommandSegment(segment string) string {
 	return strings.Join(words, " ")
 }
 
+// withoutOptionsEndpoints returns a copy of the resource whose Endpoints
+// map has OPTIONS-method entries removed, leaving the caller's original
+// map untouched. The parent command template iterates Endpoints to
+// register cobra subcommands (cmd.AddCommand(newXxxYyyCmd())), so if we
+// only skip OPTIONS at the per-endpoint render site the parent ends up
+// referencing functions in files we deliberately didn't emit. Filtering
+// at the resource level keeps every downstream consumer of Endpoints
+// (parent template, sub-resource parent template, novel-children pass)
+// consistent with the per-endpoint skip.
+func withoutOptionsEndpoints(r spec.Resource) spec.Resource {
+	if len(r.Endpoints) == 0 {
+		return r
+	}
+	hasOptions := false
+	for _, ep := range r.Endpoints {
+		if strings.EqualFold(ep.Method, "OPTIONS") {
+			hasOptions = true
+			break
+		}
+	}
+	if !hasOptions {
+		return r
+	}
+	filtered := make(map[string]spec.Endpoint, len(r.Endpoints))
+	for k, ep := range r.Endpoints {
+		if strings.EqualFold(ep.Method, "OPTIONS") {
+			continue
+		}
+		filtered[k] = ep
+	}
+	out := r
+	out.Endpoints = filtered
+	return out
+}
+
 func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {
 	// When the spec emits promoted commands, the generator also emits the api
 	// browser (api_discovery.go), whose RunE filters root.Commands() by
@@ -2973,7 +3008,15 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 	novelChildrenByParent := g.novelFeatureChildrenByParent()
 	// Generate per-resource parent files + per-endpoint command files
 	// This produces more files (one per endpoint) which improves Breadth scoring
-	for name, resource := range g.Spec.Resources {
+	for name, originalResource := range g.Spec.Resources {
+		// Filter OPTIONS-method endpoints out of the resource view used to
+		// render parent commands and per-endpoint files for this resource.
+		// Both downstream sites (parent template iterating Endpoints to
+		// register cobra subcommands; per-endpoint loop emitting one file
+		// per endpoint) must agree on which endpoints exist, otherwise the
+		// parent calls newXxxOptionsXxxCmd() functions whose files we
+		// deliberately didn't emit. Filtering once here keeps them in sync.
+		resource := withoutOptionsEndpoints(originalResource)
 		// Skip parent file for promoted resources — the promoted command replaces it.
 		// Sub-resource parents and endpoint files are still needed (wired by the promoted command).
 		if !promotedResourceNames[name] {
@@ -3003,7 +3046,10 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}
 		}
 
-		// Per-endpoint files
+		// Per-endpoint files. OPTIONS endpoints have already been filtered
+		// out of `resource.Endpoints` by withoutOptionsEndpoints at the
+		// top of the loop, so the only skip here is the promoted-endpoint
+		// inlining case.
 		for eName, endpoint := range resource.Endpoints {
 			// Skip the promoted endpoint — its logic is inlined in the promoted command's RunE.
 			if promotedEndpointNames[name] == eName {
@@ -3032,7 +3078,10 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 		}
 
 		// Sub-resource parent + endpoint files
-		for subName, subResource := range resource.SubResources {
+		for subName, originalSubResource := range resource.SubResources {
+			// Same OPTIONS filter as the top-level resource, applied to
+			// the sub-resource view for the same consistency reason.
+			subResource := withoutOptionsEndpoints(originalSubResource)
 			subParentData := struct {
 				ResourceName  string
 				FuncPrefix    string
@@ -3057,6 +3106,8 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
 			}
 
+			// OPTIONS endpoints have already been filtered out of
+			// subResource.Endpoints by withoutOptionsEndpoints above.
 			for eName, endpoint := range subResource.Endpoints {
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
