@@ -458,11 +458,17 @@ func discoverLiveDogfoodCommands(binaryPath string) ([]liveDogfoodCommand, error
 	return commands, nil
 }
 
+// liveDogfoodFrameworkSkip names top-level commands that are framework
+// scaffolding rather than API surface, so live dogfood does not probe them.
+// "login" is the top-level alias for `auth login`: it launches the OAuth
+// browser flow and never makes a probeable API call, so it belongs here
+// alongside the other framework commands.
 var liveDogfoodFrameworkSkip = map[string]bool{
 	"agent-context": true,
 	"auth":          true,
 	"completion":    true,
 	"help":          true,
+	"login":         true,
 	"version":       true,
 }
 
