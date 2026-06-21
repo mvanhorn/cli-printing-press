@@ -25,6 +25,9 @@ func newNovel{{.Ident}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   {{printf "%q" .Use}},
 		Short: {{printf "%q" .Short}},
+{{- if .Example}}
+		Example: {{printf "%q" .Example}},
+{{- end}}
 		Annotations: map[string]string{"mcp:read-only": {{printf "%q" .ReadOnlyString}}},
 {{- if .Feature}}
 		RunE: func(cmd *cobra.Command, args []string) error {

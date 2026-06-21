@@ -17,6 +17,7 @@ type novelFeatureCommandRender struct {
 	Ident          string
 	Use            string
 	Short          string
+	Example        string
 	CommandPath    string
 	ReadOnlyString string
 	HasPositional  bool
@@ -211,6 +212,7 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 	use := node.segment
 	hasPositional := false
 	readOnly := true
+	example := ""
 	var flags []novelFeatureFlagRender
 	if node.feature != nil {
 		short = naming.OneLine(node.feature.Description)
@@ -224,6 +226,7 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 		flags = novelFeatureFlags(*node.feature, node.path, g.Spec.Name)
 		hasPositional = novelFeatureHasPositional(node.feature.Command)
 		use = novelFeatureUse(node.segment, node.feature.Command)
+		example = novelFeatureExample(*node.feature, node.path, g.Spec.Name)
 	} else if len(node.children) > 0 {
 		short = novelFeatureParentShort(node)
 	}
@@ -236,6 +239,7 @@ func (g *Generator) novelFeatureCommandData(node *novelFeatureStubNode) novelFea
 		Ident:          novelFeatureStubIdent(node.path),
 		Use:            use,
 		Short:          short,
+		Example:        example,
 		CommandPath:    commandPath,
 		ReadOnlyString: readOnlyString,
 		HasPositional:  hasPositional,
@@ -489,6 +493,22 @@ func novelFeatureFlags(feature NovelFeature, commandPath []string, apiName strin
 		})
 	}
 	return flags
+}
+
+// novelFeatureExample returns the prefix-stripped runnable form of the
+// feature's research example, suitable for a Cobra Example field. Empty when
+// the feature has no example or the example yields no tokens after stripping
+// the binary/command-path prefix.
+func novelFeatureExample(feature NovelFeature, commandPath []string, apiName string) string {
+	if strings.TrimSpace(feature.Example) == "" {
+		return ""
+	}
+	tokens, err := shellargs.Split(feature.Example)
+	if err != nil {
+		return ""
+	}
+	tokens = dropNovelFeatureExamplePrefix(tokens, commandPath, apiName)
+	return strings.Join(tokens, " ")
 }
 
 func dropNovelFeatureExamplePrefix(tokens []string, commandPath []string, apiName string) []string {

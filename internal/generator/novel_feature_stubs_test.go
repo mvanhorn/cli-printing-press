@@ -43,6 +43,9 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 
 	call := readGeneratedFile(t, outputDir, "internal", "cli", "call.go")
 	assert.Contains(t, call, `Use:         "call"`)
+	// The Cobra Example field carries the prefix-stripped runnable form of the
+	// research example (binary + command path dropped).
+	assert.Contains(t, call, `Example:     "apify/web-scraper --tag skill=reddit-digest --dedupe-key daily --ttl 24h --wait --agent"`)
 	assert.Contains(t, call, `Annotations: map[string]string{"mcp:read-only": "false"}`)
 	assert.Contains(t, call, `StringSliceVar(&flagTag, "tag", nil`)
 	assert.Contains(t, call, `StringVar(&flagDedupeKey, "dedupe-key", ""`)
@@ -97,6 +100,29 @@ func TestNovelFeatureStubsResolveAtRuntime(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_stub_runtime_test.go"), []byte(runtimeTest.String()), 0o644))
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/cli")
+}
+
+func TestGeneratorOmitsExampleWhenNovelFeatureHasNoExample(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("noexample")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{
+		{
+			Name:        "Audit cache",
+			Command:     "audit",
+			Description: "Audit local cache state.",
+			// No Example: a feature without research example must emit no
+			// Cobra Example field (never `Example: ""`).
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	audit := readGeneratedFile(t, outputDir, "internal", "cli", "audit.go")
+	assert.Contains(t, audit, `Use:         "audit"`)
+	assert.NotContains(t, audit, "Example:")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratorEmitsBoundCtxHelperForNovelCommands(t *testing.T) {
