@@ -478,6 +478,99 @@ exit 99
 	assert.Equal(t, cookieOriginalBody, string(gotCookies), "live dogfood must not mutate the operator's real cookies")
 }
 
+// TestRunLiveDogfoodCookieAuthNoSessionSkips covers issue #3104: a cookie-auth
+// CLI run in the sandboxed dogfood HOME (no captured session) 401s every
+// command. Those 401s are a harness artifact, not a CLI defect, so the runner
+// records a clean skip verdict (CLI exits 0) and writes a phase5-skip.json the
+// promote gate accepts — instead of counting the 401s as failures.
+func TestRunLiveDogfoodCookieAuthNoSessionSkips(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const binaryName = "fixture-pp-cli"
+
+	// Sandboxed HOME so the cookie jar is absent — mirror the real harness.
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		RunID:         "run-cookie-no-session",
+		AuthType:      "cookie",
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  echo "HTTP 401: couldn't authenticate; login required" >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		WriteAcceptancePath: markerPath,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, liveDogfoodVerdictCookieAuthNoSession, report.Verdict, report.Tests)
+	assert.Equal(t, 0, report.Failed, "cookie-auth 401s must not count as failures")
+
+	// The runner writes the skip marker, not the fail acceptance marker.
+	_, err = os.Stat(markerPath)
+	assert.True(t, os.IsNotExist(err), "no fail acceptance marker should be written for the cookie-auth skip")
+	skipPath := filepath.Join(filepath.Dir(markerPath), Phase5SkipFilename)
+	data, err := os.ReadFile(skipPath)
+	require.NoError(t, err, "cookie-auth skip must write a phase5-skip.json marker")
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "skip", marker.Status)
+	assert.Equal(t, phase5SkipReasonCookieAuthNoHarnessSession, marker.SkipReason)
+	assert.Equal(t, "cookie", marker.AuthContext.Type)
+
+	// The promote gate accepts the skip marker.
+	validation := ValidatePhase5Gate(filepath.Dir(skipPath), CLIManifest{
+		APIName: marker.APIName, RunID: marker.RunID, AuthType: "cookie",
+	})
+	assert.True(t, validation.Passed, validation.Detail)
+	assert.Equal(t, "skip", validation.Status)
+}
+
 func TestRunLiveDogfoodSyncsOAuth2RefreshConfigBackToOperatorHome(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -1982,10 +2075,11 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		level   string
-		results []LiveDogfoodTestResult
-		want    string
+		name     string
+		level    string
+		authType string
+		results  []LiveDogfoodTestResult
+		want     string
 	}{
 		{
 			name:  "quick all pass classic",
@@ -2095,6 +2189,44 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 			},
 			want: "FAIL",
 		},
+		{
+			// Cookie auth with no captured session: the sandboxed HOME 401s
+			// every command. That is a harness artifact, so the no-live-signal
+			// outcome becomes a clean skip verdict, not a FAIL.
+			name:     "cookie auth credential-unavailable skips become a clean skip",
+			level:    "full",
+			authType: "cookie",
+			results: []LiveDogfoodTestResult{
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
+			},
+			want: liveDogfoodVerdictCookieAuthNoSession,
+		},
+		{
+			// A cookie-auth CLI that did get one real live pass (session
+			// injected) certifies normally, not as a skip.
+			name:     "cookie auth with a live pass certifies normally",
+			level:    "full",
+			authType: "cookie",
+			results: []LiveDogfoodTestResult{
+				{Status: LiveDogfoodStatusPass, Kind: LiveDogfoodTestHappy, Args: []string{"account", "show"}},
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
+			},
+			want: "PASS",
+		},
+		{
+			// A genuine non-auth failure (e.g. a crashing --help) alongside the
+			// session-less 401 skips must NOT be masked by the cookie-auth
+			// clean-skip path: report.Failed > 0 keeps the verdict FAIL so the
+			// gate still sees the real defect.
+			name:     "cookie auth with a genuine failure stays FAIL, not a clean skip",
+			level:    "full",
+			authType: "cookie",
+			results: []LiveDogfoodTestResult{
+				{Status: LiveDogfoodStatusFail, Kind: LiveDogfoodTestHappy, Args: []string{"widgets", "list"}},
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
+			},
+			want: "FAIL",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2104,7 +2236,7 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 				Verdict: "PASS",
 				Tests:   tt.results,
 			}
-			finalizeLiveDogfoodReport(report)
+			finalizeLiveDogfoodReport(report, tt.authType)
 			assert.Equal(t, tt.want, report.Verdict, "Passed=%d Failed=%d Skipped=%d MatrixSize=%d",
 				report.Passed, report.Failed, report.Skipped, report.MatrixSize)
 		})
