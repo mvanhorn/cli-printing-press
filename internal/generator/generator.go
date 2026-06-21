@@ -609,8 +609,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return out
 		},
-		"whichFallbackEntries": buildWhichFallbackEntries,
-		"firstCommandExample":  firstCommandExample,
+		"firstCommandExample": firstCommandExample,
 	}
 	return g
 }
@@ -662,56 +661,6 @@ func resourceWalkEndpoints(resourceName string, resource spec.Resource, visit fu
 		}
 	}
 	return false
-}
-
-func buildWhichFallbackEntries(resources map[string]spec.Resource) []NovelFeature {
-	var entries []NovelFeature
-	var resNames []string
-	for name := range resources {
-		resNames = append(resNames, name)
-	}
-	sort.Strings(resNames)
-	for _, rName := range resNames {
-		r := resources[rName]
-		appendEndpoint := func(command string, endpoint spec.Endpoint) {
-			description := strings.TrimSpace(endpoint.Description)
-			if description == "" {
-				description = "Run " + command
-			}
-			entries = append(entries, NovelFeature{
-				Command:     command,
-				Description: description,
-				Group:       rName,
-			})
-		}
-
-		var endpointNames []string
-		for eName := range r.Endpoints {
-			endpointNames = append(endpointNames, eName)
-		}
-		sort.Strings(endpointNames)
-		for _, eName := range endpointNames {
-			appendEndpoint(rName+" "+eName, r.Endpoints[eName])
-		}
-
-		var subNames []string
-		for subName := range r.SubResources {
-			subNames = append(subNames, subName)
-		}
-		sort.Strings(subNames)
-		for _, subName := range subNames {
-			sub := r.SubResources[subName]
-			var subEndpointNames []string
-			for eName := range sub.Endpoints {
-				subEndpointNames = append(subEndpointNames, eName)
-			}
-			sort.Strings(subEndpointNames)
-			for _, eName := range subEndpointNames {
-				appendEndpoint(rName+" "+subName+" "+eName, sub.Endpoints[eName])
-			}
-		}
-	}
-	return entries
 }
 
 // HelperFlags controls which helper functions are emitted in helpers.go.
