@@ -26,7 +26,7 @@ func newLeaguesPromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/games/{game_key}/leagues"
-			if len(args) < 1 {
+			if len(args) < 1 || args[0] == "" {
 				// JSON envelope: {error, usage}. Written first; the
 				// usageErr return preserves exit code 2 across modes.
 				if flags.asJSON {
