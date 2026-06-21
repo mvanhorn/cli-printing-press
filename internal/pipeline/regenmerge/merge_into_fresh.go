@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -118,6 +119,9 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 	if err := pruneFreshDeclCollisions(freshDir, report); err != nil {
 		return fmt.Errorf("pruning fresh declaration collisions: %w", err)
 	}
+	if err := preserveRuntimeVersionLayout(snapshotDir, freshDir, report); err != nil {
+		return fmt.Errorf("preserving runtime version layout: %w", err)
+	}
 
 	if report.GoMod != nil {
 		merged, err := renderMergedGoModWithModulePaths(snapshotDir, freshDir)
@@ -145,6 +149,260 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 
 	report.Applied = true
 	return nil
+}
+
+// preserveRuntimeVersionLayout keeps release-ledger-owned version surfaces
+// stable across template splits. Older published CLIs stored the CLI version
+// variable in internal/cli/root.go; newer templates split it into
+// internal/cli/version.go. Reprints must keep the published layout and value
+// so the library's release-ledger guard does not see a runtime-version change
+// in the publish PR.
+func preserveRuntimeVersionLayout(snapshotDir, freshDir string, report *MergeReport) error {
+	if report == nil {
+		return nil
+	}
+	if err := preserveLegacyCLIRootVersionLayout(snapshotDir, freshDir, report); err != nil {
+		return err
+	}
+	return preserveMCPMainVersionValues(snapshotDir, freshDir, report)
+}
+
+func preserveLegacyCLIRootVersionLayout(snapshotDir, freshDir string, report *MergeReport) error {
+	rootRel := filepath.ToSlash(filepath.Join("internal", "cli", "root.go"))
+	versionRel := filepath.ToSlash(filepath.Join("internal", "cli", "version.go"))
+	if fileVerdict(report, versionRel) != VerdictNewTemplateEmission {
+		return nil
+	}
+
+	snapshotRoot := filepath.Join(snapshotDir, rootRel)
+	freshRoot := filepath.Join(freshDir, rootRel)
+	freshVersion := filepath.Join(freshDir, versionRel)
+	versionLiteral, ok, err := readStringVarLiteral(snapshotRoot, "version")
+	if err != nil || !ok {
+		return err
+	}
+	snapshotRootDecls, err := extractDecls(snapshotRoot)
+	if err != nil {
+		return err
+	}
+	if _, hasCurrentVersionCmd := snapshotRootDecls["newVersionCmd"]; !hasCurrentVersionCmd {
+		if _, hasLegacyVersionCmd := snapshotRootDecls["newVersionCliCmd"]; !hasLegacyVersionCmd {
+			return nil
+		}
+	}
+	if _, err := os.Stat(freshVersion); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	rootDecls, err := extractDecls(freshRoot)
+	if err != nil {
+		return err
+	}
+	if _, hasVersion := rootDecls["version"]; hasVersion {
+		if err := replaceStringVarLiteral(freshRoot, "version", versionLiteral); err != nil {
+			return err
+		}
+	} else if err := insertStringVarAfterImports(freshRoot, "version", versionLiteral); err != nil {
+		return err
+	}
+
+	rootDecls, err = extractDecls(freshRoot)
+	if err != nil {
+		return err
+	}
+	if _, hasVersionCmd := rootDecls["newVersionCmd"]; !hasVersionCmd {
+		fn, err := extractFuncSource(freshVersion, "newVersionCmd")
+		if err != nil {
+			return err
+		}
+		if fn != "" {
+			if err := appendGoSource(freshRoot, fn); err != nil {
+				return err
+			}
+		}
+	}
+	if err := os.Remove(freshVersion); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func preserveMCPMainVersionValues(snapshotDir, freshDir string, report *MergeReport) error {
+	for _, fc := range report.Files {
+		rel := filepath.ToSlash(fc.Path)
+		if !strings.HasPrefix(rel, "cmd/") || !strings.HasSuffix(rel, "-pp-mcp/main.go") {
+			continue
+		}
+		literal, ok, err := readStringVarLiteral(filepath.Join(snapshotDir, rel), "version")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		freshPath := filepath.Join(freshDir, rel)
+		if _, err := os.Stat(freshPath); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if err := replaceStringVarLiteral(freshPath, "version", literal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func fileVerdict(report *MergeReport, rel string) Verdict {
+	for _, fc := range report.Files {
+		if filepath.ToSlash(fc.Path) == rel {
+			return fc.Verdict
+		}
+	}
+	return ""
+}
+
+func readStringVarLiteral(path, name string) (string, bool, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, ident := range valueSpec.Names {
+				if ident.Name != name || i >= len(valueSpec.Values) {
+					continue
+				}
+				lit, ok := valueSpec.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					return "", false, nil
+				}
+				return lit.Value, true, nil
+			}
+		}
+	}
+	return "", false, nil
+}
+
+func replaceStringVarLiteral(path, name, literal string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, data, parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, ident := range valueSpec.Names {
+				if ident.Name != name || i >= len(valueSpec.Values) {
+					continue
+				}
+				lit, ok := valueSpec.Values[i].(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					return fmt.Errorf("%s var %s is not a string literal", path, name)
+				}
+				start := fset.Position(lit.Pos()).Offset
+				end := fset.Position(lit.End()).Offset
+				next := append([]byte{}, data[:start]...)
+				next = append(next, literal...)
+				next = append(next, data[end:]...)
+				return writeFileAtomic(path, next)
+			}
+		}
+	}
+	return fmt.Errorf("%s missing var %s", path, name)
+}
+
+func insertStringVarAfterImports(path, name, literal string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, data, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+	insertAt := -1
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if ok && gen.Tok == token.IMPORT {
+			insertAt = fset.Position(gen.End()).Offset
+		}
+	}
+	if insertAt < 0 {
+		insertAt = fset.Position(file.Name.End()).Offset
+	}
+	block := []byte("\n\n// " + name + " is the printed CLI's version, overridable at build time via ldflags.\nvar " + name + " = " + literal + "\n")
+	next := append([]byte{}, data[:insertAt]...)
+	next = append(next, block...)
+	next = append(next, data[insertAt:]...)
+	return writeFileAtomic(path, next)
+}
+
+func extractFuncSource(path, name string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, data, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return "", fmt.Errorf("parsing %s: %w", path, err)
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != name {
+			continue
+		}
+		startPos := fn.Pos()
+		if fn.Doc != nil {
+			startPos = fn.Doc.Pos()
+		}
+		start := fset.Position(startPos).Offset
+		end := fset.Position(fn.End()).Offset
+		return strings.TrimSpace(string(data[start:end])), nil
+	}
+	return "", nil
+}
+
+var trailingWhitespaceRE = regexp.MustCompile(`\s*\z`)
+
+func appendGoSource(path, src string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	next := trailingWhitespaceRE.ReplaceAll(data, nil)
+	next = append(next, []byte("\n\n"+strings.TrimSpace(src)+"\n")...)
+	return writeFileAtomic(path, next)
 }
 
 // pruneFreshDeclCollisions removes declarations from fresh-owned Go files when

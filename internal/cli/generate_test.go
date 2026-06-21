@@ -104,6 +104,88 @@ func staleGeneratedCommand() {}
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/regenapp-pp-cli")
 }
 
+func TestGenerateCmdForcePreservesLegacyRootVersionLayout(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "legacyversion")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: legacyversion
+description: Legacy version API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/legacyversion-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+
+	runGenerate := func() {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		require.NoError(t, cmd.Execute())
+	}
+
+	runGenerate()
+
+	rootPath := filepath.Join(outputDir, "internal", "cli", "root.go")
+	versionPath := filepath.Join(outputDir, "internal", "cli", "version.go")
+	rootSrc, err := os.ReadFile(rootPath)
+	require.NoError(t, err)
+	legacyVersionDecls := `
+
+// version is the printed CLI's version, overridable at build time via ldflags.
+var version = "2026.6.1"
+
+// newVersionCmd prints the CLI name and version.
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("%s %s\n", cmd.Root().Name(), version)
+		},
+	}
+}
+`
+	require.NoError(t, os.WriteFile(rootPath, append(rootSrc, []byte(legacyVersionDecls)...), 0o644))
+	require.NoError(t, os.Remove(versionPath))
+
+	mcpMainPath := filepath.Join(outputDir, "cmd", "legacyversion-pp-mcp", "main.go")
+	mcpMain, err := os.ReadFile(mcpMainPath)
+	require.NoError(t, err)
+	mcpMain = bytes.Replace(mcpMain, []byte(`var version = "0.0.0-dev"`), []byte(`var version = "2026.6.1"`), 1)
+	require.NoError(t, os.WriteFile(mcpMainPath, mcpMain, 0o644))
+
+	runGenerate()
+
+	assert.NoFileExists(t, versionPath, "legacy root.go version layout must not gain internal/cli/version.go")
+	rootSrc, err = os.ReadFile(rootPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(rootSrc), `var version = "2026.6.1"`)
+	assert.Contains(t, string(rootSrc), "func newVersionCmd() *cobra.Command")
+	mcpMain, err = os.ReadFile(mcpMainPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(mcpMain), `var version = "2026.6.1"`)
+
+	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
+	runGoCommandForCLITest(t, outputDir, "build", "./...")
+}
+
 func TestApplyLibraryAttributionForGeneratePreservesCreatorAndPrependsReprinter(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)
