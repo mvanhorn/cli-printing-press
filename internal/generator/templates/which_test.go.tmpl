@@ -97,8 +97,8 @@ func TestWhichIndex_ExistsAndIsWellFormed(t *testing.T) {
 			t.Errorf("whichIndex[%d] (%s) has empty Description - template rendered bad data", i, e.Command)
 		}
 		found, remaining, err := root.Find(strings.Fields(e.Command))
-		if err != nil || found == nil || len(remaining) > 0 {
-			t.Errorf("whichIndex[%d] command %q does not resolve in the Cobra tree (remaining=%v, err=%v)", i, e.Command, remaining, err)
+		if err != nil || len(remaining) > 0 {
+			t.Errorf("whichIndex[%d] command %q does not resolve in the Cobra tree (found=%v, remaining=%v, err=%v)", i, e.Command, found, remaining, err)
 		}
 	}
 }
