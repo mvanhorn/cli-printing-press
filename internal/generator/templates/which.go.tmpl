@@ -11,10 +11,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// whichEntry is one row of the curated capability index. The index is
-// seeded at generation time from the same NovelFeature list that drives
-// the SKILL.md feature section, so the command a `which` query returns
-// is guaranteed to exist and to match what the skill advertises.
+// whichEntry is one row of the curated capability index. The index is seeded
+// at generation time from the verified NovelFeature list that drives the
+// SKILL.md feature section, so the command a `which` query returns is
+// guaranteed to exist and to match what the skill advertises.
 type whichEntry struct {
 	Command      string `json:"command"`
 	Description  string `json:"description"`
@@ -29,10 +29,6 @@ type whichEntry struct {
 var whichIndex = []whichEntry{
 {{- range .NovelFeatures}}
 	{Command: {{printf "%q" .Command}}, Description: {{printf "%q" .Description}}, Group: {{printf "%q" .Group}}, WhyItMatters: {{printf "%q" .WhyItMatters}}},
-{{- else}}
-{{- range whichFallbackEntries .Resources}}
-	{Command: {{printf "%q" .Command}}, Description: {{printf "%q" .Description}}, Group: {{printf "%q" .Group}}},
-{{- end}}
 {{- end}}
 }
 
