@@ -10862,7 +10862,7 @@ func TestGenerateGraphQLBFFUsesSemanticCommandSurface(t *testing.T) {
 	assert.Contains(t, string(productsHelp), "makers")
 }
 
-func TestGenerateWhichFallsBackToCommandTree(t *testing.T) {
+func TestGenerateWhichDoesNotFallbackToEndpointGuesses(t *testing.T) {
 	t.Parallel()
 
 	outputDir := filepath.Join(t.TempDir(), "whichfallback-pp-cli")
@@ -10907,17 +10907,17 @@ func TestGenerateWhichFallsBackToCommandTree(t *testing.T) {
 	whichGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "which.go"))
 	require.NoError(t, err)
 	whichSrc := string(whichGo)
-	assert.Contains(t, whichSrc, `Command: "products list"`)
-	assert.Contains(t, whichSrc, `Description: "List products"`)
-	assert.Contains(t, whichSrc, `Command: "products reviews list"`)
+	assert.Contains(t, whichSrc, `var whichIndex = []whichEntry{}`)
+	assert.NotContains(t, whichSrc, `Command: "products list"`)
+	assert.NotContains(t, whichSrc, `Command: "products reviews list"`)
 	assert.Contains(t, whichSrc, `"pp:typed-exit-codes": "0,2"`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	binaryPath := filepath.Join(outputDir, "whichfallback-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/whichfallback-pp-cli")
 	whichOut, err := exec.Command(binaryPath, "which", "reviews", "--json").CombinedOutput()
-	require.NoError(t, err, string(whichOut))
-	assert.Contains(t, string(whichOut), "products reviews list")
+	require.Error(t, err)
+	assert.Contains(t, string(whichOut), "no curated capability index")
 }
 
 func graphQLBFFCaptureEntry(operationName, variablesJSON, hash string) browsersniff.EnrichedEntry {

@@ -11,10 +11,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// whichEntry is one row of the curated capability index. The index is
-// seeded at generation time from the same NovelFeature list that drives
-// the SKILL.md feature section, so the command a `which` query returns
-// is guaranteed to exist and to match what the skill advertises.
+// whichEntry is one row of the curated capability index. The index is seeded
+// at generation time from the verified NovelFeature list that drives the
+// SKILL.md feature section, so the command a `which` query returns is
+// guaranteed to exist and to match what the skill advertises.
 type whichEntry struct {
 	Command      string `json:"command"`
 	Description  string `json:"description"`
@@ -26,18 +26,7 @@ type whichEntry struct {
 // its hero features. Endpoint-level commands are discoverable via
 // `--help`; `which` exists to resolve a natural-language capability
 // query to one of the commands the skill says matter most.
-var whichIndex = []whichEntry{
-	{Command: "currencies list", Description: "List supported currencies", Group: "currencies"},
-	{Command: "projects create", Description: "Create project", Group: "projects"},
-	{Command: "projects get", Description: "Get project", Group: "projects"},
-	{Command: "projects list", Description: "List projects", Group: "projects"},
-	{Command: "projects avatar upload-project", Description: "Upload project avatar", Group: "projects"},
-	{Command: "projects tasks list-project", Description: "List project tasks", Group: "projects"},
-	{Command: "projects tasks update-project", Description: "Update project task", Group: "projects"},
-	{Command: "public get-status", Description: "Get public service status", Group: "public"},
-	{Command: "reports export report-year", Description: "Download the annual report as a binary file", Group: "reports"},
-	{Command: "reports summary get-report-year", Description: "Get a report summary for a year", Group: "reports"},
-}
+var whichIndex = []whichEntry{}
 
 // whichMatch pairs an index entry with its ranking score for a query.
 // Higher score means stronger match. The ranker is naive (exact token
