@@ -26,16 +26,26 @@ func runWithCapturedStdout(t *testing.T, fn func() error) (string, error) {
 
 	outCh := make(chan string, 1)
 	go func() {
+		defer r.Close()
 		out, _ := io.ReadAll(r)
 		outCh <- string(out)
 	}()
 
+	stdoutRestored := false
+	restoreStdout := func() {
+		if stdoutRestored {
+			return
+		}
+		w.Close()
+		os.Stdout = origStdout
+		stdoutRestored = true
+	}
+	defer restoreStdout()
+
 	execErr := fn()
-	w.Close()
-	os.Stdout = origStdout
+	restoreStdout()
 
 	out := <-outCh
-	r.Close()
 	return out, execErr
 }
 
@@ -47,6 +57,27 @@ func captureStdout(t *testing.T, fn func()) string {
 	})
 	require.NoError(t, err)
 	return out
+}
+
+func TestRunWithCapturedStdoutRestoresStdoutAfterPanic(t *testing.T) {
+	origStdout := os.Stdout
+	var didPanic bool
+	var restored bool
+
+	func() {
+		defer func() {
+			didPanic = recover() != nil
+			restored = os.Stdout == origStdout
+			os.Stdout = origStdout
+		}()
+
+		_, _ = runWithCapturedStdout(t, func() error {
+			panic("boom")
+		})
+	}()
+
+	require.True(t, didPanic)
+	assert.True(t, restored, "stdout should be restored while unwinding a panic")
 }
 
 func TestCatalogListJSON(t *testing.T) {
