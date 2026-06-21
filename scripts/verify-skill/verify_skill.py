@@ -852,7 +852,15 @@ def _extract_prose_invocations(
                 tokens = shlex.split(fragment, posix=True)
             except ValueError:
                 tokens = fragment.split()
-            tokens = [t.strip(".,;:)") for t in tokens if t.strip(".,;:)")]
+            # Strip wrapping/trailing punctuation, including quotes: a
+            # single-quoted prose command like `'<cli> auth login --chrome'`
+            # whose closing quote shlex.split cannot balance falls back to
+            # `fragment.split()` and would otherwise leak `--chrome'`.
+            tokens = [
+                t.strip(TOKEN_TRAILING_PUNCT)
+                for t in tokens
+                if t.strip(TOKEN_TRAILING_PUNCT)
+            ]
             if len(tokens) < 2:
                 continue
 
