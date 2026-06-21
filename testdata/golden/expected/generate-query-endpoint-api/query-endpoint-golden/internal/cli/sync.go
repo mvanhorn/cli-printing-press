@@ -324,7 +324,7 @@ Resource scoping:
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/query-endpoint-golden-pp-cli/data.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 0, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
@@ -519,7 +519,7 @@ func syncResource(ctx context.Context, c interface {
 
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, dataEnvelopeKeysForResource(resource, path))
 
 		// Page-int paginator fallback: when the API paginates by integer
 		// ?page=N and emits no body cursor, treat a full page as a signal
@@ -571,7 +571,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 {
-			if isEmptyPageResponse(data) {
+			if isEmptyPageResponse(data, dataEnvelopeKeysForResource(resource, path)) {
 				break
 			}
 			// Single object response - try to store as-is
@@ -634,7 +634,7 @@ func syncResource(ctx context.Context, c interface {
 
 		totalCount += stored
 		atomic.AddInt64(&progressCount, int64(stored))
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data) {
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, dataEnvelopeKeysForResource(resource, path)) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -840,7 +840,7 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 // 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
 // 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
-func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessage, string, bool) {
+func extractPageItems(data json.RawMessage, cursorParam string, envelopeKeyOverrides ...[]string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err == nil {
@@ -858,7 +858,7 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 		return items, nextCursor, hasMore
 	}
 
-	for _, key := range dataEnvelopeKeys {
+	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -967,7 +967,7 @@ func isDryRunResponse(data json.RawMessage) bool {
 	return json.Unmarshal(raw, &v) == nil && v
 }
 
-func isEmptyPageResponse(data json.RawMessage) bool {
+func isEmptyPageResponse(data json.RawMessage, envelopeKeyOverrides ...[]string) bool {
 	var direct []json.RawMessage
 	if err := json.Unmarshal(data, &direct); err == nil && !isJSONNull(data) {
 		return len(direct) == 0
@@ -982,7 +982,7 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 		return true
 	}
 
-	for _, key := range dataEnvelopeKeys {
+	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1188,12 +1188,12 @@ func pageAllowsPageIntFallback(data json.RawMessage) bool {
 	return pageMayHaveMore(data)
 }
 
-func pageMayHaveMore(data json.RawMessage) bool {
-	hasMore, parsed := pageExplicitHasMore(data)
+func pageMayHaveMore(data json.RawMessage, envelopeKeyOverrides ...[]string) bool {
+	hasMore, parsed := pageExplicitHasMore(data, envelopeKeyOverrides...)
 	return !parsed || hasMore
 }
 
-func pageExplicitHasMore(data json.RawMessage) (bool, bool) {
+func pageExplicitHasMore(data json.RawMessage, envelopeKeyOverrides ...[]string) (bool, bool) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return false, false
@@ -1201,7 +1201,7 @@ func pageExplicitHasMore(data json.RawMessage) (bool, bool) {
 	if hasMore, parsed := envelopeExplicitHasMore(envelope); parsed {
 		return hasMore, true
 	}
-	for _, key := range dataEnvelopeKeys {
+	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1527,7 +1527,23 @@ var pageItemKeys = []string{
 	"Data", "Results", "Items", "Records", "Nodes", "Entries", "Features",
 }
 
-var dataEnvelopeKeys = []string{"data", "Data", "result", "Result", "QueryResponse"}
+var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
+
+var queryDataEnvelopeKeys = []string{"data", "Data", "result", "Result", "QueryResponse"}
+
+func dataEnvelopeKeysForResource(resource, path string) []string {
+	if _, ok := queryEntity[resource]; ok && path == queryPath {
+		return queryDataEnvelopeKeys
+	}
+	return dataEnvelopeKeys
+}
+
+func envelopeKeysOrDefault(overrides [][]string) []string {
+	if len(overrides) > 0 && len(overrides[0]) > 0 {
+		return overrides[0]
+	}
+	return dataEnvelopeKeys
+}
 
 var pageMetadataArrayKeys = map[string]bool{
 	"errors": true, "Errors": true,

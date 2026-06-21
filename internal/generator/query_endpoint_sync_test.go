@@ -54,8 +54,11 @@ func TestGeneratedQueryEndpointSyncEmitsConstructs(t *testing.T) {
 	assert.GreaterOrEqual(t, strings.Count(syncContent, "path != queryPath"), 2,
 		"break guards must exempt the query path in both the pagination and short-page checks")
 
-	// Response-envelope unwrap: the entity-named envelope key joins the extractor list.
-	assert.Contains(t, syncContent, `var dataEnvelopeKeys = []string{"data", "Data", "result", "Result", "QueryResponse"}`)
+	// Response-envelope unwrap: the entity-named envelope key is query-only,
+	// not added to the global extractor list used by ordinary resources.
+	assert.Contains(t, syncContent, `var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}`)
+	assert.Contains(t, syncContent, `var queryDataEnvelopeKeys = []string{"data", "Data", "result", "Result", "QueryResponse"}`)
+	assert.Contains(t, syncContent, `extractPageItems(data, pageSize.cursorParam, dataEnvelopeKeysForResource(resource, path))`)
 
 	requireGeneratedCompiles(t, outputDir)
 }

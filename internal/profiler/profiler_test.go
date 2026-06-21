@@ -2065,6 +2065,34 @@ func TestProfileSyncableResourceUnsetMetadata(t *testing.T) {
 	assert.False(t, profile.SyncableResources[0].Critical)
 }
 
+func TestProfileQueryEntityRequiresEntitySuffixWhenResponseItemMissing(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "query-entity-ambiguous",
+		QuerySync: &spec.QuerySyncConfig{
+			Path:          "/query",
+			QueryTemplate: "select * from {entity} startposition {start} maxresults {limit}",
+			EnvelopeKey:   "QueryResponse",
+		},
+		Resources: map[string]spec.Resource{
+			"reports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/query",
+						Response:     spec.ResponseDef{Type: "array"},
+						ResponsePath: "QueryResponse",
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Empty(t, profile.SyncableResources[0].QueryEntity,
+		"response_path without an entity suffix must not become select * from QueryResponse")
+}
+
 // TestProfileDependentResourcePropagatesIDFieldAndCritical asserts that the
 // per-endpoint IDField/Critical metadata also flows into DependentResource for
 // parameterized child paths. Without this, x-resource-id and x-critical

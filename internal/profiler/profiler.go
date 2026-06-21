@@ -1938,7 +1938,7 @@ func queryEntityForEndpoint(s *spec.APISpec, e spec.Endpoint) string {
 	if i := strings.LastIndex(e.ResponsePath, "."); i >= 0 {
 		return e.ResponsePath[i+1:]
 	}
-	return e.ResponsePath
+	return ""
 }
 
 func hasTypedResponseWithoutRuntimeID(resourceName string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
