@@ -19132,3 +19132,106 @@ func TestSyncWarningEmitsValidJSON(t *testing.T) {
 	// module, exercising the syncWarningJSON call site); asserting the contract
 	// here keeps the canary close to the template change.
 }
+
+// TestGenerateSkipsOptionsEndpoints exercises the guards that drop
+// OPTIONS-method endpoints before the per-endpoint render loop in
+// generator.go. The guards exist because command_endpoint.go.tmpl's
+// HTTP-method branch table covers GET/HEAD, POST, PUT, PATCH, and DELETE
+// — any other method (OPTIONS in the case observed in browser-sniffed
+// HARs from real-world sites) falls through, producing a .go file that
+// references undefined template-local identifiers (statusCode, data, c)
+// and breaks `go build`.
+//
+// Without this test the guards are only exercised by a real customer HAR
+// containing OPTIONS endpoints — the existing testdata/ corpus has none
+// (confirmed via grep at the time of the patch), so a future refactor
+// that accidentally removes either continue would silently regress the
+// fix and only surface in end-to-end smoke tests.
+//
+// The test asserts both the structural property (no *_options_*.go file
+// emitted at either nesting level) and the behavioral property (the
+// resulting CLI still compiles), so a regression where the files are
+// emitted under a different name would still trip the go build at the
+// end.
+func TestGenerateSkipsOptionsEndpoints(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "skipoptions",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"SKIPOPTIONS_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/skipoptions-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"things": {
+				Description: "Manage things",
+				Endpoints: map[string]spec.Endpoint{
+					// Normal GET — must be emitted.
+					"list": {Method: "GET", Path: "/things", Description: "List things"},
+					// OPTIONS at top-level — must NOT be emitted (the patch
+					// under test, top-level resource loop).
+					"options-things": {Method: "OPTIONS", Path: "/things", Description: "CORS preflight"},
+				},
+				SubResources: map[string]spec.Resource{
+					"items": {
+						Description: "Items under a thing",
+						Endpoints: map[string]spec.Endpoint{
+							// Normal sub-resource GET — must be emitted.
+							"get": {
+								Method:      "GET",
+								Path:        "/things/{thingId}/items",
+								Description: "Get items",
+								Params:      []spec.Param{{Name: "thingId", Type: "string", Required: true, Positional: true}},
+							},
+							// OPTIONS at sub-resource — must NOT be emitted
+							// (the patch under test, sub-resource loop).
+							"options-items": {
+								Method:      "OPTIONS",
+								Path:        "/things/{thingId}/items",
+								Description: "CORS preflight",
+								Params:      []spec.Param{{Name: "thingId", Type: "string", Required: true, Positional: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cliDir := filepath.Join(outputDir, "internal", "cli")
+
+	// Sanity: the normal endpoints must still be emitted. Without these,
+	// a generator change that drops EVERY endpoint would pass the
+	// negative assertions below and we wouldn't notice.
+	for _, name := range []string{"things_list.go", "things_items_get.go"} {
+		_, err := os.Stat(filepath.Join(cliDir, name))
+		require.NoError(t, err, "expected normal endpoint file %s to be emitted", name)
+	}
+
+	// The patch under test: OPTIONS endpoint files at both nesting
+	// levels must NOT be emitted.
+	for _, name := range []string{
+		"things_options-things.go",
+		"things_items_options-items.go",
+	} {
+		_, err := os.Stat(filepath.Join(cliDir, name))
+		require.True(t, os.IsNotExist(err), "OPTIONS endpoint file %s must NOT be emitted", name)
+	}
+
+	// Behavioral confirmation: the generated CLI compiles cleanly.
+	// Catches the case where a future refactor *renames* the emitted
+	// files (passing the absence checks above) but still emits
+	// uncompileable Go.
+	runGoCommand(t, outputDir, "build", "./...")
+}
