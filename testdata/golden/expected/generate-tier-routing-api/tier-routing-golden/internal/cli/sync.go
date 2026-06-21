@@ -139,8 +139,9 @@ Resource scoping:
 				return usageErr(err)
 			}
 
-			// --full: clear all sync cursors before starting
-			if full {
+			// --full: clear all sync cursors before starting.
+			// Skip under --dry-run: a preview must not mutate sync-state (issue #2935).
+			if full && !c.DryRun {
 				for _, resource := range resources {
 					_ = db.SaveSyncState(resource, "", 0)
 				}
@@ -161,11 +162,14 @@ Resource scoping:
 					maxPages = 1
 					// Clear the cursor so we start from the head each time;
 					// the goal of --latest-only is "refresh the top" not
-					// "resume from wherever I left off".
-					for _, resource := range resources {
-						existing, _, _, _ := db.GetSyncState(resource)
-						if existing != "" {
-							_ = db.SaveSyncState(resource, "", 0)
+					// "resume from wherever I left off". Skip under --dry-run:
+					// a preview must not mutate sync-state (issue #2935).
+					if !c.DryRun {
+						for _, resource := range resources {
+							existing, _, _, _ := db.GetSyncState(resource)
+							if existing != "" {
+								_ = db.SaveSyncState(resource, "", 0)
+							}
 						}
 					}
 				} else if humanFriendly {
