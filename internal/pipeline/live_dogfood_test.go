@@ -4718,3 +4718,33 @@ func TestHappyArgsContainSyntheticFlagPlaceholder(t *testing.T) {
 		[]string{"widgets", "search"},
 	))
 }
+
+// TestCollectLiveDogfoodCommandsSkipsLoginAlias verifies the top-level
+// "login" alias (a peer of `auth login` that launches the OAuth browser
+// flow) is treated as framework scaffolding and excluded from the live
+// dogfood matrix, while real API subtrees survive.
+func TestCollectLiveDogfoodCommandsSkipsLoginAlias(t *testing.T) {
+	t.Parallel()
+
+	root := dogfoodAgentCommand{
+		Name: "root",
+		Subcommands: []dogfoodAgentCommand{
+			{Name: "login"},
+			{Name: "auth", Subcommands: []dogfoodAgentCommand{{Name: "login"}}},
+			{Name: "posts", Subcommands: []dogfoodAgentCommand{{Name: "list"}}},
+		},
+	}
+
+	var cmds []liveDogfoodCommand
+	for _, sub := range root.Subcommands {
+		collectLiveDogfoodCommands(nil, sub, &cmds)
+	}
+
+	var paths [][]string
+	for _, c := range cmds {
+		paths = append(paths, c.Path)
+	}
+	// Both the top-level "login" alias and the "auth" subtree are framework
+	// skips; only the posts subtree should survive.
+	assert.Equal(t, [][]string{{"posts", "list"}}, paths)
+}
