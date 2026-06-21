@@ -972,7 +972,7 @@ func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json
 			 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 			 WHERE resources_fts MATCH ?
 			 AND r.resource_type = ?
-			 ORDER BY rank
+			 ORDER BY f.rank
 			 LIMIT ?`,
 			matchQuery, resourceType, limit,
 		)
@@ -995,7 +995,7 @@ func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json
 		`SELECT r.data FROM resources r
 		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 		 WHERE resources_fts MATCH ?
-		 ORDER BY rank
+		 ORDER BY f.rank
 		 LIMIT ?`,
 		matchQuery, limit,
 	)
@@ -1581,7 +1581,7 @@ func (s *Store) Search{{pascal .Name}}(query string, limit int) ([]json.RawMessa
 		`SELECT t.data FROM {{safeName .Name}} t
 		 JOIN {{safeNameSuffix .Name "_fts"}} ON {{safeNameSuffix .Name "_fts"}}.rowid = t.rowid
 		 WHERE {{safeNameSuffix .Name "_fts"}} MATCH ?
-		 ORDER BY rank LIMIT ?`,
+		 ORDER BY {{safeNameSuffix .Name "_fts"}}.rank LIMIT ?`,
 		matchQuery, limit,
 	)
 	if err != nil {
