@@ -542,9 +542,15 @@ func TestPublishSkillTracksCanonicalUpstreamAndOverwriteFlow(t *testing.T) {
 
 	assert.Contains(t, skill, "git remote add upstream")
 	assert.Contains(t, skill, "mvanhorn/printing-press-library")
-	assert.Contains(t, skill, "git fetch upstream")
+	assert.Contains(t, skill, "git fetch --filter=blob:none --depth 1 upstream")
+	assert.Contains(t, skill, "git fetch --filter=blob:none --depth 1 origin")
 	assert.Contains(t, skill, "git reset --hard upstream/main")
 	assert.Contains(t, skill, "git push --force-with-lease")
+
+	subsequentStart := strings.Index(skill, "### Subsequent publishes")
+	require.NotEqual(t, -1, subsequentStart)
+	subsequentBlock := skill[subsequentStart:]
+	assert.Contains(t, subsequentBlock, "sparse-checkout set tools cli-skills library/<category>")
 }
 
 func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
@@ -561,7 +567,9 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	// no longer has an in-PR auto-fix path for either.
 	assert.Contains(t, skill, "Fail on changes to generated artifacts")
 	assert.Contains(t, skill, "Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` or")
-	assert.Contains(t, skill, "git add library/\ngit commit")
+	assert.Contains(t, skill, "git add library/")
+	assert.Contains(t, skill, `git add -f "library/<category>/<api-slug>/cmd/<api-slug>-pp-mcp/"`)
+	assert.Contains(t, skill, `git commit -m "feat(<api-slug>): add <api-slug>"`)
 	assert.NotContains(t, skill, "git add library/ cli-skills/")
 	assert.NotContains(t, skill, "git add library/ cli-skills/ registry.json")
 	assert.NotContains(t, skill, "REGISTRY_HAS_ENTRY")
@@ -810,7 +818,7 @@ func TestPublishSkillOffersRetroForPolishHandoff(t *testing.T) {
 func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
-	snapshotState := strings.Index(skill, "PREEXISTING_MERGED_PATHS=$(ls")
+	snapshotState := strings.Index(skill, "PREEXISTING_MERGED_PATHS=$(git -C")
 	packageCopy := strings.Index(skill, `cp -R "$STAGED_CLI_DIR/." "$PUBLISH_SWAP_DIR/"`)
 	require.NotEqual(t, -1, snapshotState)
 	require.NotEqual(t, -1, packageCopy)

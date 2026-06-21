@@ -535,7 +535,16 @@ If `$PUBLISH_REPO_DIR` does not exist:
    else
      REPO_URL="https://github.com/mvanhorn/printing-press-library.git"
    fi
-   git clone --depth 50 "$REPO_URL" "$PUBLISH_REPO_DIR"
+   # Lightweight clone: blobless + shallow + sparse. The publish flow only
+   # touches the target CLI's own directory — it no longer regenerates the
+   # cli-skills/registry mirror (see Step 6) — so materializing every other
+   # CLI's source is wasted bandwidth and disk (a full clone is multiple GB;
+   # this is tens of MB). The cone keeps `tools`, `cli-skills`, and the target
+   # `library/<category>` so the in-category find/rm/copy operations below work
+   # on a real working tree. Cross-category collision checks use `git ls-tree`
+   # (which reads the full tree from the blobless clone) instead of `ls`.
+   git clone --filter=blob:none --depth 1 --sparse "$REPO_URL" "$PUBLISH_REPO_DIR"
+   git -C "$PUBLISH_REPO_DIR" sparse-checkout set tools cli-skills library/<category>
    ```
 
    **No push access** (`HAS_PUSH` is `false`):
@@ -558,10 +567,13 @@ If `$PUBLISH_REPO_DIR` does not exist:
      UPSTREAM_URL="https://github.com/mvanhorn/printing-press-library.git"
    fi
 
-   git clone --depth 50 "$FORK_URL" "$PUBLISH_REPO_DIR"
+   # Lightweight clone (blobless + shallow + sparse) — see the push-access
+   # branch above for the rationale and cone contents.
+   git clone --filter=blob:none --depth 1 --sparse "$FORK_URL" "$PUBLISH_REPO_DIR"
    cd "$PUBLISH_REPO_DIR"
+   git sparse-checkout set tools cli-skills library/<category>
    git remote add upstream "$UPSTREAM_URL"
-   git fetch upstream
+   git fetch --filter=blob:none --depth 1 upstream
    ```
 
 4. **Cache the config:**
@@ -606,16 +618,23 @@ cd "$PUBLISH_REPO_DIR"
 
 if [ "$(jq -r .access $PUBLISH_CONFIG)" = "push" ]; then
   # Push access: origin IS the upstream
-  git fetch origin
+  git fetch --filter=blob:none --depth 1 origin
   git checkout main
   git reset --hard origin/main
 else
   # Fork: origin is the fork, upstream is canonical
-  git fetch upstream
+  git fetch --filter=blob:none --depth 1 upstream
   git checkout main
   git reset --hard upstream/main
   # Also sync origin (fork) so git push works cleanly
   git push origin main --force-with-lease 2>/dev/null || true
+fi
+
+# Existing managed clones may already be sparse for a different publish
+# category. Refresh the cone for the current target category before Step 6 uses
+# filesystem-based removal and copy operations.
+if git -C "$PUBLISH_REPO_DIR" config --bool core.sparseCheckout | grep -qx true; then
+  git -C "$PUBLISH_REPO_DIR" sparse-checkout set tools cli-skills library/<category>
 fi
 ```
 
@@ -651,10 +670,25 @@ exists in the public library tree. Step 6 removes and replaces
 after packaging must use this pre-package snapshot, not a fresh `ls`.
 
 ```bash
-PREEXISTING_MERGED_PATHS=$(ls "$PUBLISH_REPO_DIR/library"/*/"<api-slug>" 2>/dev/null || true)
+# Read from the git tree, not the working dir: the sparse checkout only
+# materializes the target category, but a slug can collide in any category.
+PREEXISTING_MERGED_PATHS=$(git -C "$PUBLISH_REPO_DIR" ls-tree -r --name-only HEAD \
+  | sed -n 's#^\(library/[^/]*/<api-slug>\)/.*#\1#p' | sort -u || true)
 PREEXISTING_MERGED_COLLISION=false
 if [ -n "$PREEXISTING_MERGED_PATHS" ]; then
   PREEXISTING_MERGED_COLLISION=true
+  # If this is a category-change reprint, materialize the existing category path
+  # before Step 6 runs filesystem-based ledger preservation and removal.
+  if git -C "$PUBLISH_REPO_DIR" config --bool core.sparseCheckout | grep -qx true; then
+    while IFS= read -r EXISTING_MERGED_PATH; do
+      [ -n "$EXISTING_MERGED_PATH" ] || continue
+      if [ "$EXISTING_MERGED_PATH" != "library/<category>/<api-slug>" ]; then
+        git -C "$PUBLISH_REPO_DIR" sparse-checkout add "$EXISTING_MERGED_PATH"
+      fi
+    done <<EOF
+$PREEXISTING_MERGED_PATHS
+EOF
+  fi
 fi
 ```
 
@@ -1057,8 +1091,9 @@ Present the format to the user:
 **3. Verify each suggestion is non-colliding** before presenting:
 
 ```bash
-# Check merged
-ls "$PUBLISH_REPO_DIR/library"/*/"<suggestion>" 2>/dev/null
+# Check merged (read the git tree, not the sparse working dir)
+git -C "$PUBLISH_REPO_DIR" ls-tree -r --name-only HEAD \
+  | sed -n 's#^\(library/[^/]*/<suggestion>\)/.*#\1#p' | sort -u
 # Check open PRs
 gh pr list --repo mvanhorn/printing-press-library --head "feat/<suggestion>" --state open --json number
 ```
@@ -1161,6 +1196,14 @@ git checkout -B feat/<api-slug>
 ```bash
 cd "$PUBLISH_REPO_DIR"
 git add library/
+# The library .gitignore has a `*-pp-mcp` rule intended for the built MCP
+# binary, but the pattern also matches the generated MCP *source* directory
+# `cmd/<api-slug>-pp-mcp/`. A plain `git add library/` silently skips it, and
+# the PR then fails the "Validate MCPB manifest contract" CI check with
+# "cmd/<api-slug>-pp-mcp directory is missing". Force-add the source directory
+# so all MCP entry-point files ship. The built binary stays ignored because it
+# lives at the packaged CLI root, not under cmd/.
+git add -f "library/<category>/<api-slug>/cmd/<api-slug>-pp-mcp/" 2>/dev/null || true
 git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 
