@@ -139,8 +139,9 @@ Resource scoping:
 				return usageErr(err)
 			}
 
-			// --full: clear all sync cursors before starting
-			if full {
+			// --full: clear all sync cursors before starting.
+			// Skip under --dry-run: a preview must not mutate sync-state (issue #2935).
+			if full && !c.DryRun {
 				for _, resource := range resources {
 					_ = db.SaveSyncState(resource, "", 0)
 				}
@@ -161,11 +162,14 @@ Resource scoping:
 					maxPages = 1
 					// Clear the cursor so we start from the head each time;
 					// the goal of --latest-only is "refresh the top" not
-					// "resume from wherever I left off".
-					for _, resource := range resources {
-						existing, _, _, _ := db.GetSyncState(resource)
-						if existing != "" {
-							_ = db.SaveSyncState(resource, "", 0)
+					// "resume from wherever I left off". Skip under --dry-run:
+					// a preview must not mutate sync-state (issue #2935).
+					if !c.DryRun {
+						for _, resource := range resources {
+							existing, _, _, _ := db.GetSyncState(resource)
+							if existing != "" {
+								_ = db.SaveSyncState(resource, "", 0)
+							}
 						}
 					}
 				} else if humanFriendly {
@@ -878,6 +882,16 @@ func extractPageItems(data json.RawMessage, cursorParam string, envelopeKeyOverr
 		}
 	}
 
+	if raw, ok := envelope["_embedded"]; ok {
+		var embedded map[string]json.RawMessage
+		if json.Unmarshal(raw, &embedded) == nil {
+			if items, ok := extractItemsFromEnvelope(embedded); ok {
+				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+				return items, nextCursor, hasMore
+			}
+		}
+	}
+
 	if items, ok := extractSingleObjectArraySibling(envelope); ok {
 		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
 		return items, nextCursor, hasMore
@@ -1230,27 +1244,49 @@ func envelopeExplicitHasMore(envelope map[string]json.RawMessage) (bool, bool) {
 	return false, false
 }
 
-// nextCursorFromLinks extracts JSON:API-style pagination cursors from
-// {"links":{"next":"https://example.com/items?page[cursor]=..."}}.
+// nextCursorFromLinks extracts pagination cursors from JSON:API
+// {"links":{"next":"https://example.com/items?page[cursor]=..."}} and HAL
+// {"_links":{"next":{"href":"https://example.com/items?cursor=..."}}}.
 func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string) string {
-	rawLinks, ok := envelope["links"]
-	if !ok {
-		return ""
+	for _, key := range []string{"links", "_links"} {
+		rawLinks, ok := envelope[key]
+		if !ok {
+			continue
+		}
+		var links map[string]json.RawMessage
+		if json.Unmarshal(rawLinks, &links) != nil {
+			continue
+		}
+		rawNext, ok := links["next"]
+		if !ok {
+			continue
+		}
+		if nextURL := paginationLinkURL(rawNext); nextURL != "" {
+			if cursor := cursorFromNextURL(nextURL, cursorParam); cursor != "" {
+				return cursor
+			}
+		}
 	}
-	var links map[string]json.RawMessage
-	if json.Unmarshal(rawLinks, &links) != nil {
-		return ""
-	}
-	rawNext, ok := links["next"]
-	if !ok {
-		return ""
-	}
-	var nextURL string
-	if json.Unmarshal(rawNext, &nextURL) != nil || nextURL == "" {
-		return ""
-	}
+	return ""
+}
 
-	return cursorFromNextURL(nextURL, cursorParam)
+func paginationLinkURL(raw json.RawMessage) string {
+	var nextURL string
+	if json.Unmarshal(raw, &nextURL) == nil {
+		return nextURL
+	}
+	var link map[string]json.RawMessage
+	if json.Unmarshal(raw, &link) != nil {
+		return ""
+	}
+	rawHref, ok := link["href"]
+	if !ok {
+		return ""
+	}
+	if json.Unmarshal(rawHref, &nextURL) != nil {
+		return ""
+	}
+	return nextURL
 }
 
 // nextCursorFromTopLevelURL extracts a cursor from top-level absolute or relative next URLs.
