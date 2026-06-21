@@ -141,7 +141,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if .Positional}}
 {{- $pi := positionalIndex $.Endpoint .Name}}
-			if len(args) < {{add $pi 1}} {
+			if len(args) < {{add $pi 1}}{{if pathContainsParam $.Endpoint.Path .Name}} || args[{{$pi}}] == ""{{end}} {
 				// JSON envelope: {error, usage}. Written first; the
 				// usageErr return preserves exit code 2 across modes.
 				if flags.asJSON {

@@ -117,11 +117,15 @@ func TestPathParamArgsIndexUsesPositionalOrdinal(t *testing.T) {
 	}
 
 	// 1) Single positional with a non-positional query before it: args[0],
-	// no len-check (Cobra's MinimumNArgs(1) covers the first positional).
+	// with an explicit empty-string guard because Cobra's MinimumNArgs(1)
+	// allows callers to pass "" from an empty shell variable expansion.
 	tagsList := read(filepath.Join("internal", "cli", "tags_contacts_list-for-tag.go"))
 	assert.Contains(t, tagsList,
 		`path = replacePathParam(path, "tagId", args[0])`,
 		"single positional path param must use args[0] regardless of declared query params before it")
+	assert.Contains(t, tagsList,
+		`if len(args) < 1 || args[0] == ""`,
+		"first positional path param must reject explicit empty strings before URL substitution")
 	assert.NotContains(t, tagsList,
 		`args[2]`,
 		"must not interpolate the full-Params index for the positional")
