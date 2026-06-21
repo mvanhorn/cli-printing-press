@@ -29,6 +29,9 @@ func newCustomersGetCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/customers/{id}"
+			if len(args) < 1 || args[0] == "" {
+				return usageErr(fmt.Errorf("id is required\nUsage: %s <%s>", cmd.CommandPath(), "id"))
+			}
 			path = replacePathParam(path, "id", args[0])
 			params := map[string]string{}
 			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "customers", false, path, params, nil, cmd.ErrOrStderr())
