@@ -61,6 +61,7 @@ const (
 	extensionDataSourceStrategy    = "x-data-source-strategy"
 	extensionCache                 = "x-cache"
 	extensionStreaming             = "x-streaming"
+	extensionPPQuery               = "x-pp-query"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
 	extensionDispatchParam         = "x-pp-dispatch-param"
@@ -637,6 +638,10 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	querySyncConfig, err := parseQuerySyncExtension(doc)
+	if err != nil {
+		return nil, err
+	}
 
 	templateVars, templateEnvOverrides, pathParamDefaults := parseEndpointTemplateExtensions(doc)
 	// Merge server-URL template placeholders into the endpoint-template-var
@@ -664,6 +669,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		MCP:                          mcpConfig,
 		Cache:                        cacheConfig,
 		Streaming:                    streamingConfig,
+		QuerySync:                    querySyncConfig,
 		EndpointTemplateVars:         templateVars,
 		EndpointTemplateEnvOverrides: templateEnvOverrides,
 		EndpointPathParamDefaults:    pathParamDefaults,
@@ -821,6 +827,20 @@ func parseTypedExtension[T any](doc *openapi3.T, key string) (T, error) {
 		return zero, nil
 	}
 	return parseTypedExtensionRaw[T](key, raw)
+}
+
+// parseQuerySyncExtension decodes the root-level x-pp-query extension into a
+// *spec.QuerySyncConfig, returning nil (not a zero struct) when absent so the
+// sync generator's presence gate stays off for every non-query API.
+func parseQuerySyncExtension(doc *openapi3.T) (*spec.QuerySyncConfig, error) {
+	if _, ok := lookupOpenAPIExtension(doc, extensionPPQuery); !ok {
+		return nil, nil
+	}
+	cfg, err := parseTypedExtension[spec.QuerySyncConfig](doc, extensionPPQuery)
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
 func parseMCPExtension(doc *openapi3.T) (spec.MCPConfig, error) {
