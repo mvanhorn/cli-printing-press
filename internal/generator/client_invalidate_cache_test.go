@@ -76,9 +76,13 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 }
 
 // TestGenerateCacheDirIsHTTPSubdir guards #1126: cacheDir must point at
-// ~/.cache/<api>/http (not ~/.cache/<api>) so that invalidateCache's
-// os.RemoveAll only wipes the HTTP cache and leaves sibling state files
-// (SQLite mirrors, FTS5 stores, watchlists) intact.
+// <cache-root>/<api>/http (not <cache-root>/<api>) so that
+// invalidateCache's os.RemoveAll only wipes the HTTP cache and leaves
+// sibling state files (SQLite mirrors, FTS5 stores, watchlists) intact.
+//
+// The cache root is XDG-aware ($XDG_CACHE_HOME with ~/.cache fallback) so
+// the assertions key off the trailing `<api>/http` shape rather than a
+// hardcoded home prefix.
 func TestGenerateCacheDirIsHTTPSubdir(t *testing.T) {
 	t.Parallel()
 
@@ -93,12 +97,18 @@ func TestGenerateCacheDirIsHTTPSubdir(t *testing.T) {
 	require.NoError(t, err)
 	clientGo := string(clientGoBytes)
 
-	cliName := naming.CLI(apiSpec.Name)
-	wantSubdir := `filepath.Join(homeDir, ".cache", "` + cliName + `", "http")`
-	wantOldShape := `filepath.Join(homeDir, ".cache", "` + cliName + `")`
-
-	assert.Contains(t, clientGo, wantSubdir,
+	assert.Contains(t, clientGo, `dir, err := cliutil.CacheDir()`,
+		"client.go must route the cache root through the generated cache-dir resolver")
+	assert.Contains(t, clientGo, `cacheDir = filepath.Join(dir, "http")`,
 		"client.go must place cacheDir under <api>/http so invalidateCache spares siblings (#1126)")
+	cliName := naming.CLI(apiSpec.Name)
+	wantOldShape := `filepath.Join(homeDir, ".cache", "` + cliName + `")`
+	wantInlineXDG := `os.Getenv("XDG_CACHE_HOME")`
+	wantBareRoot := `filepath.Join(dir, "` + cliName + `")`
 	assert.NotContains(t, clientGo, wantOldShape,
-		"client.go must not point cacheDir at the bare ~/.cache/<api>/ root (#1126)")
+		"client.go must not hardcode homeDir/.cache for cache root")
+	assert.NotContains(t, clientGo, wantInlineXDG,
+		"client.go must delegate XDG cache resolution to cliutil.CacheDir()")
+	assert.NotContains(t, clientGo, wantBareRoot,
+		"client.go must not point cacheDir at the bare cache root without /http (#1126)")
 }

@@ -1015,6 +1015,11 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 	require.NoError(t, os.MkdirAll(discoveryDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# Research Brief"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "shipcheck.md"), []byte("# Shipcheck"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(researchDir, "test-browser-sniff-spec-samples"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "test-browser-sniff-spec-samples", "sample.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(discoveryDir, "bundles"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "probe-001.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "bundles", "app.js"), []byte("window.email='customer@gmail.com'"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "browser-sniff-capture.har"), []byte("cookie: session=secret\nemail: user@example.com\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "traffic-analysis.json"), []byte(`{"auth_stripped":true}`+"\n"), 0o644))
 
@@ -1034,6 +1039,9 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 	stagedResearch := filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "brief.md")
 	stagedProofs := filepath.Join(result.StagedDir, ".manuscripts", runID, "proofs", "shipcheck.md")
 	stagedHAR := filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "browser-sniff-capture.har")
+	stagedProbe := filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "probe-001.json")
+	stagedBundles := filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "bundles")
+	stagedSamples := filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "test-browser-sniff-spec-samples")
 	stagedTrafficAnalysis := filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "traffic-analysis.json")
 
 	_, err = os.Stat(stagedResearch)
@@ -1042,10 +1050,44 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 	_, err = os.Stat(stagedProofs)
 	assert.NoError(t, err, "shipcheck proofs should be in staged package")
 	assert.NoFileExists(t, stagedHAR, "raw HAR captures should not be bundled into publishable manuscripts")
+	assert.NoFileExists(t, stagedProbe, "raw probe captures should not be bundled into publishable manuscripts")
+	assert.NoDirExists(t, stagedBundles, "raw browser JS bundles should not be bundled into publishable manuscripts")
+	assert.NoDirExists(t, stagedSamples, "raw browser-sniff sample responses should not be bundled into publishable manuscripts")
 
 	_, err = os.Stat(stagedTrafficAnalysis)
 	assert.NoError(t, err, "auth-stripped traffic analysis should remain in staged package")
 	assert.NoFileExists(t, filepath.Join(result.StagedDir, ".manuscripts", "stale-run", "discovery", "stale-capture.har"))
+}
+
+func TestPublishPackageCanIncludeRawCaptures(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	runID := "20260329-100000"
+	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
+	discoveryDir := filepath.Join(home, "manuscripts", "test", runID, "discovery")
+	require.NoError(t, os.MkdirAll(filepath.Join(researchDir, "test-browser-sniff-spec-samples"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(discoveryDir, "bundles"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# Research Brief"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "test-browser-sniff-spec-samples", "sample.json"), []byte(`{"status":"sample"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "probe-001.json"), []byte(`{"status":"sample"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "browser-sniff-capture.har"), []byte("sample har"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(discoveryDir, "bundles", "app.js"), []byte("console.log('sample')"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--include-raw-captures", "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "probe-001.json"))
+	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "browser-sniff-capture.har"))
+	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "bundles", "app.js"))
+	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "test-browser-sniff-spec-samples", "sample.json"))
 }
 
 func TestPublishPackageFiltersEmbeddedManuscriptsFallback(t *testing.T) {
@@ -1061,6 +1103,8 @@ func TestPublishPackageFiltersEmbeddedManuscriptsFallback(t *testing.T) {
 	require.NoError(t, os.MkdirAll(embeddedDiscovery, 0o755))
 	require.NoError(t, os.MkdirAll(embeddedProofs, 0o755))
 	require.NoError(t, os.MkdirAll(embeddedResearch, 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(embeddedDiscovery, "bundles"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(embeddedResearch, "test-browser-sniff-spec-samples"), 0o755))
 	writeTestPhase5GateMarker(t, embeddedProofs, pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
 		SchemaVersion: 1,
 		APIName:       "test",
@@ -1073,7 +1117,10 @@ func TestPublishPackageFiltersEmbeddedManuscriptsFallback(t *testing.T) {
 		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
 	})
 	require.NoError(t, os.WriteFile(filepath.Join(embeddedDiscovery, "browser-sniff-capture.har"), []byte("cookie: session=secret\nemail: user@example.com\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(embeddedDiscovery, "probe-001.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(embeddedDiscovery, "bundles", "app.js"), []byte("window.email='customer@gmail.com'"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(embeddedDiscovery, "traffic-analysis.json"), []byte(`{"auth_stripped":true}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(embeddedResearch, "test-browser-sniff-spec-samples", "sample.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(embeddedResearch, "brief.md"), []byte("# Research Brief"), 0o644))
 
 	target := filepath.Join(t.TempDir(), "staging")
@@ -1088,6 +1135,9 @@ func TestPublishPackageFiltersEmbeddedManuscriptsFallback(t *testing.T) {
 	assert.True(t, result.ManuscriptsIncluded, "embedded manuscripts should be included when archive root is absent")
 	assert.Equal(t, runID, result.RunID)
 	assert.NoFileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "browser-sniff-capture.har"))
+	assert.NoFileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "probe-001.json"))
+	assert.NoDirExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "bundles"))
+	assert.NoDirExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "test-browser-sniff-spec-samples"))
 	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "discovery", "traffic-analysis.json"))
 	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "brief.md"))
 }

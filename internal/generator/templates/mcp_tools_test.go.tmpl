@@ -5,11 +5,89 @@ package mcp
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"{{modulePath}}/internal/cliutil"
 )
+
+func TestMCPPathResolutionMatchesCLIResolverWithHomeEnv(t *testing.T) {
+	resetMCPPathEnv(t)
+	root := filepath.Join(t.TempDir(), "shared-home")
+	t.Setenv("{{envName .Name}}_HOME", root)
+
+	cfg, err := newMCPConfig()
+	if err != nil {
+		t.Fatalf("newMCPConfig() error = %v", err)
+	}
+	cliConfigDir, err := cliutil.ConfigDir()
+	if err != nil {
+		t.Fatalf("cliutil.ConfigDir() error = %v", err)
+	}
+	if want := filepath.Join(cliConfigDir, "config.{{or .Config.Format "json"}}"); cfg.Path != want {
+		t.Fatalf("MCP config path = %q, want CLI resolver path %q", cfg.Path, want)
+	}
+
+	gotDB, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	cliDataDir, err := cliutil.DataDir()
+	if err != nil {
+		t.Fatalf("cliutil.DataDir() error = %v", err)
+	}
+	if want := filepath.Join(cliDataDir, "data.db"); gotDB != want {
+		t.Fatalf("MCP db path = %q, want CLI resolver path %q", gotDB, want)
+	}
+}
+
+func TestMCPPathResolutionMatchesCLIResolverWithPlatformDefaults(t *testing.T) {
+	home := resetMCPPathEnv(t)
+
+	cfg, err := newMCPConfig()
+	if err != nil {
+		t.Fatalf("newMCPConfig() error = %v", err)
+	}
+	if want := filepath.Join(home, ".config", "{{.Name}}-pp-cli", "config.{{or .Config.Format "json"}}"); cfg.Path != want {
+		t.Fatalf("MCP config path = %q, want %q", cfg.Path, want)
+	}
+
+	gotDB, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	if want := filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db"); gotDB != want {
+		t.Fatalf("MCP db path = %q, want %q", gotDB, want)
+	}
+}
+
+func resetMCPPathEnv(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, name := range []string{
+		"{{envName .Name}}_CONFIG",
+		"{{envName .Name}}_CONFIG_DIR",
+		"{{envName .Name}}_DATA_DIR",
+		"{{envName .Name}}_STATE_DIR",
+		"{{envName .Name}}_CACHE_DIR",
+		"{{envName .Name}}_HOME",
+		"XDG_CONFIG_HOME",
+		"XDG_DATA_HOME",
+		"XDG_STATE_HOME",
+		"XDG_CACHE_HOME",
+	} {
+		t.Setenv(name, "")
+	}
+	restore, err := cliutil.SetHomeOverride("")
+	if err != nil {
+		t.Fatalf("reset home override: %v", err)
+	}
+	t.Cleanup(restore)
+	return home
+}
 
 // TestValidateReadOnlyQuery_AllowsSelectAndWITH pins the contract: the MCP
 // sql tool's allowlist accepts SELECT and WITH-prefix queries, including

@@ -152,6 +152,55 @@ printing-press-oauth2-pp-cli items
 
 Run `printing-press-oauth2-pp-cli --help` for the full command reference and flag list.
 
+## Paths & environment variables
+
+This CLI separates local files into four path kinds:
+
+| Kind | Contents |
+|------|----------|
+| `config` | User-editable settings such as `config.toml` and saved profiles |
+| `data` | Durable local data: `credentials.toml`, `data.db`, cookies, browser-session proof files, and other auth sidecars |
+| `state` | Runtime state such as persisted queries, jobs, and `teach.log` |
+| `cache` | Regenerable HTTP/cache files |
+
+Each kind resolves independently. The ladder is:
+
+1. Per-kind env var: `PRINTING_PRESS_OAUTH2_CONFIG_DIR`, `PRINTING_PRESS_OAUTH2_DATA_DIR`, `PRINTING_PRESS_OAUTH2_STATE_DIR`, or `PRINTING_PRESS_OAUTH2_CACHE_DIR`
+2. `--home <dir>` for this invocation
+3. `PRINTING_PRESS_OAUTH2_HOME` for a flat relocated root
+4. XDG env vars: `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`
+5. Platform defaults matching existing installs
+
+For containers and agent sandboxes, prefer a single relocated root:
+
+```bash
+export PRINTING_PRESS_OAUTH2_HOME=/srv/printing-press-oauth2
+printing-press-oauth2-pp-cli doctor
+```
+
+Under `PRINTING_PRESS_OAUTH2_HOME=/srv/printing-press-oauth2`, the four dirs resolve to `/srv/printing-press-oauth2/config`, `/srv/printing-press-oauth2/data`, `/srv/printing-press-oauth2/state`, and `/srv/printing-press-oauth2/cache`.
+
+MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
+
+```json
+{
+  "mcpServers": {
+    "printing-press-oauth2": {
+      "command": "printing-press-oauth2-pp-mcp",
+      "env": {
+        "PRINTING_PRESS_OAUTH2_HOME": "/srv/printing-press-oauth2"
+      }
+    }
+  }
+}
+```
+
+Precedence matters in fleets: an ambient per-kind variable such as `PRINTING_PRESS_OAUTH2_DATA_DIR` overrides an explicit `--home` for that kind. Use `PRINTING_PRESS_OAUTH2_HOME` or the per-kind variables for durable fleet relocation; treat `--home` as the weaker per-invocation lever.
+
+Relocation is one-way. Unsetting `PRINTING_PRESS_OAUTH2_HOME` does not move files back to platform defaults, and `doctor` cannot find credentials left under a former root. Move the files manually before unsetting relocation variables.
+
+Existing installs keep working because the platform-default rung matches the legacy layout. On the first auth write, stored secrets leave `config.toml` and are consolidated into `credentials.toml` under the data directory. Run `printing-press-oauth2-pp-cli doctor --fail-on warn` to check path and credential-location warnings in automation.
+
 ## Commands
 
 ### items
@@ -204,7 +253,7 @@ Verifies configuration, credentials, and connectivity to the API.
 
 ## Configuration
 
-Config file: `~/.config/printing-press-oauth2-pp-cli/config.toml`
+Run `printing-press-oauth2-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `~/.config/printing-press-oauth2-pp-cli/config.toml`; `--home`, `PRINTING_PRESS_OAUTH2_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

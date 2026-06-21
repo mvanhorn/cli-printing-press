@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // TestSplitShellArgs pins the whitespace + quote splitting used by
@@ -49,8 +51,9 @@ func TestSplitShellArgs(t *testing.T) {
 // flag in the structured args map (instead of the free-form "args"
 // string), the root flags listed in blockedRootFlags must be dropped
 // before they reach exec.CommandContext. A regression here would let a
-// caller redirect --base-url, swap --token, switch --client filesystems, or
-// load a malicious --config.
+// caller redirect --base-url, swap --token, switch --client filesystems,
+// relocate the CLI's filesystem roots via --home, or load a malicious
+// --config.
 func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	in := map[string]any{
 		"args":     "contacts",
@@ -58,8 +61,14 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"client":   "attacker-client",
 		"config":   "/tmp/evil.yaml",
 		"deliver":  "fd:3",
+		"home":     "/tmp/evil-home",
 		"profile":  "attacker",
 		"token":    "stolen-token",
+		// Keys containing "=" must not be emitted verbatim as flag=value.
+		"base-url=https://evil.example.com": true,
+		"config=/tmp/evil.yaml":             true,
+		"limit=99":                          float64(42),
+		"token=stolen-token":                true,
 		// Allowed per-command flag passes through.
 		"limit": float64(10),
 	}
@@ -68,7 +77,7 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
-	for _, blocked := range []string{"--base-url", "--client", "--config", "--deliver", "--profile", "--token", "--args"} {
+	for _, blocked := range []string{"--base-url", "--client", "--config", "--deliver", "--home", "--profile", "--token", "--args"} {
 		for _, tok := range got {
 			if tok == blocked {
 				t.Errorf("blocked flag %q leaked through cliArgsFromMCP", blocked)
@@ -106,12 +115,17 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 // caught at unit-test scope rather than only via end-to-end MCP runs.
 func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 	guard := func(raw string) (rejected string, ok bool) {
-		for _, t := range SplitShellArgs(raw) {
-			if strings.HasPrefix(t, "-") {
+		tokens := SplitShellArgs(raw)
+		err := validatePositionalArgsForMCP(tokens, false, nil)
+		if err == nil {
+			return "", true
+		}
+		for _, t := range tokens {
+			if t != "-" && strings.HasPrefix(t, "-") {
 				return t, false
 			}
 		}
-		return "", true
+		return "", false
 	}
 	cases := []struct {
 		name        string
@@ -131,6 +145,7 @@ func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 		// the CLI is invoked via exec.CommandContext (no /bin/sh), so
 		// $VAR / && / | are inert. Pin that they don't trip the guard.
 		{"shell metachars in positional", `name with $VAR && pipe|stuff`, true, ""},
+		{"lone dash allowed as stdout escape", "-", true, ""},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -143,6 +158,53 @@ func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 				t.Errorf("guard(%q) blocked = %q, want %q", tc.in, tok, tc.wantBlocked)
 			}
 		})
+	}
+}
+
+func TestReadOnlyPositionalWriteSinksRejectFileOutput(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		readOnly  bool
+		sinks     map[int]bool
+		wantError bool
+	}{
+		{"unmarked read-only positional stays allowed", "out.json", true, nil, false},
+		{"write sink rejects file path", "out.json", true, map[int]bool{0: true}, true},
+		{"write sink permits stdout dash", "-", true, map[int]bool{0: true}, false},
+		{"write sink ignored outside read-only tool", "out.json", false, map[int]bool{0: true}, false},
+		{"later write sink rejects second positional", "team out.json", true, map[int]bool{1: true}, true},
+		{"later write sink allows missing optional positional", "team", true, map[int]bool{1: true}, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			err := validatePositionalArgsForMCP(SplitShellArgs(tc.raw), tc.readOnly, tc.sinks)
+			if tc.wantError && err == nil {
+				t.Fatalf("validatePositionalArgsForMCP(%q) succeeded, want error", tc.raw)
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("validatePositionalArgsForMCP(%q) returned error: %v", tc.raw, err)
+			}
+		})
+	}
+}
+
+func TestPositionalWriteSinkIndexesParsesAnnotation(t *testing.T) {
+	cmd := &cobra.Command{
+		Use: "export-unmatched [path]",
+		Annotations: map[string]string{
+			PositionalWriteSinksAnnotation: "0, 2;3",
+		},
+	}
+	got := positionalWriteSinkIndexes(cmd)
+	for _, idx := range []int{0, 2, 3} {
+		if !got[idx] {
+			t.Fatalf("positionalWriteSinkIndexes missing index %d from %#v", idx, got)
+		}
+	}
+	if got[1] {
+		t.Fatalf("positionalWriteSinkIndexes unexpectedly included index 1: %#v", got)
 	}
 }
 

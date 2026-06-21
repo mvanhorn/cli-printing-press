@@ -74,7 +74,7 @@ func deliverFile(path string, body []byte) error {
 	// file if the process is interrupted mid-write.
 	dir := filepath.Dir(path)
 	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("creating deliver dir: %w", err)
 		}
 	}

@@ -66,6 +66,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/probe.go",
 		"internal/cliutil/ratelimit.go",
 		"internal/cliutil/verifyenv.go",
+		"internal/cliutil/paths.go",
+		"internal/cliutil/paths_test.go",
 		"internal/cliutil/extractnumber.go",
 		"internal/cliutil/extractnumber_test.go",
 		"internal/cliutil/jwtshape.go",
@@ -98,9 +100,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 74},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 78},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 76},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 78},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 82},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 80},
 	}
 
 	for _, tt := range tests {
@@ -765,9 +767,15 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(out, &payload), "agent-context must emit valid JSON")
-	assert.Equal(t, "3", payload["schema_version"], "schema_version must be present")
+	assert.Equal(t, "4", payload["schema_version"], "schema_version must be present")
 	assert.Contains(t, payload, "cli")
 	assert.Contains(t, payload, "auth")
+	paths, ok := payload["paths"].(map[string]any)
+	require.True(t, ok, "agent-context must expose resolved paths")
+	for _, key := range []string{"config_dir", "data_dir", "state_dir", "cache_dir"} {
+		value, ok := paths[key].(string)
+		require.Truef(t, ok && value != "", "agent-context paths.%s must be populated", key)
+	}
 	assert.Contains(t, payload, "commands")
 
 	annotatedEndpoint := findAgentContextCommand(payload["commands"], func(command map[string]any) bool {
@@ -2527,11 +2535,10 @@ func TestGenerateCookieAuthEmitsSetTokenSubcommand(t *testing.T) {
 }
 
 // TestGenerateNoAuthPersistedQueryOmitsSetToken verifies that the
-// auth_browser template does NOT emit set-token (or import cliutil) when
+// auth_browser template does NOT emit set-token when
 // Auth.Type == "none" + a graphql_persisted_query hint routes the spec
 // through auth_browser purely for the query-refresh flow. Saving a token
-// has no meaning when there are no credentials to save; emitting the
-// subcommand would also produce an unused cliutil import and break build.
+// has no meaning when there are no credentials to save.
 func TestGenerateNoAuthPersistedQueryOmitsSetToken(t *testing.T) {
 	t.Parallel()
 
@@ -2552,8 +2559,8 @@ func TestGenerateNoAuthPersistedQueryOmitsSetToken(t *testing.T) {
 		"auth.type=none should not emit a set-token subcommand")
 	assert.NotContains(t, authGo, "cliutil.LooksLikeJWT",
 		"auth.type=none should not reference the JWT-shape helper")
-	assert.NotContains(t, authGo, "internal/cliutil\"",
-		"auth.type=none must not import cliutil — would trigger unused-import")
+	assert.Contains(t, authGo, "cliutil.StateDir",
+		"auth.type=none persisted-query refresh still uses cliutil for the state-dir registry path")
 }
 
 func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
@@ -10069,6 +10076,8 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	// instead of stdlib http.Client.
 	assert.Contains(t, content, `verifyPath := "/me?fields=id"`)
 	assert.Contains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`)
+	assert.NotContains(t, content, `authHeaders["Authorization"] = authHeader`, "doctor must let the client inject refresh-capable auth instead of replaying a stale header")
+	assert.NotContains(t, content, `authParams["api_key"] = authHeader`, "doctor must let the client inject refresh-capable query auth instead of replaying a stale parameter")
 	assert.NotContains(t, content, `&http.Client{`)
 	// When verify_path is set, HTTP 401 keeps the strict "invalid" verdict.
 	// 403 is handled separately as scope-limited; see
@@ -10335,6 +10344,8 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "validateAndWriteBrowserSessionProof")
 	assert.Contains(t, content, "validateAndWriteBrowserSessionProofWithRetry")
 	assert.Contains(t, content, "browser-session-proof.json")
+	assert.Contains(t, content, "legacyPath != proofPath")
+	assert.Contains(t, content, "os.Remove(legacyPath)")
 	assert.Contains(t, content, "newAuthRefreshCmd")
 	assert.Contains(t, content, "auth refresh")
 	assert.Contains(t, content, "openBrowserForCookieRefresh")
@@ -17234,15 +17245,51 @@ func TestLocalReadIsList(t *testing.T) {
 			want:         true,
 		},
 		{
-			name:         "non-synthetic array response without list name",
+			name:         "collection-name array response without list name",
 			endpointName: "search",
 			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/search", Response: spec.ResponseDef{Type: "array"}},
+			want:         true,
+		},
+		{
+			name:         "find collection endpoint",
+			endpointName: "find",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/events", Response: spec.ResponseDef{Type: "array"}},
+			want:         true,
+		},
+		{
+			name:         "collection-name wrapped array response path",
+			endpointName: "find",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/events", Response: spec.ResponseDef{Type: "array"}, ResponsePath: "_embedded.events"},
+			want:         true,
+		},
+		{
+			name:         "collection-name wrapped object response path",
+			endpointName: "find",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/events/latest", Response: spec.ResponseDef{Type: "object"}, ResponsePath: "data.event"},
+			want:         false,
+		},
+		{
+			name:         "non-collection array response without list name",
+			endpointName: "status",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/status", Response: spec.ResponseDef{Type: "array"}},
+			want:         false,
+		},
+		{
+			name:         "unscoped all is not a new collection heuristic",
+			endpointName: "all",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/all", Response: spec.ResponseDef{Type: "array"}},
+			want:         false,
+		},
+		{
+			name:         "unscoped index is not a new collection heuristic",
+			endpointName: "index",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/index", Response: spec.ResponseDef{Type: "array"}},
 			want:         false,
 		},
 		{
 			name:         "synthetic array response without list name",
 			apiSpec:      &spec.APISpec{Kind: spec.KindSynthetic},
-			endpointName: "search",
+			endpointName: "status",
 			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/search", Response: spec.ResponseDef{Type: "array"}},
 			want:         true,
 		},
@@ -17284,6 +17331,66 @@ func TestLocalReadIsList(t *testing.T) {
 			assert.Equal(t, tc.want, localReadIsList(tc.supportsAllPagination, tc.apiSpec, tc.endpointName, tc.endpoint))
 		})
 	}
+}
+
+func TestGeneratedCollectionNamedReadUsesLocalList(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "eventfinder",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/eventfinder-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"events": {
+				Description: "Manage events",
+				Endpoints: map[string]spec.Endpoint{
+					"find": {
+						Method:      "GET",
+						Path:        "/events",
+						Description: "Find events",
+						Response:    spec.ResponseDef{Type: "array", Item: "Event"},
+					},
+					"get": {
+						Method:      "GET",
+						Path:        "/events/{id}",
+						Description: "Get event",
+						Params:      []spec.Param{{Name: "id", Type: "string", Positional: true, PathParam: true}},
+						Response:    spec.ResponseDef{Type: "object", Item: "Event"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Event": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	findSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "events_find.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(findSrc), `"events", true, path, params`,
+		"collection-style GET endpoints named find must route --data-source local through db.List")
+
+	getSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "events_get.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(getSrc), `"events", false, path, params`,
+		"get-by-id endpoints must continue routing --data-source local through db.Get")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGeneratedSyntheticAnchorCommandFallsBackToLocalStore(t *testing.T) {

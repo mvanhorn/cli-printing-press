@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"learn-loop-example-pp-cli/internal/client"
+	"learn-loop-example-pp-cli/internal/cliutil"
 	"learn-loop-example-pp-cli/internal/config"
 )
 
@@ -34,6 +35,7 @@ type rootFlags struct {
 	noLearn       bool
 	selectFields  string
 	configPath    string
+	homePath      string
 	profileName   string
 	deliverSpec   string
 	timeout       time.Duration
@@ -156,6 +158,7 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.plain, "plain", false, "Output as plain tab-separated text")
 	rootCmd.PersistentFlags().BoolVar(&flags.quiet, "quiet", false, "Bare output, one value per line")
 	rootCmd.PersistentFlags().StringVar(&flags.configPath, "config", "", "Config file path")
+	rootCmd.PersistentFlags().StringVar(&flags.homePath, "home", "", "Root directory for config, data, state, and cache files")
 	rootCmd.PersistentFlags().DurationVar(&flags.timeout, "timeout", 60*time.Second, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
@@ -174,6 +177,9 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		if _, err := cliutil.SetHomeOverride(flags.homePath); err != nil {
+			return err
+		}
 		if flags.deliverSpec != "" {
 			sink, err := ParseDeliverSink(flags.deliverSpec)
 			if err != nil {

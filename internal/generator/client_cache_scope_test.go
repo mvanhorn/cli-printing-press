@@ -66,8 +66,9 @@ func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
 	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	config := string(configSrc)
-	require.Contains(t, config, "os.MkdirAll(dir, 0o700)")
-	require.Contains(t, config, "os.WriteFile(c.Path, data, 0o600)")
+	require.Contains(t, config, "cliutil.AtomicWritePrivateFile(c.Path, data, 0o600, 0o700)")
+	require.NotContains(t, config, "os.WriteFile(c.Path, data, 0o644)")
+	require.NotContains(t, config, "os.MkdirAll(dir, 0o755)")
 }
 
 func clientCacheKeyBody(t *testing.T, content string) string {

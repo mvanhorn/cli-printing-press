@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"printing-press-golden-pp-cli/internal/cliutil"
 )
 
 // Profile is a named set of flag values saved for reuse across invocations.
@@ -29,14 +30,22 @@ type profileStore struct {
 }
 
 func profileStorePath() (string, error) {
+	dir, err := cliutil.ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("creating profile config dir: %w", err)
+	}
+	return filepath.Join(dir, "profiles.json"), nil
+}
+
+func legacyProfileStorePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home dir: %w", err)
 	}
 	dir := filepath.Join(home, ".printing-press-golden-pp-cli")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("creating state dir: %w", err)
-	}
 	return filepath.Join(dir, "profiles.json"), nil
 }
 
@@ -45,9 +54,13 @@ func loadProfileStore() (*profileStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(p)
+	legacy, legacyErr := legacyProfileStorePath()
+	if legacyErr != nil || legacy == p {
+		legacy = ""
+	}
+	data, sourcePath, err := cliutil.ReadFileWithLegacyFallback(p, legacy)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) || sourcePath == legacy {
 			return &profileStore{Profiles: map[string]Profile{}}, nil
 		}
 		return nil, fmt.Errorf("reading profiles: %w", err)
@@ -98,9 +111,11 @@ func ApplyProfileToFlags(cmd *cobra.Command, profile *Profile) error {
 		return nil
 	}
 	// Reserved flags that never come from a profile - they control profile
-	// resolution itself or are dangerous to overlay.
+	// resolution itself or are dangerous to overlay. profile save's skip
+	// map must remain a superset of this set so saved profiles never carry
+	// values that apply would silently refuse.
 	reserved := map[string]bool{
-		"profile": true, "config": true, "help": true,
+		"profile": true, "config": true, "home": true, "help": true,
 	}
 	for name, value := range profile.Values {
 		if reserved[name] {
@@ -173,7 +188,8 @@ them under <name>. To update an existing profile, run save again; the
 entry is replaced.
 
 To avoid creating empty profiles, at least one non-default flag must be
-present (other than --profile and --config).`,
+present (other than --profile, --config, and --home, which are never
+captured: they control profile/config resolution and would never apply).`,
 		Example: `  printing-press-golden-pp-cli profile save my-defaults --json --compact
   printing-press-golden-pp-cli profile save tonight-defaults --region US`,
 		Args: cobra.ExactArgs(1),
@@ -184,7 +200,10 @@ present (other than --profile and --config).`,
 			}
 			values := map[string]string{}
 			// Walk inherited + local flags, capture only those the user set.
-			skip := map[string]bool{"profile": true, "config": true, "help": true, "description": true}
+			// Must stay a superset of ApplyProfileToFlags' reserved map for
+			// root flags: capturing a flag that apply refuses to overlay
+			// would store values that never take effect.
+			skip := map[string]bool{"profile": true, "config": true, "home": true, "help": true, "description": true}
 			visit := func(fl *pflag.Flag) {
 				if fl.Changed && !skip[fl.Name] {
 					values[fl.Name] = fl.Value.String()
