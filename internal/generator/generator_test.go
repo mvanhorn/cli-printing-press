@@ -16435,7 +16435,10 @@ func TestGenerateBodyNameAcrossCLISurfaces(t *testing.T) {
 	assert.NotContains(t, searchSource, `body["startAfter"] = parsedStartAfter`)
 
 	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
-	assert.Contains(t, mcpSource, `mcplib.WithString("startAfter", mcplib.Description("Pagination cursor"))`)
+	// CLI takes the array cursor as a JSON-string flag (StringVar + json.Unmarshal
+	// above); MCP binds it as a native array. The BodyName mapping (startAfter ->
+	// searchAfter) holds across both surfaces.
+	assert.Contains(t, mcpSource, `mcplib.WithArray("startAfter", mcplib.Description("Pagination cursor"))`)
 	assert.Contains(t, mcpSource, `PublicName: "startAfter", WireName: "searchAfter", Location: "body"`)
 }
 
