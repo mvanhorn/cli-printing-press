@@ -357,29 +357,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
 		},
-		"effectiveEndpointPath":    effectiveEndpointPath,
-		"effectiveSubEndpointPath": effectiveSubEndpointPath,
-		"enumLiteral": func(values []string) string {
-			// Render a string slice as a Go []string literal for template embedding.
-			// Example: ["asc","desc"] → `"asc", "desc"`. Returns empty string when
-			// the slice is empty so callers can {{if}}-gate the block.
-			if len(values) == 0 {
-				return ""
-			}
-			parts := make([]string, len(values))
-			for i, v := range values {
-				parts[i] = fmt.Sprintf("%q", v)
-			}
-			return strings.Join(parts, ", ")
-		},
-		"enumDescriptionHint": func(values []string) string {
-			// Appends " (one of: a, b, c)" to a flag description when the param
-			// has enum constraints. Returns empty string when the slice is empty.
-			if len(values) == 0 {
-				return ""
-			}
-			return " (one of: " + strings.Join(values, ", ") + ")"
-		},
+		"effectiveEndpointPath":        effectiveEndpointPath,
+		"effectiveSubEndpointPath":     effectiveSubEndpointPath,
+		"enumLiteral":                  enumLiteral,
+		"enumDescriptionHint":          enumDescriptionHint,
 		"jsonStringParam":              isJSONStringParam,
 		"jsonEnumSuggestion":           jsonEnumSuggestion,
 		"bodyMap":                      bodyMap,
@@ -6157,12 +6138,62 @@ func hasTemporalMarker(s string) bool {
 	return false
 }
 
+func enumLiteral(values []string) string {
+	// Render a string slice as a Go []string literal for template embedding.
+	// Example: ["asc","desc"] -> `"asc", "desc"`. Returns empty string when
+	// the slice is empty so callers can {{if}}-gate the block.
+	values = trimmedEnumValues(values)
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, len(values))
+	for i, v := range values {
+		parts[i] = fmt.Sprintf("%q", v)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func enumDescriptionHint(values []string) string {
+	// Appends " (one of: a, b, c)" to a flag description when the param
+	// has enum constraints. Returns empty string when the slice is empty.
+	values = trimmedEnumValues(values)
+	if len(values) == 0 {
+		return ""
+	}
+	return " (one of: " + strings.Join(values, ", ") + ")"
+}
+
+func trimmedEnumValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		trimmed = append(trimmed, value)
+	}
+	return trimmed
+}
+
 func defaultVal(p spec.Param) string {
 	if p.Default != nil {
+		if defaultShouldUseZero(p) || stringDefaultOutsideEnum(p) {
+			return zeroVal(p.Type)
+		}
 		// Coerce the default value to match the declared param type
 		switch primitiveKind(p.Type) {
 		case "string":
-			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
+			// Trim before emitting so a whitespace-padded default that was
+			// kept by stringDefaultOutsideEnum (which compares trimmed values)
+			// still matches the trimmed enum validator built by enumLiteral —
+			// otherwise the generated CLI rejects its own default. Trimming a
+			// non-enum string default is harmless (surrounding whitespace in a
+			// spec default is noise, like the other sloppy defaults this path
+			// normalizes).
+			return fmt.Sprintf("%q", strings.TrimSpace(fmt.Sprintf("%v", p.Default)))
 		case "bool":
 			switch v := p.Default.(type) {
 			case bool:
@@ -6198,6 +6229,37 @@ func defaultVal(p spec.Param) string {
 		}
 	}
 	return zeroVal(p.Type)
+}
+
+func defaultShouldUseZero(p spec.Param) bool {
+	if v, ok := p.Default.(string); ok && v == "" {
+		return true
+	}
+	switch primitiveKind(p.Type) {
+	case "object", "array":
+		data, err := json.Marshal(p.Default)
+		if err != nil {
+			return true
+		}
+		switch string(data) {
+		case `""`, "[]", "{}", "null":
+			return true
+		}
+	}
+	return false
+}
+
+func stringDefaultOutsideEnum(p spec.Param) bool {
+	if primitiveKind(p.Type) != "string" || len(p.Enum) == 0 {
+		return false
+	}
+	defaultText := strings.TrimSpace(fmt.Sprintf("%v", p.Default))
+	for _, enumValue := range p.Enum {
+		if defaultText == strings.TrimSpace(enumValue) {
+			return false
+		}
+	}
+	return true
 }
 
 func zeroVal(t string) string {
