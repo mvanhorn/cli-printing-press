@@ -2049,6 +2049,13 @@ func summarizeLiveDogfoodFailures(report *LiveDogfoodReport) *Phase5FailureSumma
 // best-effort hint, not a contract.
 func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
 	hay := strings.ToLower(t.Reason + " " + t.OutputSample)
+	// The transport keywords are matched against the runner-authored Reason
+	// only, never the combined hay. OutputSample is command-controlled echo:
+	// a help-kind failure carries the full --help text, which on every
+	// printed CLI includes the global flag line "--timeout duration  Request
+	// timeout (default 1m0s)". Scanning that with the bare "timeout" token
+	// mislabels every help failure as transport_error.
+	reason := strings.ToLower(t.Reason)
 	// 4xx is checked before 5xx: a legitimate 5xx response is unlikely to
 	// also mention "http 4", whereas error strings citing 400/401/403/404
 	// frequently start with digit 4 and would otherwise be shadowed if 5xx
@@ -2059,10 +2066,10 @@ func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
 		return "http_4xx"
 	case strings.Contains(hay, "http 5"):
 		return "http_5xx"
-	case strings.Contains(hay, "connection refused") ||
-		strings.Contains(hay, "no such host") ||
-		strings.Contains(hay, "timeout") ||
-		strings.Contains(hay, "dial tcp"):
+	case strings.Contains(reason, "connection refused") ||
+		strings.Contains(reason, "no such host") ||
+		strings.Contains(reason, "timeout") ||
+		strings.Contains(reason, "dial tcp"):
 		return "transport_error"
 	// "invalid json" / "not json" match independently so the runner's own
 	// Reason strings (literal "invalid JSON" at the two emit sites) bucket
