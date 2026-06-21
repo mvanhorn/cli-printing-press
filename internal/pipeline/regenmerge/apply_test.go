@@ -207,6 +207,7 @@ func newFreshCmd() {}
 	require.NoError(t, err)
 	require.NoError(t, Apply(report, Options{Force: true}))
 
+	assert.NoDirExists(t, filepath.Join(stagedPubDir, ".git"))
 	assert.NoFileExists(t, filepath.Join(stagedPubDir, ".git"))
 	assert.Contains(t, readFileString(t, filepath.Join(stagedPubDir, "internal", "cli", "root.go")), "newFreshCmd")
 }
