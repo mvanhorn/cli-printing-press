@@ -78,14 +78,20 @@ func isNetworkError(err error) bool {
 		strings.Contains(msg, "TLS handshake timeout")
 }
 
-// openStoreForRead opens the local SQLite store for reading.
+// openStoreForRead opens the local SQLite store read-only for reading.
 // Returns nil, nil if the database file does not exist (no sync has been run).
+//
+// Read paths open with store.OpenReadOnly: no MkdirAll, no migration loop, and
+// no write lock, so a read concurrent with a sync cannot block on the writer
+// and a read command never runs a schema migration as a side effect. ctx is
+// threaded into OpenReadOnlyContext so a cancelled command (SIGINT, deadline)
+// interrupts the driver-init SQLITE_BUSY retry rather than blocking on it.
 func openStoreForRead(ctx context.Context, cliName string) (*store.Store, error) {
 	dbPath := defaultDBPath(cliName)
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, nil
 	}
-	return store.OpenWithContext(ctx, dbPath)
+	return store.OpenReadOnlyContext(ctx, dbPath)
 }
 
 // localProvenance builds a DataProvenance for local data reads.
