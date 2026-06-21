@@ -157,6 +157,14 @@ type SyncableResource struct {
 	// resources before storage. Empty when the endpoint returns a homogeneous
 	// resource.
 	Discriminator DiscriminatorDispatch
+
+	// QueryEntity is the SQL-query entity name (e.g. "Customer") this resource
+	// reads through the shared query endpoint, set only when the API declares a
+	// query_sync hint (APISpec.QuerySync) and this resource's list endpoint
+	// matches it. Empty for every normal REST resource; the sync template emits
+	// the query injection / envelope unwrap / offset paging only for resources
+	// that carry it.
+	QueryEntity string
 }
 
 // DependentResource describes a child resource that requires iterating a parent
@@ -1867,6 +1875,7 @@ type syncableMeta struct {
 	FieldSelector      FieldSelector
 	Discriminator      DiscriminatorDispatch
 	ResponseItem       string
+	QueryEntity        string
 }
 
 type syncableCandidate struct {
@@ -1908,7 +1917,28 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		FieldSelector:      detectEndpointFieldSelector(e),
 		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
 		ResponseItem:       e.Response.Item,
+		QueryEntity:        queryEntityForEndpoint(s, e),
 	}
+}
+
+// queryEntityForEndpoint returns the SQL-query entity name for a list endpoint
+// when the API declares a query_sync hint and this endpoint reads through the
+// shared query path with an entity-named envelope. The entity is the
+// Response.Item type (e.g. "Customer"), falling back to the ResponsePath leaf
+// (e.g. "QueryResponse.Customer" -> "Customer"). Returns "" for non-query
+// endpoints and for raw passthrough resources on the same path that declare no
+// ResponsePath, so they never get a bogus query injection.
+func queryEntityForEndpoint(s *spec.APISpec, e spec.Endpoint) string {
+	if s == nil || s.QuerySync == nil || e.Path != s.QuerySync.Path || e.ResponsePath == "" {
+		return ""
+	}
+	if e.Response.Item != "" {
+		return e.Response.Item
+	}
+	if i := strings.LastIndex(e.ResponsePath, "."); i >= 0 {
+		return e.ResponsePath[i+1:]
+	}
+	return ""
 }
 
 func hasTypedResponseWithoutRuntimeID(resourceName string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
@@ -2441,6 +2471,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			IDWalkPageSize:     meta.IDWalkPageSize,
 			FieldSelector:      meta.FieldSelector,
 			Discriminator:      meta.Discriminator,
+			QueryEntity:        meta.QueryEntity,
 		}
 	}
 	return resources

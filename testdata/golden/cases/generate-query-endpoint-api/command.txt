@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/query-endpoint-api.yaml --output "$CASE_ACTUAL_DIR/query-endpoint-golden" --force --spec-url file://testdata/golden/fixtures/query-endpoint-api.yaml --validate=false
