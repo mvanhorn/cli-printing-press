@@ -103,7 +103,14 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	if dir, err := cliutil.CacheDir(); err == nil {
 		cacheDir = filepath.Join(dir, "http")
 	}
-	httpClient := newHTTPClient(timeout, LoadCookieJar())
+	cookieJar := LoadCookieJar()
+	// Seed the jar from a session captured via the env var or stored in
+	// credentials but not yet in cookies.json, so the credential rides every
+	// request and net/http absorbs Set-Cookie rotation across the session.
+	if cfg != nil {
+		SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+	}
+	httpClient := newHTTPClient(timeout, cookieJar)
 	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		Config:     cfg,
@@ -526,15 +533,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 
 		if authHeader != "" {
-			// Cookie-auth: LoadCookieJar is the sole source of outbound
-			// cookies. net/http's Client.send calls jar.Cookies + AddCookie
-			// for each cookie, which concatenates without dedup; a manual
-			// req.Header.Set here would ship every session cookie twice and
-			// trip upstream WAFs. auth login persists the same cookie set
-			// to both the jar and config, so the jar carries every value
-			// SaveTokens stores. authHeader is read only by the dry-run /
-			// signing paths above; intentionally not consumed on the live
-			// wire here.
+			// Cookie-auth: the cookie jar is the sole source of outbound
+			// cookies. New() loads it from cookies.json and seeds it from
+			// the env-var / credentials session via SeedCookieJar, so every
+			// cookie source flows through the jar. net/http's Client.send
+			// calls jar.Cookies + AddCookie for each cookie, which
+			// concatenates without dedup; a manual req.Header.Set here would
+			// ship every session cookie twice and trip upstream WAFs.
+			// authHeader is read only by the dry-run / signing paths above;
+			// intentionally not consumed on the live wire here.
 		}
 		if c.Config != nil {
 			for k, v := range c.Config.Headers {
