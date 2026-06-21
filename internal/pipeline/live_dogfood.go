@@ -1868,7 +1868,12 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 		// cookie-auth-no-harness-session skip marker) rather than the FAIL the
 		// no-live-signal path would otherwise produce. Pass the captured session
 		// via the config-override env var to exercise the matrix for real.
-		if isBrowserSessionAuthType(authType) {
+		//
+		// Only take the clean-skip path when nothing genuinely failed. A
+		// non-auth defect (e.g. a crashing --help) records a real FAIL that the
+		// session-less 401s must not mask: with report.Failed > 0 we fall
+		// through to the no-live-signal FAIL so the gate still sees the defect.
+		if isBrowserSessionAuthType(authType) && report.Failed == 0 {
 			report.Skipped++
 			report.Tests = append(report.Tests, LiveDogfoodTestResult{
 				Command: "live-dogfood",

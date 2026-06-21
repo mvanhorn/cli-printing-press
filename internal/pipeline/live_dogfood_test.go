@@ -2213,6 +2213,20 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 			},
 			want: "PASS",
 		},
+		{
+			// A genuine non-auth failure (e.g. a crashing --help) alongside the
+			// session-less 401 skips must NOT be masked by the cookie-auth
+			// clean-skip path: report.Failed > 0 keeps the verdict FAIL so the
+			// gate still sees the real defect.
+			name:     "cookie auth with a genuine failure stays FAIL, not a clean skip",
+			level:    "full",
+			authType: "cookie",
+			results: []LiveDogfoodTestResult{
+				{Status: LiveDogfoodStatusFail, Kind: LiveDogfoodTestHappy, Args: []string{"widgets", "list"}},
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
+			},
+			want: "FAIL",
+		},
 	}
 
 	for _, tt := range tests {
