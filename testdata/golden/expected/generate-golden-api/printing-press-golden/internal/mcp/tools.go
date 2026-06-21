@@ -214,6 +214,14 @@ func formatMCPParamValue(v any) string {
 		}
 		return strconv.FormatFloat(f, 'f', -1, 32)
 	default:
+		// Composite values (a native []any / map[string]any from an array or
+		// object param) reach this path when bound to a query or path slot;
+		// JSON-encode them so the wire value is valid JSON rather than Go's
+		// "[a b c]" / "map[...]" rendering. Body params never come through
+		// here — they are stored natively in bodyArgs and marshalled there.
+		if b, err := json.Marshal(v); err == nil {
+			return string(b)
+		}
 		return fmt.Sprintf("%v", v)
 	}
 }
