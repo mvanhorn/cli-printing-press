@@ -85,6 +85,17 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.Contains(t, mcpSrc, `multipartFileFields[binding.WireName] = fmt.Sprintf("%v", v)`)
 	assert.Contains(t, mcpSrc, `data, _, err = c.PostMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)`)
 
+	// An object/array body param binds to its native JSON type even on a
+	// multipart endpoint (not WithString). The non-file field then flows
+	// through mcpMultipartFieldValue, which JSON-encodes a native composite
+	// rather than rendering it with Go's "%v". This locks the multipart path
+	// that became live once array/object params stopped binding as WithString —
+	// without it, a future refactor of the helper could silently reintroduce a
+	// malformed multipart field for composite params.
+	assert.Contains(t, mcpSrc, `mcplib.WithObject("metadata"`)
+	assert.Contains(t, mcpSrc, `multipartFields[binding.WireName] = mcpMultipartFieldValue(v)`)
+	assert.Regexp(t, `(?s)func mcpMultipartFieldValue\(v any\) string \{.*?json\.Marshal\(v\)`, mcpSrc)
+
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 }

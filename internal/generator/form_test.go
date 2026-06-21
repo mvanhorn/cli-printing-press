@@ -50,6 +50,7 @@ func TestGenerateFormRequestBodyUsesFormClient(t *testing.T) {
 					RequestContentType: "application/x-www-form-urlencoded",
 					Body: []spec.Param{
 						{Name: "struct_data", Type: "string", Format: "json", Required: true, Description: "JSON-encoded query payload"},
+						{Name: "facets", Type: "array", Description: "Facet filters"},
 					},
 				},
 			},
@@ -90,6 +91,15 @@ func TestGenerateFormRequestBodyUsesFormClient(t *testing.T) {
 	assert.Contains(t, mcpSrc, `RequestContentType: "application/x-www-form-urlencoded"`)
 	assert.Contains(t, mcpSrc, `formFields := url.Values{}`)
 	assert.Contains(t, mcpSrc, `data, _, err = c.PostFormWithParams(ctx, path, params, formFields)`)
+
+	// An array/object body param binds to its native JSON type even on an
+	// x-www-form-urlencoded endpoint (not WithString), then flows through
+	// mcpFormFieldValue, which JSON-encodes a native composite rather than
+	// rendering it with Go's "%v". This is the form twin of the multipart path
+	// and locks it against a future helper refactor silently re-breaking it.
+	assert.Contains(t, mcpSrc, `mcplib.WithArray("facets"`)
+	assert.Contains(t, mcpSrc, `formFields.Set(binding.WireName, mcpFormFieldValue(v))`)
+	assert.Regexp(t, `(?s)func mcpFormFieldValue\(v any\) string \{.*?json\.Marshal\(v\)`, mcpSrc)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
