@@ -180,7 +180,25 @@ func TestClassifyLiveDogfoodFailure(t *testing.T) {
 		},
 		{
 			name: "transport_error on connection refused",
-			in:   LiveDogfoodTestResult{Reason: "dial tcp: connection refused", ExitCode: 1},
+			in:   LiveDogfoodTestResult{Reason: "dial tcp 1.2.3.4:443: connect: connection refused", ExitCode: 1},
+			want: "transport_error",
+		},
+		{
+			// Regression: a help-kind failure's OutputSample carries the full
+			// --help text, which includes the global "--timeout duration"
+			// flag line. The transport case must scan Reason only, not the
+			// combined hay, or every help failure mislabels as transport_error.
+			name: "help failure with --timeout flag text is not transport_error",
+			in: LiveDogfoodTestResult{
+				Kind:         LiveDogfoodTestHelp,
+				Reason:       "missing Examples section",
+				OutputSample: "Usage:\n  x [flags]\n\nGlobal Flags:\n      --timeout duration   Request timeout (default 1m0s)\n",
+			},
+			want: "other",
+		},
+		{
+			name: "transport_error on genuine timeout in reason",
+			in:   LiveDogfoodTestResult{Reason: "context deadline exceeded (Client.Timeout exceeded while awaiting headers)", ExitCode: 1},
 			want: "transport_error",
 		},
 		{
