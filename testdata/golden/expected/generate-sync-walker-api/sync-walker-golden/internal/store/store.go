@@ -788,7 +788,7 @@ func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json
 			 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 			 WHERE resources_fts MATCH ?
 			 AND r.resource_type = ?
-			 ORDER BY rank
+			 ORDER BY f.rank
 			 LIMIT ?`,
 			matchQuery, resourceType, limit,
 		)
@@ -811,7 +811,7 @@ func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json
 		`SELECT r.data FROM resources r
 		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 		 WHERE resources_fts MATCH ?
-		 ORDER BY rank
+		 ORDER BY f.rank
 		 LIMIT ?`,
 		matchQuery, limit,
 	)
