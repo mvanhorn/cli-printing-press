@@ -4042,6 +4042,26 @@ cli-printing-press dogfood --live \
 
 Use `--level quick` only when the user selected Quick Check in Step 1.
 
+**Cookie / composed / session-handshake auth.** The runner executes the binary
+in a sandboxed HOME with no captured browser session, so a CLI whose auth is a
+cookie jar will 401 every command unless you hand it the session. To exercise
+the matrix for real, point the CLI's config-override env var (the
+`<PREFIX>_CONFIG`-style override, e.g. `<API>_CONFIG`) at a `config.toml` that
+carries the captured session, and export it before the `dogfood --live` call:
+
+```bash
+<API>_CONFIG="$SESSION_DIR/config.toml" cli-printing-press dogfood --live \
+  --dir "$CLI_WORK_DIR" --level full --json \
+  --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
+```
+
+If no captured session is available to the harness, the runner does not count
+the 401s as failures: it records a clean skip verdict
+(`skip-cookie-auth-no-session`) and writes `phase5-skip.json` with
+`skip_reason: "cookie-auth-no-harness-session"` (see Step 4). The promote gate
+accepts that skip marker, so do not hand-author or fabricate a pass marker for a
+cookie-auth CLI you could not exercise.
+
 The live dogfood runner enumerates the CLI's `agent-context` command tree,
 runs help, happy-path, JSON-fidelity, and error-path checks where applicable,
 captures subprocess exit codes directly without shell pipes, and emits a
@@ -4205,11 +4225,38 @@ generation host cannot reach the user's LAN hardware, write:
 }
 ```
 
+If a cookie / composed / session-handshake CLI could not be exercised because
+no captured session was available to the harness (the sandboxed HOME has no
+cookie jar, so every command 401s), the runner writes this skip marker for you
+on a `skip-cookie-auth-no-session` verdict — do not hand-author it:
+
+`$PROOFS_DIR/phase5-skip.json`
+
+```json
+{
+  "schema_version": 1,
+  "api_name": "<api>",
+  "run_id": "<run-id>",
+  "status": "skip",
+  "level": "none",
+  "skip_reason": "cookie-auth-no-harness-session",
+  "auth_context": {
+    "type": "cookie|composed|session_handshake",
+    "browser_session_available": false
+  }
+}
+```
+
+Prefer the inject-session path in Step 2 (pass the captured session via the
+`<API>_CONFIG` override) so the matrix runs for real; the skip is the floor when
+no session is available.
+
 Do **not** write a skip marker for ordinary `auth.type: none` cloud/public APIs.
 No-auth APIs are testable and require `phase5-acceptance.json` unless they match
-the LAN-only carve-out above. Do **not** use missing API key as the skip reason
-for cookie, composed, or session-handshake auth; those require browser session
-proof or a hold decision.
+the LAN-only carve-out above. Do **not** use missing API key
+(`auth_required_no_credential`) as the skip reason for cookie, composed, or
+session-handshake auth; inject the session, or rely on the runner-emitted
+`cookie-auth-no-harness-session` skip when none is available.
 
 ## Phase 5.5: Polish
 
