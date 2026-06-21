@@ -44,6 +44,21 @@ const reasonMutatingDryRunOnly = "mutating command dry-run only"
 const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
 const reasonMutatingRunnableFixture = "blocked-fixture: mutating command requires runnable example"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
+
+// reasonCookieAuthNoHarnessSession is the Skip reason emitted when a
+// cookie/composed/session_handshake CLI yields no live signal because the
+// sandboxed dogfood HOME carries no captured browser session. The resulting
+// 401s are a harness artifact, not a CLI defect: pass the captured session via
+// the config-override env var to exercise the matrix for real. Mirrors the
+// gate's phase5SkipReasonCookieAuthNoHarnessSession so the runner-written skip
+// marker is accepted by `lock promote`.
+const reasonCookieAuthNoHarnessSession = "cookie-auth-no-harness-session"
+
+// liveDogfoodVerdictCookieAuthNoSession is the report Verdict for a clean
+// cookie-auth skip outcome. Distinct from PASS/FAIL so the CLI exits 0 (the
+// 401s are not a defect) and writeLiveDogfoodAcceptance emits a skip marker
+// instead of a fail acceptance marker.
+const liveDogfoodVerdictCookieAuthNoSession = "skip-cookie-auth-no-session"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
 const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
@@ -193,7 +208,8 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		report.Tests = append(report.Tests, runLiveDogfoodCommand(command, ctx)...)
 	}
 
-	finalizeLiveDogfoodReport(report)
+	_, _, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
+	finalizeLiveDogfoodReport(report, authType)
 	// The Phase 5.6 acceptance gate's contract is "marker from the runner on
 	// every outcome": pass → promote, fail → hold-path, missing → "Phase 5
 	// was skipped or not recorded." Writing only on PASS forced operators to
@@ -1829,7 +1845,7 @@ func liveDogfoodUsageSuffix(help string) string {
 	return ""
 }
 
-func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
+func finalizeLiveDogfoodReport(report *LiveDogfoodReport, authType string) {
 	hasUnavailableRunnerSkip := false
 	hasLiveHappyOrJSONPass := false
 	for _, result := range report.Tests {
@@ -1851,6 +1867,29 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 		}
 	}
 	if hasUnavailableRunnerSkip && !hasLiveHappyOrJSONPass {
+		// Browser-session auth (cookie/composed/session_handshake) cannot be
+		// exercised by the sandboxed dogfood HOME: it carries no captured
+		// session, so every command 401s. That is a harness artifact, not a CLI
+		// defect — record a clean skip outcome (CLI exits 0; the gate accepts a
+		// cookie-auth-no-harness-session skip marker) rather than the FAIL the
+		// no-live-signal path would otherwise produce. Pass the captured session
+		// via the config-override env var to exercise the matrix for real.
+		//
+		// Only take the clean-skip path when nothing genuinely failed. A
+		// non-auth defect (e.g. a crashing --help) records a real FAIL that the
+		// session-less 401s must not mask: with report.Failed > 0 we fall
+		// through to the no-live-signal FAIL so the gate still sees the defect.
+		if isBrowserSessionAuthType(authType) && report.Failed == 0 {
+			report.Skipped++
+			report.Tests = append(report.Tests, LiveDogfoodTestResult{
+				Command: "live-dogfood",
+				Kind:    LiveDogfoodTestHappy,
+				Status:  LiveDogfoodStatusSkip,
+				Reason:  reasonCookieAuthNoHarnessSession,
+			})
+			report.Verdict = liveDogfoodVerdictCookieAuthNoSession
+			return
+		}
 		report.Failed++
 		report.MatrixSize++
 		report.Tests = append(report.Tests, LiveDogfoodTestResult{
@@ -1872,6 +1911,19 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 	}
 }
 
+// isBrowserSessionAuthType reports whether the auth type relies on a captured
+// browser session (cookie jar / handshake) rather than an env-var credential.
+// These cannot be exercised by the sandboxed dogfood HOME without injecting the
+// session via the config-override env var.
+func isBrowserSessionAuthType(authType string) bool {
+	switch strings.ToLower(strings.TrimSpace(authType)) {
+	case "cookie", "composed", "session_handshake":
+		return true
+	default:
+		return false
+	}
+}
+
 func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodReport) error {
 	// Identity (api_name/run_id) is recorded so `lock promote`'s cross-check
 	// in validatePhase5Marker can reject stale markers. Three sources, in
@@ -1885,6 +1937,26 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 	apiName, runID, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
 	if authType == "" {
 		authType = "none"
+	}
+
+	// Browser-session auth with no captured session: emit a skip marker (the
+	// gate reads phase5-skip.json beside the acceptance path), not a fail
+	// acceptance marker. The 401-cascade is a harness artifact, not a defect.
+	if report.Verdict == liveDogfoodVerdictCookieAuthNoSession {
+		skipMarker := Phase5GateMarker{
+			SchemaVersion: 1,
+			APIName:       apiName,
+			RunID:         runID,
+			Status:        "skip",
+			Level:         "none",
+			SkipReason:    phase5SkipReasonCookieAuthNoHarnessSession,
+			AuthContext: Phase5AuthContext{
+				Type:                    authType,
+				BrowserSessionAvailable: false,
+			},
+		}
+		skipPath := filepath.Join(filepath.Dir(opts.WriteAcceptancePath), Phase5SkipFilename)
+		return writeLiveDogfoodMarkerFile(skipPath, skipMarker)
 	}
 
 	status := "pass"
@@ -1910,15 +1982,19 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 		},
 		FailureSummary: failureSummary,
 	}
+	return writeLiveDogfoodMarkerFile(opts.WriteAcceptancePath, marker)
+}
+
+func writeLiveDogfoodMarkerFile(path string, marker Phase5GateMarker) error {
 	data, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshaling phase5 acceptance marker: %w", err)
+		return fmt.Errorf("marshaling phase5 marker: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(opts.WriteAcceptancePath), 0o755); err != nil {
-		return fmt.Errorf("creating phase5 acceptance directory: %w", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating phase5 marker directory: %w", err)
 	}
-	if err := os.WriteFile(opts.WriteAcceptancePath, data, 0o644); err != nil {
-		return fmt.Errorf("writing phase5 acceptance marker: %w", err)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing phase5 marker: %w", err)
 	}
 	return nil
 }
