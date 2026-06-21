@@ -55,6 +55,57 @@ func cookieJarPath() string {
 	return filepath.Join(dir, "cookies.json")
 }
 
+// looksLikeCookieJar reports whether s is a cookie-jar string ("name=value;
+// name=value") rather than a bare token. The session env var and the browser
+// AccessToken both store the full Cookie header, so a "=" gates the seed and
+// keeps a stray bearer token from being parsed into a bogus cookie.
+func looksLikeCookieJar(s string) bool {
+	return strings.Contains(s, "=")
+}
+
+// parseCookieJar splits a Cookie-header-style string ("name=value; name=value")
+// into cookies. Pairs without "=" or with an empty name are skipped; values are
+// sanitized to the bytes net/http's jar accepts.
+func parseCookieJar(s string) []*http.Cookie {
+	parts := strings.Split(s, ";")
+	cookies := make([]*http.Cookie, 0, len(parts))
+	for _, part := range parts {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			continue
+		}
+		cookies = append(cookies, &http.Cookie{
+			Name:  name,
+			Value: sanitizeCookieValue(strings.TrimSpace(value)),
+		})
+	}
+	return cookies
+}
+
+// SeedCookieJar seeds jar with the cookies in a Cookie-header-style credential
+// string scoped to baseURL's host, so a session captured via the env var or
+// stored in credentials (not the on-disk cookies.json) still rides every
+// request. Seeding the jar (rather than setting a static Cookie header) lets
+// net/http absorb Set-Cookie rotation — Cloudflare __cf_bm, AWS ALB AWSALB —
+// across a multi-request session that a static header would let go stale.
+// A no-op when the credential is empty, is not a cookie-jar string, or baseURL
+// does not parse.
+func SeedCookieJar(jar http.CookieJar, baseURL, cookieStr string) {
+	if jar == nil || !looksLikeCookieJar(cookieStr) {
+		return
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return
+	}
+	cookies := parseCookieJar(cookieStr)
+	if len(cookies) == 0 {
+		return
+	}
+	jar.SetCookies(u, cookies)
+}
+
 // sanitizeCookieValue strips bytes that net/http's cookie jar rejects per
 // RFC 6265 (cookie-octet = %x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E;
 // excludes whitespace, double-quote, comma, semicolon, backslash, and

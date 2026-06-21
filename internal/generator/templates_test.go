@@ -17,6 +17,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// funcBody returns the source of the function whose declaration starts with
+// decl (including the opening brace), spanning to its matching closing brace.
+// Used to scope NotContains assertions to a single emitted function rather than
+// the whole generated file.
+func funcBody(t *testing.T, src, decl string) string {
+	t.Helper()
+	start := strings.Index(src, decl)
+	require.NotEqual(t, -1, start, "function declaration %q not found", decl)
+	depth := 0
+	for i := start + len(decl) - 1; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[start : i+1]
+			}
+		}
+	}
+	t.Fatalf("unbalanced braces after %q", decl)
+	return ""
+}
+
 func TestGoTemplatesEscapeSpecTextInStringLiterals(t *testing.T) {
 	t.Parallel()
 
@@ -511,13 +535,16 @@ func TestAuthHeaderComposedAndCookieApplySchemePrefix(t *testing.T) {
 			require.NoError(t, err)
 			content := string(configSrc)
 
-			// The raw-return literal must appear nowhere in the emitted config — every
-			// composed/cookie return path now flows through ensureAuthScheme. Whole-file
-			// NotContains avoids depending on a fragile slice boundary.
-			require.NotContains(t, content, "return c."+tt.envField+"\n",
-				"%s auth must not return raw env-var token without scheme prefix:\n%s", tt.authType, content)
-			require.NotContains(t, content, "return c.AccessToken\n",
-				"%s auth must not return raw AccessToken without scheme prefix:\n%s", tt.authType, content)
+			// The raw-return literal must appear nowhere in AuthHeader() — every
+			// composed/cookie return path there now flows through ensureAuthScheme.
+			// Scope to the AuthHeader() body: CookieCredential() intentionally
+			// returns the raw cookie-jar string (no scheme) for jar seeding, so a
+			// whole-file NotContains would false-positive on it.
+			authHeaderBody := funcBody(t, content, "func (c *Config) AuthHeader() string {")
+			require.NotContains(t, authHeaderBody, "return c."+tt.envField+"\n",
+				"%s AuthHeader must not return raw env-var token without scheme prefix:\n%s", tt.authType, authHeaderBody)
+			require.NotContains(t, authHeaderBody, "return c.AccessToken\n",
+				"%s AuthHeader must not return raw AccessToken without scheme prefix:\n%s", tt.authType, authHeaderBody)
 
 			// The replacement ensureAuthScheme call must be the wrapper for both paths.
 			require.Contains(t, content,
