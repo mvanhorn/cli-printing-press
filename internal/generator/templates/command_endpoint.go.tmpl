@@ -173,8 +173,8 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- range .Endpoint.Params}}
 {{- if .Positional}}
 {{- $pi := positionalIndex $.Endpoint .Name}}
-{{- if gt $pi 0}}
-			if len(args) < {{add $pi 1}} {
+{{- if or (gt $pi 0) (pathContainsParam $.Endpoint.Path .Name)}}
+			if len(args) < {{add $pi 1}}{{if pathContainsParam $.Endpoint.Path .Name}} || args[{{$pi}}] == ""{{end}} {
 				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s <%s>", cmd.CommandPath(), "{{.Name}}"))
 			}
 {{- end}}
