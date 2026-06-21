@@ -391,6 +391,45 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			want: "stores create --store-code example-value",
 		},
 		{
+			// A JSON-typed string body flag (the command emits a json.Valid
+			// guard) must not advertise the scalar "example-value" placeholder,
+			// which fails that guard on first run. It gets a minimal valid-JSON
+			// value instead, single-quoted for shell safety.
+			name: "json body field uses valid-json placeholder",
+			resources: map[string]spec.Resource{
+				"lists": {
+					Endpoints: map[string]spec.Endpoint{
+						"add": {
+							Method: "POST",
+							Path:   "/lists/add.php",
+							Body: []spec.Param{
+								{Name: "lists", Required: true, Type: "string", Description: "JSON array of list objects"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/lists/refresh"},
+					},
+				},
+			},
+			want: "lists add --lists '[]'",
+		},
+		{
+			name: "json body field with bracketed description uses array placeholder",
+			resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"bulk": {
+							Method: "POST",
+							Path:   "/items/bulk",
+							Body: []spec.Param{
+								{Name: "payload", Required: true, Type: "string", Description: `[{"id":1,"name":"foo"}]`},
+							},
+						},
+					},
+				},
+			},
+			want: "items --payload '[]'",
+		},
+		{
 			name: "promoted single-endpoint resource keeps positionals",
 			resources: map[string]spec.Resource{
 				"feed": {

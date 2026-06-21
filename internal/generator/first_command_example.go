@@ -116,7 +116,16 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		for _, p := range ep.Body {
 			if p.Required && p.Type == "string" {
 				val := exampleValue(p)
-				if val == "" {
+				// A string body flag whose value must be valid JSON (the command
+				// emits a json.Valid guard — see isJSONStringParam) cannot use the
+				// scalar "example-value" placeholder: it fails that guard
+				// immediately, so the emitted Example would advertise a command
+				// that errors on first run and the live-dogfood happy-path /
+				// json-fidelity probes (which run the Example verbatim) reject it.
+				// Emit a minimal valid-JSON placeholder instead.
+				if isJSONStringParam(p) {
+					val = jsonStringBodyExamplePlaceholder(p)
+				} else if val == "" {
 					val = "value"
 				}
 				parts = append(parts, "--"+publicFlagName(p), val)
@@ -125,6 +134,22 @@ func requiredFlagExampleParts(ep spec.Endpoint) []string {
 		}
 	}
 	return parts
+}
+
+// jsonStringBodyExamplePlaceholder returns a minimal, valid-JSON value for a
+// JSON-typed string body flag (isJSONStringParam). The value is single-quoted
+// so the rendered example survives a copy-paste into a shell and is parsed back
+// to valid JSON by the quote-aware live-dogfood example tokenizer
+// (shellargs.ArgsAfterBinary strips the quotes). An empty array/object keeps the
+// example runnable without inventing field names the upstream API might reject;
+// the array-vs-object shape follows the param's described body type.
+func jsonStringBodyExamplePlaceholder(p spec.Param) string {
+	desc := strings.TrimSpace(p.Description)
+	lower := strings.ToLower(desc)
+	if strings.HasPrefix(desc, "[") || strings.Contains(lower, "array") {
+		return "'[]'"
+	}
+	return "'{}'"
 }
 
 func requiredFlagExampleValue(ep spec.Endpoint, p spec.Param) string {
