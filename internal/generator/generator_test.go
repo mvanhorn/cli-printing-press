@@ -17257,15 +17257,33 @@ func TestLocalReadIsList(t *testing.T) {
 			want:         true,
 		},
 		{
-			name:         "collection-name response path",
+			name:         "collection-name wrapped array response path",
 			endpointName: "find",
-			endpoint:     spec.Endpoint{Method: "GET", Path: "/events", Response: spec.ResponseDef{Type: "object"}, ResponsePath: "_embedded.events"},
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/events", Response: spec.ResponseDef{Type: "array"}, ResponsePath: "_embedded.events"},
 			want:         true,
+		},
+		{
+			name:         "collection-name wrapped object response path",
+			endpointName: "find",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/events/latest", Response: spec.ResponseDef{Type: "object"}, ResponsePath: "data.event"},
+			want:         false,
 		},
 		{
 			name:         "non-collection array response without list name",
 			endpointName: "status",
 			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/status", Response: spec.ResponseDef{Type: "array"}},
+			want:         false,
+		},
+		{
+			name:         "unscoped all is not a new collection heuristic",
+			endpointName: "all",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/all", Response: spec.ResponseDef{Type: "array"}},
+			want:         false,
+		},
+		{
+			name:         "unscoped index is not a new collection heuristic",
+			endpointName: "index",
+			endpoint:     spec.Endpoint{Method: "GET", Path: "/campaigns/index", Response: spec.ResponseDef{Type: "array"}},
 			want:         false,
 		},
 		{

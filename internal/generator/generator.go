@@ -7155,14 +7155,13 @@ func localReadIsList(supportsAllPagination bool, apiSpec *spec.APISpec, endpoint
 
 func localReadLooksLikeCollection(endpointName string, endpoint spec.Endpoint) bool {
 	nameLower := strings.ToLower(strings.TrimSpace(endpointName))
-	if nameLower == "list" || nameLower == "all" || nameLower == "index" {
+	if nameLower == "list" {
 		return true
 	}
 	if !localReadNameContainsAny(nameLower, []string{"search", "query", "browse", "find"}) {
 		return false
 	}
-	return strings.EqualFold(endpoint.Response.Type, "array") ||
-		strings.TrimSpace(endpoint.ResponsePath) != ""
+	return strings.EqualFold(endpoint.Response.Type, "array")
 }
 
 func localReadNameContainsAny(s string, needles []string) bool {
