@@ -65,6 +65,12 @@ func TestEnumParamEmitsValidation(t *testing.T) {
 		"the old warn-and-continue enum behavior must be gone")
 }
 
+func TestEnumLiteralTrimsValues(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, `"yes", "no", "only"`, enumLiteral([]string{"yes", " no", " only"}))
+}
+
 // TestEnumParamPromotedCommandRejects covers the promoted-command template's
 // enum path (command_promoted.go.tmpl), which carries the same warn→reject
 // change as the endpoint template but is otherwise only validated by reading
