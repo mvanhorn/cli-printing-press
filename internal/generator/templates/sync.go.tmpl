@@ -254,8 +254,9 @@ Resource scoping:
 				return usageErr(err)
 			}
 
-			// --full: clear all sync cursors before starting
-			if full {
+			// --full: clear all sync cursors before starting.
+			// Skip under --dry-run: a preview must not mutate sync-state (issue #2935).
+			if full && !c.DryRun {
 				for _, resource := range resources {
 					_ = db.SaveSyncState(resource, "", 0)
 				}
@@ -276,11 +277,14 @@ Resource scoping:
 					maxPages = 1
 					// Clear the cursor so we start from the head each time;
 					// the goal of --latest-only is "refresh the top" not
-					// "resume from wherever I left off".
-					for _, resource := range resources {
-						existing, _, _, _ := db.GetSyncState(resource)
-						if existing != "" {
-							_ = db.SaveSyncState(resource, "", 0)
+					// "resume from wherever I left off". Skip under --dry-run:
+					// a preview must not mutate sync-state (issue #2935).
+					if !c.DryRun {
+						for _, resource := range resources {
+							existing, _, _, _ := db.GetSyncState(resource)
+							if existing != "" {
+								_ = db.SaveSyncState(resource, "", 0)
+							}
 						}
 					}
 				} else if humanFriendly {
@@ -2490,6 +2494,17 @@ func syncDependentResource(ctx context.Context, c interface {
 					fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
 				}
 				break
+			}
+
+			// Dry-run sentinel: client.dryRun returns `{"dry_run": true}` instead
+			// of a real response when --dry-run is set. A preview must not mutate
+			// sync-state, so return before the SaveSyncState at the end of this
+			// function — mirroring syncResource's guard above. (issue #2935)
+			if isDryRunResponse(data) {
+				if !humanFriendly {
+					fmt.Fprintf(syncEvents, `{"event":"sync_dryrun","resource":"%s"}`+"\n", dep.Name)
+				}
+				return syncResult{Resource: dep.Name, Count: 0, Duration: time.Since(started)}
 			}
 
 {{ if $hasHTMLSync}}
