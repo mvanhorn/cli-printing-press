@@ -87,12 +87,18 @@ func TestRankWhich_NoMatchReturnsEmpty(t *testing.T) {
 // zero NovelFeatures ship an empty index, and that is still a valid
 // state (which returns the "no curated index" error at runtime).
 func TestWhichIndex_ExistsAndIsWellFormed(t *testing.T) {
+	root := newRootCmd(&rootFlags{})
 	for i, e := range whichIndex {
 		if e.Command == "" {
 			t.Errorf("whichIndex[%d] has empty Command - template rendered bad data", i)
+			continue
 		}
 		if strings.TrimSpace(e.Description) == "" {
 			t.Errorf("whichIndex[%d] (%s) has empty Description - template rendered bad data", i, e.Command)
+		}
+		found, remaining, err := root.Find(strings.Fields(e.Command))
+		if err != nil || len(remaining) > 0 {
+			t.Errorf("whichIndex[%d] command %q does not resolve in the Cobra tree (found=%v, remaining=%v, err=%v)", i, e.Command, found, remaining, err)
 		}
 	}
 }
