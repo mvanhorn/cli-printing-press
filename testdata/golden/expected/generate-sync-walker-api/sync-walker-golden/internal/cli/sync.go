@@ -1233,7 +1233,9 @@ func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string
 			continue
 		}
 		if nextURL := paginationLinkURL(rawNext); nextURL != "" {
-			return cursorFromNextURL(nextURL, cursorParam)
+			if cursor := cursorFromNextURL(nextURL, cursorParam); cursor != "" {
+				return cursor
+			}
 		}
 	}
 	return ""
