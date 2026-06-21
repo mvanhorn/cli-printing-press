@@ -7147,10 +7147,30 @@ func localReadIsList(supportsAllPagination bool, apiSpec *spec.APISpec, endpoint
 	if endpointHasPathScope(endpoint) {
 		return false
 	}
-	if strings.EqualFold(endpointName, "list") {
+	if localReadLooksLikeCollection(endpointName, endpoint) {
 		return true
 	}
 	return networkFallbackReason(apiSpec) == "synthetic_anchor_fallback" && strings.EqualFold(endpoint.Response.Type, "array")
+}
+
+func localReadLooksLikeCollection(endpointName string, endpoint spec.Endpoint) bool {
+	nameLower := strings.ToLower(strings.TrimSpace(endpointName))
+	if nameLower == "list" {
+		return true
+	}
+	if !localReadNameContainsAny(nameLower, []string{"search", "query", "browse", "find"}) {
+		return false
+	}
+	return strings.EqualFold(endpoint.Response.Type, "array")
+}
+
+func localReadNameContainsAny(s string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func endpointHasPathScope(endpoint spec.Endpoint) bool {
