@@ -1044,6 +1044,11 @@ resources:
 	require.Len(t, manifest.NovelFeatures, 1)
 	assert.Equal(t, "Built insight", manifest.NovelFeatures[0].Name)
 	assert.Equal(t, "items insight", manifest.NovelFeatures[0].Command)
+
+	which, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "which.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(which), `Command: "items insight"`)
+	assert.NotContains(t, string(which), "items planned")
 }
 
 func TestGenerateCmdAppliesBrowserClearanceReachability(t *testing.T) {
