@@ -61,6 +61,9 @@ func TestGeneratorEmitsNovelFeatureCommandStubs(t *testing.T) {
 
 	classify := readGeneratedFile(t, outputDir, "internal", "cli", "runs_classify.go")
 	assert.Contains(t, classify, `Use:         "classify"`)
+	// Multi-segment command path: dropNovelFeatureExamplePrefix strips the
+	// binary AND both path segments ("runs classify"), leaving only the args.
+	assert.Contains(t, classify, `Example:     "run-123 --limit 10"`)
 	assert.Contains(t, classify, `Annotations: map[string]string{"mcp:read-only": "true"}`)
 	assert.Contains(t, classify, `StringVar(&flagLimit, "limit", ""`)
 	assert.Contains(t, classify, `TODO: implement novel feature %q", "runs classify"`)
