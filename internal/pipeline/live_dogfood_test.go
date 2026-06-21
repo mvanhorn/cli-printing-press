@@ -4851,32 +4851,32 @@ func TestHappyArgsContainSyntheticFlagPlaceholder(t *testing.T) {
 	))
 }
 
-// TestCollectLiveDogfoodCommandsSkipsLoginAlias verifies the top-level
-// "login" alias (a peer of `auth login` that launches the OAuth browser
-// flow) is treated as framework scaffolding and excluded from the live
-// dogfood matrix, while real API subtrees survive.
-func TestCollectLiveDogfoodCommandsSkipsLoginAlias(t *testing.T) {
+// TestLiveDogfoodSkipsInteractiveAuthCommands locks in that the live matrix
+// skips promoted login/logout (interactive OAuth lifecycle commands) the same
+// way it already skips the "auth" parent. Probing their happy path would bind a
+// local callback port and block on a browser redirect until the per-command
+// timeout, so they must never enter the command list.
+func TestLiveDogfoodSkipsInteractiveAuthCommands(t *testing.T) {
 	t.Parallel()
 
-	root := dogfoodAgentCommand{
-		Name: "root",
-		Subcommands: []dogfoodAgentCommand{
-			{Name: "login"},
-			{Name: "auth", Subcommands: []dogfoodAgentCommand{{Name: "login"}}},
-			{Name: "posts", Subcommands: []dogfoodAgentCommand{{Name: "list"}}},
-		},
+	roots := []dogfoodAgentCommand{
+		{Name: "login"},
+		{Name: "logout"},
+		{Name: "auth", Subcommands: []dogfoodAgentCommand{{Name: "login"}}},
+		{Name: "tasks", Subcommands: []dogfoodAgentCommand{{Name: "list"}}},
 	}
-
 	var cmds []liveDogfoodCommand
-	for _, sub := range root.Subcommands {
-		collectLiveDogfoodCommands(nil, sub, &cmds)
+	for _, root := range roots {
+		collectLiveDogfoodCommands(nil, root, &cmds)
 	}
 
-	var paths [][]string
+	var names []string
 	for _, c := range cmds {
-		paths = append(paths, c.Path)
+		names = append(names, strings.Join(c.Path, " "))
 	}
-	// Both the top-level "login" alias and the "auth" subtree are framework
-	// skips; only the posts subtree should survive.
-	assert.Equal(t, [][]string{{"posts", "list"}}, paths)
+
+	assert.NotContains(t, names, "login")
+	assert.NotContains(t, names, "logout")
+	assert.NotContains(t, names, "auth login")
+	assert.Contains(t, names, "tasks list", "non-auth commands must still be collected")
 }

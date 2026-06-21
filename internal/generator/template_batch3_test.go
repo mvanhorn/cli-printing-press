@@ -68,6 +68,13 @@ func TestGeneratedTailShortCircuitsFollowUnderDogfood(t *testing.T) {
 	assert.Contains(t, tailSrc, "if !follow {\n\t\t\t\treturn nil\n\t\t\t}")
 	assert.Less(t, strings.Index(tailSrc, "if !follow {"), strings.Index(tailSrc, "ticker := time.NewTicker(interval)"),
 		"tail must return after one poll before creating the follow ticker")
+
+	// An unknown resource must fail fast with a non-zero exit (it would only
+	// 404 forever) — and the validation must run before the poll loop binds.
+	assert.Contains(t, tailSrc, "for _, r := range tailKnownResources() {")
+	assert.Contains(t, tailSrc, `return fmt.Errorf("unknown resource %q; known resources: %v", resource, tailKnownResources())`)
+	assert.Less(t, strings.Index(tailSrc, "known resources: %v"), strings.Index(tailSrc, "c, err := flags.newClient()"),
+		"tail must reject an unknown resource before constructing the client")
 }
 
 func TestGeneratedSyncTreatsArgumentMissing400AsWarning(t *testing.T) {

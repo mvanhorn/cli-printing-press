@@ -56,6 +56,21 @@ native streaming instead of polling.`,
 			if resource == "" {
 				return fmt.Errorf("resource name required (e.g., 'tail messages')")
 			}
+			// Reject a resource this CLI does not expose before binding the poll
+			// loop: an unknown name only ever 404s, so failing fast with a
+			// non-zero exit (and the valid set) beats warning once per poll
+			// forever. Also satisfies the invalid-argument contract the dogfood
+			// error-path probe checks.
+			knownResource := false
+			for _, r := range tailKnownResources() {
+				if r == resource {
+					knownResource = true
+					break
+				}
+			}
+			if !knownResource {
+				return fmt.Errorf("unknown resource %q; known resources: %v", resource, tailKnownResources())
+			}
 
 			c, err := flags.newClient()
 			if err != nil {
