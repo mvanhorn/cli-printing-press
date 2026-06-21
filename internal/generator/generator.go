@@ -4746,18 +4746,25 @@ func cobraFlagFunc(t string) string {
 }
 
 // mcpBindingFunc returns the mcplib.With* function name used in MCP tool
-// input-schema registration so numeric fields bind as JSON numbers (not
-// quoted strings) and pass through the generic makeAPIHandler intact.
-// Funnels through primitiveKind so OpenAPI-parsed shapes ("int", "float",
-// "bool") and internal-spec literals ("integer", "number", "boolean")
-// produce the same binding. Object/array bodies fall back to WithString
-// because they ride the --body-json fallback or a JSON-string flag.
+// input-schema registration so each field binds to its native JSON type and
+// passes through the generic makeAPIHandler intact. Funnels through
+// primitiveKind so OpenAPI-parsed shapes ("int", "float", "bool") and
+// internal-spec literals ("integer", "number", "boolean") produce the same
+// binding. Array/object params bind natively (WithArray/WithObject): the
+// handler's body path stores the parsed value verbatim and JSON-marshals it,
+// so a native []any/map serializes as a real array/object instead of a quoted
+// JSON string. The body_json polymorphic (oneOf/anyOf) fallback is hardcoded
+// as WithString in the template and is NOT routed through this function.
 func mcpBindingFunc(t string) string {
 	switch primitiveKind(t) {
 	case "int", "float":
 		return "WithNumber"
 	case "bool":
 		return "WithBoolean"
+	case "array":
+		return "WithArray"
+	case "object":
+		return "WithObject"
 	default:
 		return "WithString"
 	}
@@ -5203,6 +5210,17 @@ func hasMCPNestedBodyPath(apiSpec *spec.APISpec) bool {
 func mcpParamDefaultValue(p spec.Param) (string, bool) {
 	if p.Default == nil {
 		return "", false
+	}
+	// An array/object param now binds natively (WithArray/WithObject) and its
+	// live values are JSON-encoded; serialize a composite default the same way
+	// so an omitted-arg default isn't injected as Go's "%v" rendering
+	// ("[a b c]" / "map[...]") where the wire expects JSON.
+	switch primitiveKind(p.Type) {
+	case "array", "object":
+		if b, err := json.Marshal(p.Default); err == nil {
+			s := string(b)
+			return s, s != "" && s != "null"
+		}
 	}
 	v := fmt.Sprintf("%v", p.Default)
 	return v, v != ""
