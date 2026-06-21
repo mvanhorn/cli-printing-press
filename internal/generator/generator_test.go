@@ -744,7 +744,7 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 	// agent-context only reads CLI tree state and emits JSON to stdout.
 	// The runtime walker uses this annotation to set readOnlyHint on
 	// the resulting MCP tool so hosts skip the per-call permission prompt.
-	assert.Regexp(t, `Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`, src,
+	assert.Regexp(t, `Annotations:\s+map\[string\]string\{[^}]*"mcp:read-only":\s*"true"[^}]*\}`, src,
 		"agent_context.go must carry mcp:read-only annotation")
 
 	// The subcommand must be registered in root.go so the CLI picks it up.
@@ -16924,7 +16924,10 @@ func TestToKebab_SnakeCaseInput(t *testing.T) {
 // export.go.tmpl (--output writes user files), import/sync/feedback/graphql_sync (writes).
 func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 	t.Parallel()
-	annotationRE := regexp.MustCompile(`Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`)
+	// Match the read-only annotation inside an Annotations map literal,
+	// tolerating additional annotations (e.g. pp:no-error-path-probe on tail).
+	// [^}]* stays within a single map literal so per-command counts hold.
+	annotationRE := regexp.MustCompile(`Annotations:\s+map\[string\]string\{[^}]*"mcp:read-only":\s*"true"[^}]*\}`)
 
 	cases := []struct {
 		template string
