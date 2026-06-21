@@ -513,8 +513,12 @@ class TestExtractProseInvocations(unittest.TestCase):
     def test_double_quoted_command_strips_trailing_quote(self):
         with tempfile.TemporaryDirectory() as tmp:
             cli_dir = self._cli_dir(tmp)
-            # An unbalanced double quote in prose also falls back to split().
-            text = 'Tip: "mycli auth login --chrome to start.'
+            # The opening quote sits after the binary, so the extracted
+            # fragment (`auth login --chrome" to authenticate.`) carries an
+            # unbalanced `"` that shlex.split rejects, forcing the
+            # fragment.split() fallback to yield `--chrome"`. Without the
+            # trailing-quote strip the flag token would leak that quote.
+            text = 'Run "mycli auth login --chrome" to authenticate.'
             results = _extract_prose_invocations(text, "mycli", cli_dir)
             flags = [f for _cmd, _pos, fl, _surface in results for f in fl]
             self.assertIn("--chrome", flags)
