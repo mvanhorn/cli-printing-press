@@ -710,6 +710,34 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 }
 
+{{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
+
+// CookieCredential returns the raw stored cookie credential for cookie/composed
+// auth with no scheme prefix: the env-var-provided session string wins over the
+// file-stored browser cookie, mirroring AuthHeader's precedence. The value is
+// the cookie-jar string ("name=value; name=value") captured at login or exported
+// via the session env var, suitable for seeding an http.CookieJar so the
+// credential rides every request. Returns "" when no cookie credential is set.
+func (c *Config) CookieCredential() string {
+{{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
+{{- $isAuthEnvVarORCase := .Auth.IsAuthEnvVarORCase}}
+{{- if $isAuthEnvVarORCase}}
+{{- range .Auth.EnvVarSpecs}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		return c.{{resolveEnvVarField .Name}}
+	}
+{{- end}}
+{{- else}}
+	{{- with $canonicalEnvVar}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		return c.{{resolveEnvVarField .Name}}
+	}
+	{{- end}}
+{{- end}}
+	return c.AccessToken
+}
+{{- end}}
+
 func applyAuthFormat(format string, replacements map[string]string) string {
 	if format == "" {
 		return ""

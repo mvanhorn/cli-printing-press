@@ -55,6 +55,101 @@ func cookieJarPath() string {
 	return filepath.Join(dir, "cookies.json")
 }
 
+// looksLikeCookieJar reports whether s is a cookie-jar string ("name=value;
+// name=value") rather than a bare token. The session env var and the browser
+// AccessToken both store the full Cookie header, so the seed is gated on a real
+// "name=value" pair. A bare "=" is too loose: a base64-padded JWT ("eyJ...Q==")
+// contains "=" yet is a single bearer token, and strings.Cut would split it into
+// a bogus {name:"eyJ...Q", value:"="} cookie. So require the first segment to be
+// a valid name=value pair whose name is a legal cookie-name token; that screens
+// out JWT/bearer values while still passing a single legit "name=value" cookie.
+func looksLikeCookieJar(s string) bool {
+	first, _, _ := strings.Cut(s, ";")
+	name, value, ok := strings.Cut(strings.TrimSpace(first), "=")
+	if !ok || value == "" {
+		return false
+	}
+	return isCookieName(strings.TrimSpace(name))
+}
+
+// isCookieName reports whether s is a non-empty RFC 6265 cookie-name token
+// (RFC 2616 token: no controls, spaces, or separators). It additionally rejects
+// "." and "/": these are valid token bytes but appear in JWT/bearer values
+// (header.payload.signature, base64url "/"), which a padded "==" suffix would
+// otherwise sneak past as a name=value pair. Server-set cookie names do not use
+// them in practice, so screening them out separates a real session jar from a
+// bearer token without rejecting legitimate single cookies.
+func isCookieName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b <= 0x20 || b >= 0x7f {
+			return false
+		}
+		switch b {
+		case '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"',
+			'/', '[', ']', '?', '=', '{', '}', '.':
+			return false
+		}
+	}
+	return true
+}
+
+// parseCookieJar splits a Cookie-header-style string ("name=value; name=value")
+// into cookies. Pairs without "=" or with an empty name are skipped; values are
+// sanitized to the bytes net/http's jar accepts.
+func parseCookieJar(s string) []*http.Cookie {
+	parts := strings.Split(s, ";")
+	cookies := make([]*http.Cookie, 0, len(parts))
+	for _, part := range parts {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			continue
+		}
+		cookies = append(cookies, &http.Cookie{
+			Name:  name,
+			Value: sanitizeCookieValue(strings.TrimSpace(value)),
+		})
+	}
+	return cookies
+}
+
+// SeedCookieJar seeds jar with the cookies in a Cookie-header-style credential
+// string scoped to baseURL's host, so a session captured via the env var or
+// stored in credentials (not the on-disk cookies.json) still rides every
+// request. Seeding the jar (rather than setting a static Cookie header) lets
+// net/http absorb Set-Cookie rotation — Cloudflare __cf_bm, AWS ALB AWSALB —
+// across a multi-request session that a static header would let go stale.
+// A no-op when the credential is empty, is not a cookie-jar string, or baseURL
+// does not parse.
+func SeedCookieJar(jar http.CookieJar, baseURL, cookieStr string) {
+	if jar == nil || !looksLikeCookieJar(cookieStr) {
+		return
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return
+	}
+	cookies := parseCookieJar(cookieStr)
+	if len(cookies) == 0 {
+		return
+	}
+	// Seed the in-memory jar only — never persist. The wrapper's SetCookies
+	// writes through to cookies.json (persistLocked -> mergeAndWriteCookieRows),
+	// which would clobber fresher rotation-refreshed values (Cloudflare __cf_bm,
+	// AWS ALB AWSALB) already on disk with the stale env/credential ones. Seeding
+	// the inner jar (as loadFromDisk does) keeps the credential live for the
+	// session without touching the persisted set.
+	if cj, ok := jar.(*cookieJar); ok {
+		cj.inner.SetCookies(u, cookies)
+		return
+	}
+	jar.SetCookies(u, cookies)
+}
+
 // sanitizeCookieValue strips bytes that net/http's cookie jar rejects per
 // RFC 6265 (cookie-octet = %x21 / %x23-2B / %x2D-3A / %x3C-5B / %x5D-7E;
 // excludes whitespace, double-quote, comma, semicolon, backslash, and
