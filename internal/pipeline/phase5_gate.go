@@ -19,6 +19,14 @@ const (
 	phase5SkipReasonExternalCredentialsUnavailable = "external_credentials_unavailable"
 	phase5SkipReasonLANUnreachableFromHost         = "lan-unreachable-from-generation-host"
 	phase5SkipReasonLocalSourceRequiresDatabase    = "local_source_requires_operator_database"
+	// phase5SkipReasonCookieAuthNoHarnessSession records that a
+	// cookie/composed/session_handshake CLI could not be exercised live
+	// because the sandboxed dogfood HOME carried no captured browser session.
+	// The 401s this produces are a harness artifact, not a CLI defect; the
+	// live runner emits the matching skip. Valid only for browser-session
+	// auth types — credentialed auth (api_key/bearer/oauth2) keeps using
+	// auth_required_no_credential.
+	phase5SkipReasonCookieAuthNoHarnessSession = "cookie-auth-no-harness-session"
 )
 
 var phase5AcceptedAcceptanceLevels = []string{
@@ -297,7 +305,15 @@ func phase5SkipAllowed(marker Phase5GateMarker, manifest CLIManifest) (bool, str
 	}
 	switch authType {
 	case "cookie", "composed", "session_handshake":
-		return false, "browser-session auth APIs require phase5 acceptance; missing API key is not a valid skip"
+		// The sandboxed dogfood HOME carries no captured browser session, so
+		// every command 401s — a harness artifact, not a CLI defect. Accept the
+		// runner-emitted no-harness-session skip; reject any other skip reason
+		// (e.g. auth_required_no_credential) so missing-credential excuses can't
+		// substitute for it.
+		if skipReason == phase5SkipReasonCookieAuthNoHarnessSession {
+			return true, ""
+		}
+		return false, "browser-session auth APIs require phase5 acceptance or a cookie-auth-no-harness-session skip; missing API key is not a valid skip"
 	default:
 		return false, fmt.Sprintf("phase5 skip not allowed for auth type %q", authType)
 	}
