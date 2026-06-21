@@ -67,6 +67,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"testing"
 )
 
@@ -97,13 +98,55 @@ func TestSeedCookieJarNilJarIsNoop(t *testing.T) {
 	var jar http.CookieJar
 	SeedCookieJar(jar, "https://api.cookieseed.example", "session_id=abc")
 }
+
+// TestSeedCookieJarDoesNotPersist pins the no-clobber contract: seeding the
+// persistent wrapper jar must only touch the in-memory inner jar, never write
+// cookies.json. Otherwise a stale env/credential value overwrites a fresher
+// rotation-refreshed cookie already on disk.
+func TestSeedCookieJarDoesNotPersist(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	jar := LoadCookieJar()
+	SeedCookieJar(jar, "https://api.cookieseed.example", "session_id=abc; csrf_token=def")
+
+	// The seeded cookies must be live on the wrapper for the base URL...
+	u, _ := url.Parse("https://api.cookieseed.example/items")
+	if cs := jar.Cookies(u); len(cs) != 2 {
+		t.Fatalf("seeded wrapper jar did not attach stored cookies: %v", cs)
+	}
+	// ...but seeding must not have written the on-disk cookie file.
+	if _, err := os.Stat(cookieJarPath()); !os.IsNotExist(err) {
+		t.Fatalf("SeedCookieJar must not persist to cookies.json (stat err=%v)", err)
+	}
+}
+
+// TestLooksLikeCookieJarRejectsJWT pins the gate tightening: a base64-padded
+// JWT contains "=" yet is a single bearer token; it must not be parsed into a
+// bogus cookie, while a real name=value pair still passes.
+func TestLooksLikeCookieJarRejectsJWT(t *testing.T) {
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlQQ=="
+	if looksLikeCookieJar(jwt) {
+		t.Fatalf("JWT-shaped token must be rejected by the cookie-jar gate")
+	}
+	jar, _ := cookiejar.New(nil)
+	SeedCookieJar(jar, "https://api.cookieseed.example", jwt)
+	u, _ := url.Parse("https://api.cookieseed.example/items")
+	if cs := jar.Cookies(u); len(cs) != 0 {
+		t.Fatalf("a JWT bearer token must not seed any cookie, got %v", cs)
+	}
+	if !looksLikeCookieJar("session_id=abc; csrf_token=def") {
+		t.Fatalf("a real cookie-jar string must still pass the gate")
+	}
+	if !looksLikeCookieJar("session_id=abc") {
+		t.Fatalf("a single legit name=value cookie must still pass the gate")
+	}
+}
 `
 	require.NoError(t, os.WriteFile(
 		filepath.Join(outputDir, "internal", "client", "seed_runtime_test.go"),
 		[]byte(runtimeTest), 0o600))
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	runGoCommand(t, outputDir, "test", "./internal/client/", "-run", "TestSeedCookieJar")
+	runGoCommand(t, outputDir, "test", "./internal/client/", "-run", "TestSeedCookieJar|TestLooksLikeCookieJar")
 }
 
 // TestBearerAuthClientOmitsCookieJarSeed pins the negative: bearer/api_key auth

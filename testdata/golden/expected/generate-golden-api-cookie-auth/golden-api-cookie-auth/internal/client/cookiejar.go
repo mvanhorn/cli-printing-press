@@ -57,10 +57,44 @@ func cookieJarPath() string {
 
 // looksLikeCookieJar reports whether s is a cookie-jar string ("name=value;
 // name=value") rather than a bare token. The session env var and the browser
-// AccessToken both store the full Cookie header, so a "=" gates the seed and
-// keeps a stray bearer token from being parsed into a bogus cookie.
+// AccessToken both store the full Cookie header, so the seed is gated on a real
+// "name=value" pair. A bare "=" is too loose: a base64-padded JWT ("eyJ...Q==")
+// contains "=" yet is a single bearer token, and strings.Cut would split it into
+// a bogus {name:"eyJ...Q", value:"="} cookie. So require the first segment to be
+// a valid name=value pair whose name is a legal cookie-name token; that screens
+// out JWT/bearer values while still passing a single legit "name=value" cookie.
 func looksLikeCookieJar(s string) bool {
-	return strings.Contains(s, "=")
+	first, _, _ := strings.Cut(s, ";")
+	name, value, ok := strings.Cut(strings.TrimSpace(first), "=")
+	if !ok || value == "" {
+		return false
+	}
+	return isCookieName(strings.TrimSpace(name))
+}
+
+// isCookieName reports whether s is a non-empty RFC 6265 cookie-name token
+// (RFC 2616 token: no controls, spaces, or separators). It additionally rejects
+// "." and "/": these are valid token bytes but appear in JWT/bearer values
+// (header.payload.signature, base64url "/"), which a padded "==" suffix would
+// otherwise sneak past as a name=value pair. Server-set cookie names do not use
+// them in practice, so screening them out separates a real session jar from a
+// bearer token without rejecting legitimate single cookies.
+func isCookieName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b <= 0x20 || b >= 0x7f {
+			return false
+		}
+		switch b {
+		case '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"',
+			'/', '[', ']', '?', '=', '{', '}', '.':
+			return false
+		}
+	}
+	return true
 }
 
 // parseCookieJar splits a Cookie-header-style string ("name=value; name=value")
@@ -101,6 +135,16 @@ func SeedCookieJar(jar http.CookieJar, baseURL, cookieStr string) {
 	}
 	cookies := parseCookieJar(cookieStr)
 	if len(cookies) == 0 {
+		return
+	}
+	// Seed the in-memory jar only — never persist. The wrapper's SetCookies
+	// writes through to cookies.json (persistLocked -> mergeAndWriteCookieRows),
+	// which would clobber fresher rotation-refreshed values (Cloudflare __cf_bm,
+	// AWS ALB AWSALB) already on disk with the stale env/credential ones. Seeding
+	// the inner jar (as loadFromDisk does) keeps the credential live for the
+	// session without touching the persisted set.
+	if cj, ok := jar.(*cookieJar); ok {
+		cj.inner.SetCookies(u, cookies)
 		return
 	}
 	jar.SetCookies(u, cookies)
