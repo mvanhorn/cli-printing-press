@@ -237,8 +237,11 @@ func preserveMCPMainVersionValues(snapshotDir, freshDir string, report *MergeRep
 			continue
 		}
 		literal, ok, err := readStringVarLiteral(filepath.Join(snapshotDir, rel), "version")
-		if err != nil || !ok {
+		if err != nil {
 			return err
+		}
+		if !ok {
+			continue
 		}
 		freshPath := filepath.Join(freshDir, rel)
 		if _, err := os.Stat(freshPath); err != nil {

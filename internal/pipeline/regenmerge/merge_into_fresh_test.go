@@ -128,6 +128,45 @@ func newVersionCmd() string { return version }
 		"the published runtime version value stays in root.go")
 }
 
+func TestPreserveMCPMainVersionValuesSkipsMissingSnapshotVersion(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	staleRel := "cmd/stale-pp-mcp/main.go"
+	currentRel := "cmd/current-pp-mcp/main.go"
+	for _, rel := range []string{staleRel, currentRel} {
+		require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(snap, staleRel), []byte(`package main
+
+func main() {}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, staleRel), []byte(`package main
+
+var version = "2.0.0"
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, currentRel), []byte(`package main
+
+var version = "1.2.3"
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, currentRel), []byte(`package main
+
+var version = "2.0.0"
+`), 0o644))
+
+	report := &MergeReport{Files: []FileClassification{
+		{Path: staleRel},
+		{Path: currentRel},
+	}}
+	require.NoError(t, preserveMCPMainVersionValues(snap, fresh, report))
+
+	got, err := os.ReadFile(filepath.Join(fresh, currentRel))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `var version = "1.2.3"`,
+		"a missing snapshot version in one MCP file must not skip later MCP files")
+}
+
 func TestMergeIntoFreshTreePrunesOnlyCollidingNameFromMultiNameValueSpec(t *testing.T) {
 	t.Parallel()
 
