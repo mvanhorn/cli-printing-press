@@ -6,7 +6,7 @@ tier: community
 spec_url: https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/catalog/specs/stac-merged.json
 spec_format: json
 openapi_version: "3.0"
-spec_source: docs
+spec_source: community
 verified_date: "2026-06-22"
 homepage: https://stacspec.org
 auth_required: false
@@ -15,8 +15,7 @@ auth_instructions: |
   AWS Earth Search (https://earth-search.aws.element84.com/v1).
   Override with STAC_BASE_URL to target any STAC-compliant server.
   Asset downloads may require auth depending on the provider.
-auth_env_vars:
-  - STAC_BASE_URL
+auth_env_vars: []
 notes: |
   STAC (SpatioTemporal Asset Catalog) is an OGC community standard implemented
   by dozens of public Earth observation data providers. This CLI targets the
