@@ -132,7 +132,16 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("creating db directory: %w", err)
 	}
 
-	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)"
+	// Pragma order is load-bearing: busy_timeout must engage BEFORE
+	// journal_mode(WAL) so the delete→WAL conversion (an exclusive
+	// operation on a fresh DB) runs with a busy handler active. With the
+	// timeout listed after the conversion, concurrent first-run opens
+	// race the WAL switch and fail SQLITE_BUSY instead of waiting. This
+	// mirrors the OpenReadOnly DSN and works alongside the retryOnBusy
+	// wrapper around Conn() acquisition below; both layers are needed
+	// because modernc.org/sqlite's connect-time conversion is not fully
+	// covered by the statement-level busy handler alone.
+	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)"
 	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
 		return nil, err
 	}
