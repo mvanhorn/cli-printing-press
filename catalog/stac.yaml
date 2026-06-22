@@ -1,0 +1,49 @@
+name: stac
+display_name: STAC API
+description: SpatioTemporal Asset Catalog API — browse, search, and access geospatial assets (satellite imagery, DEMs, climate data) across any conforming server.
+category: maps
+tier: community
+spec_url: https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/catalog/specs/stac-merged.json
+spec_format: json
+openapi_version: "3.0"
+spec_source: docs
+verified_date: "2026-06-22"
+homepage: https://stacspec.org
+auth_required: false
+auth_instructions: |
+  No auth required for public STAC endpoints. The default endpoint is
+  AWS Earth Search (https://earth-search.aws.element84.com/v1).
+  Override with STAC_BASE_URL to target any STAC-compliant server.
+  Asset downloads may require auth depending on the provider.
+auth_env_vars:
+  - STAC_BASE_URL
+notes: |
+  STAC (SpatioTemporal Asset Catalog) is an OGC community standard implemented
+  by dozens of public Earth observation data providers. This CLI targets the
+  protocol, not a single vendor — use 'providers use' to switch endpoints:
+
+    - AWS Earth Search (default): Sentinel-1/2, Landsat, NAIP, Copernicus DEM
+    - Microsoft Planetary Computer: broad catalog, SAS token for downloads
+    - USGS LandsatLook: full Landsat Collection 2 archive
+    - Copernicus Data Space: ESA Sentinel + Landsat open data
+    - NASA CMR LP DAAC: HLS, VIIRS, MODIS cloud-native products
+    - Radiant MLHub: ML-ready training datasets
+
+  Key commands:
+
+    stac-pp-cli providers list                     # all known endpoints
+    stac-pp-cli providers use planetary-computer   # switch endpoint
+    stac-pp-cli collections get                    # list available collections
+    stac-pp-cli workflow search \
+      --bbox "2.2,48.8,2.4,48.9" \
+      --collections sentinel-2-c1-l2a \
+      --datetime "2024-06-01/2024-08-31" \
+      --max-cloud 10                               # cloud-filtered scene search
+
+  Spec note: the STAC API spec is modular (separate OpenAPI files per conformance
+  class). The in-repo spec at catalog/specs/stac-merged.json is a merged bundle
+  covering Core, Item Search, OGC API Features (Collections + Items), and
+  Conformance, built by merging individual spec files from
+  https://github.com/radiantearth/stac-api-spec (main branch, v1.0.0).
+  Cloud-cover filtering uses the #query conformance class (not CQL2), which is
+  supported by all major public endpoints.

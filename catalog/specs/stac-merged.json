@@ -1,0 +1,1800 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "STAC API",
+    "version": "v1.0.0",
+    "description": "SpatioTemporal Asset Catalog (STAC) API - a community standard for browsing and searching spatiotemporal assets. Covers Core, Item Search, OGC API Features, and Collections conformance classes.",
+    "contact": {
+      "name": "STAC Specification",
+      "url": "http://stacspec.org"
+    },
+    "license": {
+      "name": "Apache License 2.0",
+      "url": "http://www.apache.org/licenses/LICENSE-2.0"
+    }
+  },
+  "tags": [
+    {
+      "name": "Core",
+      "description": "essential characteristics of a STAC API"
+    },
+    {
+      "name": "Item Search",
+      "description": "essential characteristics of a STAC API"
+    },
+    {
+      "name": "Collections",
+      "description": "All endpoints related to STAC API - Collections"
+    },
+    {
+      "name": "Features",
+      "description": "All endpoints related to OGC API - Features - Part 1: Core"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "Core"
+        ],
+        "summary": "landing page",
+        "description": "Returns the root STAC Catalog or STAC Collection that is the entry point\nfor users to browse with STAC Browser or for search engines to crawl.\nThis can either return a single STAC Collection or more commonly a STAC\ncatalog.\n\nThe landing page provides links to the\nAPI definition (link relations `service-desc` and `service-doc`)\nand the STAC records such as collections/catalogs (link relation `child`)\nor items (link relation `item`).\n\nExtensions may add additional links with new relation types.",
+        "operationId": "getLandingPage",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/LandingPage"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "summary": "Search STAC items with simple filtering.",
+        "operationId": "getItemSearch",
+        "description": "Retrieve Items matching filters. Intended as a shorthand API for simple\nqueries.\n\nThis method is required to implement.\n\nIf this endpoint is implemented on a server, it is required to add a\nlink referring to this endpoint with `rel` set to `search` to the\n`links` array in `GET /`. As `GET` is the default method, the `method`\nmay not be set explicitly in the link.",
+        "tags": [
+          "Item Search"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/bbox"
+          },
+          {
+            "$ref": "#/components/parameters/intersects"
+          },
+          {
+            "$ref": "#/components/parameters/datetime"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          },
+          {
+            "$ref": "#/components/parameters/ids"
+          },
+          {
+            "$ref": "#/components/parameters/collectionsArray"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A feature collection.",
+            "content": {
+              "application/geo+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/itemCollection"
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-pp-resource": "items"
+      },
+      "post": {
+        "summary": "Search STAC items with full-featured filtering.",
+        "operationId": "postItemSearch",
+        "description": "Retrieve items matching filters. Intended as the standard, full-featured\nquery API.\n\nThis method is optional to implement, but recommended.\n\nIf this endpoint is implemented on a server, it is required to add a\nlink referring to this endpoint with `rel` set to `search` and `method`\nset to `POST` to the `links` array in `GET /`.",
+        "tags": [
+          "Item Search"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/searchBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A feature collection.",
+            "content": {
+              "application/geo+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/itemCollection"
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "x-pp-resource": "items"
+      }
+    },
+    "/collections": {
+      "get": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "the feature collections in the dataset",
+        "description": "A body of Feature Collections that belong or are used together with additional links.\nRequest may not return the full set of metadata per Feature Collection.",
+        "operationId": "getCollections",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Collections"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/collections/{collectionId}": {
+      "get": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "describe the feature collection with id `collectionId`",
+        "description": "A single Feature Collection for the given if `collectionId`.\nRequest this endpoint to get a full list of metadata for the Feature Collection.",
+        "operationId": "describeCollection",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/collectionId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Collection"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/conformance": {
+      "get": {
+        "tags": [
+          "Features"
+        ],
+        "summary": "information about specifications that this API conforms to",
+        "description": "A list of all conformance classes specified in a standard that the\nserver conforms to.",
+        "operationId": "getConformanceDeclaration",
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ConformanceDeclaration"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/collections/{collectionId}/items": {
+      "get": {
+        "tags": [
+          "Features"
+        ],
+        "summary": "fetch features",
+        "description": "Fetch features of the feature collection with id `collectionId`.\n\nEvery feature in a dataset belongs to a collection. A dataset may\nconsist of multiple feature collections. A feature collection is often a\ncollection of features of a similar type, based on a common schema.",
+        "operationId": "getFeatures",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/collectionId"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          },
+          {
+            "$ref": "#/components/parameters/bbox"
+          },
+          {
+            "$ref": "#/components/parameters/datetime"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Features"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/collections/{collectionId}/items/{featureId}": {
+      "get": {
+        "tags": [
+          "Features"
+        ],
+        "summary": "fetch a single feature",
+        "description": "Fetch the feature with id `featureId` in the feature collection\nwith id `collectionId`.",
+        "operationId": "getFeature",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/collectionId"
+          },
+          {
+            "$ref": "#/components/parameters/featureId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Feature"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "landingPage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/catalog"
+          },
+          {
+            "$ref": "#/components/schemas/conformanceClasses"
+          }
+        ]
+      },
+      "stac_version": {
+        "title": "STAC version",
+        "type": "string",
+        "example": "1.0.0"
+      },
+      "stac_extensions": {
+        "title": "STAC extensions",
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "anyOf": [
+            {
+              "title": "Reference to a JSON Schema",
+              "type": "string",
+              "format": "uri"
+            },
+            {
+              "title": "Reference to a core extension",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "link": {
+        "title": "Link",
+        "type": "object",
+        "required": [
+          "href",
+          "rel"
+        ],
+        "properties": {
+          "href": {
+            "type": "string",
+            "format": "uri",
+            "description": "The location of the resource"
+          },
+          "rel": {
+            "type": "string",
+            "description": "Relation type of the link"
+          },
+          "type": {
+            "type": "string",
+            "description": "The media type of the resource"
+          },
+          "title": {
+            "type": "string",
+            "description": "Title of the resource"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "POST"
+            ],
+            "default": "GET",
+            "description": "Specifies the HTTP method that the resource expects"
+          },
+          "headers": {
+            "type": "object",
+            "description": "Object key values pairs they map to headers",
+            "example": {
+              "Accept": "application/json"
+            }
+          },
+          "body": {
+            "type": "object",
+            "description": "For POST requests, the resource can specify the HTTP body as a JSON object."
+          },
+          "merge": {
+            "type": "boolean",
+            "default": false,
+            "description": "This is only valid when the server is responding to POST request.\n\nIf merge is true, the client is expected to merge the body value\ninto the current request body before following the link.\nThis avoids passing large post bodies back and forth when following\nlinks, particularly for navigating pages through the `POST /search`\nendpoint.\n\nNOTE: To support form encoding it is expected that a client be able\nto merge in the key value pairs specified as JSON\n`{\"next\": \"token\"}` will become `&next=token`."
+          }
+        }
+      },
+      "links": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/link"
+        }
+      },
+      "catalog": {
+        "type": "object",
+        "required": [
+          "stac_version",
+          "type",
+          "id",
+          "description",
+          "links"
+        ],
+        "properties": {
+          "stac_version": {
+            "$ref": "#/components/schemas/stac_version"
+          },
+          "stac_extensions": {
+            "$ref": "#/components/schemas/stac_extensions"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "Catalog"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "links": {
+            "$ref": "#/components/schemas/links"
+          }
+        }
+      },
+      "conformanceClasses": {
+        "type": "object",
+        "required": [
+          "conformsTo"
+        ],
+        "properties": {
+          "conformsTo": {
+            "description": "A list of all conformance classes implemented by the server. In addition to the STAC-specific conformance classes, all OGC-related conformance classes listed at `GET /conformance` must be listed here. This entry should mirror what `GET /conformance` returns, if implemented.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "exception": {
+        "type": "object",
+        "description": "Information about the exception: an error code plus an optional description.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "searchBody": {
+        "description": "The search criteria",
+        "type": "object",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/bboxFilter"
+          },
+          {
+            "$ref": "#/components/schemas/datetimeFilter"
+          },
+          {
+            "$ref": "#/components/schemas/intersectsFilter"
+          },
+          {
+            "$ref": "#/components/schemas/collectionsFilter"
+          },
+          {
+            "$ref": "#/components/schemas/idsFilter"
+          },
+          {
+            "$ref": "#/components/schemas/limitFilter"
+          }
+        ]
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "example": 10,
+        "default": 10,
+        "maximum": 10000,
+        "description": "The optional limit parameter limits the number of items that are presented in the response document.\n\nIf the limit parameter value is greater than advertised limit maximum, the server must return the\nmaximum possible number of items, rather than responding with an error.\n\nOnly items are counted that are on the first level of the collection in the response document.\nNested objects contained within the explicitly requested items must not be counted.\n\nMinimum = 1. Maximum = 10000. Default = 10."
+      },
+      "bboxFilter": {
+        "type": "object",
+        "description": "Only return items that intersect the provided bounding box.",
+        "properties": {
+          "bbox": {
+            "$ref": "#/components/schemas/bbox"
+          }
+        }
+      },
+      "collectionsArray": {
+        "type": "array",
+        "description": "Array of Collection IDs to include in the search for items.\nOnly Item objects in one of the provided collections will be searched.",
+        "items": {
+          "type": "string"
+        }
+      },
+      "ids": {
+        "type": "array",
+        "description": "Array of Item ids to return.",
+        "items": {
+          "type": "string"
+        }
+      },
+      "datetimeFilter": {
+        "description": "An object representing a date+time based filter.",
+        "type": "object",
+        "properties": {
+          "datetime": {
+            "$ref": "#/components/schemas/datetime_interval"
+          }
+        }
+      },
+      "intersectsFilter": {
+        "type": "object",
+        "description": "Only returns items that intersect with the provided polygon.",
+        "properties": {
+          "intersects": {
+            "$ref": "#/components/schemas/geometryGeoJSON"
+          }
+        }
+      },
+      "limitFilter": {
+        "type": "object",
+        "description": "Only returns maximum number of results (page size)",
+        "properties": {
+          "limit": {
+            "$ref": "#/components/schemas/limit"
+          }
+        }
+      },
+      "idsFilter": {
+        "type": "object",
+        "description": "Only returns items that match the array of given ids",
+        "properties": {
+          "ids": {
+            "$ref": "#/components/schemas/ids"
+          }
+        }
+      },
+      "collectionsFilter": {
+        "type": "object",
+        "description": "Only returns the collections specified",
+        "properties": {
+          "collections": {
+            "$ref": "#/components/schemas/collectionsArray"
+          }
+        }
+      },
+      "datetime_interval": {
+        "type": "string",
+        "description": "Either a date-time or an interval, open or closed. Date and time expressions\nadhere to RFC 3339. Open intervals are expressed using double-dots.\n\nExamples:\n\n* A date-time: \"2018-02-12T23:20:50Z\"\n* A closed interval: \"2018-02-12T00:00:00Z/2018-03-18T12:31:12Z\"\n* Open intervals: \"2018-02-12T00:00:00Z/..\" or \"../2018-03-18T12:31:12Z\"\n\nOnly features that have a temporal property that intersects the value of\n`datetime` are selected.\n\nIf a feature has multiple temporal properties, it is the decision of the\nserver whether only a single temporal property is used to determine\nthe extent or all relevant temporal properties.",
+        "example": "2018-02-12T00:00:00Z/2018-03-18T12:31:12Z"
+      },
+      "pointGeoJSON": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Point"
+            ]
+          },
+          "coordinates": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      "multipointGeoJSON": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "MultiPoint"
+            ]
+          },
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "linestringGeoJSON": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "LineString"
+            ]
+          },
+          "coordinates": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "multilinestringGeoJSON": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "MultiLineString"
+            ]
+          },
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      },
+      "polygonGeoJSON": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Polygon"
+            ]
+          },
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 4,
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      },
+      "multipolygonGeoJSON": {
+        "type": "object",
+        "required": [
+          "type",
+          "coordinates"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "MultiPolygon"
+            ]
+          },
+          "coordinates": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "minItems": 4,
+                "items": {
+                  "type": "array",
+                  "minItems": 2,
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "geometryGeoJSON": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/pointGeoJSON"
+          },
+          {
+            "$ref": "#/components/schemas/multipointGeoJSON"
+          },
+          {
+            "$ref": "#/components/schemas/linestringGeoJSON"
+          },
+          {
+            "$ref": "#/components/schemas/multilinestringGeoJSON"
+          },
+          {
+            "$ref": "#/components/schemas/polygonGeoJSON"
+          },
+          {
+            "$ref": "#/components/schemas/multipolygonGeoJSON"
+          },
+          {
+            "$ref": "#/components/schemas/geometrycollectionGeoJSON"
+          }
+        ]
+      },
+      "geometrycollectionGeoJSON": {
+        "type": "object",
+        "required": [
+          "type",
+          "geometries"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "GeometryCollection"
+            ]
+          },
+          "geometries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/geometryGeoJSON"
+            }
+          }
+        }
+      },
+      "itemId": {
+        "type": "string",
+        "description": "Provider identifier, a unique ID."
+      },
+      "bbox": {
+        "description": "Only features that have a geometry that intersects the bounding box are\nselected. The bounding box is provided as four or six numbers,\ndepending on whether the coordinate reference system includes a\nvertical axis (elevation or depth):\n\n* Lower left corner, coordinate axis 1\n* Lower left corner, coordinate axis 2  \n* Lower left corner, coordinate axis 3 (optional) \n* Upper right corner, coordinate axis 1 \n* Upper right corner, coordinate axis 2 \n* Upper right corner, coordinate axis 3 (optional)\n\nThe coordinate reference system of the values is WGS84\nlongitude/latitude (http://www.opengis.net/def/crs/OGC/1.3/CRS84).\n\nFor WGS84 longitude/latitude the values are in most cases the sequence\nof minimum longitude, minimum latitude, maximum longitude and maximum\nlatitude. However, in cases where the box spans the antimeridian the\nfirst value (west-most box edge) is larger than the third value\n(east-most box edge).\n\nIf a feature has multiple spatial geometry properties, it is the\ndecision of the server whether only a single spatial geometry property\nis used to determine the extent or all relevant geometries.\n\nExample: The bounding box of the New Zealand Exclusive Economic Zone in\nWGS 84 (from 160.6\u00b0E to 170\u00b0W and from 55.95\u00b0S to 25.89\u00b0S) would be\nrepresented in JSON as `[160.6, -55.95, -170, -25.89]` and in a query as\n`bbox=160.6,-55.95,-170,-25.89`.",
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 6,
+        "items": {
+          "type": "number"
+        },
+        "example": [
+          -110,
+          39.5,
+          -105,
+          40.5
+        ]
+      },
+      "itemType": {
+        "type": "string",
+        "description": "The GeoJSON type",
+        "enum": [
+          "Feature"
+        ]
+      },
+      "datetime": {
+        "type": "string",
+        "format": "date-time",
+        "nullable": true,
+        "description": "The searchable date and time of the assets, in UTC.\nIt is formatted according to [RFC 3339, section 5.6](https://tools.ietf.org/html/rfc3339#section-5.6).\n`null` is allowed, but requires `start_datetime` and `end_datetime` from common metadata to be set.",
+        "example": "2018-02-12T00:00:00Z"
+      },
+      "properties": {
+        "type": "object",
+        "required": [
+          "datetime"
+        ],
+        "description": "provides the core metadata fields plus extensions",
+        "properties": {
+          "datetime": {
+            "$ref": "#/components/schemas/datetime"
+          }
+        },
+        "additionalProperties": {
+          "description": "Any additional properties added in via Item specification or extensions."
+        }
+      },
+      "assets": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "required": [
+            "href"
+          ],
+          "properties": {
+            "href": {
+              "type": "string",
+              "format": "url",
+              "description": "Link to the asset object",
+              "example": "http://cool-sat.com/catalog/collections/cs/items/CS3-20160503_132130_04/thumb.png"
+            },
+            "title": {
+              "type": "string",
+              "description": "Displayed title",
+              "example": "Thumbnail"
+            },
+            "description": {
+              "type": "string",
+              "description": "Multi-line description to explain the asset.\n\n[CommonMark 0.29](http://commonmark.org/) syntax MAY be used for rich text representation.",
+              "example": "Small 256x256px PNG thumbnail for a preview."
+            },
+            "type": {
+              "type": "string",
+              "description": "Media type of the asset",
+              "example": "image/png"
+            },
+            "roles": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Purposes of the asset",
+              "example": [
+                "thumbnail"
+              ]
+            }
+          }
+        }
+      },
+      "item": {
+        "description": "A GeoJSON Feature augmented with foreign members that contain values relevant to a STAC entity",
+        "type": "object",
+        "required": [
+          "stac_version",
+          "id",
+          "type",
+          "geometry",
+          "bbox",
+          "links",
+          "properties",
+          "assets"
+        ],
+        "properties": {
+          "stac_version": {
+            "$ref": "#/components/schemas/stac_version"
+          },
+          "stac_extensions": {
+            "$ref": "#/components/schemas/stac_extensions"
+          },
+          "id": {
+            "$ref": "#/components/schemas/itemId"
+          },
+          "bbox": {
+            "$ref": "#/components/schemas/bbox"
+          },
+          "geometry": {
+            "$ref": "#/components/schemas/geometryGeoJSON"
+          },
+          "type": {
+            "$ref": "#/components/schemas/itemType"
+          },
+          "links": {
+            "$ref": "#/components/schemas/links"
+          },
+          "properties": {
+            "$ref": "#/components/schemas/properties"
+          },
+          "assets": {
+            "$ref": "#/components/schemas/assets"
+          }
+        },
+        "example": {
+          "stac_version": "1.0.0",
+          "stac_extensions": [
+            "https://stac-extensions.github.io/eo/v1.0.0/schema.json",
+            "https://stac-extensions.github.io/view/v1.0.0/schema.json",
+            "https://example.com/cs-extension/1.0/schema.json"
+          ],
+          "type": "Feature",
+          "id": "CS3-20160503_132131_05",
+          "bbox": [
+            -122.59750209,
+            37.48803556,
+            -122.2880486,
+            37.613537207
+          ],
+          "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+              [
+                [
+                  -122.308150179,
+                  37.488035566
+                ],
+                [
+                  -122.597502109,
+                  37.538869539
+                ],
+                [
+                  -122.576687533,
+                  37.613537207
+                ],
+                [
+                  -122.2880486,
+                  37.562818007
+                ],
+                [
+                  -122.308150179,
+                  37.488035566
+                ]
+              ]
+            ]
+          },
+          "properties": {
+            "datetime": "2016-05-03T13:22:30.040Z",
+            "title": "A CS3 item",
+            "license": "PDDL-1.0",
+            "providers": [
+              {
+                "name": "CoolSat",
+                "roles": [
+                  "producer",
+                  "licensor"
+                ],
+                "url": "https://cool-sat.com/"
+              }
+            ],
+            "view:sun_azimuth": 168.7,
+            "eo:cloud_cover": 0.12,
+            "view:off_nadir": 1.4,
+            "platform": "coolsat2",
+            "instruments": [
+              "cool_sensor_v1"
+            ],
+            "eo:bands": [],
+            "view:sun_elevation": 33.4,
+            "eo:gsd": 0.512
+          },
+          "collection": "CS3",
+          "links": [
+            {
+              "rel": "self",
+              "href": "http://cool-sat.com/collections/CS3/items/20160503_132130_04",
+              "type": "application/geo+json"
+            },
+            {
+              "rel": "root",
+              "href": "http://cool-sat.com/collections",
+              "type": "application/json"
+            },
+            {
+              "rel": "parent",
+              "href": "http://cool-sat.com/collections/CS3",
+              "type": "application/json"
+            },
+            {
+              "rel": "collection",
+              "href": "http://cool-sat.com/collections/CS3",
+              "type": "application/json"
+            }
+          ],
+          "assets": {
+            "analytic": {
+              "href": "http://cool-sat.com/static-catalog/CS3/20160503_132130_04/analytic.tif",
+              "title": "4-Band Analytic",
+              "type": "image/tiff; application=geotiff; profile=cloud-optimized"
+            },
+            "thumbnail": {
+              "href": "http://cool-sat.com/static-catalog/CS3/20160503_132130_04/thumbnail.png",
+              "title": "Thumbnail",
+              "type": "image/png"
+            }
+          }
+        }
+      },
+      "itemCollection": {
+        "description": "A GeoJSON FeatureCollection augmented with foreign members that contain values relevant to a STAC entity",
+        "type": "object",
+        "required": [
+          "features",
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "FeatureCollection"
+            ]
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/item"
+            }
+          },
+          "links": {
+            "type": "array",
+            "description": "An array of links. Can be used for pagination, e.g. by providing a link with the `next` relation type.",
+            "items": {
+              "$ref": "#/components/schemas/link"
+            },
+            "example": [
+              {
+                "rel": "next",
+                "type": "application/geo+json",
+                "href": "http://api.cool-sat.com/search?next=ANsXtp9mrqN0yrKWhf-y2PUpHRLQb1GT-mtxNcXou8TwkXhi1Jbk"
+              }
+            ]
+          },
+          "numberMatched": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "numberReturned": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "collections": {
+        "type": "object",
+        "required": [
+          "links",
+          "collections"
+        ],
+        "properties": {
+          "links": {
+            "$ref": "#/components/schemas/links"
+          },
+          "collections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/collection"
+            }
+          },
+          "numberMatched": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "numberReturned": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "license": {
+        "type": "string",
+        "description": "License(s) of the data as a SPDX\n[License identifier](https://spdx.org/licenses/). Alternatively, use\n`proprietary` if the license is not on the SPDX license list or\n`various` if multiple licenses apply. In these two cases links to the\nlicense texts SHOULD be added, see the `license` link relation type.\n\nNon-SPDX licenses SHOULD add a link to the license text with the\n`license` relation in the links section. The license text MUST NOT be\nprovided as a value of this field. If there is no public license URL\navailable, it is RECOMMENDED to host the license text and\nlink to it.",
+        "example": "Apache-2.0"
+      },
+      "extent": {
+        "type": "object",
+        "description": "The extent of the features in the collection. In the Core only spatial and temporal\nextents are specified. Extensions may add additional members to represent other\nextents, for example, thermal or pressure ranges.\n\nThe first item in the array describes the overall extent of\nthe data. All subsequent items describe more precise extents, \ne.g., to identify clusters of data.\nClients only interested in the overall extent will only need to\naccess the first item in each array.",
+        "required": [
+          "spatial",
+          "temporal"
+        ],
+        "properties": {
+          "spatial": {
+            "description": "The spatial extent of the features in the collection.",
+            "type": "object",
+            "required": [
+              "bbox"
+            ],
+            "properties": {
+              "bbox": {
+                "description": "One or more bounding boxes that describe the spatial extent of the dataset.\n\nThe first bounding box describes the overall spatial\nextent of the data. All subsequent bounding boxes describe \nmore precise bounding boxes, e.g., to identify clusters of data.\nClients only interested in the overall spatial extent will\nonly need to access the first item in each array.",
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "description": "Each bounding box is provided as four or six numbers, depending on\nwhether the coordinate reference system includes a vertical axis\n(height or depth):\n\n* Lower left corner, coordinate axis 1\n* Lower left corner, coordinate axis 2\n* Minimum value, coordinate axis 3 (optional)\n* Upper right corner, coordinate axis 1\n* Upper right corner, coordinate axis 2\n* Maximum value, coordinate axis 3 (optional)\n\nThe coordinate reference system of the values is WGS 84 longitude/latitude\n(http://www.opengis.net/def/crs/OGC/1.3/CRS84) unless a different coordinate\nreference system is specified in `crs`.\n\nFor WGS 84 longitude/latitude the values are in most cases the sequence of\nminimum longitude, minimum latitude, maximum longitude and maximum latitude.\nHowever, in cases where the box spans the antimeridian the first value\n(west-most box edge) is larger than the third value (east-most box edge).\n\nIf the vertical axis is included, the third and the sixth number are\nthe bottom and the top of the 3-dimensional bounding box.\n\nIf a feature has multiple spatial geometry properties, it is the decision of the\nserver whether only a single spatial geometry property is used to determine\nthe extent or all relevant geometries.",
+                  "type": "array",
+                  "minItems": 4,
+                  "maxItems": 6,
+                  "items": {
+                    "type": "number"
+                  },
+                  "example": [
+                    -180,
+                    -90,
+                    180,
+                    90
+                  ]
+                }
+              },
+              "crs": {
+                "description": "Coordinate reference system of the coordinates in the spatial extent\n(property `bbox`). The default reference system is WGS 84 longitude/latitude.\nIn the Core this is the only supported coordinate reference system.\nExtensions may support additional coordinate reference systems and add\nadditional enum values.",
+                "type": "string",
+                "enum": [
+                  "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+                ],
+                "default": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"
+              }
+            }
+          },
+          "temporal": {
+            "description": "The temporal extent of the features in the collection.",
+            "type": "object",
+            "required": [
+              "interval"
+            ],
+            "properties": {
+              "interval": {
+                "description": "One or more time intervals that describe the temporal extent of the dataset.\n\nThe first time interval describes the overall\ntemporal extent of the data. All subsequent time intervals describe \nmore precise time intervals, e.g., to identify clusters of data.\nClients only interested in the overall extent will only need\nto access the first item in each array.",
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "description": "Begin and end times of the time interval. The timestamps\nare in the coordinate reference system specified in `trs`. By default\nthis is the Gregorian calendar.\n\nThe value `null` is supported and indicates an open time interval.",
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "type": "string",
+                    "format": "date-time",
+                    "nullable": true
+                  },
+                  "example": [
+                    "2011-11-11T12:22:11Z",
+                    null
+                  ]
+                }
+              },
+              "trs": {
+                "description": "Coordinate reference system of the coordinates in the temporal extent\n(property `interval`). The default reference system is the Gregorian calendar.\nIn the Core this is the only supported temporal reference system.\nExtensions may support additional temporal reference systems and add\nadditional enum values.",
+                "type": "string",
+                "enum": [
+                  "http://www.opengis.net/def/uom/ISO-8601/0/Gregorian"
+                ],
+                "default": "http://www.opengis.net/def/uom/ISO-8601/0/Gregorian"
+              }
+            }
+          }
+        }
+      },
+      "providers": {
+        "type": "array",
+        "description": "A list of providers, which may include all organizations capturing or processing the data or the hosting provider. Providers should be listed in chronological order with the most recent provider being the last element of the list.",
+        "items": {
+          "type": "object",
+          "title": "Provider",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "description": "The name of the organization or the individual.",
+              "type": "string"
+            },
+            "description": {
+              "description": "Multi-line description to add further provider information such as processing details for processors and producers, hosting details for hosts or basic contact information.\n\n[CommonMark 0.29](http://commonmark.org/) syntax MAY be used for rich text representation.",
+              "type": "string"
+            },
+            "roles": {
+              "description": "Roles of the provider.\n\nThe provider's role(s) can be one or more of the following\nelements:\n\n* licensor: The organization that is licensing the dataset under\n  the license specified in the collection's license field.\n* producer: The producer of the data is the provider that\n  initially captured and processed the source data, e.g. ESA for\n  Sentinel-2 data.\n* processor: A processor is any provider who processed data to a\n  derived product.\n* host: The host is the actual provider offering the data on their\n  storage. There should be no more than one host, specified as last\n  element of the list.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "producer",
+                  "licensor",
+                  "processor",
+                  "host"
+                ]
+              }
+            },
+            "url": {
+              "description": "Homepage on which the provider describes the dataset and publishes contact information.",
+              "type": "string",
+              "format": "url"
+            }
+          }
+        }
+      },
+      "collection": {
+        "type": "object",
+        "required": [
+          "stac_version",
+          "type",
+          "id",
+          "description",
+          "license",
+          "extent",
+          "links"
+        ],
+        "properties": {
+          "stac_version": {
+            "$ref": "#/components/schemas/stac_version"
+          },
+          "stac_extensions": {
+            "$ref": "#/components/schemas/stac_extensions"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "Collection"
+            ]
+          },
+          "id": {
+            "description": "identifier of the collection used, for example, in URIs",
+            "type": "string"
+          },
+          "title": {
+            "description": "human readable title of the collection",
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "description": "Detailed multi-line description to fully explain the catalog or collection.\n[CommonMark 0.29](http://commonmark.org/) syntax MAY be used for rich text representation."
+          },
+          "keywords": {
+            "type": "array",
+            "description": "List of keywords describing the collection.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "license": {
+            "$ref": "#/components/schemas/license"
+          },
+          "extent": {
+            "$ref": "#/components/schemas/extent"
+          },
+          "providers": {
+            "$ref": "#/components/schemas/providers"
+          },
+          "assets": {
+            "$ref": "#/components/schemas/assets"
+          },
+          "links": {
+            "$ref": "#/components/schemas/links"
+          },
+          "summaries": {
+            "description": "A map of Item property summaries, either a set of values, a range of values or a JSON Schema.",
+            "type": "object",
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "title": "JSON Schema (draft-07)",
+                  "type": "object",
+                  "minProperties": 1
+                },
+                {
+                  "type": "array",
+                  "title": "Set of values",
+                  "minItems": 1,
+                  "items": {
+                    "description": "For each field only the original data type of the property can occur (except for arrays)."
+                  }
+                },
+                {
+                  "type": "object",
+                  "title": "Range / Statistics",
+                  "required": [
+                    "minimum",
+                    "maximum"
+                  ],
+                  "properties": {
+                    "minimum": {
+                      "title": "Minimum value",
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "number"
+                        }
+                      ]
+                    },
+                    "maximum": {
+                      "title": "Maximum value",
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "number"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "example": {
+          "stac_version": "1.0.0",
+          "stac_extensions": [],
+          "type": "Collection",
+          "id": "Sentinel-2",
+          "title": "Sentinel-2 MSI: MultiSpectral Instrument, Level-1C",
+          "description": "Sentinel-2 is a wide-swath, high-resolution, multi-spectral\nimaging mission...\n",
+          "license": "proprietary",
+          "keywords": [
+            "copernicus",
+            "esa",
+            "eu",
+            "msi",
+            "radiance",
+            "sentinel"
+          ],
+          "providers": [
+            {
+              "name": "ESA",
+              "roles": [
+                "producer",
+                "licensor"
+              ],
+              "url": "https://sentinel.esa.int/web/sentinel/user-guides/sentinel-2-msi"
+            }
+          ],
+          "extent": {
+            "spatial": {
+              "bbox": [
+                [
+                  -180,
+                  -56,
+                  180,
+                  83
+                ]
+              ]
+            },
+            "temporal": {
+              "interval": [
+                [
+                  "2015-06-23T00:00:00Z",
+                  "2019-07-10T13:44:56Z"
+                ]
+              ]
+            }
+          },
+          "summaries": {
+            "datetime": {
+              "min": "2015-06-23T00:00:00Z",
+              "max": "2019-07-10T13:44:56Z"
+            },
+            "sci:citation": [
+              "Copernicus Sentinel data [Year]"
+            ],
+            "eo:gsd": [
+              10,
+              30,
+              60
+            ],
+            "platform": [
+              "sentinel-2a",
+              "sentinel-2b"
+            ],
+            "constellation": [
+              "sentinel-2"
+            ],
+            "instruments": [
+              "msi"
+            ],
+            "view:off_nadir": {
+              "min": 0,
+              "max": 100
+            },
+            "view:sun_elevation": {
+              "min": 6.78,
+              "max": 89.9
+            },
+            "eo:bands": [
+              [
+                {
+                  "name": "B1",
+                  "common_name": "coastal",
+                  "center_wavelength": 4.439
+                },
+                {
+                  "name": "B2",
+                  "common_name": "blue",
+                  "center_wavelength": 4.966
+                },
+                {
+                  "name": "B3",
+                  "common_name": "green",
+                  "center_wavelength": 5.6
+                },
+                {
+                  "name": "B4",
+                  "common_name": "red",
+                  "center_wavelength": 6.645
+                },
+                {
+                  "name": "B5",
+                  "center_wavelength": 7.039
+                },
+                {
+                  "name": "B6",
+                  "center_wavelength": 7.402
+                },
+                {
+                  "name": "B7",
+                  "center_wavelength": 7.825
+                },
+                {
+                  "name": "B8",
+                  "common_name": "nir",
+                  "center_wavelength": 8.351
+                },
+                {
+                  "name": "B8A",
+                  "center_wavelength": 8.648
+                },
+                {
+                  "name": "B9",
+                  "center_wavelength": 9.45
+                },
+                {
+                  "name": "B10",
+                  "center_wavelength": 1.3735
+                },
+                {
+                  "name": "B11",
+                  "common_name": "swir16",
+                  "center_wavelength": 1.6137
+                },
+                {
+                  "name": "B12",
+                  "common_name": "swir22",
+                  "center_wavelength": 2.2024
+                }
+              ]
+            ]
+          },
+          "links": [
+            {
+              "rel": "self",
+              "href": "http://cool-sat.com/collections/Sentinel-2",
+              "type": "application/json"
+            },
+            {
+              "rel": "root",
+              "href": "http://cool-sat.com/collections",
+              "type": "application/json"
+            },
+            {
+              "rel": "license",
+              "href": "https://scihub.copernicus.eu/twiki/pub/SciHubWebPortal/TermsConditions/Sentinel_Data_Terms_and_Conditions.pdf",
+              "title": "Legal notice on the use of Copernicus Sentinel Data and Service Information",
+              "type": "application/pdf"
+            }
+          ]
+        }
+      },
+      "featureCollectionGeoJSON": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/featureCollectionGeoJSON-2"
+          },
+          {
+            "type": "object",
+            "required": [
+              "features"
+            ],
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/item"
+                }
+              },
+              "links": {
+                "$ref": "#/components/schemas/links"
+              },
+              "timeStamp": {
+                "$ref": "#/components/schemas/timeStamp"
+              },
+              "numberMatched": {
+                "$ref": "#/components/schemas/numberMatched"
+              },
+              "numberReturned": {
+                "$ref": "#/components/schemas/numberReturned"
+              }
+            }
+          }
+        ]
+      },
+      "numberMatched": {
+        "description": "The number of features of the feature type that match the selection\nparameters like `bbox`.",
+        "type": "integer",
+        "minimum": 0,
+        "example": 127
+      },
+      "numberReturned": {
+        "description": "The number of features in the feature collection.\n\nA server may omit this information in a response, if the information\nabout the number of features is not known or difficult to compute.\n\nIf the value is provided, the value must be identical to the number\nof items in the \"features\" array.",
+        "type": "integer",
+        "minimum": 0,
+        "example": 10
+      },
+      "timeStamp": {
+        "description": "This property indicates the time and date when the response was generated.",
+        "type": "string",
+        "format": "date-time",
+        "example": "2017-08-17T08:05:32Z"
+      },
+      "featureGeoJSON": {
+        "type": "object",
+        "required": [
+          "type",
+          "geometry",
+          "properties"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Feature"
+            ]
+          },
+          "geometry": {
+            "$ref": "#/components/schemas/geometryGeoJSON"
+          },
+          "properties": {
+            "type": "object",
+            "nullable": true
+          }
+        }
+      },
+      "featureCollectionGeoJSON-2": {
+        "type": "object",
+        "required": [
+          "type",
+          "features"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "FeatureCollection"
+            ]
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/featureGeoJSON"
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "ids": {
+        "name": "ids",
+        "in": "query",
+        "description": "Array of Item ids to return.",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/ids"
+        },
+        "explode": false
+      },
+      "collectionsArray": {
+        "name": "collections",
+        "in": "query",
+        "description": "Array of Collection IDs to include in the search for items.\nOnly Item objects in one of the provided collections will be searched\n",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/collectionsArray"
+        },
+        "explode": false
+      },
+      "datetime": {
+        "name": "datetime",
+        "in": "query",
+        "description": "Either a date-time or an interval, open or closed. Date and time expressions\nadhere to RFC 3339. Open intervals are expressed using double-dots.\n\nExamples:\n\n* A date-time: \"2018-02-12T23:20:50Z\"\n* A closed interval: \"2018-02-12T00:00:00Z/2018-03-18T12:31:12Z\"\n* Open intervals: \"2018-02-12T00:00:00Z/..\" or \"../2018-03-18T12:31:12Z\"\n\nOnly features that have a temporal property that intersects the value of\n`datetime` are selected.\n\nIf a feature has multiple temporal properties, it is the decision of the\nserver whether only a single temporal property is used to determine\nthe extent or all relevant temporal properties.",
+        "required": false,
+        "schema": {
+          "type": "string"
+        },
+        "style": "form",
+        "explode": false
+      },
+      "bbox": {
+        "name": "bbox",
+        "in": "query",
+        "description": "Only features that have a geometry that intersects the bounding box are selected.\nThe bounding box is provided as four or six numbers, depending on\nwhether the coordinate reference system includes a vertical axis (height\nor depth):\n\n* Lower left corner, coordinate axis 1\n* Lower left corner, coordinate axis 2\n* Minimum value, coordinate axis 3 (optional)\n* Upper right corner, coordinate axis 1\n* Upper right corner, coordinate axis 2\n* Maximum value, coordinate axis 3 (optional)\n\nThe coordinate reference system of the values is WGS 84\nlongitude/latitude (http://www.opengis.net/def/crs/OGC/1.3/CRS84).\n\nFor WGS 84 longitude/latitude the values are in most cases the sequence\nof minimum longitude, minimum latitude, maximum longitude and maximum\nlatitude. However, in cases where the box spans the antimeridian the\nfirst value (west-most box edge) is larger than the third value\n(east-most box edge).\n\nIf the vertical axis is included, the third and the sixth number are\nthe bottom and the top of the 3-dimensional bounding box.\n\nIf a feature has multiple spatial geometry properties, it is the\ndecision of the server whether only a single spatial geometry property\nis used to determine the extent or all relevant geometries.\n\nExample: The bounding box of the New Zealand Exclusive Economic Zone in\nWGS 84 (from 160.6\u00b0E to 170\u00b0W and from 55.95\u00b0S to 25.89\u00b0S) would be\nrepresented in JSON as `[160.6, -55.95, -170, -25.89]` and in a query as\n`bbox=160.6,-55.95,-170,-25.89`.",
+        "required": false,
+        "schema": {
+          "type": "array",
+          "oneOf": [
+            {
+              "minItems": 4,
+              "maxItems": 4
+            },
+            {
+              "minItems": 6,
+              "maxItems": 6
+            }
+          ],
+          "items": {
+            "type": "number"
+          }
+        },
+        "style": "form",
+        "explode": false
+      },
+      "limit": {
+        "name": "limit",
+        "in": "query",
+        "description": "The optional limit parameter recommends the number of items that should be present in the response document.\n\nOnly items are counted that are on the first level of the collection in the response document.\nNested objects contained within the explicitly requested items must not be counted.\n\nMinimum = 1. Maximum = 10000. Default = 10.",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 10
+        },
+        "style": "form",
+        "explode": false
+      },
+      "intersects": {
+        "name": "intersects",
+        "in": "query",
+        "description": "The optional intersects parameter filters the result Items in the same was as bbox, only with\na GeoJSON Geometry rather than a bbox.",
+        "required": false,
+        "schema": {
+          "$ref": "#/components/schemas/geometryGeoJSON"
+        },
+        "style": "form",
+        "explode": false
+      },
+      "collectionId": {
+        "name": "collectionId",
+        "in": "path",
+        "description": "local identifier of a collection",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "featureId": {
+        "name": "featureId",
+        "in": "path",
+        "description": "local identifier of a feature",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "LandingPage": {
+        "description": "The landing page provides links to the API definition\n(link relations `service-desc` and `service-doc`).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/landingPage"
+            },
+            "example": {
+              "type": "Catalog",
+              "stac_version": "1.0.0",
+              "id": "sentinel",
+              "title": "Copernicus Sentinel Imagery",
+              "description": "Catalog of Copernicus Sentinel 1 and 2 imagery.",
+              "conformsTo": [
+                "https://api.stacspec.org/v1.0.0/core"
+              ],
+              "links": [
+                {
+                  "href": "http://data.example.org/",
+                  "rel": "self",
+                  "type": "application/json",
+                  "title": "this document"
+                },
+                {
+                  "href": "http://data.example.org/api",
+                  "rel": "service-desc",
+                  "type": "application/vnd.oai.openapi+json;version=3.0",
+                  "title": "the API definition"
+                },
+                {
+                  "href": "http://data.example.org/api.html",
+                  "rel": "service-doc",
+                  "type": "text/html",
+                  "title": "the API documentation"
+                },
+                {
+                  "href": "http://data.example.org/catalogs/sentinel-1",
+                  "rel": "child",
+                  "type": "application/json",
+                  "title": "Sentinel 1 Catalog"
+                },
+                {
+                  "href": "http://data.example.org/catalogs/sentinel-2",
+                  "rel": "child",
+                  "type": "application/json",
+                  "title": "Sentinel 2 Catalog"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "Error": {
+        "description": "An error occurred.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/exception"
+            }
+          }
+        }
+      },
+      "Collections": {
+        "description": "The feature collections shared by this API.\n\nThe dataset is organized as one or more feature collections. This resource\nprovides information about and access to the collections.\n\nThe response contains the list of collections. For each collection, a link\nto the items in the collection (path `/collections/{collectionId}/items`,\nlink relation `items`) as well as key information about the collection.\nThis information includes:\n\n* A local identifier for the collection that is unique for the dataset;\n* A list of coordinate reference systems (CRS) in which geometries may be returned by the server. The first CRS is the default coordinate reference system (the default is always WGS 84 with axis order longitude/latitude);\n* An optional title and description for the collection;\n* An optional extent that can be used to provide an indication of the spatial and temporal extent of the collection - typically derived from the data;\n* An optional indicator about the type of the items in the collection (the default value, if the indicator is not provided, is 'feature').",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/collections"
+            }
+          }
+        }
+      },
+      "Collection": {
+        "description": "Information about the feature collection with id `collectionId`.\n\nThe response contains a link to the items in the collection\n(path `/collections/{collectionId}/items`, link relation `items`)\nas well as key information about the collection. This information\nincludes:\n\n* A local identifier for the collection that is unique for the dataset;\n* A list of coordinate reference systems (CRS) in which geometries may be returned by the server. The first CRS is the default coordinate reference system (the default is always WGS 84 with axis order longitude/latitude);\n* An optional title and description for the collection;\n* An optional extent that can be used to provide an indication of the spatial and temporal extent of the collection - typically derived from the data;\n* An optional indicator about the type of the items in the collection (the default value, if the indicator is not provided, is 'feature').",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/collection"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The requested URI was not found."
+      },
+      "ConformanceDeclaration": {
+        "description": "The URIs of all conformance classes supported by the server.\n\nTo support \"generic\" clients that want to access multiple\nOGC API Features implementations - and not \"just\" a specific\nAPI / server, the server declares the conformance\nclasses it implements and conforms to.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/conformanceClasses"
+            },
+            "example": {
+              "conformsTo": [
+                "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/core",
+                "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/oas30",
+                "http://www.opengis.net/spec/ogcapi-features-1/1.0/conf/geojson"
+              ]
+            }
+          }
+        }
+      },
+      "Features": {
+        "description": "The response is a document consisting of features in the collection.\nThe features included in the response are determined by the server\nbased on the query parameters of the request. To support access to\nlarger collections without overloading the client, the API supports\npaged access with links to the next page, if more features are selected\nthat the page size.\n\nThe `bbox` and `datetime` parameter can be used to select only a\nsubset of the features in the collection (the features that are in the\nbounding box or time interval). The `bbox` parameter matches all features\nin the collection that are not associated with a location, too. The\n`datetime` parameter matches all features in the collection that are\nnot associated with a time stamp or interval, too.\n\nThe `limit` parameter may be used to control the subset of the\nselected features that should be returned in the response, the page size.\nEach page may include information about the number of selected and\nreturned features (`numberMatched` and `numberReturned`) as well as\nlinks to support paging (link relation `next`).",
+        "content": {
+          "application/geo+json": {
+            "schema": {
+              "$ref": "#/components/schemas/featureCollectionGeoJSON"
+            }
+          }
+        }
+      },
+      "Feature": {
+        "description": "fetch the feature with id `featureId` in the feature collection\nwith id `collectionId`",
+        "content": {
+          "application/geo+json": {
+            "schema": {
+              "$ref": "#/components/schemas/item"
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://earth-search.aws.element84.com/v1",
+      "description": "AWS Earth Search STAC API (default; override with STAC_BASE_URL)"
+    }
+  ]
+}

@@ -21,6 +21,7 @@ example:
 
 maps:
   openrouteservice     Open-source routing, geocoding, matrix, isochrones, and VRP optimization on OpenStreetMap data.
+  stac                 SpatioTemporal Asset Catalog API — browse, search, and access geospatial assets (satellite imagery, DEMs, climate data) across any conforming server.
 
 marketing:
   producthunt          Find, monitor, and export Product Hunt launches for launch research, scouting, and competitive tracking without requiring a Product Hunt API application.
