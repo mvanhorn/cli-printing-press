@@ -55,31 +55,47 @@ const mcpShellResultMaxBytes = 60000
 // envelope; shell-out stdout is arbitrary text (JSON, tables, CSV), so this
 // returns a JSON truncation envelope carrying a UTF-8-safe byte preview and a
 // note pointing the agent at the output-narrowing flags.
+//
+// json.Marshal escapes quotes, backslashes, and control characters, so an
+// encoded preview can be larger than its raw byte length (CLI output is often
+// itself JSON). Bound the final marshaled envelope, not the raw preview slice:
+// start from a budget-sized preview and shrink until the encoded result fits.
 func boundShellResult(out string) string {
 	if len(out) <= mcpShellResultMaxBytes {
 		return out
 	}
-	limit := mcpShellResultMaxBytes - 1024
-	if limit < 0 {
-		limit = 0
-	}
+	limit := mcpShellResultMaxBytes
 	if limit > len(out) {
 		limit = len(out)
 	}
-	for limit > 0 && !utf8.RuneStart(out[limit]) {
-		limit--
+	for {
+		for limit > 0 && !utf8.RuneStart(out[limit]) {
+			limit--
+		}
+		envelope, err := json.Marshal(map[string]any{
+			"truncated":      true,
+			"original_bytes": len(out),
+			"max_bytes":      mcpShellResultMaxBytes,
+			"preview":        out[:limit],
+			"note":           "Command output exceeded the MCP tool-result budget. Re-run with --agent/--compact/--select or a narrower --limit, or use the sql/search tools.",
+		})
+		if err != nil {
+			return out[:limit]
+		}
+		if len(envelope) <= mcpShellResultMaxBytes || limit == 0 {
+			return string(envelope)
+		}
+		// Scale the preview down proportionally to the overshoot, guaranteeing
+		// forward progress so the loop always terminates.
+		scaled := int(int64(limit) * int64(mcpShellResultMaxBytes) / int64(len(envelope)))
+		if scaled >= limit {
+			scaled = limit - 1
+		}
+		limit = scaled
+		if limit < 0 {
+			limit = 0
+		}
 	}
-	envelope, err := json.Marshal(map[string]any{
-		"truncated":      true,
-		"original_bytes": len(out),
-		"max_bytes":      mcpShellResultMaxBytes,
-		"preview":        out[:limit],
-		"note":           "Command output exceeded the MCP tool-result budget. Re-run with --agent/--compact/--select or a narrower --limit, or use the sql/search tools.",
-	})
-	if err != nil {
-		return out[:limit]
-	}
-	return string(envelope)
 }
 
 func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWriteSinks map[int]bool) error {

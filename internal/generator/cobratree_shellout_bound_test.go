@@ -36,13 +36,23 @@ func TestBoundShellResultCapsOversizedOutput(t *testing.T) {
 		t.Fatalf("small output must pass through unchanged: got %q", got)
 	}
 
-	big := strings.Repeat("x", 200000)
-	got := boundShellResult(big)
-	if len(got) > mcpShellResultMaxBytes {
-		t.Fatalf("oversized output must be capped to the byte budget %d, got %d bytes", mcpShellResultMaxBytes, len(got))
-	}
-	if !strings.Contains(got, "truncated") {
-		t.Fatalf("truncated result must carry a truncation marker, got prefix %q", got[:min(200, len(got))])
+	// Oversized inputs must always fit the byte budget once wrapped in the JSON
+	// truncation envelope, including JSON-heavy output whose characters expand
+	// under json.Marshal escaping (quotes -> \", backslashes -> \\, control
+	// chars -> \uXXXX). A raw-byte preview limit would overshoot for these.
+	for name, in := range map[string]string{
+		"plain ascii":   strings.Repeat("x", 200000),
+		"all quotes":    strings.Repeat("\"", 200000),
+		"all backslash": strings.Repeat("\\", 200000),
+		"all control":   strings.Repeat("\x01", 200000),
+	} {
+		got := boundShellResult(in)
+		if len(got) > mcpShellResultMaxBytes {
+			t.Fatalf("%s: oversized output must be capped to the budget %d, got %d bytes", name, mcpShellResultMaxBytes, len(got))
+		}
+		if !strings.Contains(got, "truncated") {
+			t.Fatalf("%s: truncated result must carry a truncation marker, got prefix %q", name, got[:min(200, len(got))])
+		}
 	}
 }
 
