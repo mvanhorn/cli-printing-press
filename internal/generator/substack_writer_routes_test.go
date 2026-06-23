@@ -30,10 +30,32 @@ func TestGenerateSubstackGlobalWriterRoutes(t *testing.T) {
 	assert.Contains(t, draftsSrc, `resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags)`)
 	assert.NotContains(t, draftsSrc, `trevinsays.substack.com`)
 
+	draftsListSrc := readGeneratedFile(t, outputDir, "internal", "cli", "drafts_list.go")
+	assert.Contains(t, draftsListSrc, `"pp:path": "https://substack.com/api/v1/drafts?publication_id={publication_id}"`)
+	assert.Contains(t, draftsListSrc, `resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags)`)
+	assert.NotContains(t, draftsListSrc, `{publication}.substack.com/api/v1/drafts`)
+
+	draftsUpdateSrc := readGeneratedFile(t, outputDir, "internal", "cli", "drafts_update.go")
+	assert.Contains(t, draftsUpdateSrc, `"pp:path": "https://substack.com/api/v1/drafts/{draft_id}?publication_id={publication_id}"`)
+	assert.Contains(t, draftsUpdateSrc, `resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags)`)
+	assert.NotContains(t, draftsUpdateSrc, `{publication}.substack.com/api/v1/drafts`)
+
+	for _, file := range []string{"drafts_get.go", "drafts_delete.go", "drafts_prepublish.go", "drafts_publish.go", "drafts_schedule.go"} {
+		src := readGeneratedFile(t, outputDir, "internal", "cli", file)
+		assert.Contains(t, src, `https://substack.com/api/v1/drafts/{draft_id}`)
+		assert.Contains(t, src, `publication_id={publication_id}`)
+		assert.Contains(t, src, `resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags)`)
+		assert.NotContains(t, src, `{publication}.substack.com/api/v1/drafts`)
+	}
+
 	imagesSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_images.go")
 	assert.Contains(t, imagesSrc, `"pp:path": "https://substack.com/api/v1/image"`)
 	assert.Contains(t, imagesSrc, `path := "https://substack.com/api/v1/image"`)
 	assert.NotContains(t, imagesSrc, `{publication}.substack.com/api/v1/image`)
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	assert.Contains(t, syncSrc, `"drafts": "https://substack.com/api/v1/drafts?publication_id={publication_id}"`)
+	assert.NotContains(t, syncSrc, `"drafts":          publicationAPIPath("/drafts")`)
 
 	helpersSrc := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
 	assert.Contains(t, helpersSrc, `func resolveSubstackPublicationIDTemplate(ctx context.Context, c *client.Client, flags *rootFlags) error`)
@@ -257,6 +279,43 @@ func substackWriterRoutesSpec() *spec.APISpec {
 						Method:      "GET",
 						Path:        "/drafts",
 						Description: "List drafts",
+					},
+					"update": {
+						Method:      "PUT",
+						Path:        "https://{publication}.substack.com/api/v1/drafts/{draft_id}",
+						Description: "Update a draft",
+						Params:      []spec.Param{{Name: "draft_id", Type: "string", Required: true, Positional: true, PathParam: true}},
+						Body:        []spec.Param{{Name: "title", Type: "string"}},
+					},
+					"get": {
+						Method:      "GET",
+						Path:        "https://{publication}.substack.com/api/v1/drafts/{draft_id}",
+						Description: "Get a draft",
+						Params:      []spec.Param{{Name: "draft_id", Type: "string", Required: true, Positional: true, PathParam: true}},
+					},
+					"delete": {
+						Method:      "DELETE",
+						Path:        "https://{publication}.substack.com/api/v1/drafts/{draft_id}",
+						Description: "Delete a draft",
+						Params:      []spec.Param{{Name: "draft_id", Type: "string", Required: true, Positional: true, PathParam: true}},
+					},
+					"prepublish": {
+						Method:      "POST",
+						Path:        "https://{publication}.substack.com/api/v1/drafts/{draft_id}/prepublish",
+						Description: "Prepublish a draft",
+						Params:      []spec.Param{{Name: "draft_id", Type: "string", Required: true, Positional: true, PathParam: true}},
+					},
+					"publish": {
+						Method:      "POST",
+						Path:        "https://{publication}.substack.com/api/v1/drafts/{draft_id}/publish",
+						Description: "Publish a draft",
+						Params:      []spec.Param{{Name: "draft_id", Type: "string", Required: true, Positional: true, PathParam: true}},
+					},
+					"schedule": {
+						Method:      "POST",
+						Path:        "https://{publication}.substack.com/api/v1/drafts/{draft_id}/schedule",
+						Description: "Schedule a draft",
+						Params:      []spec.Param{{Name: "draft_id", Type: "string", Required: true, Positional: true, PathParam: true}},
 					},
 				},
 			},

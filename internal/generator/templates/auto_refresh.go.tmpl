@@ -210,6 +210,14 @@ func runAutoRefresh(ctx context.Context, flags *rootFlags, db *store.Store, reso
 			return ctx.Err()
 		default:
 		}
+{{- if eq .Name "substack"}}
+		if resource == "drafts" {
+			if err := resolveSubstackPublicationIDTemplate(ctx, c, flags); err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", resource, err))
+				continue
+			}
+		}
+{{- end}}
 		result := syncResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, "", false, 1, true{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil, os.Stderr{{end}})
 		if result.Err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", resource, result.Err))

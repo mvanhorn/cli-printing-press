@@ -326,6 +326,21 @@ Resource scoping:
 				concurrency = 1
 			}
 
+{{ if eq .Name "substack"}}
+			needsSubstackDraftPublicationID := false
+			for _, resource := range resources {
+				if resource == "drafts" {
+					needsSubstackDraftPublicationID = true
+					break
+				}
+			}
+			if needsSubstackDraftPublicationID {
+				if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
+					return err
+				}
+			}
+
+{{- end}}
 			started := time.Now()
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
