@@ -2124,7 +2124,7 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
-	if g.Spec.HasXMLResponse() {
+	if g.Spec.AllResponsesXML() {
 		if err := g.renderTemplate("cliutil_xml_parse.go.tmpl", filepath.Join("internal", "cliutil", "xml_parse.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering cliutil xml parse: %w", err)
 		}

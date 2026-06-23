@@ -1431,7 +1431,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			if binaryResponse {
 				req.Header.Set("Accept", "*/*")
 			} else {
-				req.Header.Set("Accept", "application/{{if .HasXMLResponse}}xml{{else}}json{{end}}")
+				req.Header.Set("Accept", "application/{{if .AllResponsesXML}}xml{{else}}json{{end}}")
 			}
 		}
 {{- end}}
@@ -1471,11 +1471,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				}
 				return env, resp.StatusCode, nil
 			}
-{{- if .HasXMLResponse}}
-			// XML-only endpoints (response_format: xml) are normalized to a
-			// generic JSON document so --json, --select, and table output work
-			// unchanged. Non-XML responses pass through untouched; a decode
-			// failure returns the raw bytes rather than corrupting the body.
+{{- if .AllResponsesXML}}
+			// XML-only specs (every endpoint response_format: xml) normalize
+			// success bodies to a generic JSON document so --json, --select, and
+			// table output work unchanged. Non-XML content types (e.g. a JSON
+			// error envelope) pass through untouched; a decode failure returns
+			// the raw bytes rather than corrupting the body.
 			if isXMLResponseContentType(resp.Header.Get("Content-Type")) {
 				return cliutil.XMLToJSON(json.RawMessage(respBody)), resp.StatusCode, nil
 			}
@@ -2226,7 +2227,7 @@ func isBinaryResponseContentType(ct string) bool {
 	}
 	return true
 }
-{{- if .HasXMLResponse}}
+{{- if .AllResponsesXML}}
 
 // isXMLResponseContentType reports whether a success response should be
 // normalized from XML to JSON. application/xhtml+xml is excluded: it is

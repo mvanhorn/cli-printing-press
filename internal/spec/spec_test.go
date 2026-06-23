@@ -3848,6 +3848,16 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.NoError(t, xmlSpec.Validate())
 	assert.True(t, xmlSpec.Resources["posts"].Endpoints["list"].UsesXMLResponse())
 	assert.True(t, xmlSpec.HasXMLResponse())
+	assert.True(t, xmlSpec.AllResponsesXML(), "a spec whose only endpoint is XML is XML-only")
+
+	mixedSpec := validHTMLSpec()
+	ep = mixedSpec.Resources["posts"].Endpoints["list"]
+	ep.ResponseFormat = ResponseFormatXML
+	ep.HTMLExtract = nil
+	mixedSpec.Resources["posts"].Endpoints["list"] = ep
+	mixedSpec.Resources["posts"].Endpoints["get"] = Endpoint{Method: "GET", Path: "/posts/{id}", Description: "Get a post (JSON)"}
+	assert.True(t, mixedSpec.HasXMLResponse())
+	assert.False(t, mixedSpec.AllResponsesXML(), "a JSON sibling endpoint makes the spec non-XML-only")
 
 	badFormat := validHTMLSpec()
 	ep = badFormat.Resources["posts"].Endpoints["list"]

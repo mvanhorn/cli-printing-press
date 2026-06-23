@@ -975,6 +975,40 @@ func resourceHasXMLResponse(resource Resource) bool {
 	return false
 }
 
+// AllResponsesXML reports whether the spec is XML-only: it declares at least
+// one XML response and every endpoint uses response_format: xml. The generated
+// client gates its spec-wide XML behavior — the application/xml Accept default
+// and the XML→JSON normalization of success responses — on this rather than
+// HasXMLResponse. That keeps a mixed spec (one XML endpoint plus JSON
+// endpoints) from forcing application/xml onto, or XML-normalizing, its JSON
+// endpoints. XML endpoints in a mixed spec still get their per-endpoint Accept
+// override from the parser; only the spec-wide fallback is withheld.
+func (s *APISpec) AllResponsesXML() bool {
+	if s == nil || !s.HasXMLResponse() {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if !resourceAllResponsesXML(resource) {
+			return false
+		}
+	}
+	return true
+}
+
+func resourceAllResponsesXML(resource Resource) bool {
+	for _, endpoint := range resource.Endpoints {
+		if !endpoint.UsesXMLResponse() {
+			return false
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if !resourceAllResponsesXML(sub) {
+			return false
+		}
+	}
+	return true
+}
+
 // HasHTMLExtractMode reports whether any endpoint in the spec declares
 // html_extract with the given effective mode. Used by the html_extract
 // template to gate per-mode helpers: a CLI that uses only
