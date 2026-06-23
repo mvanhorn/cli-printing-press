@@ -326,6 +326,21 @@ Resource scoping:
 				concurrency = 1
 			}
 
+{{ if eq .Name "substack"}}
+			needsSubstackDraftPublicationID := false
+			for _, resource := range resources {
+				if resource == "drafts" {
+					needsSubstackDraftPublicationID = true
+					break
+				}
+			}
+			if needsSubstackDraftPublicationID {
+				if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
+					return err
+				}
+			}
+
+{{- end}}
 			started := time.Now()
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
@@ -336,14 +351,6 @@ Resource scoping:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-{{- if eq .Name "substack"}}
-						if resource == "drafts" {
-							if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
-								results <- syncResult{Resource: resource, Err: err}
-								continue
-							}
-						}
-{{- end}}
 						res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, sinceTS, full, maxPages, effectiveLatestOnly{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams, syncEventWriter)
 						results <- res
 					}
