@@ -1077,15 +1077,12 @@ func shouldIndexSearchString(key, value string) bool {
 		return false
 	}
 	lower := strings.ToLower(s)
-	upper := strings.ToUpper(s)
 	switch {
 	case IsUUID(s):
 		return false
 	case isoDatePattern.MatchString(s):
 		return false
 	case strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://"):
-		return false
-	case upper == s && len(s) == 3 && strings.IndexFunc(s, func(r rune) bool { return r < 'A' || r > 'Z' }) == -1:
 		return false
 	}
 	tokens := ftsQueryTokenRE.FindAllString(s, -1)
