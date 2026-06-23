@@ -6,11 +6,13 @@ package cobratree
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -37,8 +39,47 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnl
 		if err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
-		return mcplib.NewToolResultText(out), nil
+		return mcplib.NewToolResultText(boundShellResult(out)), nil
 	}
+}
+
+// mcpShellResultMaxBytes caps raw companion-CLI stdout returned through the
+// command-mirror shell-out path. It mirrors the typed endpoint tools' result
+// ceiling (mcpToolResultMaxBytes in the mcp package) so a single tool result
+// stays within an MCP host's context budget regardless of which tool surface
+// produced it.
+const mcpShellResultMaxBytes = 60000
+
+// boundShellResult caps oversized command output to the tool-result byte
+// budget. Typed endpoint tools bound their output with a JSON-aware list
+// envelope; shell-out stdout is arbitrary text (JSON, tables, CSV), so this
+// returns a JSON truncation envelope carrying a UTF-8-safe byte preview and a
+// note pointing the agent at the output-narrowing flags.
+func boundShellResult(out string) string {
+	if len(out) <= mcpShellResultMaxBytes {
+		return out
+	}
+	limit := mcpShellResultMaxBytes - 1024
+	if limit < 0 {
+		limit = 0
+	}
+	if limit > len(out) {
+		limit = len(out)
+	}
+	for limit > 0 && !utf8.RuneStart(out[limit]) {
+		limit--
+	}
+	envelope, err := json.Marshal(map[string]any{
+		"truncated":      true,
+		"original_bytes": len(out),
+		"max_bytes":      mcpShellResultMaxBytes,
+		"preview":        out[:limit],
+		"note":           "Command output exceeded the MCP tool-result budget. Re-run with --agent/--compact/--select or a narrower --limit, or use the sql/search tools.",
+	})
+	if err != nil {
+		return out[:limit]
+	}
+	return string(envelope)
 }
 
 func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWriteSinks map[int]bool) error {
