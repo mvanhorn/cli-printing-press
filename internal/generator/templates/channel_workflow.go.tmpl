@@ -296,6 +296,14 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 
 			for _, resource := range resources {
+{{- if eq .Name "substack"}}
+				if resource == "drafts" {
+					if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, err)
+						continue
+					}
+				}
+{{- end}}
 				res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, 100, false{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil, syncEventWriter{{end}})
 				if res.Err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, res.Err)

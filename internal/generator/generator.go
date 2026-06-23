@@ -171,6 +171,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	s.InferEndpointTemplateVarsFromBaseURLs()
 	s.EnrichPathParams()
 	s.PromoteGlobalPathTemplateVars()
+	normalizeSubstackGlobalWriterRoutes(s)
 	// Resolve the creator + contributors (the canonical attribution model),
 	// preserving persisted values across regens so a regen never flips the
 	// creator to whoever is running the generator. The legacy
@@ -634,6 +635,88 @@ func hasSubstackPublicationIDTemplateResolver(s *spec.APISpec) bool {
 
 func substackPublicationIDTemplatePath(s *spec.APISpec, path string) bool {
 	return s != nil && strings.EqualFold(s.Name, "substack") && strings.Contains(path, "{publication_id}")
+}
+
+func normalizeSubstackGlobalWriterRoutes(s *spec.APISpec) {
+	if s == nil || !strings.EqualFold(s.Name, "substack") || !s.IsEndpointTemplateVar("publication_id") {
+		return
+	}
+	for resourceName, resource := range s.Resources {
+		for endpointName, endpoint := range resource.Endpoints {
+			if normalized, ok := substackGlobalWriterPath(resourceName, endpointName, endpoint.Path); ok {
+				endpoint.Path = normalized
+				resource.Endpoints[endpointName] = endpoint
+			}
+		}
+		for subName, sub := range resource.SubResources {
+			for endpointName, endpoint := range sub.Endpoints {
+				if normalized, ok := substackGlobalWriterPath(subName, endpointName, endpoint.Path); ok {
+					endpoint.Path = normalized
+					sub.Endpoints[endpointName] = endpoint
+				}
+			}
+			resource.SubResources[subName] = sub
+		}
+		s.Resources[resourceName] = resource
+	}
+}
+
+func substackGlobalWriterPath(resourceName, endpointName, path string) (string, bool) {
+	resourceName = strings.ToLower(strings.TrimSpace(resourceName))
+	endpointName = strings.ToLower(strings.TrimSpace(endpointName))
+	path = strings.TrimSpace(path)
+	if resourceName == "images" && substackImageUploadPath(path) {
+		return "https://substack.com/api/v1/image", path != "https://substack.com/api/v1/image"
+	}
+	if resourceName != "drafts" {
+		return "", false
+	}
+	if !substackDraftsPath(path) {
+		return "", false
+	}
+	if endpointName == "" {
+		return "", false
+	}
+	trimmed := strings.TrimPrefix(path, "https://{publication}.substack.com/api/v1")
+	trimmed = strings.TrimPrefix(trimmed, "https://substack.com/api/v1")
+	if !strings.HasPrefix(trimmed, "/drafts") {
+		trimmed = "/drafts"
+	}
+	normalized := "https://substack.com/api/v1" + ensurePublicationIDQuery(trimmed)
+	return normalized, normalized != path
+}
+
+func substackImageUploadPath(path string) bool {
+	if path == "/image" || strings.HasPrefix(path, "/image?") {
+		path = "https://substack.com/api/v1" + path
+	}
+	for _, prefix := range []string{
+		"https://substack.com/api/v1/image",
+		"https://{publication}.substack.com/api/v1/image",
+	} {
+		if path == prefix || strings.HasPrefix(path, prefix+"?") {
+			return true
+		}
+	}
+	return false
+}
+
+func substackDraftsPath(path string) bool {
+	if strings.HasPrefix(path, "/drafts") {
+		return true
+	}
+	return strings.HasPrefix(path, "https://{publication}.substack.com/api/v1/drafts") || strings.HasPrefix(path, "https://substack.com/api/v1/drafts")
+}
+
+func ensurePublicationIDQuery(path string) string {
+	if strings.Contains(path, "publication_id=") {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "publication_id={publication_id}"
 }
 
 func specWalkEndpoints(s *spec.APISpec, visit func(resourceName string, endpoint spec.Endpoint) bool) bool {

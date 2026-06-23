@@ -336,6 +336,14 @@ Resource scoping:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
+{{- if eq .Name "substack"}}
+						if resource == "drafts" {
+							if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
+								results <- syncResult{Resource: resource, Err: err}
+								continue
+							}
+						}
+{{- end}}
 						res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, sinceTS, full, maxPages, effectiveLatestOnly{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams, syncEventWriter)
 						results <- res
 					}
