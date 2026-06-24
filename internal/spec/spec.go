@@ -3952,18 +3952,30 @@ func (s *APISpec) NormalizeCookieDomain() {
 
 // cookieDomainFromBaseURL returns a leading-dot cookie domain for a base URL,
 // stripping a leading "www." so the registrable domain and its subdomains both
-// match (e.g. "https://www.example.com" -> ".example.com"). Returns "" when the
-// URL has no host.
+// match (e.g. "https://www.example.com" -> ".example.com"). Returns "" when no
+// host can be recovered.
 func cookieDomainFromBaseURL(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// url.Parse treats a scheme-less string as a relative path (empty Host),
+	// so a base_url like "api.example.com" would otherwise yield no domain.
+	// Prepend a scheme to recover the host in that case.
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
 	if err != nil {
 		return ""
 	}
 	host := strings.ToLower(parsed.Hostname())
-	if host == "" {
+	// Guard degenerate hosts: a bare "www." trims to "" (would emit "..").
+	bare := strings.TrimPrefix(host, "www.")
+	if bare == "" || bare == "." {
 		return ""
 	}
-	return "." + strings.TrimPrefix(host, "www.")
+	return "." + bare
 }
 
 var publicParamNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)

@@ -5338,6 +5338,18 @@ func TestNormalizeCookieDomain(t *testing.T) {
 			baseURL:    "",
 			wantDomain: "",
 		},
+		{
+			name:       "scheme-less base_url still derives a domain",
+			authType:   "cookie",
+			baseURL:    "api.example.com",
+			wantDomain: ".api.example.com",
+		},
+		{
+			name:       "degenerate www-only host yields no domain",
+			authType:   "cookie",
+			baseURL:    "https://www.",
+			wantDomain: "",
+		},
 	}
 
 	for _, tc := range cases {
