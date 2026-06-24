@@ -229,6 +229,20 @@ type DependentResource struct {
 	// in internal YAML, or the `key_field` key under `x-pp-sync-walker` in
 	// OpenAPI). When empty, the existing parent-primary-key flow runs.
 	KeyField string
+
+	// Reconciliation metadata (deletion mark-and-sweep). See sync.go.tmpl.
+	ReconcileMode        string                // "per_parent" | "none"
+	ParentScopeColumn    string                // e.g. "projects_id" (= ParentResource + "_id")
+	GenericScopeJSONPath string                // e.g. "$.project" (json path to the parent UUID in the body)
+	CascadeJunctions     []CascadeJunctionSpec // filled by the novel-junction seam, not the profiler
+}
+
+// CascadeJunctionSpec describes a junction table that must be pruned as part
+// of a per-parent reconciliation cascade. Populated by the novel-junction
+// registration seam (Task 4), not by the profiler itself.
+type CascadeJunctionSpec struct {
+	Table    string
+	FKColumn string
 }
 
 type DependentPathParam struct {
@@ -612,6 +626,18 @@ func Profile(s *spec.APISpec) *APIProfile {
 	p.SyncableResources = sortedSyncableResources(syncable)
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
 	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
+	// Populate reconcile metadata for each dependent resource.
+	// per_parent is safe only for a single-path-param dependent with a PK.
+	for i := range p.DependentSyncResources {
+		dep := &p.DependentSyncResources[i]
+		if len(dep.PathParams) == 1 && dep.IDField != "" {
+			dep.ReconcileMode = "per_parent"
+			dep.ParentScopeColumn = dep.ParentResource + "_id"
+			dep.GenericScopeJSONPath = "$." + singularParentField(dep.ParentResource)
+		} else {
+			dep.ReconcileMode = "none"
+		}
+	}
 	for resource, fields := range searchable {
 		p.SearchableFields[resource] = sortedKeys(fields)
 	}
@@ -1668,6 +1694,13 @@ func dependentParentIDParam(path, parentResource, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// singularParentField maps a plural parent resource name to the singular field
+// the API body carries for that parent (e.g. "projects" → "project"). Mirrors
+// the childScopeColumnSources convention used by deriveScopeColumns in the store.
+func singularParentField(parentResource string) string {
+	return strings.TrimSuffix(parentResource, "s")
 }
 
 func dependentPathParamFields(path, parentResource string) map[string]string {
