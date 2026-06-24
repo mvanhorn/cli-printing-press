@@ -3821,6 +3821,38 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+// TestGenerateMCPSQLToolExampleUsesFirstResourceType pins that the sql tool's
+// worked example filters by a real resource_type derived from the spec, not the
+// hardcoded literal 'items'. A CLI whose resources don't include "items" would
+// otherwise ship an example query that returns zero rows for every agent that
+// copies it.
+func TestGenerateMCPSQLToolExampleUsesFirstResourceType(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("sql-example")
+	apiSpec.Resources = map[string]spec.Resource{
+		"widgets": {
+			Description: "Manage widgets",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/widgets", Description: "List widgets"},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpCode := string(mcpSrc)
+
+	assert.Contains(t, mcpCode, `resource_type='widgets'`,
+		"sql tool example must filter by a real resource_type derived from the spec's resources")
+	assert.NotContains(t, mcpCode, `resource_type='items'`,
+		"sql tool example must not hardcode the placeholder resource_type 'items' when the CLI has no items resource")
+}
+
 // TestGenerateMCPSQLToolSurfacesRowErrors pins the emitted handleSQL error
 // handling so a regression to the silent-discard form (which returns a
 // truncated result set as a successful tool call) fails fast. It also pins the
