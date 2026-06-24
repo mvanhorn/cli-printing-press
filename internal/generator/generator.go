@@ -2021,6 +2021,7 @@ func (g *Generator) prepareOutput() error {
 		filepath.Join("internal", "client"),
 		filepath.Join("internal", "cliutil"),
 		filepath.Join("internal", "config"),
+		filepath.Join("internal", "mcp", "bound"),
 		filepath.Join("internal", "mcp", "cobratree"),
 		filepath.Join("internal", "types"),
 	}
@@ -2124,6 +2125,8 @@ func (g *Generator) renderSingleFiles() error {
 		"cliutil_odata_date.go.tmpl":               filepath.Join("internal", "cliutil", "odata_date.go"),
 		"cliutil_odata_date_test.go.tmpl":          filepath.Join("internal", "cliutil", "odata_date_test.go"),
 		"cliutil_test.go.tmpl":                     filepath.Join("internal", "cliutil", "cliutil_test.go"),
+		"mcp_bound.go.tmpl":                        filepath.Join("internal", "mcp", "bound", "bound.go"),
+		"mcp_bound_test.go.tmpl":                   filepath.Join("internal", "mcp", "bound", "bound_test.go"),
 		"types.go.tmpl":                            filepath.Join("internal", "types", "types.go"),
 		"golangci.yml.tmpl":                        ".golangci.yml",
 		"readme.md.tmpl":                           "README.md",
@@ -2781,6 +2784,8 @@ func (g *Generator) GenerateMCPSurface() error {
 		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
 		"cliutil_jwtshape.go.tmpl":           filepath.Join("internal", "cliutil", "jwtshape.go"),
 		"cliutil_jwtshape_test.go.tmpl":      filepath.Join("internal", "cliutil", "jwtshape_test.go"),
+		"mcp_bound.go.tmpl":                  filepath.Join("internal", "mcp", "bound", "bound.go"),
+		"mcp_bound_test.go.tmpl":             filepath.Join("internal", "mcp", "bound", "bound_test.go"),
 	}
 	maps.Copy(mcpFiles, cobratreeWalkerTemplateFiles())
 	for tmplName, outPath := range mcpFiles {
@@ -3312,6 +3317,7 @@ func (g *Generator) renderMCPEntrypoint() error {
 		mcpDirs := []string{
 			filepath.Join("cmd", naming.MCP(g.Spec.Name)),
 			filepath.Join("internal", "mcp"),
+			filepath.Join("internal", "mcp", "bound"),
 		}
 		for _, d := range mcpDirs {
 			if err := os.MkdirAll(filepath.Join(g.OutputDir, d), 0755); err != nil {
