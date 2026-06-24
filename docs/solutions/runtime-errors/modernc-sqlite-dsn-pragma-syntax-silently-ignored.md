@@ -43,7 +43,7 @@ The store template (`internal/generator/templates/store.go.tmpl`, emitted as `in
 ## What Didn't Work
 
 - **Trusting the in-code comment.** A comment in `OpenReadOnly` claimed `_journal_mode`/`_busy_timeout` "work either way; they're parsed out of the DSN by the driver before sqlite3_open_v2." That belief is what let the bug ship. The fix only became obvious after reading the pragmas back empirically.
-- **Reordering pragmas to put `busy_timeout` first** (so the WAL conversion would honor the timeout). Measured no improvement on the concurrent-open race — the connect-time conversion BUSY is not covered by the statement-level busy handler.
+- **Reordering pragmas to put `busy_timeout` first** (so the WAL conversion would honor the timeout). As the *sole* fix it measured no improvement on the concurrent-open race — the connect-time conversion BUSY is not covered by the statement-level busy handler, which is why this fix shipped behind the `retryOnBusy`-wrapped `Conn()` acquisition instead. Revisiting it later (see #2926) showed that ordering `busy_timeout` before `journal_mode` still reduces the residual race window once the retry wrapper is in place, so the DSN now lists `busy_timeout` first as defense-in-depth alongside the retry. Both layers are needed; neither is sufficient alone.
 
 ## Solution
 
@@ -54,7 +54,7 @@ Switch both opens to the `_pragma=` form (verify with the pinned driver version,
 sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
 
 // read-write (adds synchronous)
-sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
+sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)")
 ```
 
 Empirical proof with the pinned driver — the mattn-style DSN is byte-for-byte equivalent to passing no parameters:

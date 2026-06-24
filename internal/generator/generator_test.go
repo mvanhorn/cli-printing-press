@@ -3696,6 +3696,51 @@ func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
 		"migrate must read PRAGMA user_version BEFORE entering withMigrationLock so newer-DB rejection happens before lock acquisition")
 }
 
+// TestGenerateStoreDSNOrdersBusyTimeoutBeforeJournalMode pins the read-write
+// DSN pragma ordering. busy_timeout must be listed BEFORE journal_mode(WAL) so
+// the delete→WAL conversion on a fresh DB runs with the busy handler active;
+// listing it after lets concurrent first-run opens race the exclusive WAL
+// switch and fail SQLITE_BUSY instead of waiting (#2926). The OpenReadOnly DSN
+// already orders busy_timeout first (and carries no journal_mode), so this only
+// needs to assert the read-write path. A regression that swaps the order back
+// fails fast here instead of surfacing as a flaky concurrent-open failure in
+// printed CLIs.
+func TestGenerateStoreDSNOrdersBusyTimeoutBeforeJournalMode(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("dsn-order-canary")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	src := string(storeSrc)
+
+	// Strip comments so the assertion runs against the live DSN literal,
+	// not against a comment that happens to mention the pragmas.
+	codeOnly := stripGoComments(src)
+
+	// journal_mode(WAL) appears only in the read-write DSN, so it anchors
+	// the search to that literal. busy_timeout(5000) appears in BOTH the
+	// read-only DSN (OpenReadOnlyContext, defined earlier in the file) and
+	// the read-write DSN, so a file-wide strings.Index for it always hits
+	// the read-only DSN first and the ordering check passes regardless of
+	// the read-write DSN's internal order. Scope the busy_timeout search to
+	// the read-write DSN by starting at its "?_pragma=" query prefix — the
+	// read-only DSN begins with "?mode=ro&_pragma=", so "?_pragma=" uniquely
+	// marks the read-write query string.
+	idxJournal := strings.Index(codeOnly, "_pragma=journal_mode(WAL)")
+	require.GreaterOrEqual(t, idxJournal, 0, "read-write DSN must set journal_mode(WAL)")
+	dsnStart := strings.LastIndex(codeOnly[:idxJournal], "?_pragma=")
+	require.GreaterOrEqual(t, dsnStart, 0,
+		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL): no ?_pragma= query prefix precedes journal_mode(WAL) (see #2926)")
+	idxBusy := strings.Index(codeOnly[dsnStart:idxJournal], "_pragma=busy_timeout(5000)")
+	require.GreaterOrEqual(t, idxBusy, 0,
+		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL) so the WAL conversion runs with the busy handler active (see #2926)")
+}
+
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
 // emitted Store.Get must surface the sentinel rather than swallow it into
 // a nil-shape that bypasses the caller's err check.
