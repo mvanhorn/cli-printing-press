@@ -50,6 +50,10 @@ func TestGenerateMutatingEndpointPassesQueryParams(t *testing.T) {
 	assert.Contains(t, mcpSrc, `PublicName: "output_format", WireName: "output_format", Location: "query"`)
 	assert.Contains(t, mcpSrc, `data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)`)
 	assert.Contains(t, mcpSrc, `"content_encoding": "base64"`)
+	assert.Contains(t, mcpSrc, `encoded := base64.StdEncoding.EncodeToString(data)`)
+	assert.Contains(t, mcpSrc, `if len(out) > bound.MaxBytes {`)
+	assert.Contains(t, mcpSrc, `binary response is too large for MCP text output`)
+	assert.NotContains(t, mcpSrc, `bound.JSON(map[string]any{`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
