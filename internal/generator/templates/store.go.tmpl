@@ -1971,6 +1971,29 @@ type CascadeJunction struct {
 	FKColumn string
 }
 
+var (
+	cascadeMu        sync.Mutex
+	cascadeJunctions = map[string][]CascadeJunction{}
+)
+
+// RegisterCascadeJunction records a junction to clean when rows of resourceType
+// are reconciled away. Used for runtime-created junctions (e.g. module_issues)
+// that the generated schema does not declare.
+func RegisterCascadeJunction(resourceType string, j CascadeJunction) {
+	cascadeMu.Lock()
+	defer cascadeMu.Unlock()
+	cascadeJunctions[resourceType] = append(cascadeJunctions[resourceType], j)
+}
+
+// CascadeJunctionsFor returns the registered cascade junctions for resourceType.
+func CascadeJunctionsFor(resourceType string) []CascadeJunction {
+	cascadeMu.Lock()
+	defer cascadeMu.Unlock()
+	out := make([]CascadeJunction, len(cascadeJunctions[resourceType]))
+	copy(out, cascadeJunctions[resourceType])
+	return out
+}
+
 // ReconcilePartition hard-deletes local rows of resourceType in one partition
 // (rows whose data JSON at genericScopeJSONPath equals scopeValue) whose primary
 // key is NOT in seenIDs. It is the mark-and-sweep half of deletion mirroring;
@@ -2037,6 +2060,9 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 		return 0, err
 	}
 
+	// Safety: typedTable and cascade Table/FKColumn are TRUSTED generator/registration
+	// metadata (schema-derived or RegisterCascadeJunction), not user input — Sprintf
+	// interpolation here is intentional and safe.
 	for _, id := range victims {
 		if typedTable != "" {
 			if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM "%s" WHERE id = ?`, typedTable), id); err != nil {
