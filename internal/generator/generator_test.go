@@ -82,6 +82,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/client/client_verify_short_circuit_test.go",
 		"internal/config/config.go",
 		"internal/store/extras.go",
+		"internal/mcp/bound/bound.go",
+		"internal/mcp/bound/bound_test.go",
 		"internal/mcp/cobratree/walker.go",
 		"internal/mcp/cobratree/classify.go",
 		"internal/mcp/cobratree/typemap.go",
@@ -100,9 +102,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 78},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 82},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 80},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 80},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 84},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 82},
 	}
 
 	for _, tt := range tests {
@@ -3929,8 +3931,8 @@ func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
 		"mcp package must expose toolResultJSON so result encoding surfaces marshal errors")
 	assert.NotContains(t, mcpCode, `json.MarshalIndent(results, "", "  ")`,
 		"handleSQL/handleSearch must route result encoding through toolResultJSON, not discard the json.MarshalIndent error")
-	assert.Regexp(t, `(?s)func toolResultJSON\(.*json\.MarshalIndent\(v.*if err != nil`, mcpCode,
-		"toolResultJSON must check the json.MarshalIndent error")
+	assert.Regexp(t, `(?s)func toolResultJSON\(.*bound\.JSON\(v\).*if err != nil`, mcpCode,
+		"toolResultJSON must check the shared MCP bound encoder error")
 
 	// Compile-check the emission: the cols, err := redeclaration reusing the
 	// err already bound by db.Query must still build.

@@ -25,6 +25,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"{{modulePath}}/internal/mcp/bound"
 {{- if .MCP.Intents}}
 	"{{modulePath}}/internal/client"
 {{- end}}
@@ -119,11 +120,11 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 		return mcplib.NewToolResultText(`{"status":"ok"}`), nil
 	}
 	out := scope[returnKey]
-	data, err := json.Marshal(out)
+	text, err := bound.JSON(out)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("encoding %s result: %v", returnKey, err)), nil
 	}
-	return mcplib.NewToolResultText(string(data)), nil
+	return mcplib.NewToolResultText(text), nil
 }
 {{end}}
 
@@ -167,7 +168,7 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	return mcplib.NewToolResultText(out), nil
+	return mcplib.NewToolResultText(bound.Text(out)), nil
 }
 {{end}}
 
