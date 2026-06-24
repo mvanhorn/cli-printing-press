@@ -3666,6 +3666,7 @@ func singularize(s string) string {
 
 func (s *APISpec) Validate() error {
 	s.NormalizeAuthEnvVarSpecs()
+	s.NormalizeCookieDomain()
 	s.InferEndpointTemplateVarsFromBaseURLs()
 	if s.Name == "" {
 		return fmt.Errorf("name is required")
@@ -3926,6 +3927,55 @@ func (s *APISpec) NormalizeAuthEnvVarSpecs() {
 		tier.Auth.NormalizeEnvVarSpecs(fmt.Sprintf("tier_routing.tiers.%s.auth", name))
 		s.TierRouting.Tiers[name] = tier
 	}
+}
+
+// NormalizeCookieDomain backfills Auth.CookieDomain for cookie/composed auth
+// when no explicit domain came from the spec field, the x-auth-cookie-domain
+// extension, or the sniffer's bound domain. The browser cookie-capture path
+// (`auth login --chrome`) reads cookies scoped to this domain; an empty value
+// makes it request cookies for "" so the extraction tool returns none. Derive
+// a leading-dot domain from base_url so cookies on the registrable domain and
+// its subdomains both match.
+func (s *APISpec) NormalizeCookieDomain() {
+	if s == nil || s.Auth.CookieDomain != "" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Auth.Type)) {
+	case "cookie", "composed":
+	default:
+		return
+	}
+	if domain := cookieDomainFromBaseURL(s.BaseURL); domain != "" {
+		s.Auth.CookieDomain = domain
+	}
+}
+
+// cookieDomainFromBaseURL returns a leading-dot cookie domain for a base URL,
+// stripping a leading "www." so the registrable domain and its subdomains both
+// match (e.g. "https://www.example.com" -> ".example.com"). Returns "" when no
+// host can be recovered.
+func cookieDomainFromBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// url.Parse treats a scheme-less string as a relative path (empty Host),
+	// so a base_url like "api.example.com" would otherwise yield no domain.
+	// Prepend a scheme to recover the host in that case.
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	// Guard degenerate hosts: a bare "www." trims to "" (would emit "..").
+	bare := strings.TrimPrefix(host, "www.")
+	if bare == "" || bare == "." {
+		return ""
+	}
+	return "." + bare
 }
 
 var publicParamNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)

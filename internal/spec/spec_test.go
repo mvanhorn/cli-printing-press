@@ -5297,6 +5297,73 @@ resources:
 	assert.Equal(t, "paid", s.EffectiveTier(s.Resources["results"], s.Resources["results"].Endpoints["premium"]))
 }
 
+func TestNormalizeCookieDomain(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		authType   string
+		baseURL    string
+		preset     string
+		wantDomain string
+	}{
+		{
+			name:       "cookie auth derives leading-dot domain from base_url",
+			authType:   "cookie",
+			baseURL:    "https://www.factor75.com",
+			wantDomain: ".factor75.com",
+		},
+		{
+			name:       "composed auth derives domain too",
+			authType:   "composed",
+			baseURL:    "https://app.example.com",
+			wantDomain: ".app.example.com",
+		},
+		{
+			name:       "explicit cookie_domain is preserved",
+			authType:   "cookie",
+			baseURL:    "https://www.factor75.com",
+			preset:     ".custom.example.com",
+			wantDomain: ".custom.example.com",
+		},
+		{
+			name:       "non-cookie auth is untouched",
+			authType:   "bearer_token",
+			baseURL:    "https://www.example.com",
+			wantDomain: "",
+		},
+		{
+			name:       "no host yields no domain",
+			authType:   "cookie",
+			baseURL:    "",
+			wantDomain: "",
+		},
+		{
+			name:       "scheme-less base_url still derives a domain",
+			authType:   "cookie",
+			baseURL:    "api.example.com",
+			wantDomain: ".api.example.com",
+		},
+		{
+			name:       "degenerate www-only host yields no domain",
+			authType:   "cookie",
+			baseURL:    "https://www.",
+			wantDomain: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{BaseURL: tc.baseURL}
+			s.Auth.Type = tc.authType
+			s.Auth.CookieDomain = tc.preset
+			s.NormalizeCookieDomain()
+			assert.Equal(t, tc.wantDomain, s.Auth.CookieDomain)
+		})
+	}
+}
+
 func TestInferEndpointTemplateVarsFromBaseURLs(t *testing.T) {
 	t.Parallel()
 
