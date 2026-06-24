@@ -698,6 +698,7 @@ paths:
         '404':
           description: Workspace not found
   /projects/:
+    x-pp-tenant-scope-column: workspace
     get:
       operationId: list_projects
       description: Retrieve all projects in a workspace or get details of a specific project.
