@@ -82,6 +82,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/client/client_verify_short_circuit_test.go",
 		"internal/config/config.go",
 		"internal/store/extras.go",
+		"internal/mcp/bound/bound.go",
+		"internal/mcp/bound/bound_test.go",
 		"internal/mcp/cobratree/walker.go",
 		"internal/mcp/cobratree/classify.go",
 		"internal/mcp/cobratree/typemap.go",
@@ -100,9 +102,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 78},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 82},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 80},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 80},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 84},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 82},
 	}
 
 	for _, tt := range tests {
@@ -2579,6 +2581,43 @@ func TestGenerateCookieAuthAttachesRealRequestHeader(t *testing.T) {
 		"genuine cookie auth should keep the jar-only comment block")
 }
 
+// TestGenerateCookieAuthDerivesCookieDomainFromBaseURL verifies that a
+// cookie-auth spec that omits cookie_domain still emits a concrete cookie
+// domain derived from base_url, rather than the empty string that left
+// `auth login --chrome` reading cookies for "" (so the extraction backend
+// returned none). NormalizeCookieDomain runs in Validate, which Generate
+// invokes, so the derived ".example.com" reaches the auth_browser template.
+func TestGenerateCookieAuthDerivesCookieDomainFromBaseURL(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cookiedomainderive")
+	apiSpec.BaseURL = "https://www.example.com"
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "cookie",
+		Header:  "Cookie",
+		In:      "cookie",
+		EnvVars: []string{"COOKIEDOMAINDERIVE_COOKIES"},
+		// CookieDomain intentionally left empty — the generator must derive it.
+	}
+
+	// The generation pipeline validates before generating (see root.go); that
+	// is where NormalizeCookieDomain derives the domain. Mirror that order.
+	require.NoError(t, apiSpec.Validate())
+	require.Equal(t, ".example.com", apiSpec.Auth.CookieDomain,
+		"Validate should derive the cookie domain from base_url")
+
+	outputDir := filepath.Join(t.TempDir(), "cookiedomainderive-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	// The auth_browser template's cookie-capture path binds the target domain
+	// from {{.Auth.CookieDomain}}; before the fix this rendered `domain := ""`.
+	assert.Contains(t, authGo, `domain := ".example.com"`,
+		"cookie-auth CLI without explicit cookie_domain should derive it from base_url")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // TestGenerateNoAuthPersistedQueryOmitsSetToken verifies that the
 // auth_browser template does NOT emit set-token when
 // Auth.Type == "none" + a graphql_persisted_query hint routes the spec
@@ -3704,6 +3743,51 @@ func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
 		"migrate must read PRAGMA user_version BEFORE entering withMigrationLock so newer-DB rejection happens before lock acquisition")
 }
 
+// TestGenerateStoreDSNOrdersBusyTimeoutBeforeJournalMode pins the read-write
+// DSN pragma ordering. busy_timeout must be listed BEFORE journal_mode(WAL) so
+// the delete→WAL conversion on a fresh DB runs with the busy handler active;
+// listing it after lets concurrent first-run opens race the exclusive WAL
+// switch and fail SQLITE_BUSY instead of waiting (#2926). The OpenReadOnly DSN
+// already orders busy_timeout first (and carries no journal_mode), so this only
+// needs to assert the read-write path. A regression that swaps the order back
+// fails fast here instead of surfacing as a flaky concurrent-open failure in
+// printed CLIs.
+func TestGenerateStoreDSNOrdersBusyTimeoutBeforeJournalMode(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("dsn-order-canary")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	src := string(storeSrc)
+
+	// Strip comments so the assertion runs against the live DSN literal,
+	// not against a comment that happens to mention the pragmas.
+	codeOnly := stripGoComments(src)
+
+	// journal_mode(WAL) appears only in the read-write DSN, so it anchors
+	// the search to that literal. busy_timeout(5000) appears in BOTH the
+	// read-only DSN (OpenReadOnlyContext, defined earlier in the file) and
+	// the read-write DSN, so a file-wide strings.Index for it always hits
+	// the read-only DSN first and the ordering check passes regardless of
+	// the read-write DSN's internal order. Scope the busy_timeout search to
+	// the read-write DSN by starting at its "?_pragma=" query prefix — the
+	// read-only DSN begins with "?mode=ro&_pragma=", so "?_pragma=" uniquely
+	// marks the read-write query string.
+	idxJournal := strings.Index(codeOnly, "_pragma=journal_mode(WAL)")
+	require.GreaterOrEqual(t, idxJournal, 0, "read-write DSN must set journal_mode(WAL)")
+	dsnStart := strings.LastIndex(codeOnly[:idxJournal], "?_pragma=")
+	require.GreaterOrEqual(t, dsnStart, 0,
+		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL): no ?_pragma= query prefix precedes journal_mode(WAL) (see #2926)")
+	idxBusy := strings.Index(codeOnly[dsnStart:idxJournal], "_pragma=busy_timeout(5000)")
+	require.GreaterOrEqual(t, idxBusy, 0,
+		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL) so the WAL conversion runs with the busy handler active (see #2926)")
+}
+
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
 // emitted Store.Get must surface the sentinel rather than swallow it into
 // a nil-shape that bypasses the caller's err check.
@@ -3829,6 +3913,38 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+// TestGenerateMCPSQLToolExampleUsesFirstResourceType pins that the sql tool's
+// worked example filters by a real resource_type derived from the spec, not the
+// hardcoded literal 'items'. A CLI whose resources don't include "items" would
+// otherwise ship an example query that returns zero rows for every agent that
+// copies it.
+func TestGenerateMCPSQLToolExampleUsesFirstResourceType(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("sql-example")
+	apiSpec.Resources = map[string]spec.Resource{
+		"widgets": {
+			Description: "Manage widgets",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/widgets", Description: "List widgets"},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpCode := string(mcpSrc)
+
+	assert.Contains(t, mcpCode, `resource_type='widgets'`,
+		"sql tool example must filter by a real resource_type derived from the spec's resources")
+	assert.NotContains(t, mcpCode, `resource_type='items'`,
+		"sql tool example must not hardcode the placeholder resource_type 'items' when the CLI has no items resource")
+}
+
 // TestGenerateMCPSQLToolSurfacesRowErrors pins the emitted handleSQL error
 // handling so a regression to the silent-discard form (which returns a
 // truncated result set as a successful tool call) fails fast. It also pins the
@@ -3860,8 +3976,8 @@ func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
 		"mcp package must expose toolResultJSON so result encoding surfaces marshal errors")
 	assert.NotContains(t, mcpCode, `json.MarshalIndent(results, "", "  ")`,
 		"handleSQL/handleSearch must route result encoding through toolResultJSON, not discard the json.MarshalIndent error")
-	assert.Regexp(t, `(?s)func toolResultJSON\(.*json\.MarshalIndent\(v.*if err != nil`, mcpCode,
-		"toolResultJSON must check the json.MarshalIndent error")
+	assert.Regexp(t, `(?s)func toolResultJSON\(.*bound\.JSON\(v\).*if err != nil`, mcpCode,
+		"toolResultJSON must check the shared MCP bound encoder error")
 
 	// Compile-check the emission: the cols, err := redeclaration reusing the
 	// err already bound by db.Query must still build.

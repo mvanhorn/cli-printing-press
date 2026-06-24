@@ -5,13 +5,13 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"ble-temperature-sensor-pp-cli/internal/cli"
 	"ble-temperature-sensor-pp-cli/internal/device"
+	"ble-temperature-sensor-pp-cli/internal/mcp/bound"
 	"ble-temperature-sensor-pp-cli/internal/mcp/cobratree"
 )
 
@@ -33,9 +33,9 @@ func RegisterTools(s *server.MCPServer) {
 }
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	data, err := json.MarshalIndent(device.Capabilities(), "", "  ")
+	text, err := bound.JSON(device.Capabilities())
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	return mcplib.NewToolResultText(string(data)), nil
+	return mcplib.NewToolResultText(text), nil
 }
