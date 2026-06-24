@@ -165,6 +165,11 @@ type SyncableResource struct {
 	// the query injection / envelope unwrap / offset paging only for resources
 	// that carry it.
 	QueryEntity string
+
+	// ReconcileMode mirrors DependentResource.ReconcileMode for flat resources.
+	// Always "none" this round — forward-looking metadata reserved for a
+	// follow-up flat/tenant reconcile pass; no sync logic consumes it yet.
+	ReconcileMode string
 }
 
 // DependentResource describes a child resource that requires iterating a parent
@@ -624,6 +629,12 @@ func Profile(s *spec.APISpec) *APIProfile {
 	p.NeedsSearch = len(listResources) >= 3 && float64(searchEndpointCount)/float64(len(listResources)) < 0.5
 
 	p.SyncableResources = sortedSyncableResources(syncable)
+	// Flat resources carry "none" this round — forward-looking metadata for the
+	// follow-up flat/tenant reconcile. Set explicitly so the value is "none",
+	// not the empty zero value.
+	for i := range p.SyncableResources {
+		p.SyncableResources[i].ReconcileMode = "none"
+	}
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
 	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
 	// Populate reconcile metadata for each dependent resource.
@@ -1699,6 +1710,8 @@ func dependentParentIDParam(path, parentResource, fallback string) string {
 // singularParentField maps a plural parent resource name to the singular field
 // the API body carries for that parent (e.g. "projects" → "project"). Mirrors
 // the childScopeColumnSources convention used by deriveScopeColumns in the store.
+// Known limitation: naive TrimSuffix("s") fails for irregular plurals (e.g.
+// "categories" → "categorie"); acceptable as no current spec carries them.
 func singularParentField(parentResource string) string {
 	return strings.TrimSuffix(parentResource, "s")
 }

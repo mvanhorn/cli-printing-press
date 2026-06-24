@@ -3016,9 +3016,12 @@ func TestProfiler_DependentReconcileMetadata(t *testing.T) {
 	assert.Equal(t, "per_parent", dep.ReconcileMode)
 	assert.Equal(t, "projects_id", dep.ParentScopeColumn)
 	assert.Equal(t, "$.project", dep.GenericScopeJSONPath)
+	assert.Empty(t, dep.CascadeJunctions, "profiler must leave CascadeJunctions empty (filled by Task 4 seam)")
 
 	t.Run("negative_two_path_params_yields_none", func(t *testing.T) {
 		// A dependent with 2 path params cannot be safely reconciled per-parent.
+		// Both parent segments are declared as flat resources so the child path
+		// is detected as a dependent (and the negative guard is genuinely exercised).
 		s2 := &spec.APISpec{
 			Name: "deep-nesting",
 			Resources: map[string]spec.Resource{
@@ -3031,27 +3034,41 @@ func TestProfiler_DependentReconcileMetadata(t *testing.T) {
 						},
 					},
 				},
-				"issues": {
+				"projects": {
 					Endpoints: map[string]spec.Endpoint{
 						"list": {
 							Method:   "GET",
-							Path:     "/workspaces/{workspaceId}/projects/{projectId}/issues",
+							Path:     "/projects",
 							Response: spec.ResponseDef{Type: "array"},
-							IDField:  "id",
+						},
+					},
+				},
+				"issues": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/workspaces/{workspaceId}/projects/{projectId}/issues",
+							Response:   spec.ResponseDef{Type: "array"},
+							IDField:    "id",
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
 						},
 					},
 				},
 			},
 		}
 		profile2 := Profile(s2)
-		for _, dep2 := range profile2.DependentSyncResources {
-			if dep2.Name == "issues" {
-				assert.Equal(t, "none", dep2.ReconcileMode, "2-path-param dependent must have ReconcileMode=none")
-				return
+		// The 2-placeholder child shards to "projects_issues"; match by Path so the
+		// lookup is robust to the sharded Name.
+		var issues *DependentResource
+		for i := range profile2.DependentSyncResources {
+			if profile2.DependentSyncResources[i].Path == "/workspaces/{workspaceId}/projects/{projectId}/issues" {
+				issues = &profile2.DependentSyncResources[i]
+				break
 			}
 		}
-		// If issues is not found as dependent (path heuristic may skip it), that's fine
-		// for the negative test — what matters is the positive case above passes.
+		require.NotNil(t, issues, "2-path-param child must be detected as a dependent resource")
+		require.Len(t, issues.PathParams, 2, "expected 2 path params so the negative guard is exercised")
+		assert.Equal(t, "none", issues.ReconcileMode, "2-path-param dependent must have ReconcileMode=none")
 	})
 
 	t.Run("negative_no_pk_yields_none", func(t *testing.T) {
@@ -3085,5 +3102,14 @@ func TestProfiler_DependentReconcileMetadata(t *testing.T) {
 		require.Len(t, profile3.DependentSyncResources, 1)
 		assert.Equal(t, "none", profile3.DependentSyncResources[0].ReconcileMode,
 			"dependent with no IDField must have ReconcileMode=none")
+	})
+
+	t.Run("flat_syncables_get_none", func(t *testing.T) {
+		// Every flat SyncableResource carries ReconcileMode "none" this round.
+		require.NotEmpty(t, profile.SyncableResources)
+		for _, sr := range profile.SyncableResources {
+			assert.Equal(t, "none", sr.ReconcileMode,
+				"flat SyncableResource %q must have ReconcileMode=none", sr.Name)
+		}
 	})
 }
