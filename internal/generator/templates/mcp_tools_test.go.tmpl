@@ -11,6 +11,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/mcp/bound"
 )
 
 func TestMCPPathResolutionMatchesCLIResolverWithHomeEnv(t *testing.T) {
@@ -235,8 +236,8 @@ func TestStripLeadingSQLNoise(t *testing.T) {
 }
 
 func TestMCPToolResultTextBoundsListResponses(t *testing.T) {
-	items := make([]string, 0, mcpToolResultMaxItems+25)
-	for i := 0; i < mcpToolResultMaxItems+25; i++ {
+	items := make([]string, 0, bound.MaxItems+25)
+	for i := 0; i < bound.MaxItems+25; i++ {
 		items = append(items, strings.Repeat("x", 1600))
 	}
 	data, err := json.Marshal(items)
@@ -245,8 +246,8 @@ func TestMCPToolResultTextBoundsListResponses(t *testing.T) {
 	}
 
 	text := mcpTextContent(t, mcpToolResultText("GET", data))
-	if len(text) > mcpToolResultMaxBytes {
-		t.Fatalf("bounded result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), bound.MaxBytes)
 	}
 
 	var envelope struct {
@@ -274,8 +275,8 @@ func TestMCPToolResultTextBoundsListResponses(t *testing.T) {
 }
 
 func TestMCPToolResultTextBoundsSingleArrayEnvelope(t *testing.T) {
-	groups := make([]map[string]string, 0, mcpToolResultMaxItems+25)
-	for i := 0; i < mcpToolResultMaxItems+25; i++ {
+	groups := make([]map[string]string, 0, bound.MaxItems+25)
+	for i := 0; i < bound.MaxItems+25; i++ {
 		groups = append(groups, map[string]string{
 			"id":   strings.Repeat("g", 8),
 			"name": strings.Repeat("verbose group name ", 90),
@@ -290,8 +291,8 @@ func TestMCPToolResultTextBoundsSingleArrayEnvelope(t *testing.T) {
 	}
 
 	text := mcpTextContent(t, mcpToolResultText("GET", data))
-	if len(text) > mcpToolResultMaxBytes {
-		t.Fatalf("bounded result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), bound.MaxBytes)
 	}
 
 	var envelope struct {
@@ -320,15 +321,15 @@ func TestMCPToolResultTextBoundsSingleArrayEnvelope(t *testing.T) {
 
 func TestMCPToolResultTextFallsBackToOversizedPreview(t *testing.T) {
 	data, err := json.Marshal(map[string]string{
-		"blob": strings.Repeat("z", mcpToolResultMaxBytes+10000),
+		"blob": strings.Repeat("z", bound.MaxBytes+10000),
 	})
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 
 	text := mcpTextContent(t, mcpToolResultText("GET", data))
-	if len(text) > mcpToolResultMaxBytes {
-		t.Fatalf("preview result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("preview result length = %d, want <= %d", len(text), bound.MaxBytes)
 	}
 
 	var envelope struct {
@@ -352,15 +353,15 @@ func TestMCPToolResultTextFallsBackToOversizedPreview(t *testing.T) {
 
 func TestMCPToolResultTextBoundsOversizedNonGETResponses(t *testing.T) {
 	data, err := json.Marshal(map[string]string{
-		"blob": strings.Repeat("z", mcpToolResultMaxBytes+10000),
+		"blob": strings.Repeat("z", bound.MaxBytes+10000),
 	})
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 
 	text := mcpTextContent(t, mcpToolResultText("POST", data))
-	if len(text) > mcpToolResultMaxBytes {
-		t.Fatalf("preview result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("preview result length = %d, want <= %d", len(text), bound.MaxBytes)
 	}
 
 	var envelope struct {
