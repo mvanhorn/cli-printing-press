@@ -2536,6 +2536,51 @@ func TestGenerateCookieAuthEmitsSetTokenSubcommand(t *testing.T) {
 		"set-token should appear in `auth --help` listing")
 }
 
+// TestGenerateCookieAuthAttachesRealRequestHeader verifies that a cookie-typed
+// auth whose credential is carried in a real request header (e.g. Authorization:
+// Bearer) attaches that header on the live wire, while genuine cookie auth
+// (header "Cookie", jar-sourced) does not — so the jar isn't double-shipped.
+func TestGenerateCookieAuthAttachesRealRequestHeader(t *testing.T) {
+	t.Parallel()
+
+	// Header-bearer credential mis-typed as cookie (the factor75 shape):
+	// header "Authorization", format "Bearer {token}", no cookie list.
+	bearerSpec := minimalSpec("cookiebearer")
+	bearerSpec.BaseURL = "https://www.example.com"
+	bearerSpec.Auth = spec.AuthConfig{
+		Type:    "cookie",
+		Header:  "Authorization",
+		Format:  "Bearer {token}",
+		In:      "header",
+		EnvVars: []string{"COOKIEBEARER_TOKEN"},
+	}
+	bearerDir := filepath.Join(t.TempDir(), "cookiebearer-pp-cli")
+	require.NoError(t, New(bearerSpec, bearerDir).Generate())
+	bearerClient := readGeneratedFile(t, bearerDir, "internal", "client", "client.go")
+	assert.Contains(t, bearerClient, `req.Header.Set("Authorization", authHeader)`,
+		"cookie-typed auth with a real Authorization header must attach it on the live wire")
+	requireGeneratedCompiles(t, bearerDir)
+
+	// Genuine cookie auth (header "Cookie", cookie list): the jar is the sole
+	// source of outbound cookies; the live wire must NOT set a header here.
+	cookieSpec := minimalSpec("genuinecookie")
+	cookieSpec.BaseURL = "https://www.example.com"
+	cookieSpec.Auth = spec.AuthConfig{
+		Type:         "cookie",
+		Header:       "Cookie",
+		CookieDomain: ".example.com",
+		Cookies:      []string{"session_id"},
+		EnvVars:      []string{"GENUINECOOKIE_COOKIES"},
+	}
+	cookieDir := filepath.Join(t.TempDir(), "genuinecookie-pp-cli")
+	require.NoError(t, New(cookieSpec, cookieDir).Generate())
+	cookieClient := readGeneratedFile(t, cookieDir, "internal", "client", "client.go")
+	assert.NotContains(t, cookieClient, `req.Header.Set("Cookie", authHeader)`,
+		"genuine cookie auth must rely on the jar, not set a Cookie header on the wire")
+	assert.Contains(t, cookieClient, "the cookie jar is the sole source of outbound",
+		"genuine cookie auth should keep the jar-only comment block")
+}
+
 // TestGenerateCookieAuthDerivesCookieDomainFromBaseURL verifies that a
 // cookie-auth spec that omits cookie_domain still emits a concrete cookie
 // domain derived from base_url, rather than the empty string that left

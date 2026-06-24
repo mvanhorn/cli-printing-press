@@ -1403,6 +1403,13 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 {{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
 			req.AddCookie(&http.Cookie{Name: "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", Value: authHeader})
 {{- else if eq .Auth.Type "cookie"}}
+{{- if and .Auth.Header (ne .Auth.Header "Cookie")}}
+			// Cookie-typed auth whose credential is carried in a real request
+			// header (e.g. an Authorization bearer) rather than as cookies.
+			// The jar still carries any session cookies; this header is the
+			// primary credential and must ride the live wire.
+			req.Header.Set("{{.Auth.Header}}", authHeader)
+{{- else}}
 			// Cookie-auth: the cookie jar is the sole source of outbound
 			// cookies. New() loads it from cookies.json and seeds it from
 			// the env-var / credentials session via SeedCookieJar, so every
@@ -1412,6 +1419,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// ship every session cookie twice and trip upstream WAFs.
 			// authHeader is read only by the dry-run / signing paths above;
 			// intentionally not consumed on the live wire here.
+{{- end}}
 {{- else}}
 			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- end}}
