@@ -2534,6 +2534,43 @@ func TestGenerateCookieAuthEmitsSetTokenSubcommand(t *testing.T) {
 		"set-token should appear in `auth --help` listing")
 }
 
+// TestGenerateCookieAuthDerivesCookieDomainFromBaseURL verifies that a
+// cookie-auth spec that omits cookie_domain still emits a concrete cookie
+// domain derived from base_url, rather than the empty string that left
+// `auth login --chrome` reading cookies for "" (so the extraction backend
+// returned none). NormalizeCookieDomain runs in Validate, which Generate
+// invokes, so the derived ".example.com" reaches the auth_browser template.
+func TestGenerateCookieAuthDerivesCookieDomainFromBaseURL(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cookiedomainderive")
+	apiSpec.BaseURL = "https://www.example.com"
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "cookie",
+		Header:  "Cookie",
+		In:      "cookie",
+		EnvVars: []string{"COOKIEDOMAINDERIVE_COOKIES"},
+		// CookieDomain intentionally left empty — the generator must derive it.
+	}
+
+	// The generation pipeline validates before generating (see root.go); that
+	// is where NormalizeCookieDomain derives the domain. Mirror that order.
+	require.NoError(t, apiSpec.Validate())
+	require.Equal(t, ".example.com", apiSpec.Auth.CookieDomain,
+		"Validate should derive the cookie domain from base_url")
+
+	outputDir := filepath.Join(t.TempDir(), "cookiedomainderive-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	// The auth_browser template's cookie-capture path binds the target domain
+	// from {{.Auth.CookieDomain}}; before the fix this rendered `domain := ""`.
+	assert.Contains(t, authGo, `domain := ".example.com"`,
+		"cookie-auth CLI without explicit cookie_domain should derive it from base_url")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // TestGenerateNoAuthPersistedQueryOmitsSetToken verifies that the
 // auth_browser template does NOT emit set-token when
 // Auth.Type == "none" + a graphql_persisted_query hint routes the spec
