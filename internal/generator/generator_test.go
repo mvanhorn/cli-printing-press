@@ -3685,14 +3685,23 @@ func TestGenerateStoreDSNOrdersBusyTimeoutBeforeJournalMode(t *testing.T) {
 	// not against a comment that happens to mention the pragmas.
 	codeOnly := stripGoComments(src)
 
-	// Find the read-write DSN (the one without mode=ro). It is the only
-	// DSN literal in the file that carries journal_mode(WAL).
+	// journal_mode(WAL) appears only in the read-write DSN, so it anchors
+	// the search to that literal. busy_timeout(5000) appears in BOTH the
+	// read-only DSN (OpenReadOnlyContext, defined earlier in the file) and
+	// the read-write DSN, so a file-wide strings.Index for it always hits
+	// the read-only DSN first and the ordering check passes regardless of
+	// the read-write DSN's internal order. Scope the busy_timeout search to
+	// the read-write DSN by starting at its "?_pragma=" query prefix — the
+	// read-only DSN begins with "?mode=ro&_pragma=", so "?_pragma=" uniquely
+	// marks the read-write query string.
 	idxJournal := strings.Index(codeOnly, "_pragma=journal_mode(WAL)")
 	require.GreaterOrEqual(t, idxJournal, 0, "read-write DSN must set journal_mode(WAL)")
-	idxBusy := strings.Index(codeOnly, "_pragma=busy_timeout(5000)")
-	require.GreaterOrEqual(t, idxBusy, 0, "read-write DSN must set busy_timeout(5000)")
-	assert.Less(t, idxBusy, idxJournal,
-		"read-write DSN must list busy_timeout(5000) BEFORE journal_mode(WAL) so the WAL conversion runs with the busy handler active (see #2926)")
+	dsnStart := strings.LastIndex(codeOnly[:idxJournal], "?_pragma=")
+	require.GreaterOrEqual(t, dsnStart, 0,
+		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL): no ?_pragma= query prefix precedes journal_mode(WAL) (see #2926)")
+	idxBusy := strings.Index(codeOnly[dsnStart:idxJournal], "_pragma=busy_timeout(5000)")
+	require.GreaterOrEqual(t, idxBusy, 0,
+		"read-write DSN must list busy_timeout(5000) before journal_mode(WAL) so the WAL conversion runs with the busy handler active (see #2926)")
 }
 
 // Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
