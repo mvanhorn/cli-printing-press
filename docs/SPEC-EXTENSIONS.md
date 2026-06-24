@@ -49,7 +49,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
-| `x-pp-tenant-scope-column` | path-item | *reserved for follow-up tenant-scoped reconcile; not parsed yet* | No |
+| `x-pp-tenant-scope-column` | path item | *reserved for follow-up tenant-scoped reconcile; not parsed yet* | No |
 
 ## `info` Extensions
 
