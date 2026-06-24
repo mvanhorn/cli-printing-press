@@ -14,6 +14,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"{{modulePath}}/internal/mcp/bound"
 )
 
 func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
@@ -37,7 +38,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnl
 		if err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
-		return mcplib.NewToolResultText(out), nil
+		return mcplib.NewToolResultText(bound.Text(out)), nil
 	}
 }
 

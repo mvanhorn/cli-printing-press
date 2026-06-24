@@ -131,8 +131,10 @@ func (g *DeviceGenerator) Generate() error {
 		// API-agnostic cobratree walker. The walker respects mcp:read-only and
 		// mcp:hidden annotations, so each device CLI's own commands decide what an
 		// agent can reach. The MCP binary execs the companion CLI (no BLE/CGO).
-		filepath.Join("cmd", data.MCPName, "main.go"): deviceMCPMainTemplate,
-		filepath.Join("internal", "mcp", "tools.go"):  deviceMCPToolsTemplate,
+		filepath.Join("cmd", data.MCPName, "main.go"):              deviceMCPMainTemplate,
+		filepath.Join("internal", "mcp", "tools.go"):               deviceMCPToolsTemplate,
+		filepath.Join("internal", "mcp", "bound", "bound.go"):      "mcp_bound.go.tmpl",
+		filepath.Join("internal", "mcp", "bound", "bound_test.go"): "mcp_bound_test.go.tmpl",
 	}
 	// The cobratree walker is API-agnostic and shared with the HTTP generator;
 	// single-source the file set. device files are keyed output->template, so
@@ -2564,13 +2566,13 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"{{.ModulePath}}/internal/cli"
 	"{{.ModulePath}}/internal/device"
+	"{{.ModulePath}}/internal/mcp/bound"
 	"{{.ModulePath}}/internal/mcp/cobratree"
 )
 
@@ -2592,10 +2594,10 @@ func RegisterTools(s *server.MCPServer) {
 }
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	data, err := json.MarshalIndent(device.Capabilities(), "", "  ")
+	text, err := bound.JSON(device.Capabilities())
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
-	return mcplib.NewToolResultText(string(data)), nil
+	return mcplib.NewToolResultText(text), nil
 }
 `
