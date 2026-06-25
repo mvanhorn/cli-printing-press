@@ -2500,7 +2500,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "list"},
 		Help: "Usage:\n  cli widgets list [flags]\n",
 	}
-	args, skipped, _, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, ctx)
+	args, skipped, _, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, 0, ctx)
 	assert.False(t, skipped)
 	assert.Equal(t, []string{"widgets", "list"}, args)
 
@@ -2509,7 +2509,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "search"},
 		Help: "Usage:\n  cli widgets search <query> [flags]\n",
 	}
-	_, skipped, reason, _ := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, ctx)
+	_, skipped, reason, _ := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "non-id positional")
 
@@ -2518,7 +2518,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "get"},
 		Help: "Usage:\n  cli widgets get <id> [flags]\n",
 	}
-	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, ctx)
+	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
 
@@ -2527,7 +2527,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"movies", "get"},
 		Help: "Usage:\n  cli movies get <movieId> [flags]\n",
 	}
-	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, ctx)
+	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
 
@@ -2536,7 +2536,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"get"},
 		Help: "Usage:\n  cli get <id> <name> [flags]\n",
 	}
-	_, skipped, _, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, ctx)
+	_, skipped, _, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, 0, ctx)
 	assert.True(t, skipped)
 }
 
@@ -2577,7 +2577,7 @@ exit 99
 		storeDBPath: dbPath,
 	}
 
-	args, skipped, reason, source := resolveCommandPositionals(cmd, []string{"projects", "tasks", "get", "example-project", "example-task"}, ctx)
+	args, skipped, reason, source := resolveCommandPositionals(cmd, []string{"projects", "tasks", "get", "example-project", "example-task"}, 0, ctx)
 	require.False(t, skipped, reason)
 	assert.Equal(t, []string{"projects", "tasks", "get", "real-project-1", "real-task-1"}, args)
 	assert.Empty(t, source, "mixed store and companion resolution should not be counted as store-backed")
@@ -4822,6 +4822,39 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "12"}, args,
 		"flag-form pp:happy-args must override the Example placeholder")
 
+	// Flag-only overlays must not hide synthetic ID fixtures that remain in
+	// the Example. Those still cannot be sent to a real upstream API.
+	syntheticFlagCmd := liveDogfoodCommand{
+		Path: []string{"users", "get-by-ids"},
+		Help: `Usage:
+  cli users get-by-ids [flags]
+
+Examples:
+  cli users get-by-ids --ids example-value --format=summary
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--format=json"},
+	}
+	args, ok = liveDogfoodHappyArgs(syntheticFlagCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "example-value", "--format=json"}, args)
+	assert.Equal(t, reasonRequiredParamFixture, happyPathSyntheticParamFixtureSkip(syntheticFlagCmd, args),
+		"flag-only pp:happy-args must still skip unresolved synthetic ID fixtures")
+
+	boolFlagCmd := liveDogfoodCommand{
+		Path: []string{"widgets", "get"},
+		Help: `Usage:
+  cli widgets get <id> [flags]
+
+Examples:
+  cli widgets get --verbose widget-1
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--verbose=true"},
+	}
+	args, ok = liveDogfoodHappyArgs(boolFlagCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "get", "--verbose", "true", "widget-1"}, args,
+		"boolean flag overlay must not consume the following positional")
+
 	// Flag-only pp:happy-args overlays the runnable Example but still leaves
 	// positional IDs available for the live fixture resolver. This matches
 	// verify's happy-args behavior: annotated flags do not replace inferred
@@ -4855,7 +4888,7 @@ fi
 echo "unexpected args: $*" >&2
 exit 99
 `), 0o755))
-	resolved, skipped, reason, _ := resolveCommandPositionals(flagOnlyPositionalCmd, args, resolveCtx{
+	resolved, skipped, reason, _ := resolveCommandPositionals(flagOnlyPositionalCmd, args, 0, resolveCtx{
 		binaryPath: binaryPath,
 		cliDir:     dir,
 		siblings: map[string][]liveDogfoodCommand{
@@ -4867,7 +4900,7 @@ exit 99
 	require.False(t, skipped, reason)
 	assert.Equal(t, []string{"widgets", "get", "real-widget-1", "--format=summary", "--include", "stats"}, resolved)
 
-	_, skipped, reason, _ = resolveCommandPositionals(flagOnlyPositionalCmd, args, resolveCtx{
+	_, skipped, reason, _ = resolveCommandPositionals(flagOnlyPositionalCmd, args, 0, resolveCtx{
 		siblings: map[string][]liveDogfoodCommand{},
 		cache:    newCompanionCache(),
 		timeout:  time.Second,
@@ -4886,7 +4919,7 @@ exit 99
 	args, ok = liveDogfoodHappyArgs(posCmd)
 	require.True(t, ok)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, args)
-	resolved, skipped, reason, _ = resolveCommandPositionals(posCmd, args, resolveCtx{})
+	resolved, skipped, reason, _ = resolveCommandPositionals(posCmd, args, 1, resolveCtx{})
 	assert.False(t, skipped, "pp:happy-args positional must not be skipped: %s", reason)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, resolved,
 		"resolveCommandPositionals must preserve the pp:happy-args positional value")
