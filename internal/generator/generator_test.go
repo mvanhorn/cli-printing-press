@@ -3475,7 +3475,7 @@ func TestSyncResourceExtractsHTMLLinks(t *testing.T) {
 	}
 	defer db.Close()
 
-	res := syncResource(context.Background(), htmlSyncClient{}, db, "pages", "", false, 1, false, nil, nil)
+	res := syncResource(context.Background(), htmlSyncClient{}, db, "pages", "", false, 1, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -5119,7 +5119,7 @@ func TestSyncResourceIDWalksPostQueryPages(t *testing.T) {
 	defer db.Close()
 
 	client := &postQuerySyncClient{}
-	res := syncResource(context.Background(), client, db, "tickets", "", true, 10, false, nil, nil)
+	res := syncResource(context.Background(), client, db, "tickets", "", true, 10, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -12724,7 +12724,7 @@ func TestSyncResourceWarnsOnFullPageWithoutCursor(t *testing.T) {
 
 	client := &fullNoCursorClient{}
 	var events strings.Builder
-	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, nil, &events)
+	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, false, nil, &events)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -12745,7 +12745,7 @@ func TestSyncResourceDoesNotWarnOnExplicitFinalFullPage(t *testing.T) {
 
 	client := &fullNoCursorClient{explicitFinalPage: true}
 	var events strings.Builder
-	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, nil, &events)
+	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, false, nil, &events)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -12765,7 +12765,7 @@ func TestSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
 	defer db.Close()
 
 	first := &resumeCursorClient{}
-	res := syncResource(context.Background(), first, db, "channels", "", false, 2, false, nil, nil)
+	res := syncResource(context.Background(), first, db, "channels", "", false, 2, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("first syncResource error: %v", res.Err)
 	}
@@ -12781,7 +12781,7 @@ func TestSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
 	}
 
 	second := &resumeCursorClient{}
-	res = syncResource(context.Background(), second, db, "channels", "", false, 2, false, nil, nil)
+	res = syncResource(context.Background(), second, db, "channels", "", false, 2, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("second syncResource error: %v", res.Err)
 	}
@@ -12797,7 +12797,7 @@ func TestSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
 	}
 
 	final := &resumeCursorClient{}
-	res = syncResource(context.Background(), final, db, "channels", "", false, 0, false, nil, nil)
+	res = syncResource(context.Background(), final, db, "channels", "", false, 0, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("final syncResource error: %v", res.Err)
 	}
@@ -12828,7 +12828,7 @@ func TestSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
 	}
 
 	client := &resumeCursorClient{}
-	res := syncResource(context.Background(), client, db, "channels", "", false, 3, false, nil, nil)
+	res := syncResource(context.Background(), client, db, "channels", "", false, 3, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -12859,7 +12859,7 @@ func TestSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
 	}
 
 	client := &resumeCursorClient{stuck: true}
-	res := syncResource(context.Background(), client, db, "channels", "", false, 1, false, nil, nil)
+	res := syncResource(context.Background(), client, db, "channels", "", false, 1, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -13685,7 +13685,7 @@ func TestSyncResourceAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"},{"id":"two"}]}` + "`" + `),
 		json.RawMessage(` + "`" + `{"items":[{"id":"three"}]}` + "`" + `),
 	}}
-	res := syncResource(context.Background(), client, db, "records", "", true, 0, false, nil, nil)
+	res := syncResource(context.Background(), client, db, "records", "", true, 0, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -14053,7 +14053,7 @@ func TestSyncResourceIgnoresCheckpointWhenStoreEmpty(t *testing.T) {
 	}
 
 	emptyClient := &checkpointClient{}
-	res := syncResource(context.Background(), emptyClient, db, "events", "", false, 0, false, nil, nil)
+	res := syncResource(context.Background(), emptyClient, db, "events", "", false, 0, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("empty-store syncResource error: %v", res.Err)
 	}
@@ -14069,7 +14069,7 @@ func TestSyncResourceIgnoresCheckpointWhenStoreEmpty(t *testing.T) {
 	}
 
 	populatedClient := &checkpointClient{}
-	res = syncResource(context.Background(), populatedClient, db, "events", "", false, 0, false, nil, nil)
+	res = syncResource(context.Background(), populatedClient, db, "events", "", false, 0, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("populated-store syncResource error: %v", res.Err)
 	}

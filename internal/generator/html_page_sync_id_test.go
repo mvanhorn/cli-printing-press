@@ -169,7 +169,7 @@ func TestSyncSingleObjectHTMLPageModeIDFallbacks(t *testing.T) {
 	defer db.Close()
 
 	canonicalURL := "https://example.test/docs/page"
-	res := syncResource(context.Background(), htmlPageClient{}, db, "pages", "", false, 1, false, nil, nil)
+	res := syncResource(context.Background(), htmlPageClient{}, db, "pages", "", false, 1, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource canonical_url fallback: %v", res.Err)
 	}
