@@ -284,6 +284,33 @@ func TestAnalyzeTraffic_DoesNotWarnEmptyResponseShapesWhenAnyClusterHasSchema(t 
 	assert.NotContains(t, warningTypes(analysis.Warnings), "empty_response_shapes")
 }
 
+func TestAnalyzeTraffic_DoesNotWarnEmptyResponseShapesForNoContentClusters(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:         "DELETE",
+				URL:            "https://api.example.com/v1/items/123",
+				ResponseStatus: 204,
+				ResponseBody:   "",
+			},
+			{
+				Method:         "PUT",
+				URL:            "https://api.example.com/v1/items/456/archive",
+				ResponseStatus: 205,
+				ResponseBody:   "",
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	assert.NotContains(t, warningTypes(analysis.Warnings), "empty_response_shapes")
+}
+
 func TestAnalyzeTraffic_ClusterConfidenceRoundTripsThroughSidecar(t *testing.T) {
 	t.Parallel()
 

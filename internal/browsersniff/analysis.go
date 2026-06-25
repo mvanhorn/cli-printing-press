@@ -1612,12 +1612,27 @@ func allEndpointClustersHaveEmptyResponseShape(clusters []EndpointCluster) bool 
 		if cluster.Count == 0 {
 			continue
 		}
+		if clusterHasOnlyNoContentStatuses(cluster) {
+			continue
+		}
 		seenCluster = true
 		if cluster.ResponseShape.Kind != "" || len(cluster.ResponseShape.Fields) > 0 {
 			return false
 		}
 	}
 	return seenCluster
+}
+
+func clusterHasOnlyNoContentStatuses(cluster EndpointCluster) bool {
+	if len(cluster.Statuses) == 0 {
+		return false
+	}
+	for _, status := range cluster.Statuses {
+		if status != 204 && status != 205 {
+			return false
+		}
+	}
+	return true
 }
 
 func evidenceForClusters(clusters []EndpointCluster) []EvidenceRef {

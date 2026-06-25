@@ -591,7 +591,12 @@ func normalizeEntryPathWithHints(rawURL string) (string, []LowConfidenceParamete
 func compactCodeRunPositions(segments []string) map[int]bool {
 	out := map[int]bool{}
 	for i := 0; i < len(segments); {
-		if !shortCodePattern.MatchString(segments[i]) {
+		segment := segments[i]
+		if segment == "" {
+			i++
+			continue
+		}
+		if !shortCodePattern.MatchString(segment) {
 			i++
 			continue
 		}
