@@ -66,7 +66,7 @@ func classifyResponse(status int, headers http.Header, bodySnippet string) []Pro
 	cfFingerprint := strings.Contains(server, "cloudflare") || h["cf-ray"] != ""
 	turnstileBody := htmlBody && strings.Contains(body, "challenges.cloudflare.com/turnstile")
 	impervaBody := htmlBody && (strings.Contains(body, "_incapsula_resource") ||
-		strings.Contains(body, "incapsula") ||
+		strings.Contains(body, "incapsula_resource") ||
 		strings.Contains(body, "visid_incap") ||
 		strings.Contains(body, "incap_ses"))
 	cfChallengeBody := htmlBody && (strings.Contains(body, "cf-chl") ||
@@ -80,7 +80,7 @@ func classifyResponse(status int, headers http.Header, bodySnippet string) []Pro
 		strings.Contains(body, "data-hcaptcha"))
 	recaptchaBody := htmlBody && (strings.Contains(body, "google.com/recaptcha") ||
 		strings.Contains(body, "g-recaptcha") ||
-		strings.Contains(body, "data-sitekey") && strings.Contains(body, "recaptcha"))
+		(strings.Contains(body, "data-sitekey") && strings.Contains(body, "recaptcha")))
 
 	switch {
 	case cfChallengeBody:

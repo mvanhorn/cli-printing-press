@@ -111,6 +111,15 @@ func TestClassifyResponse(t *testing.T) {
 			wantBody:   []string{"imperva", "hcaptcha"},
 		},
 		{
+			name:   "imperva vendor mention on 200 is not a protection signal",
+			status: 200,
+			headers: http.Header{
+				"Content-Type": {"text/html"},
+			},
+			body:        "<html><p>Imperva Incapsula migration notes and vendor comparison.</p></html>",
+			emptyResult: true,
+		},
+		{
 			name:   "cf-turnstile widget markup without script is not a protection signal",
 			status: 200,
 			headers: http.Header{
