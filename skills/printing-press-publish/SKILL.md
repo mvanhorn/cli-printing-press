@@ -739,9 +739,9 @@ fi
 mkdir -p "$DEST_CATEGORY_DIR"
 
 # Preserve release-ledger files from the current public-library entry before
-# removing it. New CLIs keep the blank skeletons produced by publish package;
-# reprints keep existing changelog history and release metadata until the
-# library's post-merge workflow stamps the next release.
+# removing it. New CLIs omit .printing-press-release.json until the library's
+# post-merge workflow stamps a real release; reprints keep existing changelog
+# history and release metadata until that workflow stamps the next release.
 RELEASE_LEDGER_TMP="$(mktemp -d)"
 PUBLISH_SWAP_DIR="$(mktemp -d "$DEST_CATEGORY_DIR/.<api-slug>.XXXXXX")"
 trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT
