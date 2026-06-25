@@ -1822,13 +1822,18 @@ func liveDogfoodFlagHasSeparateValue(args []string, start, flagIndex, positional
 
 func countNonFlagArgs(args []string) int {
 	count := 0
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" {
 			break
 		}
-		if !strings.HasPrefix(arg, "-") {
-			count++
+		if strings.HasPrefix(arg, "-") {
+			if !strings.Contains(arg, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+			}
+			continue
 		}
+		count++
 	}
 	return count
 }

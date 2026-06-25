@@ -4855,6 +4855,21 @@ Examples:
 	assert.Equal(t, []string{"widgets", "get", "--verbose", "true", "widget-1"}, args,
 		"boolean flag overlay must not consume the following positional")
 
+	filterBoolFlagCmd := liveDogfoodCommand{
+		Path: []string{"widgets", "get"},
+		Help: `Usage:
+  cli widgets get <id> [flags]
+
+Examples:
+  cli widgets get --filter active --verbose widget-1
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--verbose=true"},
+	}
+	args, ok = liveDogfoodHappyArgs(filterBoolFlagCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "get", "--filter", "active", "--verbose", "true", "widget-1"}, args,
+		"preceding flag values must not be counted as consumed positionals")
+
 	// Flag-only pp:happy-args overlays the runnable Example but still leaves
 	// positional IDs available for the live fixture resolver. This matches
 	// verify's happy-args behavior: annotated flags do not replace inferred
