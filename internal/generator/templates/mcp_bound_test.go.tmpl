@@ -449,6 +449,47 @@ func TestJSONBoundsLargeArrays(t *testing.T) {
 	}
 }
 
+func TestJSONBoundsSingleArrayObject(t *testing.T) {
+	results := make([]map[string]string, 0, MaxItems+25)
+	for i := 0; i < MaxItems+25; i++ {
+		results = append(results, map[string]string{
+			"id":      "row-" + strconv.Itoa(i),
+			"payload": strings.Repeat("result payload ", 160),
+		})
+	}
+
+	text, err := JSON(map[string]any{
+		"count":        len(results),
+		"results":      results,
+		"store_status": "ready",
+		"resumable":    false,
+	})
+	if err != nil {
+		t.Fatalf("JSON returned error: %v", err)
+	}
+	if len(text) > MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), MaxBytes)
+	}
+	var envelope struct {
+		Results       []json.RawMessage `json:"results"`
+		StoreStatus   string            `json:"store_status"`
+		Truncated     bool              `json:"_pp_truncated"`
+		ReturnedCount int               `json:"_pp_returned_count"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("bounded single-array object must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("bounded single-array object did not mark truncation: %s", text)
+	}
+	if envelope.StoreStatus != "ready" {
+		t.Fatalf("store_status = %q, want preserved metadata", envelope.StoreStatus)
+	}
+	if envelope.ReturnedCount != len(envelope.Results) {
+		t.Fatalf("returned_count = %d, want result count %d", envelope.ReturnedCount, len(envelope.Results))
+	}
+}
+
 func TestJSONReturnsCompactFullArrayWhenIndentedOutputExceedsBudget(t *testing.T) {
 	rows := make([]map[string]string, 11000)
 

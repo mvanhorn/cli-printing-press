@@ -3879,10 +3879,12 @@ func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
 		"handleSQL must use store.OpenReadOnly, not OpenWithContext")
 	assert.NotRegexp(t, `(?s)func handleSearch\(.*store\.OpenWithContext\(`, mcpCode,
 		"handleSearch must use store.OpenReadOnly, not OpenWithContext")
-	assert.Regexp(t, `(?s)func handleSQL\(.*store\.OpenReadOnly\(`, mcpCode,
-		"handleSQL must open the store via OpenReadOnly")
-	assert.Regexp(t, `(?s)func handleSearch\(.*store\.OpenReadOnly\(`, mcpCode,
-		"handleSearch must open the store via OpenReadOnly")
+	assert.Regexp(t, `(?s)func openMCPReadOnlyStore\(.*store\.OpenReadOnly\(`, mcpCode,
+		"MCP store-backed helpers must open the store via OpenReadOnly")
+	assert.Regexp(t, `(?s)func handleSQL\(.*openMCPReadOnlyStore\(`, mcpCode,
+		"handleSQL must open the store through the read-only MCP helper")
+	assert.Regexp(t, `(?s)func handleSearch\(.*openMCPReadOnlyStore\(`, mcpCode,
+		"handleSearch must open the store through the read-only MCP helper")
 
 	assert.Contains(t, mcpCode, `func validateReadOnlyQuery(`,
 		"mcp package must expose validateReadOnlyQuery — the gate that handleSQL must call before opening the store")
@@ -3982,6 +3984,27 @@ func TestGenerateMCPSQLToolSurfacesRowErrors(t *testing.T) {
 	// Compile-check the emission: the cols, err := redeclaration reusing the
 	// err already bound by db.Query must still build.
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGenerateMCPStoreGuidanceTestsPass(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-store-guidance")
+	apiSpec.Resources = map[string]spec.Resource{
+		"widgets": {
+			Description: "Manage widgets",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/widgets", Description: "List widgets"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestMCP(Search|SQL)(MissingStore|EmptyStore|DomainTable)")
 }
 
 func TestGenerateMCPToolResultTextBudgetTestsPass(t *testing.T) {
