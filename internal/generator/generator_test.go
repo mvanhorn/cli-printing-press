@@ -3083,7 +3083,7 @@ func TestSyncDependentResourceContinuesAfterHTMLExtractionError(t *testing.T) {
 		dependentHTMLSyncClient{},
 		db,
 		dependentResourceDef{Name: "messages", ParentTable: "channels", ParentIDParam: "channelId", PathTemplate: "/channels/{channelId}/messages"},
-		"", false, 1, false, nil, nil,
+		"", false, 1, false, false, nil, nil,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -5377,7 +5377,7 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 		dependentParentFKClient{},
 		db,
 		dependentResourceDef{Name: "contacts", ParentTable: "lists", ParentIDParam: "listId", PathTemplate: "/lists/{listId}/contacts"},
-		"", false, 1, false, nil, nil,
+		"", false, 1, false, false, nil, nil,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -5543,7 +5543,7 @@ func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
 				{Param: "messageId", Field: "id"},
 			},
 		},
-		"", false, 1, false, nil, nil,
+		"", false, 1, false, false, nil, nil,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -11450,7 +11450,7 @@ func TestGenerateDependentSyncCompiles(t *testing.T) {
 	// where it gates each dependent.
 	assert.Contains(t, syncContent, "parentFilter := append([]string(nil), resources...)",
 		"sync.go should capture user --resources filter before default expansion")
-	assert.Contains(t, syncContent, "effectiveLatestOnly, parentFilter",
+	assert.Contains(t, syncContent, "effectiveLatestOnly, prune, parentFilter",
 		"sync.go should pass the captured filter into syncDependentResources")
 	assert.Contains(t, syncContent, "parentFilter []string",
 		"syncDependentResources should accept a parent filter")
@@ -11847,7 +11847,7 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 		"maxPages, effectiveLatestOnly",
 		"syncResource call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
 	assert.Contains(t, syncContent,
-		"maxPages, effectiveLatestOnly, parentFilter",
+		"maxPages, effectiveLatestOnly, prune, parentFilter",
 		"syncDependentResources call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
 	assert.Contains(t, syncContent, "capExitHit := false",
 		"syncResource must track whether the loop stopped because --max-pages was reached")

@@ -2996,11 +2996,11 @@ func TestProfiler_DependentReconcileMetadata(t *testing.T) {
 			"modules": {
 				Endpoints: map[string]spec.Endpoint{
 					"list": {
-						Method:      "GET",
-						Path:        "/projects/{projectId}/modules",
-						Response:    spec.ResponseDef{Type: "array"},
-						IDField:     "id",
-						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Method:     "GET",
+						Path:       "/projects/{projectId}/modules",
+						Response:   spec.ResponseDef{Type: "array"},
+						IDField:    "id",
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
 					},
 				},
 			},
@@ -3112,4 +3112,28 @@ func TestProfiler_DependentReconcileMetadata(t *testing.T) {
 				"flat SyncableResource %q must have ReconcileMode=none", sr.Name)
 		}
 	})
+}
+
+func TestSingularParentField(t *testing.T) {
+	cases := map[string]string{
+		// Regular "-s".
+		"projects": "project",
+		"modules":  "module",
+		"cycles":   "cycle",
+		// "-ies → -y" rule. A bare TrimSuffix("s") would yield "categorie",
+		// whose JSON path matches no row and silently sweeps nothing.
+		"categories": "category",
+		"activities": "activity",
+		"companies":  "company",
+		// Residual irregulars from the table.
+		"statuses":  "status",
+		"addresses": "address",
+		"people":    "person",
+		// Already singular / no trailing "s": returned unchanged.
+		"project": "project",
+	}
+	for plural, want := range cases {
+		assert.Equalf(t, want, singularParentField(plural),
+			"singularParentField(%q)", plural)
+	}
 }

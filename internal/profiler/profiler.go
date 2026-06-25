@@ -1707,12 +1707,38 @@ func dependentParentIDParam(path, parentResource, fallback string) string {
 	return fallback
 }
 
+// parentFieldIrregulars maps plural parent resource names whose singular form a
+// naive TrimSuffix("s") would mangle to the correct singular field. The "-ies →
+// -y" class is handled by rule below; this table is for the residual irregulars.
+var parentFieldIrregulars = map[string]string{
+	"statuses":  "status",
+	"addresses": "address",
+	"buses":     "bus",
+	"classes":   "class",
+	"indexes":   "index",
+	"indices":   "index",
+	"matrices":  "matrix",
+	"people":    "person",
+}
+
 // singularParentField maps a plural parent resource name to the singular field
 // the API body carries for that parent (e.g. "projects" → "project"). Mirrors
 // the childScopeColumnSources convention used by deriveScopeColumns in the store.
-// Known limitation: naive TrimSuffix("s") fails for irregular plurals (e.g.
-// "categories" → "categorie"); acceptable as no current spec carries them.
+// A bare TrimSuffix("s") mangles irregular plurals ("categories" → "categorie"),
+// which would silently break reconciliation (json_extract on a wrong path returns
+// NULL for every row, so ReconcilePartition sweeps nothing). Guard the common
+// English classes: an explicit irregulars table, then the "-ies → -y" rule, then
+// the regular "-s" trim. Genuinely irregular forms outside the table still fall
+// through to TrimSuffix, so a future spec with an exotic plural should add it here.
 func singularParentField(parentResource string) string {
+	if s, ok := parentFieldIrregulars[parentResource]; ok {
+		return s
+	}
+	// "categories" → "category", "activities" → "activity". Guard length so a
+	// 3-letter "-ies" word (none in practice) can't underflow to "".
+	if strings.HasSuffix(parentResource, "ies") && len(parentResource) > 4 {
+		return strings.TrimSuffix(parentResource, "ies") + "y"
+	}
 	return strings.TrimSuffix(parentResource, "s")
 }
 

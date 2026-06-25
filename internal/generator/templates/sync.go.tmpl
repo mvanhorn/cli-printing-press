@@ -2822,7 +2822,9 @@ func syncDependentResource(ctx context.Context, c interface {
 			)
 			if rerr != nil {
 				fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", dep.Name, outcome.scopeVal, rerr.Error())
-			} else if deleted > 0 {
+			} else {
+				// Always emit on a proven-complete sweep, even when deleted==0, so a
+				// clean run is observable (distinguishable from "reconcile never ran").
 				fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", dep.Name, outcome.scopeVal, deleted)
 			}
 		} else if prune && dep.ReconcileMode == "per_parent" {

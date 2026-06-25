@@ -1979,9 +1979,20 @@ var (
 // RegisterCascadeJunction records a junction to clean when rows of resourceType
 // are reconciled away. Used for runtime-created junctions (e.g. module_issues)
 // that the generated schema does not declare.
+//
+// Registration is idempotent: re-registering the same (Table, FKColumn) for a
+// resourceType is a no-op. The registry is a process-global with no removal path
+// (registrations happen once at startup in the generated binary); dedupe keeps a
+// repeated init() or a test that re-registers across sub-tests from accumulating
+// duplicate cascades.
 func RegisterCascadeJunction(resourceType string, j CascadeJunction) {
 	cascadeMu.Lock()
 	defer cascadeMu.Unlock()
+	for _, existing := range cascadeJunctions[resourceType] {
+		if existing == j {
+			return
+		}
+	}
 	cascadeJunctions[resourceType] = append(cascadeJunctions[resourceType], j)
 }
 
@@ -2016,8 +2027,14 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 	}
 	defer tx.Rollback()
 
-	// Per-call temp table on this txn's connection; cleared each call so a prior
-	// partition's seen-set can't leak into this one.
+	// Per-call seen-set staging. A TEMP TABLE is connection-scoped, not
+	// transaction-scoped: its lifetime is decoupled from this tx. We deliberately
+	// do not rely on either lifetime — CREATE ... IF NOT EXISTS is a no-op when the
+	// table survived a previous call (standard SQLite keeps it; a ROLLBACK does not
+	// drop it), and the unconditional DELETE that follows clears any rows a prior
+	// partition left behind. So the pair is correct whether or not the underlying
+	// driver (modernc.org/sqlite here) drops temp tables on rollback — we never
+	// assume a fresh table, only an empty one before insert.
 	if _, err := tx.Exec(`CREATE TEMP TABLE IF NOT EXISTS reconcile_seen (id TEXT PRIMARY KEY)`); err != nil {
 		return 0, fmt.Errorf("reconcile %s: temp: %w", resourceType, err)
 	}
