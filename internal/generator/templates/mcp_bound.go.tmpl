@@ -98,8 +98,10 @@ func endpointResponse(method string, data json.RawMessage, opts PageOptions) str
 }
 
 // JSON renders an arbitrary JSON value within the MCP result budget. Small
-// results pass through unchanged; oversized arrays become bounded list
-// envelopes before falling back to a preview envelope.
+// results pass through unchanged; oversized arrays and single-array objects
+// become bounded list envelopes before falling back to a preview envelope. The
+// object path preserves metadata fields such as count/status while truncating
+// the large array field.
 func JSON(v any) (string, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {

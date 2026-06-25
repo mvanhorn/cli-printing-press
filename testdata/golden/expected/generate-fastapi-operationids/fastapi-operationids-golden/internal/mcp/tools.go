@@ -421,6 +421,13 @@ func mcpDBPath() (string, error) {
 	return filepath.Join(dir, "data.db"), nil
 }
 
+type mcpStoreStatusKind string
+
+const (
+	mcpStoreStatusEmpty mcpStoreStatusKind = "empty"
+	mcpStoreStatusReady mcpStoreStatusKind = "ready"
+)
+
 func openMCPReadOnlyStore(path string) (*store.Store, *mcplib.CallToolResult) {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
@@ -439,15 +446,15 @@ func mcpMissingStoreMessage(path string) string {
 	return fmt.Sprintf("No local data store found at %s. Run fastapi-operationids-golden-pp-cli sync before using MCP search/sql, or use live endpoint MCP tools for unsynced data.", path)
 }
 
-func mcpStoreStatus(db *store.Store) (string, error) {
+func mcpStoreStatus(db *store.Store) (mcpStoreStatusKind, error) {
 	status, err := db.Status()
 	if err != nil {
 		return "", err
 	}
 	if len(status) == 0 {
-		return "empty", nil
+		return mcpStoreStatusEmpty, nil
 	}
-	return "ready", nil
+	return mcpStoreStatusReady, nil
 }
 
 func mcpEmptyStoreNextStep() string {
@@ -488,7 +495,7 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 	return toolResultJSON(mcpSearchEnvelope(results, storeStatus))
 }
 
-func mcpSearchEnvelope(results []json.RawMessage, storeStatus string) map[string]any {
+func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind) map[string]any {
 	if results == nil {
 		results = []json.RawMessage{}
 	}
@@ -499,10 +506,9 @@ func mcpSearchEnvelope(results []json.RawMessage, storeStatus string) map[string
 		"resumable":    false,
 	}
 	if len(results) == 0 {
-		switch storeStatus {
-		case "empty":
+		if storeStatus == mcpStoreStatusEmpty {
 			out["next_step"] = mcpEmptyStoreNextStep()
-		default:
+		} else {
 			out["next_step"] = "No local search matches. Try a broader query, a lower-specificity FTS expression, or sync again if data may be stale."
 		}
 	}
@@ -719,7 +725,7 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	return toolResultJSON(mcpSQLEnvelope(results, cols, storeStatus))
 }
 
-func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus string) map[string]any {
+func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStoreStatusKind) map[string]any {
 	if rows == nil {
 		rows = []map[string]any{}
 	}
@@ -731,10 +737,9 @@ func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus string)
 		"resumable":    false,
 	}
 	if len(rows) == 0 {
-		switch storeStatus {
-		case "empty":
+		if storeStatus == mcpStoreStatusEmpty {
 			out["next_step"] = mcpEmptyStoreNextStep()
-		default:
+		} else {
 			out["next_step"] = "The read-only SQL query returned no rows. Check resource_type filters, json_extract paths, or run sync again if data may be stale."
 		}
 	}
