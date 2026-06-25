@@ -340,7 +340,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return naming.CLI(s.Name)
 		},
-		"graphqlQueryField": graphqlQueryField,
+		"goDirectiveVersion": currentGoDirectiveVersion,
+		"goToolchainVersion": currentGoToolchainVersion,
+		"graphqlQueryField":  graphqlQueryField,
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
 		},
