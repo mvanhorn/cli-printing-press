@@ -273,9 +273,8 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 }
 
 // WriteCLIManifest marshals m as indented JSON and writes it to
-// dir/.printing-press.json. It also ensures the release-ledger skeleton files
-// exist so fresh published CLIs have the same shape the public library assigns
-// to older entries after merge.
+// dir/.printing-press.json. It preserves existing release-ledger files because
+// the public library workflow owns updating them after merge.
 func WriteCLIManifest(dir string, m CLIManifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
@@ -290,31 +289,13 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 	return nil
 }
 
-// WriteReleaseLedgerSkeleton writes the public-library release skeleton files
-// without assigning a release version. Existing files are preserved because the
-// library workflow owns updating them after merge.
+// WriteReleaseLedgerSkeleton preserves public-library release ledger files.
+// Fresh prints intentionally do not create .printing-press-release.json:
+// the public library registry validator treats a present release object as
+// populated release metadata and rejects blank version/stamp fields.
 func WriteReleaseLedgerSkeleton(dir string, m CLIManifest) error {
 	releasePath := filepath.Join(dir, CLIReleaseManifestFilename)
-	if _, err := os.Stat(releasePath); errors.Is(err, os.ErrNotExist) {
-		release := CLIReleaseManifest{
-			SchemaVersion:        1,
-			Slug:                 m.APIName,
-			CLIName:              m.CLIName,
-			Version:              "",
-			ReleasedAt:           "",
-			SourceCommit:         "",
-			PrintingPressVersion: m.PrintingPressVersion,
-			RunID:                m.RunID,
-		}
-		data, err := json.MarshalIndent(release, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshaling CLI release manifest skeleton: %w", err)
-		}
-		data = append(data, '\n')
-		if err := os.WriteFile(releasePath, data, 0o644); err != nil {
-			return fmt.Errorf("writing CLI release manifest skeleton: %w", err)
-		}
-	} else if err != nil {
+	if _, err := os.Stat(releasePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("checking CLI release manifest skeleton: %w", err)
 	}
 
