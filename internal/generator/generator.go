@@ -395,6 +395,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"mcpInputName":                 mcpInputName,
 		"mcpToolInputParams":           mcpToolInputParams,
 		"mcpParamBindings":             mcpParamBindings,
+		"mcpEndpointPageable":          mcpEndpointPageable,
+		"mcpPageConfig":                mcpPageConfig,
 		"mcpGlobalTemplateInputParams": mcpGlobalTemplateInputParams,
 		"mcpGlobalTemplateBindings":    mcpGlobalTemplateBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
@@ -5075,6 +5077,9 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		requestContentType = endpoint.RequestContentType
 	}
 	for _, p := range endpoint.Params {
+		if isMCPPaginationCursorParam(endpoint, p) {
+			continue
+		}
 		loc := "query"
 		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
 			loc = "path"
@@ -5117,12 +5122,50 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 
 func mcpToolInputParams(endpoint spec.Endpoint) []spec.Param {
 	params := make([]spec.Param, 0, len(endpoint.Params)+len(endpoint.Body))
-	params = append(params, endpoint.Params...)
+	for _, p := range endpoint.Params {
+		if isMCPPaginationCursorParam(endpoint, p) {
+			continue
+		}
+		params = append(params, p)
+	}
 	if endpoint.BodyJSONFallback {
 		return params
 	}
 	params = append(params, mcpBodyInputParams(endpoint)...)
 	return params
+}
+
+func mcpEndpointPageable(endpoint spec.Endpoint) bool {
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+		return false
+	}
+	if endpoint.Pagination == nil {
+		return false
+	}
+	if strings.TrimSpace(endpoint.Pagination.CursorParam) == "" {
+		return false
+	}
+	return !endpoint.UsesBinaryResponse()
+}
+
+func mcpPageConfig(endpoint spec.Endpoint) string {
+	if !mcpEndpointPageable(endpoint) {
+		return "mcpPageConfig{}"
+	}
+	return fmt.Sprintf("mcpPageConfig{CursorParam: %q, NextCursorPath: %q}",
+		endpoint.Pagination.CursorParam,
+		endpoint.Pagination.NextCursorPath,
+	)
+}
+
+func isMCPPaginationCursorParam(endpoint spec.Endpoint, p spec.Param) bool {
+	if !mcpEndpointPageable(endpoint) {
+		return false
+	}
+	if p.PathParam || p.Positional {
+		return false
+	}
+	return p.Name == endpoint.Pagination.CursorParam || p.WireName() == endpoint.Pagination.CursorParam
 }
 
 func mcpGlobalTemplateInputParams(endpoint spec.Endpoint, pathTemplate string, vars []string) []spec.Param {

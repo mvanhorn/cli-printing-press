@@ -5,6 +5,7 @@ package bound
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -46,6 +47,217 @@ func TestEndpointResponseBoundsListResponses(t *testing.T) {
 	}
 	if envelope.OriginalBytes != len(data) {
 		t.Fatalf("original_bytes = %d, want %d", envelope.OriginalBytes, len(data))
+	}
+}
+
+func TestEndpointPageResponseEmitsOpaqueCursorForTruncatedList(t *testing.T) {
+	items := make([]map[string]string, 0, MaxItems+25)
+	for i := 0; i < MaxItems+25; i++ {
+		items = append(items, map[string]string{
+			"id":      "item-" + strconv.Itoa(i),
+			"payload": strings.Repeat("x", 1600),
+		})
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := EndpointPageResponse("GET", data, PageOptions{CursorParam: "cursor"})
+	if len(text) > MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), MaxBytes)
+	}
+
+	var envelope struct {
+		Items         []json.RawMessage `json:"items"`
+		Truncated     bool              `json:"truncated"`
+		ReturnedCount int               `json:"returned_count"`
+		NextCursor    string            `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("bounded list result must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("bounded list result did not mark truncation: %s", text)
+	}
+	if envelope.ReturnedCount != len(envelope.Items) {
+		t.Fatalf("returned_count = %d, want item count %d", envelope.ReturnedCount, len(envelope.Items))
+	}
+	if envelope.NextCursor == "" {
+		t.Fatalf("truncated resumable list result did not include next_cursor: %s", text)
+	}
+	if strings.Contains(envelope.NextCursor, "item-") || strings.Contains(envelope.NextCursor, "cursor") {
+		t.Fatalf("next_cursor should be opaque, got %q", envelope.NextCursor)
+	}
+}
+
+func TestEndpointPageResponseContinuesFromOpaqueCursor(t *testing.T) {
+	items := make([]map[string]string, 0, MaxItems+25)
+	for i := 0; i < MaxItems+25; i++ {
+		items = append(items, map[string]string{
+			"id":      "item-" + strconv.Itoa(i),
+			"payload": strings.Repeat("x", 1600),
+		})
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	firstText := EndpointPageResponse("GET", data, PageOptions{CursorParam: "cursor"})
+	var first struct {
+		Items      []map[string]string `json:"items"`
+		NextCursor string              `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(firstText), &first); err != nil {
+		t.Fatalf("first page must remain valid JSON: %v\n%s", err, firstText)
+	}
+	if first.NextCursor == "" {
+		t.Fatalf("first page did not include next_cursor: %s", firstText)
+	}
+
+	secondText := EndpointPageResponse("GET", data, PageOptions{CursorParam: "cursor", Cursor: first.NextCursor})
+	var second struct {
+		Items         []map[string]string `json:"items"`
+		ReturnedCount int                 `json:"returned_count"`
+	}
+	if err := json.Unmarshal([]byte(secondText), &second); err != nil {
+		t.Fatalf("second page must remain valid JSON: %v\n%s", err, secondText)
+	}
+	if len(first.Items) == 0 || len(second.Items) == 0 {
+		t.Fatalf("expected both pages to return items: first=%s second=%s", firstText, secondText)
+	}
+	if got, want := second.Items[0]["id"], items[len(first.Items)]["id"]; got != want {
+		t.Fatalf("second page first id = %q, want %q", got, want)
+	}
+	if second.ReturnedCount != len(second.Items) {
+		t.Fatalf("returned_count = %d, want item count %d", second.ReturnedCount, len(second.Items))
+	}
+}
+
+func TestEndpointPageResponseWrapsUpstreamCursorOpaquely(t *testing.T) {
+	items := []map[string]string{
+		{"id": "item-0", "payload": "small"},
+		{"id": "item-1", "payload": "small"},
+	}
+	data, err := json.Marshal(map[string]any{
+		"items":       items,
+		"next_cursor": "server-next-token",
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := EndpointPageResponse("GET", data, PageOptions{CursorParam: "cursor", NextCursorPath: "next_cursor"})
+	if len(text) > MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), MaxBytes)
+	}
+
+	var envelope struct {
+		Items         []map[string]string `json:"items"`
+		ReturnedCount int                 `json:"returned_count"`
+		NextCursor    string              `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("page result must remain valid JSON: %v\n%s", err, text)
+	}
+	if envelope.ReturnedCount != len(items) {
+		t.Fatalf("returned_count = %d, want %d", envelope.ReturnedCount, len(items))
+	}
+	if envelope.NextCursor == "" {
+		t.Fatalf("page with upstream cursor did not include next_cursor: %s", text)
+	}
+	if strings.Contains(envelope.NextCursor, "server-next-token") {
+		t.Fatalf("next_cursor leaked upstream cursor: %q", envelope.NextCursor)
+	}
+}
+
+func TestEndpointPageResponseOversizedFirstItemReturnsPreviewAndAdvances(t *testing.T) {
+	items := []map[string]string{
+		{"id": "too-large", "payload": strings.Repeat("x", MaxBytes+10000)},
+		{"id": "next", "payload": "small"},
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	firstText := EndpointPageResponse("GET", data, PageOptions{CursorParam: "cursor"})
+	if len(firstText) > MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(firstText), MaxBytes)
+	}
+
+	var first struct {
+		Items         []json.RawMessage `json:"items"`
+		ItemPreview   string            `json:"item_preview"`
+		ReturnedCount int               `json:"returned_count"`
+		NextCursor    string            `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(firstText), &first); err != nil {
+		t.Fatalf("first page must remain valid JSON: %v\n%s", err, firstText)
+	}
+	if len(first.Items) != 0 || first.ReturnedCount != 0 {
+		t.Fatalf("oversized first item should not claim to return a full item: %s", firstText)
+	}
+	if first.ItemPreview == "" {
+		t.Fatalf("oversized first item should include item_preview: %s", firstText)
+	}
+	if first.NextCursor == "" {
+		t.Fatalf("oversized first item should advance with next_cursor: %s", firstText)
+	}
+
+	secondText := EndpointPageResponse("GET", data, PageOptions{CursorParam: "cursor", Cursor: first.NextCursor})
+	var second struct {
+		Items []map[string]string `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(secondText), &second); err != nil {
+		t.Fatalf("second page must remain valid JSON: %v\n%s", err, secondText)
+	}
+	if len(second.Items) == 0 || second.Items[0]["id"] != "next" {
+		t.Fatalf("second page should advance past oversized item, got %s", secondText)
+	}
+}
+
+func TestEndpointPageResponseMultiArrayObjectUsesNonResumablePreview(t *testing.T) {
+	items := make([]map[string]string, 0, MaxItems+25)
+	users := make([]map[string]string, 0, MaxItems+25)
+	for i := 0; i < MaxItems+25; i++ {
+		items = append(items, map[string]string{"id": "item-" + strconv.Itoa(i), "payload": strings.Repeat("x", 1600)})
+		users = append(users, map[string]string{"id": "user-" + strconv.Itoa(i), "payload": strings.Repeat("y", 1600)})
+	}
+	data, err := json.Marshal(map[string]any{
+		"items": items,
+		"users": users,
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := EndpointPageResponse("GET", data, PageOptions{CursorParam: "cursor"})
+	if len(text) > MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), MaxBytes)
+	}
+
+	var envelope struct {
+		Truncated  bool   `json:"truncated"`
+		Resumable  *bool  `json:"resumable"`
+		Preview    string `json:"preview"`
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("preview result must remain valid JSON: %v\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("multi-array preview should be marked truncated: %s", text)
+	}
+	if envelope.Resumable == nil || *envelope.Resumable {
+		t.Fatalf("multi-array preview should explicitly be non-resumable: %s", text)
+	}
+	if envelope.NextCursor != "" {
+		t.Fatalf("non-resumable preview must not include next_cursor: %s", text)
+	}
+	if envelope.Preview == "" {
+		t.Fatalf("non-resumable preview should include bounded preview text: %s", text)
 	}
 }
 

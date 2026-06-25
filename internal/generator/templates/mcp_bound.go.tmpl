@@ -4,7 +4,9 @@
 package bound
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -23,15 +25,65 @@ const (
 	textResultNote = "MCP command output exceeded the tool result budget. Rerun with narrower flags, --agent, --compact, --select, or --limit where available."
 )
 
+// PageOptions describes resumable list context for typed MCP endpoint results.
+// Cursor is the opaque value supplied by the MCP caller. CursorParam is the
+// upstream request parameter name that can resume another API page, when one
+// exists. NextCursorPath is the dotted response path containing the upstream
+// cursor for the following API page.
+type PageOptions struct {
+	Cursor         string
+	CursorParam    string
+	NextCursorPath string
+}
+
+type endpointCursor struct {
+	Version        int    `json:"v"`
+	Offset         int    `json:"o,omitempty"`
+	UpstreamCursor string `json:"u,omitempty"`
+}
+
 // EndpointResponse renders a typed endpoint response within the MCP result
 // budget. GET array responses are always wrapped so agents get count metadata;
 // other small responses pass through unchanged.
 func EndpointResponse(method string, data json.RawMessage) string {
+	return endpointResponse(method, data, PageOptions{})
+}
+
+// EndpointPageResponse renders a typed endpoint response with resumable list
+// cursors. It only changes recognized GET list shapes; opaque or non-list data
+// falls back to EndpointResponse's bounded preview contract.
+func EndpointPageResponse(method string, data json.RawMessage, opts PageOptions) string {
+	if opts.CursorParam == "" && opts.Cursor == "" && opts.NextCursorPath == "" {
+		return endpointResponse(method, data, PageOptions{})
+	}
+	return endpointResponse(method, data, opts)
+}
+
+// UpstreamCursor unwraps the upstream API cursor embedded in an opaque MCP
+// cursor. It returns an empty string for local continuation cursors that resume
+// within the current API page.
+func UpstreamCursor(cursor string) (string, error) {
+	state, err := decodeEndpointCursor(cursor)
+	if err != nil {
+		return "", err
+	}
+	return state.UpstreamCursor, nil
+}
+
+func endpointResponse(method string, data json.RawMessage, opts PageOptions) string {
 	trimmed := strings.TrimSpace(string(data))
 	if strings.EqualFold(method, "GET") && len(trimmed) > 0 && trimmed[0] == '[' {
 		var items []json.RawMessage
 		if json.Unmarshal(data, &items) == nil {
+			if opts.CursorParam != "" {
+				return string(boundedPageListEnvelope("items", items, data, endpointListNote, opts, nil, ""))
+			}
 			return string(boundedListEnvelope("items", items, len(data), endpointListNote))
+		}
+	}
+	if strings.EqualFold(method, "GET") && opts.CursorParam != "" {
+		if out, ok := boundedSingleArrayPageObject(data, opts); ok {
+			return string(out)
 		}
 	}
 	if len(data) <= MaxBytes {
@@ -137,6 +189,35 @@ func boundedSingleArrayObject(data json.RawMessage) ([]byte, bool) {
 	return out, true
 }
 
+func boundedSingleArrayPageObject(data json.RawMessage, opts PageOptions) ([]byte, bool) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return nil, false
+	}
+	arrayField := ""
+	var items []json.RawMessage
+	for key, raw := range obj {
+		trimmed := strings.TrimSpace(string(raw))
+		if len(trimmed) == 0 || trimmed[0] != '[' {
+			continue
+		}
+		var candidate []json.RawMessage
+		if json.Unmarshal(raw, &candidate) != nil {
+			continue
+		}
+		if arrayField != "" {
+			return nil, false
+		}
+		arrayField = key
+		items = candidate
+	}
+	if arrayField == "" {
+		return nil, false
+	}
+	nextUpstream := extractStringPath(data, opts.NextCursorPath)
+	return boundedPageListEnvelope(arrayField, items, data, endpointListNote, opts, obj, nextUpstream), true
+}
+
 func boundedListEnvelope(field string, items []json.RawMessage, originalBytes int, note string) []byte {
 	build := func(subset []json.RawMessage) any {
 		out := map[string]any{
@@ -153,6 +234,61 @@ func boundedListEnvelope(field string, items []json.RawMessage, originalBytes in
 		return out
 	}
 	return fitJSONItems(items, build)
+}
+
+func boundedPageListEnvelope(field string, items []json.RawMessage, original json.RawMessage, note string, opts PageOptions, base map[string]json.RawMessage, nextUpstream string) []byte {
+	state := endpointCursor{Version: 1}
+	if opts.Cursor != "" {
+		if decoded, err := decodeEndpointCursor(opts.Cursor); err == nil {
+			state = decoded
+		}
+	}
+	start := state.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > len(items) {
+		start = len(items)
+	}
+
+	build := func(subset []json.RawMessage, itemPreview string, nextCursor string) any {
+		var out map[string]any
+		if base == nil {
+			out = map[string]any{}
+		} else {
+			out = make(map[string]any, len(base)+8)
+			for key, raw := range base {
+				if key == field {
+					continue
+				}
+				out[key] = raw
+			}
+		}
+		if nextUpstream != "" || state.UpstreamCursor != "" {
+			out["count"] = -1
+		} else {
+			out["count"] = len(items)
+		}
+		out[field] = subset
+		out["returned_count"] = len(subset)
+		if itemPreview != "" {
+			out["item_preview"] = itemPreview
+		}
+		if nextCursor != "" {
+			out["truncated"] = true
+			out["next_cursor"] = nextCursor
+			out["original_bytes"] = len(original)
+			out["max_bytes"] = MaxBytes
+			out["note"] = note
+		}
+		return out
+	}
+
+	out := fitJSONPageItems(items, start, state.UpstreamCursor, nextUpstream, build)
+	if len(out) > MaxBytes {
+		return []byte(previewEnvelope(original, endpointPreviewNote))
+	}
+	return out
 }
 
 func fitJSONItems(items []json.RawMessage, build func([]json.RawMessage) any) []byte {
@@ -173,6 +309,119 @@ func fitJSONItems(items []json.RawMessage, build func([]json.RawMessage) any) []
 	return out
 }
 
+func fitJSONPageItems(items []json.RawMessage, start int, currentUpstream, nextUpstream string, build func([]json.RawMessage, string, string) any) []byte {
+	remaining := len(items) - start
+	if remaining < 0 {
+		remaining = 0
+	}
+	limit := remaining
+	if limit > MaxItems {
+		limit = MaxItems
+	}
+	for n := limit; n > 0; n-- {
+		next := nextPageCursor(start+n, len(items), currentUpstream, nextUpstream)
+		out, err := json.Marshal(build(items[start:start+n], "", next))
+		if err != nil {
+			continue
+		}
+		if len(out) <= MaxBytes {
+			return out
+		}
+	}
+	if start < len(items) {
+		next := nextPageCursor(start+1, len(items), currentUpstream, nextUpstream)
+		previewLimit := maxPreviewBytes
+		for previewLimit >= 0 {
+			out, err := json.Marshal(build(nil, previewString(items[start], previewLimit), next))
+			if err == nil && len(out) <= MaxBytes {
+				return out
+			}
+			if previewLimit == 0 {
+				break
+			}
+			if previewLimit < 512 {
+				previewLimit = 0
+			} else {
+				previewLimit -= 512
+			}
+		}
+	}
+	next := nextPageCursor(len(items), len(items), currentUpstream, nextUpstream)
+	out, _ := json.Marshal(build(nil, "", next))
+	return out
+}
+
+func nextPageCursor(nextOffset, itemCount int, currentUpstream, nextUpstream string) string {
+	state := endpointCursor{Version: 1}
+	switch {
+	case nextOffset < itemCount:
+		state.Offset = nextOffset
+		state.UpstreamCursor = currentUpstream
+	case nextUpstream != "":
+		state.UpstreamCursor = nextUpstream
+	default:
+		return ""
+	}
+	return encodeEndpointCursor(state)
+}
+
+func encodeEndpointCursor(state endpointCursor) string {
+	if state.Version == 0 {
+		state.Version = 1
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+func decodeEndpointCursor(cursor string) (endpointCursor, error) {
+	if cursor == "" {
+		return endpointCursor{Version: 1}, nil
+	}
+	data, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return endpointCursor{}, fmt.Errorf("invalid MCP cursor")
+	}
+	var state endpointCursor
+	if err := json.Unmarshal(data, &state); err != nil {
+		return endpointCursor{}, fmt.Errorf("invalid MCP cursor")
+	}
+	if state.Version != 1 {
+		return endpointCursor{}, fmt.Errorf("unsupported MCP cursor version")
+	}
+	if state.Offset < 0 {
+		return endpointCursor{}, fmt.Errorf("invalid MCP cursor offset")
+	}
+	return state, nil
+}
+
+func extractStringPath(data json.RawMessage, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	var v any
+	if json.Unmarshal(data, &v) != nil {
+		return ""
+	}
+	for _, part := range strings.Split(path, ".") {
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return ""
+		}
+		v, ok = obj[part]
+		if !ok {
+			return ""
+		}
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
 func previewEnvelope(data []byte, note string) string {
 	limit := len(data)
 	if limit > maxPreviewBytes {
@@ -181,6 +430,7 @@ func previewEnvelope(data []byte, note string) string {
 	for limit >= 0 {
 		out, err := json.Marshal(map[string]any{
 			"truncated":      true,
+			"resumable":      false,
 			"original_bytes": len(data),
 			"max_bytes":      MaxBytes,
 			"preview":        previewString(data, limit),
@@ -200,6 +450,7 @@ func previewEnvelope(data []byte, note string) string {
 	}
 	out, _ := json.Marshal(map[string]any{
 		"truncated":      true,
+		"resumable":      false,
 		"original_bytes": len(data),
 		"max_bytes":      MaxBytes,
 		"note":           note,

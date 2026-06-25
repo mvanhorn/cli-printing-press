@@ -135,3 +135,59 @@ func TestToolResultJSONBoundsLargeSearchLikeArray(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "tool_result_json_budget_test.go"), []byte(testSrc), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/mcp", "-run", "TestToolResultJSONBoundsLargeSearchLikeArray")
 }
+
+func TestGenerateMCPToolsUseOpaqueCursorForResumableListEndpoints(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-resumable-cursor")
+	apiSpec.Resources = map[string]spec.Resource{
+		"groups": {
+			Description: "Groups",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/groups",
+					Description: "List groups",
+					Params: []spec.Param{
+						{Name: "limit", Type: "integer"},
+						{Name: "after", Type: "string"},
+					},
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						LimitParam:     "limit",
+						CursorParam:    "after",
+						NextCursorPath: "next_cursor",
+					},
+					Response: spec.ResponseDef{Type: "array", Item: "Group"},
+				},
+			},
+		},
+	}
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Group": {
+			Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "name", Type: "string"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	toolsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	toolsCode := stripGoComments(string(toolsSrc))
+	assert.Contains(t, toolsCode, `mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response"))`,
+		"resumable MCP list tools should expose a canonical opaque cursor input")
+	assert.NotContains(t, toolsCode, `mcplib.WithString("after"`,
+		"resumable MCP list tools should not expose the raw upstream cursor parameter")
+	assert.Contains(t, toolsCode, `mcpPageConfig{CursorParam: "after", NextCursorPath: "next_cursor"}`,
+		"generated handler should receive the upstream cursor metadata needed to continue safely")
+	assert.Contains(t, toolsCode, `bound.EndpointPageResponse(method, data, bound.PageOptions{`,
+		"typed MCP responses should route resumable endpoints through the cursor-aware bound path")
+
+	requireGeneratedCompiles(t, outputDir)
+}

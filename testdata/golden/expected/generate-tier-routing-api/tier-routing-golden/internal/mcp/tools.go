@@ -41,16 +41,17 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items/enterprise", "enterprise", true, false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/items/enterprise", "enterprise", true, false, nil, mcpPageConfig{}, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_list",
 			mcplib.WithDescription("List free items. (public)"),
+			mcplib.WithString("cursor", mcplib.Description("Opaque pagination cursor returned by a previous MCP response")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items", "free", true, false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/items", "free", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: ""}, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_premium",
@@ -59,7 +60,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items/premium", "paid", true, false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/items/premium", "paid", true, false, nil, mcpPageConfig{}, []mcpParamBinding{}, []string{}),
 	)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
@@ -105,6 +106,11 @@ type mcpParamBinding struct {
 	Location   string
 }
 
+type mcpPageConfig struct {
+	CursorParam    string
+	NextCursorPath string
+}
+
 func formatMCPParamValue(v any) string {
 	switch tv := v.(type) {
 	case string:
@@ -142,7 +148,7 @@ func formatMCPParamValue(v any) string {
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
-func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, pageConfig mcpPageConfig, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
@@ -163,6 +169,24 @@ func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResp
 		pathParams := make(map[string]bool, len(positionalParams))
 		params := make(map[string]string)
 		bodyArgs := make(map[string]any)
+		mcpCursor := ""
+		if pageConfig.CursorParam != "" {
+			knownArgs["cursor"] = true
+			if v, ok := args["cursor"]; ok {
+				s, ok := v.(string)
+				if !ok {
+					return mcplib.NewToolResultError("cursor must be an opaque string returned by a previous MCP response"), nil
+				}
+				mcpCursor = s
+				upstreamCursor, err := bound.UpstreamCursor(s)
+				if err != nil {
+					return mcplib.NewToolResultError(err.Error()), nil
+				}
+				if upstreamCursor != "" {
+					params[pageConfig.CursorParam] = upstreamCursor
+				}
+			}
+		}
 		var headers map[string]string
 		if len(headerOverrides) > 0 {
 			headers = make(map[string]string, len(headerOverrides)+1)
@@ -307,12 +331,23 @@ func makeAPIHandler(method, pathTemplate, tier string, readOnly bool, binaryResp
 			}
 			return mcplib.NewToolResultText(string(out)), nil
 		}
+		if pageConfig.CursorParam != "" {
+			return mcpToolPageResultText(method, data, pageConfig, mcpCursor), nil
+		}
 		return mcpToolResultText(method, data), nil
 	}
 }
 
 func mcpToolResultText(method string, data json.RawMessage) *mcplib.CallToolResult {
 	return mcplib.NewToolResultText(bound.EndpointResponse(method, data))
+}
+
+func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {
+	return mcplib.NewToolResultText(bound.EndpointPageResponse(method, data, bound.PageOptions{
+		Cursor:         cursor,
+		CursorParam:    pageConfig.CursorParam,
+		NextCursorPath: pageConfig.NextCursorPath,
+	}))
 }
 
 func newMCPClient() (*client.Client, error) {
