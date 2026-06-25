@@ -1369,6 +1369,7 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 
 	expectedPrefix := ""
 	expectedHeader := ""
+	formatPrefixOverrides := ""
 	formatLower := strings.ToLower(auth.Format)
 	switch {
 	case strings.Contains(formatLower, "bot "):
@@ -1377,9 +1378,16 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	case strings.EqualFold(auth.Type, "bearer_token"):
 		expectedPrefix = auth.HeaderPrefix() + " "
 		if formatPrefix, ok := authFormatSchemePrefix(auth.Format); ok {
+			if prefix := strings.TrimSpace(auth.Prefix); prefix != "" && !strings.EqualFold(strings.TrimSpace(formatPrefix), prefix) {
+				formatPrefixOverrides = prefix
+			}
 			expectedPrefix = formatPrefix
 		}
-		result.SpecScheme = fmt.Sprintf(`bearer token format (expects %q prefix)`, expectedPrefix)
+		if formatPrefixOverrides != "" {
+			result.SpecScheme = fmt.Sprintf(`bearer token format (expects %q prefix from auth.format; auth.prefix %q ignored)`, expectedPrefix, formatPrefixOverrides)
+		} else {
+			result.SpecScheme = fmt.Sprintf(`bearer token format (expects %q prefix)`, expectedPrefix)
+		}
 	case strings.Contains(formatLower, "basic "):
 		result.SpecScheme = `basic auth format (expects "Basic " prefix)`
 		expectedPrefix = "Basic "
@@ -1455,7 +1463,11 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	result.Match = result.GeneratedFmt == expectedPrefix
 	if result.Match {
 		if tokenPreserving {
-			result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+			if formatPrefixOverrides != "" {
+				result.Detail = fmt.Sprintf(`auth.format %q overrides auth.prefix %q; generated client uses %q`, strings.TrimSpace(expectedPrefix), formatPrefixOverrides, strings.TrimSpace(expectedPrefix))
+			} else {
+				result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+			}
 		} else {
 			result.Match = false
 			result.Detail = invalidDetail
@@ -1505,7 +1517,7 @@ func checkOAuthScopeCoverage(dir string, requirements []oauthScopeRequirement) O
 	if len(result.Violations) == 0 {
 		result.Detail = "all OAuth-scoped endpoints covered by generated auth scopes"
 	} else if len(generatedScopes) == 0 {
-		result.Detail = "generated auth.go declares no OAuth scopes"
+		result.Detail = "generated auth files declare no OAuth scopes"
 	} else {
 		result.Detail = fmt.Sprintf("%d OAuth-scoped endpoint(s) lack a generated auth scope", len(result.Violations))
 	}

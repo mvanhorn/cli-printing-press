@@ -498,7 +498,7 @@ components:
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
-	assert.Equal(t, "generated auth.go declares no OAuth scopes", report.OAuthScopeCoverage.Detail)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
 }
 
 func TestRunDogfoodOAuthScopeCoverageIgnoresUnjoinedScopesVariable(t *testing.T) {
@@ -541,7 +541,7 @@ components:
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
-	assert.Equal(t, "generated auth.go declares no OAuth scopes", report.OAuthScopeCoverage.Detail)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
 }
 
 func TestRunDogfoodOAuthScopeCoverageSurvivesUndefinedNonOAuthScheme(t *testing.T) {
@@ -1318,6 +1318,29 @@ func (c *Config) AuthHeader() string {
 	assert.True(t, result.Match)
 	assert.Equal(t, "Token ", result.GeneratedFmt)
 	assert.Contains(t, result.SpecScheme, `"Token " prefix`)
+}
+
+func TestCheckAuthMakesFormatOverPrefixPrecedenceExplicit(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `auth.format`)
+	assert.Contains(t, result.SpecScheme, `auth.prefix "Token" ignored`)
+	assert.Contains(t, result.Detail, `auth.format "Bearer" overrides auth.prefix "Token"`)
 }
 
 func TestCheckAuthRejectsBearerTokenPrefixMismatch(t *testing.T) {
