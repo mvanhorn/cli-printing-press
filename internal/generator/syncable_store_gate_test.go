@@ -21,6 +21,15 @@ func TestGenerateSyncableSmallAPIEmitsLocalDataLayer(t *testing.T) {
 	require.FileExists(t, filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "search.go"))
+
+	// The store must expose BareResourceID so novel commands can recover bare
+	// entity ids from the composite (id+NUL+parent) storage keys ListIDs returns
+	// for parent-keyed dependent resources.
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(storeSrc), "func BareResourceID(",
+		"store must expose BareResourceID for composite dependent-resource keys")
+
 	requireGeneratedCompiles(t, outputDir)
 }
 
