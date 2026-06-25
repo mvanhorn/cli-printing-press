@@ -15,8 +15,14 @@ type RecipeIntent struct {
 	Name        string
 	Description string
 	Command     []string
+	Args        []RecipeIntentArg
 	Params      []RecipeIntentParam
-	TakesArgs   bool
+}
+
+type RecipeIntentArg struct {
+	Static bool
+	Token  string
+	Param  RecipeIntentParam
 }
 
 type RecipeIntentParam struct {
@@ -109,6 +115,7 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 						Positional:  true,
 					}
 					intent.Params = append(intent.Params, param)
+					intent.Args = append(intent.Args, RecipeIntentArg{Param: param})
 					nonTrivialInputs++
 					continue
 				}
@@ -117,6 +124,7 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 				return RecipeIntent{}, false
 			}
 			intent.Command = append(intent.Command, token)
+			intent.Args = append(intent.Args, RecipeIntentArg{Static: true, Token: token})
 			commandWords++
 			continue
 		}
@@ -129,6 +137,7 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 		useEquals := hasValue
 		if recipeFlagIsStatic(name) {
 			intent.Command = append(intent.Command, "--"+name)
+			intent.Args = append(intent.Args, RecipeIntentArg{Static: true, Token: "--" + name})
 			if !hasValue && i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
 				value = tokens[i+1]
 				hasValue = true
@@ -136,6 +145,7 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 			}
 			if hasValue && value != "" {
 				intent.Command = append(intent.Command, value)
+				intent.Args = append(intent.Args, RecipeIntentArg{Static: true, Token: value})
 			}
 			continue
 		}
@@ -167,6 +177,7 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 			param.Type = recipeParamType(value)
 		}
 		intent.Params = append(intent.Params, param)
+		intent.Args = append(intent.Args, RecipeIntentArg{Param: param})
 		nonTrivialInputs++
 	}
 	if len(intent.Command) == 0 || nonTrivialInputs == 0 {
@@ -340,6 +351,9 @@ func looksLikeRecipeVersion(token string) bool {
 
 func looksLikeRecipeDomain(token string) bool {
 	if strings.ContainsAny(token, "/:@") || strings.HasPrefix(token, ".") || strings.HasSuffix(token, ".") {
+		return false
+	}
+	if looksLikeRecipeVersion(token) {
 		return false
 	}
 	parts := strings.Split(token, ".")
