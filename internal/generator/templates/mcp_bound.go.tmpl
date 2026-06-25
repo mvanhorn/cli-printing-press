@@ -98,8 +98,10 @@ func endpointResponse(method string, data json.RawMessage, opts PageOptions) str
 }
 
 // JSON renders an arbitrary JSON value within the MCP result budget. Small
-// results pass through unchanged; oversized arrays become bounded list
-// envelopes before falling back to a preview envelope.
+// results pass through unchanged; oversized arrays and single-array objects
+// become bounded list envelopes before falling back to a preview envelope. The
+// object path preserves metadata fields such as count/status while truncating
+// the large array field.
 func JSON(v any) (string, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -124,6 +126,11 @@ func JSON(v any) (string, error) {
 			return string(boundedListEnvelope("items", items, len(compact), jsonResultNote)), nil
 		}
 	}
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		if out, ok := boundedSingleArrayObjectWithNote(compact, jsonResultNote); ok {
+			return string(out), nil
+		}
+	}
 	return previewEnvelope(compact, jsonResultNote), nil
 }
 
@@ -138,6 +145,10 @@ func Text(out string) string {
 }
 
 func boundedSingleArrayObject(data json.RawMessage) ([]byte, bool) {
+	return boundedSingleArrayObjectWithNote(data, endpointListNote)
+}
+
+func boundedSingleArrayObjectWithNote(data json.RawMessage, note string) ([]byte, bool) {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(data, &obj) != nil {
 		return nil, false
@@ -178,7 +189,7 @@ func boundedSingleArrayObject(data json.RawMessage) ([]byte, bool) {
 			out["_pp_returned_count"] = len(subset)
 			out["_pp_original_bytes"] = len(data)
 			out["_pp_max_bytes"] = MaxBytes
-			out["_pp_note"] = endpointListNote
+			out["_pp_note"] = note
 		}
 		return out
 	}
