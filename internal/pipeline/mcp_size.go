@@ -481,15 +481,15 @@ func normalizedStringMapLiteral(expr ast.Expr) map[string]string {
 //   - per-tool <= 320 tokens: partial (4)
 //   - per-tool > 320 tokens: 0
 //
-// Large code-orchestrated catalogs are unscored instead. Their catalog
-// payload intentionally scales with endpoint count while the exposed tool
-// count stays fixed at search+execute, so a per-tool average is not a
-// meaningful efficiency signal.
+// Code-orchestrated catalogs are unscored instead. Their catalog payload
+// intentionally scales with endpoint count while the exposed tool count stays
+// fixed at search+execute, so a per-tool average is not a meaningful
+// efficiency signal.
 //
 // Empty or missing MCP surface returns (0, false) so the dimension is
 // added to UnscoredDimensions.
 func scoreMCPTokenEfficiency(dir string) (int, bool) {
-	if canonicalMCPSurfacePath(dir) == mcpCodeOrchPath(dir) && codeOrchEndpointCount(dir) > surfaceStrategyLargeThreshold {
+	if canonicalMCPSurfacePath(dir) == mcpCodeOrchPath(dir) {
 		return 0, false
 	}
 	est := estimateMCPTokens(dir)
@@ -507,34 +507,4 @@ func scoreMCPTokenEfficiency(dir string) (int, bool) {
 	default:
 		return 0, true
 	}
-}
-
-func codeOrchEndpointCount(dir string) int {
-	file, err := parser.ParseFile(token.NewFileSet(), mcpCodeOrchPath(dir), nil, 0)
-	if err != nil {
-		return 0
-	}
-	for _, decl := range file.Decls {
-		genDecl, ok := decl.(*ast.GenDecl)
-		if !ok || genDecl.Tok != token.VAR {
-			continue
-		}
-		for _, spec := range genDecl.Specs {
-			valueSpec, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			for i, name := range valueSpec.Names {
-				if name.Name != "codeOrchEndpoints" || i >= len(valueSpec.Values) {
-					continue
-				}
-				lit, ok := valueSpec.Values[i].(*ast.CompositeLit)
-				if !ok {
-					return 0
-				}
-				return len(lit.Elts)
-			}
-		}
-	}
-	return 0
 }

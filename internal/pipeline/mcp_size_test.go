@@ -354,12 +354,12 @@ func TestScoreMCPTokenEfficiency_UnscoredForLargeCodeOrchCatalog(t *testing.T) {
 	assert.Contains(t, sc.UnscoredDimensions, DimMCPTokenEfficiency)
 }
 
-func TestScoreMCPTokenEfficiency_ScoresSmallCodeOrchCatalog(t *testing.T) {
+func TestScoreMCPTokenEfficiency_UnscoredForSmallCodeOrchCatalog(t *testing.T) {
 	dir := writeCodeOrchSurface(t, 20)
 
 	score, scored := scoreMCPTokenEfficiency(dir)
-	assert.True(t, scored, "small code-orchestrated catalogs should still use the scoring bands")
-	assert.Greater(t, score, 0)
+	assert.False(t, scored, "code-orchestrated catalogs should be unscored regardless of endpoint count")
+	assert.Equal(t, 0, score)
 }
 
 func TestScoreMCPTokenEfficiency_EndpointMirrorBehaviorUnchanged(t *testing.T) {
