@@ -132,6 +132,45 @@ func TestLoadCommands_Shapes(t *testing.T) {
 			t.Errorf("expected single non-empty command, got %+v", got)
 		}
 	})
+
+	t.Run("prose code spans with cli binary are included", func(t *testing.T) {
+		t.Parallel()
+		path := writeFile(t, `{"api_name":"demo-api","narrative":{
+			"headline":"Use `+"`demo-api-pp-cli reports status --json`"+` for status and `+"`--json`"+` for machine output.",
+			"value_prop":"HTTP `+"`429`"+` is not a command.",
+			"auth_narrative":"Refresh credentials with `+"`demo-api-cli auth refresh`"+`.",
+			"when_to_use":"Prefer `+"`demo-api-pp-cli search --query foo`"+` when exploring.",
+			"troubleshoots":[{"fix":"Run `+"`demo-api-pp-cli doctor`"+` before retrying."}],
+			"quickstart":[{"command":"demo-api-pp-cli widgets list"}],
+			"recipes":[{"command":"demo-api-pp-cli widgets export"}]
+		}}`)
+
+		got, err := loadCommands(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var sections []Section
+		var commands []string
+		for _, cmd := range got {
+			sections = append(sections, cmd.Section)
+			commands = append(commands, cmd.Command)
+		}
+		wantSections := []Section{
+			SectionQuickstart,
+			SectionRecipes,
+			SectionHeadline,
+			SectionAuthNarrative,
+			SectionWhenToUse,
+			SectionTroubleshoot,
+		}
+		if !reflect.DeepEqual(sections, wantSections) {
+			t.Fatalf("sections = %#v, want %#v; commands=%#v", sections, wantSections, commands)
+		}
+		if slices.Contains(commands, "--json") || slices.Contains(commands, "429") {
+			t.Fatalf("flag-only and non-command code spans should be ignored, got %#v", commands)
+		}
+	})
 }
 
 // TestValidate_EndToEnd builds a tiny stub binary that responds OK to
