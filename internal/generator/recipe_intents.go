@@ -293,6 +293,9 @@ func recipePositionalInputName(token string) (string, bool) {
 	if strings.HasPrefix(token, "http://") || strings.HasPrefix(token, "https://") {
 		return "url", true
 	}
+	if looksLikeRecipeVersion(token) {
+		return "version", true
+	}
 	if _, err := strconv.ParseFloat(token, 64); err == nil {
 		return "id", true
 	}
@@ -306,6 +309,33 @@ func recipePositionalInputName(token string) (string, bool) {
 		return "slug", true
 	}
 	return "", false
+}
+
+func looksLikeRecipeVersion(token string) bool {
+	withoutPrefix := strings.TrimPrefix(strings.TrimPrefix(token, "v"), "V")
+	hasVersionPrefix := withoutPrefix != token
+	if withoutPrefix == "" || strings.ContainsAny(withoutPrefix, "/:@") {
+		return false
+	}
+	core, _, _ := strings.Cut(withoutPrefix, "-")
+	parts := strings.Split(core, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	if !hasVersionPrefix && len(parts) < 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func looksLikeRecipeDomain(token string) bool {

@@ -125,12 +125,13 @@ func TestRecipeIntentDerivationBindsPositionals(t *testing.T) {
 		Recipes: []Recipe{
 			{Title: "Scan site", Command: "demo-pp-cli advice https://example.com --copy --json"},
 			{Title: "Get thing", Command: "demo-pp-cli get 12345678 --json"},
+			{Title: "Upgrade release", Command: "demo-pp-cli upgrade v1.2.3 --json"},
 			{Title: "Lookup slug", Command: "demo-pp-cli recipes my-best-brownies --json"},
 			{Title: "Unbindable word", Command: "demo-pp-cli team add engineering --role=owner --json"},
 		},
 	}, nil)
 
-	require.Len(t, intents, 3)
+	require.Len(t, intents, 4)
 	require.Equal(t, []string{"advice", "--json"}, intents[0].Command)
 	require.Len(t, intents[0].Params, 2)
 	require.True(t, intents[0].Params[0].Positional)
@@ -144,9 +145,13 @@ func TestRecipeIntentDerivationBindsPositionals(t *testing.T) {
 	require.True(t, intents[1].Params[0].Positional)
 	require.Equal(t, "id", intents[1].Params[0].InputName)
 
-	require.Equal(t, []string{"recipes", "--json"}, intents[2].Command)
+	require.Equal(t, []string{"upgrade", "--json"}, intents[2].Command)
 	require.True(t, intents[2].Params[0].Positional)
-	require.Equal(t, "slug", intents[2].Params[0].InputName)
+	require.Equal(t, "version", intents[2].Params[0].InputName)
+
+	require.Equal(t, []string{"recipes", "--json"}, intents[3].Command)
+	require.True(t, intents[3].Params[0].Positional)
+	require.Equal(t, "slug", intents[3].Params[0].InputName)
 }
 
 func TestRecipeIntentGenerationBindsPositionalHandlerArgs(t *testing.T) {
