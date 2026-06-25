@@ -33,6 +33,18 @@ func TestResolveCreatorForExisting_ManifestCreatorWins(t *testing.T) {
 	assert.Equal(t, spec.Person{Handle: "trevin-chow", Name: "Trevin Chow"}, resolveCreatorForExisting(dir, ""))
 }
 
+// A persisted creator with a name but an empty handle (printed before
+// github.user resolved) is unpublishable: publish-validate rejects the empty
+// handle and a plain regen would otherwise lock it in. resolveCreatorForExisting
+// backfills only the missing handle from the same-lineage printer field,
+// preserving the display name. A populated handle is never touched — see
+// TestResolveCreatorForExisting_ManifestCreatorWins.
+func TestResolveCreatorForExisting_BackfillsEmptyHandleFromPrinter(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, `{"creator": {"name": "ghltshubh"}, "printer": "ghltshubh", "printer_name": "ghltshubh"}`)
+	assert.Equal(t, spec.Person{Handle: "ghltshubh", Name: "ghltshubh"}, resolveCreatorForExisting(dir, ""))
+}
+
 // A pre-transition manifest (no creator) falls back to the legacy printer
 // fields, then owner fields.
 func TestResolveCreatorForExisting_LegacyFallback(t *testing.T) {

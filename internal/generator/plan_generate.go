@@ -533,7 +533,7 @@ func readManifestAttribution(outputDir string) manifestAttribution {
 // resolveCreatorForExisting returns the creator for a regen against an existing
 // tree, preferring persisted attribution over re-derivation so a regen never
 // silently flips the creator to whoever is running the generator:
-//  1. manifest `creator` object
+//  1. manifest `creator` object (backfilling only an empty handle)
 //  2. manifest legacy fields (printer/printer_name, then owner/owner_name)
 //  3. copyright-header parse (manifest-less legacy trees)
 //  4. resolveCreatorForNew() (git config)
@@ -546,7 +546,21 @@ func resolveCreatorForExisting(outputDir, apiName string) spec.Person {
 	}
 	switch {
 	case !a.Creator.IsZero():
-		return a.Creator
+		c := a.Creator
+		// A persisted creator with a name but no handle (printed before
+		// github.user resolved) would otherwise lock in an unpublishable
+		// record: publish-validate rejects an empty handle and a plain regen
+		// never re-derives it. Backfill only the missing handle, preferring the
+		// same-lineage legacy printer field, then git config / gh. A populated
+		// handle is never touched, so manifest-as-authority still holds.
+		if c.Handle == "" {
+			if a.Printer != "" {
+				c.Handle = a.Printer
+			} else if h := resolvePrinterForNew(); h != "" {
+				c.Handle = h
+			}
+		}
+		return c
 	case a.Printer != "":
 		return spec.Person{Handle: a.Printer, Name: a.PrinterName}
 	case a.Owner != "":
