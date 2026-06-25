@@ -41,8 +41,11 @@ func TestResolveCreatorForExisting_ManifestCreatorWins(t *testing.T) {
 // TestResolveCreatorForExisting_ManifestCreatorWins.
 func TestResolveCreatorForExisting_BackfillsEmptyHandleFromPrinter(t *testing.T) {
 	dir := t.TempDir()
-	writeManifest(t, dir, `{"creator": {"name": "ghltshubh"}, "printer": "ghltshubh", "printer_name": "ghltshubh"}`)
-	assert.Equal(t, spec.Person{Handle: "ghltshubh", Name: "ghltshubh"}, resolveCreatorForExisting(dir, ""))
+	// Distinct values per field so the assertion pins the source of each: the
+	// handle must come from `printer` (not `printer_name`), and the display name
+	// must be preserved from `creator.name` (not overwritten by `printer_name`).
+	writeManifest(t, dir, `{"creator": {"name": "Shubhankar"}, "printer": "ghltshubh", "printer_name": "Printer Person"}`)
+	assert.Equal(t, spec.Person{Handle: "ghltshubh", Name: "Shubhankar"}, resolveCreatorForExisting(dir, ""))
 }
 
 // A pre-transition manifest (no creator) falls back to the legacy printer
