@@ -176,6 +176,11 @@ type SyncableResource struct {
 	// Always "none" this round — forward-looking metadata reserved for a
 	// follow-up flat/tenant reconcile pass; no sync logic consumes it yet.
 	ReconcileMode string
+
+	// TenantScopeColumn is the resource's own tenant discriminator column
+	// (from x-pp-tenant-scope-column). Drives flat tenant reconcile and, for
+	// parent tables, tenant-scoped fan-out. Empty when unannotated.
+	TenantScopeColumn string
 }
 
 // DependentResource describes a child resource that requires iterating a parent
@@ -796,6 +801,66 @@ func (p *APIProfile) hasSyncableStoreResources() bool {
 // SyncableResourceNames returns the names of the syncable resources.
 func (p *APIProfile) SyncableResourceNames() []string {
 	return syncableResourceNames(p.SyncableResources)
+}
+
+// TenantScopedParent names a parent table and its tenant discriminator column.
+type TenantScopedParent struct {
+	Parent string
+	Column string
+}
+
+// TenantScopedParents lists dependent-parent tables that carry a tenant column,
+// for the generated parentTenantScopeColumns map. Sorted by parent for
+// deterministic output.
+func (p *APIProfile) TenantScopedParents() []TenantScopedParent {
+	seen := map[string]string{}
+	for _, sr := range p.SyncableResources {
+		if sr.TenantScopeColumn == "" {
+			continue
+		}
+		for _, dep := range p.DependentSyncResources {
+			if dep.ParentResource == sr.Name {
+				seen[sr.Name] = sr.TenantScopeColumn
+			}
+		}
+	}
+	out := make([]TenantScopedParent, 0, len(seen))
+	for parent, col := range seen {
+		out = append(out, TenantScopedParent{Parent: parent, Column: col})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Parent < out[j].Parent })
+	return out
+}
+
+// ChildScopeSource maps a typed child scope column to the body field it is
+// derived from (the singular parent reference). Drives deriveScopeColumns.
+type ChildScopeSource struct {
+	Column string // e.g. "projects_id"
+	Source string // e.g. "project"
+}
+
+// ChildScopeColumnSources lists (scopeColumn -> sourceField) for every dependent
+// whose parent injects a scope column, deduped and sorted. Built from the same
+// metadata that yields ParentScopeColumn and GenericScopeJSONPath.
+func (p *APIProfile) ChildScopeColumnSources() []ChildScopeSource {
+	seen := map[string]string{}
+	for _, dep := range p.DependentSyncResources {
+		col := dep.ParentScopeColumn
+		if col == "" {
+			col = dep.ParentResource + "_id"
+		}
+		src := singularParentField(dep.ParentResource)
+		if col == "" || src == "" {
+			continue
+		}
+		seen[col] = src
+	}
+	out := make([]ChildScopeSource, 0, len(seen))
+	for col, src := range seen {
+		out = append(out, ChildScopeSource{Column: col, Source: src})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Column < out[j].Column })
+	return out
 }
 
 func featureIdeaFor(name string, p *APIProfile) vision.FeatureIdea {
@@ -2079,6 +2144,7 @@ type syncableMeta struct {
 	Discriminator         DiscriminatorDispatch
 	ResponseItem          string
 	QueryEntity           string
+	TenantScopeColumn     string
 }
 
 type syncableCandidate struct {
@@ -2127,6 +2193,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		Discriminator:         discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
 		ResponseItem:          e.Response.Item,
 		QueryEntity:           queryEntityForEndpoint(s, e),
+		TenantScopeColumn:     e.TenantScopeColumn,
 	}
 }
 
@@ -2843,6 +2910,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			FieldSelector:         meta.FieldSelector,
 			Discriminator:         meta.Discriminator,
 			QueryEntity:           meta.QueryEntity,
+			TenantScopeColumn:     meta.TenantScopeColumn,
 		}
 	}
 	return resources

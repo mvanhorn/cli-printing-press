@@ -3625,3 +3625,101 @@ func TestSingularParentField(t *testing.T) {
 			"singularParentField(%q)", plural)
 	}
 }
+
+// profileFixtureWithTenant builds a minimal *APIProfile used by
+// TestProfiler_TenantScopeColumnAndViews (Task 2) and Task 3's negative
+// assertion tests. It contains:
+//
+//   - "projects": a flat /projects/ resource with TenantScopeColumn="workspace"
+//     and IDField="id". This is the tenant-scoped parent.
+//   - "modules": a dependent /projects/{project_id}/modules/ resource with no
+//     TenantScopeColumn of its own. Its ParentResource is "projects", making
+//     "projects" appear in TenantScopedParents() and "projects_id" appear in
+//     ChildScopeColumnSources().
+//   - "widgets": a second flat resource WITHOUT a TenantScopeColumn, for Task 3's
+//     negative assertion ("widgets" must NOT appear in TenantScopedParents()).
+//
+// Task 3 implementers: rely on these exact resource names and the absence of
+// TenantScopeColumn on "widgets" and "modules".
+func profileFixtureWithTenant(t *testing.T) *APIProfile {
+	t.Helper()
+	s := &spec.APISpec{
+		Name: "tenant-fixture",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/projects",
+						Response:          spec.ResponseDef{Type: "array"},
+						IDField:           "id",
+						TenantScopeColumn: "workspace",
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/projects/{project_id}",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			"modules": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/projects/{project_id}/modules",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/widgets",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/widgets/{widget_id}",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+		},
+	}
+	return Profile(s)
+}
+
+func TestProfiler_TenantScopeColumnAndViews(t *testing.T) {
+	// Reuse the existing profiler test harness that builds an APISpec with a
+	// flat /projects/ resource plus a dependent /projects/{id}/modules/.
+	// Annotate projects' endpoint with TenantScopeColumn="workspace".
+	prof := profileFixtureWithTenant(t) // helper: see note below
+
+	var projects *SyncableResource
+	for i := range prof.SyncableResources {
+		if prof.SyncableResources[i].Name == "projects" {
+			projects = &prof.SyncableResources[i]
+		}
+	}
+	if projects == nil || projects.TenantScopeColumn != "workspace" {
+		t.Fatalf("projects.TenantScopeColumn = %v, want workspace", projects)
+	}
+
+	parents := prof.TenantScopedParents()
+	if len(parents) != 1 || parents[0].Parent != "projects" || parents[0].Column != "workspace" {
+		t.Fatalf("TenantScopedParents() = %+v", parents)
+	}
+
+	sources := prof.ChildScopeColumnSources()
+	found := false
+	for _, s := range sources {
+		if s.Column == "projects_id" && s.Source == "project" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ChildScopeColumnSources() missing projects_id->project: %+v", sources)
+	}
+}
