@@ -4520,9 +4520,10 @@ library repo. A run that isn't ready to publish still produces valuable research
 # Archive under API slug (e.g., steam-web), matching the slug-keyed library layout.
 API_SLUG="<api>"
 mkdir -p "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID"
-cp -r "$RESEARCH_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research" 2>/dev/null || true
+mkdir -p "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs"
+cp -r "$RESEARCH_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research/" 2>/dev/null || true
 cp -f "$API_RUN_DIR/research.json" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research.json" 2>/dev/null || true
-cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs" 2>/dev/null || true
+cp -r "$PROOFS_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/" 2>/dev/null || true
 
 # Archive discovery artifacts (browser-sniff captures, URL lists, traffic analysis, browser-sniff report).
 # Session state lives outside $DISCOVERY_DIR (see Run Initialization), so the

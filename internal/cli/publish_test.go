@@ -144,6 +144,11 @@ func TestPublishValidateRejectsStaleAttributionManifest(t *testing.T) {
 }
 
 func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		"#!/bin/sh\nexit 1\n",
+		"#!/bin/sh\nexit 1\n",
+	)
+
 	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
 		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
 		PrintingPressVersion: "4.2.1",
@@ -158,6 +163,41 @@ func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
 	require.Len(t, issues, 2)
 	assert.Contains(t, issues[0], "creator.handle must not be the literal sentinel")
 	assert.Contains(t, issues[1], "printer must not be the literal sentinel")
+}
+
+func TestPublishManifestContractBackfillsPrinterSentinelFromCurrentIdentity(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		`#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "github.user" ]; then
+  echo tmchow
+  exit 0
+fi
+if [ "$1" = "config" ] && [ "$2" = "user.name" ]; then
+  echo "Trevin Chow"
+  exit 0
+fi
+exit 1
+`,
+		`#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "users/tmchow" ]; then
+  echo '{"login":"tmchow","name":"Trevin Chow"}'
+  exit 0
+fi
+exit 1
+`,
+	)
+
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "USER",
+		PrinterName:          "USER",
+	})
+
+	assert.Empty(t, issues)
 }
 
 func TestPublishManifestContractBackfillsAttributionFromGh(t *testing.T) {
@@ -302,6 +342,42 @@ exit 1
 	info, err := os.Stat(manifestPath)
 	require.NoError(t, err)
 	assert.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
+}
+
+func TestBackfillPackagedManifestAttributionReplacesPrinterSentinel(t *testing.T) {
+	stubPublishIdentityCommands(t,
+		`#!/bin/sh
+if [ "$1" = "config" ] && [ "$2" = "github.user" ]; then
+  echo tmchow
+  exit 0
+fi
+if [ "$1" = "config" ] && [ "$2" = "user.name" ]; then
+  echo "Trevin Chow"
+  exit 0
+fi
+exit 1
+`,
+		"#!/bin/sh\nexit 1\n",
+	)
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "printing_press_version": "4.2.1",
+  "api_name": "test",
+  "cli_name": "test-pp-cli",
+  "run_id": "20260509-000000",
+  "printer": "USER",
+  "printer_name": "USER"
+}`+"\n"), 0o644))
+
+	require.NoError(t, backfillPackagedManifestAttribution(dir))
+
+	data, err := os.ReadFile(filepath.Join(dir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var got map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.JSONEq(t, `"tmchow"`, string(got["printer"]))
+	assert.JSONEq(t, `"Trevin Chow"`, string(got["printer_name"]))
 }
 
 func TestBackfillPackagedManifestAttributionFailsWithoutFallback(t *testing.T) {
@@ -740,6 +816,58 @@ func TestPublishPackageBackfillsPatchesIndexForLegacyCLI(t *testing.T) {
 	gitkeep := filepath.Join(result.StagedDir, pipeline.PatchesDirName, pipeline.PatchesGitKeepName)
 	require.FileExists(t, gitkeep)
 	require.NoFileExists(t, filepath.Join(result.StagedDir, pipeline.PatchesIndexFilename))
+}
+
+func TestPublishPackageRemovesBlankReleaseManifest(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, pipeline.CLIReleaseManifestFilename), []byte(`{
+  "schema_version": 1,
+  "slug": "test",
+  "cli_name": "test-pp-cli",
+  "version": "",
+  "released_at": "",
+  "source_commit": ""
+}`+"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	require.NoFileExists(t, filepath.Join(result.StagedDir, pipeline.CLIReleaseManifestFilename))
+}
+
+func TestPublishPackagePreservesPopulatedReleaseManifest(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, pipeline.CLIReleaseManifestFilename), []byte(`{
+  "schema_version": 1,
+  "slug": "test",
+  "cli_name": "test-pp-cli",
+  "version": "2026.6.2",
+  "released_at": "2026-06-02T00:00:00Z",
+  "source_commit": "abc123"
+}`+"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	got, err := os.ReadFile(filepath.Join(result.StagedDir, pipeline.CLIReleaseManifestFilename))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `"version": "2026.6.2"`)
 }
 
 func TestPublishPackageNormalizesManifestCategoryToPublishCategory(t *testing.T) {
