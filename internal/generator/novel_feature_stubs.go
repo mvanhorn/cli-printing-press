@@ -394,7 +394,7 @@ func novelFeatureStubFileName(parts []string) string {
 	if len(safeParts) == 0 {
 		return "novel_feature.go"
 	}
-	return strings.Join(safeParts, "_") + ".go"
+	return safeResourceFileStem(strings.Join(safeParts, "_")) + ".go"
 }
 
 func novelFeatureReadOnly(feature NovelFeature) bool {
