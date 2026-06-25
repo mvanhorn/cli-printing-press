@@ -684,6 +684,8 @@ var novelOnlyEditableHookPaths = map[string]struct{}{
 	"internal/store/extras.go": {},
 }
 
+const novelCommandScaffoldTestMarker = "cli-printing-press: novel-scaffold-test"
+
 func isNovelCommandScaffoldTest(freshDir, rel string) bool {
 	if !strings.HasPrefix(rel, "internal/cli/") || !strings.HasSuffix(rel, "_test.go") {
 		return false
@@ -695,9 +697,7 @@ func isNovelCommandScaffoldTest(freshDir, rel string) bool {
 	if hasGeneratedMarkerBytes(freshData) {
 		return false
 	}
-	return bytes.Contains(freshData, []byte("Novel command scaffold tests")) &&
-		bytes.Contains(freshData, []byte("TestNovel")) &&
-		bytes.Contains(freshData, []byte("HelpWires"))
+	return bytes.Contains(freshData, []byte(novelCommandScaffoldTestMarker))
 }
 
 func hasGeneratedMarkerBytes(data []byte) bool {

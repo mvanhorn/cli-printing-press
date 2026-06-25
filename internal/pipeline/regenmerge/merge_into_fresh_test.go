@@ -653,6 +653,7 @@ func TestNovelCallBehavior(t *testing.T) {
 }
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`// Copyright 2026 owner. Licensed under Apache-2.0. See LICENSE.
+// cli-printing-press: novel-scaffold-test
 // Novel command scaffold tests. Keep the wiring smoke test and add behavior cases as needed.
 
 package cli
@@ -662,6 +663,10 @@ import "testing"
 func TestNovelCallHelpWires(t *testing.T) {}
 `), 0o644))
 
+	// This covers the old-to-new transition: the snapshot is an old DO NOT EDIT
+	// scaffold with operator-authored tests, while the fresh file is the new
+	// marker-based editable scaffold. Once both sides are markerless novel files,
+	// the classifier returns VerdictNovel and preserves without this helper.
 	report, err := Classify(snap, fresh, Options{Force: true})
 	require.NoError(t, err)
 	assert.Equal(t, VerdictTemplatedWithAdditions, verdictMap(report)[rel])
