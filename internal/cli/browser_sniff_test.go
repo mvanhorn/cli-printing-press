@@ -69,6 +69,68 @@ func TestBrowserSniffCmdDerivesTrafficAnalysisPath(t *testing.T) {
 	require.FileExists(t, filepath.Join(dir, "sample-spec-traffic-analysis.json"))
 }
 
+func TestBrowserSniffCmdRejectsEmptyCapture(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "empty.har")
+	require.NoError(t, os.WriteFile(capturePath, []byte(`{"log":{"pages":[],"entries":[]}}`), 0o600))
+
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", capturePath,
+		"--output", filepath.Join(dir, "spec.yaml"),
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains no entries")
+	assert.NoFileExists(t, filepath.Join(dir, "spec.yaml"))
+}
+
+func TestBrowserSniffCmdWritesLowConfidencePathHints(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "capture.json")
+	outputPath := filepath.Join(dir, "spec.yaml")
+	analysisPath := filepath.Join(dir, "traffic-analysis.json")
+	capture := browsersniff.EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []browsersniff.EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/predict/FR/STN/DUB/2026-08-16",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"price":123}`,
+			},
+		},
+	}
+	data, err := json.Marshal(capture)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(capturePath, data, 0o600))
+
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", capturePath,
+		"--output", outputPath,
+		"--analysis-output", analysisPath,
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	specData, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(specData), "/predict/{segment_0}/{segment_1}/{segment_2}/{date}")
+
+	analysisData, err := os.ReadFile(analysisPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(analysisData), `"low_confidence_parameters"`)
+	assert.Contains(t, string(analysisData), `"segment": "FR"`)
+	assert.Contains(t, string(analysisData), `"segment": "2026-08-16"`)
+}
+
 func TestBrowserSniffCmdPreserveHostsWritesBaseURLOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -127,6 +189,27 @@ func TestPrintingPressSkillDocumentsPreserveHostsForComboHAR(t *testing.T) {
 		assert.Contains(t, text, "two or more sources")
 		assert.Contains(t, text, "--preserve-hosts")
 	}
+}
+
+func TestPrintingPressSkillDocumentsHARQualityGates(t *testing.T) {
+	t.Parallel()
+
+	skillData, err := os.ReadFile(filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	require.NoError(t, err)
+	skillText := string(skillData)
+	assert.Contains(t, skillText, `.log.entries | length > 0`)
+	assert.Contains(t, skillText, "Capture again (Recommended)")
+	assert.Contains(t, skillText, "Proceed with docs-only")
+	assert.Contains(t, skillText, "empty_response_shapes")
+	assert.Contains(t, skillText, `size_class: "empty"`)
+	assert.Contains(t, skillText, `response_shape: {}`)
+
+	referenceData, err := os.ReadFile(filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"))
+	require.NoError(t, err)
+	referenceText := string(referenceData)
+	assert.Contains(t, referenceText, "Immediately inspect `$DISCOVERY_DIR/traffic-analysis.json` for response-body quality")
+	assert.Contains(t, referenceText, "direct-response-*.json")
+	assert.Contains(t, referenceText, "Do not invent type definitions from endpoint names alone")
 }
 
 func TestBrowserSniffCmdReportsTrafficAnalysisWriteFailure(t *testing.T) {

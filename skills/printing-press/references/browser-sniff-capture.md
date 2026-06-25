@@ -1013,6 +1013,12 @@ cli-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.jso
 
 If `$API_RUN_DIR/source-priority.json` exists with two or more sources, add `--preserve-hosts` to the browser-sniff command so combo-CLI captures retain peer API hosts with per-endpoint `base_url` overrides instead of selecting only the dominant host.
 
+Immediately inspect `$DISCOVERY_DIR/traffic-analysis.json` for response-body quality before trusting the sniffed spec:
+
+- If `warnings[].type` contains `empty_response_shapes`, or every `endpoint_clusters[]` entry has `size_class: "empty"` and `response_shape: {}`, the HAR/enriched capture did not preserve usable response bodies. Do not proceed to generation with the skeletal sniffed spec.
+- For each discovered endpoint cluster, use curl or another direct HTTP path with the captured method, URL, safe headers, and body shape to retrieve at least one representative response. Store those response samples in `$DISCOVERY_DIR/direct-response-*.json` or the browser-sniff report, then repair the sniffed spec's response types from the direct responses.
+- If direct HTTP is blocked by the same protection that required browser capture, report HOLD or return to the capture recovery menu. Do not invent type definitions from endpoint names alone.
+
 If hand-writing or repairing `$DISCOVERY_DIR/traffic-analysis.json`, inspect the canonical schema first:
 
 ```bash
@@ -1035,6 +1041,7 @@ use `html` only for GET/HEAD HTML and embedded-JSON surfaces, with
 Report: "Browser-Sniff discovered **N endpoints** across **M resources**. [X new endpoints not in the original spec.]"
 
 Read `$DISCOVERY_DIR/traffic-analysis.json` before reporting. If it includes:
+- `"warnings": [{"type": "empty_response_shapes", ...}]` — report: "Browser-Sniff captured endpoints but no response bodies. I need direct curl/HTTP samples before generation can have useful response types." Then run the response-body quality recovery from Step 3 before updating the spec source.
 - `"reachability": {"mode": "browser_clearance_http", ...}` — report: "Direct HTTP is blocked; generation will use browser-compatible HTTP plus `auth login --chrome` cookie import. After generation, test whether Surf + imported cookies can replay the captured requests without a resident browser."
 - Useful same-site HTML document captures — report: "Browser-Sniff found replayable HTML pages; generation can emit `response_format: html` commands that extract metadata and filtered links without a resident browser."
 - `"reachability": {"mode": "browser_required", ...}` — report: "The captured surface appears to require live page-context execution. This is not a shippable runtime shape for ordinary printed CLI commands. Return to discovery for a Surf/direct/browser-clearance replayable surface such as HTML, SSR data, RSS, JSON-LD, or a lighter internal endpoint, or HOLD the run."

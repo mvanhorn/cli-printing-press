@@ -36,6 +36,9 @@ func newBrowserSniffCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("loading capture: %w", err)
 			}
+			if len(capture.Entries) == 0 {
+				return fmt.Errorf("capture %s contains no entries; capture traffic again or choose a docs-only/spec path", harPath)
+			}
 
 			if authFrom != "" {
 				authCapture, err := browsersniff.ParseEnriched(authFrom)
