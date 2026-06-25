@@ -244,5 +244,41 @@
     "time_end": "2026-03-28T22:47:12.3217152Z",
     "time_start": "2026-03-28T22:46:42.118844928Z"
   },
-  "version": "1"
+  "version": "1",
+  "warnings": [
+    {
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "content_type": "application/json",
+          "entry_index": 1,
+          "host": "httpbin.org",
+          "method": "GET",
+          "path": "/get",
+          "reason": "endpoint cluster member",
+          "status": 200
+        },
+        {
+          "content_type": "application/json",
+          "entry_index": 3,
+          "host": "httpbin.org",
+          "method": "GET",
+          "path": "/headers",
+          "reason": "endpoint cluster member",
+          "status": 200
+        },
+        {
+          "content_type": "application/json",
+          "entry_index": 4,
+          "host": "httpbin.org",
+          "method": "GET",
+          "path": "/ip",
+          "reason": "endpoint cluster member",
+          "status": 200
+        }
+      ],
+      "message": "All endpoint clusters have empty response shapes; capture may have omitted response bodies. Re-fetch discovered endpoints with curl or another direct HTTP path before generating types.",
+      "type": "empty_response_shapes"
+    }
+  ]
 }
