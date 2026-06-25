@@ -3085,6 +3085,25 @@ var resourceIDFieldOverrides = map[string]string{
 {{- end}}
 }
 
+// resolveTenantID returns the active tenant's stable ID for tenant-scoped
+// enumeration and reconcile, or "" = unknown. The generated default cannot
+// resolve (a printed CLI has no tenant registry). A novel override reassigns
+// this with a real resolver in RunE (after flag parsing). No-arg by design: it
+// must not reference any novel (hand-patched) type, so the override owns all
+// config/slug access internally. Consumers branch on "" with OPPOSITE fallbacks:
+// fan-out falls back to UNSCOPED enumeration; flat reconcile SKIPS (never
+// deletes).
+var resolveTenantID = func() string { return "" }
+
+// parentTenantScopeColumns maps a dependent-parent table to its tenant
+// discriminator column (from x-pp-tenant-scope-column), used to scope dependent
+// fan-out. Empty when no parent is annotated.
+var parentTenantScopeColumns = map[string]string{
+{{- range .TenantScopedParents}}
+	{{printf "%q" .Parent}}: {{printf "%q" .Column}},
+{{- end}}
+}
+
 {{- if $hasHTMLPageModeSync}}
 
 // htmlPageModeResources identifies sync resources whose single-object HTML

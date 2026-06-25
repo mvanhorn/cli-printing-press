@@ -3546,6 +3546,7 @@ type visionRenderData struct {
 	VisionSet                    VisionTemplateSet
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
+	TenantScopedParents          []profiler.TenantScopedParent
 	PaginationSupportedResources []string
 	PaginationDefaultResources   []paginationDefaultEntry
 	SpecTimestampFields          []string
@@ -3854,6 +3855,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		VisionSet:                    g.VisionSet,
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
+		TenantScopedParents:          g.profile.TenantScopedParents(),
 		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		PaginationDefaultResources:   paginationDefaultEntries(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		SpecTimestampFields:          specDateTimeFieldNames(g.Spec),

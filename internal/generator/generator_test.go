@@ -503,6 +503,60 @@ func TestGenerate_EmitsReconcile(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./internal/cli", "./internal/store")
 }
 
+// TestGenerate_EmitsTenantSeam verifies that the generated sync.go contains
+// the no-arg resolveTenantID seam and a parentTenantScopeColumns entry for a
+// tenant-annotated parent (projects:workspace). The spec mirrors
+// TestGenerate_EmitsReconcile but adds TenantScopeColumn="workspace" on the
+// projects list endpoint so TenantScopedParents() yields projects->workspace.
+func TestGenerate_EmitsTenantSeam(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("emits-tenant-seam")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"projects": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:            "GET",
+					Path:              "/projects",
+					Response:          spec.ResponseDef{Type: "array"},
+					Pagination:        &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:           "id",
+					TenantScopeColumn: "workspace",
+				},
+			},
+		},
+		"modules": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/projects/{projectId}/modules",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:    "id",
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	src := string(syncSrc)
+
+	assert.Contains(t, src, `var resolveTenantID = func() string { return "" }`,
+		"sync.go must contain the no-arg resolveTenantID seam")
+	assert.Contains(t, src, `"projects": "workspace"`,
+		"sync.go must contain the parentTenantScopeColumns entry for projects->workspace")
+
+	// Generated sync.go must COMPILE. Deliberately NOT ./internal/cliutil —
+	// that package has env-sensitive credential/path tests that fail on this
+	// Windows host (pre-existing baseline, unrelated to tenant seam).
+	runGoCommand(t, outputDir, "build", "./internal/cli", "./internal/store")
+}
+
 // TestGenerateFreshnessHelperEmitted verifies that the cliutil freshness
 // helper and auto-refresh wrapper are emitted when the spec opts into
 // cache, and that the resulting CLI compiles end-to-end and its cliutil
