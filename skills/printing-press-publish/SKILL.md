@@ -1142,8 +1142,8 @@ Exit the publish flow. If Step 6 already wrote files into `$PUBLISH_REPO_DIR`, c
 
 **If `EXISTING_PR_NUMBER` is set** (updating an existing PR):
 
-Fetch and inspect the current PR branch before replacing it. The publish
-clone's `main` plus the newly packaged `library/<category>/<api-slug>/` tree is
+Fetch and inspect the current PR branch before replacing it. The latest
+`origin/main` plus the newly packaged `library/<category>/<api-slug>/` tree is
 the proposed update. The remote PR branch may also contain accepted review
 fixes from the drive-to-green loop. Those branch-only edits must not be erased
 silently.
@@ -1152,7 +1152,7 @@ silently.
 UPDATE_BRANCH="feat/<api-slug>"
 UPDATE_BASE_REF="refs/printing-press-update-base/<api-slug>"
 
-git fetch origin "+$UPDATE_BRANCH:$UPDATE_BASE_REF"
+git fetch origin "+main:refs/remotes/origin/main" "+$UPDATE_BRANCH:$UPDATE_BASE_REF"
 
 # Show the scoped change from the current PR head to the new packaged working
 # tree. This is informational for clean updates and mandatory context for holds.
@@ -1164,15 +1164,15 @@ git diff --stat "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/"
 WORKTREE_PATHS=$(find "library/<category>/<api-slug>" -type f -print 2>/dev/null | sort)
 BRANCH_ONLY_PATHS=$(comm -23 \
   <(git ls-tree -r --name-only "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/" | sort) \
-  <(printf '%s\n' "$WORKTREE_PATHS"))
+  <([ -n "$WORKTREE_PATHS" ] && printf '%s\n' "$WORKTREE_PATHS" || true))
 
-# Modified paths need human review only when a branch patch relative to main is
-# not present in the new packaged working tree. A strict superset passes: if the
-# branch patch can be reverse-applied from the working tree, the fix is still
-# there even if the file also has fresh generated changes.
-BRANCH_ONLY_EDITS=$(git diff --name-only main "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/" | while read -r path; do
+# Modified paths need human review only when a branch patch relative to
+# origin/main is not present in the new packaged working tree. A strict superset
+# passes: if the branch patch can be reverse-applied from the working tree, the
+# fix is still there even if the file also has fresh generated changes.
+BRANCH_ONLY_EDITS=$(git diff --name-only origin/main "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/" | while read -r path; do
   [ -n "$path" ] || continue
-  if git diff main "$UPDATE_BASE_REF" -- "$path" | git apply --check --reverse >/dev/null 2>&1; then
+  if git diff origin/main "$UPDATE_BASE_REF" -- "$path" | git apply --check --reverse >/dev/null 2>&1; then
     continue
   else
     printf '%s\n' "$path"
