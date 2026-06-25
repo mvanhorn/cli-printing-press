@@ -289,8 +289,8 @@ func deviceCommandCallable(command devicespec.DeviceCommand) bool {
 func (g *DeviceGenerator) render(relPath, tmplText string, data deviceTemplateData) error {
 	tmpl, err := template.New(relPath).Funcs(template.FuncMap{
 		"quote":              func(value string) string { return fmt.Sprintf("%q", value) },
-		"goDirectiveVersion": currentGoDirectiveVersion,
-		"goToolchainVersion": currentGoToolchainVersion,
+		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
+		"goToolchainVersion": resolveCurrentGoToolchainVersion,
 	}).Parse(tmplText)
 	if err != nil {
 		return fmt.Errorf("parse %s template: %w", relPath, err)

@@ -2373,7 +2373,7 @@ func TestGenerateBrowserChromeTransport(t *testing.T) {
 	gomod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
 	assert.Contains(t, string(gomod), "go "+currentGoDirectiveVersion()+"\n")
-	assert.Contains(t, string(gomod), "toolchain go1.26.4")
+	assert.Contains(t, string(gomod), "toolchain "+currentGoToolchainVersion())
 	assert.Contains(t, string(gomod), "github.com/enetx/surf")
 
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
@@ -3641,7 +3641,7 @@ func TestGenerateStandardTransportForOfficialAPI(t *testing.T) {
 	gomod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
 	assert.Contains(t, string(gomod), "go "+currentGoDirectiveVersion()+"\n")
-	assert.Contains(t, string(gomod), "toolchain go1.26.4")
+	assert.Contains(t, string(gomod), "toolchain "+currentGoToolchainVersion())
 	assert.NotContains(t, string(gomod), "github.com/enetx/surf")
 
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))

@@ -103,8 +103,8 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
 		"copyrightHolder":    func() string { return copyrightHolderString(creator, "", owner) },
 		"modulePath":         func() string { return naming.CLI(cliName) },
-		"goDirectiveVersion": currentGoDirectiveVersion,
-		"goToolchainVersion": currentGoToolchainVersion,
+		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
+		"goToolchainVersion": resolveCurrentGoToolchainVersion,
 		// Stub: plan-generated scaffolds never declare auth env vars. The full
 		// generator's hasNonCookieAuth (which inspects the real spec.AuthConfig)
 		// is registered separately on its own FuncMap.
