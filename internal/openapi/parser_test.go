@@ -11423,3 +11423,30 @@ paths:
 	require.Contains(t, parsed.Resources["oauth-token"].Endpoints, "list")
 	assert.Equal(t, []string{"OAuth"}, parsed.Resources["oauth-token"].Endpoints["list"].Tags)
 }
+
+func TestParse_TenantScopeColumnExtension(t *testing.T) {
+	doc := `openapi: 3.0.0
+info: {title: t, version: "1"}
+paths:
+  /projects/:
+    x-pp-tenant-scope-column: workspace
+    get:
+      operationId: listProjects
+      responses: {"200": {description: ok}}
+`
+	api, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var got string
+	for _, r := range api.Resources {
+		for _, e := range r.Endpoints {
+			if e.TenantScopeColumn != "" {
+				got = e.TenantScopeColumn
+			}
+		}
+	}
+	if got != "workspace" {
+		t.Fatalf("TenantScopeColumn = %q, want %q", got, "workspace")
+	}
+}

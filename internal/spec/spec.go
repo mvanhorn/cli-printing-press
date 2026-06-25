@@ -2050,6 +2050,12 @@ type Endpoint struct {
 	// could be resolved; templates fall back to runtime list scanning. Internal
 	// YAML specs may set this directly.
 	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
+	// TenantScopeColumn is the tenant discriminator column declared by the
+	// path-item-level `x-pp-tenant-scope-column` extension (e.g. "workspace").
+	// Self-declaring: the annotated collection's own rows carry this column.
+	// Consumed by tenant-scoped dependent fan-out (parent tables) and flat
+	// tenant-scoped reconcile (the swept table). Empty when unannotated.
+	TenantScopeColumn string `yaml:"tenant_scope_column,omitempty" json:"tenant_scope_column,omitempty"`
 	// IDFieldFromPathParam is parser-only provenance used by the profiler to
 	// promote member-path primary-key hints onto same-resource list endpoints
 	// without re-inferring how IDField was resolved. It is intentionally not
