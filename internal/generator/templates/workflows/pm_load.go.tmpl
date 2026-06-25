@@ -144,29 +144,26 @@ person. Helps identify overloaded team members and unbalanced workload.`,
 			}
 			sort.Slice(entries, func(i, j int) bool { return entries[i].Count > entries[j].Count })
 
-			if flags.asJSON {
-				shown := entries
-				if limit > 0 && len(shown) > limit {
-					shown = shown[:limit]
+			shown := entries
+			if limit > 0 && len(shown) > limit {
+				shown = shown[:limit]
+			}
+
+			if wantsMachineOutput(flags) {
+				if flags.csv || flags.plain || flags.quiet {
+					return printJSONFiltered(cmd.OutOrStdout(), shown, flags)
 				}
 				result := map[string]any{
 					"total_count":  total,
 					"showing":      len(shown),
 					"distribution": shown,
 				}
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(result)
+				return printJSONFiltered(cmd.OutOrStdout(), result, flags)
 			}
 
 			if len(entries) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No items found. Run sync first.")
 				return nil
-			}
-
-			shown := entries
-			if limit > 0 && len(shown) > limit {
-				shown = shown[:limit]
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Workload Distribution (%d total items, showing %d):\n\n", total, len(shown))
