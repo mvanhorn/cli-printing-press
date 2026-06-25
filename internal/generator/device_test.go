@@ -190,6 +190,7 @@ func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {
 	goMod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
 	assert.Contains(t, string(goMod), "github.com/mark3labs/mcp-go")
+	assert.Contains(t, string(goMod), "\ngo "+currentGoDirectiveVersion()+"\n")
 
 	requireGeneratedCompiles(t, outputDir) // builds ./... including the MCP binary
 }
