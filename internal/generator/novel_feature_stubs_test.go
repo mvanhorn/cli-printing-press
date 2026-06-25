@@ -135,11 +135,41 @@ func TestGeneratorSanitizesNovelFeatureCommandStubFilenames(t *testing.T) {
 	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "wake_windows_cmd_test.go"))
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "wake_windows.go"))
 	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "wake_windowsill.go"))
+	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "wake_windowsill_test.go"))
 
 	root := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	assert.Contains(t, root, "rootCmd.AddCommand(newNovelWakeWindowsCmd(flags))")
 	assert.Contains(t, root, "rootCmd.AddCommand(newNovelWakeWindowsillCmd(flags))")
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratorMigratesLegacyNovelFeatureBuildTagFilenames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("legacynovel")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	cliDir := filepath.Join(outputDir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "wake_windows.go"), []byte(`package cli
+
+func newNovelWakeWindowsCmd(flags *rootFlags) {}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "wake_windows_test.go"), []byte(`package cli
+`), 0o644))
+
+	gen := New(apiSpec, outputDir)
+	gen.NovelFeatures = []NovelFeature{{
+		Name:        "Wake Windows",
+		Command:     "wake-windows",
+		Description: "Wake Windows hosts.",
+		Example:     "legacynovel-pp-cli wake-windows --json",
+	}}
+	require.NoError(t, gen.Generate())
+
+	require.NoFileExists(t, filepath.Join(cliDir, "wake_windows.go"))
+	require.NoFileExists(t, filepath.Join(cliDir, "wake_windows_test.go"))
+	require.FileExists(t, filepath.Join(cliDir, "wake_windows_cmd.go"))
+	require.FileExists(t, filepath.Join(cliDir, "wake_windows_cmd_test.go"))
 }
 
 func TestGeneratorOmitsExampleWhenNovelFeatureHasNoExample(t *testing.T) {
