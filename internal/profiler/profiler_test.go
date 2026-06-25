@@ -2312,6 +2312,18 @@ func TestProfileODataConditionsSinceParamPropagation(t *testing.T) {
 					},
 				},
 			},
+			"badinfo": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/system/badinfo",
+						Response: spec.ResponseDef{Type: "array", Item: "BadInfo"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+						},
+					},
+				},
+			},
 		},
 		Types: map[string]spec.TypeDef{
 			"Ticket": {
@@ -2330,6 +2342,12 @@ func TestProfileODataConditionsSinceParamPropagation(t *testing.T) {
 				Fields: []spec.TypeField{
 					{Name: "id", Type: "integer"},
 					{Name: "name", Type: "string"},
+				},
+			},
+			"BadInfo": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "_info", Type: "string"},
 				},
 			},
 		},
@@ -2352,6 +2370,10 @@ func TestProfileODataConditionsSinceParamPropagation(t *testing.T) {
 	require.Contains(t, byName, "users")
 	assert.Empty(t, byName["users"].SinceParam, "conditions without a documented updated field must not hardcode a filter")
 	assert.Empty(t, byName["users"].SinceParamFormat)
+
+	require.Contains(t, byName, "badinfo")
+	assert.Empty(t, byName["badinfo"].SinceParam, "non-object _info fields must not synthesize nested OData filters")
+	assert.Empty(t, byName["badinfo"].SinceParamFormat)
 
 	assert.Equal(t, "conditions", profile.Pagination.SinceParam)
 }

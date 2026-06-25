@@ -2140,21 +2140,6 @@ func paginationLimitDefault(endpoint spec.Endpoint) (int, bool) {
 	return 0, false
 }
 
-// detectEndpointSinceParam returns the actual query parameter name this
-// endpoint declares for incremental temporal filtering, or "" when none is
-// declared. The match list mirrors the profile-level aggregation in
-// Profile() so per-endpoint detection stays consistent with the
-// PaginationProfile.SinceParam summary.
-func detectEndpointSinceParam(params []spec.Param) string {
-	name, _ := detectEndpointSinceParamAndFormat(spec.Endpoint{Params: params}, nil)
-	return name
-}
-
-func detectEndpointSinceParamFormat(params []spec.Param) string {
-	_, format := detectEndpointSinceParamAndFormat(spec.Endpoint{Params: params}, nil)
-	return format
-}
-
 func detectEndpointSinceParamAndFormat(endpoint spec.Endpoint, types map[string]spec.TypeDef) (string, string) {
 	for _, p := range endpoint.Params {
 		name := strings.ToLower(p.Name)
@@ -2204,7 +2189,7 @@ func detectODataConditionsTimestampField(endpoint spec.Endpoint, types map[strin
 		}
 	}
 	for _, field := range typeDef.Fields {
-		if strings.TrimSpace(field.Name) == "_info" {
+		if strings.TrimSpace(field.Name) == "_info" && strings.EqualFold(strings.TrimSpace(field.Type), "object") {
 			return "_info/lastUpdated"
 		}
 	}
