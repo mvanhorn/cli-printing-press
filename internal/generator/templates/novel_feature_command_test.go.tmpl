@@ -1,49 +1,32 @@
 // Copyright {{currentYear}} {{copyrightHolder}}. Licensed under Apache-2.0. See LICENSE.
-// Novel command scaffold tests. Keep the wiring smoke test and replace the behavior TODO.
+// cli-printing-press: novel-scaffold-test
+// Novel command scaffold tests. Keep the wiring smoke test and add behavior cases as needed.
 
 package cli
 
 import (
-	"io"
+	"bytes"
+	"strings"
 	"testing"
 )
 
 // TestNovel{{.Ident}}HelpWires smoke-tests that the {{.CommandPath}} command
-// resolves at runtime and renders --help without error. Catches wiring
+// resolves at runtime and renders useful --help output. Catches wiring
 // regressions (missing AddCommand, panicking RunE on --help, etc.) before
-// review. Always runs — do not delete this test when filling in real cases.
+// review. Keep this smoke test when adding behavior-specific cases.
 func TestNovel{{.Ident}}HelpWires(t *testing.T) {
 	cmd := RootCmd()
 	cmd.SetArgs([]string{{"{"}}{{range .CommandArgs}}{{printf "%q" .}}, {{end}}"--help"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("{{.CommandPath}} --help error = %v (novel command not wired correctly?)", err)
 	}
-}
-
-// TestNovel{{.Ident}}Behavior is the placeholder for table-driven tests of
-// the {{.CommandPath}} command's actual behavior. Replace the t.Skip with
-// real cases — reviewers will flag a shipped t.Skip.
-//
-// Suggested shape:
-//
-//	func TestNovel{{.Ident}}Behavior(t *testing.T) {
-//	    cases := []struct {
-//	        name  string
-//	        input ...
-//	        want  ...
-//	    }{
-//	        // {name: "...", input: ..., want: ...},
-//	    }
-//	    for _, tc := range cases {
-//	        tc := tc
-//	        t.Run(tc.name, func(t *testing.T) {
-//	            t.Parallel()
-//	            // assertions here
-//	        })
-//	    }
-//	}
-func TestNovel{{.Ident}}Behavior(t *testing.T) {
-	t.Skip({{printf "%q" .SkipMessage}})
+	help := out.String()
+	for _, want := range []string{"Usage:", {{printf "%q" .CommandLeaf}}} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("{{.CommandPath}} --help missing %q in output:\n%s", want, help)
+		}
+	}
 }
