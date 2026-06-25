@@ -2733,6 +2733,9 @@ func ParseBytes(data []byte) (*APISpec, error) {
 			}
 		}
 	}
+	if err := validateRawSpecStructure(data); err != nil {
+		return nil, err
+	}
 	if yamlErr != nil {
 		return nil, fmt.Errorf("parsing yaml: %w", yamlErr)
 	}
@@ -2751,6 +2754,79 @@ func ParseBytes(data []byte) (*APISpec, error) {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
 	return &s, nil
+}
+
+func validateRawSpecStructure(data []byte) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	root := yamlDocumentRoot(&doc)
+	if root == nil || root.Kind != yaml.MappingNode {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var topLevelDuplicates []string
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key := root.Content[i].Value
+		if _, ok := seen[key]; ok {
+			topLevelDuplicates = append(topLevelDuplicates, key)
+			continue
+		}
+		seen[key] = struct{}{}
+	}
+	if len(topLevelDuplicates) > 0 {
+		slices.Sort(topLevelDuplicates)
+		topLevelDuplicates = slices.Compact(topLevelDuplicates)
+		return fmt.Errorf("spec structural error: duplicate top-level key(s): %s", strings.Join(topLevelDuplicates, ", "))
+	}
+
+	types := mappingValue(root, "types")
+	if types == nil || types.Kind != yaml.MappingNode {
+		return nil
+	}
+	var misplaced []string
+	for i := 0; i+1 < len(types.Content); i += 2 {
+		name := types.Content[i].Value
+		value := types.Content[i+1]
+		if value.Kind == yaml.MappingNode && mappingValue(value, "endpoints") != nil {
+			misplaced = append(misplaced, name)
+		}
+	}
+	if len(misplaced) > 0 {
+		slices.Sort(misplaced)
+		return fmt.Errorf("spec structural error: found resource-shaped entr%s under 'types:' (%s) - resources were likely appended at the wrong indentation level; move them under top-level 'resources:'", pluralSuffix(len(misplaced), "y", "ies"), strings.Join(misplaced, ", "))
+	}
+	return nil
+}
+
+func yamlDocumentRoot(doc *yaml.Node) *yaml.Node {
+	if doc == nil {
+		return nil
+	}
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		return doc.Content[0]
+	}
+	return doc
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func pluralSuffix(count int, singular, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
 }
 
 // ReservedCLIResourceNames is the set of resource names that would collide with

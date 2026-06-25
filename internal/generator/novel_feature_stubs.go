@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -151,6 +152,9 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 		fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to generated command path; skipping novel stub\n", data.CommandPath)
 		return nil, nil
 	}
+	if err := g.migrateLegacyNovelFeatureStubPath(node.path, outPath); err != nil {
+		return nil, err
+	}
 	if exists, hasConstructor := g.novelFeatureStubExistingFileConstructorStatus(node.path); exists {
 		if !hasConstructor {
 			fmt.Fprintf(os.Stderr, "warning: novel feature command %q maps to existing %s without expected constructor %s; skipping novel stub\n", data.CommandPath, outPath, novelFeatureStubConstructorName(node.path))
@@ -190,6 +194,45 @@ func (g *Generator) novelFeatureStubShouldSkipGenerated(parts []string, generate
 func (g *Generator) novelFeatureStubExistingFileMissingConstructor(parts []string) bool {
 	exists, hasConstructor := g.novelFeatureStubExistingFileConstructorStatus(parts)
 	return exists && !hasConstructor
+}
+
+func (g *Generator) migrateLegacyNovelFeatureStubPath(parts []string, outPath string) error {
+	legacyName := novelFeatureStubLegacyFileName(parts)
+	currentName := novelFeatureStubFileName(parts)
+	if legacyName == currentName {
+		return nil
+	}
+
+	legacyPath := filepath.Join("internal", "cli", legacyName)
+	if err := g.renameLegacyNovelFeatureFile(legacyPath, outPath); err != nil {
+		return err
+	}
+
+	legacyTestPath := filepath.Join("internal", "cli", strings.TrimSuffix(legacyName, ".go")+"_test.go")
+	currentTestPath := filepath.Join("internal", "cli", strings.TrimSuffix(currentName, ".go")+"_test.go")
+	return g.renameLegacyNovelFeatureFile(legacyTestPath, currentTestPath)
+}
+
+func (g *Generator) renameLegacyNovelFeatureFile(legacyPath, currentPath string) error {
+	legacyAbs := filepath.Join(g.OutputDir, legacyPath)
+	if _, err := os.Stat(legacyAbs); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("checking legacy novel feature stub %s: %w", legacyPath, err)
+	}
+
+	currentAbs := filepath.Join(g.OutputDir, currentPath)
+	if _, err := os.Stat(currentAbs); err == nil {
+		fmt.Fprintf(os.Stderr, "warning: legacy novel feature stub %s still exists alongside %s; remove the legacy file to avoid duplicate build-tagged commands\n", legacyPath, currentPath)
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking novel feature stub %s: %w", currentPath, err)
+	}
+
+	if err := os.Rename(legacyAbs, currentAbs); err != nil {
+		return fmt.Errorf("renaming legacy novel feature stub %s to %s: %w", legacyPath, currentPath, err)
+	}
+	return nil
 }
 
 func (g *Generator) novelFeatureStubExistingFileConstructorStatus(parts []string) (bool, bool) {
@@ -384,6 +427,10 @@ func novelFeatureStubIdent(parts []string) string {
 }
 
 func novelFeatureStubFileName(parts []string) string {
+	return safeResourceFileStem(strings.TrimSuffix(novelFeatureStubLegacyFileName(parts), ".go")) + ".go"
+}
+
+func novelFeatureStubLegacyFileName(parts []string) string {
 	safeParts := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part == "" {
