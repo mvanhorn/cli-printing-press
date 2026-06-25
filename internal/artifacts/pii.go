@@ -125,14 +125,12 @@ var piiDetectors = []piiDetector{
 	},
 	{
 		kind: PIIKindPhoneUS,
-		// US-shaped 10-digit phone with optional +1 prefix and
-		// parens/separators. NANP requires the area code and the
-		// exchange code to each start with 2-9 — leading 0 or 1 is
-		// not a real US phone. That constraint filters out 10-digit
-		// product UPCs (`0190074442`) and coordinate-shaped numerics
-		// (`106.0512973`) without rejecting any real phone shape.
+		// Formatted US phone with optional +1 prefix. NANP requires the
+		// area code and the exchange code to each start with 2-9; requiring
+		// separators/parentheses avoids treating bare 10-digit IDs, DNS SOA
+		// serials, and epoch timestamps as customer phone numbers.
 		// Catches "(415) 555-0123", "415-555-0123", "+1 415 555 0123".
-		pattern: regexp.MustCompile(`\b(?:\+?1[\s.\-]?)?\(?[2-9]\d{2}\)?[\s.\-]?[2-9]\d{2}[\s.\-]?\d{4}\b`),
+		pattern: regexp.MustCompile(`(?:\+?1[\s.\-]+)?(?:\([2-9]\d{2}\)[\s.\-]*|\b[2-9]\d{2}[\s.\-]+)[2-9]\d{2}[\s.\-]+\d{4}\b`),
 	},
 	{
 		kind: PIIKindZipPlus4,

@@ -641,13 +641,27 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
-		// Sync might not accept --db flag - try without.
+		// Sync might not accept --resources or --full; keep --db when
+		// possible so downstream sql probes read the same temporary store.
+		syncErr = runCLI(binary, []string{"sync", "--db", dbPath}, env, 30*time.Second)
+	}
+	if syncErr != nil {
+		syncErrors = append(syncErrors, syncErr)
+		// Sync might not accept --db either; try the bare command before
+		// deciding the pipeline crashed.
 		syncErr = runCLI(binary, []string{"sync", "--full"}, env, 30*time.Second)
+	}
+	if syncErr != nil {
+		syncErrors = append(syncErrors, syncErr)
+		syncErr = runCLI(binary, []string{"sync"}, env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
 		if allSyncAttemptsWereUnknownCommand(syncErrors) {
 			return true, "WARN: no sync command — data-pipeline check skipped"
+		}
+		if flag, ok := firstUnknownSyncFlag(syncErrors); ok {
+			return false, fmt.Sprintf("FAIL: sync rejected flag %s", flag)
 		}
 		return false, "FAIL: sync crashed"
 	}
@@ -729,6 +743,32 @@ func allSyncAttemptsWereUnknownCommand(errs []error) bool {
 func isUnknownSyncCommandError(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "unknown command \"sync\"")
+}
+
+func firstUnknownSyncFlag(errs []error) (string, bool) {
+	for _, err := range errs {
+		if flag, ok := unknownSyncFlag(err); ok {
+			return flag, true
+		}
+	}
+	return "", false
+}
+
+func unknownSyncFlag(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{"unknown flag: ", "unknown shorthand flag: "} {
+		if _, after, ok := strings.Cut(text, marker); ok {
+			flag := strings.Fields(after)
+			if len(flag) > 0 {
+				return flag[0], true
+			}
+			return "", false
+		}
+	}
+	return "", false
 }
 
 func cliHasSyncCommand(cliDir string) bool {

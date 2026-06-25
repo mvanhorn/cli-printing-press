@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -231,6 +232,24 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 		assert.Contains(t, detail, "items has 2 rows")
 	})
 
+	t.Run("falls back when sync rejects full flag", func(t *testing.T) {
+		binary := buildNoFullSyncDataPipelineProbeBinary(t, 2)
+
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("reports unknown sync flag distinctly", func(t *testing.T) {
+		binary := buildUnknownFlagSyncDataPipelineProbeBinary(t)
+
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Equal(t, "FAIL: sync rejected flag --full", detail)
+	})
+
 	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
 		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0, 2)
 
@@ -275,6 +294,13 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 		assert.False(t, pass)
 		assert.Equal(t, "FAIL: sync crashed", detail)
 	})
+}
+
+func TestUnknownSyncFlagIgnoresEmptyFlagName(t *testing.T) {
+	flag, ok := unknownSyncFlag(errors.New("unknown flag: "))
+
+	assert.False(t, ok)
+	assert.Empty(t, flag)
 }
 
 func TestRunDataPipelineTestSkipsUnsyncableCLIs(t *testing.T) {
@@ -718,6 +744,112 @@ func dbArg(args []string) string {
 	return ""
 }
 `, rowCount))
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildNoFullSyncDataPipelineProbeBinary(t *testing.T, rowCount int) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		for _, arg := range args[1:] {
+			if arg == "--full" {
+				fmt.Fprintln(os.Stderr, "unknown flag: --full")
+				os.Exit(1)
+			}
+		}
+		dbPath := dbArg(args[1:])
+		if dbPath == "" {
+			os.Exit(1)
+		}
+		if err := os.WriteFile(dbPath+".marker", []byte(dbPath), 0o644); err != nil {
+			os.Exit(1)
+		}
+		return
+	case "sql":
+		dbPath := dbArg(args[1:])
+		if dbPath == "" {
+			os.Exit(1)
+		}
+		usedDB, err := os.ReadFile(dbPath + ".marker")
+		if err != nil || string(usedDB) != dbPath {
+			os.Exit(1)
+		}
+		query := args[len(args)-1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			fmt.Println(%d)
+			return
+		}
+	}
+	os.Exit(1)
+}
+
+func dbArg(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--db" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+`, rowCount))
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildUnknownFlagSyncDataPipelineProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "sync" {
+		for _, arg := range args[1:] {
+			if arg == "--full" {
+				fmt.Fprintln(os.Stderr, "unknown flag: --full")
+				os.Exit(1)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "sync requires --full")
+		os.Exit(1)
+	}
+	os.Exit(1)
+}
+`)
 	binaryPath := filepath.Join(dir, "test-cli")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()

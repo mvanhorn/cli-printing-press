@@ -274,6 +274,7 @@ func TestFindPII_PhoneUS(t *testing.T) {
 		{name: "parens-space-dash", line: `"phone": "(415) 234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
 		{name: "all-dashes", line: `"phone": "415-234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
 		{name: "country-code", line: `"phone": "+1 415 234 5678"`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "country-code-dashes", line: `"phone": "+1-415-234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
 		{name: "fictional-exchange-dashes", line: `"phone": "415-555-0123"`, expectKinds: nil},
 		{name: "fictional-exchange-parens", line: `"phone": "(212) 555-0100"`, expectKinds: nil},
 		{name: "fictional-exchange-country-code", line: `"phone": "+1 415 555 0199"`, expectKinds: nil},
@@ -286,6 +287,8 @@ func TestFindPII_PhoneUS(t *testing.T) {
 		{name: "no-product-upc-leading-zero", line: `"upc": "0190074442"`, expectKinds: nil},
 		{name: "no-coordinate-leading-one", line: `"lng": 106.0512973`, expectKinds: nil},
 		{name: "no-epoch-timestamp", line: `"updated_at": 1700000000`, expectKinds: nil},
+		{name: "no-dns-soa-serial", line: `"soa_serial": 2026062501`, expectKinds: nil},
+		{name: "no-bare-ten-digit-id", line: `"customer_id": "4152345678"`, expectKinds: nil},
 		// Boundary cases that prove the constraint is on the leading
 		// digit of each quadrant, not on the whole string.
 		{name: "no-area-code-leading-zero", line: `"phone": "015-555-0123"`, expectKinds: nil},
@@ -312,8 +315,8 @@ func TestFindPII_PhoneUS_GitHubContextIDSkips(t *testing.T) {
 		{name: "comment-id", line: `see comment id 3249672558`, expectKinds: nil},
 		{name: "issuecomment-anchor", line: `https://github.com/o/r/pull/12#issuecomment-3249672648`, expectKinds: nil},
 		{name: "comments-url-path", line: `https://github.com/o/r/issues/5/comments/3249672700`, expectKinds: nil},
-		{name: "bare-real-phone-no-github-token", line: `contact 4152345678`, expectKinds: []string{PIIKindPhoneUS}},
-		{name: "bare-commit-word-near-real-phone-still-flags", line: `we will commit then call 4152345678`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "bare-real-phone-no-github-token", line: `contact 4152345678`, expectKinds: nil},
+		{name: "bare-commit-word-near-real-phone-skips", line: `we will commit then call 4152345678`, expectKinds: nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
