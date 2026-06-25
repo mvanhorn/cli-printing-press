@@ -1207,9 +1207,12 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 // printPlain renders JSON arrays as tab-separated text with a header row.
 func printPlain(w io.Writer, data json.RawMessage) error {
 	var items []map[string]any
-	if err := json.Unmarshal(data, &items); err != nil || len(items) == 0 {
-		// Single object or empty - just print as JSON
+	if err := json.Unmarshal(data, &items); err != nil {
+		// Single object - just print as JSON
 		fmt.Fprintln(w, string(data))
+		return nil
+	}
+	if len(items) == 0 {
 		return nil
 	}
 	keySet := map[string]bool{}

@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -42,6 +43,18 @@ func TestPrintOutputWithFlagsPlainRendersTSV(t *testing.T) {
 	}
 }
 
+func TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty(t *testing.T) {
+	data := json.RawMessage("[]")
+	var out bytes.Buffer
+
+	if err := printOutputWithFlags(&out, data, &rootFlags{plain: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("--plain should render empty arrays as an empty stream, got %q", got)
+	}
+}
+
 func TestHumanFriendlyForcesTableAndNoColorStripsANSI(t *testing.T) {
 	oldHumanFriendly, oldNoColor := humanFriendly, noColor
 	humanFriendly, noColor = true, false
@@ -78,7 +91,7 @@ func TestHumanFriendlyForcesTableAndNoColorStripsANSI(t *testing.T) {
 }
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestHumanFriendlyForcesTableAndNoColorStripsANSI", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestHumanFriendlyForcesTableAndNoColorStripsANSI", "-count=1")
 }
 
 func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T) {
@@ -86,7 +99,6 @@ func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T
 
 	for _, path := range []string{
 		filepath.Join("templates", "analytics.go.tmpl"),
-		filepath.Join("templates", "search.go.tmpl"),
 		filepath.Join("templates", "workflows", "pm_load.go.tmpl"),
 		filepath.Join("templates", "workflows", "pm_orphans.go.tmpl"),
 		filepath.Join("templates", "workflows", "pm_stale.go.tmpl"),
@@ -102,4 +114,23 @@ func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T
 		require.NotContains(t, src, "flags.asJSON || !isTerminal",
 			"%s still lets piped auto-JSON override explicit machine format flags", path)
 	}
+
+	searchPath := filepath.Join("templates", "search.go.tmpl")
+	body, err := os.ReadFile(searchPath)
+	require.NoError(t, err, "template must exist: %s", searchPath)
+	src := string(body)
+	require.Contains(t, src, "!wantsHumanTable(cmd.OutOrStdout(), flags)",
+		"search.go.tmpl must route explicit machine formats and default piped output through the shared output contract")
+	require.Contains(t, src, "outputFlags := *flags",
+		"search.go.tmpl must clear row-shaping flags after applying them before provenance wrapping")
+	selectIdx := strings.Index(src, "data = filterFields(data, flags.selectFields)")
+	wrapIdx := strings.Index(src, "wrapped, err := wrapWithProvenance(data, prov)")
+	require.GreaterOrEqual(t, selectIdx, 0)
+	require.GreaterOrEqual(t, wrapIdx, 0)
+	require.Less(t, selectIdx, wrapIdx,
+		"search.go.tmpl must apply --select to the result array before wrapping it in the provenance envelope")
+	require.NotContains(t, src, "if flags.asJSON {",
+		"search.go.tmpl still branches only on --json, so other documented output flags can be bypassed")
+	require.NotContains(t, src, "flags.asJSON || !isTerminal",
+		"search.go.tmpl still lets piped auto-JSON override explicit machine format flags")
 }

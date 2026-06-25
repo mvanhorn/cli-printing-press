@@ -18069,13 +18069,13 @@ func TestSearchTemplateEmitsEmptyJSONEnvelope(t *testing.T) {
 	require.NoError(t, err)
 	body := string(data)
 
-	assert.Contains(t, body, `wantsMachineOutput(flags) || !wantsHumanTable(cmd.OutOrStdout(), flags)`,
+	assert.Contains(t, body, `!wantsHumanTable(cmd.OutOrStdout(), flags)`,
 		"search.go.tmpl must route explicit machine formats and default piped output through the envelope path even on no matches")
 
 	// Ordering pin: the machine/piped block must come before the human-mode
 	// "No results" stderr line. Reversing the order would skip the JSON
 	// envelope on empty results — the original failure mode.
-	machineModeIdx := strings.Index(body, "wantsMachineOutput(flags) || !wantsHumanTable")
+	machineModeIdx := strings.Index(body, "!wantsHumanTable(cmd.OutOrStdout(), flags)")
 	noResultsIdx := strings.Index(body, `"No results (source: %s)\n"`)
 	require.GreaterOrEqual(t, machineModeIdx, 0)
 	require.GreaterOrEqual(t, noResultsIdx, 0)
