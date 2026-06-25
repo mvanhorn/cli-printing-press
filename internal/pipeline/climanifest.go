@@ -295,10 +295,7 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 // populated release metadata and rejects blank version/stamp fields.
 func WriteReleaseLedgerSkeleton(dir string, m CLIManifest) error {
 	releasePath := filepath.Join(dir, CLIReleaseManifestFilename)
-	if _, err := os.Stat(releasePath); errors.Is(err, os.ErrNotExist) {
-		// Fresh publish packages must omit the release manifest until the
-		// public library release workflow stamps a real release.
-	} else if err != nil {
+	if _, err := os.Stat(releasePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("checking CLI release manifest skeleton: %w", err)
 	}
 

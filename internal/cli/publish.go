@@ -1130,8 +1130,7 @@ func isMissingPublishPrinterField(value string) bool {
 }
 
 func isMissingPublishPrinterNameField(value string) bool {
-	trimmed := strings.TrimSpace(value)
-	return trimmed == "" || isPublishPrinterSentinel(trimmed)
+	return isMissingPublishPrinterField(value)
 }
 
 func removeEmptyReleaseManifest(dir string) error {
