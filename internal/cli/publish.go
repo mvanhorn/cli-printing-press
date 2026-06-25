@@ -890,19 +890,19 @@ func manifestWithPublishAttributionFallbacks(manifest pipeline.CLIManifest) pipe
 	// creator-only manifest (manual edit or future creator-primary state)
 	// validates without needing a git identity (e.g. on CI).
 	if manifest.Creator != nil && !manifest.Creator.IsZero() {
-		if strings.TrimSpace(manifest.Printer) == "" {
+		if isMissingPublishPrinterField(manifest.Printer) {
 			manifest.Printer = manifest.Creator.Handle
 		}
-		if strings.TrimSpace(manifest.PrinterName) == "" {
+		if isMissingPublishPrinterNameField(manifest.PrinterName) {
 			manifest.PrinterName = manifest.Creator.Name
 		}
 	}
-	if strings.TrimSpace(manifest.Printer) == "" || strings.TrimSpace(manifest.PrinterName) == "" {
+	if isMissingPublishPrinterField(manifest.Printer) || isMissingPublishPrinterNameField(manifest.PrinterName) {
 		fallback := resolvePublishAttributionFallback(manifest)
-		if strings.TrimSpace(manifest.Printer) == "" && fallback.Printer != "" {
+		if isMissingPublishPrinterField(manifest.Printer) && fallback.Printer != "" {
 			manifest.Printer = fallback.Printer
 		}
-		if strings.TrimSpace(manifest.PrinterName) == "" && fallback.PrinterName != "" {
+		if isMissingPublishPrinterNameField(manifest.PrinterName) && fallback.PrinterName != "" {
 			manifest.PrinterName = fallback.PrinterName
 		}
 	}
@@ -926,10 +926,12 @@ type publishAttributionFallback struct {
 func resolvePublishAttributionFallback(manifest pipeline.CLIManifest) publishAttributionFallback {
 	printer := strings.TrimSpace(manifest.Printer)
 	printerName := strings.TrimSpace(manifest.PrinterName)
-	if printer != "" && printerName == "" {
+	printerMissing := isMissingPublishPrinterField(printer)
+	printerNameMissing := isMissingPublishPrinterNameField(printerName)
+	if !printerMissing && printerNameMissing {
 		return publishAttributionFallback{PrinterName: resolveGitHubUserName(printer)}
 	}
-	if printer == "" && printerName == "" {
+	if printerMissing {
 		return resolveCurrentPublishAttributionFallback()
 	}
 	return publishAttributionFallback{}
@@ -1037,8 +1039,8 @@ func backfillPackagedManifestAttribution(dir string) error {
 		return err
 	}
 	fallback := resolvePublishAttributionFallback(manifest)
-	needsPrinter := strings.TrimSpace(manifest.Printer) == ""
-	needsPrinterName := strings.TrimSpace(manifest.PrinterName) == ""
+	needsPrinter := isMissingPublishPrinterField(manifest.Printer)
+	needsPrinterName := isMissingPublishPrinterNameField(manifest.PrinterName)
 	if needsPrinter && fallback.Printer == "" {
 		return fmt.Errorf("printer attribution is missing and no fallback could be resolved")
 	}
@@ -1112,11 +1114,44 @@ func normalizePackagedPublishMetadata(dir, category string) error {
 		}
 	}
 
+	if err := removeEmptyReleaseManifest(dir); err != nil {
+		return err
+	}
 	return pipeline.EnsurePatchesDir(dir)
 }
 
 func isPublishPrinterSentinel(printer string) bool {
 	return printer == "USER" || printer == "user"
+}
+
+func isMissingPublishPrinterField(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return trimmed == "" || isPublishPrinterSentinel(trimmed)
+}
+
+func isMissingPublishPrinterNameField(value string) bool {
+	return isMissingPublishPrinterField(value)
+}
+
+func removeEmptyReleaseManifest(dir string) error {
+	path := filepath.Join(dir, pipeline.CLIReleaseManifestFilename)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var release pipeline.CLIReleaseManifest
+	if err := json.Unmarshal(data, &release); err != nil {
+		return fmt.Errorf("parsing %s: %w", pipeline.CLIReleaseManifestFilename, err)
+	}
+	if strings.TrimSpace(release.Version) != "" ||
+		strings.TrimSpace(release.ReleasedAt) != "" ||
+		strings.TrimSpace(release.SourceCommit) != "" {
+		return nil
+	}
+	return os.Remove(path)
 }
 
 func manifestAdvertisesMCP(manifest pipeline.CLIManifest) bool {

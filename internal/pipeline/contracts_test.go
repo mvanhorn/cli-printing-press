@@ -580,6 +580,18 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	require.NotEqual(t, -1, copyIntoLibrary)
 	assert.Contains(t, skill, `trap 'rm -rf "$RELEASE_LEDGER_TMP" "$PUBLISH_SWAP_DIR"' EXIT`)
 	assert.Contains(t, skill, `mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"`)
+	assert.Contains(t, skill, "New CLIs omit .printing-press-release.json")
+	assert.NotContains(t, skill, "New CLIs keep the blank skeletons")
+}
+
+func TestPrintingPressSkillArchivesManuscriptContents(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+
+	archive := substringBetween(t, skill, "### Archive Manuscripts", "# Archive discovery artifacts")
+	assert.Contains(t, archive, `mkdir -p "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs"`)
+	assert.Contains(t, archive, `cp -r "$RESEARCH_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research/"`)
+	assert.Contains(t, archive, `cp -r "$PROOFS_DIR/." "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs/"`)
+	assert.NotContains(t, archive, `cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs"`)
 }
 
 func TestPrintingPressSkillChecksBlockedAPIJournal(t *testing.T) {
