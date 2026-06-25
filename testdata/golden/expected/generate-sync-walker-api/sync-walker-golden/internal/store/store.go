@@ -1530,7 +1530,7 @@ func (s *Store) ListIDsScoped(resourceType, scopeColumn, scopeValue string) ([]s
 	}
 	// No typed table: filter the generic resources table by body field.
 	rows, qerr := s.db.Query(
-		fmt.Sprintf(`SELECT id FROM resources WHERE resource_type = ? AND json_extract(data, '$.%s') = ?`, scopeColumn),
+		fmt.Sprintf(`SELECT id FROM resources WHERE resource_type = ? AND (CASE WHEN json_valid(data) THEN json_extract(data, '$.%s') END) = ?`, scopeColumn),
 		resourceType, scopeValue,
 	)
 	if qerr != nil {
@@ -1831,10 +1831,12 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 	}
 	ins.Close()
 
+	// CASE guards against a malformed-JSON row aborting the victim scan:
+	// a row we cannot parse is never a victim — it is skipped (never deleted).
 	rows, err := tx.Query(
 		`SELECT id FROM resources
 		 WHERE resource_type = ?
-		   AND json_extract(data, ?) = ?
+		   AND (CASE WHEN json_valid(data) THEN json_extract(data, ?) END) = ?
 		   AND id NOT IN (SELECT id FROM reconcile_seen)`,
 		resourceType, genericScopeJSONPath, scopeValue,
 	)
