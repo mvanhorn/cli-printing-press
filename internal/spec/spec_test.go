@@ -2440,6 +2440,57 @@ description: Missing base_url and resources
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "base_url is required")
 	})
+
+	t.Run("duplicate top-level keys fail clearly", func(t *testing.T) {
+		t.Parallel()
+		input := `name: duplicateapi
+base_url: https://api.example.com
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+resources:
+  teams:
+    endpoints:
+      list:
+        method: GET
+        path: /teams
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate top-level key(s): resources")
+	})
+
+	t.Run("resource-shaped entries under types fail clearly", func(t *testing.T) {
+		t.Parallel()
+		input := `name: misroutedapi
+base_url: https://api.example.com
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+types:
+  Team:
+    fields:
+      id:
+        type: string
+  misplaced_widgets:
+    description: Appended at the wrong indentation level
+    endpoints:
+      list:
+        method: GET
+        path: /widgets
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resource-shaped entry under 'types:'")
+		assert.Contains(t, err.Error(), "misplaced_widgets")
+		assert.Contains(t, err.Error(), "wrong indentation")
+	})
 }
 
 func TestOperationsShorthand(t *testing.T) {
