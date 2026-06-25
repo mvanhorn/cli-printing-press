@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.25.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.25.0...v4.25.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* **cli:** add resumable MCP cursors ([#3230](https://github.com/mvanhorn/cli-printing-press/issues/3230)) ([8155e8f](https://github.com/mvanhorn/cli-printing-press/commit/8155e8fcda3346735d62c761bbe17a89bef5a07b))
+* **cli:** attach Authorization header for cookie-typed auth with a real header credential ([#3201](https://github.com/mvanhorn/cli-printing-press/issues/3201)) ([9a3919d](https://github.com/mvanhorn/cli-printing-press/commit/9a3919d6f62cfb8c6f76d5f1bbc61be281d227da)), closes [#3200](https://github.com/mvanhorn/cli-printing-press/issues/3200)
+* **cli:** backfill empty creator handle on regen + emit store bare-id accessor ([#3232](https://github.com/mvanhorn/cli-printing-press/issues/3232)) ([104ed22](https://github.com/mvanhorn/cli-printing-press/commit/104ed220f2adb71e09e9f31ebf99e30bd12b8293))
+* **cli:** bound MCP store result envelopes ([#3234](https://github.com/mvanhorn/cli-printing-press/issues/3234)) ([c5e42bb](https://github.com/mvanhorn/cli-printing-press/commit/c5e42bbdfd8e320e8c060326eadb26cce4ecff25))
+* **cli:** centralize MCP output bounds ([#3214](https://github.com/mvanhorn/cli-printing-press/issues/3214)) ([7f6431c](https://github.com/mvanhorn/cli-printing-press/commit/7f6431cd0b45d41c521ab799b0ea98bd0f2d3e1d))
+* **cli:** correct SQLite pragma order to avoid SQLITE_BUSY on concurrent first-run (closes [#2926](https://github.com/mvanhorn/cli-printing-press/issues/2926)) ([#3165](https://github.com/mvanhorn/cli-printing-press/issues/3165)) ([82af5ef](https://github.com/mvanhorn/cli-printing-press/commit/82af5ef6d75e1651617e8dc2806d1851408f850e))
+* **cli:** derive cookie domain from base_url when spec omits cookie_domain ([#3199](https://github.com/mvanhorn/cli-printing-press/issues/3199)) ([9c9280d](https://github.com/mvanhorn/cli-printing-press/commit/9c9280d1c9007fd1ac54bba555ea8905d924d64b))
+* **cli:** derive sql tool example resource_type from the spec ([#3184](https://github.com/mvanhorn/cli-printing-press/issues/3184)) ([29659f2](https://github.com/mvanhorn/cli-printing-press/commit/29659f269504f5b8a8ee1dca70596e18c1e76c67)), closes [#2960](https://github.com/mvanhorn/cli-printing-press/issues/2960)
+* **cli:** harden generated auth client retries ([#3248](https://github.com/mvanhorn/cli-printing-press/issues/3248)) ([aa05aea](https://github.com/mvanhorn/cli-printing-press/commit/aa05aeabc217fb0bce50fbf3bd166a6faf707197))
+* **cli:** harden generator correctness ([#3251](https://github.com/mvanhorn/cli-printing-press/issues/3251)) ([24294a1](https://github.com/mvanhorn/cli-printing-press/commit/24294a14f0b82a3209fb4afb1dd86db6c2cadcfa))
+* **cli:** harden publish packaging ([#3250](https://github.com/mvanhorn/cli-printing-press/issues/3250)) ([6c0b5d8](https://github.com/mvanhorn/cli-printing-press/commit/6c0b5d85ab5d82d4a67f4073278833d34bf4fb1e))
+* **cli:** harden recipe and reprint flows ([#3252](https://github.com/mvanhorn/cli-printing-press/issues/3252)) ([83f6a45](https://github.com/mvanhorn/cli-printing-press/commit/83f6a4534a9091f0397d727d7361be98f49bf453))
+* **cli:** harden validation gates ([#3249](https://github.com/mvanhorn/cli-printing-press/issues/3249)) ([a9bbdd4](https://github.com/mvanhorn/cli-printing-press/commit/a9bbdd48c3a80df10fd236508886865f1e13c979))
+* **cli:** honor live dogfood happy args overlays ([#3264](https://github.com/mvanhorn/cli-printing-press/issues/3264)) ([f9dbafa](https://github.com/mvanhorn/cli-printing-press/commit/f9dbafa467559bf4bc3f2b1326ec093a9564227c))
+* **cli:** honor output format flags across generated commands ([#3235](https://github.com/mvanhorn/cli-printing-press/issues/3235)) ([43033b0](https://github.com/mvanhorn/cli-printing-press/commit/43033b037980ad76023ded4cc24fcd52b7970ef9))
+* **cli:** index 3-letter all-caps acronyms in generated FTS ([#3185](https://github.com/mvanhorn/cli-printing-press/issues/3185)) ([e2a9b50](https://github.com/mvanhorn/cli-printing-press/commit/e2a9b50142aa996036cd17589ba162e7e8d59f38)), closes [#3098](https://github.com/mvanhorn/cli-printing-press/issues/3098)
+* **cli:** preserve generated query params ([#3240](https://github.com/mvanhorn/cli-printing-press/issues/3240)) ([65db052](https://github.com/mvanhorn/cli-printing-press/commit/65db0525c0ce40045dfb24ba6cdfc3bc141b77a1))
+* **cli:** project wrapped-array output ([#3239](https://github.com/mvanhorn/cli-printing-press/issues/3239)) ([3c25b3e](https://github.com/mvanhorn/cli-printing-press/commit/3c25b3ef223f12bb993be06d0e7e1c42e191f745))
+* **cli:** support OData conditions sync filters ([#3262](https://github.com/mvanhorn/cli-printing-press/issues/3262)) ([9c62eee](https://github.com/mvanhorn/cli-printing-press/commit/9c62eee18f9b0174ef437e84c298f8d0db6fa8ee))
+* **cli:** unify generated agent envelopes ([#3260](https://github.com/mvanhorn/cli-printing-press/issues/3260)) ([49f2111](https://github.com/mvanhorn/cli-printing-press/commit/49f21113817ee895295572ea857393f3b493c8d5))
+* **substack:** route draft writer endpoints globally ([#3191](https://github.com/mvanhorn/cli-printing-press/issues/3191)) ([36c4be0](https://github.com/mvanhorn/cli-printing-press/commit/36c4be02130544effc0673d2a0e33e22df01adc2))
+
 ## [4.25.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.24.0...v4.25.0) (2026-06-21)
 
 
