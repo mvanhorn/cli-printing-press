@@ -2266,6 +2266,118 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 	assert.Empty(t, byName["users"].SinceParam, "endpoints without a since-like param yield empty SinceParam — the sync template treats this as 'do not send'")
 }
 
+func TestProfileODataConditionsSinceParamPropagation(t *testing.T) {
+	t.Parallel()
+
+	s := &spec.APISpec{
+		Name: "odata",
+		Resources: map[string]spec.Resource{
+			"tickets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/service/tickets",
+						Response: spec.ResponseDef{Type: "array", Item: "Ticket"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+							{Name: "page", Type: "integer"},
+							{Name: "pageSize", Type: "integer"},
+						},
+					},
+				},
+			},
+			"companies": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/company/companies",
+						Response: spec.ResponseDef{Type: "array", Item: "Company"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+							{Name: "page", Type: "integer"},
+							{Name: "pageSize", Type: "integer"},
+						},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/system/users",
+						Response: spec.ResponseDef{Type: "array", Item: "User"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+						},
+					},
+				},
+			},
+			"badinfo": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/system/badinfo",
+						Response: spec.ResponseDef{Type: "array", Item: "BadInfo"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Ticket": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "_info", Type: "object"},
+				},
+			},
+			"Company": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "lastUpdated", Type: "string", Format: "date-time"},
+				},
+			},
+			"User": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "name", Type: "string"},
+				},
+			},
+			"BadInfo": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "_info", Type: "string"},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "tickets")
+	assert.Equal(t, "conditions", byName["tickets"].SinceParam)
+	assert.Equal(t, "odata-conditions:_info/lastUpdated", byName["tickets"].SinceParamFormat)
+
+	require.Contains(t, byName, "companies")
+	assert.Equal(t, "conditions", byName["companies"].SinceParam)
+	assert.Equal(t, "odata-conditions:lastUpdated", byName["companies"].SinceParamFormat)
+
+	require.Contains(t, byName, "users")
+	assert.Empty(t, byName["users"].SinceParam, "conditions without a documented updated field must not hardcode a filter")
+	assert.Empty(t, byName["users"].SinceParamFormat)
+
+	require.Contains(t, byName, "badinfo")
+	assert.Empty(t, byName["badinfo"].SinceParam, "non-object _info fields must not synthesize nested OData filters")
+	assert.Empty(t, byName["badinfo"].SinceParamFormat)
+
+	assert.Equal(t, "conditions", profile.Pagination.SinceParam)
+}
+
 func TestProfileSyncableResourceFieldSelectorPropagation(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "selectors",

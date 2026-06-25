@@ -13201,6 +13201,14 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 			Format: "toml",
 			Path:   "~/.config/gatedsync-pp-cli/config.toml",
 		},
+		Types: map[string]spec.TypeDef{
+			"Ticket": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "_info", Type: "object"},
+				},
+			},
+		},
 		Resources: map[string]spec.Resource{
 			// Declares since — sync should pass it through.
 			"events": {
@@ -13214,6 +13222,25 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
 						Params: []spec.Param{
 							{Name: "since", Type: "string"},
+						},
+					},
+				},
+			},
+			// OData-style APIs declare a conditions param instead of a
+			// literal since param. When the response type documents a
+			// timestamp field, sync should send a formatted conditions
+			// expression through the same per-resource switch.
+			"tickets": {
+				Description: "Tickets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/tickets",
+						Description: "List tickets",
+						Response:    spec.ResponseDef{Type: "array", Item: "Ticket"},
+						Pagination:  &spec.Pagination{CursorParam: "page", LimitParam: "pageSize"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
 						},
 					},
 				},
@@ -13276,6 +13303,21 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 		"events resource must appear in the per-resource switch")
 	assert.Contains(t, sinceHelperBody, `return "since"`,
 		"events resource must map to its declared param name")
+	assert.Contains(t, sinceHelperBody, `case "tickets":`,
+		"tickets resource must appear in the per-resource switch")
+	assert.Contains(t, sinceHelperBody, `return "conditions"`,
+		"tickets resource must map to the OData conditions param")
+
+	sinceFormatHelperStart := strings.Index(syncContent, "func syncResourceSinceParamFormat(resource string) string")
+	require.NotEqual(t, -1, sinceFormatHelperStart, "sync.go must emit syncResourceSinceParamFormat")
+	sinceFormatHelperBody := syncContent[sinceFormatHelperStart:]
+	if nextFunc := strings.Index(sinceFormatHelperBody[1:], "\nfunc "); nextFunc != -1 {
+		sinceFormatHelperBody = sinceFormatHelperBody[:nextFunc+1]
+	}
+	assert.Contains(t, sinceFormatHelperBody, `case "tickets":`)
+	assert.Contains(t, sinceFormatHelperBody, `return "odata-conditions:_info/lastUpdated"`)
+	assert.Contains(t, syncContent, `fmt.Sprintf("%s > [%s]", field, value)`,
+		"OData conditions format must wrap RFC3339 timestamps in the API's bracketed expression syntax")
 
 	// users declares no since-like param → no case for it (falls through to "").
 	assert.NotContains(t, sinceHelperBody, `case "users":`,
@@ -18777,6 +18819,9 @@ func TestSyncSinceParamFormatForDateOnlyResources(t *testing.T) {
 	}
 	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "date-time"); got != "2026-06-07T12:34:56Z" {
 		t.Fatalf("date-time since value = %q, want original RFC3339", got)
+	}
+	if got := formatSyncSinceValue("2026-06-07T12:34:56Z", "odata-conditions:_info/lastUpdated"); got != "_info/lastUpdated > [2026-06-07T12:34:56Z]" {
+		t.Fatalf("odata conditions since value = %q, want bracketed conditions expression", got)
 	}
 }
 `

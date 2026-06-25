@@ -536,11 +536,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 			if endpoint.ResponsePath != "" {
 				responsePaths[endpoint.ResponsePath]++
 			}
+			if sinceParam, _ := detectEndpointSinceParamAndFormat(endpoint, s.Types); sinceParam != "" {
+				sinceParams[sinceParam]++
+			}
 			for _, param := range endpoint.Params {
 				name := strings.ToLower(param.Name)
-				if isEndpointSinceParamName(name) {
-					sinceParams[param.Name]++
-				}
 				if name == "dates" || name == "date_range" || name == "daterange" {
 					dateRangeParams[param.Name]++
 				}
@@ -1898,6 +1898,7 @@ type parameterizedEntry struct {
 // fields propagate uniformly.
 func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resource, e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
 	idWalkFilterParam, idWalkLimitParam, idWalkPageSize := detectIDWalkParams(e)
+	sinceParam, sinceParamFormat := detectEndpointSinceParamAndFormat(e, types)
 	return syncableMeta{
 		Path:               e.Path,
 		Method:             strings.ToUpper(e.Method),
@@ -1905,8 +1906,8 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		SkipDefaultSync:    isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types),
 		IDField:            e.IDField,
 		Critical:           e.Critical,
-		SinceParam:         detectEndpointSinceParam(e.Params),
-		SinceParamFormat:   detectEndpointSinceParamFormat(e.Params),
+		SinceParam:         sinceParam,
+		SinceParamFormat:   sinceParamFormat,
 		SupportsPagination: endpointSupportsPagination(e),
 		UsesHTMLResponse:   e.UsesHTMLResponse(),
 		HTMLExtract:        e.HTMLExtract,
@@ -2139,29 +2140,87 @@ func paginationLimitDefault(endpoint spec.Endpoint) (int, bool) {
 	return 0, false
 }
 
-// detectEndpointSinceParam returns the actual query parameter name this
-// endpoint declares for incremental temporal filtering, or "" when none is
-// declared. The match list mirrors the profile-level aggregation in
-// Profile() so per-endpoint detection stays consistent with the
-// PaginationProfile.SinceParam summary.
-func detectEndpointSinceParam(params []spec.Param) string {
-	name, _ := detectEndpointSinceParamAndFormat(params)
-	return name
-}
-
-func detectEndpointSinceParamFormat(params []spec.Param) string {
-	_, format := detectEndpointSinceParamAndFormat(params)
-	return format
-}
-
-func detectEndpointSinceParamAndFormat(params []spec.Param) (string, string) {
-	for _, p := range params {
+func detectEndpointSinceParamAndFormat(endpoint spec.Endpoint, types map[string]spec.TypeDef) (string, string) {
+	for _, p := range endpoint.Params {
 		name := strings.ToLower(p.Name)
 		if isEndpointSinceParamName(name) {
 			return p.Name, strings.ToLower(strings.TrimSpace(p.Format))
 		}
 	}
+	for _, p := range endpoint.Params {
+		if strings.EqualFold(strings.TrimSpace(p.Name), "conditions") {
+			if field := detectODataConditionsTimestampField(endpoint, types); field != "" {
+				return p.Name, "odata-conditions:" + field
+			}
+		}
+	}
 	return "", ""
+}
+
+func detectODataConditionsTimestampField(endpoint spec.Endpoint, types map[string]spec.TypeDef) string {
+	typeName := strings.TrimSpace(endpoint.Response.Item)
+	if typeName == "" || types == nil {
+		return ""
+	}
+	typeDef, ok := types[typeName]
+	if !ok {
+		return ""
+	}
+	for _, field := range typeDef.Fields {
+		if field.Name == "_info/lastUpdated" {
+			return field.Name
+		}
+	}
+	for _, candidate := range []string{
+		"lastUpdated",
+		"updated_at",
+		"updatedAt",
+		"modified_at",
+		"modifiedAt",
+		"last_modified",
+		"lastModified",
+		"date_updated",
+		"dateUpdated",
+		"updated_date",
+		"modified_date",
+	} {
+		if field := responseTypeFieldByNormalizedName(typeDef, candidate); field != "" {
+			return field
+		}
+	}
+	for _, field := range typeDef.Fields {
+		if strings.TrimSpace(field.Name) == "_info" && strings.EqualFold(strings.TrimSpace(field.Type), "object") {
+			return "_info/lastUpdated"
+		}
+	}
+	for _, field := range typeDef.Fields {
+		name := strings.ToLower(field.Name)
+		format := strings.ToLower(strings.TrimSpace(field.Format))
+		if (format == "date" || format == "date-time") && (strings.Contains(name, "updated") || strings.Contains(name, "modified")) {
+			return field.Name
+		}
+	}
+	return ""
+}
+
+func responseTypeFieldByNormalizedName(typeDef spec.TypeDef, candidate string) string {
+	normalizedCandidate := normalizeTemporalFieldName(candidate)
+	for _, field := range typeDef.Fields {
+		if normalizeTemporalFieldName(field.Name) == normalizedCandidate {
+			return field.Name
+		}
+	}
+	return ""
+}
+
+func normalizeTemporalFieldName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func isEndpointSinceParamName(name string) bool {
