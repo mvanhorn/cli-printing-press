@@ -702,7 +702,7 @@ PR body sections (per origin R27):
 5. **Evidence** — full GitHub URLs to the per-run plan doc and the `.printing-press-patches/` directory at the PR's HEAD SHA (captured AFTER push so links don't 404)
 6. **Closes #N** footer when an issue match was found in Step 6 of `library-pr-plumbing.md`
 
-Labels: `comp:<api-slug>` always; `priority:P1` for bugs-only scope, `priority:P2` for bugs+features, `priority:P3` for all-tiers.
+Labels: propose `comp:<api-slug>` always; `priority:P1` for bugs-only scope, `priority:P2` for bugs+features, `priority:P3` for all-tiers. Before applying labels to the upstream library PR, query the target repository with `gh label list --repo mvanhorn/printing-press-library --json name --jq '.[].name'` and apply only labels that exist there. If a proposed label is absent, skip it and note the skip in the PR body or final run log; do not let a missing per-CLI or priority label fail the amend flow.
 
 ### Display before gh fires
 

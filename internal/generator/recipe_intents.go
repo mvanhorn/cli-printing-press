@@ -25,6 +25,7 @@ type RecipeIntentParam struct {
 	Type        RecipeIntentParamType
 	Description string
 	Required    bool
+	Positional  bool
 	Default     string
 	BoolDefault bool
 	UseEquals   bool
@@ -88,20 +89,38 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 		intent.Description = strings.TrimSpace(recipe.Title)
 	}
 
-	nonTrivialFlags := 0
+	nonTrivialInputs := 0
 	paramInputNames := map[string]int{}
 	paramGoNames := map[string]int{}
+	commandWords := 0
+	seenFlag := false
 	for i := 0; i < len(tokens); i++ {
 		token := tokens[i]
-		if isRecipePlaceholder(token) {
-			intent.TakesArgs = true
-			continue
-		}
 		if !strings.HasPrefix(token, "--") || token == "--" {
+			if commandWords > 0 {
+				if inputName, ok := recipePositionalInputName(token); ok {
+					param := RecipeIntentParam{
+						InputName:   uniqueRecipeParamInputName(inputName, paramInputNames),
+						GoName:      uniqueRecipeParamGoName(inputName, paramGoNames),
+						Type:        recipeIntentParamString,
+						Description: "Override the recipe's positional " + inputName + " value.",
+						Required:    true,
+						Positional:  true,
+					}
+					intent.Params = append(intent.Params, param)
+					nonTrivialInputs++
+					continue
+				}
+			}
+			if seenFlag || commandWords >= 2 {
+				return RecipeIntent{}, false
+			}
 			intent.Command = append(intent.Command, token)
+			commandWords++
 			continue
 		}
 
+		seenFlag = true
 		name, value, hasValue := strings.Cut(strings.TrimPrefix(token, "--"), "=")
 		if name == "" {
 			continue
@@ -147,9 +166,9 @@ func recipeIntentFromRecipe(apiName string, recipe Recipe) (RecipeIntent, bool) 
 			param.Type = recipeParamType(value)
 		}
 		intent.Params = append(intent.Params, param)
-		nonTrivialFlags++
+		nonTrivialInputs++
 	}
-	if len(intent.Command) == 0 || nonTrivialFlags == 0 {
+	if len(intent.Command) == 0 || nonTrivialInputs == 0 {
 		return RecipeIntent{}, false
 	}
 	return intent, true
@@ -256,6 +275,52 @@ func isRecipePlaceholder(token string) bool {
 	token = strings.TrimSpace(token)
 	return (strings.HasPrefix(token, "<") && strings.HasSuffix(token, ">")) ||
 		(strings.HasPrefix(token, "[") && strings.HasSuffix(token, "]"))
+}
+
+func recipePositionalInputName(token string) (string, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	if isRecipePlaceholder(token) {
+		name := strings.Trim(token, "<>[]")
+		if inputName := uniqueMCPToolName(name); inputName != "" {
+			return inputName, true
+		}
+		return "value", true
+	}
+	if strings.HasPrefix(token, "http://") || strings.HasPrefix(token, "https://") {
+		return "url", true
+	}
+	if _, err := strconv.ParseFloat(token, 64); err == nil {
+		return "id", true
+	}
+	if strings.Contains(token, "/") {
+		return "path", true
+	}
+	if looksLikeRecipeDomain(token) {
+		return "domain", true
+	}
+	if strings.Contains(token, "-") || strings.Contains(token, "_") {
+		return "slug", true
+	}
+	return "", false
+}
+
+func looksLikeRecipeDomain(token string) bool {
+	if strings.ContainsAny(token, "/:@") || strings.HasPrefix(token, ".") || strings.HasSuffix(token, ".") {
+		return false
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func uniqueMCPToolName(title string) string {

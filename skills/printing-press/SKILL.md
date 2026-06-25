@@ -989,9 +989,9 @@ Before new research:
    if ! gh api -H "Accept: application/vnd.github.v3.raw" \
         repos/mvanhorn/printing-press-library/contents/registry.json \
         > "$REGISTRY" 2>/dev/null; then
-     echo "Public-library check skipped: registry.json unreachable. Proceeding to Phase 1."
+     echo "Public-library check failed: registry.json is unreachable. Stop here instead of treating the API as unpublished; retry when GitHub/library access is available."
      rm -f "$REGISTRY"
-     REGISTRY=""
+     exit 1
    fi
 
    BLOCKED_APIS=$(mktemp)
@@ -1004,7 +1004,7 @@ Before new research:
    fi
    ```
 
-   Do not block on a network failure or on a missing `blocked-apis.json` file. After step 4 finishes, clean up tempfiles only if the fetch succeeded: `[ -n "$REGISTRY" ] && rm -f "$REGISTRY"` and `[ -n "$BLOCKED_APIS" ] && rm -f "$BLOCKED_APIS"`. The failure branches above already removed each file and set its variable to empty, so an unconditional `rm -f "$REGISTRY"` or `rm -f "$BLOCKED_APIS"` would run `rm -f ""`.
+   Do not continue past a registry fetch/parse failure: it can hide an already published nested CLI and route a duplicate greenfield build. Network failure or missing `blocked-apis.json` is still non-blocking. After step 4 finishes, clean up tempfiles only if the fetch succeeded: `[ -n "$REGISTRY" ] && rm -f "$REGISTRY"` and `[ -n "$BLOCKED_APIS" ] && rm -f "$BLOCKED_APIS"`. The blocked-journal failure branch above already removed its file and set its variable to empty, so an unconditional `rm -f "$BLOCKED_APIS"` would run `rm -f ""`.
 
    **Read the blocked journal before reasoning about registry matches.** If `BLOCKED_APIS` is non-empty, read it directly. Expected shape:
 

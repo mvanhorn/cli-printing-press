@@ -41,7 +41,9 @@ func TestRecipeIntentHandlerBuildsRecipeArgs(t *testing.T) {
 {{- end}}
 {{- range (index .RecipeIntents 0).Params}}
 {{- if .Required}}
-{{- if .UseEquals}}
+{{- if .Positional}}
+		"required-value",
+{{- else if .UseEquals}}
 		{{printf "%q" (printf "--%s=required-value" .FlagName)}},
 {{- else}}
 		{{printf "%q" (printf "--%s" .FlagName)}}, "required-value",
@@ -95,7 +97,11 @@ func TestRecipeIntentHandlerOverridesAndRejectsArgs(t *testing.T) {
 	}
 	got := recipeToolText(t, result)
 {{- range (index .RecipeIntents 0).Params}}
-{{- if eq (recipeParamTypeString .Type) "boolean"}}
+{{- if .Positional}}
+	if !strings.Contains(got, "required-value") {
+		t.Fatalf("positional override for {{.InputName}} missing from %q", got)
+	}
+{{- else if eq (recipeParamTypeString .Type) "boolean"}}
 	if strings.Contains(got, {{printf "%q" (printf "--%s" .FlagName)}}) {
 		t.Fatalf("boolean false override should suppress {{printf "--%s" .FlagName}}: %q", got)
 	}
