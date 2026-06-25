@@ -1044,7 +1044,11 @@ Present three options via AskUserQuestion:
 
 #### Update path (own PR)
 
-This is the existing update flow. Set `EXISTING_PR_NUMBER` from the detection step and proceed to Step 8, which handles force-push and PR description update.
+This is the existing update flow with a divergence guard. Set
+`EXISTING_PR_NUMBER` from the detection step and proceed to Step 8, which
+fetches the current PR branch head, checks for branch-only fixes that the new
+package would revert, and only then handles force-push and PR description
+update.
 
 #### Replace path
 
@@ -1138,7 +1142,69 @@ Exit the publish flow. If Step 6 already wrote files into `$PUBLISH_REPO_DIR`, c
 
 **If `EXISTING_PR_NUMBER` is set** (updating an existing PR):
 
-Always overwrite the branch — the intent is clearly to update:
+Fetch and inspect the current PR branch before replacing it. The latest
+`origin/main` plus the newly packaged `library/<category>/<api-slug>/` tree is
+the proposed update. The remote PR branch may also contain accepted review
+fixes from the drive-to-green loop. Those branch-only edits must not be erased
+silently.
+
+```bash
+UPDATE_BRANCH="feat/<api-slug>"
+UPDATE_BASE_REF="refs/printing-press-update-base/<api-slug>"
+
+git fetch origin "+main:refs/remotes/origin/main" "+$UPDATE_BRANCH:$UPDATE_BASE_REF"
+
+# Show the scoped change from the current PR head to the new packaged working
+# tree. This is informational for clean updates and mandatory context for holds.
+git diff --stat "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/"
+
+# Branch-only paths are files that exist on the current PR branch but are absent
+# from the new packaged working tree. These are always a hold because a
+# force-push would delete them.
+WORKTREE_PATHS=$(find "library/<category>/<api-slug>" -type f -print 2>/dev/null | sort)
+BRANCH_ONLY_PATHS=$(comm -23 \
+  <(git ls-tree -r --name-only "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/" | sort) \
+  <([ -n "$WORKTREE_PATHS" ] && printf '%s\n' "$WORKTREE_PATHS" || true))
+
+# Modified paths need human review only when a branch patch relative to
+# origin/main is not present in the new packaged working tree. A strict superset
+# passes: if the branch patch can be reverse-applied from the working tree, the
+# fix is still there even if the file also has fresh generated changes.
+BRANCH_ONLY_EDITS=$(git diff --name-only origin/main "$UPDATE_BASE_REF" -- "library/<category>/<api-slug>/" | while read -r path; do
+  [ -n "$path" ] || continue
+  if git diff origin/main "$UPDATE_BASE_REF" -- "$path" | git apply --check --reverse >/dev/null 2>&1; then
+    continue
+  else
+    printf '%s\n' "$path"
+  fi
+done | sort -u)
+
+if [ -n "$BRANCH_ONLY_PATHS$BRANCH_ONLY_EDITS" ]; then
+  echo "HOLD: updating PR #$EXISTING_PR_NUMBER would overwrite branch-only changes."
+  if [ -n "$BRANCH_ONLY_PATHS" ]; then
+    echo "Files present on the PR branch but missing from the new package:"
+    printf '%s\n' "$BRANCH_ONLY_PATHS" | sed 's/^/- /'
+  fi
+  if [ -n "$BRANCH_ONLY_EDITS" ]; then
+    echo "Files edited on the PR branch and changed again by the new package:"
+    printf '%s\n' "$BRANCH_ONLY_EDITS" | sed 's/^/- /'
+  fi
+  echo "Do not push yet. Reconcile by restoring the branch-only fixes onto the new tree, or ask the user for explicit overwrite confirmation after showing the paths above."
+  exit 1
+fi
+```
+
+If the guard exits, offer the user two choices via `AskUserQuestion`:
+
+- **Reconcile first** — restore the named branch-only files or edits onto the
+  new packaged tree, keep or add matching `.printing-press-patches/<id>.json`
+  records for code-level fixes, rerun Step 6 verification, then rerun this
+  divergence guard.
+- **Overwrite intentionally** — only after the user confirms the listed paths
+  are obsolete, continue and include a PR-body note naming the overwritten
+  branch-only paths.
+
+If the guard finds no branch-only paths or edits, overwrite the local branch:
 
 ```bash
 git checkout -B feat/<api-slug>
@@ -1212,6 +1278,9 @@ Push to origin (which is the fork for non-push users, or the upstream for push u
 **If updating an existing PR** (`EXISTING_PR_NUMBER` is set):
 
 ```bash
+# Only run this after the update-path divergence guard above has passed, or
+# after the user explicitly confirmed an intentional overwrite of the named
+# branch-only paths.
 git push --force-with-lease -u origin feat/<api-slug>
 ```
 
