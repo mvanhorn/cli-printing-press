@@ -406,6 +406,101 @@ components:
 	assert.Empty(t, report.OAuthScopeCoverage.Violations)
 }
 
+func TestRunDogfoodOAuthScopeCoverageReadsClientCredentialsScopeHelper(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+import (
+	"net/url"
+	"os"
+)
+
+func resolveClientCredentialsScope() string {
+	if scope := os.Getenv("VIDEOS_OAUTH_SCOPE"); scope != "" {
+		return scope
+	}
+	return "all"
+}
+
+func mintClientCredentialsToken() {
+	form := url.Values{}
+	if scope := resolveClientCredentialsScope(); scope != "" {
+		form.Set("scope", scope)
+	}
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [all]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.com/token
+          scopes:
+            all: Full access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+}
+
+func TestRunDogfoodOAuthScopeCoverageIgnoresUnwiredClientCredentialsScopeHelper(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func resolveClientCredentialsScope() string {
+	return "all"
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [all]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.com/token
+          scopes:
+            all: Full access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
+}
+
 func TestRunDogfoodOAuthScopeCoverageIgnoresUnjoinedScopesVariable(t *testing.T) {
 	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
 func helper() {
@@ -446,7 +541,7 @@ components:
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
-	assert.Equal(t, "generated auth.go declares no OAuth scopes", report.OAuthScopeCoverage.Detail)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
 }
 
 func TestRunDogfoodOAuthScopeCoverageSurvivesUndefinedNonOAuthScheme(t *testing.T) {
@@ -1202,6 +1297,71 @@ func (c *Config) AuthHeader() string {
 	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer {token}"})
 	assert.True(t, result.Match)
 	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+}
+
+func TestCheckAuthRecognizesBearerTokenPrefixOverride(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Token " + c.Token
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Token ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `"Token " prefix`)
+}
+
+func TestCheckAuthMakesFormatOverPrefixPrecedenceExplicit(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `auth.format`)
+	assert.Contains(t, result.SpecScheme, `auth.prefix "Token" ignored`)
+	assert.Contains(t, result.Detail, `auth.format "Bearer" overrides auth.prefix "Token"`)
+}
+
+func TestCheckAuthRejectsBearerTokenPrefixMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Token " + c.Token
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Bearer"})
+	assert.False(t, result.Match)
+	assert.Equal(t, "Token ", result.GeneratedFmt)
+	assert.Contains(t, result.Detail, `spec expects "Bearer" but generated client uses "Token"`)
 }
 
 func TestCheckAuthRecognizesHeaderAPIKey(t *testing.T) {
