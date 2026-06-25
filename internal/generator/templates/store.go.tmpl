@@ -1521,6 +1521,40 @@ func BareResourceID(storageID string) string {
 	return storageID
 }
 
+// childScopeColumnSources maps a typed child table's path-placeholder scope
+// column (the FK the dependent sync injects per item, e.g. "projects_id") to
+// the singular parent-reference field the API body carries natively (e.g.
+// "project"). deriveScopeColumns consults this so write-through cache paths —
+// which pass RAW API items to UpsertBatch and never carry the path-injected
+// scope column — still satisfy the typed table's NOT NULL scope column instead
+// of stranding the row in generic resources.
+var childScopeColumnSources = map[string]string{
+{{- range .ChildScopeColumnSources}}
+	{{printf "%q" .Column}}: {{printf "%q" .Source}},
+{{- end}}
+}
+
+// deriveScopeColumns backfills a typed child table's scope column from the
+// item's own parent reference when path injection is absent. A value already
+// present (valid injection) is never overwritten.
+func deriveScopeColumns(obj map[string]any) {
+	for scopeKey, sourceKey := range childScopeColumnSources {
+		if v := lookupFieldValue(obj, scopeKey); v != nil {
+			if s, ok := v.(string); !ok || s != "" {
+				continue // path injection already supplied a usable value
+			}
+		}
+		src := lookupFieldValue(obj, sourceKey)
+		if src == nil {
+			continue
+		}
+		if s, ok := src.(string); ok && s == "" {
+			continue
+		}
+		obj[scopeKey] = src
+	}
+}
+
 // UpsertBatch inserts or replaces multiple records in a single transaction
 // and returns (stored, extractFailures, err). stored counts rows landed in
 // the generic resources table; extractFailures counts items that survived
@@ -1589,6 +1623,11 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		}
 		stored++
 {{- if $hasDomainTable}}
+
+		// Backfill the typed child table's NOT NULL scope column from the item's
+		// own parent reference when the dependent-sync path injection is absent
+		// (write-through cache feeds RAW API items here).
+		deriveScopeColumns(obj)
 
 		savepoint := fmt.Sprintf("pp_typed_%d", i)
 		if _, err := tx.Exec("SAVEPOINT " + savepoint); err != nil {

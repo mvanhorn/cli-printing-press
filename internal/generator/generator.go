@@ -3515,12 +3515,14 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 			DependentSyncResources []profiler.DependentResource
 			SearchableFields       map[string][]string
 			Tables                 []TableDef
+			ChildScopeColumnSources []profiler.ChildScopeSource
 		}{
-			APISpec:                g.Spec,
-			SyncableResources:      g.profile.SyncableResources,
-			DependentSyncResources: g.profile.DependentSyncResources,
-			SearchableFields:       g.profile.SearchableFields,
-			Tables:                 schema,
+			APISpec:                 g.Spec,
+			SyncableResources:       g.profile.SyncableResources,
+			DependentSyncResources:  g.profile.DependentSyncResources,
+			SearchableFields:        g.profile.SearchableFields,
+			Tables:                  schema,
+			ChildScopeColumnSources: g.profile.ChildScopeColumnSources(),
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)

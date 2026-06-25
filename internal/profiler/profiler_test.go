@@ -3762,6 +3762,24 @@ func TestProfiler_TenantScopeColumnAndViews(t *testing.T) {
 	}
 }
 
+// TestProfiler_ChildScopeColumnSources_ExactPair asserts the exact (Column,
+// Source) pair emitted for profileFixtureWithTenant. Guards singularParentField
+// derivation: a wrong singularization (e.g. "projects" → "project_s" or "") would
+// silently break deriveScopeColumns in the generated store.
+func TestProfiler_ChildScopeColumnSources_ExactPair(t *testing.T) {
+	prof := profileFixtureWithTenant(t)
+	sources := prof.ChildScopeColumnSources()
+	want := []ChildScopeSource{{Column: "projects_id", Source: "project"}}
+	if len(sources) != len(want) {
+		t.Fatalf("ChildScopeColumnSources() = %+v, want exactly %+v", sources, want)
+	}
+	for i, got := range sources {
+		if got != want[i] {
+			t.Fatalf("ChildScopeColumnSources()[%d] = %+v, want %+v", i, got, want[i])
+		}
+	}
+}
+
 func TestProfiler_FlatReconcileClassification(t *testing.T) {
 	prof := profileFixtureWithTenant(t) // projects annotated, has a PK IDField
 
