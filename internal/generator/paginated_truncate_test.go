@@ -466,6 +466,44 @@ func TestPaginatedGetStopsAtMaxPageSafetyLimitForBodyCursor(t *testing.T) {
 	}
 }
 
+func TestPaginatedGetMergesDomainSpecificWrappedArrayWithMetadataArrays(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{
+			"charges": [{"id":"ch_1","amount":10}],
+			"warnings": [{"code":"slow"}],
+			"cursor": "next-token"
+		}` + "`" + `),
+		json.RawMessage(` + "`" + `{
+			"charges": [{"id":"ch_2","amount":20}],
+			"warnings": [],
+			"cursor": null
+		}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/charges", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", "cursor", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	if string(data) == "null" {
+		t.Fatalf("paginatedGet returned null for populated wrapped pages")
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v\n%s", err, data)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2; data=%s", len(got), data)
+	}
+	if got[0]["id"] != "ch_1" || got[1]["id"] != "ch_2" {
+		t.Fatalf("merged wrong collection: %#v", got)
+	}
+	if len(client.params) != 2 {
+		t.Fatalf("got %d requests, want 2", len(client.params))
+	}
+	if client.params[1]["cursor"] != "next-token" {
+		t.Fatalf("second request cursor = %q, want next-token", client.params[1]["cursor"])
+	}
+}
+
 func containsAll(s string, needles ...string) bool {
 	for _, needle := range needles {
 		if !strings.Contains(s, needle) {

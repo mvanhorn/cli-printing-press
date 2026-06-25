@@ -1281,9 +1281,11 @@ func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, b
 
 	var onlyArray []json.RawMessage
 	arrayCount := 0
-	for _, raw := range obj {
-		var candidate []json.RawMessage
-		if json.Unmarshal(raw, &candidate) == nil {
+	for key, raw := range obj {
+		if envelopeMetadataArrayKeys[key] {
+			continue
+		}
+		if candidate, ok := extractPaginatedObjectArray(raw); ok {
 			onlyArray = candidate
 			arrayCount++
 		}
@@ -1292,6 +1294,27 @@ func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, b
 		return onlyArray, true
 	}
 	return nil, false
+}
+
+// envelopeMetadataArrayKeys lists sidecar arrays that must not be mistaken for
+// a domain collection when projecting wrapped output or aggregating pages.
+var envelopeMetadataArrayKeys = map[string]bool{
+	"errors": true, "Errors": true,
+	"warnings": true, "Warnings": true,
+}
+
+func extractPaginatedObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+	var items []json.RawMessage
+	// Empty fallback arrays are deliberately ignored: without an object item,
+	// there is no signal distinguishing a domain collection from metadata.
+	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+		return nil, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(items[0], &obj); err != nil {
+		return nil, false
+	}
+	return items, true
 }
 
 {{- if .HasEmbeddedPaged}}
@@ -1534,21 +1557,8 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) json.RawMessage {
 		// json.Unmarshal otherwise accepts into a []json.RawMessage as a
 		// nil slice and would coerce to `[]`.
 		if !matchedAny {
-			pending := map[string]json.RawMessage{}
-			foundArray := false
-			for k, v := range obj {
-				var arr []json.RawMessage
-				if json.Unmarshal(v, &arr) == nil && arr != nil {
-					foundArray = true
-					pending[k] = filterFieldsRec(v, paths)
-				} else {
-					pending[k] = v
-				}
-			}
-			if foundArray {
-				for k, v := range pending {
-					filtered[k] = v
-				}
+			if pending, foundArray := filterListEnvelopeFields(obj, paths); foundArray {
+				filtered = pending
 			}
 		}
 		result, _ := json.Marshal(filtered)
@@ -1556,6 +1566,45 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) json.RawMessage {
 	}
 
 	return data
+}
+
+func filterListEnvelopeFields(obj map[string]json.RawMessage, paths [][]string) (map[string]json.RawMessage, bool) {
+	pending := map[string]json.RawMessage{}
+	foundArray := false
+	for k, v := range obj {
+		if envelopeMetadataArrayKeys[k] {
+			pending[k] = v
+			continue
+		}
+		var arr []json.RawMessage
+		if json.Unmarshal(v, &arr) == nil && arr != nil {
+			foundArray = true
+			pending[k] = filterFieldsRec(v, paths)
+			continue
+		}
+		if k == "_embedded" {
+			if nested, ok := filterNestedListEnvelopeFields(v, paths); ok {
+				foundArray = true
+				pending[k] = nested
+				continue
+			}
+		}
+		pending[k] = v
+	}
+	return pending, foundArray
+}
+
+func filterNestedListEnvelopeFields(data json.RawMessage, paths [][]string) (json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, false
+	}
+	filtered, found := filterListEnvelopeFields(obj, paths)
+	if !found {
+		return nil, false
+	}
+	result, _ := json.Marshal(filtered)
+	return result, true
 }
 
 // matchSelectSegment returns the matching lowercase segment, or "" if no match.
@@ -1649,6 +1698,7 @@ func extractResponseData(data json.RawMessage) json.RawMessage {
 var compactVerboseListFields = map[string]bool{
 	"description": true, "body": true, "content": true,
 	"comments": true, "attachments": true, "html": true, "markdown": true,
+	"_links": true, "links": true,
 }
 
 // compactVerboseObjectFields are metadata fields stripped from single-object
@@ -1785,6 +1835,10 @@ func isCompactScalar(v any) bool {
 // under `--agent`/`--compact` is a silent loss; agents who want to omit them
 // can pass `--select` to specify only the fields they need.
 func compactObjectFields(obj map[string]any) json.RawMessage {
+	if compacted, ok := compactListEnvelopeObject(obj); ok {
+		result, _ := json.Marshal(compacted)
+		return result
+	}
 	compact := map[string]any{}
 	for k, v := range obj {
 		if !compactVerboseObjectFields[k] {
@@ -1793,6 +1847,58 @@ func compactObjectFields(obj map[string]any) json.RawMessage {
 	}
 	result, _ := json.Marshal(compact)
 	return result
+}
+
+func compactListEnvelopeObject(obj map[string]any) (map[string]any, bool) {
+	out := map[string]any{}
+	foundArray := false
+	for k, v := range obj {
+		if compactVerboseObjectFields[k] {
+			continue
+		}
+		if envelopeMetadataArrayKeys[k] {
+			out[k] = v
+			continue
+		}
+		if compacted, ok := compactObjectArrayValue(v); ok {
+			foundArray = true
+			out[k] = compacted
+			continue
+		}
+		if nested, ok := v.(map[string]any); ok && k == "_embedded" {
+			if compacted, ok := compactListEnvelopeObject(nested); ok {
+				foundArray = true
+				out[k] = compacted
+				continue
+			}
+		}
+		out[k] = v
+	}
+	if !foundArray {
+		return nil, false
+	}
+	return out, true
+}
+
+func compactObjectArrayValue(v any) (any, bool) {
+	rawItems, ok := v.([]any)
+	if !ok || len(rawItems) == 0 {
+		return nil, false
+	}
+	items := make([]map[string]any, 0, len(rawItems))
+	for _, raw := range rawItems {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		items = append(items, item)
+	}
+	compactedRaw := compactListFields(items)
+	var compacted any
+	if err := json.Unmarshal(compactedRaw, &compacted); err != nil {
+		return nil, false
+	}
+	return compacted, true
 }
 
 // printCSV renders JSON arrays as CSV with header row.
