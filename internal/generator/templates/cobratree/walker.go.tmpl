@@ -30,16 +30,22 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		if toolName == "" {
 			return
 		}
+		if s.GetTool(toolName) != nil {
+			return
+		}
+		blockedStructuredArgs := blockedStructuredArgsForCommand(cmd)
+		positionals := positionalArgsForCommand(cmd, blockedStructuredArgs)
+		blockedCLIArgs := cliFlagBlockedArgs(blockedStructuredArgs, positionals)
 		options := []mcplib.ToolOption{mcplib.WithDescription(descriptionFor(cmd))}
-		options = append(options, toolOptionsForFlags(cmd)...)
-		if commandTakesArgs(cmd) {
-			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments or raw CLI flags to append to the command.")))
+		options = append(options, toolOptionsForFlags(cmd, blockedStructuredArgs, positionals)...)
+		if commandTakesArgs(cmd) && len(positionals) == 0 {
+			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the command. Raw flags are rejected; use structured flag parameters instead.")))
 		}
 		readOnly := isMCPReadOnly(cmd)
 		if readOnly {
 			options = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
 		}
-		s.AddTool(mcplib.NewTool(toolName, options...), shellOutToCLI(cliPath, path, readOnly, positionalWriteSinkIndexes(cmd)))
+		s.AddTool(mcplib.NewTool(toolName, options...), shellOutToCLI(cliPath, path, blockedCLIArgs, positionals, readOnly, positionalWriteSinkIndexes(cmd)))
 	})
 }
 

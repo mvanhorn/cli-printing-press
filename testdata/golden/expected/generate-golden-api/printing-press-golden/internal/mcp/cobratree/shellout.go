@@ -17,7 +17,7 @@ import (
 	"printing-press-golden-pp-cli/internal/mcp/bound"
 )
 
-func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
+func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
 	lookupPath, lookupErr := cliPath()
 	prefixArgs := append([]string{}, commandPath...)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -26,10 +26,15 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnl
 		}
 		args := req.GetArguments()
 		finalArgs := append([]string{}, prefixArgs...)
-		finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
+		finalArgs = append(finalArgs, cliArgsFromMCP(args, blockedStructuredArgs)...)
+		positionalArgs, err := positionalArgsFromMCP(args, positionals, readOnly, positionalWriteSinks)
+		if err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		finalArgs = append(finalArgs, positionalArgs...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
 			tokens := SplitShellArgs(raw)
-			if err := validatePositionalArgsForMCP(tokens, readOnly, positionalWriteSinks); err != nil {
+			if err := validatePositionalArgsForMCPAtOffset(tokens, readOnly, positionalWriteSinks, len(positionalArgs)); err != nil {
 				return mcplib.NewToolResultError(err.Error()), nil
 			}
 			finalArgs = append(finalArgs, tokens...)
@@ -42,7 +47,49 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnl
 	}
 }
 
+func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) ([]string, error) {
+	out := make([]string, 0, len(positionals))
+	for positionalIndex, positional := range positionals {
+		value, ok := args[positional.InputName]
+		if !ok || value == nil {
+			continue
+		}
+		var text string
+		switch tv := value.(type) {
+		case string:
+			text = tv
+		case float64:
+			text = strconv.FormatFloat(tv, 'f', -1, 64)
+		case bool:
+			text = strconv.FormatBool(tv)
+		default:
+			text = fmt.Sprintf("%v", tv)
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if positionalIndex != len(out) {
+			return nil, fmt.Errorf("structured positional %q cannot be used while earlier positional arguments are omitted; provide the preceding positional arguments or use the args field", positional.InputName)
+		}
+		if text != "-" && strings.HasPrefix(text, "-") {
+			return nil, fmt.Errorf("flag-like positional argument %q not allowed in structured positional %q; use structured flag parameters instead", text, positional.InputName)
+		}
+		if readOnly && positionalWriteSinks[positionalIndex] && text != "-" {
+			return nil, fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", positionalIndex+1, text)
+		}
+		out = append(out, text)
+	}
+	if err := validatePositionalArgsForMCP(out, readOnly, nil); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWriteSinks map[int]bool) error {
+	return validatePositionalArgsForMCPAtOffset(tokens, readOnly, positionalWriteSinks, 0)
+}
+
+func validatePositionalArgsForMCPAtOffset(tokens []string, readOnly bool, positionalWriteSinks map[int]bool, offset int) error {
 	for _, t := range tokens {
 		if t != "-" && strings.HasPrefix(t, "-") {
 			return fmt.Errorf("flag-like argument %q not allowed in positional args field; use structured tool parameters instead", t)
@@ -52,15 +99,22 @@ func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWrit
 		return nil
 	}
 	for i, t := range tokens {
-		if !positionalWriteSinks[i] {
+		positionalIndex := offset + i
+		if !positionalWriteSinks[positionalIndex] {
 			continue
 		}
 		if strings.TrimSpace(t) == "" || t == "-" {
 			continue
 		}
-		return fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", i+1, t)
+		return fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", positionalIndex+1, t)
 	}
 	return nil
+}
+
+// reservedStructuredArgs are MCP-only argument names that must never be
+// forwarded as CLI flags.
+var reservedStructuredArgs = map[string]bool{
+	"args": true,
 }
 
 // blockedRootFlags are root-level CLI flags that an MCP client must not be
@@ -70,7 +124,6 @@ func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWrit
 // malicious config file, or change the delivery target, all of which sit
 // outside the per-command surface the agent is supposed to be calling.
 var blockedRootFlags = map[string]bool{
-	"args":     true,
 	"base-url": true,
 	"client":   true,
 	"config":   true,
@@ -80,13 +133,13 @@ var blockedRootFlags = map[string]bool{
 	"token":    true,
 }
 
-func cliArgsFromMCP(args map[string]any) []string {
+func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
 		if strings.Contains(k, "=") {
 			continue
 		}
-		if blockedRootFlags[k] {
+		if blocked[k] {
 			continue
 		}
 		keys = append(keys, k)
