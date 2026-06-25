@@ -93,16 +93,18 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 
 	// Build template FuncMap (subset of the full generator's FuncMap)
 	funcs := template.FuncMap{
-		"title":           cases.Title(language.English).String,
-		"lower":           strings.ToLower,
-		"upper":           strings.ToUpper,
-		"pascal":          toPascal,
-		"camel":           toCamel,
-		"snake":           naming.Snake,
-		"kebab":           toKebab,
-		"currentYear":     func() string { return strconv.Itoa(time.Now().Year()) },
-		"copyrightHolder": func() string { return copyrightHolderString(creator, "", owner) },
-		"modulePath":      func() string { return naming.CLI(cliName) },
+		"title":              cases.Title(language.English).String,
+		"lower":              strings.ToLower,
+		"upper":              strings.ToUpper,
+		"pascal":             toPascal,
+		"camel":              toCamel,
+		"snake":              naming.Snake,
+		"kebab":              toKebab,
+		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
+		"copyrightHolder":    func() string { return copyrightHolderString(creator, "", owner) },
+		"modulePath":         func() string { return naming.CLI(cliName) },
+		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
+		"goToolchainVersion": resolveCurrentGoToolchainVersion,
 		// Stub: plan-generated scaffolds never declare auth env vars. The full
 		// generator's hasNonCookieAuth (which inspects the real spec.AuthConfig)
 		// is registered separately on its own FuncMap.

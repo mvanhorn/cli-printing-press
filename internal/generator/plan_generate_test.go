@@ -54,6 +54,7 @@ func TestGenerateFromPlan_BasicScaffold(t *testing.T) {
 	goMod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
 	assert.Contains(t, string(goMod), naming.CLI("screencap"))
+	assert.Contains(t, string(goMod), "\ngo "+currentGoDirectiveVersion()+"\n")
 
 	// Verify root.go contains command registrations
 	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))

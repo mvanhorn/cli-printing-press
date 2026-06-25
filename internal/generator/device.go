@@ -288,7 +288,9 @@ func deviceCommandCallable(command devicespec.DeviceCommand) bool {
 
 func (g *DeviceGenerator) render(relPath, tmplText string, data deviceTemplateData) error {
 	tmpl, err := template.New(relPath).Funcs(template.FuncMap{
-		"quote": func(value string) string { return fmt.Sprintf("%q", value) },
+		"quote":              func(value string) string { return fmt.Sprintf("%q", value) },
+		"goDirectiveVersion": resolveCurrentGoDirectiveVersion,
+		"goToolchainVersion": resolveCurrentGoToolchainVersion,
 	}).Parse(tmplText)
 	if err != nil {
 		return fmt.Errorf("parse %s template: %w", relPath, err)
@@ -332,9 +334,9 @@ func (g *DeviceGenerator) renderEmbedded(relPath, tmplName string, data deviceTe
 
 const deviceGoModTemplate = `module {{.ModulePath}}
 
-go 1.26
+go {{goDirectiveVersion}}
 
-toolchain go1.26.4
+toolchain {{goToolchainVersion}}
 
 require (
 	github.com/mark3labs/mcp-go v0.47.0
