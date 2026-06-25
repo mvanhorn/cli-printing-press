@@ -538,7 +538,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		return c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides, authHeader)
 	}
 
-	const maxRetries = 3
+	maxRetries := clientMaxRetries()
 	var lastErr error
 	refreshedAfterUnauthorized := false
 
@@ -1185,4 +1185,11 @@ func truncateBody(b []byte) string {
 		return string(b)
 	}
 	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
+}
+
+func clientMaxRetries() int {
+	if cliutil.IsVerifyEnv() || cliutil.IsDogfoodEnv() {
+		return 0
+	}
+	return 3
 }

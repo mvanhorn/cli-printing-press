@@ -1608,12 +1608,84 @@ func TestGenerateOAuth2LoginVerifyEnvShortCircuitBeforeBrowserLaunch(t *testing.
 	assert.Less(t, verifyIdx, openBrowserIdx, "verify short-circuit must run before browser launch")
 	assert.Less(t, wouldLaunchIdx, openBrowserIdx, "verify short-circuit output must run before browser launch")
 	assert.Less(t, verifyIdx, listenIdx, "verify short-circuit must run before binding the callback port (no port bind in verify mode)")
+	assert.Contains(t, body, `exec.Command("rundll32", "url.dll,FileProtocolHandler", url)`,
+		"Windows browser opener must hand the full OAuth URL to the default handler")
+	assert.NotContains(t, body, `exec.Command("cmd", "/c", "start", url)`,
+		"bare cmd /c start truncates OAuth query strings at ampersands on Windows")
 
 	// Text assertions alone pass even when the generated auth.go has a compile
 	// error (e.g. redirectURI referenced but never declared). Compile the
 	// generated module so such regressions fail this suite directly.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedClientRetriesFailFastInVerifyAndDogfood(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("retry-env")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "retry-env-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const runtimeTest = `package client
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"retry-env-pp-cli/internal/config"
+)
+
+func TestClientMaxRetriesRespectsVerifyAndDogfood(t *testing.T) {
+	if got := clientMaxRetries(); got != 3 {
+		t.Fatalf("clientMaxRetries() = %d, want 3", got)
+	}
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	if got := clientMaxRetries(); got != 0 {
+		t.Fatalf("clientMaxRetries() under verify = %d, want 0", got)
+	}
+	t.Setenv("PRINTING_PRESS_VERIFY", "")
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "1")
+	if got := clientMaxRetries(); got != 0 {
+		t.Fatalf("clientMaxRetries() under dogfood = %d, want 0", got)
+	}
+}
+
+func TestClientDoesNotRetry429InVerifyEnv(t *testing.T) {
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, "slow down")
+	}))
+	defer server.Close()
+
+	c := New(&config.Config{BaseURL: server.URL, Path: filepath.Join(t.TempDir(), "config.toml")}, time.Second, 0)
+	_, err := c.Get(context.Background(), "/items", nil)
+	if err == nil {
+		t.Fatal("Get() error = nil, want 429 error")
+	}
+	if calls != 1 {
+		t.Fatalf("server calls = %d, want 1", calls)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "retry_env_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestClient")
 }
 
 func TestGenerateOAuth2DeviceCodeAuth(t *testing.T) {

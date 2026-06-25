@@ -1581,6 +1581,16 @@ func validateHTTPSURL(label, raw string) error {
 	}
 }
 
+func validateAuthURL(label, raw string) error {
+	if strings.ContainsAny(raw, "{}<>") {
+		return fmt.Errorf("%s contains an unresolved placeholder; supply a concrete URL before generation", label)
+	}
+	if err := validateHTTPSURL(label, raw); err != nil {
+		return err
+	}
+	return nil
+}
+
 // validateOAuth2Grant ensures OAuth2Grant is empty or one of the supported
 // values. Empty is accepted (treated as the default). Cross-checking against
 // validateAuthPrefix rejects characters that would break out of the Go
@@ -1638,6 +1648,16 @@ func validateAuthSubtype(c AuthConfig) error {
 func validateOAuth2Grant(c AuthConfig) error {
 	switch c.OAuth2Grant {
 	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode:
+		if (c.OAuth2Grant == "" || c.OAuth2Grant == OAuth2GrantAuthorizationCode) && strings.TrimSpace(c.TokenURL) != "" {
+			if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
+				return err
+			}
+		}
+		if c.OAuth2Grant == OAuth2GrantClientCredentials && strings.TrimSpace(c.TokenURL) != "" {
+			if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
+				return err
+			}
+		}
 		if c.OAuth2Grant == OAuth2GrantDeviceCode {
 			if strings.TrimSpace(c.DeviceAuthorizationURL) == "" {
 				return fmt.Errorf("auth.device_authorization_url is required when auth.oauth2_grant is %q", OAuth2GrantDeviceCode)
@@ -1645,10 +1665,10 @@ func validateOAuth2Grant(c AuthConfig) error {
 			if strings.TrimSpace(c.TokenURL) == "" {
 				return fmt.Errorf("auth.token_url is required when auth.oauth2_grant is %q", OAuth2GrantDeviceCode)
 			}
-			if err := validateHTTPSURL("auth.device_authorization_url", c.DeviceAuthorizationURL); err != nil {
+			if err := validateAuthURL("auth.device_authorization_url", c.DeviceAuthorizationURL); err != nil {
 				return err
 			}
-			if err := validateHTTPSURL("auth.token_url", c.TokenURL); err != nil {
+			if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
 				return err
 			}
 		}
@@ -1666,7 +1686,7 @@ func validateOAuth2Refresh(c AuthConfig) error {
 	if strings.TrimSpace(c.TokenURL) == "" {
 		return fmt.Errorf("auth.token_url is required when auth.type is %q", AuthTypeOAuth2Refresh)
 	}
-	if err := validateHTTPSURL("auth.token_url", c.TokenURL); err != nil {
+	if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
 		return err
 	}
 	return nil
