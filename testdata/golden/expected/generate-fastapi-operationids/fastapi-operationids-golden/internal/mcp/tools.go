@@ -151,7 +151,6 @@ type mcpParamBinding struct {
 
 type mcpPageConfig struct {
 	CursorParam    string
-	LimitParam     string
 	NextCursorPath string
 }
 

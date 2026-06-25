@@ -184,7 +184,7 @@ func TestGenerateMCPToolsUseOpaqueCursorForResumableListEndpoints(t *testing.T) 
 		"resumable MCP list tools should expose a canonical opaque cursor input")
 	assert.NotContains(t, toolsCode, `mcplib.WithString("after"`,
 		"resumable MCP list tools should not expose the raw upstream cursor parameter")
-	assert.Contains(t, toolsCode, `mcpPageConfig{CursorParam: "after", LimitParam: "limit", NextCursorPath: "next_cursor"}`,
+	assert.Contains(t, toolsCode, `mcpPageConfig{CursorParam: "after", NextCursorPath: "next_cursor"}`,
 		"generated handler should receive the upstream cursor metadata needed to continue safely")
 	assert.Contains(t, toolsCode, `bound.EndpointPageResponse(method, data, bound.PageOptions{`,
 		"typed MCP responses should route resumable endpoints through the cursor-aware bound path")

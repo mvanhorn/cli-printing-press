@@ -5152,9 +5152,8 @@ func mcpPageConfig(endpoint spec.Endpoint) string {
 	if !mcpEndpointPageable(endpoint) {
 		return "mcpPageConfig{}"
 	}
-	return fmt.Sprintf("mcpPageConfig{CursorParam: %q, LimitParam: %q, NextCursorPath: %q}",
+	return fmt.Sprintf("mcpPageConfig{CursorParam: %q, NextCursorPath: %q}",
 		endpoint.Pagination.CursorParam,
-		endpoint.Pagination.LimitParam,
 		endpoint.Pagination.NextCursorPath,
 	)
 }

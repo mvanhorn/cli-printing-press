@@ -54,7 +54,7 @@ func EndpointResponse(method string, data json.RawMessage) string {
 // falls back to EndpointResponse's bounded preview contract.
 func EndpointPageResponse(method string, data json.RawMessage, opts PageOptions) string {
 	if opts.CursorParam == "" && opts.Cursor == "" && opts.NextCursorPath == "" {
-		return endpointResponse(method, data, opts)
+		return endpointResponse(method, data, PageOptions{})
 	}
 	return endpointResponse(method, data, opts)
 }
