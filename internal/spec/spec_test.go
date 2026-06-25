@@ -1647,6 +1647,14 @@ func TestOAuth2GrantValidate(t *testing.T) {
 		{name: "explicit authorization_code is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}},
 		{name: "client_credentials is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}},
 		{
+			name: "client_credentials rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant: OAuth2GrantClientCredentials,
+				TokenURL:    "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
+		{
 			name: "device_code is valid with required endpoints",
 			cfg: AuthConfig{
 				OAuth2Grant:            OAuth2GrantDeviceCode,
@@ -1696,6 +1704,15 @@ func TestOAuth2GrantValidate(t *testing.T) {
 				TokenURL:               "http://login.example.com/token",
 			},
 			wantErr: `auth.token_url uses http://`,
+		},
+		{
+			name: "device_code rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "https://{tenant}.example.com/token",
+			},
+			wantErr: "unresolved placeholder",
 		},
 		{
 			name:    "typo (e.g. authorisation) is rejected",
