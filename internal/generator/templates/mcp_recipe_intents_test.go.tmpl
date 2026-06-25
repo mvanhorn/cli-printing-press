@@ -34,38 +34,38 @@ func TestRecipeIntentHandlerBuildsRecipeArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handler returned transport error: %v", err)
 	}
-	got := recipeToolText(t, result)
-	for _, want := range []string{
-{{- range (index .RecipeIntents 0).Command}}
-		{{printf "%q" .}},
-{{- end}}
-{{- range (index .RecipeIntents 0).Params}}
-{{- if .Required}}
-{{- if .UseEquals}}
-		{{printf "%q" (printf "--%s=required-value" .FlagName)}},
+	got := strings.TrimSpace(recipeToolText(t, result))
+	want := strings.Join([]string{
+{{- range (index .RecipeIntents 0).Args}}
+{{- if .Static}}
+		{{printf "%q" .Token}},
+{{- else if .Param.Required}}
+{{- if .Param.Positional}}
+		"required-value",
+{{- else if .Param.UseEquals}}
+		{{printf "%q" (printf "--%s=required-value" .Param.FlagName)}},
 {{- else}}
-		{{printf "%q" (printf "--%s" .FlagName)}}, "required-value",
+		{{printf "%q" (printf "--%s" .Param.FlagName)}}, "required-value",
 {{- end}}
 {{- else}}
-{{- if .Default}}
-{{- if eq (recipeParamTypeString .Type) "boolean"}}
-		{{printf "%q" (printf "--%s" .FlagName)}},
-{{- else if .UseEquals}}
-		{{printf "%q" (printf "--%s=%s" .FlagName .Default)}},
+{{- if .Param.Default}}
+{{- if eq (recipeParamTypeString .Param.Type) "boolean"}}
+		{{printf "%q" (printf "--%s" .Param.FlagName)}},
+{{- else if .Param.UseEquals}}
+		{{printf "%q" (printf "--%s=%s" .Param.FlagName .Param.Default)}},
 {{- else}}
-		{{printf "%q" (printf "--%s" .FlagName)}}, {{printf "%q" .Default}},
+		{{printf "%q" (printf "--%s" .Param.FlagName)}}, {{printf "%q" .Param.Default}},
 {{- end}}
 {{- end}}
 {{- end}}
 {{- end}}
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("handler output %q missing %q", got, want)
-		}
+	}, " ")
+	if got != want {
+		t.Fatalf("handler output = %q, want %q", got, want)
 	}
 }
 
-func TestRecipeIntentHandlerOverridesAndRejectsArgs(t *testing.T) {
+func TestRecipeIntentHandlerOverridesParams(t *testing.T) {
 	oldPath, oldErr := recipeCLIPath, recipeCLIPathErr
 	t.Cleanup(func() {
 		recipeCLIPath, recipeCLIPathErr = oldPath, oldErr
@@ -85,9 +85,6 @@ func TestRecipeIntentHandlerOverridesAndRejectsArgs(t *testing.T) {
 		{{printf "%q" .InputName}}: "override-value",
 {{- end}}
 {{- end}}
-{{- if (index .RecipeIntents 0).TakesArgs}}
-		"args": "extra-position",
-{{- end}}
 	}}}
 	result, err := handle{{pascal (index .RecipeIntents 0).Name}}(context.Background(), req)
 	if err != nil {
@@ -95,7 +92,11 @@ func TestRecipeIntentHandlerOverridesAndRejectsArgs(t *testing.T) {
 	}
 	got := recipeToolText(t, result)
 {{- range (index .RecipeIntents 0).Params}}
-{{- if eq (recipeParamTypeString .Type) "boolean"}}
+{{- if .Positional}}
+	if !strings.Contains(got, "required-value") {
+		t.Fatalf("positional override for {{.InputName}} missing from %q", got)
+	}
+{{- else if eq (recipeParamTypeString .Type) "boolean"}}
 	if strings.Contains(got, {{printf "%q" (printf "--%s" .FlagName)}}) {
 		t.Fatalf("boolean false override should suppress {{printf "--%s" .FlagName}}: %q", got)
 	}
@@ -104,20 +105,6 @@ func TestRecipeIntentHandlerOverridesAndRejectsArgs(t *testing.T) {
 		t.Fatalf("string override for {{printf "--%s" .FlagName}} missing from %q", got)
 	}
 {{- end}}
-{{- end}}
-{{- if (index .RecipeIntents 0).TakesArgs}}
-	if !strings.Contains(got, "extra-position") {
-		t.Fatalf("positional args passthrough missing from %q", got)
-	}
-
-	req.Params.Arguments = map[string]any{"args": "--config /tmp/evil"}
-	result, err = handle{{pascal (index .RecipeIntents 0).Name}}(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handler returned transport error: %v", err)
-	}
-	if got := recipeToolText(t, result); !strings.Contains(got, "flag-like argument") {
-		t.Fatalf("flag-like args should be rejected, got %q", got)
-	}
 {{- end}}
 }
 

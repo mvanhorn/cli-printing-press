@@ -394,6 +394,16 @@ for review. This honors the prefer-`regen-merge` guidance under the
 edit to that phase changes the routing rule, update this paragraph in the same
 PR -- the reprint skill is the dominant entry point that fires it.
 
+Before the hand-off, compare regenerated manifest files against the tracked
+published tree. If `$LIB_TARGET/manifest.json` or
+`$LIB_TARGET/tools-manifest.json` exists, diff each file against the freshly
+generated counterpart under `$CLI_WORK_DIR` and surface non-empty diffs in the
+handoff prompt. Treat a diff as a reconciliation checkpoint, not as automatic
+overwrite approval: the operator must decide whether to preserve the tracked
+hand-edit, fold it into the spec/research inputs, or intentionally accept the
+regenerated value. Do not continue silently when tracked manifest fields,
+tool metadata, or descriptions would be dropped.
+
 Attribution also stays owned by `/printing-press`: the hand-off runs generation
 for the same API slug, and the generate/promote path must preserve the existing
 library manifest's permanent `creator` while adding the reprinter to

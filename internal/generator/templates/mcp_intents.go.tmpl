@@ -59,9 +59,6 @@ func RegisterIntents(s *server.MCPServer) {
 {{- range .Params}}
 			mcplib.{{mcpBindingFunc (recipeParamTypeString .Type)}}("{{.InputName}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
 {{- end}}
-{{- if .TakesArgs}}
-			mcplib.WithString("args", mcplib.Description("Additional positional arguments to append to the recipe command. Flag-like arguments are rejected; use structured parameters for flags.")),
-{{- end}}
 		),
 		handle{{pascal .Name}},
 	)
@@ -137,31 +134,25 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 
 	input := req.GetArguments()
 	args := []string{
-{{- range .Command}}
-		{{printf "%q" .}},
-{{- end}}
 	}
-{{- range .Params}}
-{{- if eq (recipeParamTypeString .Type) "boolean"}}
-	args = appendRecipeBoolFlag(args, {{printf "%q" .FlagName}}, input[{{printf "%q" .InputName}}], {{.BoolDefault}})
+{{- range .Args}}
+{{- if .Static}}
+	args = append(args, {{printf "%q" .Token}})
+{{- else if .Param.Positional}}
+	var missing{{.Param.GoName}} bool
+	args, missing{{.Param.GoName}} = appendRecipePositional(args, input[{{printf "%q" .Param.InputName}}], {{.Param.Required}})
+	if missing{{.Param.GoName}} {
+		return mcplib.NewToolResultError({{printf "%q" (printf "%s is required" .Param.InputName)}}), nil
+	}
+{{- else if eq (recipeParamTypeString .Param.Type) "boolean"}}
+	args = appendRecipeBoolFlag(args, {{printf "%q" .Param.FlagName}}, input[{{printf "%q" .Param.InputName}}], {{.Param.BoolDefault}})
 {{- else}}
-	var missing{{.GoName}} bool
-	args, missing{{.GoName}} = appendRecipeStringFlag(args, {{printf "%q" .FlagName}}, input[{{printf "%q" .InputName}}], {{printf "%q" .Default}}, {{.Required}}, {{.UseEquals}})
-	if missing{{.GoName}} {
-		return mcplib.NewToolResultError({{printf "%q" (printf "--%s is required" .FlagName)}}), nil
+	var missing{{.Param.GoName}} bool
+	args, missing{{.Param.GoName}} = appendRecipeStringFlag(args, {{printf "%q" .Param.FlagName}}, input[{{printf "%q" .Param.InputName}}], {{printf "%q" .Param.Default}}, {{.Param.Required}}, {{.Param.UseEquals}})
+	if missing{{.Param.GoName}} {
+		return mcplib.NewToolResultError({{printf "%q" (printf "--%s is required" .Param.FlagName)}}), nil
 	}
 {{- end}}
-{{- end}}
-{{- if .TakesArgs}}
-	if raw, _ := input["args"].(string); strings.TrimSpace(raw) != "" {
-		tokens := cobratree.SplitShellArgs(raw)
-		for _, token := range tokens {
-			if strings.HasPrefix(token, "-") {
-				return mcplib.NewToolResultError(fmt.Sprintf("flag-like argument %q not allowed in args; use structured tool parameters instead", token)), nil
-			}
-		}
-		args = append(args, tokens...)
-	}
 {{- end}}
 
 	out, err := cobratree.RunCLICommand(ctx, recipeCLIPath, args)
@@ -340,6 +331,14 @@ var (
 
 func init() {
 	recipeCLIPath, recipeCLIPathErr = cobratree.SiblingCLIPath()
+}
+
+func appendRecipePositional(args []string, value any, required bool) ([]string, bool) {
+	selected := recipeValueString(value)
+	if selected == "" {
+		return args, required
+	}
+	return append(args, selected), false
 }
 
 func appendRecipeStringFlag(args []string, name string, value any, defaultValue string, required bool, useEquals bool) ([]string, bool) {

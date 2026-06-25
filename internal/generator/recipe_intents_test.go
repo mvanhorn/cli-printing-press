@@ -55,7 +55,8 @@ func TestRecipeNarrativeEmitsMCPIntentTools(t *testing.T) {
 	require.Contains(t, intents, `mcplib.WithNumber("limit"`)
 	require.Contains(t, intents, `cobratree.RunCLICommand(ctx, recipeCLIPath, args)`)
 	require.NotContains(t, intents, "CombinedOutput")
-	require.NotContains(t, intents, `mcplib.NewTool("plain_lookup"`)
+	require.Contains(t, intents, `mcplib.NewTool("plain_lookup"`)
+	require.Contains(t, intents, `mcplib.WithString("id"`)
 	require.NotContains(t, intents, `mcplib.NewTool("piped_analysis"`)
 
 	_ = readGeneratedFile(t, outputDir, "internal", "mcp", "recipe_intents_test.go")
@@ -115,6 +116,87 @@ func TestRecipeIntentDerivationSkipsAmbiguousSeparatedFlagValue(t *testing.T) {
 	}, nil)
 
 	require.Empty(t, intents)
+}
+
+func TestRecipeIntentDerivationBindsPositionals(t *testing.T) {
+	t.Parallel()
+
+	intents := buildRecipeIntents("demo", &ReadmeNarrative{
+		Recipes: []Recipe{
+			{Title: "Scan site", Command: "demo-pp-cli advice https://example.com --copy --json"},
+			{Title: "Get thing", Command: "demo-pp-cli get 12345678 --json"},
+			{Title: "Upgrade release", Command: "demo-pp-cli upgrade v1.2.3 --json"},
+			{Title: "Lookup slug", Command: "demo-pp-cli recipes my-best-brownies --json"},
+			{Title: "Unbindable word", Command: "demo-pp-cli team add engineering --role=owner --json"},
+		},
+	}, nil)
+
+	require.Len(t, intents, 4)
+	require.Equal(t, []string{"advice", "--json"}, intents[0].Command)
+	require.Len(t, intents[0].Params, 2)
+	require.True(t, intents[0].Params[0].Positional)
+	require.True(t, intents[0].Params[0].Required)
+	require.Equal(t, "url", intents[0].Params[0].InputName)
+	require.Equal(t, "Url", intents[0].Params[0].GoName)
+	require.Equal(t, "copy", intents[0].Params[1].InputName)
+	require.Equal(t, recipeIntentParamBoolean, intents[0].Params[1].Type)
+	require.Len(t, intents[0].Args, 4)
+	require.True(t, intents[0].Args[0].Static)
+	require.Equal(t, "advice", intents[0].Args[0].Token)
+	require.True(t, intents[0].Args[1].Param.Positional)
+	require.Equal(t, "url", intents[0].Args[1].Param.InputName)
+	require.Equal(t, "copy", intents[0].Args[2].Param.FlagName)
+	require.True(t, intents[0].Args[3].Static)
+	require.Equal(t, "--json", intents[0].Args[3].Token)
+
+	require.Equal(t, []string{"get", "--json"}, intents[1].Command)
+	require.True(t, intents[1].Params[0].Positional)
+	require.Equal(t, "id", intents[1].Params[0].InputName)
+
+	require.Equal(t, []string{"upgrade", "--json"}, intents[2].Command)
+	require.True(t, intents[2].Params[0].Positional)
+	require.Equal(t, "version", intents[2].Params[0].InputName)
+
+	require.Equal(t, []string{"recipes", "--json"}, intents[3].Command)
+	require.True(t, intents[3].Params[0].Positional)
+	require.Equal(t, "slug", intents[3].Params[0].InputName)
+}
+
+func TestRecipeIntentGenerationBindsPositionalHandlerArgs(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("positionrecipes")
+	outputDir := filepath.Join(t.TempDir(), "positionrecipes-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	gen.Narrative = &ReadmeNarrative{
+		Recipes: []Recipe{{
+			Title:       "Scan site",
+			Command:     "positionrecipes-pp-cli advice https://example.com --copy --json",
+			Explanation: "Scan a site and return copy-paste fixes.",
+		}},
+	}
+
+	require.NoError(t, gen.Generate())
+
+	intents := readGeneratedFile(t, outputDir, "internal", "mcp", "intents.go")
+	require.Contains(t, intents, `mcplib.WithString("url"`)
+	require.Contains(t, intents, `appendRecipePositional(args, input["url"], true)`)
+	require.NotContains(t, intents, `mcplib.WithString("args"`)
+	require.NotContains(t, intents, "https://example.com")
+	adviceIdx := strings.Index(intents, `args = append(args, "advice")`)
+	urlIdx := strings.Index(intents, `appendRecipePositional(args, input["url"], true)`)
+	copyIdx := strings.Index(intents, `appendRecipeBoolFlag(args, "copy", input["copy"], true)`)
+	jsonIdx := strings.Index(intents, `args = append(args, "--json")`)
+	require.NotEqual(t, -1, adviceIdx)
+	require.NotEqual(t, -1, urlIdx)
+	require.NotEqual(t, -1, copyIdx)
+	require.NotEqual(t, -1, jsonIdx)
+	require.Less(t, adviceIdx, urlIdx)
+	require.Less(t, urlIdx, copyIdx)
+	require.Less(t, copyIdx, jsonIdx)
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp")
 }
 
 func TestRecipeIntentDerivationSkipsShellVariables(t *testing.T) {

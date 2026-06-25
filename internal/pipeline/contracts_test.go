@@ -606,6 +606,15 @@ func TestPrintingPressSkillChecksBlockedAPIJournal(t *testing.T) {
 	assert.Contains(t, skill, " (tracking #<entry.blocking_issue>; marked permanent)")
 }
 
+func TestPrintingPressRegistryCheckFailsClosedWhenRegistryUnavailable(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+
+	assert.Contains(t, skill, "Public-library check failed: registry.json is unreachable")
+	assert.Contains(t, skill, "Stop here instead of treating the API as unpublished")
+	assert.Contains(t, skill, "Do not continue past a registry fetch/parse failure")
+	assert.NotContains(t, skill, "Public-library check skipped: registry.json unreachable. Proceeding to Phase 1.")
+}
+
 func TestPublishSkillDocumentsBlockedAPIJournalMode(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
@@ -687,6 +696,14 @@ func TestAmendSkillResolvesPublishedStatusByPublicLibrarySlug(t *testing.T) {
 	assert.Contains(t, transcript, "not on local git remotes or `$PRESS_LIBRARY/<slug>` presence")
 }
 
+func TestAmendSkillFiltersMissingTargetRepoLabels(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"))
+
+	assert.Contains(t, skill, "gh label list --repo mvanhorn/printing-press-library")
+	assert.Contains(t, skill, "apply only labels that exist there")
+	assert.Contains(t, skill, "do not let a missing per-CLI or priority label fail the amend flow")
+}
+
 func TestGeneratedAgentsTemplatePointsToCatalogForPatchMechanics(t *testing.T) {
 	template := readContractFile(t, filepath.Join("..", "generator", "templates", "agents.md.tmpl"))
 
@@ -737,6 +754,15 @@ func TestReprintSkillInitializesPrintingPressBinary(t *testing.T) {
 	assert.Contains(t, reprintSkill, `PRINTING_PRESS_BIN="${PRINTING_PRESS_BIN:-}"`)
 	assert.Contains(t, reprintSkill, `command -v cli-printing-press`)
 	assert.Contains(t, reprintSkill, `"$PRINTING_PRESS_BIN" scorecard --dir "$LIB_TARGET" --json`)
+}
+
+func TestReprintSkillSurfacesManifestDiffBeforeHandoff(t *testing.T) {
+	reprintSkill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-reprint", "SKILL.md"))
+
+	assert.Contains(t, reprintSkill, "Before the hand-off, compare regenerated manifest files against the tracked")
+	assert.Contains(t, reprintSkill, "$LIB_TARGET/manifest.json")
+	assert.Contains(t, reprintSkill, "$LIB_TARGET/tools-manifest.json")
+	assert.Contains(t, reprintSkill, "Do not continue silently when tracked manifest fields")
 }
 
 func TestPolishSkillPinsGo126CompatibleGosecFallback(t *testing.T) {
