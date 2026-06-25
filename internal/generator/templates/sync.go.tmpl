@@ -107,8 +107,14 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Sync API data to local SQLite for offline search and analysis",
+{{- if .Pagination.SinceParam}}
 	Long: `Sync data from the API into a local SQLite database. Supports resumable
 incremental sync (only fetches new data since last sync) and full resync.
+{{- else}}
+	Long: `Sync data from the API into a local SQLite database. This API does
+not declare temporal sync filters, so sync performs full pagination unless an
+explicit resource declares its own incremental filter.
+{{- end}}
 {{- if .VisionSet.Search}}
 Once synced, use the 'search' command for instant full-text search.
 {{- end}}
@@ -1408,6 +1414,13 @@ func syncResourceSinceParamFormat(resource string) string {
 }
 
 func formatSyncSinceValue(value string, paramFormat string) string {
+	if field, ok := strings.CutPrefix(paramFormat, "odata-conditions:"); ok {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			return value
+		}
+		return fmt.Sprintf("%s > [%s]", field, value)
+	}
 	if strings.EqualFold(paramFormat, "date") {
 		if ts, err := time.Parse(time.RFC3339, value); err == nil {
 			return ts.Format("2006-01-02")
