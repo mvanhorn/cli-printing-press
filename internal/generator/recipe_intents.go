@@ -2,6 +2,7 @@ package generator
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -315,10 +316,8 @@ func looksLikeRecipeDomain(token string) bool {
 	if len(parts) < 2 {
 		return false
 	}
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
+	if slices.Contains(parts, "") {
+		return false
 	}
 	return true
 }
