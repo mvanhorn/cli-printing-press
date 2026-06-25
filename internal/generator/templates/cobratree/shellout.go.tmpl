@@ -49,7 +49,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 
 func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) ([]string, error) {
 	out := make([]string, 0, len(positionals))
-	for _, positional := range positionals {
+	for positionalIndex, positional := range positionals {
 		value, ok := args[positional.InputName]
 		if !ok || value == nil {
 			continue
@@ -71,9 +71,12 @@ func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, rea
 		if text != "-" && strings.HasPrefix(text, "-") {
 			return nil, fmt.Errorf("flag-like positional argument %q not allowed in structured positional %q; use structured flag parameters instead", text, positional.InputName)
 		}
+		if readOnly && positionalWriteSinks[positionalIndex] && text != "-" {
+			return nil, fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", positionalIndex+1, text)
+		}
 		out = append(out, text)
 	}
-	if err := validatePositionalArgsForMCP(out, readOnly, positionalWriteSinks); err != nil {
+	if err := validatePositionalArgsForMCP(out, readOnly, nil); err != nil {
 		return nil, err
 	}
 	return out, nil

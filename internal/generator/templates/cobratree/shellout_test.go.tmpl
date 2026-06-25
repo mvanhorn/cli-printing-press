@@ -278,6 +278,36 @@ func TestPositionalsExposeNamedInputsAndRejectFlagLikeValues(t *testing.T) {
 	}
 }
 
+func TestStructuredPositionalWriteSinkUsesOriginalCLIIndex(t *testing.T) {
+	cmd := &cobra.Command{Use: "export [format] <output-file>"}
+	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
+	if got, want := len(positionals), 2; got != want {
+		t.Fatalf("positionals length = %d, want %d: %#v", got, want, positionals)
+	}
+
+	if _, err := positionalArgsFromMCP(
+		map[string]any{"output-file": "out.json"},
+		positionals,
+		true,
+		map[int]bool{1: true},
+	); err == nil {
+		t.Fatal("structured write sink with omitted optional positional succeeded, want error")
+	}
+
+	got, err := positionalArgsFromMCP(
+		map[string]any{"output-file": "-"},
+		positionals,
+		true,
+		map[int]bool{1: true},
+	)
+	if err != nil {
+		t.Fatalf("stdout structured write sink returned error: %v", err)
+	}
+	if want := []string{"-"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("structured write sink args = %v, want %v", got, want)
+	}
+}
+
 func TestCLIArgsFromMCPSkipsStructuredPositionals(t *testing.T) {
 	cmd := &cobra.Command{Use: "export <resource> [id]"}
 	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
@@ -325,15 +355,15 @@ func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEqui
 	root := &cobra.Command{Use: "root"}
 	root.AddCommand(
 		&cobra.Command{
-			Use: "context",
+			Use:  "context",
 			RunE: func(cmd *cobra.Command, args []string) error { return nil },
 		},
 		&cobra.Command{
-			Use: "auth",
+			Use:  "auth",
 			RunE: func(cmd *cobra.Command, args []string) error { return nil },
 		},
 		&cobra.Command{
-			Use: "search <query>",
+			Use:  "search <query>",
 			RunE: func(cmd *cobra.Command, args []string) error { return nil },
 		},
 		&cobra.Command{
