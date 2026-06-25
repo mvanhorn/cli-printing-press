@@ -16,7 +16,6 @@ import (
 	"query-endpoint-golden-pp-cli/internal/cliutil"
 	"query-endpoint-golden-pp-cli/internal/store"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,9 +58,8 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Sync API data to local SQLite for offline search and analysis",
-		Long: `Sync data from the API into a local SQLite database. This API does
-not declare temporal sync filters, so sync performs full pagination unless an
-explicit resource declares its own incremental filter.
+		Long: `Sync data from the API into a local SQLite database. Supports resumable
+incremental sync (only fetches new data since last sync) and full resync.
 Once synced, use the 'search' command for instant full-text search.
 
 Exit codes & warnings:
@@ -151,7 +149,7 @@ Resource scoping:
 			}
 
 			if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages") {
-				maxPages = 1
+				maxPages = 10
 			}
 
 			// --latest-only narrows to the first page of each resource
@@ -210,6 +208,11 @@ Resource scoping:
 			}
 
 			started := time.Now()
+			// prune gates deletion reconciliation: a full sync prunes local rows
+			// the API no longer returns within a fully-enumerated partition, unless
+			// --no-prune disables it. Flat tenant-scoped reconcile (per resource)
+			// and dependent per-parent reconcile share this gate.
+			prune := full && !noPrune
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
 
@@ -219,7 +222,7 @@ Resource scoping:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(cmd.Context(), c, db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams, syncEventWriter)
+						res := syncResource(cmd.Context(), c, db, resource, sinceTS, full, maxPages, effectiveLatestOnly, prune, userParams, syncEventWriter)
 						results <- res
 					}
 				}()
@@ -242,8 +245,6 @@ Resource scoping:
 			var criticalErrCount int
 			var warnCount int
 			var successCount int
-			var failedResources []string
-			var criticalFailedResources []string
 			var firstErr error
 			var firstPlaceholderErr error
 			for res := range results {
@@ -252,7 +253,6 @@ Resource scoping:
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
-					failedResources = append(failedResources, res.Resource)
 					if firstErr == nil {
 						firstErr = res.Err
 					}
@@ -261,7 +261,6 @@ Resource scoping:
 					}
 					if criticalResources[res.Resource] {
 						criticalErrCount++
-						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
 				} else if res.Warn != nil {
 					if humanFriendly {
@@ -305,17 +304,17 @@ Resource scoping:
 				return classifyAPIError(firstPlaceholderErr, flags)
 			}
 			if strict && errCount > 0 {
-				return errors.New(describeFailedResources(errCount, failedResources))
+				return fmt.Errorf("%d resource(s) failed to sync", errCount)
 			}
 			if criticalErrCount > 0 {
-				return errors.New(describeCriticalFailedResources(criticalErrCount, criticalFailedResources))
+				return fmt.Errorf("%d critical resource(s) failed to sync", criticalErrCount)
 			}
 			if successCount == 0 {
 				if warnCount > 0 && errCount == 0 {
-					return fmt.Errorf("%d resource(s) completed with warnings but no successful syncs", warnCount)
+					return fmt.Errorf("%d resource(s) skipped due to insufficient access", warnCount)
 				}
 				if errCount > 0 {
-					return errors.New(describeFailedResources(errCount, failedResources))
+					return fmt.Errorf("%d resource(s) failed to sync", errCount)
 				}
 			}
 			if errCount > 0 && !strict && criticalErrCount == 0 && successCount > 0 {
@@ -354,7 +353,7 @@ Resource scoping:
 func syncResource(ctx context.Context, c interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams, syncEvents io.Writer) syncResult {
+}, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool, userParams *syncUserParams, syncEvents io.Writer) syncResult {
 	started := time.Now()
 	if syncEvents == nil {
 		syncEvents = io.Discard
@@ -442,7 +441,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	cursor := existingCursor
-	pageSize := determinePaginationDefaults(resource)
+	pageSize := determinePaginationDefaults()
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
@@ -459,6 +458,15 @@ func syncResource(ctx context.Context, c interface {
 	var extractFailureTotal int
 	var consumedTotal int
 	anomalyEmitted := false
+
+	// Flat tenant-scoped reconcile bookkeeping (mirrors the dependent loop's
+	// partitionOutcome machinery). flatReconcilable gates all of it: only
+	// resources classified reconcileMode=="flat" collect seen IDs and prune.
+	// outcome.complete is set ONLY at proven natural ends; any abnormal break
+	// sets outcome.reason and leaves complete=false so the reconcile SKIPS.
+	flatReconcilable := resourceReconcileMode(resource) == "flat"
+	outcome := partitionOutcome{}
+	var seenIDs []string
 
 	for {
 		params := map[string]string{}
@@ -508,7 +516,7 @@ func syncResource(ctx context.Context, c interface {
 				if !humanFriendly {
 					fmt.Fprintln(syncEvents, syncWarningJSON(resource, "", w.Status, w.Reason, w.Message))
 				}
-				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped due to insufficient access: %s (%s)", resource, w.Reason), Duration: time.Since(started)}
+				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
 			}
 			if !humanFriendly {
 				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
@@ -531,7 +539,7 @@ func syncResource(ctx context.Context, c interface {
 
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
+		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, dataEnvelopeKeysForResource(resource, path))
 
 		// Page-int paginator fallback: when the API paginates by integer
 		// ?page=N and emits no body cursor, treat a full page as a signal
@@ -574,6 +582,11 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
+			// Abnormal: a 200 with a non-JSON body means the page was not a
+			// trustworthy enumeration — leave outcome.complete=false so reconcile
+			// SKIPS. Reuse the dependent loop's reason string for cross-loop
+			// consistency.
+			outcome.reason = "non_json_200_body"
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\nwarning: %s returned a 200 response with a non-JSON body; no rows were stored.\n", resource)
 			} else {
@@ -583,7 +596,9 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 {
-			if isEmptyPageResponse(data, responsePathForResource(resource, path)...) {
+			if isEmptyPageResponse(data, dataEnvelopeKeysForResource(resource, path)) {
+				// Natural end: the API legitimately returned an empty page.
+				outcome.complete = true
 				break
 			}
 			// Single object response - try to store as-is
@@ -594,6 +609,8 @@ func syncResource(ctx context.Context, c interface {
 				return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
 			}
 			totalCount++
+			// Single-object resources are fully enumerated by definition.
+			outcome.complete = true
 			break
 		}
 
@@ -646,7 +663,20 @@ func syncResource(ctx context.Context, c interface {
 
 		totalCount += stored
 		atomic.AddInt64(&progressCount, int64(stored))
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
+		// Collect seen IDs for flat tenant-scoped reconcile. extractID resolves
+		// the primary key the same way UpsertBatch does, so seenIDs match stored
+		// row IDs. Only non-empty IDs are tracked; reconcile never deletes a row
+		// whose ID was seen this run.
+		if flatReconcilable {
+			for _, it := range items {
+				if o, derr := store.DecodeJSONObject(it); derr == nil {
+					if id := extractID(resource, o); id != "" {
+						seenIDs = append(seenIDs, id)
+					}
+				}
+			}
+		}
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, dataEnvelopeKeysForResource(resource, path)) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -704,6 +734,10 @@ func syncResource(ctx context.Context, c interface {
 					}
 				}
 			}
+			// A cap break ends enumeration before exhausting the partition; mirror
+			// the dependent loop and treat it as incomplete (reconcile SKIPS). Safe
+			// default: when the cap may have truncated, never prune.
+			outcome.reason = "max_pages_cap"
 			break
 		}
 
@@ -714,6 +748,9 @@ func syncResource(ctx context.Context, c interface {
 		// check below because the natural-end check would not catch a sticky
 		// non-empty cursor on its own.
 		if nextCursor != "" && nextCursor == lastNextCursor {
+			// Abnormal: a non-advancing cursor means we cannot prove the partition
+			// was fully enumerated — leave outcome.complete=false (reconcile SKIPS).
+			outcome.reason = "stuck_cursor"
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages; aborting to prevent budget waste.\n", resource)
 			} else {
@@ -730,12 +767,15 @@ func syncResource(ctx context.Context, c interface {
 		// false for them) nor on the generic short-page check (their page size
 		// is the in-query page size, not pageSize.limit).
 		if !resourceSupportsPagination(resource) && path != queryPath {
+			outcome.complete = true // resource declares no pagination: one page is the whole set
 			break
 		}
 		if !hasMore {
+			outcome.complete = true
 			break
 		}
 		if path != queryPath && len(items) < pageSize.limit {
+			outcome.complete = true
 			break
 		}
 		if nextCursor == "" {
@@ -747,6 +787,7 @@ func syncResource(ctx context.Context, c interface {
 			} else {
 				// A cursor-based API reporting has_more without a next cursor
 				// cannot advance safely; stop instead of looping silently.
+				outcome.reason = "cursor_unavailable"
 				break
 			}
 		}
@@ -758,6 +799,34 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		cursor = nextCursor
+	}
+
+	// Flat tenant-scoped reconcile: prune local rows the API no longer returns
+	// within THIS tenant's partition, gated on a proven-complete sync.
+	//   - Unknown tenant (resolveTenantID()=="") ⇒ SKIP, zero deletes. This is
+	//     the OPPOSITE of the dependent fan-out fallback (which enumerates
+	//     unscoped): a flat delete cannot be safely scoped without a tenant, so
+	//     we never delete on unknown.
+	//   - Incomplete sync (outcome.complete==false) ⇒ SKIP with the recorded
+	//     reason; an abnormal break never proves the partition was enumerated.
+	if prune && flatReconcilable {
+		def := flatReconcileDef(resource)
+		tenantUUID := resolveTenantID()
+		if tenantUUID == "" {
+			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unknown-tenant"}`+"\n", resource)
+		} else if outcome.complete {
+			deleted, rerr := db.ReconcilePartition(
+				resource, "$."+def.BodyField, tenantUUID,
+				seenIDs, resource, store.CascadeJunctionsFor(resource),
+			)
+			if rerr != nil {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", resource, tenantUUID, rerr.Error())
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", resource, tenantUUID, deleted)
+			}
+		} else {
+			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, outcome.reason)
+		}
 	}
 
 	// Final sync state: clear cursor on natural completion, but preserve the
@@ -787,15 +856,6 @@ func syncResource(ctx context.Context, c interface {
 		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, totalCount, time.Since(started).Milliseconds())
 	}
 
-	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal >= consumedTotal {
-		return syncResult{
-			Resource: resource,
-			Count:    0,
-			Warn:     fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal),
-			Duration: time.Since(started),
-		}
-	}
-
 	return syncResult{Resource: resource, Count: totalCount, Duration: time.Since(started)}
 }
 
@@ -809,9 +869,7 @@ type paginationDefaults struct {
 
 // determinePaginationDefaults returns the pagination parameter names to use.
 // Values are detected from the API spec by the profiler at generation time.
-func determinePaginationDefaults(resource string) paginationDefaults {
-	switch resource {
-	}
+func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
 		cursorParam: "after",
 		cursorType:  "",
@@ -843,13 +901,6 @@ func syncResourceSinceParamFormat(resource string) string {
 }
 
 func formatSyncSinceValue(value string, paramFormat string) string {
-	if field, ok := strings.CutPrefix(paramFormat, "odata-conditions:"); ok {
-		field = strings.TrimSpace(field)
-		if field == "" {
-			return value
-		}
-		return fmt.Sprintf("%s > [%s]", field, value)
-	}
 	if strings.EqualFold(paramFormat, "date") {
 		if ts, err := time.Parse(time.RFC3339, value); err == nil {
 			return ts.Format("2006-01-02")
@@ -870,7 +921,7 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 // 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
 // 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
-func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ...string) ([]json.RawMessage, string, bool) {
+func extractPageItems(data json.RawMessage, cursorParam string, envelopeKeyOverrides ...[]string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err == nil {
@@ -883,43 +934,12 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		return nil, "", false
 	}
 
-	for _, responsePath := range responsePaths {
-		pathData, ok := responsePayloadAtPath(data, responsePath)
-		if !ok {
-			continue
-		}
-		if items, ok := extractObjectArray(pathData); ok {
-			nextCursor, hasMore := "", false
-			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
-				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
-			}
-			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
-			if nextCursor == "" {
-				nextCursor = outerCursor
-			}
-			hasMore = hasMore || outerHasMore
-			return items, nextCursor, hasMore
-		}
-		var inner map[string]json.RawMessage
-		if json.Unmarshal(pathData, &inner) == nil {
-			if items, ok := extractItemsFromEnvelope(inner); ok {
-				nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
-				outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
-				if nextCursor == "" {
-					nextCursor = outerCursor
-				}
-				hasMore = hasMore || outerHasMore
-				return items, nextCursor, hasMore
-			}
-		}
-	}
-
 	if items, ok := extractItemsByKnownKeys(envelope); ok {
 		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
 		return items, nextCursor, hasMore
 	}
 
-	for _, key := range dataEnvelopeKeys {
+	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1038,7 +1058,7 @@ func isDryRunResponse(data json.RawMessage) bool {
 	return json.Unmarshal(raw, &v) == nil && v
 }
 
-func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
+func isEmptyPageResponse(data json.RawMessage, envelopeKeyOverrides ...[]string) bool {
 	var direct []json.RawMessage
 	if err := json.Unmarshal(data, &direct); err == nil && !isJSONNull(data) {
 		return len(direct) == 0
@@ -1053,28 +1073,7 @@ func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
 		return true
 	}
 
-	for _, responsePath := range responsePaths {
-		pathData, ok := responsePayloadAtPath(data, responsePath)
-		if !ok {
-			continue
-		}
-		if isJSONNull(pathData) {
-			if envelopeReportsFailure(envelope) {
-				return true
-			}
-			continue
-		}
-		var direct []json.RawMessage
-		if json.Unmarshal(pathData, &direct) == nil && !isJSONNull(pathData) {
-			return len(direct) == 0
-		}
-		var inner map[string]json.RawMessage
-		if json.Unmarshal(pathData, &inner) == nil && isEmptyPageEnvelope(inner) {
-			return true
-		}
-	}
-
-	for _, key := range dataEnvelopeKeys {
+	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1280,12 +1279,12 @@ func pageAllowsPageIntFallback(data json.RawMessage) bool {
 	return pageMayHaveMore(data)
 }
 
-func pageMayHaveMore(data json.RawMessage, responsePaths ...string) bool {
-	hasMore, parsed := pageExplicitHasMore(data, responsePaths...)
+func pageMayHaveMore(data json.RawMessage, envelopeKeyOverrides ...[]string) bool {
+	hasMore, parsed := pageExplicitHasMore(data, envelopeKeyOverrides...)
 	return !parsed || hasMore
 }
 
-func pageExplicitHasMore(data json.RawMessage, responsePaths ...string) (bool, bool) {
+func pageExplicitHasMore(data json.RawMessage, envelopeKeyOverrides ...[]string) (bool, bool) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return false, false
@@ -1293,19 +1292,7 @@ func pageExplicitHasMore(data json.RawMessage, responsePaths ...string) (bool, b
 	if hasMore, parsed := envelopeExplicitHasMore(envelope); parsed {
 		return hasMore, true
 	}
-	for _, responsePath := range responsePaths {
-		pathData, ok := responsePayloadAtPath(data, responsePath)
-		if !ok {
-			continue
-		}
-		var inner map[string]json.RawMessage
-		if json.Unmarshal(pathData, &inner) == nil {
-			if hasMore, parsed := envelopeExplicitHasMore(inner); parsed {
-				return hasMore, true
-			}
-		}
-	}
-	for _, key := range dataEnvelopeKeys {
+	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1594,23 +1581,6 @@ func knownSyncResourceNames() []string {
 	return names
 }
 
-func describeFailedResources(count int, resources []string) string {
-	return describeResourceFailure(count, "resource(s)", resources)
-}
-
-func describeCriticalFailedResources(count int, resources []string) string {
-	return describeResourceFailure(count, "critical resource(s)", resources)
-}
-
-func describeResourceFailure(count int, label string, resources []string) string {
-	if len(resources) == 0 {
-		return fmt.Sprintf("%d %s failed to sync", count, label)
-	}
-	names := append([]string(nil), resources...)
-	sort.Strings(names)
-	return fmt.Sprintf("%d %s failed to sync: %s", count, label, strings.Join(names, ", "))
-}
-
 // syncResourcePath maps resource names to their actual API endpoint paths.
 // For REST APIs this is typically "/<resource>". For non-REST APIs (e.g., Steam)
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
@@ -1636,6 +1606,63 @@ func syncResourcePath(resource string) (string, error) {
 // flat paths.
 var resourceIDFieldOverrides = map[string]string{}
 
+// partitionOutcome tracks whether a sync loop (flat tenant-scoped OR dependent
+// per-parent) enumerated its partition completely. complete is set ONLY at
+// proven natural ends; any abnormal break records a reason and leaves
+// complete=false so the gated reconcile SKIPS. scopeVal carries the dependent
+// loop's parent scope value (unused by the flat path).
+type partitionOutcome struct {
+	complete bool
+	reason   string
+	scopeVal string
+}
+
+// flatReconcileModes maps a flat resource to its reconcile mode classification
+// (from SyncableResource.ReconcileMode, set by the profiler when a flat resource
+// carries a tenant scope column AND an extractable IDField AND no discriminator).
+// Only "flat" resources are emitted; resourceReconcileMode returns "" for any
+// resource absent here, which is all the flat reconcile gate checks for.
+var flatReconcileModes = map[string]string{}
+
+// resourceReconcileMode returns the flat reconcile classification for a resource,
+// or "" when it is not a flat-reconcilable resource.
+func resourceReconcileMode(resource string) string {
+	return flatReconcileModes[resource]
+}
+
+// flatReconcileDefT carries the per-resource metadata the flat reconcile call
+// site needs. BodyField is the JSON body key (== TenantScopeColumn; the column
+// name and the body key coincide) used to scope ReconcilePartition's
+// json_extract($.<BodyField>) partition filter to the active tenant.
+type flatReconcileDefT struct {
+	BodyField string
+}
+
+// flatReconcileDefs maps each flat-reconcilable resource to its tenant body
+// field. Sourced from SyncableResource.TenantScopeColumn for ReconcileMode=="flat".
+var flatReconcileDefs = map[string]flatReconcileDefT{}
+
+// flatReconcileDef returns the flat reconcile metadata for a resource (zero
+// value when absent; the call site only reaches it for flatReconcilable resources).
+func flatReconcileDef(resource string) flatReconcileDefT {
+	return flatReconcileDefs[resource]
+}
+
+// resolveTenantID returns the active tenant's stable ID for tenant-scoped
+// enumeration and reconcile, or "" = unknown. The generated default cannot
+// resolve (a printed CLI has no tenant registry). A novel override reassigns
+// this with a real resolver in RunE (after flag parsing). No-arg by design: it
+// must not reference any novel (hand-patched) type, so the override owns all
+// config/slug access internally. Consumers branch on "" with OPPOSITE fallbacks:
+// fan-out falls back to UNSCOPED enumeration; flat reconcile SKIPS (never
+// deletes).
+var resolveTenantID = func() string { return "" }
+
+// parentTenantScopeColumns maps a dependent-parent table to its tenant
+// discriminator column (from x-pp-tenant-scope-column), used to scope dependent
+// fan-out. Empty when no parent is annotated.
+var parentTenantScopeColumns = map[string]string{}
+
 // queryEntity maps each SQL-query-endpoint resource to its API entity name for
 // the shared query endpoint's injected SELECT (e.g. "invoices" -> "Invoice").
 // Populated from the spec's query_sync hint plus each list endpoint's response
@@ -1659,7 +1686,7 @@ const (
 // identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
 // so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
 // field and upsert on names — see #1394.
-var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}
+var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}
 
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,
@@ -1672,17 +1699,20 @@ var pageItemKeys = []string{
 
 var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 
-func responsePathForResource(resource, path string) []string {
-	switch resource + "\x00" + path {
-	case "gadgets\x00/query":
-		return []string{"QueryResponse.Gadget"}
-	case "widgets\x00/query":
-		return []string{"QueryResponse.Widget"}
-	}
+var queryDataEnvelopeKeys = []string{"data", "Data", "result", "Result", "QueryResponse"}
+
+func dataEnvelopeKeysForResource(resource, path string) []string {
 	if _, ok := queryEntity[resource]; ok && path == queryPath {
-		return []string{"QueryResponse"}
+		return queryDataEnvelopeKeys
 	}
-	return nil
+	return dataEnvelopeKeys
+}
+
+func envelopeKeysOrDefault(overrides [][]string) []string {
+	if len(overrides) > 0 && len(overrides[0]) > 0 {
+		return overrides[0]
+	}
+	return dataEnvelopeKeys
 }
 
 var pageMetadataArrayKeys = map[string]bool{
@@ -1779,14 +1809,6 @@ func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
 				}
 			}
 		}
-		camelBase := lowerCamelResourceIDBase(base)
-		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
-			if v, ok := obj[camelBase+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
-			}
-		}
 	}
 	return ""
 }
@@ -1852,23 +1874,6 @@ func depluralizeResourceStem(r string) string {
 		return strings.TrimSuffix(r, "s") // languages -> language, cases -> case
 	}
 	return r
-}
-
-func lowerCamelResourceIDBase(base string) string {
-	parts := strings.FieldsFunc(base, func(r rune) bool {
-		return r == '_' || r == '-'
-	})
-	if len(parts) == 0 {
-		return base
-	}
-	for i := range parts {
-		if i == 0 {
-			parts[i] = strings.ToLower(parts[i])
-			continue
-		}
-		parts[i] = strings.ToUpper(parts[i][:1]) + strings.ToLower(parts[i][1:])
-	}
-	return strings.Join(parts, "")
 }
 
 func scalarIDString(value any) string {

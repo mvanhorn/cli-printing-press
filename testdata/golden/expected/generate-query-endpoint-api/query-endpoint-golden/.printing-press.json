@@ -22,7 +22,7 @@
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
   "run_id": "<RUN_ID>",
   "schema_version": 1,
-  "spec_checksum": "sha256:c7fe9a113944b6db8073b4650cfb16dc877edda5457e489c0376d939b0ef3704",
+  "spec_checksum": "sha256:689716d42c07742a68ef830fc466ceda7665ace59fe0ae8a57345fedf683cebf",
   "spec_format": "internal",
   "spec_path": "query-endpoint-api.yaml",
   "spec_url": "file://testdata/golden/fixtures/query-endpoint-api.yaml"

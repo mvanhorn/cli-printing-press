@@ -194,7 +194,7 @@ func runAutoRefresh(ctx context.Context, flags *rootFlags, db *store.Store, reso
 			return ctx.Err()
 		default:
 		}
-		result := syncResource(ctx, c, db, resource, "", false, 1, true, nil, os.Stderr)
+		result := syncResource(ctx, c, db, resource, "", false, 1, true, false, nil, os.Stderr)
 		if result.Err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", resource, result.Err))
 		}

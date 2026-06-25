@@ -132,16 +132,7 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("creating db directory: %w", err)
 	}
 
-	// Pragma order is load-bearing: busy_timeout must engage BEFORE
-	// journal_mode(WAL) so the delete→WAL conversion (an exclusive
-	// operation on a fresh DB) runs with a busy handler active. With the
-	// timeout listed after the conversion, concurrent first-run opens
-	// race the WAL switch and fail SQLITE_BUSY instead of waiting. This
-	// mirrors the OpenReadOnly DSN and works alongside the retryOnBusy
-	// wrapper around Conn() acquisition below; both layers are needed
-	// because modernc.org/sqlite's connect-time conversion is not fully
-	// covered by the statement-level busy handler alone.
-	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)"
+	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)"
 	if err := ensureSQLiteDriverInitialized(ctx, dsn); err != nil {
 		return nil, err
 	}
@@ -908,12 +899,15 @@ func shouldIndexSearchString(key, value string) bool {
 		return false
 	}
 	lower := strings.ToLower(s)
+	upper := strings.ToUpper(s)
 	switch {
 	case IsUUID(s):
 		return false
 	case isoDatePattern.MatchString(s):
 		return false
 	case strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://"):
+		return false
+	case upper == s && len(s) == 3 && strings.IndexFunc(s, func(r rune) bool { return r < 'A' || r > 'Z' }) == -1:
 		return false
 	}
 	tokens := ftsQueryTokenRE.FindAllString(s, -1)
@@ -1178,7 +1172,7 @@ var resourceIDFieldOverrides = map[string]string{}
 // identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
 // so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
 // field and upsert on names — see #1394.
-var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}
+var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}
 
 // resourceParentKeyColumns identifies generated dependent resources whose
 // local mirror rows need the parent context in the storage key. Without this,
@@ -1225,14 +1219,6 @@ func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
 	for _, base := range resourceIDBaseNames(resourceType) {
 		for _, suffix := range []string{"_id", "_code", "_key", "_slug"} {
 			if v, ok := obj[base+suffix]; ok {
-				if s := scalarIDString(v); s != "" && s != "<nil>" {
-					return s
-				}
-			}
-		}
-		camelBase := lowerCamelResourceIDBase(base)
-		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
-			if v, ok := obj[camelBase+suffix]; ok {
 				if s := scalarIDString(v); s != "" && s != "<nil>" {
 					return s
 				}
@@ -1305,23 +1291,6 @@ func depluralizeResourceStem(r string) string {
 	return r
 }
 
-func lowerCamelResourceIDBase(base string) string {
-	parts := strings.FieldsFunc(base, func(r rune) bool {
-		return r == '_' || r == '-'
-	})
-	if len(parts) == 0 {
-		return base
-	}
-	for i := range parts {
-		if i == 0 {
-			parts[i] = strings.ToLower(parts[i])
-			continue
-		}
-		parts[i] = strings.ToUpper(parts[i][:1]) + strings.ToLower(parts[i][1:])
-	}
-	return strings.Join(parts, "")
-}
-
 func scalarIDString(value any) string {
 	switch value.(type) {
 	case string, bool, int, int8, int16, int32, int64,
@@ -1345,16 +1314,34 @@ func resourceStorageID(resourceType, id string, obj map[string]any) string {
 	return id + string([]byte{0}) + parentValue
 }
 
-// BareResourceID strips the NUL-delimited parent suffix that resourceStorageID
-// appends to dependent resource types, returning the bare entity id. ListIDs
-// returns composite keys for parent-keyed resources, so callers comparing those
-// ids against bare API ids must run them through this first. For non-composite
-// ids it returns the input unchanged, so it is safe to apply to every id.
-func BareResourceID(storageID string) string {
-	if i := strings.IndexByte(storageID, 0); i >= 0 {
-		return storageID[:i]
+// childScopeColumnSources maps a typed child table's path-placeholder scope
+// column (the FK the dependent sync injects per item, e.g. "projects_id") to
+// the singular parent-reference field the API body carries natively (e.g.
+// "project"). deriveScopeColumns consults this so write-through cache paths —
+// which pass RAW API items to UpsertBatch and never carry the path-injected
+// scope column — still satisfy the typed table's NOT NULL scope column instead
+// of stranding the row in generic resources.
+var childScopeColumnSources = map[string]string{}
+
+// deriveScopeColumns backfills a typed child table's scope column from the
+// item's own parent reference when path injection is absent. A value already
+// present (valid injection) is never overwritten.
+func deriveScopeColumns(obj map[string]any) {
+	for scopeKey, sourceKey := range childScopeColumnSources {
+		if v := lookupFieldValue(obj, scopeKey); v != nil {
+			if s, ok := v.(string); !ok || s != "" {
+				continue // path injection already supplied a usable value
+			}
+		}
+		src := lookupFieldValue(obj, sourceKey)
+		if src == nil {
+			continue
+		}
+		if s, ok := src.(string); ok && s == "" {
+			continue
+		}
+		obj[scopeKey] = src
 	}
-	return storageID
 }
 
 // UpsertBatch inserts or replaces multiple records in a single transaction
@@ -1400,13 +1387,6 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		// spec declares x-resource-id).
 		id := ExtractResourceID(resourceType, obj)
 		if id == "" {
-			if unwrappedObj, unwrappedItem, ok := unwrapIDBearingEnvelopeItem(resourceType, item, obj); ok {
-				obj = unwrappedObj
-				item = unwrappedItem
-				id = ExtractResourceID(resourceType, obj)
-			}
-		}
-		if id == "" {
 			skippedCount++
 			extractFailures++
 			continue
@@ -1420,6 +1400,11 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 			return stored, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, storageID, err)
 		}
 		stored++
+
+		// Backfill the typed child table's NOT NULL scope column from the item's
+		// own parent reference when the dependent-sync path injection is absent
+		// (write-through cache feeds RAW API items here).
+		deriveScopeColumns(obj)
 
 		savepoint := fmt.Sprintf("pp_typed_%d", i)
 		if _, err := tx.Exec("SAVEPOINT " + savepoint); err != nil {
@@ -1449,12 +1434,9 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		}
 	}
 
-	// Warn when every decoded item in a batch lacks an extractable ID — this
-	// likely means the API uses a primary key field we don't recognize yet.
-	// Partial misses still surface through extractFailures so sync can emit
-	// a structured primary_key_unresolved anomaly without spamming stderr for
-	// write-through cache batches that did persist useful rows.
-	if extractFailures > 0 && stored == 0 && len(items) > 0 {
+	// Warn when most items in a batch lack an extractable ID — this likely
+	// means the API uses a primary key field we don't recognize yet.
+	if skippedCount > 0 && len(items) > 0 && skippedCount*2 > len(items) {
 		fmt.Fprintf(os.Stderr, "warning: %d/%d %s items returned but not cached locally (no extractable ID field; offline lookup against these rows will be incomplete; live queries unaffected)\n", skippedCount, len(items), resourceType)
 	}
 	// Surface typed-table failures without aborting the batch. Generic rows
@@ -1467,35 +1449,6 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		return 0, extractFailures, err
 	}
 	return stored, extractFailures, nil
-}
-
-func unwrapIDBearingEnvelopeItem(resourceType string, item json.RawMessage, obj map[string]any) (map[string]any, json.RawMessage, bool) {
-	var candidate map[string]any
-	candidateKey := ""
-	objectFields := 0
-	for key, value := range obj {
-		inner, ok := value.(map[string]any)
-		if !ok {
-			continue
-		}
-		objectFields++
-		if ExtractResourceID(resourceType, inner) != "" {
-			candidate = inner
-			candidateKey = key
-		}
-	}
-	if objectFields != 1 || candidate == nil || candidateKey == "" {
-		return nil, nil, false
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(item, &raw); err != nil {
-		return nil, nil, false
-	}
-	data, ok := raw[candidateKey]
-	if !ok {
-		return nil, nil, false
-	}
-	return candidate, data, true
 }
 
 func (s *Store) SaveSyncState(resourceType, cursor string, count int) error {
@@ -1526,12 +1479,11 @@ func (s *Store) GetSyncState(resourceType string) (cursor string, lastSynced tim
 func (s *Store) SaveSyncCursor(resourceType, cursor string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.Exec(
 		`INSERT INTO sync_state (resource_type, last_cursor, last_synced_at, total_count)
-		 VALUES (?, ?, ?, 0)
-		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = ?, last_synced_at = ?`,
-		resourceType, cursor, now, cursor, now,
+		 VALUES (?, ?, CURRENT_TIMESTAMP, 0)
+		 ON CONFLICT(resource_type) DO UPDATE SET last_cursor = ?, last_synced_at = CURRENT_TIMESTAMP`,
+		resourceType, cursor, cursor,
 	)
 	return err
 }
@@ -1548,8 +1500,6 @@ func (s *Store) GetSyncCursor(resourceType string) string {
 
 // ListIDs returns all IDs from a resource's domain table, or from the generic
 // resources table if no domain table exists. Used by dependent sync to iterate parents.
-// For parent-keyed resource types these are composite storage keys; run them
-// through BareResourceID before comparing against bare API ids.
 //
 // resourceType is never interpolated into SQL directly. We resolve it to a real
 // table name via a parameterized sqlite_master lookup; only that trusted name is
@@ -1573,6 +1523,74 @@ func (s *Store) ListIDs(resourceType string) ([]string, error) {
 	}
 	defer rows.Close()
 
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ListIDsScoped is ListIDs with an optional tenant filter. scopeValue=="" =>
+// unscoped (identical to ListIDs). When the typed table exists AND has
+// scopeColumn (validated via validIdentifierRE + pragma_table_info), the IDs are
+// filtered by that bound column. When the typed table exists but LACKS the
+// column, it degrades to unscoped ListIDs (never silently returns zero parents).
+// When no typed table exists, it filters the generic resources table via
+// json_extract. scopeColumn is validated; scopeValue is always bound.
+func (s *Store) ListIDsScoped(resourceType, scopeColumn, scopeValue string) ([]string, error) {
+	if scopeValue == "" || scopeColumn == "" {
+		return s.ListIDs(resourceType)
+	}
+	if !validIdentifierRE.MatchString(scopeColumn) {
+		return nil, fmt.Errorf("ListIDsScoped: invalid scope column %q", scopeColumn)
+	}
+	var table string
+	err := s.db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+		resourceType,
+	).Scan(&table)
+	if err == nil && table != "" {
+		var colName string
+		colErr := s.db.QueryRow(
+			`SELECT name FROM pragma_table_info(?) WHERE name=?`,
+			table, scopeColumn,
+		).Scan(&colName)
+		if colErr != nil || colName == "" {
+			// Typed table exists but lacks the scope column: degrade to unscoped
+			// rather than returning zero parents.
+			return s.ListIDs(resourceType)
+		}
+		qTable := strings.ReplaceAll(table, `"`, `""`)
+		qCol := strings.ReplaceAll(colName, `"`, `""`)
+		rows, qerr := s.db.Query(
+			fmt.Sprintf(`SELECT id FROM "%s" WHERE "%s" = ?`, qTable, qCol), scopeValue)
+		if qerr != nil {
+			return nil, qerr
+		}
+		defer rows.Close()
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				continue
+			}
+			ids = append(ids, id)
+		}
+		return ids, rows.Err()
+	}
+	// No typed table: filter the generic resources table by body field.
+	rows, qerr := s.db.Query(
+		fmt.Sprintf(`SELECT id FROM resources WHERE resource_type = ? AND json_extract(data, '$.%s') = ?`, scopeColumn),
+		resourceType, scopeValue,
+	)
+	if qerr != nil {
+		return nil, qerr
+	}
+	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
