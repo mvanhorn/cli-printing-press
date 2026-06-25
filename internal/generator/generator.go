@@ -6873,6 +6873,10 @@ func exampleNeedsTODO(line string) bool {
 }
 
 func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.Endpoint) string {
+	if strings.TrimSpace(endpoint.Example) != "" {
+		return endpoint.Example
+	}
+
 	commandParts := append(strings.Fields(commandPath), toKebab(endpointName))
 	if line, ok := g.narrativeExampleLine(commandParts, endpoint); ok {
 		return line
@@ -6893,6 +6897,10 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 }
 
 func (g *Generator) promotedExampleLine(promotedName string, endpoint spec.Endpoint) string {
+	if strings.TrimSpace(endpoint.Example) != "" {
+		return endpoint.Example
+	}
+
 	if line, ok := g.narrativeExampleLine([]string{promotedName}, endpoint); ok {
 		return line
 	}

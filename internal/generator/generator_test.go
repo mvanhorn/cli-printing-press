@@ -7291,10 +7291,10 @@ func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
 		"required-body promoted command must short-circuit to help on bare invocation")
 }
 
-func TestHappyArgsAnnotationEmittedFromSpec(t *testing.T) {
+func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := minimalSpec("happy-args")
+	apiSpec := minimalSpec("endpoint-fixtures")
 	apiSpec.Resources = map[string]spec.Resource{
 		"lookup": {
 			Description: "Lookup a page",
@@ -7304,6 +7304,7 @@ func TestHappyArgsAnnotationEmittedFromSpec(t *testing.T) {
 					Path:        "/lookup",
 					Description: "Lookup a page",
 					Params:      []spec.Param{{Name: "q", Type: "string", Required: true}},
+					Example:     "  endpoint-fixtures-pp-cli lookup --q example-page",
 					HappyArgs:   "--q=example-page",
 				},
 			},
@@ -7316,6 +7317,7 @@ func TestHappyArgsAnnotationEmittedFromSpec(t *testing.T) {
 					Path:        "/items/search",
 					Description: "Search items",
 					Params:      []spec.Param{{Name: "q", Type: "string", Required: true}},
+					Example:     "  endpoint-fixtures-pp-cli items search --q example-item",
 					HappyArgs:   "--q=example-item",
 				},
 				"get": {
@@ -7333,16 +7335,23 @@ func TestHappyArgsAnnotationEmittedFromSpec(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	promoted := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_lookup.go")
+	assert.Contains(t, promoted, `Example:     "  endpoint-fixtures-pp-cli lookup --q example-page"`,
+		"promoted command must prefer the spec-declared Cobra example")
 	assert.Contains(t, promoted, `"pp:happy-args": "--q=example-page"`,
 		"promoted command must carry spec-declared happy-path fixtures for live dogfood")
 
 	endpoint := readGeneratedFile(t, outputDir, "internal", "cli", "items_search.go")
+	assert.Contains(t, endpoint, `Example:     "  endpoint-fixtures-pp-cli items search --q example-item"`,
+		"non-promoted endpoint commands should also prefer their own spec-declared Cobra example")
 	assert.Contains(t, endpoint, `"pp:happy-args": "--q=example-item"`,
 		"non-promoted endpoint commands should also carry their own happy-path fixtures")
 
 	withoutHappyArgs := readGeneratedFile(t, outputDir, "internal", "cli", "items_get.go")
+	assert.Contains(t, withoutHappyArgs, `Example:     "  endpoint-fixtures-pp-cli items get 550e8400-e29b-41d4-a716-446655440000"`,
+		"endpoints without example must keep the existing synthesized example")
 	assert.NotContains(t, withoutHappyArgs, "pp:happy-args",
 		"endpoints without happy_args must keep the existing annotation shape")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // endpointHasRequiredInput must mirror the template's required-check gates

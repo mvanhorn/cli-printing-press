@@ -46,6 +46,8 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
         path: "/users"           # string (REQUIRED) API path; supports {param} placeholders
         base_url: "https://search.example.com/v1" # string optional override for this endpoint only
         description: "List users" # string endpoint help text
+        example: "  my-api-pp-cli users list --limit 25" # string optional Cobra Example override; include Cobra help indentation
+        happy_args: "--limit=25"  # string optional live-dogfood fixture args
         params:                   # []Param query/path parameters
           - name: limit           # string upstream wire key; request serialization always uses this value
             flag_name: page-size  # string optional public CLI/MCP/docs name; agent-authored from evidence
@@ -124,6 +126,18 @@ Next.js `__NEXT_DATA__` or schema.org JSON-LD; prefer `html_extract` modes
 `page`, `links`, or `embedded-json` before writing custom extraction code. Use
 `csv` for CSV responses that novel commands may parse through
 `cliutil.ParseCSV`, and `binary` for opaque byte payloads.
+
+**`example` and `happy_args` are endpoint-command fixtures.** Set `example`
+when the synthesized Cobra example would use placeholder values or omit
+domain-specific context. Use the exact command string that should appear in
+`--help`; lead with two spaces for Cobra help indentation and include the
+generated binary name and command path. When an endpoint is also promoted as a
+top-level command, the same `example` value is used verbatim for both forms, so
+write it as the promoted invocation if that is the command users should run. Set
+`happy_args` when live dogfood needs realistic arguments that cannot be inferred
+from names or schema hints. The value is copied into the generated `pp:happy-args`
+annotation and follows the runtime grammar, for example
+`"--zip=60614"` or `"id=example-id;--query=example"`.
 
 **`html_extract.link_prefixes` are path-segment anchored.** In `mode: links`, a
 prefix such as `/items` keeps links whose path is exactly `/items` or starts

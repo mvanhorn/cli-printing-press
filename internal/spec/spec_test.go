@@ -153,6 +153,43 @@ resources:
 	assert.True(t, param.DispatchParamSet)
 }
 
+func TestParseEndpointExampleAndHappyArgs(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: fixture-api
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  geography:
+    endpoints:
+      counties:
+        method: GET
+        path: /geography/counties
+        example: "fixture-api-pp-cli geography counties --zip 60614"
+        happy_args: "--zip=60614"
+        params:
+          - name: zip
+            type: string
+            required: true
+      states:
+        method: GET
+        path: /geography/states
+`)
+
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	counties := s.Resources["geography"].Endpoints["counties"]
+	assert.Equal(t, "fixture-api-pp-cli geography counties --zip 60614", counties.Example)
+	assert.Equal(t, "--zip=60614", counties.HappyArgs)
+
+	states := s.Resources["geography"].Endpoints["states"]
+	assert.Empty(t, states.Example)
+	assert.Empty(t, states.HappyArgs)
+}
+
 func TestDispatchParamFalseSurvivesRoundTrip(t *testing.T) {
 	t.Parallel()
 
