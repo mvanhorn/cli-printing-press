@@ -2625,7 +2625,9 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 		pathParams = []dependentPathParamDef{{"{{"}}Param: dep.ParentIDParam, Field: field}}
 	}
-	parentRows, err := dependentParentRows(db, dep.ParentTable, pathParams)
+	tenantUUID := resolveTenantID()
+	parentScopeColumn := parentTenantScopeColumns[dep.ParentTable]
+	parentRows, err := dependentParentRows(db, dep.ParentTable, pathParams, parentScopeColumn, tenantUUID)
 	if err != nil || len(parentRows) == 0 {
 		if len(parentRows) == 0 {
 			if humanFriendly {
@@ -3042,10 +3044,13 @@ func dependentParentFields(pathParams []dependentPathParamDef) []string {
 	return fields
 }
 
-func dependentParentRows(db *store.Store, parentTable string, pathParams []dependentPathParamDef) ([]map[string]string, error) {
+func dependentParentRows(db *store.Store, parentTable string, pathParams []dependentPathParamDef, scopeColumn, scopeValue string) ([]map[string]string, error) {
 	fields := dependentParentFields(pathParams)
 	if len(fields) == 1 {
-		values, err := db.ListIDs(parentTable)
+		// Tenant-scoped enumeration: scope to the active tenant's parents when a
+		// tenant column is known and resolved. scopeValue=="" => unscoped (the
+		// fan-out unknown-tenant fallback; the API 403s foreign parents).
+		values, err := db.ListIDsScoped(parentTable, scopeColumn, scopeValue)
 		if err != nil {
 			return nil, err
 		}
@@ -3055,6 +3060,8 @@ func dependentParentRows(db *store.Store, parentTable string, pathParams []depen
 		}
 		return rows, nil
 	}
+	// Multi-placeholder paths have no single tenant column to filter on; keep the
+	// existing unscoped enumeration.
 	if len(pathParams) == 1 && len(fields) == 2 && fields[0] == "id" {
 		values, err := db.ListField(parentTable, fields[1])
 		if err != nil {
