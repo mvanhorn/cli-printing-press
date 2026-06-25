@@ -75,6 +75,7 @@ func Probe(ctx context.Context, url string, opts Options) (*Result, error) {
 		if pr.Status > 0 && len(pr.Evidence) == 0 && statusIsClear(pr.Status) && !stdlibCleared(result) {
 			result.Mode = ModeBrowserHTTP
 			result.Confidence = 0.85
+			result.BodyEvidence = bodyEvidenceFromProbes(result.Probes)
 			result.Recommendation = Recommendation{
 				Runtime:   ModeBrowserHTTP,
 				Rationale: "Surf with Chrome TLS fingerprint cleared the protection that blocked plain stdlib HTTP.",
@@ -105,6 +106,7 @@ func stdlibCleared(result *Result) bool {
 func classifyStdlibSuccess(result *Result, partial bool) {
 	result.Mode = ModeStandardHTTP
 	result.Confidence = 0.95
+	result.BodyEvidence = bodyEvidenceFromProbes(result.Probes)
 	result.Recommendation = Recommendation{
 		Runtime:   ModeStandardHTTP,
 		Rationale: "Plain stdlib HTTP returned a non-error response; no special transport needed.",
@@ -186,6 +188,7 @@ func statusIsClear(status int) bool {
 // no rung returned a clear pass.
 func classifyFailure(result *Result, partial bool) {
 	result.Partial = partial
+	result.BodyEvidence = bodyEvidenceFromProbes(result.Probes)
 
 	hasProtection := false
 	allTransportErrors := true
@@ -269,8 +272,24 @@ func runRung(ctx context.Context, url string, transport Transport, opts Options)
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, bodyReadCap))
 	protections := classifyResponse(resp.StatusCode, resp.Header, string(body))
 	pr.Evidence = protectionsToEvidence(protections)
+	pr.BodyEvidence = protectionsToBodyEvidence(protections)
 	pr.ElapsedMS = time.Since(start).Milliseconds()
 	return pr
+}
+
+func bodyEvidenceFromProbes(probes []ProbeResult) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, pr := range probes {
+		for _, marker := range pr.BodyEvidence {
+			if seen[marker] {
+				continue
+			}
+			seen[marker] = true
+			out = append(out, marker)
+		}
+	}
+	return out
 }
 
 // buildClient constructs the *http.Client for one probe rung. Tests
