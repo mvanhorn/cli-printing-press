@@ -43,7 +43,7 @@ type novelFeatureTestRender struct {
 	Ident       string
 	CommandPath string
 	CommandArgs []string
-	SkipMessage string
+	CommandLeaf string
 }
 
 type novelFeatureStubNode struct {
@@ -173,7 +173,7 @@ func (g *Generator) renderNovelFeatureNode(node *novelFeatureStubNode, generated
 			Ident:       data.Ident,
 			CommandPath: data.CommandPath,
 			CommandArgs: strings.Fields(data.CommandPath),
-			SkipMessage: "TODO: implement table-driven tests for " + data.CommandPath,
+			CommandLeaf: node.segment,
 		}
 		if err := g.renderTemplate("novel_feature_command_test.go.tmpl", testPath, testData); err != nil {
 			return nil, fmt.Errorf("rendering novel feature command test %s: %w", data.CommandPath, err)
