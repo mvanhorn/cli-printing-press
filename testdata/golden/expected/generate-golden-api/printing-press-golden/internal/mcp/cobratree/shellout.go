@@ -68,6 +68,9 @@ func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, rea
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
+		if positionalIndex != len(out) {
+			return nil, fmt.Errorf("structured positional %q cannot be used while earlier positional arguments are omitted; provide the preceding positional arguments or use the args field", positional.InputName)
+		}
 		if text != "-" && strings.HasPrefix(text, "-") {
 			return nil, fmt.Errorf("flag-like positional argument %q not allowed in structured positional %q; use structured flag parameters instead", text, positional.InputName)
 		}

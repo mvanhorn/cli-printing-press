@@ -294,17 +294,53 @@ func TestStructuredPositionalWriteSinkUsesOriginalCLIIndex(t *testing.T) {
 		t.Fatal("structured write sink with omitted optional positional succeeded, want error")
 	}
 
-	got, err := positionalArgsFromMCP(
+	if _, err := positionalArgsFromMCP(
 		map[string]any{"output-file": "-"},
+		positionals,
+		true,
+		map[int]bool{1: true},
+	); err == nil {
+		t.Fatal("stdout structured write sink with omitted optional positional succeeded, want error")
+	}
+
+	got, err := positionalArgsFromMCP(
+		map[string]any{"format": "json", "output-file": "-"},
 		positionals,
 		true,
 		map[int]bool{1: true},
 	)
 	if err != nil {
-		t.Fatalf("stdout structured write sink returned error: %v", err)
+		t.Fatalf("stdout structured write sink with contiguous positionals returned error: %v", err)
 	}
-	if want := []string{"-"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"json", "-"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("structured write sink args = %v, want %v", got, want)
+	}
+}
+
+func TestStructuredPositionalsRejectGapsBeforeLaterArguments(t *testing.T) {
+	cmd := &cobra.Command{Use: "export [format] <output-file>"}
+	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
+
+	if _, err := positionalArgsFromMCP(
+		map[string]any{"output-file": "report.csv"},
+		positionals,
+		false,
+		nil,
+	); err == nil {
+		t.Fatal("later structured positional with omitted earlier positional succeeded, want error")
+	}
+
+	got, err := positionalArgsFromMCP(
+		map[string]any{"format": "csv", "output-file": "report.csv"},
+		positionals,
+		false,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("contiguous structured positionals returned error: %v", err)
+	}
+	if want := []string{"csv", "report.csv"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("contiguous structured positionals = %v, want %v", got, want)
 	}
 }
 
