@@ -1645,6 +1645,21 @@ func TestOAuth2GrantValidate(t *testing.T) {
 	}{
 		{name: "empty is valid (defaults to authorization_code)", cfg: AuthConfig{}},
 		{name: "explicit authorization_code is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}},
+		{
+			name: "authorization_code rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant: OAuth2GrantAuthorizationCode,
+				TokenURL:    "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
+		{
+			name: "empty default grant rejects placeholder token URL host",
+			cfg: AuthConfig{
+				TokenURL: "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
 		{name: "client_credentials is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}},
 		{
 			name: "client_credentials rejects placeholder token URL host",

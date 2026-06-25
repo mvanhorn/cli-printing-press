@@ -1648,6 +1648,11 @@ func validateAuthSubtype(c AuthConfig) error {
 func validateOAuth2Grant(c AuthConfig) error {
 	switch c.OAuth2Grant {
 	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials, OAuth2GrantDeviceCode:
+		if (c.OAuth2Grant == "" || c.OAuth2Grant == OAuth2GrantAuthorizationCode) && strings.TrimSpace(c.TokenURL) != "" {
+			if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
+				return err
+			}
+		}
 		if c.OAuth2Grant == OAuth2GrantClientCredentials && strings.TrimSpace(c.TokenURL) != "" {
 			if err := validateAuthURL("auth.token_url", c.TokenURL); err != nil {
 				return err
