@@ -132,6 +132,10 @@ const structuredCookieLineWindow = 5
 
 var structuredCookieValueLineRE = regexp.MustCompile(`(?i)["']value["']\s*:\s*["']([^"']{8,})["']`)
 var uuidCredentialValueRE = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`)
+var opaqueCredentialLowerRE = regexp.MustCompile(`[a-z]`)
+var opaqueCredentialUpperRE = regexp.MustCompile(`[A-Z]`)
+var opaqueCredentialDigitRE = regexp.MustCompile(`[0-9]`)
+var opaqueCredentialSymbolRE = regexp.MustCompile(`[._~+/=-]`)
 
 const publicSecretMarker = "pp:public-secret"
 
@@ -396,16 +400,16 @@ func looksLikeOpaqueCredentialValue(candidate string) bool {
 		return false
 	}
 	classes := 0
-	if regexp.MustCompile(`[a-z]`).MatchString(candidate) {
+	if opaqueCredentialLowerRE.MatchString(candidate) {
 		classes++
 	}
-	if regexp.MustCompile(`[A-Z]`).MatchString(candidate) {
+	if opaqueCredentialUpperRE.MatchString(candidate) {
 		classes++
 	}
-	if regexp.MustCompile(`[0-9]`).MatchString(candidate) {
+	if opaqueCredentialDigitRE.MatchString(candidate) {
 		classes++
 	}
-	if regexp.MustCompile(`[._~+/=-]`).MatchString(candidate) {
+	if opaqueCredentialSymbolRE.MatchString(candidate) {
 		classes++
 	}
 	return classes >= 2

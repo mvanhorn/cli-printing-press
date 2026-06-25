@@ -255,6 +255,7 @@ func TestFindPII_Email(t *testing.T) {
 		{name: "reserved-localhost-tld", line: `"email": "printer@app.localhost"`, expectKinds: nil},
 		{name: "reserved-invalid-tld", line: `"email": "printer@app.invalid"`, expectKinds: nil},
 		{name: "github-noreply", line: `git author 123456+octocat@users.noreply.github.com`, expectKinds: nil},
+		{name: "github-legacy-noreply", line: `git author octocat@users.noreply.github.com`, expectKinds: nil},
 		{name: "url-userinfo-placeholder", line: `Use https://login:password@api.vendor.example/v1 for Basic auth examples.`, expectKinds: nil},
 		{name: "no-tld", line: `"handle": "alice@example"`, expectKinds: nil},
 		{name: "missing-at", line: `"site": "example.com"`, expectKinds: nil},

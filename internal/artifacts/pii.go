@@ -564,13 +564,23 @@ func isGitHubNoreplyEmail(matched string) bool {
 	}
 	local := strings.TrimSuffix(lower, "@users.noreply.github.com")
 	id, handle, ok := strings.Cut(local, "+")
-	if !ok || id == "" || handle == "" {
-		return false
-	}
-	for _, r := range id {
-		if r < '0' || r > '9' {
+	if ok {
+		if id == "" || handle == "" {
 			return false
 		}
+		for _, r := range id {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return isGitHubHandleLocalPart(handle)
+	}
+	return isGitHubHandleLocalPart(local)
+}
+
+func isGitHubHandleLocalPart(handle string) bool {
+	if handle == "" {
+		return false
 	}
 	for _, r := range handle {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
