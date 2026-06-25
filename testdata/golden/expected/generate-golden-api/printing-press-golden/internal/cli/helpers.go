@@ -954,6 +954,69 @@ func printJSONFiltered(w io.Writer, v any, flags *rootFlags) error {
 	return printOutputWithFlags(w, json.RawMessage(raw), flags)
 }
 
+// wrapAgentOutput gives --agent callers one parseable top-level envelope for
+// generated command families that build typed Go values instead of endpoint
+// response bytes. The raw value is preserved under results so --json without
+// --agent can stay backward-compatible while shell agents get stable metadata.
+func wrapAgentOutput(data json.RawMessage, meta map[string]any) (json.RawMessage, error) {
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	if _, ok := meta["source"]; !ok {
+		meta["source"] = "local"
+	}
+	if source, _ := meta["source"].(string); source == "live" {
+		data = unwrapSingleKeyArray(data)
+	}
+	var results any
+	if json.Valid(data) {
+		results = data
+	} else {
+		results = string(data)
+	}
+	envelope := map[string]any{
+		"meta":    meta,
+		"results": results,
+	}
+	return json.Marshal(envelope)
+}
+
+// unwrapSingleKeyArray flattens single-key collection envelopes
+// ({"results":[...]}, {"data":[...]}, etc.) so the agent envelope
+// emits a stable .results[] across APIs. Multi-key objects pass
+// through so cursor/pagination fields stay accessible; non-array
+// values pass through so non-collection responses aren't reshaped.
+//
+// The wrapper-key set is intentionally narrower than
+// extractPaginatedItems (which also walks domain-specific keys like
+// "messages", "members", "values" used by social/messaging APIs).
+// This helper only flattens canonical collection envelopes for
+// --json output; the pagination walker has a broader remit.
+func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
+	leading := bytes.TrimLeft(data, " \t\r\n")
+	if len(leading) == 0 || leading[0] != '{' {
+		return data
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return data
+	}
+	if len(obj) != 1 {
+		return data
+	}
+	for key, val := range obj {
+		if key != "results" && key != "data" && key != "items" && key != "nodes" && key != "entries" && key != "records" {
+			return data
+		}
+		trimmed := bytes.TrimLeft(val, " \t\r\n")
+		if len(trimmed) == 0 || trimmed[0] != '[' {
+			return data
+		}
+		return val
+	}
+	return data
+}
+
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.
@@ -1111,6 +1174,10 @@ func camelToKebab(s string) string {
 
 // printOutputWithFlags routes output through the right format based on flags.
 func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) error {
+	return printOutputWithFlagsMeta(w, data, flags, map[string]any{"source": "local"})
+}
+
+func printOutputWithFlagsMeta(w io.Writer, data json.RawMessage, flags *rootFlags, agentMeta map[string]any) error {
 	// --select wins over --compact when both are set: an explicit field list
 	// is the user's authoritative request, so the high-gravity allow-list
 	// must not strip those fields out before --select can pick them. When
@@ -1120,6 +1187,13 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 		data = filterFields(data, flags.selectFields)
 	} else if flags.compact {
 		data = compactFields(data)
+	}
+	if flags.agent && flags.asJSON && !flags.csv && !flags.plain && !flags.quiet {
+		wrapped, err := wrapAgentOutput(data, agentMeta)
+		if err != nil {
+			return err
+		}
+		data = wrapped
 	}
 	// --quiet: suppress all output, exit code communicates result
 	if flags.quiet {
@@ -1984,42 +2058,6 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 		prefix = "API unreachable. "
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s%d results (cached, synced %s)\n", prefix, count, age)
-}
-
-// unwrapSingleKeyArray flattens single-key collection envelopes
-// ({"results":[...]}, {"data":[...]}, etc.) so the agent envelope
-// emits a stable .results[] across APIs. Multi-key objects pass
-// through so cursor/pagination fields stay accessible; non-array
-// values pass through so non-collection responses aren't reshaped.
-//
-// The wrapper-key set is intentionally narrower than
-// extractPaginatedItems (which also walks domain-specific keys like
-// "messages", "members", "values" used by social/messaging APIs).
-// This helper only flattens canonical collection envelopes for
-// --json output; the pagination walker has a broader remit.
-func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
-	leading := bytes.TrimLeft(data, " \t\r\n")
-	if len(leading) == 0 || leading[0] != '{' {
-		return data
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return data
-	}
-	if len(obj) != 1 {
-		return data
-	}
-	for key, val := range obj {
-		if key != "results" && key != "data" && key != "items" && key != "nodes" && key != "entries" && key != "records" {
-			return data
-		}
-		trimmed := bytes.TrimLeft(val, " \t\r\n")
-		if len(trimmed) == 0 || trimmed[0] != '[' {
-			return data
-		}
-		return val
-	}
-	return data
 }
 
 // wrapWithProvenance wraps response data in a provenance envelope:

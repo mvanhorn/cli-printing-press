@@ -80,7 +80,7 @@ func newCustomersGetCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"})
 		},
 	}
 
