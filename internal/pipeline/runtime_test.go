@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -293,6 +294,13 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 		assert.False(t, pass)
 		assert.Equal(t, "FAIL: sync crashed", detail)
 	})
+}
+
+func TestUnknownSyncFlagIgnoresEmptyFlagName(t *testing.T) {
+	flag, ok := unknownSyncFlag(errors.New("unknown flag: "))
+
+	assert.False(t, ok)
+	assert.Empty(t, flag)
 }
 
 func TestRunDataPipelineTestSkipsUnsyncableCLIs(t *testing.T) {

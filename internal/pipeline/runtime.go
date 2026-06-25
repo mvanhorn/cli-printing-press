@@ -765,7 +765,7 @@ func unknownSyncFlag(err error) (string, bool) {
 			if len(flag) > 0 {
 				return flag[0], true
 			}
-			return "", true
+			return "", false
 		}
 	}
 	return "", false
