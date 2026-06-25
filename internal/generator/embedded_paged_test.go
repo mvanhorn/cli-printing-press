@@ -60,6 +60,12 @@ func TestEmbeddedPagedHelperEmitted_NonPromoted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(helpersSrc), "func fetchEmbeddedPagedSubresource(",
 		"helpers.go must emit the shared paginator when at least one endpoint has detected sub-resources")
+	assert.Contains(t, string(helpersSrc), "GetWithHeadersValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error)",
+		"URL-following helpers must depend on the url.Values client path so repeated query params survive passthrough")
+	assert.Contains(t, string(helpersSrc), "c.GetWithHeadersValues(ctx, target, query, nil)",
+		"URL-following helpers must pass parsed query values rather than collapsing them to one string per key")
+	assert.NotContains(t, string(helpersSrc), "func relativizeNextURL(raw string) string",
+		"generated helpers should not emit a dead wrapper around the structured URL passthrough helper")
 	assert.Contains(t, string(helpersSrc), "embeddedPagedSubresourcePageCap",
 		"shared helper must carry the page-count cap so callers can't spin against a misbehaving server")
 

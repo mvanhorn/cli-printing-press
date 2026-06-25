@@ -18,7 +18,7 @@ import (
 {{- if or (and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)) (and (eq .Endpoint.Method "DELETE") $hasJSONBody)}}
 	"io"
 {{- end}}
-{{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) $isForm}}
+{{- if or (and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) $isForm) .Endpoint.EmbeddedPagedSubresources}}
 	"net/url"
 {{- end}}
 	"os"
@@ -928,7 +928,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 // exhausted. pathParams must include every {placeholder} in the parent
 // path (e.g. {"id": "<value>"}).
 func fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}}(ctx context.Context, c interface {
-	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+	GetWithHeadersValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error)
 }, pathParams map[string]string) ([]json.RawMessage, error) {
 	childPath := "{{.ChildPath}}"
 	for name, val := range pathParams {

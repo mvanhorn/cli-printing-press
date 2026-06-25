@@ -272,6 +272,10 @@ func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[str
 	return result, err
 }
 
+func (c *Client) GetWithHeadersValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error) {
+	return c.GetWithHeaders(ctx, pathWithQueryValues(path, params), nil, headers)
+}
+
 // GetNoCache issues a GET that bypasses the cache read for this call only,
 // then refreshes the cache with the fresh response on success. Use for
 // polling-until-terminal patterns where every call must reflect current
@@ -295,6 +299,10 @@ func (c *Client) GetWithHeadersNoCache(ctx context.Context, path string, params 
 		c.writeCache(path, params, result)
 	}
 	return result, err
+}
+
+func (c *Client) GetWithHeadersNoCacheValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error) {
+	return c.GetWithHeadersNoCache(ctx, pathWithQueryValues(path, params), nil, headers)
 }
 
 func (c *Client) responseCacheEnabled(binaryResponse bool) bool {
@@ -359,16 +367,30 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 			key += "|config_path=" + c.Config.Path
 		}
 	}
-	paramKeys := make([]string, 0, len(params))
-	for k := range params {
-		paramKeys = append(paramKeys, k)
-	}
-	sort.Strings(paramKeys)
-	for _, k := range paramKeys {
-		key += k + "=" + params[k]
+	if len(params) > 0 {
+		query := url.Values{}
+		for k, v := range params {
+			query.Set(k, v)
+		}
+		key += "|query=" + query.Encode()
 	}
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:8])
+}
+
+func pathWithQueryValues(path string, params url.Values) string {
+	if len(params) == 0 {
+		return path
+	}
+	encoded := params.Encode()
+	if encoded == "" {
+		return path
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + encoded
 }
 
 func (c *Client) readCache(path string, params map[string]string) (json.RawMessage, bool) {

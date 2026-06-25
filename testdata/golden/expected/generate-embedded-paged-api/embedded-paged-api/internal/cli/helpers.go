@@ -855,16 +855,17 @@ const embeddedPagedSubresourcePageCap = 500
 // describe envelopes in one casing in the schema and serve another on
 // the wire (`NextPageToken` vs `nextPageToken`).
 func fetchEmbeddedPagedSubresource(ctx context.Context, c interface {
-	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+	GetWithHeadersValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error)
 }, childPath, nextField string, nextIsURL, nextIsBoolean bool) ([]json.RawMessage, error) {
 	all := make([]json.RawMessage, 0)
 	nextURL := ""
 	for page := 0; page < embeddedPagedSubresourcePageCap; page++ {
 		target := childPath
+		var query url.Values
 		if nextURL != "" {
-			target = relativizeNextURL(nextURL)
+			target, query = relativizeNextURLParts(nextURL)
 		}
-		data, err := c.GetWithHeaders(ctx, target, nil, nil)
+		data, err := c.GetWithHeadersValues(ctx, target, query, nil)
 		if err != nil {
 			return nil, fmt.Errorf("paginating embedded sub-resource %q page %d: %w", childPath, page+1, err)
 		}
@@ -917,24 +918,19 @@ func emitEmbeddedPagedTruncationWarning(childPath string) {
 	}
 }
 
-// relativizeNextURL strips an absolute scheme+host from a next-page URL
-// so the client's BaseURL+path concat doesn't produce a double-prefixed
-// target. Vendors that return absolute next URLs (e.g. for offset-based
-// pagination) would otherwise concatenate against c.BaseURL on every
-// follow-up request and 404 from page 2 onward.
-func relativizeNextURL(raw string) string {
+// relativizeNextURLParts strips an absolute scheme+host from a next-page URL
+// so the client's BaseURL+path concat doesn't produce a double-prefixed target,
+// while preserving repeated query params for the follow-up request.
+func relativizeNextURLParts(raw string) (string, url.Values) {
 	u, err := url.Parse(raw)
 	if err != nil || !u.IsAbs() {
-		return raw
+		return raw, nil
 	}
 	path := u.Path
 	if path == "" {
 		path = "/"
 	}
-	if u.RawQuery != "" {
-		path += "?" + u.RawQuery
-	}
-	return path
+	return path, u.Query()
 }
 
 // caseInsensitiveLookup returns obj[key] tolerating envelope casing

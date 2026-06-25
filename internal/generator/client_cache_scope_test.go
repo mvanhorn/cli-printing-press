@@ -33,7 +33,8 @@ func TestClientCacheKeyScopesByBaseURLAndAuthIdentity(t *testing.T) {
 	require.Contains(t, body, `authHeader := c.Config.AuthHeader()`, "cache keys should capture AuthHeader() once")
 	require.Contains(t, body, `sha256.Sum256([]byte(authHeader))`, "cache keys should include an auth fingerprint without storing the raw token")
 	require.NotContains(t, body, `sha256.Sum256([]byte(c.Config.AuthHeader()))`, "cache keys should reuse the captured authHeader, not call AuthHeader() twice")
-	require.Contains(t, body, `sort.Strings(paramKeys)`, "cache keys should be deterministic for map params")
+	require.Contains(t, body, `query := url.Values{}`, "cache keys should encode query params with structured delimiters")
+	require.Contains(t, body, `key += "|query=" + query.Encode()`, "cache keys should use url.Values.Encode for deterministic query boundaries")
 }
 
 func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
@@ -69,6 +70,16 @@ func TestGeneratedCacheWritesUsePrivatePermissions(t *testing.T) {
 	require.Contains(t, config, "cliutil.AtomicWritePrivateFile(c.Path, data, 0o600, 0o700)")
 	require.NotContains(t, config, "os.WriteFile(c.Path, data, 0o644)")
 	require.NotContains(t, config, "os.MkdirAll(dir, 0o755)")
+}
+
+func TestGeneratedClientQueryParamContractsPass(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("query-param-contracts")
+	outputDir := filepath.Join(t.TempDir(), "query-param-contracts-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/client", "-run", "Test(CacheKeyDelimitsSortedQueryParams|GetWithHeadersValuesPreservesRepeatedQueryParams)", "-count=1")
 }
 
 func clientCacheKeyBody(t *testing.T, content string) string {
