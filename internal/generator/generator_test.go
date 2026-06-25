@@ -7291,7 +7291,7 @@ func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
 		"required-body promoted command must short-circuit to help on bare invocation")
 }
 
-func TestHappyArgsAnnotationEmittedFromSpec(t *testing.T) {
+func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("endpoint-fixtures")
