@@ -79,7 +79,7 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.NotContains(t, promotedSrc, `"stdin"`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
-	assert.Contains(t, mcpSrc, `makeAPIHandler("POST", "/assets", false, false, nil, []mcpParamBinding`)
+	assert.Contains(t, mcpSrc, `makeAPIHandler("POST", "/assets", false, false, nil, mcpPageConfig{}, []mcpParamBinding`)
 	assert.Contains(t, mcpSrc, `Format: "binary"`)
 	assert.Contains(t, mcpSrc, `RequestContentType: "multipart/form-data"`)
 	assert.Contains(t, mcpSrc, `multipartFileFields[binding.WireName] = fmt.Sprintf("%v", v)`)
