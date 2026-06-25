@@ -1289,6 +1289,39 @@ func TestPublishPackageRejectsVendorPrefixSecretsInStagedCLI(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
 }
 
+func TestPublishPackageRecordsAnnotatedPublicVendorPrefixSecrets(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	publicKey := testSecret("AI", "za", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234")
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "huckleberry"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "internal", "huckleberry", "firestore.go"),
+		[]byte(`package huckleberry
+
+const firebaseWebAPIKey = "`+publicKey+`" // pp:public-secret Firebase web API key is documented public; access is gated by Firestore rules.
+`),
+		0o644,
+	))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	manifest, err := pipeline.ReadCLIManifest(result.StagedDir)
+	require.NoError(t, err)
+	require.Len(t, manifest.ReviewedSecretSuppressions, 1)
+	assert.Equal(t, "internal/huckleberry/firestore.go", manifest.ReviewedSecretSuppressions[0].Path)
+	assert.Equal(t, 3, manifest.ReviewedSecretSuppressions[0].Line)
+	assert.Equal(t, "google-api-key", manifest.ReviewedSecretSuppressions[0].Kind)
+	assert.Contains(t, manifest.ReviewedSecretSuppressions[0].Reason, "documented public")
+}
+
 func TestPublishPackageRejectsSpecDeclaredCookieValuesInStagedCLI(t *testing.T) {
 	for _, authType := range []string{"cookie", "composed"} {
 		t.Run(authType, func(t *testing.T) {

@@ -121,6 +121,61 @@ func TestFindVendorPrefixSecretsDetectsMailchimpLinearAndAnthropic(t *testing.T)
 	require.False(t, anthropicShortFlagged, "anthropic payload one char short of 40 must not match")
 }
 
+func TestFindPackageSecretsDetectsCredentialNamedOpaqueValues(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Join([]string{
+		`{"auth":{"user":{"api_key":"550e8400-e29b-41d4-a716-446655440000"}}}`,
+		`{"api_info":{"secret":"abcdefghijklmnopqrstuvwxyz1234567890"}}`,
+		`{"event_type":"customer.updated","sort_key":"created_at","api_key":"short-id"}`,
+	}, "\n")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "sample.json"), []byte(content), 0o644))
+
+	findings, err := FindPackageSecrets(root, nil)
+	require.NoError(t, err)
+	require.Len(t, findings, 2)
+	require.Equal(t, "opaque-credential:api-key", findings[0].Kind)
+	require.Equal(t, 1, findings[0].Line)
+	require.Equal(t, "opaque-credential:secret", findings[1].Kind)
+	require.Equal(t, 2, findings[1].Line)
+}
+
+func TestFindPackageSecretsAllowsAnnotatedPublicVendorPrefixSecret(t *testing.T) {
+	root := t.TempDir()
+	publicKey := testSecret("AI", "za", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "internal"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, "internal", "client.go"),
+		[]byte(`const firebaseKey = "`+publicKey+`" // pp:public-secret Firebase web API key is documented public; access is gated by rules.`+"\n"),
+		0o644,
+	))
+
+	result, err := FindPackageSecretsWithSuppressions(root, nil)
+	require.NoError(t, err)
+	require.Empty(t, result.Findings)
+	require.Len(t, result.Suppressions, 1)
+	require.Equal(t, "internal/client.go", result.Suppressions[0].Path)
+	require.Equal(t, 1, result.Suppressions[0].Line)
+	require.Equal(t, "google-api-key", result.Suppressions[0].Kind)
+	require.Contains(t, result.Suppressions[0].Reason, "documented public")
+}
+
+func TestFindPackageSecretsRequiresPublicSecretReason(t *testing.T) {
+	root := t.TempDir()
+	publicKey := testSecret("AI", "za", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "internal"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, "internal", "client.go"),
+		[]byte(`const firebaseKey = "`+publicKey+`" // pp:public-secret`+"\n"),
+		0o644,
+	))
+
+	result, err := FindPackageSecretsWithSuppressions(root, nil)
+	require.NoError(t, err)
+	require.Len(t, result.Findings, 1)
+	require.Empty(t, result.Suppressions)
+	require.Equal(t, "google-api-key", result.Findings[0].Kind)
+}
+
 func TestFindSpecDeclaredCookieSecretsReportsCookieNameOnly(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "README.md"), []byte("Cookie:session-id=actuallyrealcookievaluexyz; x-main=your-cookie-here; y-main=not-an-example-real-value\n"), 0o644))
