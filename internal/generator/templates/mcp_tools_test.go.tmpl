@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/mcp/bound"
 {{- if or .VisionSet.Search .VisionSet.Store}}
@@ -94,6 +95,41 @@ func resetMCPPathEnv(t *testing.T) string {
 	}
 	t.Cleanup(restore)
 	return home
+}
+
+func TestMCPRegisterToolsPreservesTypedSpecialTools(t *testing.T) {
+	s := server.NewMCPServer("{{.Name}}", "test")
+	RegisterTools(s)
+
+	tools := s.ListTools()
+	if len(tools) == 0 {
+		t.Fatal("RegisterTools registered no tools")
+	}
+	contextTool, ok := tools["context"]
+	if !ok {
+		t.Fatalf("typed context tool missing from registered tools: %#v", tools)
+	}
+	if !strings.Contains(contextTool.Tool.Description, "Get API domain context") {
+		t.Fatalf("context tool appears to have been overwritten by command mirror: %q", contextTool.Tool.Description)
+	}
+{{- if .VisionSet.Search}}
+	searchTool, ok := tools["search"]
+	if !ok {
+		t.Fatalf("typed search tool missing from registered tools: %#v", tools)
+	}
+	if !strings.Contains(searchTool.Tool.Description, "Full-text search across all synced data") {
+		t.Fatalf("search tool appears to have been overwritten by command mirror: %q", searchTool.Tool.Description)
+	}
+{{- end}}
+{{- if .VisionSet.Store}}
+	sqlTool, ok := tools["sql"]
+	if !ok {
+		t.Fatalf("typed sql tool missing from registered tools: %#v", tools)
+	}
+	if !strings.Contains(sqlTool.Tool.Description, "Run read-only SQL against local database") {
+		t.Fatalf("sql tool appears to have been overwritten by command mirror: %q", sqlTool.Tool.Description)
+	}
+{{- end}}
 }
 
 {{- if .VisionSet.Search}}

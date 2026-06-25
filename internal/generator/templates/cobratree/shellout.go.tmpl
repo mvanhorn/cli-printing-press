@@ -17,7 +17,7 @@ import (
 	"{{modulePath}}/internal/mcp/bound"
 )
 
-func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
+func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
 	lookupPath, lookupErr := cliPath()
 	prefixArgs := append([]string{}, commandPath...)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -26,7 +26,12 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnl
 		}
 		args := req.GetArguments()
 		finalArgs := append([]string{}, prefixArgs...)
-		finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
+		finalArgs = append(finalArgs, cliArgsFromMCP(args, blockedStructuredArgs)...)
+		positionalArgs, err := positionalArgsFromMCP(args, positionals, readOnly, positionalWriteSinks)
+		if err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
+		finalArgs = append(finalArgs, positionalArgs...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
 			tokens := SplitShellArgs(raw)
 			if err := validatePositionalArgsForMCP(tokens, readOnly, positionalWriteSinks); err != nil {
@@ -40,6 +45,38 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, readOnl
 		}
 		return mcplib.NewToolResultText(bound.Text(out)), nil
 	}
+}
+
+func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) ([]string, error) {
+	out := make([]string, 0, len(positionals))
+	for _, positional := range positionals {
+		value, ok := args[positional.InputName]
+		if !ok || value == nil {
+			continue
+		}
+		var text string
+		switch tv := value.(type) {
+		case string:
+			text = tv
+		case float64:
+			text = strconv.FormatFloat(tv, 'f', -1, 64)
+		case bool:
+			text = strconv.FormatBool(tv)
+		default:
+			text = fmt.Sprintf("%v", tv)
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if text != "-" && strings.HasPrefix(text, "-") {
+			return nil, fmt.Errorf("flag-like positional argument %q not allowed in structured positional %q; use structured flag parameters instead", text, positional.InputName)
+		}
+		out = append(out, text)
+	}
+	if err := validatePositionalArgsForMCP(out, readOnly, positionalWriteSinks); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWriteSinks map[int]bool) error {
@@ -63,6 +100,12 @@ func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWrit
 	return nil
 }
 
+// reservedStructuredArgs are MCP-only argument names that must never be
+// forwarded as CLI flags.
+var reservedStructuredArgs = map[string]bool{
+	"args": true,
+}
+
 // blockedRootFlags are root-level CLI flags that an MCP client must not be
 // able to override via structured tool parameters. Allowing them lets a
 // caller swap auth credentials, redirect the API base URL, select a different
@@ -70,7 +113,6 @@ func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWrit
 // malicious config file, or change the delivery target, all of which sit
 // outside the per-command surface the agent is supposed to be calling.
 var blockedRootFlags = map[string]bool{
-	"args":     true,
 	"base-url": true,
 	"client":   true,
 	"config":   true,
@@ -80,13 +122,13 @@ var blockedRootFlags = map[string]bool{
 	"token":    true,
 }
 
-func cliArgsFromMCP(args map[string]any) []string {
+func cliArgsFromMCP(args map[string]any, blocked map[string]bool) []string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
 		if strings.Contains(k, "=") {
 			continue
 		}
-		if blockedRootFlags[k] {
+		if blocked[k] {
 			continue
 		}
 		keys = append(keys, k)

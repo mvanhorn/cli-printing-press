@@ -188,8 +188,8 @@ func TestFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
 	}
 
 	root := &cobra.Command{Use: "depthcheck-pp-cli"}
-	topSearch := &cobra.Command{
-		Use: "search",
+	topAuth := &cobra.Command{
+		Use: "auth",
 		RunE: func(cmd *cobra.Command, args []string) error { return nil },
 	}
 	items := &cobra.Command{Use: "items"}
@@ -198,10 +198,10 @@ func TestFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
 		RunE: func(cmd *cobra.Command, args []string) error { return nil },
 	}
 	items.AddCommand(itemSearch)
-	root.AddCommand(topSearch, items)
+	root.AddCommand(topAuth, items)
 
-	if got := classify(topSearch); got != commandFramework {
-		t.Fatalf("top-level search classify() = %v, want commandFramework", got)
+	if got := classify(topAuth); got != commandFramework {
+		t.Fatalf("top-level auth classify() = %v, want commandFramework", got)
 	}
 	if got := classify(itemSearch); got != commandNovel {
 		t.Fatalf("nested items search classify() = %v, want commandNovel", got)
