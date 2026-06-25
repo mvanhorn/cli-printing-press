@@ -34,7 +34,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		finalArgs = append(finalArgs, positionalArgs...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
 			tokens := SplitShellArgs(raw)
-			if err := validatePositionalArgsForMCP(tokens, readOnly, positionalWriteSinks); err != nil {
+			if err := validatePositionalArgsForMCPAtOffset(tokens, readOnly, positionalWriteSinks, len(positionalArgs)); err != nil {
 				return mcplib.NewToolResultError(err.Error()), nil
 			}
 			finalArgs = append(finalArgs, tokens...)
@@ -83,6 +83,10 @@ func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, rea
 }
 
 func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWriteSinks map[int]bool) error {
+	return validatePositionalArgsForMCPAtOffset(tokens, readOnly, positionalWriteSinks, 0)
+}
+
+func validatePositionalArgsForMCPAtOffset(tokens []string, readOnly bool, positionalWriteSinks map[int]bool, offset int) error {
 	for _, t := range tokens {
 		if t != "-" && strings.HasPrefix(t, "-") {
 			return fmt.Errorf("flag-like argument %q not allowed in positional args field; use structured tool parameters instead", t)
@@ -92,13 +96,14 @@ func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWrit
 		return nil
 	}
 	for i, t := range tokens {
-		if !positionalWriteSinks[i] {
+		positionalIndex := offset + i
+		if !positionalWriteSinks[positionalIndex] {
 			continue
 		}
 		if strings.TrimSpace(t) == "" || t == "-" {
 			continue
 		}
-		return fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", i+1, t)
+		return fmt.Errorf("positional argument %d writes to %q; file output is not available for read-only MCP tools", positionalIndex+1, t)
 	}
 	return nil
 }

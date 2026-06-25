@@ -308,6 +308,17 @@ func TestStructuredPositionalWriteSinkUsesOriginalCLIIndex(t *testing.T) {
 	}
 }
 
+func TestRawArgsWriteSinkValidationUsesStructuredPositionalOffset(t *testing.T) {
+	tokens := SplitShellArgs("evil.txt")
+	sinks := map[int]bool{1: true}
+	if err := validatePositionalArgsForMCPAtOffset(tokens, true, sinks, 1); err == nil {
+		t.Fatal("raw args write sink with structured positional offset succeeded, want error")
+	}
+	if err := validatePositionalArgsForMCPAtOffset(SplitShellArgs("-"), true, sinks, 1); err != nil {
+		t.Fatalf("stdout raw args with structured positional offset returned error: %v", err)
+	}
+}
+
 func TestCLIArgsFromMCPSkipsStructuredPositionals(t *testing.T) {
 	cmd := &cobra.Command{Use: "export <resource> [id]"}
 	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
