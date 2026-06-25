@@ -3700,6 +3700,30 @@ func profileFixtureWithTenant(t *testing.T) *APIProfile {
 					},
 				},
 			},
+			// "mixed_items" is tenant-annotated AND has a PK IDField but its
+			// list response is discriminator-dispatched (its item type carries
+			// a "type" enum routing items to projects/widgets). It must stay
+			// "none" — this is the Task 3 negative case for the discriminator
+			// branch (guards against a Discriminator.Field sign-flip).
+			"mixed_items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/mixed-items",
+						Response:          spec.ResponseDef{Type: "array", Item: "MixedItem"},
+						IDField:           "id",
+						TenantScopeColumn: "workspace",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"MixedItem": {
+				Fields: []spec.TypeField{
+					{Name: "type", Type: "string", Enum: []string{"projects", "widgets"}},
+					{Name: "id", Type: "string"},
+				},
+			},
 		},
 	}
 	return Profile(s)
@@ -3774,5 +3798,28 @@ func TestProfiler_FlatReconcileClassification(t *testing.T) {
 	}
 	if invoicesMode != "none" {
 		t.Fatalf("invoices.ReconcileMode = %q, want none (tenant-annotated but no IDField)", invoicesMode)
+	}
+
+	// Negative case 3: "mixed_items" is tenant-annotated AND has an IDField but
+	// is discriminator-dispatched (Discriminator.Field != ""), so it must stay
+	// "none". This guards the third condition against a sign-flip that would
+	// misclassify every discriminator-dispatched resource as "flat".
+	var mixed *SyncableResource
+	for i := range prof.SyncableResources {
+		if prof.SyncableResources[i].Name == "mixed_items" {
+			mixed = &prof.SyncableResources[i]
+		}
+	}
+	if mixed == nil {
+		t.Fatal("mixed_items resource not found in SyncableResources")
+	}
+	if mixed.Discriminator.Field == "" {
+		t.Fatalf("mixed_items fixture is not discriminator-dispatched (Discriminator.Field empty); negative case is ineffective")
+	}
+	if mixed.TenantScopeColumn == "" || mixed.IDField == "" {
+		t.Fatalf("mixed_items fixture lost its tenant column / IDField (col=%q id=%q); negative case is ineffective", mixed.TenantScopeColumn, mixed.IDField)
+	}
+	if mixed.ReconcileMode != "none" {
+		t.Fatalf("mixed_items.ReconcileMode = %q, want none (discriminator-dispatched)", mixed.ReconcileMode)
 	}
 }
