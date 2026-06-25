@@ -4822,6 +4822,59 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "12"}, args,
 		"flag-form pp:happy-args must override the Example placeholder")
 
+	// Flag-only pp:happy-args overlays the runnable Example but still leaves
+	// positional IDs available for the live fixture resolver. This matches
+	// verify's happy-args behavior: annotated flags do not replace inferred
+	// positionals.
+	flagOnlyPositionalCmd := liveDogfoodCommand{
+		Path: []string{"widgets", "get"},
+		Help: `Usage:
+  cli widgets get <id> [flags]
+
+Examples:
+  cli widgets get 550e8400-e29b-41d4-a716-446655440000 --format=summary
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--include=stats"},
+	}
+	args, ok = liveDogfoodHappyArgs(flagOnlyPositionalCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "get", "550e8400-e29b-41d4-a716-446655440000", "--format=summary", "--include", "stats"}, args)
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "fixture-pp-cli")
+	require.NoError(t, os.WriteFile(binaryPath, []byte(`#!/bin/sh
+set -u
+if [ "$1" = "widgets" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  echo 'Usage: fixture-pp-cli widgets list [flags]'
+  exit 0
+fi
+if [ "$1" = "widgets" ] && [ "$2" = "list" ] && [ "${3:-}" = "--json" ]; then
+  echo '{"results":[{"id":"real-widget-1"}]}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 99
+`), 0o755))
+	resolved, skipped, reason, _ := resolveCommandPositionals(flagOnlyPositionalCmd, args, resolveCtx{
+		binaryPath: binaryPath,
+		cliDir:     dir,
+		siblings: map[string][]liveDogfoodCommand{
+			"widgets": {{Path: []string{"widgets", "list"}}},
+		},
+		cache:   newCompanionCache(),
+		timeout: time.Second,
+	})
+	require.False(t, skipped, reason)
+	assert.Equal(t, []string{"widgets", "get", "real-widget-1", "--format=summary", "--include", "stats"}, resolved)
+
+	_, skipped, reason, _ = resolveCommandPositionals(flagOnlyPositionalCmd, args, resolveCtx{
+		siblings: map[string][]liveDogfoodCommand{},
+		cache:    newCompanionCache(),
+		timeout:  time.Second,
+	})
+	assert.True(t, skipped)
+	assert.Contains(t, reason, "no list companion")
+
 	// Positional form: <name>=value contributes the value as a positional arg.
 	// resolveCommandPositionals must NOT re-resolve (or skip) it even when the
 	// Usage line carries an <id> placeholder and no list companion is reachable.
@@ -4833,7 +4886,7 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 	args, ok = liveDogfoodHappyArgs(posCmd)
 	require.True(t, ok)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, args)
-	resolved, skipped, reason, _ := resolveCommandPositionals(posCmd, args, resolveCtx{})
+	resolved, skipped, reason, _ = resolveCommandPositionals(posCmd, args, resolveCtx{})
 	assert.False(t, skipped, "pp:happy-args positional must not be skipped: %s", reason)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, resolved,
 		"resolveCommandPositionals must preserve the pp:happy-args positional value")

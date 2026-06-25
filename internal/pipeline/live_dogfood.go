@@ -668,11 +668,11 @@ func findListCompanion(candidates []liveDogfoodCommand) *liveDogfoodCommand {
 //   - (nil, true, reason, "")        - chain broke before an ID fixture source was available
 //   - (happyArgs, false, "", "")     - no positionals at all; pass-through unchanged
 func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, ctx resolveCtx) ([]string, bool, string, string) {
-	// pp:happy-args already supplies real positional values, so the args are
-	// authoritative — skip placeholder re-resolution, which would otherwise
-	// overwrite them via the list companion or skip the command when no
-	// companion is reachable.
-	if strings.TrimSpace(command.Annotations[happyArgsAnnotation]) != "" {
+	// Explicit pp:happy-args positionals are authoritative — skip placeholder
+	// re-resolution, which would otherwise overwrite them via a list companion.
+	// Flag-only pp:happy-args still allow the normal ID fixture resolver to fill
+	// the command's positional placeholders.
+	if raw := strings.TrimSpace(command.Annotations[happyArgsAnnotation]); raw != "" && len(parseHappyArgsAnnotation(raw).positionals) > 0 {
 		return happyArgs, false, "", ""
 	}
 	placeholders := extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))
@@ -1698,20 +1698,24 @@ func fileExistsRelativeTo(p, cliDir string) bool {
 }
 
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
-	// pp:happy-args supplies real happy-path args, overriding the Example-derived
+	// pp:happy-args supplies real happy-path args, overlaying the Example-derived
 	// placeholders (e.g. "--ids example-value") that strict upstream validators
 	// reject with HTTP 400. Same `;`-separated `--flag=value` / `<name>=value`
 	// grammar the runtime layer uses (parseHappyArgsAnnotation), so a single
 	// annotation drives both surfaces.
 	if raw := strings.TrimSpace(command.Annotations[happyArgsAnnotation]); raw != "" {
 		parsed := parseHappyArgsAnnotation(raw)
-		args := append([]string{}, command.Path...)
-		args = append(args, parsed.positionals...)
-		args = append(args, parsed.flags...)
-		if len(args) > len(command.Path) {
-			return args, true
+		args, hasExample := liveDogfoodExampleArgs(command)
+		if !hasExample {
+			args = append([]string{}, command.Path...)
 		}
+		args = overlayLiveDogfoodHappyArgs(args, command.Path, parsed)
+		return args, len(args) > len(command.Path) || hasExample
 	}
+	return liveDogfoodExampleArgs(command)
+}
+
+func liveDogfoodExampleArgs(command liveDogfoodCommand) ([]string, bool) {
 	examples := extractExamplesSection(command.Help)
 	for line := range strings.SplitSeq(examples, "\n") {
 		candidate := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "$"))
@@ -1724,6 +1728,81 @@ func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
 		}
 	}
 	return nil, false
+}
+
+func overlayLiveDogfoodHappyArgs(args, commandPath []string, parsed happyArgs) []string {
+	out := append([]string{}, args...)
+	if len(parsed.positionals) > 0 {
+		out = overlayLiveDogfoodPositionals(out, commandPath, parsed.positionals)
+	}
+	if len(parsed.flags) > 0 {
+		out = overlayLiveDogfoodFlags(out, commandPath, parsed.flags)
+	}
+	return out
+}
+
+func overlayLiveDogfoodPositionals(args, commandPath, positionals []string) []string {
+	if len(positionals) == 0 {
+		return args
+	}
+	out := append([]string{}, args...)
+	start := min(len(commandPath), len(out))
+	var positionalIndexes []int
+	insertAt := len(out)
+	for i := start; i < len(out); i++ {
+		arg := out[i]
+		if strings.HasPrefix(arg, "-") {
+			if insertAt == len(out) {
+				insertAt = i
+			}
+			if !strings.Contains(arg, "=") && i+1 < len(out) && !strings.HasPrefix(out[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		positionalIndexes = append(positionalIndexes, i)
+	}
+	for i, value := range positionals {
+		if i < len(positionalIndexes) {
+			out[positionalIndexes[i]] = value
+			continue
+		}
+		out = append(out[:insertAt], append([]string{value}, out[insertAt:]...)...)
+		insertAt++
+	}
+	return out
+}
+
+func overlayLiveDogfoodFlags(args, commandPath, flags []string) []string {
+	out := append([]string{}, args...)
+	for i := 0; i+1 < len(flags); i += 2 {
+		flag := flags[i]
+		value := flags[i+1]
+		replaced := false
+		start := min(len(commandPath), len(out))
+		for j := start; j < len(out); j++ {
+			arg := out[j]
+			if strings.HasPrefix(arg, flag+"=") {
+				out[j] = flag + "=" + value
+				replaced = true
+				break
+			}
+			if arg != flag {
+				continue
+			}
+			if j+1 < len(out) && !strings.HasPrefix(out[j+1], "-") {
+				out[j+1] = value
+			} else {
+				out = append(out[:j+1], append([]string{value}, out[j+1:]...)...)
+			}
+			replaced = true
+			break
+		}
+		if !replaced {
+			out = append(out, flag, value)
+		}
+	}
+	return out
 }
 
 func commandSupportsJSON(help string) bool {
