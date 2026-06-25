@@ -129,6 +129,48 @@ func TestAnalyzeCapture_PrefersCanonicalCollectionEnvelope(t *testing.T) {
 	assert.Equal(t, "title", apiSpec.Types["SearchItem"].Fields[1].Name)
 }
 
+func TestAnalyzeCapture_ParameterizesCompactSingleSampleIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := AnalyzeCapture(&EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/predict/FR/STN/DUB/2026-08-16",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"price":123}`,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	endpoint, found := findEndpointByPath(apiSpec, "/predict/{segment_0}/{segment_1}/{segment_2}/{date}")
+	require.True(t, found, "expected compact identifier path in generated spec")
+	assert.Equal(t, "/predict/{segment_0}/{segment_1}/{segment_2}/{date}", endpoint.Path)
+	assert.ElementsMatch(t, []string{"segment_0", "segment_1", "segment_2", "date"}, paramNames(endpoint.Params))
+}
+
+func findEndpointByPath(apiSpec *spec.APISpec, path string) (spec.Endpoint, bool) {
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.Path == path {
+				return endpoint, true
+			}
+		}
+	}
+	return spec.Endpoint{}, false
+}
+
+func paramNames(params []spec.Param) []string {
+	names := make([]string, 0, len(params))
+	for _, param := range params {
+		names = append(names, param.Name)
+	}
+	return names
+}
+
 func TestSingularizeSESWords(t *testing.T) {
 	t.Parallel()
 

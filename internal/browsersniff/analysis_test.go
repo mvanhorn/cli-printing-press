@@ -199,6 +199,118 @@ func TestAnalyzeTraffic_PopulatesConfidenceAndFlagsOnClusters(t *testing.T) {
 	assert.Contains(t, cluster.NormalizationFlags, "single-status")
 }
 
+func TestAnalyzeTraffic_SurfacesLowConfidenceSingleSamplePathParameters(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/predict/FR/STN/DUB/2026-08-16",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"price":123}`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.Len(t, analysis.EndpointClusters, 1)
+
+	cluster := analysis.EndpointClusters[0]
+	assert.Equal(t, "/predict/{segment_0}/{segment_1}/{segment_2}/{date}", cluster.Path)
+	require.Len(t, cluster.LowConfidenceParameters, 4)
+	assert.Equal(t, LowConfidenceParameter{Name: "segment_0", Segment: "FR", Position: 1, Reason: "single-sample compact uppercase code path segment"}, cluster.LowConfidenceParameters[0])
+	assert.Equal(t, LowConfidenceParameter{Name: "date", Segment: "2026-08-16", Position: 4, Reason: "single-sample ISO date path segment"}, cluster.LowConfidenceParameters[3])
+}
+
+func TestAnalyzeTraffic_WarnsWhenAllEndpointClustersHaveEmptyResponseShapes(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        "",
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items/123",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        "",
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	assert.Contains(t, warningTypes(analysis.Warnings), "empty_response_shapes")
+}
+
+func TestAnalyzeTraffic_DoesNotWarnEmptyResponseShapesWhenAnyClusterHasSchema(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/empty",
+				ResponseStatus:      204,
+				ResponseContentType: "application/json",
+				ResponseBody:        "",
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	assert.NotContains(t, warningTypes(analysis.Warnings), "empty_response_shapes")
+}
+
+func TestAnalyzeTraffic_DoesNotWarnEmptyResponseShapesForNoContentClusters(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:         "DELETE",
+				URL:            "https://api.example.com/v1/items/123",
+				ResponseStatus: 204,
+				ResponseBody:   "",
+			},
+			{
+				Method:         "PUT",
+				URL:            "https://api.example.com/v1/items/456/archive",
+				ResponseStatus: 205,
+				ResponseBody:   "",
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	assert.NotContains(t, warningTypes(analysis.Warnings), "empty_response_shapes")
+}
+
 func TestAnalyzeTraffic_ClusterConfidenceRoundTripsThroughSidecar(t *testing.T) {
 	t.Parallel()
 

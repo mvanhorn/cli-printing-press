@@ -23,12 +23,15 @@ type EndpointGroup struct {
 	Method         string
 	NormalizedPath string
 	Entries        []EnrichedEntry
+	LowConfidence  []LowConfidenceParameter
 }
 
 var (
 	uuidSegmentPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	hashSegmentPattern = regexp.MustCompile(`(?i)^[0-9a-f]{32,}$`)
 	numericPattern     = regexp.MustCompile(`^\d+$`)
+	isoDatePattern     = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	shortCodePattern   = regexp.MustCompile(`^[A-Z]{2,4}$`)
 	// prefixedIDPattern matches application-issued IDs that ship a short
 	// type-prefix and a long alphanumeric tail, such as Clay's t_/r_/c_, Stripe's
 	// cus_/sub_, or OpenAI's run_/asst_. The tail floor of 8 chars keeps short
@@ -186,7 +189,7 @@ func DeduplicateEndpoints(entries []EnrichedEntry) []EndpointGroup {
 
 	for _, entry := range entries {
 		method := strings.ToUpper(strings.TrimSpace(entry.Method))
-		normalizedPath := normalizeEntryPath(entry.URL)
+		normalizedPath, lowConfidence := normalizeEntryPathWithHints(entry.URL)
 		key := method + " " + normalizedPath
 
 		if idx, ok := indexByKey[key]; ok {
@@ -199,6 +202,7 @@ func DeduplicateEndpoints(entries []EnrichedEntry) []EndpointGroup {
 			Method:         method,
 			NormalizedPath: normalizedPath,
 			Entries:        []EnrichedEntry{entry},
+			LowConfidence:  lowConfidence,
 		})
 	}
 
@@ -516,12 +520,20 @@ func extractPath(rawURL string) string {
 }
 
 func normalizeEntryPath(rawURL string) string {
+	normalized, _ := normalizeEntryPathWithHints(rawURL)
+	return normalized
+}
+
+func normalizeEntryPathWithHints(rawURL string) (string, []LowConfidenceParameter) {
 	path := extractPath(rawURL)
 	segments := strings.Split(path, "/")
+	codeRun := compactCodeRunPositions(segments)
 	// Track per-path placeholder name use so consecutive IDs that resolve to
 	// the same parent (e.g. /resources/123/456) don't both emit
 	// {resource_id}; the second collision gets a counter suffix.
 	nameCounts := make(map[string]int)
+	lowConfidence := make([]LowConfidenceParameter, 0)
+	compactIndex := 0
 	for i, segment := range segments {
 		if segment == "" {
 			continue
@@ -530,9 +542,20 @@ func normalizeEntryPath(rawURL string) string {
 		// resource the ID belongs to, not the version prefix.
 		parent := previousMeaningfulSegment(segments, i)
 		var placeholder string
+		var confidenceReason string
 		switch {
+		case isoDatePattern.MatchString(segment):
+			placeholder = "{date}"
+			confidenceReason = "single-sample ISO date path segment"
+		case codeRun[i]:
+			placeholder = "{segment_" + strconv.Itoa(compactIndex) + "}"
+			compactIndex++
+			confidenceReason = "single-sample compact uppercase code path segment"
 		case numericPattern.MatchString(segment):
 			placeholder = idPlaceholder(parent, "id")
+			if len(segment) <= 4 {
+				confidenceReason = "single-sample small integer path segment"
+			}
 		case uuidSegmentPattern.MatchString(segment):
 			placeholder = idPlaceholder(parent, "uuid")
 		case hashSegmentPattern.MatchString(segment):
@@ -547,14 +570,62 @@ func normalizeEntryPath(rawURL string) string {
 			continue
 		}
 		segments[i] = disambiguatePlaceholder(placeholder, nameCounts)
+		if confidenceReason != "" {
+			lowConfidence = append(lowConfidence, LowConfidenceParameter{
+				Name:     strings.TrimSuffix(strings.TrimPrefix(segments[i], "{"), "}"),
+				Segment:  segment,
+				Position: pathSegmentPosition(segments, i),
+				Reason:   confidenceReason,
+			})
+		}
 	}
 
 	normalized := strings.Join(segments, "/")
 	if normalized == "" {
-		return "/"
+		return "/", lowConfidence
 	}
 
-	return normalized
+	return normalized, lowConfidence
+}
+
+func compactCodeRunPositions(segments []string) map[int]bool {
+	out := map[int]bool{}
+	for i := 0; i < len(segments); {
+		segment := segments[i]
+		if segment == "" {
+			i++
+			continue
+		}
+		if !shortCodePattern.MatchString(segment) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(segments) && shortCodePattern.MatchString(segments[i]) {
+			i++
+		}
+		if i-start < 2 {
+			continue
+		}
+		for pos := start; pos < i; pos++ {
+			out[pos] = true
+		}
+	}
+	return out
+}
+
+func pathSegmentPosition(segments []string, index int) int {
+	position := 0
+	for i := 0; i <= index && i < len(segments); i++ {
+		if segments[i] == "" {
+			continue
+		}
+		if i == index {
+			return position
+		}
+		position++
+	}
+	return position
 }
 
 // disambiguatePlaceholder appends a counter suffix when the same placeholder
