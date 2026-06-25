@@ -47,9 +47,7 @@ func TestTeachPlaybook_HappyPath(t *testing.T) {
 		t.Fatalf("teach-playbook: %v (stderr=%q)", err, stderr)
 	}
 	var resp map[string]any
-	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
-		t.Fatalf("decode: %v (stdout=%q)", err, stdout)
-	}
+	unmarshalAgentResults(t, stdout, &resp)
 	if v, _ := resp["recorded"].(bool); !v {
 		t.Errorf("recorded should be true, got %v", resp)
 	}

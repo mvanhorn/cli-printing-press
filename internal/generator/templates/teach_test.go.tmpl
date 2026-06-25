@@ -19,6 +19,26 @@ import (
 	"{{modulePath}}/internal/store"
 )
 
+func unmarshalAgentResults(t *testing.T, stdout string, out any) {
+	t.Helper()
+	var envelope struct {
+		Meta    map[string]any  `json:"meta"`
+		Results json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("agent envelope JSON: %v (stdout=%q)", err, stdout)
+	}
+	if src, _ := envelope.Meta["source"].(string); src == "" {
+		t.Fatalf("agent envelope missing meta.source: %q", stdout)
+	}
+	if len(envelope.Results) == 0 {
+		t.Fatalf("agent envelope missing results: %q", stdout)
+	}
+	if err := json.Unmarshal(envelope.Results, out); err != nil {
+		t.Fatalf("agent envelope results JSON: %v (stdout=%q)", err, stdout)
+	}
+}
+
 // withTempLearnHome points HOME at a fresh temp dir and clears the
 // per-CLI no-learn env var so every test gets the default "learning
 // on" behavior. Returns the temp HOME so callers can resolve the
@@ -184,9 +204,7 @@ func TestRecallCommand_FoundAndNotFound(t *testing.T) {
 		t.Fatalf("recall: %v", err)
 	}
 	var env recallEnvelope
-	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
-		t.Fatalf("recall JSON: %v (stdout=%q)", err, stdout)
-	}
+	unmarshalAgentResults(t, stdout, &env)
 	if !env.Found || len(env.Results) != 2 {
 		t.Errorf("recall: want found+2 results, got %+v", env)
 	}
@@ -200,9 +218,7 @@ func TestRecallCommand_FoundAndNotFound(t *testing.T) {
 		t.Fatalf("recall unrelated: %v", err)
 	}
 	env = recallEnvelope{}
-	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
-		t.Fatalf("recall unrelated JSON: %v", err)
-	}
+	unmarshalAgentResults(t, stdout, &env)
 	if env.Found || len(env.Results) != 0 {
 		t.Errorf("unrelated recall: want empty, got %+v", env)
 	}
@@ -252,9 +268,7 @@ func TestRecallCommand_RespectsNoLearnEnvVar(t *testing.T) {
 		t.Fatalf("recall with NO_LEARN: %v", err)
 	}
 	var env recallEnvelope
-	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
-		t.Fatalf("recall JSON: %v", err)
-	}
+	unmarshalAgentResults(t, stdout, &env)
 	if env.Found {
 		t.Errorf("NO_LEARN should suppress recall results; got %+v", env)
 	}
@@ -331,9 +345,7 @@ func TestLearningsForget_TargetedAndAll(t *testing.T) {
 		t.Fatalf("forget Y: %v", err)
 	}
 	var resp map[string]any
-	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
-		t.Fatalf("forget JSON: %v", err)
-	}
+	unmarshalAgentResults(t, stdout, &resp)
 	if v, _ := resp["deleted"].(float64); v != 1 {
 		t.Errorf("forget Y: want deleted=1, got %v", resp["deleted"])
 	}
@@ -348,9 +360,7 @@ func TestLearningsForget_TargetedAndAll(t *testing.T) {
 		t.Fatalf("forget all: %v", err)
 	}
 	resp = nil
-	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
-		t.Fatalf("forget all JSON: %v", err)
-	}
+	unmarshalAgentResults(t, stdout, &resp)
 	if v, _ := resp["deleted"].(float64); v < 1 {
 		t.Errorf("forget all: want deleted>=1, got %v", resp["deleted"])
 	}
@@ -373,9 +383,7 @@ func TestTeachPattern_HappyPath(t *testing.T) {
 		t.Fatalf("teach-pattern: %v", err)
 	}
 	var resp map[string]any
-	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
-		t.Fatalf("teach-pattern JSON: %v (stdout=%q)", err, stdout)
-	}
+	unmarshalAgentResults(t, stdout, &resp)
 	if v, _ := resp["recorded"].(bool); !v {
 		t.Errorf("teach-pattern: want recorded=true, got %v", resp)
 	}
@@ -411,9 +419,7 @@ func TestTeachLookup_HappyPath(t *testing.T) {
 		t.Fatalf("teach-lookup: %v", err)
 	}
 	var resp map[string]any
-	if err := json.Unmarshal([]byte(stdout), &resp); err != nil {
-		t.Fatalf("teach-lookup JSON: %v (stdout=%q)", err, stdout)
-	}
+	unmarshalAgentResults(t, stdout, &resp)
 	if v, _ := resp["recorded"].(bool); !v {
 		t.Errorf("teach-lookup: want recorded=true, got %v", resp)
 	}
@@ -508,9 +514,7 @@ func TestRecallCommand_EnvelopeCarriesQueryEntities(t *testing.T) {
 		t.Fatalf("recall: %v", err)
 	}
 	var env recallEnvelope
-	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
-		t.Fatalf("recall JSON: %v (stdout=%q)", err, stdout)
-	}
+	unmarshalAgentResults(t, stdout, &env)
 	if env.Normalized == "" {
 		t.Errorf("cold recall should still populate normalized; got %q", env.Normalized)
 	}
