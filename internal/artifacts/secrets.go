@@ -416,11 +416,11 @@ func looksLikeOpaqueCredentialValue(candidate string) bool {
 }
 
 func publicSecretSuppressionReason(line string) (string, bool) {
-	idx := strings.Index(line, publicSecretMarker)
-	if idx == -1 {
+	_, reason, ok := strings.Cut(line, publicSecretMarker)
+	if !ok {
 		return "", false
 	}
-	reason := strings.TrimSpace(line[idx+len(publicSecretMarker):])
+	reason = strings.TrimSpace(reason)
 	reason = strings.TrimLeft(reason, ":=- \t")
 	lowerReason := strings.ToLower(reason)
 	if strings.HasPrefix(lowerReason, "reason=") || strings.HasPrefix(lowerReason, "reason:") {
