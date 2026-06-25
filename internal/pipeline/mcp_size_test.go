@@ -346,7 +346,7 @@ func TestScoreMCPTokenEfficiency_UnscoredForLargeCodeOrchCatalog(t *testing.T) {
 	dir := writeCodeOrchSurface(t, 200)
 
 	score, scored := scoreMCPTokenEfficiency(dir)
-	assert.False(t, scored, "large code-orchestrated catalogs should be unscored instead of zero-scored")
+	assert.False(t, scored, "code-orchestrated catalogs should always be unscored instead of zero-scored")
 	assert.Equal(t, 0, score)
 
 	sc := &Scorecard{}
