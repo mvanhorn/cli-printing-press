@@ -159,8 +159,17 @@ type CLIManifest struct {
 	// (e.g., USDA nutrition backfill on recipe-goat) rather than every
 	// API call. Drives the MCPB user_config Required field so opt-in
 	// keys don't surface as mandatory in install dialogs.
-	AuthOptional  bool                   `json:"auth_optional,omitempty"`
-	NovelFeatures []NovelFeatureManifest `json:"novel_features,omitempty"`
+	AuthOptional               bool                        `json:"auth_optional,omitempty"`
+	ReviewedSecretSuppressions []ReviewedSecretSuppression `json:"reviewed_secret_suppressions,omitempty"`
+	NovelFeatures              []NovelFeatureManifest      `json:"novel_features,omitempty"`
+}
+
+type ReviewedSecretSuppression struct {
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
+	Kind        string `json:"kind"`
+	Fingerprint string `json:"fingerprint"`
+	Reason      string `json:"reason"`
 }
 
 // CLIReleaseManifest is the skeleton shape consumed by the public library's
@@ -285,6 +294,35 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 	}
 	if err := WriteReleaseLedgerSkeleton(dir, m); err != nil {
 		return err
+	}
+	return nil
+}
+
+func WriteReviewedSecretSuppressions(dir string, suppressions []ReviewedSecretSuppression) error {
+	path := filepath.Join(dir, CLIManifestFilename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading CLI manifest: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+	if len(suppressions) == 0 {
+		delete(raw, "reviewed_secret_suppressions")
+	} else {
+		encoded, err := json.Marshal(suppressions)
+		if err != nil {
+			return fmt.Errorf("encoding reviewed secret suppressions: %w", err)
+		}
+		raw["reviewed_secret_suppressions"] = encoded
+	}
+	out, err := marshalCLIManifestObject(raw)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(path, out, 0o644); err != nil {
+		return fmt.Errorf("writing CLI manifest: %w", err)
 	}
 	return nil
 }
@@ -572,6 +610,7 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"auth_title",
 		"auth_description",
 		"auth_optional",
+		"reviewed_secret_suppressions",
 		"novel_features",
 	}
 

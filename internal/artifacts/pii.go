@@ -392,6 +392,7 @@ func redactDetectorMatches(det piiDetector, text string) string {
 		match := text[loc[0]:loc[1]]
 		b.WriteString(text[last:loc[0]])
 		if isSyntheticPIIPlaceholder(det.kind, match) ||
+			(det.kind == PIIKindEmail && isBenignEmailContext(text, loc[0], match)) ||
 			(det.kind == PIIKindPhoneUS && isGitHubContextBarePhoneID(text, loc[0], match)) {
 			b.WriteString(match)
 		} else {
@@ -550,6 +551,78 @@ func isRFCReservedEmail(matched string) bool {
 		strings.HasSuffix(domain, ".test") ||
 		strings.HasSuffix(domain, ".invalid") ||
 		strings.HasSuffix(domain, ".localhost")
+}
+
+func isBenignEmailContext(line string, matchStart int, matchedSpan string) bool {
+	return isGitHubNoreplyEmail(matchedSpan) || isURLUserinfoPlaceholderEmail(line, matchStart, matchedSpan)
+}
+
+func isGitHubNoreplyEmail(matched string) bool {
+	lower := strings.ToLower(matched)
+	if !strings.HasSuffix(lower, "@users.noreply.github.com") {
+		return false
+	}
+	local := strings.TrimSuffix(lower, "@users.noreply.github.com")
+	id, handle, ok := strings.Cut(local, "+")
+	if ok {
+		if id == "" || handle == "" {
+			return false
+		}
+		for _, r := range id {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return isGitHubHandleLocalPart(handle)
+	}
+	return isGitHubHandleLocalPart(local)
+}
+
+func isGitHubHandleLocalPart(handle string) bool {
+	if handle == "" {
+		return false
+	}
+	for _, r := range handle {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isURLUserinfoPlaceholderEmail(line string, matchStart int, matched string) bool {
+	local, _, ok := strings.Cut(strings.ToLower(matched), "@")
+	if !ok || !map[string]bool{
+		"apikey":   true,
+		"password": true,
+		"pass":     true,
+		"secret":   true,
+		"token":    true,
+	}[local] {
+		return false
+	}
+	prefixStart := matchStart
+	for prefixStart > 0 {
+		r := line[prefixStart-1]
+		if r == '"' || r == '\'' || r == '`' || r == '<' || r == '(' || r == '[' || r == '{' || r == ' ' || r == '\t' || r == '\n' {
+			break
+		}
+		prefixStart--
+	}
+	prefix := strings.ToLower(line[prefixStart:matchStart])
+	if !strings.HasSuffix(prefix, ":") {
+		return false
+	}
+	user := strings.TrimSuffix(prefix, ":")
+	if schemeIdx := strings.LastIndex(user, "://"); schemeIdx != -1 {
+		user = user[schemeIdx+len("://"):]
+	}
+	return map[string]bool{
+		"login":    true,
+		"user":     true,
+		"username": true,
+	}[user]
 }
 
 func isNANPFictionalPhone(matched string) bool {
@@ -820,6 +893,9 @@ func scanPIIFileWithRel(path, relSlash string) ([]PIIFinding, error) {
 			for _, match := range det.pattern.FindAllStringIndex(line, -1) {
 				matchedSpan := line[match[0]:match[1]]
 				if isSyntheticPIIPlaceholder(det.kind, matchedSpan) {
+					continue
+				}
+				if det.kind == PIIKindEmail && isBenignEmailContext(line, match[0], matchedSpan) {
 					continue
 				}
 				if det.kind == PIIKindPhoneUS && isGitHubContextBarePhoneID(line, match[0], matchedSpan) {

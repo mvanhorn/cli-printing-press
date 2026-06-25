@@ -456,7 +456,7 @@ func newPublishPackageCmd() *cobra.Command {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("reading staged package cookie auth metadata: %w", err)}
 			}
-			findings, err := artifacts.FindPackageSecrets(outCLIDir, cookieNames)
+			secretResult, err := artifacts.FindPackageSecretsWithSuppressions(outCLIDir, cookieNames)
 			if err != nil {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for secret tokens: %w", err)}
@@ -468,9 +468,13 @@ func newPublishPackageCmd() *cobra.Command {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for PII: %w", piiErr)}
 			}
 
-			if scanErr := formatCombinedScanError(findings, piiResult.Findings, piiResult.Completion); scanErr != nil {
+			if scanErr := formatCombinedScanError(secretResult.Findings, piiResult.Findings, piiResult.Completion); scanErr != nil {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: scanErr}
+			}
+			if err := recordReviewedSecretSuppressions(outCLIDir, secretResult.Suppressions); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("recording reviewed secret suppressions: %w", err)}
 			}
 
 			// Success — remove stashed old CLI dirs
@@ -1537,6 +1541,20 @@ func stagedPackageCookieNames(dir string) ([]string, error) {
 	default:
 		return nil, nil
 	}
+}
+
+func recordReviewedSecretSuppressions(dir string, suppressions []artifacts.ReviewedSecretSuppression) error {
+	manifestSuppressions := make([]pipeline.ReviewedSecretSuppression, 0, len(suppressions))
+	for _, suppression := range suppressions {
+		manifestSuppressions = append(manifestSuppressions, pipeline.ReviewedSecretSuppression{
+			Path:        suppression.Path,
+			Line:        suppression.Line,
+			Kind:        suppression.Kind,
+			Fingerprint: suppression.Fingerprint,
+			Reason:      suppression.Reason,
+		})
+	}
+	return pipeline.WriteReviewedSecretSuppressions(dir, manifestSuppressions)
 }
 
 // formatCombinedScanError composes the publish-time error message from
