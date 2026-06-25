@@ -263,23 +263,32 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 		results = results[:limit]
 	}
 
-	jsonMode := flags.asJSON || !isTerminal(cmd.OutOrStdout())
-
-	// JSON mode always emits a valid envelope, including on no matches —
-	// agents pipe stdout through json.loads / jq and need parseable output
-	// regardless of result count. The filtered slice is built via make
-	// above, so it's non-nil even when empty; json.Marshal renders that
-	// as `[]` rather than `null`.
-	if jsonMode {
+	// Machine/piped mode always emits a valid envelope, including on no
+	// matches — agents pipe stdout through json.loads / jq and need parseable
+	// output regardless of result count. Explicit row formats render the result
+	// array directly so --csv/--plain can produce real tabular output.
+	if !wantsHumanTable(cmd.OutOrStdout(), flags) {
 		data, err := json.Marshal(results)
 		if err != nil {
 			return err
+		}
+		if flags.csv || flags.plain || flags.quiet {
+			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+		}
+		outputFlags := *flags
+		if flags.selectFields != "" {
+			data = filterFields(data, flags.selectFields)
+			outputFlags.selectFields = ""
+			outputFlags.compact = false
+		} else if flags.compact {
+			data = compactFields(data)
+			outputFlags.compact = false
 		}
 		wrapped, err := wrapWithProvenance(data, prov)
 		if err != nil {
 			return err
 		}
-		return printOutput(cmd.OutOrStdout(), wrapped, true)
+		return printOutputWithFlags(cmd.OutOrStdout(), wrapped, &outputFlags)
 	}
 
 	if len(results) == 0 {

@@ -18092,18 +18092,18 @@ func TestSearchTemplateEmitsEmptyJSONEnvelope(t *testing.T) {
 	require.NoError(t, err)
 	body := string(data)
 
-	assert.Contains(t, body, `jsonMode := flags.asJSON || !isTerminal(cmd.OutOrStdout())`,
-		"search.go.tmpl must compute jsonMode so the envelope path runs even on no matches")
+	assert.Contains(t, body, `!wantsHumanTable(cmd.OutOrStdout(), flags)`,
+		"search.go.tmpl must route explicit machine formats and default piped output through the envelope path even on no matches")
 
-	// Ordering pin: the jsonMode block must come before the human-mode
+	// Ordering pin: the machine/piped block must come before the human-mode
 	// "No results" stderr line. Reversing the order would skip the JSON
 	// envelope on empty results — the original failure mode.
-	jsonModeIdx := strings.Index(body, "jsonMode := flags.asJSON")
+	machineModeIdx := strings.Index(body, "!wantsHumanTable(cmd.OutOrStdout(), flags)")
 	noResultsIdx := strings.Index(body, `"No results (source: %s)\n"`)
-	require.GreaterOrEqual(t, jsonModeIdx, 0)
+	require.GreaterOrEqual(t, machineModeIdx, 0)
 	require.GreaterOrEqual(t, noResultsIdx, 0)
-	assert.Less(t, jsonModeIdx, noResultsIdx,
-		"jsonMode check must come before the human-mode 'No results' stderr line; otherwise the JSON-envelope path is skipped on empty results")
+	assert.Less(t, machineModeIdx, noResultsIdx,
+		"machine/piped check must come before the human-mode 'No results' stderr line; otherwise the JSON-envelope path is skipped on empty results")
 }
 
 // TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert pins the gate that

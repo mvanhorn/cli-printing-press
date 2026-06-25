@@ -54,10 +54,24 @@ Data must be synced first with the sync command.`,
 				if err != nil {
 					return fmt.Errorf("getting status: %w", err)
 				}
-				if flags.asJSON {
-					enc := json.NewEncoder(out)
-					enc.SetIndent("", "  ")
-					return enc.Encode(status)
+				if wantsMachineOutput(flags) {
+					if flags.csv || flags.plain || flags.quiet {
+						type statusRow struct {
+							ResourceType string `json:"resource_type"`
+							Count        int    `json:"count"`
+						}
+						keys := make([]string, 0, len(status))
+						for rt := range status {
+							keys = append(keys, rt)
+						}
+						sort.Strings(keys)
+						rows := make([]statusRow, 0, len(keys))
+						for _, rt := range keys {
+							rows = append(rows, statusRow{ResourceType: rt, Count: status[rt]})
+						}
+						return printJSONFiltered(out, rows, flags)
+					}
+					return printJSONFiltered(out, status, flags)
 				}
 				fmt.Fprintln(out, "Resource Type\tCount")
 				fmt.Fprintln(out, "-------------\t-----")
@@ -76,11 +90,9 @@ Data must be synced first with the sync command.`,
 				return fmt.Errorf("counting: %w", err)
 			}
 
-			if flags.asJSON {
+			if wantsMachineOutput(flags) {
 				result := map[string]any{"resource_type": resourceType, "count": count}
-				enc := json.NewEncoder(out)
-				enc.SetIndent("", "  ")
-				return enc.Encode(result)
+				return printJSONFiltered(out, result, flags)
 			}
 
 			fmt.Fprintf(out, "%s: %d records\n", resourceType, count)
@@ -145,10 +157,8 @@ func runGroupBy(out io.Writer, db *store.Store, resourceType, field string, limi
 		sorted = sorted[:limit]
 	}
 
-	if flags.asJSON {
-		enc := json.NewEncoder(out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(sorted)
+	if wantsMachineOutput(flags) {
+		return printJSONFiltered(out, sorted, flags)
 	}
 
 	fmt.Fprintf(out, "%s\tCount\n", field)

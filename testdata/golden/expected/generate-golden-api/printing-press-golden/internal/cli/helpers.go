@@ -56,7 +56,7 @@ func colorEnabled() bool {
 	if os.Getenv("TERM") == "dumb" {
 		return false
 	}
-	return isTerminal(os.Stdout)
+	return true
 }
 
 func isTerminal(w io.Writer) bool {
@@ -1080,6 +1080,10 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	if flags.csv {
 		return printCSV(w, data)
 	}
+	// --plain: render arrays as tab-separated rows
+	if flags.plain {
+		return printPlain(w, data)
+	}
 	return printOutput(w, data, flags.asJSON)
 }
 
@@ -1282,6 +1286,56 @@ func printCSV(w io.Writer, data json.RawMessage) error {
 	return nil
 }
 
+// printPlain renders JSON arrays as tab-separated text with a header row.
+func printPlain(w io.Writer, data json.RawMessage) error {
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		// Single object - just print as JSON
+		fmt.Fprintln(w, string(data))
+		return nil
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	keySet := map[string]bool{}
+	for _, item := range items {
+		for k := range item {
+			keySet[k] = true
+		}
+	}
+	var keys []string
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintln(w, strings.Join(keys, "\t"))
+	for _, item := range items {
+		var vals []string
+		for _, k := range keys {
+			vals = append(vals, plainCellValue(item[k]))
+		}
+		fmt.Fprintln(w, strings.Join(vals, "\t"))
+	}
+	return nil
+}
+
+func plainCellValue(v any) string {
+	if v == nil {
+		return ""
+	}
+	var s string
+	if f, ok := v.(float64); ok {
+		s = strconv.FormatFloat(f, 'f', -1, 64)
+	} else {
+		s = fmt.Sprintf("%v", v)
+	}
+	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
 // printOutput auto-detects arrays and renders as tables, or prints raw JSON for objects.
 func printOutput(w io.Writer, data json.RawMessage, asJSON bool) error {
 	if !asJSON && !isTerminal(w) {
@@ -1384,16 +1438,21 @@ func suggestFlag(unknown string, cmd *cobra.Command) string {
 // wantsHumanTable returns true when output should be a human-friendly table.
 // Smart default: terminal=table, pipe=JSON.
 // - Human in terminal: isTerminal()=true → table
+// - --human-friendly: force human output, even when stdout is piped
 // - Claude Code/Codex bash tool: stdout piped → JSON
 // - --json/--csv/--compact/--agent: machine format → JSON
 func wantsHumanTable(w io.Writer, flags *rootFlags) bool {
-	if flags.asJSON || flags.csv || flags.compact || flags.quiet || flags.plain {
+	if wantsMachineOutput(flags) {
 		return false
 	}
-	if flags.selectFields != "" {
-		return false
+	if humanFriendly {
+		return true
 	}
 	return isTerminal(w)
+}
+
+func wantsMachineOutput(flags *rootFlags) bool {
+	return flags.asJSON || flags.csv || flags.compact || flags.quiet || flags.plain || flags.selectFields != ""
 }
 
 func printAutoTable(w io.Writer, items []map[string]any) error {
