@@ -3686,6 +3686,20 @@ func profileFixtureWithTenant(t *testing.T) *APIProfile {
 					},
 				},
 			},
+			// "invoices" is tenant-annotated but has no IDField, so it must
+			// NOT be classified as "flat" — it stays "none". This is the
+			// Task 3 negative case for the PK-less branch.
+			"invoices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/invoices",
+						Response:          spec.ResponseDef{Type: "array"},
+						TenantScopeColumn: "workspace",
+						// IDField intentionally omitted — no stable PK.
+					},
+				},
+			},
 		},
 	}
 	return Profile(s)
@@ -3721,5 +3735,44 @@ func TestProfiler_TenantScopeColumnAndViews(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("ChildScopeColumnSources() missing projects_id->project: %+v", sources)
+	}
+}
+
+func TestProfiler_FlatReconcileClassification(t *testing.T) {
+	prof := profileFixtureWithTenant(t) // projects annotated, has a PK IDField
+
+	// Positive case: a tenant-scoped flat resource with a PK must be "flat".
+	var mode string
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "projects" {
+			mode = sr.ReconcileMode
+		}
+	}
+	if mode != "flat" {
+		t.Fatalf("projects.ReconcileMode = %q, want flat", mode)
+	}
+
+	// Negative case 1: a flat resource WITHOUT a tenant column must stay "none".
+	for _, sr := range prof.SyncableResources {
+		if sr.TenantScopeColumn == "" && sr.ReconcileMode == "flat" {
+			t.Fatalf("%s classified flat without a tenant column", sr.Name)
+		}
+	}
+
+	// Negative case 2: "invoices" has TenantScopeColumn but no IDField, so it
+	// must stay "none" (missing stable PK disqualifies flat reconcile).
+	var invoicesMode string
+	found := false
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "invoices" {
+			found = true
+			invoicesMode = sr.ReconcileMode
+		}
+	}
+	if !found {
+		t.Fatal("invoices resource not found in SyncableResources")
+	}
+	if invoicesMode != "none" {
+		t.Fatalf("invoices.ReconcileMode = %q, want none (tenant-annotated but no IDField)", invoicesMode)
 	}
 }

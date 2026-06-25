@@ -665,11 +665,17 @@ func Profile(s *spec.APISpec) *APIProfile {
 	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
 	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
-	// Flat resources carry "none" this round — forward-looking metadata for the
-	// follow-up flat/tenant reconcile. Set explicitly so the value is "none",
-	// not the empty zero value.
+	// Flat tenant-scoped reconcile: a flat resource is reconcilable only when it
+	// is tenant-discriminated (its rows carry a tenant column) AND has a stable
+	// PK AND will not mis-route items through a discriminator dispatcher. All
+	// other flat resources stay "none". flat_global is intentionally unreachable.
 	for i := range p.SyncableResources {
-		p.SyncableResources[i].ReconcileMode = "none"
+		sr := &p.SyncableResources[i]
+		if sr.TenantScopeColumn != "" && sr.IDField != "" && sr.Discriminator.Field == "" {
+			sr.ReconcileMode = "flat"
+		} else {
+			sr.ReconcileMode = "none"
+		}
 	}
 	// Populate reconcile metadata for each dependent resource.
 	// per_parent is safe only for a single-path-param dependent with a PK.
