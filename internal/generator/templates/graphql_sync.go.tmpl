@@ -103,7 +103,7 @@ Exit codes & warnings:
 			}
 
 			if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages") {
-				maxPages = 10
+				maxPages = 1
 			}
 
 			// --latest-only: cap at page 1 and clear the resume cursor so

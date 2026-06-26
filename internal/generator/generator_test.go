@@ -9912,6 +9912,72 @@ func TestGeneratedOutput_DefaultSyncSkipsUnsatisfiedRequiredParams(t *testing.T)
 	runGoCommand(t, outputDir, "build", "./cmd/"+naming.CLI(apiSpec.Name))
 }
 
+func TestGeneratedSyncExcludesActionGetEndpoints(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "sync-actions",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/sync-actions-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Description: "Customers",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/customers.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"subscriptions_lookup": {
+				Description: "Subscription lookup",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/subscriptions/lookup.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"invoices_events": {
+				Description: "Invoice events",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/invoices/events.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncSrc := string(syncGo)
+	defaultResources := regexp.MustCompile(`(?s)func defaultSyncResources\(\) \[\]string \{(.*?)\n\}`).FindStringSubmatch(syncSrc)
+	require.Len(t, defaultResources, 2)
+	assert.Contains(t, defaultResources[1], `"customers"`)
+	assert.NotContains(t, defaultResources[1], `"subscriptions_lookup"`)
+	assert.NotContains(t, defaultResources[1], `"invoices_events"`)
+	assert.NotContains(t, syncSrc, `"/subscriptions/lookup.json"`)
+	assert.NotContains(t, syncSrc, `"/invoices/events.json"`)
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
 func TestGeneratedOutput_WorkflowArchiveJSONKeepsSyncEventsOffStdout(t *testing.T) {
 	t.Parallel()
 
@@ -12424,12 +12490,22 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 		"sync.go must declare --max-pages with default 0")
 	assert.Contains(t, syncContent, `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
 		"sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
-	assert.Contains(t, syncContent, `maxPages = 10`,
-		"sync.go must keep a dogfood-only page cap")
+	assert.Contains(t, syncContent, `maxPages = 1`,
+		"sync.go must keep a dogfood-only paginate-once cap")
 	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
 		"sync.go must not retain the old finite 100-page default")
 	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"sync.go must not retain the old 10-page default")
+	assert.Contains(t, syncContent, `const dogfoodMaxParentRows = 2`,
+		"sync.go must bound dependent parent fan-out under dogfood")
+	assert.Contains(t, syncContent, `parentRows = parentRows[:dogfoodMaxParentRows]`,
+		"sync.go must curtail wide parent tables before dependent fan-out")
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","parent_table":"%s","reason":"dogfood_parent_rows_cap_hit"`,
+		"sync.go must emit a structured warning when dogfood caps dependent parent rows")
+	assert.Contains(t, syncContent,
+		"dogfood capped parent sync to %d of %d %s parents",
+		"sync.go must print a human-friendly warning when dogfood caps dependent parent rows")
 
 	// (b1) Flat-path cap-hit emits structured sync_warning with reason
 	// "max_pages_cap_hit". Use the literal %s embedded-quote shape — match
@@ -12936,8 +13012,8 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 		"GraphQL sync.go must declare --max-pages with default 0")
 	assert.Contains(t, string(syncGo), `if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages")`,
 		"GraphQL sync.go must bound dogfood syncs only when --max-pages was not explicitly set")
-	assert.Contains(t, string(syncGo), `maxPages = 10`,
-		"GraphQL sync.go dogfood cap must still bound generated syncs to 10 pages")
+	assert.Contains(t, string(syncGo), `maxPages = 1`,
+		"GraphQL sync.go dogfood cap must bound generated syncs to one page")
 	assert.NotContains(t, string(syncGo), `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"GraphQL sync.go must not retain the old 10-page default")
 	assert.Contains(t, string(syncGo), "capExitHit := false",
@@ -14029,6 +14105,19 @@ func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
 					},
 				},
 			},
+			"ip_addresses": {
+				Description: "IP addresses",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/ip_addresses",
+						Description: "List IP addresses",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params:      []spec.Param{{Name: "page_size", Type: "integer"}, {Name: "page", Type: "integer"}},
+						Pagination:  &spec.Pagination{Type: "none"},
+					},
+				},
+			},
 			"budget_settings": {
 				Description: "Budget settings",
 				Endpoints: map[string]spec.Endpoint{
@@ -14064,6 +14153,8 @@ func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
 		"dependent transactions declares limit/offset and must opt into pagination params")
 	assert.NotContains(t, helperBody, `case "categories":`,
 		"categories declares no limit param and must not receive pagination params")
+	assert.NotContains(t, helperBody, `case "ip_addresses":`,
+		"pagination.type none must suppress otherwise recognizable pagination params")
 	assert.NotContains(t, helperBody, `case "budget_settings":`,
 		"/budgets/settings is non-paginated and must fall through to false")
 	assert.Contains(t, syncContent, `if resourceSupportsPagination(resource) {`,

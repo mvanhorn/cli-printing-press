@@ -11351,6 +11351,47 @@ func TestDetectPaginationRecognizesSkipAndPerPage(t *testing.T) {
 	assert.Equal(t, "perPage", pag.LimitParam)
 }
 
+func TestParseOperationPaginationNoneExtension(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.0
+info:
+  title: Pagination None API
+  version: "1.0"
+paths:
+  /ip_addresses:
+    get:
+      operationId: listIPAddresses
+      x-pp-pagination: none
+      parameters:
+        - name: page
+          in: query
+          schema: {type: integer}
+        - name: page_size
+          in: query
+          schema: {type: integer}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+`))
+	require.NoError(t, err)
+	require.Contains(t, parsed.Resources, "ip-addresses")
+	endpoint := parsed.Resources["ip-addresses"].Endpoints["list"]
+	require.NotNil(t, endpoint.Pagination)
+	assert.Equal(t, spec.PaginationTypeNone, endpoint.Pagination.Type)
+	assert.Empty(t, endpoint.Pagination.CursorParam)
+	assert.Empty(t, endpoint.Pagination.LimitParam)
+}
+
 func TestParsePreservesOperationTags(t *testing.T) {
 	t.Parallel()
 

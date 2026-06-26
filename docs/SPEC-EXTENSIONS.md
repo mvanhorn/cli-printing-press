@@ -46,6 +46,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
 | `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
 | `x-pp-resource` | operation | resource name override | No |
+| `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
@@ -1339,6 +1340,41 @@ paths:
     post:
       operationId: searchNotes
       x-pp-resource: notes_search
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-pagination`
+
+Overrides pagination detection for one GET operation.
+
+Parsed field: `Endpoint.Pagination`
+
+Rules:
+- Optional.
+- Must be on an operation, not the root, `info`, or path item.
+- Must be a string.
+- Accepted value: `none`.
+- `none` tells generated sync not to send inferred cursor, page, offset, or
+  page-size query parameters for this endpoint, even when the operation exposes
+  page-looking filters such as `page`, `page_size`, or `limit`.
+- Use for list endpoints that return the whole collection in one response and
+  reject pagination keys as invalid filters.
+- Unsupported values emit a warning and fall back to normal pagination
+  detection.
+
+Example:
+
+```yaml
+paths:
+  /ip_addresses:
+    get:
+      operationId: listIPAddresses
+      x-pp-pagination: none
+      parameters:
+        - name: page_size
+          in: query
+          schema: {type: integer}
       responses:
         "200": {description: ok}
 ```

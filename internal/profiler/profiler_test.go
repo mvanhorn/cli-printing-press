@@ -2310,6 +2310,42 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 					},
 				},
 			},
+			"documents": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/documents",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updatedAfter", Type: "string", Format: "date-time"},
+						},
+					},
+				},
+			},
+			"books": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/books",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updated__gt", Type: "string", Format: "date-time"},
+						},
+					},
+				},
+			},
+			"highlights": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/highlights",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "num_highlights__gt", Type: "integer"},
+						},
+					},
+				},
+			},
 			"posts": {
 				Endpoints: map[string]spec.Endpoint{
 					"list": {
@@ -2360,6 +2396,15 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 	require.Contains(t, byName, "audit")
 	assert.Equal(t, "updated_after", byName["audit"].SinceParam, "spec-declared name (not the profile-wide guess) wins")
 	assert.Equal(t, "date", byName["audit"].SinceParamFormat, "date format should propagate so sync can send YYYY-MM-DD")
+
+	require.Contains(t, byName, "documents")
+	assert.Equal(t, "updatedAfter", byName["documents"].SinceParam, "camelCase updatedAfter should be recognized as an incremental filter")
+
+	require.Contains(t, byName, "books")
+	assert.Equal(t, "updated__gt", byName["books"].SinceParam, "temporal DRF comparison filters should be recognized")
+
+	require.Contains(t, byName, "highlights")
+	assert.Empty(t, byName["highlights"].SinceParam, "numeric DRF comparison filters must not be mistaken for temporal cursors")
 
 	require.Contains(t, byName, "posts")
 	assert.Equal(t, "modified_since", byName["posts"].SinceParam, "modified_since heuristic branch")
@@ -2978,6 +3023,19 @@ func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *test
 					},
 				},
 			},
+			"ip_addresses": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/ip_addresses",
+						Params:   []spec.Param{{Name: "page_size", Type: "integer"}, {Name: "page", Type: "integer"}},
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							Type: "none",
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -2998,6 +3056,77 @@ func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *test
 	assert.Equal(t, "page", byName["photos"].PaginationCursorParam)
 	assert.Equal(t, "per_page", byName["photos"].PaginationLimitParam)
 	assert.Equal(t, 25, byName["photos"].PaginationPageSize)
+
+	require.Contains(t, byName, "ip_addresses")
+	assert.False(t, byName["ip_addresses"].SupportsPagination, "pagination.type none must suppress inferred pagination params")
+	assert.Empty(t, byName["ip_addresses"].PaginationCursorParam)
+	assert.Empty(t, byName["ip_addresses"].PaginationLimitParam)
+	assert.Equal(t, 0, byName["ip_addresses"].PaginationPageSize, "pagination.type none must not imply a page-size default")
+}
+
+func TestProfileSyncableResourcesExcludeActionGetEndpoints(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "actions",
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/customers.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"subscriptions_lookup": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/subscriptions/lookup.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"invoices_events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/invoices/events.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"products_search": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/products/search",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"orders_find": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/orders/find",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "customers")
+	assert.NotContains(t, byName, "subscriptions_lookup")
+	assert.NotContains(t, byName, "invoices_events")
+	assert.NotContains(t, byName, "products_search")
+	assert.NotContains(t, byName, "orders_find")
 }
 
 // Specs with no recognizable pagination shape must keep the historical

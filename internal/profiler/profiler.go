@@ -538,7 +538,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				} else if pathCallable && requiredScope {
 					addStandaloneCandidate()
 				}
-			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s) || endpoint.Syncable) && looksLikeCollectionEndpoint(endpointNameLower) && !isSamplerEndpoint(endpoint) && !isScalarItemArray(endpoint.Response) {
+			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s) || endpoint.Syncable) && looksLikeCollectionEndpoint(endpointNameLower) && (endpoint.Syncable || !isActionGetEndpoint(endpoint.Path)) && !isSamplerEndpoint(endpoint) && !isScalarItemArray(endpoint.Response) {
 				// Catch-all for simple GET collection endpoints that isListEndpoint
 				// didn't recognise (e.g., response is an untyped object with no
 				// wrapper field defined in the spec's types map).
@@ -555,13 +555,13 @@ func Profile(s *spec.APISpec) *APIProfile {
 			}
 
 			if endpoint.Pagination != nil {
-				if endpoint.Pagination.Type != spec.PaginationTypeIDWalk && endpoint.Pagination.CursorParam != "" {
+				if isRuntimePagination(endpoint.Pagination) && endpoint.Pagination.CursorParam != "" {
 					cursorParams[endpoint.Pagination.CursorParam]++
 				}
-				if endpoint.Pagination.Type != "" && endpoint.Pagination.Type != spec.PaginationTypeIDWalk {
+				if isRuntimePagination(endpoint.Pagination) && endpoint.Pagination.Type != "" {
 					cursorTypes[endpoint.Pagination.Type]++
 				}
-				if endpoint.Pagination.Type != spec.PaginationTypeIDWalk && endpoint.Pagination.LimitParam != "" {
+				if isRuntimePagination(endpoint.Pagination) && endpoint.Pagination.LimitParam != "" {
 					pageSizeParams[endpoint.Pagination.LimitParam]++
 				}
 			} else {
@@ -1008,6 +1008,9 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 	if method != "GET" {
 		return false
 	}
+	if !endpoint.Syncable && isActionGetEndpoint(endpoint.Path) {
+		return false
+	}
 	if endpoint.Pagination != nil {
 		return true
 	}
@@ -1016,6 +1019,49 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 	}
 
 	return looksLikeBasicGetListEndpoint(strings.ToLower(name))
+}
+
+var nonListActionSegments = map[string]bool{
+	"events": true,
+	"find":   true,
+	"lookup": true,
+	"search": true,
+}
+
+func isActionGetEndpoint(path string) bool {
+	segments := staticPathSegments(path)
+	segments = trimVersionPathSegments(segments)
+	if len(segments) < 2 {
+		return false
+	}
+	last := actionSegmentBase(segments[len(segments)-1])
+	return nonListActionSegments[last]
+}
+
+func trimVersionPathSegments(segments []string) []string {
+	for len(segments) > 0 && isVersionPathSegment(segments[0]) {
+		segments = segments[1:]
+	}
+	return segments
+}
+
+func isVersionPathSegment(segment string) bool {
+	if len(segment) < 2 || segment[0] != 'v' {
+		return false
+	}
+	for _, r := range segment[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func actionSegmentBase(segment string) string {
+	for _, suffix := range []string{"-json", "_json", ".json"} {
+		segment = strings.TrimSuffix(segment, suffix)
+	}
+	return segment
 }
 
 // scalarItemTypes are the response-array element type names the parser emits
@@ -2278,7 +2324,10 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 	cursorParam := ""
 	cursorType := ""
 	limitParam := ""
-	if endpoint.Pagination != nil && endpoint.Pagination.Type != spec.PaginationTypeIDWalk {
+	if paginationDisabled(endpoint.Pagination) {
+		return "", "", "", 0
+	}
+	if isRuntimePagination(endpoint.Pagination) {
 		cursorParam = strings.TrimSpace(endpoint.Pagination.CursorParam)
 		cursorType = strings.TrimSpace(endpoint.Pagination.Type)
 		limitParam = strings.TrimSpace(endpoint.Pagination.LimitParam)
@@ -2420,15 +2469,40 @@ func normalizeTemporalFieldName(name string) string {
 
 func isEndpointSinceParamName(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	return strings.Contains(name, "since") ||
-		strings.Contains(name, "updated_after") ||
-		strings.Contains(name, "modified_since") ||
+	normalized := normalizeTemporalFieldName(name)
+	if strings.Contains(normalized, "since") ||
+		strings.Contains(normalized, "updatedafter") ||
+		strings.Contains(normalized, "modifiedafter") ||
+		strings.Contains(normalized, "createdafter") ||
 		strings.Contains(name, "updated_at") ||
 		name == "start_date" ||
 		name == "start_datetime" ||
 		name == "start_time" ||
 		name == "from_date" ||
-		name == "from_datetime"
+		name == "from_datetime" {
+		return true
+	}
+	base, op, ok := strings.Cut(name, "__")
+	if !ok {
+		return false
+	}
+	switch op {
+	case "gt", "gte", "lt", "lte":
+		return isTemporalComparisonBase(base)
+	default:
+		return false
+	}
+}
+
+func isTemporalComparisonBase(base string) bool {
+	normalized := normalizeTemporalFieldName(base)
+	switch normalized {
+	case "updated", "modified", "created", "updatedat", "modifiedat", "createdat", "updateddate", "modifieddate", "createddate":
+		return true
+	default:
+		base = strings.ToLower(strings.TrimSpace(base))
+		return strings.HasSuffix(base, "_at") || strings.HasSuffix(base, "_date")
+	}
 }
 
 func detectEndpointFieldSelector(endpoint spec.Endpoint) FieldSelector {
@@ -2447,6 +2521,9 @@ func detectEndpointFieldSelector(endpoint spec.Endpoint) FieldSelector {
 }
 
 func endpointSupportsPagination(endpoint spec.Endpoint) bool {
+	if paginationDisabled(endpoint.Pagination) {
+		return false
+	}
 	if endpoint.Pagination != nil &&
 		(strings.TrimSpace(endpoint.Pagination.LimitParam) != "" ||
 			strings.TrimSpace(endpoint.Pagination.CursorParam) != "") {
@@ -2461,6 +2538,14 @@ func endpointSupportsPagination(endpoint spec.Endpoint) bool {
 		}
 	}
 	return false
+}
+
+func paginationDisabled(p *spec.Pagination) bool {
+	return p != nil && p.Type == spec.PaginationTypeNone
+}
+
+func isRuntimePagination(p *spec.Pagination) bool {
+	return p != nil && p.Type != spec.PaginationTypeIDWalk && p.Type != spec.PaginationTypeNone
 }
 
 func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string][]syncableCandidate) {

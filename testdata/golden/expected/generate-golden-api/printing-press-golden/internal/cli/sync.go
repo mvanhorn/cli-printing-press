@@ -33,6 +33,8 @@ import (
 // sync still completes for resources that DO have resolvable paths.
 var unresolvedPathKeyRE = regexp.MustCompile(`\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
 
+const dogfoodMaxParentRows = 2
+
 // syncResult holds the outcome of syncing a single resource.
 type syncResult struct {
 	Resource string
@@ -155,7 +157,7 @@ Resource scoping:
 			}
 
 			if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages") {
-				maxPages = 10
+				maxPages = 1
 			}
 
 			// --latest-only narrows to the first page of each resource
@@ -1674,6 +1676,15 @@ func syncDependentResource(ctx context.Context, c interface {
 			return syncResult{Resource: dep.Name, Duration: time.Since(started)}
 		}
 		return syncResult{Resource: dep.Name, Err: fmt.Errorf("querying parent table %s: %w", dep.ParentTable, err), Duration: time.Since(started)}
+	}
+	if cliutil.IsDogfoodEnv() && len(parentRows) > dogfoodMaxParentRows {
+		originalParentRows := len(parentRows)
+		parentRows = parentRows[:dogfoodMaxParentRows]
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "  %s: dogfood capped parent sync to %d of %d %s parents\n", dep.Name, len(parentRows), originalParentRows, dep.ParentTable)
+		} else {
+			fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent_table":"%s","reason":"dogfood_parent_rows_cap_hit","message":"dogfood capped dependent sync to %d of %d parent rows; run outside dogfood to verify full parent coverage"}`+"\n", dep.Name, dep.ParentTable, len(parentRows), originalParentRows)
+		}
 	}
 
 	if humanFriendly {
