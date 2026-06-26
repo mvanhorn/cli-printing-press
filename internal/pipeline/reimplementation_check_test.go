@@ -178,6 +178,50 @@ func newIRMAACmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+func TestCheckReimplementation_ComputedDataSourceTODOInSiblingFileStillFlagged(t *testing.T) {
+	files := map[string]string{
+		"irmaa.go": `package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+// pp:data-source computed
+func newIRMAACmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "irmaa",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "irmaa")
+		},
+	}
+}
+`,
+		"irmaa_helpers.go": `package cli
+
+// pp:data-source computed
+func irmaaBracket() string {
+	return "standard"
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "IRMAA", Command: "irmaa"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 {
+		t.Fatalf("MissingDataSourceStrategy: want 0, got %d (%v)", len(got.MissingDataSourceStrategy), got.MissingDataSourceStrategy)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+	if !strings.Contains(got.Suspicious[0].Reason, "TODO") && !strings.Contains(got.Suspicious[0].Reason, "stub") {
+		t.Fatalf("Reason should mention TODO/stub, got %q", got.Suspicious[0].Reason)
+	}
+}
+
 func TestCheckReimplementation_MissingDataSourceStrategy_Flagged(t *testing.T) {
 	files := map[string]string{
 		"today.go": `package cli

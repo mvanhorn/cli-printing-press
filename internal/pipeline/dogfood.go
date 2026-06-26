@@ -2580,8 +2580,8 @@ func readRootShort(path string) (string, bool) {
 	}
 	lit := m[1]
 	var value string
-	if strings.HasPrefix(lit, "`") {
-		value = strings.TrimSuffix(strings.TrimPrefix(lit, "`"), "`")
+	if unwrapped, ok := strings.CutPrefix(lit, "`"); ok {
+		value = strings.TrimSuffix(unwrapped, "`")
 	} else if unquoted, err := strconv.Unquote(lit); err == nil {
 		value = unquoted
 	}

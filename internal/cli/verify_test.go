@@ -188,3 +188,31 @@ func TestVerifyCmdWriteManifestPersistsSummary(t *testing.T) {
 	assert.Equal(t, float64(75), verify["pass_rate"])
 	assert.Equal(t, "WARN", verify["verdict"])
 }
+
+func TestVerifyCmdWriteManifestErrorUsesGenerationExitCode(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
+	require.NoError(t, os.WriteFile(manifestPath, []byte(`not-json`), 0o644))
+
+	cmd := newVerifyCmdWithOptions(verifyCmdOptions{
+		runVerify: func(cfg pipeline.VerifyConfig) (*pipeline.VerifyReport, error) {
+			return &pipeline.VerifyReport{
+				Mode:     "mock",
+				Total:    1,
+				Passed:   1,
+				PassRate: 100,
+				Verdict:  "PASS",
+				Binary:   filepath.Join(cfg.Dir, "sample-cli"),
+			}, nil
+		},
+	})
+	cmd.SetArgs([]string{"--dir", dir, "--write-manifest", manifestPath})
+
+	_, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+
+	var exitErr *ExitError
+	require.True(t, errors.As(err, &exitErr))
+	assert.Equal(t, ExitGenerationError, exitErr.Code)
+	assert.Contains(t, exitErr.Error(), "writing verify summary to manifest")
+}

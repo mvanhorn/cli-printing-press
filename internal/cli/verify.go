@@ -113,7 +113,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 			}
 			if writeManifest != "" {
 				if _, err := pipeline.PersistVerifyToManifest(writeManifest, report); err != nil {
-					return fmt.Errorf("writing verify summary to manifest: %w", err)
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("writing verify summary to manifest: %w", err)}
 				}
 			}
 

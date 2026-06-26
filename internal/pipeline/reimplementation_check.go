@@ -332,6 +332,14 @@ func classifyReimplementation(leaf string, files []string, fileContent map[strin
 	hasTrivialBody := false
 	hasTODOStub := false
 	primaryFile := files[0]
+	hasAnyTODOStub := false
+	for _, f := range files {
+		content, ok := fileContent[f]
+		if ok && todoStubRe.MatchString(content) {
+			hasAnyTODOStub = true
+			break
+		}
+	}
 	for _, f := range files {
 		content, ok := fileContent[f]
 		if !ok {
@@ -343,7 +351,7 @@ func classifyReimplementation(leaf string, files []string, fileContent map[strin
 		if clientCallDirectiveRe.MatchString(content) {
 			return ReimplementationFinding{File: f}, exemptClientDirective, true
 		}
-		if computedDataSource(content) && !todoStubRe.MatchString(content) {
+		if computedDataSource(content) && !hasAnyTODOStub {
 			return ReimplementationFinding{File: f}, exemptComputedDataSource, true
 		}
 		if hasStoreSignal(content) {
