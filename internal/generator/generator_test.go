@@ -12462,6 +12462,12 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 		"sync.go must bound dependent parent fan-out under dogfood")
 	assert.Contains(t, syncContent, `parentRows = parentRows[:dogfoodMaxParentRows]`,
 		"sync.go must curtail wide parent tables before dependent fan-out")
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","parent_table":"%s","reason":"dogfood_parent_rows_cap_hit"`,
+		"sync.go must emit a structured warning when dogfood caps dependent parent rows")
+	assert.Contains(t, syncContent,
+		"dogfood capped parent sync to %d of %d %s parents",
+		"sync.go must print a human-friendly warning when dogfood caps dependent parent rows")
 
 	// (b1) Flat-path cap-hit emits structured sync_warning with reason
 	// "max_pages_cap_hit". Use the literal %s embedded-quote shape — match

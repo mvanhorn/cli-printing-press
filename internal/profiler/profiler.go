@@ -2325,7 +2325,7 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 	cursorType := ""
 	limitParam := ""
 	if paginationDisabled(endpoint.Pagination) {
-		return "", "", "", 100
+		return "", "", "", 0
 	}
 	if isRuntimePagination(endpoint.Pagination) {
 		cursorParam = strings.TrimSpace(endpoint.Pagination.CursorParam)
@@ -2474,9 +2474,6 @@ func isEndpointSinceParamName(name string) bool {
 		strings.Contains(normalized, "updatedafter") ||
 		strings.Contains(normalized, "modifiedafter") ||
 		strings.Contains(normalized, "createdafter") ||
-		strings.Contains(name, "since") ||
-		strings.Contains(name, "updated_after") ||
-		strings.Contains(name, "modified_since") ||
 		strings.Contains(name, "updated_at") ||
 		name == "start_date" ||
 		name == "start_datetime" ||

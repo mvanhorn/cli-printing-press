@@ -3061,6 +3061,7 @@ func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *test
 	assert.False(t, byName["ip_addresses"].SupportsPagination, "pagination.type none must suppress inferred pagination params")
 	assert.Empty(t, byName["ip_addresses"].PaginationCursorParam)
 	assert.Empty(t, byName["ip_addresses"].PaginationLimitParam)
+	assert.Equal(t, 0, byName["ip_addresses"].PaginationPageSize, "pagination.type none must not imply a page-size default")
 }
 
 func TestProfileSyncableResourcesExcludeActionGetEndpoints(t *testing.T) {
