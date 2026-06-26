@@ -49,6 +49,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 | `x-pp-dispatch-param` | parameter | `Param.DispatchParam` | No |
+| `x-pp-tenant-scope-column` | path item | *reserved for follow-up tenant-scoped reconcile; not parsed yet* | No |
 
 ## `info` Extensions
 
@@ -424,6 +425,44 @@ info:
   title: ServiceTitan CRM
   version: 1.0.0
   x-tenant-env-var: ST_TENANT_ID
+```
+
+### `x-pp-tenant-scope-column`
+
+Declares, on a parent collection's list path-item, the column or field name
+that identifies the tenant (e.g. workspace) scope for each row returned by
+that collection. Use it on list path-items whose synced rows are partitioned
+by a workspace or organization identifier, so that a future deletion-
+reconciliation pass can target only the rows belonging to the active tenant
+rather than pruning the entire table.
+
+This extension is **reserved and forward-looking**. It is consumed by the
+upcoming tenant-scoped deletion-reconciliation and flat fan-out work; the
+follow-up parser will map it to a `tenantScopeColumn` field on the profiled
+resource. The extension is **not parsed in the current release** and has no
+effect on generated output today. Specs without it are unaffected.
+
+Rules:
+- Optional. Absence means no tenant scoping is recorded; the current release
+  behavior is unchanged.
+- Placed on the list path-item object (same level as `get:`, `post:`, etc.),
+  not on an individual operation.
+- Value must be a non-empty string naming the response field that holds the
+  tenant scope (e.g. `workspace`, `workspace_slug`, `org_id`).
+- Only one column per path-item is meaningful; the field names the foreign-key
+  column whose values identify tenant boundaries in the synced rows.
+- Has no effect this round; the parser will begin reading it in the follow-up
+  tenant-scoped reconcile task.
+
+Example:
+
+```yaml
+paths:
+  /projects/:
+    x-pp-tenant-scope-column: workspace
+    get:
+      operationId: list_projects
+      summary: List or retrieve projects
 ```
 
 ### `x-path-template-env-vars`

@@ -458,6 +458,51 @@ func TestGenerateDedupesResourceRegistryMapEntries(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "./internal/store")
 }
 
+// TestGenerate_EmitsReconcile verifies that, for a spec with a single-path-param
+// dependent resource, the generator emits the ReconcilePartition wiring in both
+// store.go and sync.go, and that the generated code compiles successfully.
+func TestGenerate_EmitsReconcile(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("emits-reconcile")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"projects": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/projects", Response: spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"}, IDField: "id"},
+			},
+		},
+		"modules": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/projects/{projectId}/modules", Response: spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"}, IDField: "id"},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assert.Contains(t, string(storeSrc), "func (s *Store) ReconcilePartition")
+	assert.Contains(t, string(syncSrc), "ReconcilePartition(")
+	assert.Contains(t, string(syncSrc), "partitionOutcome")
+	assert.Contains(t, string(syncSrc), "reconcile_skipped")
+
+	// Generated reconcile code must COMPILE (string asserts alone can't catch a
+	// template-expansion Go error). Build the generated CLI's cli+store packages.
+	// Deliberately NOT ./internal/cliutil — that package has env-sensitive
+	// credential/path tests that fail on this Windows host (pre-existing baseline,
+	// unrelated to reconcile); a build of ./internal/cli + ./internal/store is the
+	// targeted proof the reconcile wiring is valid Go.
+	runGoCommand(t, outputDir, "build", "./internal/cli", "./internal/store")
+}
+
 // TestGenerateFreshnessHelperEmitted verifies that the cliutil freshness
 // helper and auto-refresh wrapper are emitted when the spec opts into
 // cache, and that the resulting CLI compiles end-to-end and its cliutil
@@ -3194,7 +3239,7 @@ func TestSyncDependentResourceContinuesAfterHTMLExtractionError(t *testing.T) {
 		dependentHTMLSyncClient{},
 		db,
 		dependentResourceDef{Name: "messages", ParentTable: "channels", ParentIDParam: "channelId", PathTemplate: "/channels/{channelId}/messages"},
-		"", false, 1, false, nil, nil,
+		"", false, 1, false, false, nil, nil,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -5588,7 +5633,7 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 		dependentParentFKClient{},
 		db,
 		dependentResourceDef{Name: "contacts", ParentTable: "lists", ParentIDParam: "listId", PathTemplate: "/lists/{listId}/contacts"},
-		"", false, 1, false, nil, nil,
+		"", false, 1, false, false, nil, nil,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -5754,7 +5799,7 @@ func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
 				{Param: "messageId", Field: "id"},
 			},
 		},
-		"", false, 1, false, nil, nil,
+		"", false, 1, false, false, nil, nil,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -11670,7 +11715,7 @@ func TestGenerateDependentSyncCompiles(t *testing.T) {
 	// where it gates each dependent.
 	assert.Contains(t, syncContent, "parentFilter := append([]string(nil), resources...)",
 		"sync.go should capture user --resources filter before default expansion")
-	assert.Contains(t, syncContent, "effectiveLatestOnly, parentFilter",
+	assert.Contains(t, syncContent, "effectiveLatestOnly, prune, parentFilter",
 		"sync.go should pass the captured filter into syncDependentResources")
 	assert.Contains(t, syncContent, "parentFilter []string",
 		"syncDependentResources should accept a parent filter")
@@ -12067,7 +12112,7 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 		"maxPages, effectiveLatestOnly",
 		"syncResource call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
 	assert.Contains(t, syncContent,
-		"maxPages, effectiveLatestOnly, parentFilter",
+		"maxPages, effectiveLatestOnly, prune, parentFilter",
 		"syncDependentResources call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
 	assert.Contains(t, syncContent, "capExitHit := false",
 		"syncResource must track whether the loop stopped because --max-pages was reached")

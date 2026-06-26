@@ -3089,3 +3089,163 @@ func TestIsSamplerEndpoint(t *testing.T) {
 	// "random" must match as a whole path segment, not a substring of another word.
 	assert.False(t, isSamplerEndpoint(spec.Endpoint{Path: "/randomizer-configs"}))
 }
+
+func TestProfiler_DependentReconcileMetadata(t *testing.T) {
+	// A single-path-param dependent resource with a PK must yield per_parent,
+	// scoped by the singular parent field in its body.
+	s := &spec.APISpec{
+		Name: "project-mgmt",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/projects",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"modules": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/projects/{projectId}/modules",
+						Response:   spec.ResponseDef{Type: "array"},
+						IDField:    "id",
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "modules", dep.Name)
+	assert.Equal(t, "projects", dep.ParentResource)
+	assert.Equal(t, "per_parent", dep.ReconcileMode)
+	assert.Equal(t, "projects_id", dep.ParentScopeColumn)
+	assert.Equal(t, "$.project", dep.GenericScopeJSONPath)
+	assert.Empty(t, dep.CascadeJunctions, "profiler must leave CascadeJunctions empty (filled by Task 4 seam)")
+
+	t.Run("negative_two_path_params_yields_none", func(t *testing.T) {
+		// A dependent with 2 path params cannot be safely reconciled per-parent.
+		// Both parent segments are declared as flat resources so the child path
+		// is detected as a dependent (and the negative guard is genuinely exercised).
+		s2 := &spec.APISpec{
+			Name: "deep-nesting",
+			Resources: map[string]spec.Resource{
+				"workspaces": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/workspaces",
+							Response: spec.ResponseDef{Type: "array"},
+						},
+					},
+				},
+				"projects": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/projects",
+							Response: spec.ResponseDef{Type: "array"},
+						},
+					},
+				},
+				"issues": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/workspaces/{workspaceId}/projects/{projectId}/issues",
+							Response:   spec.ResponseDef{Type: "array"},
+							IDField:    "id",
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						},
+					},
+				},
+			},
+		}
+		profile2 := Profile(s2)
+		// The 2-placeholder child shards to "projects_issues"; match by Path so the
+		// lookup is robust to the sharded Name.
+		var issues *DependentResource
+		for i := range profile2.DependentSyncResources {
+			if profile2.DependentSyncResources[i].Path == "/workspaces/{workspaceId}/projects/{projectId}/issues" {
+				issues = &profile2.DependentSyncResources[i]
+				break
+			}
+		}
+		require.NotNil(t, issues, "2-path-param child must be detected as a dependent resource")
+		require.Len(t, issues.PathParams, 2, "expected 2 path params so the negative guard is exercised")
+		assert.Equal(t, "none", issues.ReconcileMode, "2-path-param dependent must have ReconcileMode=none")
+	})
+
+	t.Run("negative_no_pk_yields_none", func(t *testing.T) {
+		// A dependent with no IDField cannot be reconciled per-parent.
+		s3 := &spec.APISpec{
+			Name: "no-pk",
+			Resources: map[string]spec.Resource{
+				"channels": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/channels",
+							Response: spec.ResponseDef{Type: "array"},
+						},
+					},
+				},
+				"messages": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/channels/{channelId}/messages",
+							Response:   spec.ResponseDef{Type: "array"},
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							// No IDField — should yield ReconcileMode "none"
+						},
+					},
+				},
+			},
+		}
+		profile3 := Profile(s3)
+		require.Len(t, profile3.DependentSyncResources, 1)
+		assert.Equal(t, "none", profile3.DependentSyncResources[0].ReconcileMode,
+			"dependent with no IDField must have ReconcileMode=none")
+	})
+
+	t.Run("flat_syncables_get_none", func(t *testing.T) {
+		// Every flat SyncableResource carries ReconcileMode "none" this round.
+		require.NotEmpty(t, profile.SyncableResources)
+		for _, sr := range profile.SyncableResources {
+			assert.Equal(t, "none", sr.ReconcileMode,
+				"flat SyncableResource %q must have ReconcileMode=none", sr.Name)
+		}
+	})
+}
+
+func TestSingularParentField(t *testing.T) {
+	cases := map[string]string{
+		// Regular "-s".
+		"projects": "project",
+		"modules":  "module",
+		"cycles":   "cycle",
+		// "-ies → -y" rule. A bare TrimSuffix("s") would yield "categorie",
+		// whose JSON path matches no row and silently sweeps nothing.
+		"categories": "category",
+		"activities": "activity",
+		"companies":  "company",
+		// Residual irregulars from the table.
+		"statuses":  "status",
+		"addresses": "address",
+		"people":    "person",
+		// Already singular / no trailing "s": returned unchanged.
+		"project": "project",
+	}
+	for plural, want := range cases {
+		assert.Equalf(t, want, singularParentField(plural),
+			"singularParentField(%q)", plural)
+	}
+}

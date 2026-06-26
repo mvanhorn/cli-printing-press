@@ -165,6 +165,11 @@ type SyncableResource struct {
 	// the query injection / envelope unwrap / offset paging only for resources
 	// that carry it.
 	QueryEntity string
+
+	// ReconcileMode mirrors DependentResource.ReconcileMode for flat resources.
+	// Always "none" this round — forward-looking metadata reserved for a
+	// follow-up flat/tenant reconcile pass; no sync logic consumes it yet.
+	ReconcileMode string
 }
 
 // DependentResource describes a child resource that requires iterating a parent
@@ -229,6 +234,20 @@ type DependentResource struct {
 	// in internal YAML, or the `key_field` key under `x-pp-sync-walker` in
 	// OpenAPI). When empty, the existing parent-primary-key flow runs.
 	KeyField string
+
+	// Reconciliation metadata (deletion mark-and-sweep). See sync.go.tmpl.
+	ReconcileMode        string                // "per_parent" | "none"
+	ParentScopeColumn    string                // e.g. "projects_id" (= ParentResource + "_id")
+	GenericScopeJSONPath string                // e.g. "$.project" (json path to the parent UUID in the body)
+	CascadeJunctions     []CascadeJunctionSpec // filled by the novel-junction seam, not the profiler
+}
+
+// CascadeJunctionSpec describes a junction table that must be pruned as part
+// of a per-parent reconciliation cascade. Populated by the novel-junction
+// registration seam (Task 4), not by the profiler itself.
+type CascadeJunctionSpec struct {
+	Table    string
+	FKColumn string
 }
 
 type DependentPathParam struct {
@@ -610,8 +629,26 @@ func Profile(s *spec.APISpec) *APIProfile {
 	p.NeedsSearch = len(listResources) >= 3 && float64(searchEndpointCount)/float64(len(listResources)) < 0.5
 
 	p.SyncableResources = sortedSyncableResources(syncable)
+	// Flat resources carry "none" this round — forward-looking metadata for the
+	// follow-up flat/tenant reconcile. Set explicitly so the value is "none",
+	// not the empty zero value.
+	for i := range p.SyncableResources {
+		p.SyncableResources[i].ReconcileMode = "none"
+	}
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
 	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
+	// Populate reconcile metadata for each dependent resource.
+	// per_parent is safe only for a single-path-param dependent with a PK.
+	for i := range p.DependentSyncResources {
+		dep := &p.DependentSyncResources[i]
+		if len(dep.PathParams) == 1 && dep.IDField != "" {
+			dep.ReconcileMode = "per_parent"
+			dep.ParentScopeColumn = dep.ParentResource + "_id"
+			dep.GenericScopeJSONPath = "$." + singularParentField(dep.ParentResource)
+		} else {
+			dep.ReconcileMode = "none"
+		}
+	}
 	for resource, fields := range searchable {
 		p.SearchableFields[resource] = sortedKeys(fields)
 	}
@@ -1668,6 +1705,41 @@ func dependentParentIDParam(path, parentResource, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// parentFieldIrregulars maps plural parent resource names whose singular form a
+// naive TrimSuffix("s") would mangle to the correct singular field. The "-ies →
+// -y" class is handled by rule below; this table is for the residual irregulars.
+var parentFieldIrregulars = map[string]string{
+	"statuses":  "status",
+	"addresses": "address",
+	"buses":     "bus",
+	"classes":   "class",
+	"indexes":   "index",
+	"indices":   "index",
+	"matrices":  "matrix",
+	"people":    "person",
+}
+
+// singularParentField maps a plural parent resource name to the singular field
+// the API body carries for that parent (e.g. "projects" → "project"). Mirrors
+// the childScopeColumnSources convention used by deriveScopeColumns in the store.
+// A bare TrimSuffix("s") mangles irregular plurals ("categories" → "categorie"),
+// which would silently break reconciliation (json_extract on a wrong path returns
+// NULL for every row, so ReconcilePartition sweeps nothing). Guard the common
+// English classes: an explicit irregulars table, then the "-ies → -y" rule, then
+// the regular "-s" trim. Genuinely irregular forms outside the table still fall
+// through to TrimSuffix, so a future spec with an exotic plural should add it here.
+func singularParentField(parentResource string) string {
+	if s, ok := parentFieldIrregulars[parentResource]; ok {
+		return s
+	}
+	// "categories" → "category", "activities" → "activity". Guard length so a
+	// 3-letter "-ies" word (none in practice) can't underflow to "".
+	if strings.HasSuffix(parentResource, "ies") && len(parentResource) > 4 {
+		return strings.TrimSuffix(parentResource, "ies") + "y"
+	}
+	return strings.TrimSuffix(parentResource, "s")
 }
 
 func dependentPathParamFields(path, parentResource string) map[string]string {

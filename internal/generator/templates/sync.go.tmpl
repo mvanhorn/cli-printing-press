@@ -88,6 +88,7 @@ func applySyncGlobalScopeEnvDefaults(userParams *syncUserParams) {
 func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var resources []string
 	var full bool
+	var noPrune bool
 	var since string
 	var concurrency int
 	var dbPath string
@@ -417,7 +418,8 @@ Resource scoping:
 
 {{- if .DependentSyncResources}}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(cmd.Context(), c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams, syncEventWriter)
+			prune := full && !noPrune
+			depResults := syncDependentResources(cmd.Context(), c, db, sinceTS, full, maxPages, effectiveLatestOnly, prune, parentFilter{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams, syncEventWriter)
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
@@ -508,6 +510,7 @@ Resource scoping:
 
 	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync. Naming a parent also runs its parent-keyed dependents (see Long help for scoping).")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
+	cmd.Flags().BoolVar(&noPrune, "no-prune", false, "Disable deletion reconciliation on --full (by default a full sync prunes local rows the API no longer returns for a fully-enumerated parent partition)")
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", {{.SyncDefaultConcurrency}}, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "SQLite database file path (default: resolved data directory data.db)")
@@ -2398,12 +2401,14 @@ func syncClientForResource(c *client.Client, resource string) *client.Client {
 // or `key_field` under `x-pp-sync-walker` in OpenAPI). Empty KeyField preserves the
 // parent-primary-key flow.
 type dependentResourceDef struct {
-	Name          string
-	ParentTable   string
-	ParentIDParam string
-	PathTemplate  string
-	KeyField      string
-	PathParams    []dependentPathParamDef
+	Name                  string
+	ParentTable           string
+	ParentIDParam         string
+	PathTemplate          string
+	KeyField              string
+	PathParams            []dependentPathParamDef
+	ReconcileMode         string
+	GenericScopeJSONPath  string
 }
 
 type dependentPathParamDef struct {
@@ -2411,10 +2416,16 @@ type dependentPathParamDef struct {
 	Field string
 }
 
+type partitionOutcome struct {
+	complete bool
+	reason   string
+	scopeVal string
+}
+
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
 {{- range .DependentSyncResources}}
-		{Name: "{{.Name}}", ParentTable: "{{.ParentResource}}", ParentIDParam: "{{.ParentIDParam}}", PathTemplate: "{{.Path}}", KeyField: "{{.KeyField}}"{{if .PathParams}}, PathParams: []dependentPathParamDef{
+		{Name: "{{.Name}}", ParentTable: "{{.ParentResource}}", ParentIDParam: "{{.ParentIDParam}}", PathTemplate: "{{.Path}}", KeyField: "{{.KeyField}}", ReconcileMode: "{{.ReconcileMode}}", GenericScopeJSONPath: "{{.GenericScopeJSONPath}}"{{if .PathParams}}, PathParams: []dependentPathParamDef{
 {{- range .PathParams}}
 			{Param: "{{.Param}}", Field: "{{.Field}}"},
 {{- end}}
@@ -2437,7 +2448,7 @@ func syncDependentResources(ctx context.Context, c {{if .HasTierRouting}}*client
 	LastContentType() string
 {{- end}}
 	RateLimit() float64
-}{{end}}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, parentFilter []string{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams, syncEvents io.Writer) []syncResult {
+}{{end}}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool, parentFilter []string{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams, syncEvents io.Writer) []syncResult {
 	allow := make(map[string]bool, len(parentFilter))
 	for _, r := range parentFilter {
 		allow[r] = true
@@ -2447,7 +2458,7 @@ func syncDependentResources(ctx context.Context, c {{if .HasTierRouting}}*client
 		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
 			continue
 		}
-		res := syncDependentResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, dep.Name){{else}}c{{end}}, db, dep, sinceTS, full, maxPages, latestOnly{{if .Pagination.DateRangeParam}}, dates{{end}}, userParams, syncEvents)
+		res := syncDependentResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, dep.Name){{else}}c{{end}}, db, dep, sinceTS, full, maxPages, latestOnly, prune{{if .Pagination.DateRangeParam}}, dates{{end}}, userParams, syncEvents)
 		results = append(results, res)
 	}
 	return results
@@ -2465,7 +2476,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	LastContentType() string
 {{- end}}
 	RateLimit() float64
-}, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams, syncEvents io.Writer) syncResult {
+}, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams, syncEvents io.Writer) syncResult {
 	started := time.Now()
 	if syncEvents == nil {
 		syncEvents = io.Discard
@@ -2545,6 +2556,9 @@ func syncDependentResource(ctx context.Context, c interface {
 		pagesFetched := 0
 		lastNextCursor := ""
 
+		outcome := partitionOutcome{scopeVal: parentID}
+		var seenIDs []string
+
 		for {
 			params := map[string]string{}
 {{- if $hasIDWalk}}
@@ -2592,6 +2606,7 @@ func syncDependentResource(ctx context.Context, c interface {
 				// Track access-denial separately so an all-denied dependent
 				// resource can surface as a Warn rather than silent success.
 				if w, ok := isSyncAccessWarning(err); ok {
+					outcome.reason = "access_denied"
 					deniedParents++
 					if firstDenial == nil {
 						firstDenial = w
@@ -2602,8 +2617,10 @@ func syncDependentResource(ctx context.Context, c interface {
 						fmt.Fprintln(syncEvents, syncWarningJSON(dep.Name, parentID, w.Status, w.Reason, w.Message))
 					}
 				} else if humanFriendly {
+					outcome.reason = "fetch_error"
 					fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
 				} else {
+					outcome.reason = "fetch_error"
 					// Non-warning failures were previously silent in JSON mode —
 					// operators only saw the missing rows. Emit a structured
 					// sync_error so the API body and status are inspectable.
@@ -2627,6 +2644,7 @@ func syncDependentResource(ctx context.Context, c interface {
 			if opts, ok := syncHTMLExtractionOptions(dep.Name, dep.ParentTable, c.RequestBaseURL(), c.LastContentType(), path, params); ok {
 				data, err = extractHTMLResponse(data, opts)
 				if err != nil {
+					outcome.reason = "html_extract_error"
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "\n  %s: HTML extraction error for parent %s: %v\n", dep.Name, parentID, err)
 					} else {
@@ -2662,6 +2680,7 @@ func syncDependentResource(ctx context.Context, c interface {
 {{- end}}
 
 			if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
+				outcome.reason = "non_json_200_body"
 				if humanFriendly {
 					fmt.Fprintf(os.Stderr, "\nwarning: %s returned a 200 response with a non-JSON body for parent %s; no rows were stored.\n", dep.Name, parentID)
 				} else {
@@ -2671,6 +2690,11 @@ func syncDependentResource(ctx context.Context, c interface {
 			}
 
 			if len(items) == 0 {
+				if isEmptyPageResponse(data{{if .QuerySync}}, dataEnvelopeKeysForResource(dep.Name, path){{end}}) {
+					outcome.complete = true // parent legitimately has zero children
+				} else {
+					outcome.reason = "empty_non_list_response"
+				}
 				break
 			}
 
@@ -2699,6 +2723,7 @@ func syncDependentResource(ctx context.Context, c interface {
 
 			stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)
 			if err != nil {
+				outcome.reason = "upsert_error"
 				if humanFriendly {
 					fmt.Fprintf(os.Stderr, "\n  %s: upsert error for parent %s: %v\n", dep.Name, parentID, err)
 				}
@@ -2728,6 +2753,17 @@ func syncDependentResource(ctx context.Context, c interface {
 			}
 
 			totalCount += stored
+			// seenIDs are stored primary keys; extractID resolves the PK the same
+			// way UpsertBatch does. Assumes storageID==id (true for per_parent
+			// resources lacking a composite parent key; composite-key per_parent
+			// resources are out of scope this round).
+			for _, it := range items {
+				if o, derr := store.DecodeJSONObject(it); derr == nil {
+					if id := extractID(dep.Name, o); id != "" {
+						seenIDs = append(seenIDs, id)
+					}
+				}
+			}
 {{- if $hasIDWalk}}
 			if resourceSupportsPagination(dep.Name) && !usesIDWalk && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data) {
 				emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, dep.Name, parentID)
@@ -2740,6 +2776,7 @@ func syncDependentResource(ctx context.Context, c interface {
 			pagesFetched++
 
 			if maxPages > 0 && pagesFetched >= maxPages {
+				outcome.reason = "max_pages_cap"
 				if !latestOnly {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items) for parent %s\n", dep.Name, maxPages, totalCount, parentID)
@@ -2753,6 +2790,7 @@ func syncDependentResource(ctx context.Context, c interface {
 			// here so dependent-resource page loops cannot burn the budget on a
 			// non-advancing next cursor.
 			if nextCursor != "" && nextCursor == lastNextCursor {
+				outcome.reason = "stuck_cursor"
 				if humanFriendly {
 					fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages for parent %s; aborting to prevent budget waste.\n", dep.Name, parentID)
 				} else {
@@ -2762,12 +2800,15 @@ func syncDependentResource(ctx context.Context, c interface {
 			}
 			lastNextCursor = nextCursor
 			if !resourceSupportsPagination(dep.Name) {
+				outcome.complete = true
 				break
 			}
 {{- if $hasIDWalk}}
 			if !hasMore || len(items) < activePageLimit {
+				outcome.complete = true
 {{- else}}
 			if !hasMore || len(items) < pageSize.limit {
+				outcome.complete = true
 {{- end}}
 				break
 			}
@@ -2780,10 +2821,27 @@ func syncDependentResource(ctx context.Context, c interface {
 				} else {
 					// A cursor-based API reporting has_more without a next cursor
 					// cannot advance safely; stop instead of looping silently.
+					outcome.reason = "cursor_unavailable"
 					break
 				}
 			}
 			cursor = nextCursor
+		}
+
+		if prune && outcome.complete && dep.ReconcileMode == "per_parent" {
+			deleted, rerr := db.ReconcilePartition(
+				dep.Name, dep.GenericScopeJSONPath, outcome.scopeVal,
+				seenIDs, dep.Name, store.CascadeJunctionsFor(dep.Name),
+			)
+			if rerr != nil {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", dep.Name, outcome.scopeVal, rerr.Error())
+			} else {
+				// Always emit on a proven-complete sweep, even when deleted==0, so a
+				// clean run is observable (distinguishable from "reconcile never ran").
+				fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", dep.Name, outcome.scopeVal, deleted)
+			}
+		} else if prune && dep.ReconcileMode == "per_parent" {
+			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", dep.Name, outcome.scopeVal, outcome.reason)
 		}
 
 		// Brief rate-limit pause between parents to avoid hammering the API
