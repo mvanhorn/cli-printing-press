@@ -29,6 +29,12 @@ func TestGenerateCSVArrayBodyFields(t *testing.T) {
 						Description: "Recipient email addresses",
 					},
 					{
+						Name:        "tags",
+						Type:        "array",
+						ItemType:    "string",
+						Description: "Message tags",
+					},
+					{
 						Name:        "attendees",
 						Type:        "string_csv_array",
 						ItemType:    "object",
@@ -51,19 +57,80 @@ func TestGenerateCSVArrayBodyFields(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "csv-array-body-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	code := readGeneratedCLIFileContaining(t, outputDir, `cliutil.SplitCSV(bodyEmails)`)
+	code := readGeneratedCLIFileContaining(t, outputDir, `cliutil.ParseStringList(bodyEmails)`)
 
 	require.Contains(t, code, `"csv-array-body-pp-cli/internal/cliutil"`)
-	require.Contains(t, code, `body["emails"] = cliutil.SplitCSV(bodyEmails)`)
+	require.Contains(t, code, `parsedEmails, parseErr := cliutil.ParseStringList(bodyEmails)`)
+	require.Contains(t, code, `return fmt.Errorf("parsing --emails list: %w", parseErr)`)
+	require.Contains(t, code, `body["emails"] = parsedEmails`)
+	require.Contains(t, code, `parsedTags, parseErr := cliutil.ParseStringList(bodyTags)`)
+	require.Contains(t, code, `body["tags"] = parsedTags`)
 	require.Contains(t, code, `body["attendees"] = cliutil.CSVTemplateObjects(bodyAttendees, map[string]any{"emailAddress": map[string]any{"address": "$value"}, "type": "required"})`)
 	require.Contains(t, code, `body["subject"] = bodySubject`)
 
 	helper, err := os.ReadFile(filepath.Join(outputDir, "internal", "cliutil", "csv.go"))
 	require.NoError(t, err)
 	require.Contains(t, string(helper), `func SplitCSV(input string) []string`)
+	require.Contains(t, string(helper), `func ParseStringList(input string) ([]string, error)`)
 	require.Contains(t, string(helper), `func CSVTemplateObjects(input string, template map[string]any) []map[string]any`)
 
 	runGoCommand(t, outputDir, "build", "./cmd/csv-array-body-pp-cli")
+}
+
+func TestGeneratedParseStringListAcceptsCSVOrJSONArray(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("csv-array-runtime")
+	apiSpec.Resources["messages"] = spec.Resource{
+		Description: "Messages",
+		Endpoints: map[string]spec.Endpoint{
+			"send": {
+				Method:      "POST",
+				Path:        "/messages",
+				Description: "Send a message",
+				Body: []spec.Param{
+					{Name: "emails", Type: "string_csv_array", ItemType: "string"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "csv-array-runtime-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	testSrc := []byte(`package cliutil
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestParseStringListCSVOrJSON(t *testing.T) {
+	csv, err := ParseStringList("ada@example.com, grace@example.com")
+	if err != nil {
+		t.Fatalf("CSV parse failed: %v", err)
+	}
+	if len(csv) != 2 || csv[0] != "ada@example.com" || csv[1] != "grace@example.com" {
+		t.Fatalf("unexpected CSV parse: %#v", csv)
+	}
+
+	jsonList, err := ParseStringList(` + "`" + `["ada@example.com","grace@example.com"]` + "`" + `)
+	if err != nil {
+		t.Fatalf("JSON parse failed: %v", err)
+	}
+	if len(jsonList) != 2 || jsonList[0] != "ada@example.com" || jsonList[1] != "grace@example.com" {
+		t.Fatalf("unexpected JSON parse: %#v", jsonList)
+	}
+
+		if _, err := ParseStringList(` + "`" + `[{"email":"ada@example.com"}]` + "`" + `); err == nil {
+			t.Fatal("object arrays must not be accepted as string lists")
+		} else if !strings.Contains(err.Error(), "expected JSON array of strings or comma-separated list") {
+			t.Fatalf("unexpected object-array error: %v", err)
+		}
+	}
+	`)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cliutil", "csv_extra_test.go"), testSrc, 0o600))
+	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
 }
 
 func TestGenerateCSVResponseParseHelpers(t *testing.T) {

@@ -54,6 +54,13 @@ func formatCLIParamValue(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
+{{- if hasMCPJSONOrScalarBody .APISpec}}
+func looksLikeJSONComposite(input string) bool {
+	input = strings.TrimSpace(input)
+	return strings.HasPrefix(input, "{") || strings.HasPrefix(input, "[")
+}
+
+{{- end}}
 {{- if hasSubstackPublicationIDTemplateResolver .APISpec}}
 
 const (

@@ -100,6 +100,26 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t}\n",
 		},
 		{
+			// Polymorphic body fields (for example oneOf scalar-or-object)
+			// accept either a scalar string or a JSON object/array. JSON-looking
+			// values must be parsed before entering the body map so the API sees
+			// an object/array, not a quoted JSON string.
+			name:   "json-or-scalar branch parses composite values and keeps scalar fallback",
+			body:   []spec.Param{{Name: "response_engine", Type: "string", Format: "json_or_scalar"}},
+			indent: "\t\t\t",
+			want: "\t\t\tif bodyResponseEngine != \"\" {\n" +
+				"\t\t\t\tif looksLikeJSONComposite(bodyResponseEngine) {\n" +
+				"\t\t\t\t\tvar parsedResponseEngine any\n" +
+				"\t\t\t\t\tif err := json.Unmarshal([]byte(bodyResponseEngine), &parsedResponseEngine); err != nil {\n" +
+				"\t\t\t\t\t\treturn fmt.Errorf(\"parsing --response-engine JSON: %w\", err)\n" +
+				"\t\t\t\t\t}\n" +
+				"\t\t\t\t\tbody[\"response_engine\"] = parsedResponseEngine\n" +
+				"\t\t\t\t} else {\n" +
+				"\t\t\t\t\tbody[\"response_engine\"] = bodyResponseEngine\n" +
+				"\t\t\t\t}\n" +
+				"\t\t\t}\n",
+		},
+		{
 			name: "multiple params concatenate in order",
 			body: []spec.Param{
 				{Name: "name", Type: "string"},

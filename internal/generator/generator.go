@@ -388,6 +388,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"hasFormRequest":               hasFormRequest,
 		"hasBodyJSONFallback":          hasBodyJSONFallback,
 		"hasMCPNestedBodyPath":         hasMCPNestedBodyPath,
+		"hasMCPJSONOrScalarBody":       hasMCPJSONOrScalarBody,
 		"hasMCPParamDefault":           hasMCPParamDefault,
 		"publicFlagName":               publicFlagName,
 		"publicFlagAliases":            publicFlagAliases,
@@ -5339,11 +5340,40 @@ func collectMCPBodyBindings(bindings *[]mcpParamBinding, body []spec.Param, dept
 			Location:           "body",
 			RequestContentType: requestContentType,
 		}
+		if isJSONOrScalarParam(p) {
+			binding.Format = "json_or_scalar"
+		}
 		if len(bodyPath) > 0 {
 			binding.BodyPath = append(append([]string(nil), bodyPath...), p.BodyWireName())
 		}
 		*bindings = append(*bindings, binding)
 	}
+}
+
+func hasMCPJSONOrScalarBody(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointHasJSONOrScalarBody)
+}
+
+func endpointHasJSONOrScalarBody(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback {
+		return false
+	}
+	var walk func([]spec.Param, int) bool
+	walk = func(params []spec.Param, depth int) bool {
+		if depth >= maxBodyFlagDepth {
+			return false
+		}
+		for _, p := range params {
+			if isJSONOrScalarParam(p) {
+				return true
+			}
+			if walk(p.Fields, depth+1) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(endpoint.Body, 0)
 }
 
 func endpointHasMCPNestedBodyPath(endpoint spec.Endpoint) bool {
@@ -5728,7 +5758,29 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 		}
 		if isStringCSVArrayParam(p) {
 			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), csvArrayValueExpr(p, "body"+ident))
+			if strings.EqualFold(strings.TrimSpace(p.ItemType), "object") {
+				fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), csvArrayValueExpr(p, "body"+ident))
+			} else {
+				fmt.Fprintf(b, "%s\tparsed%s, parseErr := %s\n", indent, ident, csvArrayValueExpr(p, "body"+ident))
+				fmt.Fprintf(b, "%s\tif parseErr != nil {\n", indent)
+				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s list: %%w\", parseErr)\n", indent, flag)
+				fmt.Fprintf(b, "%s\t}\n", indent)
+				fmt.Fprintf(b, "%s\t%s[%q] = parsed%s\n", indent, mapVar, p.BodyWireName(), ident)
+			}
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+		if isJSONOrScalarParam(p) {
+			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%s\tif looksLikeJSONComposite(body%s) {\n", indent, ident)
+			fmt.Fprintf(b, "%s\t\tvar parsed%s any\n", indent, ident)
+			fmt.Fprintf(b, "%s\t\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
+			fmt.Fprintf(b, "%s\t\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
+			fmt.Fprintf(b, "%s\t\t}\n", indent)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = parsed%s\n", indent, mapVar, p.BodyWireName(), ident)
+			fmt.Fprintf(b, "%s\t} else {\n", indent)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
+			fmt.Fprintf(b, "%s\t}\n", indent)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
@@ -6479,7 +6531,10 @@ func zeroVal(t string) string {
 }
 
 func isStringCSVArrayParam(p spec.Param) bool {
-	return strings.EqualFold(strings.TrimSpace(p.Type), "string_csv_array")
+	if strings.EqualFold(strings.TrimSpace(p.Type), "string_csv_array") {
+		return true
+	}
+	return primitiveKind(p.Type) == "array" && strings.EqualFold(strings.TrimSpace(p.ItemType), "string") && len(p.Fields) == 0
 }
 
 func csvArrayValueExpr(p spec.Param, inputExpr string) string {
@@ -6487,8 +6542,12 @@ func csvArrayValueExpr(p spec.Param, inputExpr string) string {
 	case "object":
 		return fmt.Sprintf("cliutil.CSVTemplateObjects(%s, %s)", inputExpr, csvItemTemplateLiteral(p.ItemTemplate))
 	default:
-		return fmt.Sprintf("cliutil.SplitCSV(%s)", inputExpr)
+		return fmt.Sprintf("cliutil.ParseStringList(%s)", inputExpr)
 	}
+}
+
+func isJSONOrScalarParam(p spec.Param) bool {
+	return strings.EqualFold(strings.TrimSpace(p.Format), "json_or_scalar")
 }
 
 func csvItemTemplateLiteral(v any) string {

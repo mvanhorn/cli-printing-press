@@ -1299,6 +1299,88 @@ paths:
 	assert.Empty(t, endpoint.Body[0].ItemType)
 }
 
+func TestParseOneOfBodyPropertiesEmitJSONOrScalarFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Agent API
+  version: 1.0.0
+paths:
+  /agents:
+    post:
+      operationId: createAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [response_engine]
+              properties:
+                response_engine:
+                  description: Engine configuration
+                  oneOf:
+                    - type: string
+                    - type: object
+                      properties:
+                        type: {type: string}
+                        llm_id: {type: string}
+                language:
+                  description: Locale or locales
+                  anyOf:
+                    - type: string
+                    - type: array
+                      items:
+                        type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/agents")
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+
+	require.Contains(t, byName, "response_engine")
+	assert.Equal(t, "string", byName["response_engine"].Type)
+	assert.Equal(t, "json_or_scalar", byName["response_engine"].Format)
+	assert.True(t, byName["response_engine"].Required)
+
+	require.Contains(t, byName, "language")
+	assert.Equal(t, "string", byName["language"].Type)
+	assert.Equal(t, "json_or_scalar", byName["language"].Format)
+
+	outputDir := filepath.Join(t.TempDir(), "agent-api-pp-cli")
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+
+	commandData, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "promoted_agents.go"))
+	require.NoError(t, err)
+	commandSrc := string(commandData)
+	assert.Contains(t, commandSrc, `if looksLikeJSONComposite(bodyResponseEngine) {`)
+	assert.Contains(t, commandSrc, `body["response_engine"] = parsedResponseEngine`)
+	assert.Contains(t, commandSrc, `body["response_engine"] = bodyResponseEngine`)
+	assert.Contains(t, commandSrc, `if looksLikeJSONComposite(bodyLanguage) {`)
+
+	mcpData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpSrc := string(mcpData)
+	assert.Contains(t, mcpSrc, `mcplib.WithString("response_engine", mcplib.Required()`)
+	assert.Contains(t, mcpSrc, `PublicName: "response_engine", WireName: "response_engine", Location: "body", Format: "json_or_scalar"`)
+	assert.Contains(t, mcpSrc, `coerceMCPBodyValue(binding, v)`)
+
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "./...")
+}
+
 const dataEnvelopeAllOfTaskSpec = `
 openapi: 3.0.3
 info:
