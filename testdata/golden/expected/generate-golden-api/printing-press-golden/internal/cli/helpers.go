@@ -2078,14 +2078,28 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s%d results (cached, synced %s)\n", prefix, count, age)
 }
 
+func nonJSONPayloadError(data json.RawMessage) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '<' {
+		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + "Set your API key with: export PRINTING_PRESS_GOLDEN_API_KEY=\"your-token-here\""))
+	}
+	if len(trimmed) == 0 {
+		return apiErr(fmt.Errorf("API returned an empty response body; expected JSON"))
+	}
+	return apiErr(fmt.Errorf("API returned a non-JSON response; expected JSON"))
+}
+
+func assertLiveJSONBody(data json.RawMessage) error {
+	if json.Valid(data) {
+		return nil
+	}
+	return nonJSONPayloadError(data)
+}
+
 // wrapWithProvenance wraps response data in a provenance envelope:
-// {"results": ..., "meta": {...}}. When data is valid JSON, it embeds as
-// the parsed shape; when data is non-JSON (e.g., XML/RSS responses, plain
-// text), it embeds as a JSON string so json.Marshal doesn't choke on
-// "invalid character '<'" while still passing the raw payload through to
-// the consumer. Single-key array envelopes from the API (e.g.
-// {"results": [...]}, {"data": [...]}) are unwrapped first so the output
-// shape is the same regardless of the API's wrapper key.
+// {"results": ..., "meta": {...}}. Single-key array envelopes from the API
+// (e.g. {"results": [...]}, {"data": [...]}) are unwrapped first so the
+// output shape is the same regardless of the API's wrapper key.
 func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMessage, error) {
 	meta := map[string]any{"source": prov.Source}
 	if prov.SyncedAt != nil {
@@ -2104,7 +2118,7 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	if json.Valid(data) {
 		results = json.RawMessage(unwrapSingleKeyArray(data))
 	} else {
-		results = string(data)
+		return nil, nonJSONPayloadError(data)
 	}
 	envelope := map[string]any{
 		"results": results,

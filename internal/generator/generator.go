@@ -3503,6 +3503,8 @@ type visionRenderData struct {
 	SearchQueryParam             string
 	SearchEndpointMethod         string
 	SearchBodyFields             []profiler.SearchBodyField
+	SearchResponsePaths          []string
+	SearchExampleType            string
 	GraphQLFieldPaths            map[string]string
 	AgentMoneyWorkflow           AgentMoneyWorkflow
 	HTMLSyncStub                 bool
@@ -3761,11 +3763,41 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SearchQueryParam:             g.profile.SearchQueryParam,
 		SearchEndpointMethod:         g.profile.SearchEndpointMethod,
 		SearchBodyFields:             g.profile.SearchBodyFields,
+		SearchResponsePaths:          searchResponsePaths(g.Spec),
+		SearchExampleType:            searchExampleType(g.Spec),
 		GraphQLFieldPaths:            gqlFieldPaths,
 		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
 		HTMLSyncStub:                 g.shouldEmitHTMLSyncStub(),
 		HTMLPageModeResources:        htmlPageModeResourceEntries(g.Spec, g.profile.SyncableResources, g.profile.DependentSyncResources),
 	}
+}
+
+func searchResponsePaths(apiSpec *spec.APISpec) []string {
+	if apiSpec == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			path := strings.TrimSpace(endpoint.ResponsePath)
+			if path != "" {
+				seen[path] = true
+			}
+		}
+	}
+	paths := slices.Sorted(maps.Keys(seen))
+	return paths
+}
+
+func searchExampleType(apiSpec *spec.APISpec) string {
+	if apiSpec == nil {
+		return ""
+	}
+	names := slices.Sorted(maps.Keys(apiSpec.Resources))
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
 }
 
 const htmlSyncStubThreshold = 0.7

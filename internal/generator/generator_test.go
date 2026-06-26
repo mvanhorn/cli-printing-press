@@ -8214,20 +8214,10 @@ func TestWrapWithProvenance_BareArrayUnchanged(t *testing.T) {
 	}
 }
 
-func TestWrapWithProvenance_NonJSONEmbeddedAsString(t *testing.T) {
+func TestWrapWithProvenance_NonJSONRejected(t *testing.T) {
 	prov := DataProvenance{Source: "live"}
-	wrapped, err := wrapWithProvenance(json.RawMessage(` + "`<rss><channel/></rss>`" + `), prov)
-	if err != nil {
-		t.Fatalf("wrapWithProvenance: %v", err)
-	}
-	var out struct {
-		Results string ` + "`json:\"results\"`" + `
-	}
-	if err := json.Unmarshal(wrapped, &out); err != nil {
-		t.Fatalf("non-JSON payload must embed as a string: %v\noutput: %s", err, wrapped)
-	}
-	if out.Results != ` + "`<rss><channel/></rss>`" + ` {
-		t.Fatalf("want raw payload preserved, got %q", out.Results)
+	if _, err := wrapWithProvenance(json.RawMessage(` + "`<rss><channel/></rss>`" + `), prov); err == nil {
+		t.Fatalf("wrapWithProvenance accepted non-JSON payload")
 	}
 }
 `
