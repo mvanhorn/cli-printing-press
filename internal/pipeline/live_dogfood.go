@@ -721,7 +721,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 			} else if storeAvailable {
 				return nil, true, reasonRequiredParamFixture, ""
 			}
-			if liveDogfoodSyntheticPositionalValue(happyArgs, command.Path, i) {
+			if liveDogfoodSyntheticPositionalValue(happyArgs, command.Path, i, nPlaceholders) {
 				return nil, true, reasonRequiredParamFixture, ""
 			}
 			return nil, true, fmt.Sprintf("no list companion at depth %d for %q", i, name), ""
@@ -803,7 +803,7 @@ func happyPathSyntheticParamFixtureSkip(command liveDogfoodCommand, happyArgs []
 	return reasonRequiredParamFixture
 }
 
-func liveDogfoodSyntheticPositionalValue(happyArgs, commandPath []string, position int) bool {
+func liveDogfoodSyntheticPositionalValue(happyArgs, commandPath []string, position, positionalCount int) bool {
 	start := min(len(commandPath), len(happyArgs))
 	seen := 0
 	for i := start; i < len(happyArgs); i++ {
@@ -812,7 +812,7 @@ func liveDogfoodSyntheticPositionalValue(happyArgs, commandPath []string, positi
 			break
 		}
 		if strings.HasPrefix(arg, "-") {
-			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValue(happyArgs, start, i, position+1) {
+			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValue(happyArgs, start, i, positionalCount) {
 				i++
 			}
 			continue
@@ -1115,31 +1115,7 @@ func firstIDFromArray(arr []any) (string, bool) {
 	if id, ok := idValueAsString(first["id"]); ok {
 		return id, true
 	}
-	keys := make([]string, 0, len(first))
-	for key := range first {
-		if isLiveDogfoodIDField(key) {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	if len(keys) == 1 {
-		if id, ok := idValueAsString(first[keys[0]]); ok {
-			return id, true
-		}
-	}
 	return "", false
-}
-
-func isLiveDogfoodIDField(key string) bool {
-	if key == "" {
-		return false
-	}
-	lower := strings.ToLower(key)
-	return lower == "id" ||
-		strings.HasSuffix(lower, "_id") ||
-		strings.HasSuffix(lower, "-id") ||
-		(strings.HasSuffix(key, "Id") && len(key) > 2) ||
-		(strings.HasSuffix(key, "ID") && len(key) > 2)
 }
 
 // pickIDFromGraphQLConnection walks .data... looking for a `connectionKey`
@@ -1980,9 +1956,6 @@ func liveDogfoodFeatureAbsentFixtureReason(run liveDogfoodRun) string {
 	}
 	featureAbsentPhrases := []string{
 		"feature not enabled",
-		"not enabled for",
-		"not available on",
-		"not available for",
 		"upgrade your plan",
 		"requires a paid plan",
 		"plan does not include",

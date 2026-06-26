@@ -2119,6 +2119,10 @@ func TestLiveDogfoodFeatureAbsentFixtureReason(t *testing.T) {
 			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"team not found"}`, exitCode: 1},
 		},
 		{
+			name: "generic not available for remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"note is not available for account acct_1"}`, exitCode: 1},
+		},
+		{
 			name: "successful output is not blocked fixture",
 			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"feature not enabled"}`, exitCode: 0},
 		},
@@ -2535,9 +2539,14 @@ func TestExtractFirstIDFromJSON(t *testing.T) {
 			want:   "cus_xyz", ok: true,
 		},
 		{
-			name:   "provenance envelope with resource id field",
+			name:   "provenance envelope with only resource id field is not harvested without context",
 			stdout: `{"results":{"items":[{"note_id":"note-real-1"}]},"meta":{"source":"live"}}`,
-			want:   "note-real-1", ok: true,
+			want:   "", ok: false,
+		},
+		{
+			name:   "foreign id-like field is not harvested",
+			stdout: `{"results":{"items":[{"account_id":"acct_1"}]}}`,
+			want:   "", ok: false,
 		},
 		{
 			name:   "ambiguous foreign and resource ids are not harvested",
@@ -5233,16 +5242,27 @@ func TestLiveDogfoodSyntheticPositionalValueHandlesBooleanFlags(t *testing.T) {
 		[]string{"widgets", "get", "--verbose", "550e8400-e29b-41d4-a716-446655440000"},
 		commandPath,
 		0,
+		1,
 	))
 	assert.False(t, liveDogfoodSyntheticPositionalValue(
 		[]string{"widgets", "get", "--limit", "5", "real-widget-1"},
 		commandPath,
 		0,
+		1,
 	))
 	assert.True(t, liveDogfoodSyntheticPositionalValue(
 		[]string{"widgets", "get", "--limit", "5", "550e8400-e29b-41d4-a716-446655440000"},
 		commandPath,
 		0,
+		1,
+	))
+
+	movePath := []string{"widgets", "move"}
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "move", "--verbose", "550e8400-e29b-41d4-a716-446655440000", "real-target"},
+		movePath,
+		0,
+		2,
 	))
 }
 
