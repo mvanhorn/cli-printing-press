@@ -268,6 +268,43 @@ func TestNewBundleCmdWindowsPlatformBuildsToExeStagingPaths(t *testing.T) {
 	assert.Contains(t, entries, "bin/demo-pp-cli.exe")
 }
 
+func TestBuildMCPBBinaryUsesReproducibleBuildFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake go shim uses POSIX shell")
+	}
+
+	dir := t.TempDir()
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+if [ -z "$out" ]; then
+  echo "missing -o" >&2
+  exit 2
+fi
+mkdir -p "$(dirname "$out")"
+printf 'fake binary' > "$out"
+chmod 755 "$out"
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+
+	require.NoError(t, buildMCPBBinary(dir, "demo-pp-mcp", filepath.Join(dir, "bin", "demo-pp-mcp"), "linux", "amd64"))
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(calls), "build -trimpath -ldflags=-s -w -buildid= -o ")
+}
+
 func TestAutoBundleForHostSuccessPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake go shim uses POSIX shell")

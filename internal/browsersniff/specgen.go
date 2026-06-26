@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/discovery"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -1775,6 +1776,8 @@ func encodeSampleJSON(sample SampleFile) ([]byte, error) {
 	return []byte(buf.String()), nil
 }
 
+const maxSampleFilenameBytes = 120
+
 // sampleFilename returns method__path-slug__hash.json. The hash is the
 // first 8 hex chars of sha256(METHOD + " " + normalizedPath), with host
 // included only for host-preserved groups so same-path groups cannot
@@ -1799,7 +1802,32 @@ func sampleFilename(group EndpointGroup) string {
 		hashKey = host + " " + hashKey
 	}
 	h := sha256.Sum256([]byte(hashKey))
-	return fmt.Sprintf("%s__%s__%s.json", method, slug, hex.EncodeToString(h[:4]))
+	hash := hex.EncodeToString(h[:4])
+	prefix := method + "__"
+	suffix := "__" + hash + ".json"
+	slug = truncateSampleFilenameSlug(slug, maxSampleFilenameBytes-len(prefix)-len(suffix))
+	return prefix + slug + suffix
+}
+
+func truncateSampleFilenameSlug(slug string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return "sample"
+	}
+	if len(slug) <= maxBytes {
+		return slug
+	}
+	for len(slug) > maxBytes {
+		_, size := utf8.DecodeLastRuneInString(slug)
+		if size <= 0 {
+			break
+		}
+		slug = slug[:len(slug)-size]
+	}
+	slug = strings.TrimRight(slug, "._-")
+	if slug == "" {
+		return "sample"
+	}
+	return slug
 }
 
 // buildSampleFile selects a representative entry from the group, redacts

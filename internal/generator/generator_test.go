@@ -10410,6 +10410,44 @@ func TestGeneratedAuthHints_DoNotDuplicateRecoveryCommands(t *testing.T) {
 
 		requireGeneratedCompiles(t, outputDir)
 	})
+
+	t.Run("browser login bearer token hints use auth login", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := minimalSpec("browserbearer")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			Format:           "Bearer {token}",
+			EnvVars:          []string{"BROWSERBEARER_TOKEN"},
+			AuthorizationURL: "https://login.example.com/oauth/authorize",
+			TokenURL:         "https://login.example.com/oauth/token",
+			OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "browserbearer-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+		assert.Contains(t, auth, `Use:   "login"`)
+		assert.NotContains(t, auth, `Use:   "set-token <token>"`)
+
+		helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+		helpers401 := generatedSourceBlock(t, helpers, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
+		assert.Contains(t, helpers401, "auth login")
+		assert.NotContains(t, helpers401, "auth set-token")
+
+		tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+		tools401 := generatedSourceBlock(t, tools, `case strings.Contains(msg, "HTTP 401"):`, `case strings.Contains(msg, "HTTP 403"):`)
+		assert.Contains(t, tools401, "auth login")
+		assert.NotContains(t, tools401, "auth set-token")
+
+		client := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+		assert.Contains(t, client, "auth login")
+		assert.NotContains(t, client, "auth set-token <token>")
+
+		requireGeneratedCompiles(t, outputDir)
+	})
 }
 
 func generatedSourceBlock(t *testing.T, body, start, end string) string {

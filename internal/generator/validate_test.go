@@ -117,3 +117,45 @@ exit 0
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
 }
+
+func TestValidateBuildRunnableBinaryUsesReproducibleBuildFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell go binary is Unix-only")
+	}
+	outputDir := filepath.Join(t.TempDir(), "validate-pp-cli")
+	gen := New(minimalSpec("validate"), outputDir)
+	require.NoError(t, gen.Generate())
+
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+if [ -n "$out" ]; then
+  mkdir -p "$(dirname "$out")"
+  cat > "$out" <<'SCRIPT'
+#!/bin/sh
+echo ok
+exit 0
+SCRIPT
+  chmod 755 "$out"
+fi
+exit 0
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+
+	require.NoError(t, gen.Validate())
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(calls), "build -trimpath -ldflags=-buildid= -o ")
+}

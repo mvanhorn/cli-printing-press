@@ -1231,6 +1231,12 @@ func main() {}
 	assert.FileExists(t, binaryPath)
 }
 
+func TestBuildCLIArgsUseReproducibleBuildFlags(t *testing.T) {
+	args := buildCLIArgs("out-bin", "./cmd/sample-pp-cli")
+
+	assert.Equal(t, []string{"build", "-trimpath", "-ldflags=-buildid=", "-o", "out-bin", "./cmd/sample-pp-cli"}, args)
+}
+
 // TestExtractPositionalPlaceholders covers the placeholder extractor used
 // by inferPositionalArgs. The bracketed-flag-descriptor cases are the
 // retro #301 F2 regression: cobra Use strings like
