@@ -3584,6 +3584,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
 The generic `resources` table is keyed by `resource_type`. Flat resources synced from `/<resource>` land as `resource_type='<resource>'`. **Hierarchical resources** synced from `/<parents>/{id}/<resource>` land as `resource_type='<parent>_<resource>'` — e.g., `projects_tasks` (Asana), `repos_issues` / `repos_pulls` (GitHub) — *not* the bare `<resource>` name. A novel feature that filters by the bare name returns zero rows against a real DB. Use `IN (...)` to catch both shapes so the same code works whether the API exposes the resource flat or only parent-scoped.
 
+SQLite store queries must use a **drain-first** pattern. SQLite uses a single connection by default, so never issue another query while a `*sql.Rows` is open. If the command needs follow-up lookups, parent-to-child expansion, or ID-to-name/email resolution, scan the first result set into plain structs/slices, check `rows.Err()`, close `rows`, and only then run follow-up `QueryContext` / `QueryRowContext` calls.
+
 ```go
 // Declare these alongside the cmd literal, before return cmd:
 //   var dbPath string
@@ -3631,14 +3633,35 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
-	defer rows.Close()
 	// Scan each row. id/data on the resources table are NOT NULL so bare
 	// strings are safe; ANY optional field selected via json_extract or
 	// pulled from a typed FTS/upsert table can be NULL — use sql.Null*
 	// scan targets (or COALESCE in the SQL) for those, see the NULL-safe
 	// scans paragraph below.
-	results := make([]yourRowType, 0) // scan rows into this slice; make([]T, 0) keeps empty JSON as [] not null
-	// (loop over rows here: results = append(results, scannedRow))
+	rawRows := make([]yourRawRowType, 0) // make([]T, 0) keeps empty JSON as [] not null
+	for rows.Next() {
+		var row yourRawRowType
+		// Scan only columns from this result set here. Do NOT query again
+		// inside this loop; drain and close rows first.
+		if err := rows.Scan(&row.ID, &row.Data); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan row: %w", err)
+		}
+		rawRows = append(rawRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close rows: %w", err)
+	}
+	results := make([]yourRowType, 0, len(rawRows))
+	for _, raw := range rawRows {
+		// Follow-up queries are safe here because the parent *sql.Rows is closed.
+		// Resolve IDs, expand child rows, or perform local joins, then append.
+		_ = raw
+	}
 	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
@@ -3652,6 +3675,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 For flat-only resources, the typed FTS/upsert tables the generator emits (e.g., `tasks_fts`, `projects`) work too — `SELECT id, data FROM <typed-table>` is the fast path. The `IN (...)` pattern above is the safe default whenever the resource may be hierarchical; `cli-printing-press dogfood --json` shows the actual `resource_type` distribution so you can confirm without running raw SQL.
 
 For features that combine both (cache an API response in the store, or fall through to live when the local store is stale), nest one skeleton inside the other and use the `--data-source auto/local/live` flag pattern from the generated `sync` command.
+
+**Store write transaction guardrail:** `store.Upsert` and `store.UpsertBatch` open their own write transaction. Do not call them from inside an open `db.DB().BeginTx` / `tx.Prepare` / `tx.Exec` write transaction; SQLite WAL permits only one writer and the nested write can busy-wait, fail, or corrupt the outer statement state. If a novel command writes both custom tables and `resources`, either use transaction-scoped helpers that operate on the same `*sql.Tx`, or commit/rollback the custom-table transaction before calling `store.Upsert` / `store.UpsertBatch`. Never discard these errors with `_`; a busy-timeout is data loss.
 
 **Shared helpers available to novel code:** The generator emits `internal/cliutil/` in every CLI. When authoring novel commands, prefer `cliutil.FanoutRun` for any aggregation command (any `--site`/`--source`/`--region` CSV fan-out) and `cliutil.CleanText` for any text extracted from HTML or schema.org JSON-LD. Re-implementing these inline is how recipe-goat's trending silent-drop and `&#39;` entity bugs shipped.
 
@@ -3695,7 +3720,7 @@ For an extension to be durable, put it in its own file beside the emitted one:
 - **Custom request headers** (vendor fingerprint, `X-CSRF`, app-version, signed timestamps): create `internal/client/<api>_headers.go` exporting a func that builds the header map; novel code passes that map to `client.GetWithHeaders` / `PostWithHeaders` when it calls the API. The generated `client.go` has no global request mutator, so this pattern only covers requests made directly from novel code — it does not intercept calls from generated endpoint commands. Do not edit the templated header block in `client.go`.
 - **Custom auth flow** (browser-sniffed sessions, vendor SSO, refresh hooks beyond OAuth2): create `internal/cli/<api>_auth.go` (package `cli`, same as the generated `auth.go`) with the API-specific token capture or refresh, and wire it from a novel command rather than editing the templated `auth.go` constructor functions (`newAuthLoginCmd`, `newAuthSetupCmd`, etc.). If the custom flow implements OAuth2 Authorization Code + PKCE, read [references/oauth2-pkce-cli-checklist.md](references/oauth2-pkce-cli-checklist.md) before writing or reviewing the command.
 - **Extended store schema** (typed tables beyond `resources`, vendor JSON columns, full-text indexes): create `internal/store/<api>_migrations.go` running its own `CREATE TABLE ... IF NOT EXISTS` from a lazy init invoked by the novel commands that need it. Do not edit the migration slice in `store.go`.
-- **New novel command:** put the command body in its own `internal/cli/<feature>.go` file — it survives regen as a whole hand-authored unit. The `AddCommand` call wiring it into the Cobra tree still goes in `root.go` per the Phase 3 novel-command skeleton above; `cli-printing-press generate --force` re-injects it via the lost-registration merge path. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
+- **New novel command:** put the command body in its own `internal/cli/<feature>.go` file. Generated TODO scaffolds may refresh on `generate --force`; once you replace the TODO body with a real implementation, regen preserves that hand-authored file instead of re-emitting the scaffold. The `AddCommand` call wiring it into the Cobra tree still goes in `root.go` per the Phase 3 novel-command skeleton above; `cli-printing-press generate --force` re-injects it via the lost-registration merge path. Use standalone `regen-merge` when you want to inspect the merge report before applying. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
 
 If an extension genuinely cannot live in a separate file (a `case` branch in a templated method switch, an inline modification to a generated handler with no registry hook), file a generator issue requesting the hook rather than depending on repeated conflict-prone merges. The `AddCommand` case above is covered by the merge path.
 

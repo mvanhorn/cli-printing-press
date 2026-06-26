@@ -226,6 +226,22 @@ Use `""` for commands that scan all local resources. The helpers write only to
 stderr, so JSON/stdout output stays stable; `--max-age 0` disables stale-read
 hints.
 
+Local-store query plans must also call out SQLite's open-rows constraint. SQLite
+uses a single connection by default, so a command must not issue a follow-up
+`QueryContext` or `QueryRowContext` while iterating a parent `*sql.Rows`. Plan
+store-query features with the drain-first pattern: scan the first result set
+into plain structs/slices, check `rows.Err()`, close `rows`, then run any
+ID-to-name resolution, parent-to-child expansion, or local join follow-up
+queries.
+
+For local-store write features, do not plan a `store.Upsert` or
+`store.UpsertBatch` call inside an open `db.DB().BeginTx` write transaction.
+Those helpers begin their own write transaction, and SQLite WAL only permits one
+writer. Either use helpers that write through the same `*sql.Tx`, or commit the
+custom-table transaction before calling the pooled store upsert helpers. Treat
+upsert errors as command failures; discarding them can silently drop cached
+resources after a busy timeout.
+
 Every hand-written novel command must also declare its data-source strategy in
 the command source file:
 
