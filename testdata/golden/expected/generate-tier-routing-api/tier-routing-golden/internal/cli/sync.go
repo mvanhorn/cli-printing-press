@@ -151,7 +151,7 @@ Resource scoping:
 			}
 
 			if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages") {
-				maxPages = 10
+				maxPages = 1
 			}
 
 			// --latest-only narrows to the first page of each resource

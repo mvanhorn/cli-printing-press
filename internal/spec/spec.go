@@ -2645,7 +2645,10 @@ type ResponseDiscriminator struct {
 	Mapping map[string]string `yaml:"mapping,omitempty" json:"mapping,omitempty"` // discriminator value -> schema/resource name
 }
 
-const PaginationTypeIDWalk = "id_walk"
+const (
+	PaginationTypeIDWalk = "id_walk"
+	PaginationTypeNone   = "none"
+)
 
 type Pagination struct {
 	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token, page, id_walk

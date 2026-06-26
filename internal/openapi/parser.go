@@ -64,6 +64,7 @@ const (
 	extensionStreaming             = "x-streaming"
 	extensionPPQuery               = "x-pp-query"
 	extensionPPSyncable            = "x-pp-syncable"
+	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
 	extensionDispatchParam         = "x-pp-dispatch-param"
@@ -3358,7 +3359,10 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, targetResourceName+"_"+endpointName, out)
 			populateFieldSelectorDefaults(&endpoint, op)
 			if strings.ToUpper(method) == "GET" {
-				endpoint.Pagination = detectPagination(endpoint.Params, op)
+				endpoint.Pagination = readPaginationExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+				if endpoint.Pagination == nil {
+					endpoint.Pagination = detectPagination(endpoint.Params, op)
+				}
 				// Only single-resource fetches (GET /resource/{id}) can carry
 				// embedded paged sub-resources; list endpoints ARE the paged
 				// endpoint themselves and don't need a companion helper.
@@ -5298,6 +5302,30 @@ func readHappyArgsExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+func readPaginationExtension(extensions map[string]any, context string) *spec.Pagination {
+	if extensions == nil {
+		return nil
+	}
+	raw, ok := extensions[extensionPPPagination]
+	if !ok || raw == nil {
+		return nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionPPPagination, raw)
+		return nil
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return nil
+	}
+	if value == spec.PaginationTypeNone {
+		return &spec.Pagination{Type: spec.PaginationTypeNone}
+	}
+	warnf("%s: %s=%q is not supported; ignoring", context, extensionPPPagination, value)
+	return nil
 }
 
 // readWalkerExtension reads the `x-pp-sync-walker` extension from an

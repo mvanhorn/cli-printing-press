@@ -33,6 +33,8 @@ import (
 // sync still completes for resources that DO have resolvable paths.
 var unresolvedPathKeyRE = regexp.MustCompile(`\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
 
+const dogfoodMaxParentRows = 2
+
 // syncResult holds the outcome of syncing a single resource.
 type syncResult struct {
 	Resource string
@@ -155,7 +157,7 @@ Resource scoping:
 			}
 
 			if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages") {
-				maxPages = 10
+				maxPages = 1
 			}
 
 			// --latest-only narrows to the first page of each resource
@@ -1645,6 +1647,9 @@ func syncDependentResource(ctx context.Context, c interface {
 			return syncResult{Resource: dep.Name, Duration: time.Since(started)}
 		}
 		return syncResult{Resource: dep.Name, Err: fmt.Errorf("querying parent table %s: %w", dep.ParentTable, err), Duration: time.Since(started)}
+	}
+	if cliutil.IsDogfoodEnv() && len(parentRows) > dogfoodMaxParentRows {
+		parentRows = parentRows[:dogfoodMaxParentRows]
 	}
 
 	if humanFriendly {
