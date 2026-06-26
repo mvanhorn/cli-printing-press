@@ -11145,6 +11145,18 @@ func TestDetectPaginationOffsetBeatsPage(t *testing.T) {
 	assert.Equal(t, "offset", pag.Type)
 }
 
+func TestDetectPaginationRecognizesSkipAndPerPage(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{
+		{Name: "skip"}, {Name: "perPage"},
+	}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "skip", pag.CursorParam)
+	assert.Equal(t, "offset", pag.Type)
+	assert.Equal(t, "perPage", pag.LimitParam)
+}
+
 func TestParsePreservesOperationTags(t *testing.T) {
 	t.Parallel()
 

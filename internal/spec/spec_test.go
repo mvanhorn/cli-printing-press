@@ -153,6 +153,43 @@ resources:
 	assert.True(t, param.DispatchParamSet)
 }
 
+func TestParsePagePagination(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: page-pagination
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  photos:
+    endpoints:
+      list:
+        method: GET
+        path: /photos
+        params:
+          - name: page
+            type: integer
+          - name: per_page
+            type: integer
+            default: 25
+        pagination:
+          type: page
+          cursor_param: page
+          limit_param: per_page
+        response:
+          type: array
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	list := s.Resources["photos"].Endpoints["list"]
+	require.NotNil(t, list.Pagination)
+	assert.Equal(t, "page", list.Pagination.Type)
+	assert.Equal(t, "page", list.Pagination.CursorParam)
+	assert.Equal(t, "per_page", list.Pagination.LimitParam)
+}
+
 func TestParseEndpointExampleAndHappyArgs(t *testing.T) {
 	t.Parallel()
 

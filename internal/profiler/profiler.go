@@ -133,6 +133,12 @@ type SyncableResource struct {
 	// sending synthetic limit/offset params to strict non-paginated list
 	// endpoints.
 	SupportsPagination bool
+	// Pagination* fields preserve the chosen list endpoint's concrete paging
+	// contract so generated sync does not reuse a different resource's default.
+	PaginationCursorParam string
+	PaginationCursorType  string
+	PaginationLimitParam  string
+	PaginationPageSize    int
 
 	// UsesHTMLResponse and HTMLExtract mirror the chosen list endpoint's
 	// response_format/html_extract contract so sync can normalize HTML into
@@ -207,6 +213,11 @@ type DependentResource struct {
 	// paths so dependent syncs skip synthetic limit/offset params on endpoints
 	// that do not declare page-size pagination.
 	SupportsPagination bool
+	// Pagination* mirrors SyncableResource for child sync paths.
+	PaginationCursorParam string
+	PaginationCursorType  string
+	PaginationLimitParam  string
+	PaginationPageSize    int
 
 	// UsesHTMLResponse and HTMLExtract mirror SyncableResource for child sync
 	// paths.
@@ -860,11 +871,11 @@ func dataFit(v bool) int {
 var (
 	pageSizeParamCandidates = map[string]bool{
 		"limit": true, "per_page": true, "page_size": true, "pagesize": true,
-		"first": true, "count": true, "max_results": true, "maxrecords": true,
-		"max_records": true, "page[size]": true,
+		"perpage": true, "first": true, "count": true, "max_results": true,
+		"maxrecords": true, "max_records": true, "page[size]": true,
 	}
 	cursorParamCandidates = map[string]bool{
-		"after": true, "cursor": true, "page_token": true, "offset": true,
+		"after": true, "cursor": true, "page_token": true, "offset": true, "skip": true,
 		"page": true, "before": true, "starting_after": true, "page[cursor]": true,
 	}
 )
@@ -1424,26 +1435,30 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 	}
 
 	return DependentResource{
-		Name:               ctx.name,
-		ParentResource:     ctx.parentResource,
-		ParentIDParam:      dependentParentIDParam(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam),
-		Path:               entry.meta.Path,
-		Method:             entry.meta.Method,
-		Tier:               entry.meta.Tier,
-		PathParams:         dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, ""),
-		IDField:            entry.meta.IDField,
-		Critical:           entry.meta.Critical,
-		SinceParam:         entry.meta.SinceParam,
-		SinceParamFormat:   entry.meta.SinceParamFormat,
-		SupportsPagination: entry.meta.SupportsPagination,
-		UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
-		HTMLExtract:        entry.meta.HTMLExtract,
-		BodyFields:         entry.meta.BodyFields,
-		IDWalkFilterParam:  entry.meta.IDWalkFilterParam,
-		IDWalkLimitParam:   entry.meta.IDWalkLimitParam,
-		IDWalkPageSize:     entry.meta.IDWalkPageSize,
-		FieldSelector:      entry.meta.FieldSelector,
-		Discriminator:      entry.meta.Discriminator,
+		Name:                  ctx.name,
+		ParentResource:        ctx.parentResource,
+		ParentIDParam:         dependentParentIDParam(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam),
+		Path:                  entry.meta.Path,
+		Method:                entry.meta.Method,
+		Tier:                  entry.meta.Tier,
+		PathParams:            dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, ""),
+		IDField:               entry.meta.IDField,
+		Critical:              entry.meta.Critical,
+		SinceParam:            entry.meta.SinceParam,
+		SinceParamFormat:      entry.meta.SinceParamFormat,
+		SupportsPagination:    entry.meta.SupportsPagination,
+		PaginationCursorParam: entry.meta.PaginationCursorParam,
+		PaginationCursorType:  entry.meta.PaginationCursorType,
+		PaginationLimitParam:  entry.meta.PaginationLimitParam,
+		PaginationPageSize:    entry.meta.PaginationPageSize,
+		UsesHTMLResponse:      entry.meta.UsesHTMLResponse,
+		HTMLExtract:           entry.meta.HTMLExtract,
+		BodyFields:            entry.meta.BodyFields,
+		IDWalkFilterParam:     entry.meta.IDWalkFilterParam,
+		IDWalkLimitParam:      entry.meta.IDWalkLimitParam,
+		IDWalkPageSize:        entry.meta.IDWalkPageSize,
+		FieldSelector:         entry.meta.FieldSelector,
+		Discriminator:         entry.meta.Discriminator,
 	}, true
 }
 
@@ -1639,27 +1654,31 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 			}
 			meta := metaFromEndpoint(s, resourceName, r, e, types, resourceNameIndex)
 			deps = append(deps, DependentResource{
-				Name:               spec.ToSnakeCase(resourceName),
-				ParentResource:     parent,
-				ParentIDParam:      keyParam,
-				Path:               e.Path,
-				Method:             meta.Method,
-				Tier:               meta.Tier,
-				PathParams:         dependentPathParams(e.Path, parent, keyParam, keyField),
-				IDField:            meta.IDField,
-				Critical:           meta.Critical,
-				SinceParam:         meta.SinceParam,
-				SinceParamFormat:   meta.SinceParamFormat,
-				SupportsPagination: meta.SupportsPagination,
-				UsesHTMLResponse:   meta.UsesHTMLResponse,
-				HTMLExtract:        meta.HTMLExtract,
-				BodyFields:         meta.BodyFields,
-				IDWalkFilterParam:  meta.IDWalkFilterParam,
-				IDWalkLimitParam:   meta.IDWalkLimitParam,
-				IDWalkPageSize:     meta.IDWalkPageSize,
-				FieldSelector:      meta.FieldSelector,
-				Discriminator:      meta.Discriminator,
-				KeyField:           keyField,
+				Name:                  spec.ToSnakeCase(resourceName),
+				ParentResource:        parent,
+				ParentIDParam:         keyParam,
+				Path:                  e.Path,
+				Method:                meta.Method,
+				Tier:                  meta.Tier,
+				PathParams:            dependentPathParams(e.Path, parent, keyParam, keyField),
+				IDField:               meta.IDField,
+				Critical:              meta.Critical,
+				SinceParam:            meta.SinceParam,
+				SinceParamFormat:      meta.SinceParamFormat,
+				SupportsPagination:    meta.SupportsPagination,
+				PaginationCursorParam: meta.PaginationCursorParam,
+				PaginationCursorType:  meta.PaginationCursorType,
+				PaginationLimitParam:  meta.PaginationLimitParam,
+				PaginationPageSize:    meta.PaginationPageSize,
+				UsesHTMLResponse:      meta.UsesHTMLResponse,
+				HTMLExtract:           meta.HTMLExtract,
+				BodyFields:            meta.BodyFields,
+				IDWalkFilterParam:     meta.IDWalkFilterParam,
+				IDWalkLimitParam:      meta.IDWalkLimitParam,
+				IDWalkPageSize:        meta.IDWalkPageSize,
+				FieldSelector:         meta.FieldSelector,
+				Discriminator:         meta.Discriminator,
+				KeyField:              keyField,
 			})
 			byPath[lookupKey] = len(deps) - 1
 		}
@@ -1929,25 +1948,29 @@ func resolveParentResourceName(walkParent, paramName string, knownParents map[st
 // is still selecting between candidates (e.g., flat vs. paginated). It is
 // converted into a SyncableResource at the end of Profile().
 type syncableMeta struct {
-	Path               string
-	Method             string
-	Tier               string
-	SkipDefaultSync    bool
-	IDField            string
-	Critical           bool
-	SinceParam         string
-	SinceParamFormat   string
-	SupportsPagination bool
-	UsesHTMLResponse   bool
-	HTMLExtract        *spec.HTMLExtract
-	BodyFields         []SyncBodyField
-	IDWalkFilterParam  string
-	IDWalkLimitParam   string
-	IDWalkPageSize     int
-	FieldSelector      FieldSelector
-	Discriminator      DiscriminatorDispatch
-	ResponseItem       string
-	QueryEntity        string
+	Path                  string
+	Method                string
+	Tier                  string
+	SkipDefaultSync       bool
+	IDField               string
+	Critical              bool
+	SinceParam            string
+	SinceParamFormat      string
+	SupportsPagination    bool
+	PaginationCursorParam string
+	PaginationCursorType  string
+	PaginationLimitParam  string
+	PaginationPageSize    int
+	UsesHTMLResponse      bool
+	HTMLExtract           *spec.HTMLExtract
+	BodyFields            []SyncBodyField
+	IDWalkFilterParam     string
+	IDWalkLimitParam      string
+	IDWalkPageSize        int
+	FieldSelector         FieldSelector
+	Discriminator         DiscriminatorDispatch
+	ResponseItem          string
+	QueryEntity           string
 }
 
 type syncableCandidate struct {
@@ -1971,26 +1994,31 @@ type parameterizedEntry struct {
 func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resource, e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
 	idWalkFilterParam, idWalkLimitParam, idWalkPageSize := detectIDWalkParams(e)
 	sinceParam, sinceParamFormat := detectEndpointSinceParamAndFormat(e, types)
+	paginationCursorParam, paginationCursorType, paginationLimitParam, paginationPageSize := syncPaginationDefaultsFromEndpoint(e)
 	return syncableMeta{
-		Path:               e.Path,
-		Method:             strings.ToUpper(e.Method),
-		Tier:               s.EffectiveTier(resource, e),
-		SkipDefaultSync:    isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types),
-		IDField:            e.IDField,
-		Critical:           e.Critical,
-		SinceParam:         sinceParam,
-		SinceParamFormat:   sinceParamFormat,
-		SupportsPagination: endpointSupportsPagination(e),
-		UsesHTMLResponse:   e.UsesHTMLResponse(),
-		HTMLExtract:        e.HTMLExtract,
-		BodyFields:         syncBodyFieldsFromEndpoint(e),
-		IDWalkFilterParam:  idWalkFilterParam,
-		IDWalkLimitParam:   idWalkLimitParam,
-		IDWalkPageSize:     idWalkPageSize,
-		FieldSelector:      detectEndpointFieldSelector(e),
-		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
-		ResponseItem:       e.Response.Item,
-		QueryEntity:        queryEntityForEndpoint(s, e),
+		Path:                  e.Path,
+		Method:                strings.ToUpper(e.Method),
+		Tier:                  s.EffectiveTier(resource, e),
+		SkipDefaultSync:       isAuthTaggedEndpoint(e) || hasTypedResponseWithoutRuntimeID(resourceName, e, types),
+		IDField:               e.IDField,
+		Critical:              e.Critical,
+		SinceParam:            sinceParam,
+		SinceParamFormat:      sinceParamFormat,
+		SupportsPagination:    endpointSupportsPagination(e),
+		PaginationCursorParam: paginationCursorParam,
+		PaginationCursorType:  paginationCursorType,
+		PaginationLimitParam:  paginationLimitParam,
+		PaginationPageSize:    paginationPageSize,
+		UsesHTMLResponse:      e.UsesHTMLResponse(),
+		HTMLExtract:           e.HTMLExtract,
+		BodyFields:            syncBodyFieldsFromEndpoint(e),
+		IDWalkFilterParam:     idWalkFilterParam,
+		IDWalkLimitParam:      idWalkLimitParam,
+		IDWalkPageSize:        idWalkPageSize,
+		FieldSelector:         detectEndpointFieldSelector(e),
+		Discriminator:         discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+		ResponseItem:          e.Response.Item,
+		QueryEntity:           queryEntityForEndpoint(s, e),
 	}
 }
 
@@ -2174,17 +2202,17 @@ func detectIDWalkParams(endpoint spec.Endpoint) (string, string, int) {
 		return "", "", 0
 	}
 	pageSize := 100
-	if defaultSize, ok := paginationLimitDefault(endpoint); ok {
+	if defaultSize, ok := paginationLimitDefault(endpoint, resolvedLimitParam); ok {
 		pageSize = defaultSize
 	}
 	return filterParam, resolvedLimitParam, pageSize
 }
 
-func paginationLimitDefault(endpoint spec.Endpoint) (int, bool) {
-	if endpoint.Pagination == nil || strings.TrimSpace(endpoint.Pagination.LimitParam) == "" {
+func paginationLimitDefault(endpoint spec.Endpoint, limitParam string) (int, bool) {
+	if strings.TrimSpace(limitParam) == "" {
 		return 0, false
 	}
-	limitName := strings.ToLower(endpoint.Pagination.LimitParam)
+	limitName := strings.ToLower(limitParam)
 	params := append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...)
 	for _, param := range params {
 		if strings.ToLower(param.Name) != limitName {
@@ -2210,6 +2238,67 @@ func paginationLimitDefault(endpoint spec.Endpoint) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string, string, int) {
+	cursorParam := ""
+	cursorType := ""
+	limitParam := ""
+	if endpoint.Pagination != nil && endpoint.Pagination.Type != spec.PaginationTypeIDWalk {
+		cursorParam = strings.TrimSpace(endpoint.Pagination.CursorParam)
+		cursorType = strings.TrimSpace(endpoint.Pagination.Type)
+		limitParam = strings.TrimSpace(endpoint.Pagination.LimitParam)
+	}
+	if cursorParam == "" || limitParam == "" {
+		inferredCursor, inferredLimit := inferPaginationParamsFromEndpoint(endpoint)
+		if cursorParam == "" {
+			cursorParam = inferredCursor
+		}
+		if limitParam == "" {
+			limitParam = inferredLimit
+		}
+	}
+	if cursorType == "" {
+		cursorType = inferPaginationType(cursorParam)
+	}
+	pageSize := 100
+	if defaultSize, ok := paginationLimitDefault(endpoint, limitParam); ok {
+		pageSize = defaultSize
+	}
+	return cursorParam, cursorType, limitParam, pageSize
+}
+
+func inferPaginationParamsFromEndpoint(endpoint spec.Endpoint) (string, string) {
+	var cursorParam string
+	var limitParam string
+	for _, param := range endpoint.Params {
+		if param.PathParam || param.Positional {
+			continue
+		}
+		lower := strings.ToLower(param.Name)
+		if cursorParam == "" && cursorParamCandidates[lower] {
+			cursorParam = param.Name
+		}
+		if limitParam == "" && pageSizeParamCandidates[lower] {
+			limitParam = param.Name
+		}
+	}
+	return cursorParam, limitParam
+}
+
+func inferPaginationType(cursorParam string) string {
+	switch strings.ToLower(strings.TrimSpace(cursorParam)) {
+	case "":
+		return ""
+	case "page", "page_number", "pagenumber":
+		return "page"
+	case "offset", "skip":
+		return "offset"
+	case "page_token", "pagetoken":
+		return "page_token"
+	default:
+		return "cursor"
+	}
 }
 
 func detectEndpointSinceParamAndFormat(endpoint spec.Endpoint, types map[string]spec.TypeDef) (string, string) {
@@ -2584,25 +2673,29 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 	for i, name := range names {
 		meta := m[name]
 		resources[i] = SyncableResource{
-			Name:               name,
-			Path:               meta.Path,
-			Method:             meta.Method,
-			Tier:               meta.Tier,
-			SkipDefaultSync:    meta.SkipDefaultSync,
-			IDField:            meta.IDField,
-			Critical:           meta.Critical,
-			SinceParam:         meta.SinceParam,
-			SinceParamFormat:   meta.SinceParamFormat,
-			SupportsPagination: meta.SupportsPagination,
-			UsesHTMLResponse:   meta.UsesHTMLResponse,
-			HTMLExtract:        meta.HTMLExtract,
-			BodyFields:         meta.BodyFields,
-			IDWalkFilterParam:  meta.IDWalkFilterParam,
-			IDWalkLimitParam:   meta.IDWalkLimitParam,
-			IDWalkPageSize:     meta.IDWalkPageSize,
-			FieldSelector:      meta.FieldSelector,
-			Discriminator:      meta.Discriminator,
-			QueryEntity:        meta.QueryEntity,
+			Name:                  name,
+			Path:                  meta.Path,
+			Method:                meta.Method,
+			Tier:                  meta.Tier,
+			SkipDefaultSync:       meta.SkipDefaultSync,
+			IDField:               meta.IDField,
+			Critical:              meta.Critical,
+			SinceParam:            meta.SinceParam,
+			SinceParamFormat:      meta.SinceParamFormat,
+			SupportsPagination:    meta.SupportsPagination,
+			PaginationCursorParam: meta.PaginationCursorParam,
+			PaginationCursorType:  meta.PaginationCursorType,
+			PaginationLimitParam:  meta.PaginationLimitParam,
+			PaginationPageSize:    meta.PaginationPageSize,
+			UsesHTMLResponse:      meta.UsesHTMLResponse,
+			HTMLExtract:           meta.HTMLExtract,
+			BodyFields:            meta.BodyFields,
+			IDWalkFilterParam:     meta.IDWalkFilterParam,
+			IDWalkLimitParam:      meta.IDWalkLimitParam,
+			IDWalkPageSize:        meta.IDWalkPageSize,
+			FieldSelector:         meta.FieldSelector,
+			Discriminator:         meta.Discriminator,
+			QueryEntity:           meta.QueryEntity,
 		}
 	}
 	return resources

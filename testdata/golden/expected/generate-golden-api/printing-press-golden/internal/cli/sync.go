@@ -471,7 +471,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	cursor := existingCursor
-	pageSize := determinePaginationDefaults()
+	pageSize := determinePaginationDefaults(resource)
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
@@ -771,7 +771,23 @@ type paginationDefaults struct {
 
 // determinePaginationDefaults returns the pagination parameter names to use.
 // Values are detected from the API spec by the profiler at generation time.
-func determinePaginationDefaults() paginationDefaults {
+func determinePaginationDefaults(resource string) paginationDefaults {
+	switch resource {
+	case "projects":
+		return paginationDefaults{
+			cursorParam: "cursor",
+			cursorType:  "cursor",
+			limitParam:  "limit",
+			limit:       25,
+		}
+	case "projects/tasks":
+		return paginationDefaults{
+			cursorParam: "cursor",
+			cursorType:  "cursor",
+			limitParam:  "limit",
+			limit:       50,
+		}
+	}
 	return paginationDefaults{
 		cursorParam: "cursor",
 		cursorType:  "cursor",
@@ -1611,7 +1627,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	var totalCount int
 	var deniedParents int
 	var firstDenial *accessWarning
-	pageSize := determinePaginationDefaults()
+	pageSize := determinePaginationDefaults(dep.ParentTable + "/" + dep.Name)
 	depSinceParam := syncResourceSinceParam(dep.Name)
 	depSinceTS := sinceTS
 	if depSinceTS != "" && depSinceParam == "" {

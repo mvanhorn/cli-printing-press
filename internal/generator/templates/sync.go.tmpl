@@ -646,7 +646,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	cursor := existingCursor
-	pageSize := determinePaginationDefaults()
+	pageSize := determinePaginationDefaults(resource)
 {{- if $hasIDWalk}}
 	idWalk, usesIDWalk := syncResourceIDWalkConfig(resource)
 	pageLimit := pageSize.limit
@@ -1099,7 +1099,18 @@ type paginationDefaults struct {
 
 // determinePaginationDefaults returns the pagination parameter names to use.
 // Values are detected from the API spec by the profiler at generation time.
-func determinePaginationDefaults() paginationDefaults {
+func determinePaginationDefaults(resource string) paginationDefaults {
+	switch resource {
+{{- range .PaginationDefaultResources}}
+	case "{{.Key}}":
+		return paginationDefaults{
+			cursorParam: "{{if .CursorParam}}{{.CursorParam}}{{else}}{{$.Pagination.CursorParam}}{{end}}",
+			cursorType:  "{{if .CursorType}}{{.CursorType}}{{else}}{{$.Pagination.CursorType}}{{end}}",
+			limitParam:  "{{if .LimitParam}}{{.LimitParam}}{{else}}{{$.Pagination.PageSizeParam}}{{end}}",
+			limit:       {{if .Limit}}{{.Limit}}{{else}}{{if $.Pagination.DefaultPageSize}}{{$.Pagination.DefaultPageSize}}{{else}}100{{end}}{{end}},
+		}
+{{- end}}
+	}
 	return paginationDefaults{
 		cursorParam: "{{if .Pagination.CursorParam}}{{.Pagination.CursorParam}}{{else}}after{{end}}",
 		cursorType:  "{{.Pagination.CursorType}}",
@@ -2508,7 +2519,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	var totalCount int
 	var deniedParents int
 	var firstDenial *accessWarning
-	pageSize := determinePaginationDefaults()
+	pageSize := determinePaginationDefaults(dep.ParentTable + "/" + dep.Name)
 	depSinceParam := syncResourceSinceParam(dep.Name)
 {{- if $hasIDWalk}}
 	idWalk, usesIDWalk := syncResourceIDWalkConfig(dep.Name)
