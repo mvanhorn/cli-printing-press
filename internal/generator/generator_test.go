@@ -13663,6 +13663,74 @@ func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGeneratedSyncUsesPerResourcePaginationDefaults(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "per-resource-pagination",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/per-resource-pagination-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"assets": {
+				Description: "Assets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/assets",
+						Description: "List assets",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params:      []spec.Param{{Name: "limit", Type: "integer", Default: 50}, {Name: "skip", Type: "integer"}},
+						Pagination:  &spec.Pagination{Type: "offset", CursorParam: "skip", LimitParam: "limit"},
+					},
+				},
+			},
+			"photos": {
+				Description: "Photos",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/photos",
+						Description: "List photos",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params:      []spec.Param{{Name: "page", Type: "integer"}, {Name: "per_page", Type: "integer", Default: 25}},
+						Pagination:  &spec.Pagination{Type: "page", CursorParam: "page", LimitParam: "per_page"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	assert.Contains(t, syncContent, `pageSize := determinePaginationDefaults(resource)`)
+	assert.Contains(t, syncContent, `func determinePaginationDefaults(resource string) paginationDefaults`)
+	assert.Contains(t, syncContent, `case "assets":`)
+	assert.Contains(t, syncContent, `cursorParam: "skip"`)
+	assert.Contains(t, syncContent, `cursorType:  "offset"`)
+	assert.Contains(t, syncContent, `limitParam:  "limit"`)
+	assert.Contains(t, syncContent, `limit:       50`)
+	assert.Contains(t, syncContent, `case "photos":`)
+	assert.Contains(t, syncContent, `cursorParam: "page"`)
+	assert.Contains(t, syncContent, `cursorType:  "page"`)
+	assert.Contains(t, syncContent, `limitParam:  "per_page"`)
+	assert.Contains(t, syncContent, `limit:       25`)
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
 func TestGeneratedSyncUsesPOSTForRPCStyleListResources(t *testing.T) {
 	t.Parallel()
 

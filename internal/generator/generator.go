@@ -3475,6 +3475,7 @@ type visionRenderData struct {
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
 	PaginationSupportedResources []string
+	PaginationDefaultResources   []paginationDefaultEntry
 	SpecTimestampFields          []string
 	SearchableFields             map[string][]string
 	Tables                       []TableDef
@@ -3496,6 +3497,51 @@ type resourceIDFieldOverrideEntry struct {
 
 type criticalResourceEntry struct {
 	Name string
+}
+
+type paginationDefaultEntry struct {
+	Name        string
+	CursorParam string
+	CursorType  string
+	LimitParam  string
+	Limit       int
+}
+
+func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []paginationDefaultEntry {
+	defaults := map[string]paginationDefaultEntry{}
+	add := func(name, cursorParam, cursorType, limitParam string, limit int, supportsPagination bool) {
+		if !supportsPagination || name == "" {
+			return
+		}
+		if _, exists := defaults[name]; exists {
+			return
+		}
+		defaults[name] = paginationDefaultEntry{
+			Name:        name,
+			CursorParam: cursorParam,
+			CursorType:  cursorType,
+			LimitParam:  limitParam,
+			Limit:       limit,
+		}
+	}
+	for _, resource := range syncable {
+		add(resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
+	}
+	for _, resource := range dependent {
+		add(resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
+	}
+
+	names := make([]string, 0, len(defaults))
+	for name := range defaults {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]paginationDefaultEntry, len(names))
+	for i, name := range names {
+		entries[i] = defaults[name]
+	}
+	return entries
 }
 
 func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {
@@ -3685,6 +3731,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
 		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
+		PaginationDefaultResources:   paginationDefaultEntries(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		SpecTimestampFields:          specDateTimeFieldNames(g.Spec),
 		SearchableFields:             g.profile.SearchableFields,
 		Tables:                       schema,

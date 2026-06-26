@@ -2832,6 +2832,62 @@ func TestProfilePagination_ExplicitBlockWinsOverInference(t *testing.T) {
 	assert.Equal(t, "bar", profile.Pagination.PageSizeParam, "explicit limit_param must win")
 }
 
+func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "mixed-pagination",
+		Resources: map[string]spec.Resource{
+			"assets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/assets",
+						Params:   []spec.Param{{Name: "limit", Type: "integer", Default: 50}, {Name: "skip", Type: "integer"}},
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							Type:        "offset",
+							CursorParam: "skip",
+							LimitParam:  "limit",
+						},
+					},
+				},
+			},
+			"photos": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/photos",
+						Params:   []spec.Param{{Name: "page", Type: "integer"}, {Name: "per_page", Type: "integer", Default: 25}},
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							Type:        "page",
+							CursorParam: "page",
+							LimitParam:  "per_page",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "assets")
+	assert.Equal(t, "offset", byName["assets"].PaginationCursorType)
+	assert.Equal(t, "skip", byName["assets"].PaginationCursorParam)
+	assert.Equal(t, "limit", byName["assets"].PaginationLimitParam)
+	assert.Equal(t, 50, byName["assets"].PaginationPageSize)
+
+	require.Contains(t, byName, "photos")
+	assert.Equal(t, "page", byName["photos"].PaginationCursorType)
+	assert.Equal(t, "page", byName["photos"].PaginationCursorParam)
+	assert.Equal(t, "per_page", byName["photos"].PaginationLimitParam)
+	assert.Equal(t, 25, byName["photos"].PaginationPageSize)
+}
+
 // Specs with no recognizable pagination shape must keep the historical
 // after/limit defaults so existing golden output doesn't churn.
 func TestProfilePagination_NoPaginationParamsKeepsDefaults(t *testing.T) {
