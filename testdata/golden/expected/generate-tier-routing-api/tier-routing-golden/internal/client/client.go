@@ -231,14 +231,15 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
-		// Tier routing picks header vs query at runtime via authForRequest;
-		// re-deriving here would duplicate that selection logic, so we cap
-		// depth only. Known limitation: Go strips standard auth headers
-		// (Authorization, Cookie) on cross-host redirects but not custom
-		// header names, so a tier credential carried on a custom header
-		// could still be forwarded on a cross-host hop. Stripping it here
-		// requires the runtime tier selection and is tracked separately
-		// from the static-auth cross-host fix below.
+		// Tier routing picks header vs query at request time on a WithTier copy,
+		// while this redirect callback is installed once on the shared
+		// http.Client. On cross-host redirects, delete every tier auth header
+		// name the generated CLI can use; same-host redirects keep Go's copied
+		// header unchanged. Go strips Authorization/Cookie automatically on
+		// cross-host redirects, but not arbitrary tier header names.
+		if req.URL.Host != via[0].URL.Host {
+			req.Header.Del("Authorization")
+		}
 		return nil
 	}
 	return c

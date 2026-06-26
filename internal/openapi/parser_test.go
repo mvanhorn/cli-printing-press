@@ -5428,6 +5428,110 @@ paths:
 	}, parsed.Auth.EnvVarSpecs[1])
 }
 
+func TestOpenAPIAPIKeyAuthorizationHonorsAuthFormat(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: DRF API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    TokenAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-format: "Token {token}"
+security:
+  - TokenAuth: []
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, "Token {token}", parsed.Auth.Format)
+	assert.Equal(t, []string{"DRF_TOKEN_AUTH"}, parsed.Auth.EnvVars)
+}
+
+func TestOpenAPIHTTPBearerHonorsAuthFormat(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Custom Bearer
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    AccessToken:
+      type: http
+      scheme: bearer
+      x-auth-format: "Token {token}"
+security:
+  - AccessToken: []
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, "Token {token}", parsed.Auth.Format)
+	assert.Equal(t, []string{"CUSTOM_BEARER_ACCESS_TOKEN"}, parsed.Auth.EnvVars)
+}
+
+func TestOpenAPIBasicAuthFormatDerivesCredentialPairEnvVars(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Pair API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BasicPair:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-format: "Basic {user}:{token}"
+security:
+  - BasicPair: []
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, "Basic {user}:{token}", parsed.Auth.Format)
+	assert.Equal(t, []string{"PAIR_USER", "PAIR_TOKEN"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 2)
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+	assert.True(t, parsed.Auth.EnvVarSpecs[1].Sensitive)
+}
+
 func TestOpenAPIHTTPBasicAuthHonorsAuthVarsOverride(t *testing.T) {
 	t.Parallel()
 

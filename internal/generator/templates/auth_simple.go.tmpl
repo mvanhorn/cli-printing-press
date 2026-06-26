@@ -6,6 +6,8 @@ package cli
 {{- $requiredRequestAuthEnvVars := requiredRequestAuthEnvVars .Auth}}
 {{- $optionalRequestAuthEnvVars := optionalRequestAuthEnvVars .Auth}}
 {{- $authSetTokenAvailable := authSetTokenAvailable .Auth}}
+{{- $authSetCredentialsAvailable := authSetCredentialsAvailable .Auth}}
+{{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
 
 import (
 	"fmt"
@@ -31,7 +33,12 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 
 	cmd.AddCommand(newAuthSetupCmd(flags))
 	cmd.AddCommand(newAuthStatusCmd(flags))
+{{- if $authSetTokenAvailable}}
 	cmd.AddCommand(newAuthSetTokenCmd(flags))
+{{- end}}
+{{- if $authSetCredentialsAvailable}}
+	cmd.AddCommand(newAuthSetCredentialsCmd(flags))
+{{- end}}
 	cmd.AddCommand(newAuthLogoutCmd(flags))
 
 	return cmd
@@ -78,6 +85,9 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 {{- if $authSetTokenAvailable}}
 			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
 {{- end}}
+{{- if $authSetCredentialsAvailable}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}")
+{{- end}}
 {{- if $optionalRequestAuthEnvVars}}
 			fmt.Fprintln(w, "")
 {{- if and (not $requiredRequestAuthEnvVars) .Auth.IsAuthEnvVarORCase}}
@@ -98,6 +108,9 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 {{- end}}
 {{- if $authSetTokenAvailable}}
 			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
+{{- end}}
+{{- if $authSetCredentialsAvailable}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}")
 {{- end}}
 {{- end}}
 			if !launch {
@@ -200,6 +213,9 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 {{- if $authSetTokenAvailable}}
 				fmt.Fprintf(w, "  {{.Name}}-pp-cli auth set-token <token>\n")
 {{- end}}
+{{- if $authSetCredentialsAvailable}}
+				fmt.Fprintf(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}\n")
+{{- end}}
 {{- if $optionalRequestAuthEnvVars}}
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Optional request credentials:")
@@ -275,6 +291,66 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 }
+
+{{- if $authSetCredentialsAvailable}}
+
+func newAuthSetCredentialsCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-credentials <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}>{{if (index $basicAuthEnvVars 1).Required}} <{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}>{{else}} [{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}]{{end}}",
+		Short: "Save Basic auth credentials to the credentials file",
+		Example: "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}",
+		Args: func(cmd *cobra.Command, args []string) error {
+{{- if (index $basicAuthEnvVars 1).Required}}
+			if len(args) != 2 {
+				return fmt.Errorf("requires exactly 2 args: <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}> <{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}>")
+			}
+{{- else}}
+			if len(args) < 1 || len(args) > 2 {
+				return fmt.Errorf("requires 1 or 2 args: <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}> [{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}]")
+			}
+{{- end}}
+{{- if (index $basicAuthEnvVars 0).Required}}
+			if args[0] == "" {
+				return fmt.Errorf("{{(index $basicAuthEnvVars 0).Name}} is required")
+			}
+{{- end}}
+{{- if (index $basicAuthEnvVars 1).Required}}
+			if args[1] == "" {
+				return fmt.Errorf("{{(index $basicAuthEnvVars 1).Name}} is required")
+			}
+{{- end}}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+			value1 := ""
+			if len(args) > 1 {
+				value1 = args[1]
+			}
+			if err := cfg.SaveCredentials(args[0], value1); err != nil {
+				return configErr(fmt.Errorf("saving credentials: %w", err))
+			}
+			savePath := credentialSavePath(cfg)
+			if flags.asJSON {
+				out := map[string]any{
+					"saved":       true,
+					"config_path": cfg.Path,
+				}
+				if !cfg.AgentcookieManagedByExternalStore() {
+					out["credentials_path"] = savePath
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Credentials saved to %s\n", savePath)
+			return nil
+		},
+	}
+}
+
+{{- end}}
 
 func credentialSavePath(cfg *config.Config) string {
 	if cfg != nil && cfg.AgentcookieManagedByExternalStore() {

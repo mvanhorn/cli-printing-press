@@ -426,21 +426,57 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 {{- if eq .Auth.Type "api_key"}}
 {{- if $basicAuthEnvVars}}
-{{- if eq (len $basicAuthEnvVars) 1}}
-	if c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} == "" {
+{{- range $basicAuthEnvVars}}
+{{- if .Required}}
+	if c.{{resolveEnvVarField .Name}} == "" {
 		return ""
 	}
-	credentials := c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} + ":"
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
-{{- else if eq (len $basicAuthEnvVars) 2}}
-	if c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} == "" || c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}} == "" {
-		return ""
-	}
-	credentials := c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} + ":" + c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}}
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
-{{- else}}
-	return ""
 {{- end}}
+{{- end}}
+	credentials := basicAuthPayload("{{.Auth.Format}}", map[string]string{
+{{- $basicAuthEnvVarCount := len $basicAuthEnvVars}}
+{{- $firstBasicAuthPlaceholder := ""}}
+{{- if gt $basicAuthEnvVarCount 0}}
+{{- $firstBasicAuthPlaceholder = envVarPlaceholder (index $basicAuthEnvVars 0).Name}}
+{{- end}}
+{{- range $i, $env := $basicAuthEnvVars}}
+{{- $placeholder := envVarPlaceholder .Name}}
+		"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+		"{{.Name}}": c.{{resolveEnvVarField .Name}},
+{{- if and (eq $i 0) (eq $basicAuthEnvVarCount 1)}}
+{{- if ne $placeholder "token"}}
+		"token": c.{{resolveEnvVarField .Name}},
+{{- end}}
+{{- if ne $placeholder "access_token"}}
+		"access_token": c.{{resolveEnvVarField .Name}},
+{{- end}}
+{{- else if eq $i 0}}
+{{- if ne $placeholder "username"}}
+		"username": c.{{resolveEnvVarField .Name}},
+{{- end}}
+{{- if ne $placeholder "user"}}
+		"user": c.{{resolveEnvVarField .Name}},
+{{- end}}
+{{- else if eq $i 1}}
+{{- if ne $placeholder "password"}}
+		"password": c.{{resolveEnvVarField .Name}},
+{{- end}}
+{{- if ne $placeholder "secret"}}
+		"secret": c.{{resolveEnvVarField .Name}},
+{{- end}}
+{{- if and (ne $placeholder "token") (ne $firstBasicAuthPlaceholder "token")}}
+		"token": c.{{resolveEnvVarField .Name}},
+{{- end}}
+{{- if and (ne $placeholder "access_token") (ne $firstBasicAuthPlaceholder "access_token")}}
+		"access_token": c.{{resolveEnvVarField .Name}},
+{{- end}}
+{{- end}}
+{{- end}}
+	}, {{basicAuthAppendsColonForSingleToken .Auth}})
+	if credentials == "" {
+		return ""
+	}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
 {{- else if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
@@ -751,6 +787,24 @@ func applyAuthFormat(format string, replacements map[string]string) string {
 	return format
 }
 
+{{- if basicAuthEnvVars .Auth}}
+
+func basicAuthPayload(format string, replacements map[string]string, appendColonForSingleToken bool) string {
+	payload := strings.TrimSpace(format)
+	if scheme, rest, ok := strings.Cut(payload, " "); ok && strings.EqualFold(strings.TrimSpace(scheme), "Basic") {
+		payload = strings.TrimSpace(rest)
+	}
+	payload = applyAuthFormat(payload, replacements)
+	if payload == "" {
+		return ""
+	}
+	if appendColonForSingleToken && !strings.Contains(payload, ":") {
+		payload += ":"
+	}
+	return payload
+}
+{{- end}}
+
 {{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
 
 // ensureAuthScheme returns "<scheme> <token>" but skips the prefix when the
@@ -899,6 +953,37 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	}
 	return c.save()
 }
+
+{{- if authSetCredentialsAvailable .Auth}}
+
+// SaveCredentials persists a two-part request credential pair to the fields
+// AuthHeader() consults. It is used for Basic auth pairs, where set-token
+// cannot represent the username/password shape.
+func (c *Config) SaveCredentials(value0, value1 string) error {
+	c.AuthHeaderVal = ""
+	c.AccessToken = ""
+	delete(c.envOverrides, "AuthHeaderVal")
+	delete(c.envOverrides, "AccessToken")
+	c.updateFileConfigField("AuthHeaderVal")
+	c.updateFileConfigField("AccessToken")
+{{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
+	c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} = value0
+	delete(c.envOverrides, "{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}}")
+	c.updateFileConfigField("{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}}")
+	c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}} = value1
+	delete(c.envOverrides, "{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}}")
+	c.updateFileConfigField("{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}}")
+{{- if .HasRequiredRoles}}
+	c.AuthRole = ""
+	delete(c.envOverrides, "AuthRole")
+	c.updateFileConfigField("AuthRole")
+{{- end}}
+	if err := c.saveCredentialsFirst(); err != nil {
+		return err
+	}
+	return c.save()
+}
+{{- end}}
 
 {{- if and (eq .Auth.Type "api_key") .Auth.CanonicalEnvVar}}
 

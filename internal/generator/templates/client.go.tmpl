@@ -505,14 +505,19 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			return errors.New("stopped after 10 redirects")
 		}
 {{- if .HasTierRouting}}
-		// Tier routing picks header vs query at runtime via authForRequest;
-		// re-deriving here would duplicate that selection logic, so we cap
-		// depth only. Known limitation: Go strips standard auth headers
-		// (Authorization, Cookie) on cross-host redirects but not custom
-		// header names, so a tier credential carried on a custom header
-		// could still be forwarded on a cross-host hop. Stripping it here
-		// requires the runtime tier selection and is tracked separately
-		// from the static-auth cross-host fix below.
+		// Tier routing picks header vs query at request time on a WithTier copy,
+		// while this redirect callback is installed once on the shared
+		// http.Client. On cross-host redirects, delete every tier auth header
+		// name the generated CLI can use; same-host redirects keep Go's copied
+		// header unchanged. Go strips Authorization/Cookie automatically on
+		// cross-host redirects, but not arbitrary tier header names.
+		if req.URL.Host != via[0].URL.Host {
+	{{- range $tierName, $tier := .TierRouting.Tiers}}
+	{{- if and (ne $tier.Auth.Type "") (ne $tier.Auth.Type "none") (eq (authPlacement $tier.Auth) "header")}}
+			req.Header.Del({{printf "%q" (authParameterName $tier.Auth)}})
+	{{- end}}
+	{{- end}}
+		}
 {{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
 		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
@@ -2073,6 +2078,13 @@ func resolveClientCredentialsScope({{if $ccScopeUsesClientID}}clientID string{{e
 {{- end}}
 }
 
+func resolveClientCredentialsUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv("{{envName .Name}}_USER_AGENT")); ua != "" {
+		return ua
+	}
+	return "{{.Name}}-pp-cli/{{.Version}}"
+}
+
 {{- if clientCredentialsTokenURLHasTenant .Auth}}
 func resolveClientCredentialsTokenURL(tokenURL, tenant string) (string, error) {
 	idx := strings.Index(strings.ToLower(tokenURL), "/common/")
@@ -2112,9 +2124,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 	}
 {{- end}}
 	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
+		"grant_type": {"client_credentials"},
 	}
 	if scope := resolveClientCredentialsScope({{if $ccScopeUsesClientID}}clientID{{end}}); scope != "" {
 		form.Set("scope", scope)
@@ -2124,6 +2134,8 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 		return fmt.Errorf("building token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", resolveClientCredentialsUserAgent())
+	req.SetBasicAuth(clientID, clientSecret)
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("calling token endpoint: %w", err)

@@ -165,6 +165,96 @@ func TestTierRoutingEmitsTierAwareClientAndCommands(t *testing.T) {
 	require.Contains(t, codeOrchSrc, `c = c.WithTier(ep.Tier)`)
 }
 
+func TestTierRoutingRedirectsStripCustomHeaderCrossHost(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("tier-redirect")
+	apiSpec.TierRouting = spec.TierRoutingConfig{
+		DefaultTier: "free",
+		Tiers: map[string]spec.TierConfig{
+			"free": {Auth: spec.AuthConfig{Type: "none"}},
+			"paid": {
+				Auth: spec.AuthConfig{
+					Type:    "api_key",
+					In:      "header",
+					Header:  "X-Tier-Key",
+					EnvVars: []string{"TIER_REDIRECT_PAID_KEY"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "tier-redirect-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const clientTest = `package client
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"tier-redirect-pp-cli/internal/config"
+)
+
+func TestTierRedirectCustomHeaderStripping(t *testing.T) {
+	t.Setenv("TIER_REDIRECT_PAID_KEY", "paid-secret")
+
+	sameHostFinalHeader := ""
+	sameHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/same-start":
+			http.Redirect(w, r, "/same-final", http.StatusFound)
+		case "/same-final":
+			sameHostFinalHeader = r.Header.Get("X-Tier-Key")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(` + "`{}`" + `))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer sameHost.Close()
+
+	cfg := &config.Config{BaseURL: sameHost.URL}
+	c := New(cfg, time.Second, 0).WithTier("paid")
+	c.NoCache = true
+	if _, err := c.Get(context.Background(), "/same-start", nil); err != nil {
+		t.Fatalf("same-host redirect request failed: %v", err)
+	}
+	if sameHostFinalHeader != "paid-secret" {
+		t.Fatalf("same-host redirect X-Tier-Key = %q, want paid-secret", sameHostFinalHeader)
+	}
+
+	crossHostFinalHeader := "not-called"
+	crossHostTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		crossHostFinalHeader = r.Header.Get("X-Tier-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(` + "`{}`" + `))
+	}))
+	defer crossHostTarget.Close()
+
+	crossHostStart := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, crossHostTarget.URL+"/cross-final", http.StatusFound)
+	}))
+	defer crossHostStart.Close()
+
+	cfg = &config.Config{BaseURL: crossHostStart.URL}
+	c = New(cfg, time.Second, 0).WithTier("paid")
+	c.NoCache = true
+	if _, err := c.Get(context.Background(), "/cross-start", nil); err != nil {
+		t.Fatalf("cross-host redirect request failed: %v", err)
+	}
+	if crossHostFinalHeader != "" {
+		t.Fatalf("cross-host redirect leaked X-Tier-Key = %q", crossHostFinalHeader)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "tier_redirect_test.go"), []byte(clientTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/client", "-run", "TestTierRedirectCustomHeaderStripping", "-count=1")
+}
+
 func readGeneratedFile(t *testing.T, root string, parts ...string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(append([]string{root}, parts...)...))
