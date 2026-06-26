@@ -68,7 +68,7 @@ func newBrowserSniffCmd() *cobra.Command {
 			if analysisOutputPath == "" {
 				analysisOutputPath = browsersniff.DefaultTrafficAnalysisPath(outputPath)
 			}
-			if samplesOutputPath == "" {
+			if samplesOutputPath == "" && !cmd.Flags().Changed("samples-output") {
 				samplesOutputPath = browsersniff.DefaultSamplesPath(outputPath)
 			}
 

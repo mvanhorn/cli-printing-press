@@ -764,6 +764,20 @@ func TestWriteManifestForGenerateWithSpecURL(t *testing.T) {
 	assert.False(t, got.GeneratedAt.IsZero())
 }
 
+func TestWriteManifestForGenerateRecordsSpecSourceFromSpec(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "sniffed-api",
+		OutputDir: dir,
+		Spec:      &spec.APISpec{Name: "sniffed-api", SpecSource: "sniffed"},
+	})
+	require.NoError(t, err)
+
+	got := readManifest(t, dir)
+	assert.Equal(t, "sniffed", got.SpecSource)
+}
+
 func TestWriteManifestForGenerateRecordsAuthPreference(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1298,7 +1312,23 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.True(t, os.IsNotExist(statErr))
 	})
 
-	t.Run("uses generate-time placeholder instead of printing press version", func(t *testing.T) {
+	t.Run("uses API version before printing press version", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "demo",
+			MCPBinary:            "demo-pp-mcp",
+			MCPReady:             "full",
+			APIVersion:           "0.1.0",
+			PrintingPressVersion: "4.11.0",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "0.1.0", got.Version)
+	})
+
+	t.Run("falls back to printing press version", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{
 			APIName:              "demo",
@@ -1310,7 +1340,7 @@ func TestWriteMCPBManifest(t *testing.T) {
 		require.NoError(t, WriteMCPBManifest(dir))
 		got := readMCPBManifest(t, dir)
 
-		assert.Equal(t, "0.0.0", got.Version)
+		assert.Equal(t, "4.11.0", got.Version)
 	})
 
 	t.Run("api_key auth emits required user_config fields", func(t *testing.T) {

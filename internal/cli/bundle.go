@@ -263,15 +263,15 @@ func resolvePlatform(s string) (string, string, error) {
 
 // buildMCPBBinary invokes `go build` on cmd/<name>/main.go inside cliDir,
 // targeting the requested GOOS/GOARCH and writing to outputPath. We pass
-// -trimpath and -ldflags="-s -w" to match the bundle conventions Claude
-// Desktop's prebuilt examples use; users who need debug builds can
+// -trimpath and a blank build id to avoid embedding operator-local paths while
+// retaining the size-oriented ldflags Claude Desktop examples use. Users can
 // --skip-build and pass their own binary.
 func buildMCPBBinary(cliDir, mcpName, outputPath, goos, goarch string) error {
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return fmt.Errorf("creating bin dir: %w", err)
 	}
 	pkg := "./cmd/" + mcpName
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", outputPath, pkg)
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w -buildid=", "-o", outputPath, pkg)
 	cmd.Dir = cliDir
 	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
 	if out, err := cmd.CombinedOutput(); err != nil {

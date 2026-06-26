@@ -52,6 +52,27 @@ func TestBrowserSniffCmdWritesSpecAndExplicitTrafficAnalysis(t *testing.T) {
 	assert.Contains(t, string(data), `"endpoint_clusters"`)
 }
 
+func TestBrowserSniffCmdEmptySamplesOutputDisablesSamples(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "spec.yaml")
+	analysisPath := filepath.Join(dir, "traffic-analysis.json")
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", filepath.Join("..", "..", "testdata", "sniff", "sample-enriched.json"),
+		"--output", outputPath,
+		"--analysis-output", analysisPath,
+		"--samples-output=",
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	require.FileExists(t, outputPath)
+	require.FileExists(t, analysisPath)
+	assert.NoDirExists(t, browsersniff.DefaultSamplesPath(outputPath))
+}
+
 func TestBrowserSniffCmdDerivesTrafficAnalysisPath(t *testing.T) {
 	t.Parallel()
 

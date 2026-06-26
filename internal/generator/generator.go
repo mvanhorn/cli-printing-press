@@ -298,6 +298,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authSetCredentialsAvailable":         authSetCredentialsAvailable,
 		"authErrorCheckHint":                  authErrorCheckHint,
 		"authSetupHint":                       authSetupHint,
+		"authBrowserLoginAvailable":           authBrowserLoginAvailable,
 		"authEnvPlaceholder":                  authEnvPlaceholder,
 		"authEnvPlaceholderByName":            authEnvPlaceholderByName,
 		"authEnvHintComment":                  authEnvHintComment,
@@ -1594,6 +1595,9 @@ func authSetupHint(auth spec.AuthConfig, cliName string) string {
 	case "oauth2":
 		return fmt.Sprintf("Run '%s-pp-cli auth login' to re-authenticate.", cliName)
 	}
+	if authBrowserLoginAvailable(auth) {
+		return fmt.Sprintf("Run '%s-pp-cli auth login' to re-authenticate.", cliName)
+	}
 
 	envVars := requiredRequestAuthEnvVars(auth)
 	if len(envVars) == 0 && auth.IsAuthEnvVarORCase() {
@@ -1636,6 +1640,11 @@ func authSetupHint(auth spec.AuthConfig, cliName string) string {
 		return "Set Basic credentials with: export " + strings.Join(exports, " ")
 	}
 	return "Set credentials with: export " + strings.Join(exports, " ")
+}
+
+func authBrowserLoginAvailable(auth spec.AuthConfig) bool {
+	return strings.TrimSpace(auth.AuthorizationURL) != "" &&
+		auth.EffectiveOAuth2Grant() == spec.OAuth2GrantAuthorizationCode
 }
 
 func authEnvDomainVendor(envNameUpper, placeholder string) string {

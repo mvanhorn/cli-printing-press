@@ -10,6 +10,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 )
 
 // MCPB-bundle constants. Promoted from string literals so a typo here can't
@@ -203,7 +204,7 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 		// The generated on-disk manifest does not know the printed CLI's
 		// release tag yet. Release packaging can stamp the bundle version
 		// into the ZIP without mutating this generate-time manifest.
-		Version:     bundleVersion(),
+		Version:     bundleVersion(m),
 		Description: manifestDescription(existing, m, displayName),
 		Author:      MCPBAuthor{Name: "CLI Printing Press"},
 		License:     "Apache-2.0",
@@ -224,11 +225,17 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	}
 }
 
-// bundleVersion returns a semver-shaped generate-time placeholder. The MCPB
-// manifest's version is the printed CLI bundle version, which is not known
-// until release packaging passes it to BuildMCPBBundle.
-func bundleVersion() string {
-	return "0.0.0"
+// bundleVersion returns the best known printed CLI bundle version at generate
+// time. Release packaging may still stamp the final public-library version
+// into the ZIP without mutating this generate-time manifest.
+func bundleVersion(m CLIManifest) string {
+	if v := strings.TrimSpace(m.APIVersion); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(m.PrintingPressVersion); v != "" {
+		return v
+	}
+	return version.Version
 }
 
 // manifestDescription preserves hand-edited bundle descriptions while letting
