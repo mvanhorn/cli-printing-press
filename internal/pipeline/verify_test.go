@@ -23,6 +23,7 @@ func TestPathProof_DetectsHallucinatedEndpoint(t *testing.T) {
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_get.go"), `package cli
 func usersGet() {
 	path = "/users/{id}"
+	path = replacePathParam(path, "id", args[0])
 }
 `)
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "bogus_get.go"), `package cli
@@ -58,6 +59,79 @@ func bogusGet() {
 	assert.Equal(t, 1, invalidCount, "one path should be hallucinated")
 }
 
+func TestPathProof_DetectsUnresolvedPathTemplatePlaceholders(t *testing.T) {
+	dir := t.TempDir()
+	setupVerifierDirs(t, dir)
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "feed.go"), `package cli
+func runFeed() {
+	path := "/feeds/{type}/{month}"
+	_ = c.Get(path)
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "accounts.go"), `package cli
+func runAccounts() {
+	path := "/accounts/{account_id}/workers/{account_id}"
+	path = replacePathParam(path, "account_id", args[0])
+	_ = c.Get(path)
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "direct.go"), `package cli
+func runDirect() {
+	_ = c.Get("/direct/{id}")
+}
+`)
+
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Template API
+  version: "1.0"
+paths:
+  /feeds/{type}/{month}:
+    get:
+      responses:
+        "200":
+          description: ok
+  /accounts/{account_id}/workers/{account_id}:
+    get:
+      responses:
+        "200":
+          description: ok
+  /direct/{id}:
+    get:
+      responses:
+        "200":
+          description: ok`)
+
+	v, err := NewVerifier(dir, specPath)
+	require.NoError(t, err)
+
+	results := v.PathProof()
+	require.Len(t, results, 3)
+
+	var feed, accounts, direct PathProofResult
+	for _, r := range results {
+		switch r.File {
+		case "feed.go":
+			feed = r
+		case "accounts.go":
+			accounts = r
+		case "direct.go":
+			direct = r
+		}
+	}
+	assert.False(t, feed.Valid)
+	assert.Equal(t, 3, feed.Line)
+	assert.Equal(t, []string{"type", "month"}, feed.UnresolvedPlaceholders)
+	assert.True(t, accounts.Valid, "one substitution covers repeated account_id placeholders")
+	assert.Equal(t, 3, accounts.Line)
+	assert.Empty(t, accounts.UnresolvedPlaceholders)
+	assert.False(t, direct.Valid)
+	assert.Equal(t, 3, direct.Line)
+	assert.Equal(t, []string{"id"}, direct.UnresolvedPlaceholders)
+}
+
 func TestNewVerifierAcceptsYAMLSpec(t *testing.T) {
 	dir := t.TempDir()
 	setupVerifierDirs(t, dir)
@@ -65,6 +139,7 @@ func TestNewVerifierAcceptsYAMLSpec(t *testing.T) {
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_get.go"), `package cli
 func usersGet() {
 	path = "/users/{id}"
+	path = replacePathParam(path, "id", args[0])
 }
 `)
 
@@ -435,6 +510,7 @@ func TestRunVerification_FullIntegration(t *testing.T) {
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_get.go"), `package cli
 func usersGet() {
 	path = "/users/{id}"
+	path = replacePathParam(path, "id", args[0])
 }
 `)
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "bogus_get.go"), `package cli
