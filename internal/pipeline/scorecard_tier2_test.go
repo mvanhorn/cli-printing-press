@@ -1415,9 +1415,34 @@ func runLinks() string {
 		pipelineDir := t.TempDir()
 		sc, err := RunScorecard(dir, pipelineDir, "", nil)
 		assert.NoError(t, err)
-		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "live_api_verification"}, sc.UnscoredDimensions)
+		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "data_pipeline_integrity", "sync_correctness", "type_fidelity", "live_api_verification"}, sc.UnscoredDimensions)
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 		assert.NotContains(t, sc.GapReport, "auth_protocol scored 0/10 - needs improvement")
+	})
+
+	t.Run("no store omits store pipeline dimensions from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func initRoot() { rootCmd.AddCommand(newSyncCmd()) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+import "github.com/spf13/cobra"
+func newSyncCmd() *cobra.Command { return &cobra.Command{Use: "sync"} }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/snapshot.go", `package cli
+import "github.com/spf13/cobra"
+func newSnapshotCmd() *cobra.Command { return &cobra.Command{Use: "snapshot"} }
+`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, "", nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimDataPipelineIntegrity)
+		assert.Contains(t, sc.UnscoredDimensions, DimSyncCorrectness)
+		assert.Contains(t, sc.UnscoredDimensions, DimTypeFidelity)
+		assert.NotContains(t, sc.GapReport, "data_pipeline_integrity scored 0/10 - needs improvement")
+		assert.NotContains(t, sc.GapReport, "sync_correctness scored 0/10 - needs improvement")
+		assert.NotContains(t, sc.GapReport, "type_fidelity scored 0/5 - needs improvement")
 	})
 
 	t.Run("hidden endpoint mirrors omit mcp description quality from scoring", func(t *testing.T) {
@@ -1496,7 +1521,9 @@ func runLinks() string {
 			scBearer.Steinberger.SyncCorrectness +
 			scBearer.Steinberger.TypeFidelity +
 			scBearer.Steinberger.DeadCode
-		expectedDelta := (sharedTier2Raw * 50 / 40) - (sharedTier2Raw * 50 / 50)
+		noAuthMax := scorecardTierMax(scNoAuth, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
+		bearerMax := scorecardTierMax(scBearer, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
+		expectedDelta := (sharedTier2Raw * 50 / noAuthMax) - (sharedTier2Raw * 50 / bearerMax)
 		assert.Equal(t, scBearer.Steinberger.Total+expectedDelta, scNoAuth.Steinberger.Total)
 	})
 
@@ -2476,7 +2503,7 @@ func runLinks() string {
 		body := string(data)
 		assert.True(t, strings.Contains(body, `"path_validity":0`))
 		assert.True(t, strings.Contains(body, `"auth_protocol":0`))
-		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_description_quality","mcp_token_efficiency","mcp_remote_transport","mcp_tool_design","mcp_surface_strategy","cache_freshness","path_validity","auth_protocol","live_api_verification"]`))
+		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_description_quality","mcp_token_efficiency","mcp_remote_transport","mcp_tool_design","mcp_surface_strategy","cache_freshness","path_validity","auth_protocol","data_pipeline_integrity","sync_correctness","type_fidelity","live_api_verification"]`))
 	})
 }
 

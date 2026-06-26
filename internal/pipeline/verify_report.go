@@ -130,6 +130,14 @@ func collectVerificationIssues(report *VerificationReport) []string {
 
 	for _, p := range report.Paths {
 		if !p.Valid {
+			if len(p.UnresolvedPlaceholders) > 0 {
+				location := p.File
+				if p.Line > 0 {
+					location = fmt.Sprintf("%s:%d", p.File, p.Line)
+				}
+				issues = append(issues, fmt.Sprintf("unresolved path placeholders in %s: %s", location, strings.Join(p.UnresolvedPlaceholders, ", ")))
+				continue
+			}
 			issues = append(issues, fmt.Sprintf("hallucinated path: %s (not in spec)", p.Path))
 		}
 	}

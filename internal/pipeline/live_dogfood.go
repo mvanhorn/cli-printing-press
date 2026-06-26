@@ -703,9 +703,7 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 		// where the prefix has at least one character (len > 2). Broader than
 		// generator.go exampleValue's predicate — no spec type info is available
 		// from CLI help text, so the string-type fence applied there is omitted.
-		isIDShape := nameLower == "id" ||
-			(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2)
-		if !isIDShape {
+		if !isIDShapePlaceholderName(nameLower) {
 			return nil, true, fmt.Sprintf("non-id positional %q at depth %d", name, i), ""
 		}
 
