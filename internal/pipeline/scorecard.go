@@ -110,6 +110,8 @@ const (
 	DimPathValidity          = "path_validity"
 	DimAuthProtocol          = "auth_protocol"
 	DimSyncCorrectness       = "sync_correctness"
+	DimTypeFidelity          = "type_fidelity"
+	DimDeadCode              = "dead_code"
 	DimLiveAPIVerification   = "live_api_verification"
 	// HTTP-API-shaped dimensions that do not apply to a BLE device CLI (no remote
 	// API, no sync->sql->search pipeline, no response cache). Marked N/A for
@@ -277,6 +279,8 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInf
 		// BLE device CLIs have no sync->sql->search data pipeline; the HTTP-shaped
 		// pipeline and sync checks don't apply. Mark N/A rather than scoring 0.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
+	} else if !hasScorecardLocalStore(outputDir) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimDataPipelineIntegrity, DimSyncCorrectness)
 	} else {
 		sc.Steinberger.DataPipelineIntegrity = scoreDataPipelineIntegrity(outputDir)
 		if isLocalDatastoreCLIDir(outputDir) {
@@ -287,6 +291,8 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, spec *openAPISpecInf
 	}
 	if isDevice {
 		sc.Steinberger.TypeFidelity = scoreTypeFidelityDevice(outputDir)
+	} else if !hasScorecardLocalStore(outputDir) {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimTypeFidelity)
 	} else {
 		sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir, spec)
 	}
@@ -1358,7 +1364,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.LiveAPIVerification,
 	)
 
-	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity)
+	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
 	tier2Normalized := 0
 	if tier2Max > 0 {
 		tier2Normalized = (tier2Raw * 50) / tier2Max
@@ -1378,10 +1384,21 @@ func scorecardTierMax(sc *Scorecard, base int, optionalDimensions ...string) int
 	max := base
 	for _, name := range optionalDimensions {
 		if sc.IsDimensionUnscored(name) {
-			max -= 10
+			max -= scorecardDimensionMax(name)
 		}
 	}
 	return max
+}
+
+func scorecardDimensionMax(name string) int {
+	if name == DimTypeFidelity || name == DimDeadCode {
+		return 5
+	}
+	return 10
+}
+
+func hasScorecardLocalStore(dir string) bool {
+	return fileExists(filepath.Join(dir, "internal", "store", "store.go"))
 }
 
 func scoreBreadth(dir string) int {
@@ -3691,14 +3708,14 @@ func buildGapReport(s SteinerScore, unscored []string) []string {
 		{"data_pipeline_integrity", s.DataPipelineIntegrity},
 		{"sync_correctness", s.SyncCorrectness},
 		{"type_fidelity", s.TypeFidelity},
-		{"dead_code", s.DeadCode},
+		{DimDeadCode, s.DeadCode},
 	}
 	for _, d := range dimensions {
 		if _, skip := unscoredSet[d.name]; skip {
 			continue
 		}
 		max := 10
-		if d.name == "type_fidelity" || d.name == "dead_code" {
+		if d.name == DimTypeFidelity || d.name == DimDeadCode {
 			max = 5
 		}
 		if d.score < max/2 {
@@ -3838,6 +3855,10 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"Dead Code", s.DeadCode},
 	}
 	for _, d := range typeDimensions {
+		if sc.IsDimensionUnscored(strings.ToLower(strings.ReplaceAll(d.name, " ", "_"))) {
+			fmt.Fprintf(&b, "| %s | N/A |\n", d.name)
+			continue
+		}
 		bar := strings.Repeat("#", d.score) + strings.Repeat(".", 5-d.score)
 		fmt.Fprintf(&b, "| %s | %d/5 %s |\n", d.name, d.score, bar)
 	}

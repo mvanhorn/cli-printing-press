@@ -618,6 +618,9 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 		if !cliHasSyncCommand(cliDir) {
 			return true, "SKIP (CLI has no sync command)"
 		}
+		if !cliHasLocalStore(cliDir) {
+			return true, "SKIP (CLI has no local store)"
+		}
 	}
 
 	env := envFn()
@@ -681,6 +684,9 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 		// No domain tables found — ambiguous (could be minimal CLI or unusual naming).
 		// Don't fail the pipeline gate; report for human review.
 		return true, "WARN: sync completed but no domain tables found in sqlite_master"
+	}
+	if mode == "mock" && strings.TrimSpace(cliDir) != "" && !cliHasSyncableResources(cliDir) {
+		return true, fmt.Sprintf("PASS: %d domain tables created (mock mode; no syncable resources declared)", len(tables))
 	}
 
 	var bestShortTable string
@@ -773,6 +779,16 @@ func unknownSyncFlag(err error) (string, bool) {
 
 func cliHasSyncCommand(cliDir string) bool {
 	return hasRegisteredCommandFileWithPrefix(filepath.Join(cliDir, "internal", "cli"), "sync")
+}
+
+func cliHasLocalStore(cliDir string) bool {
+	return fileExists(filepath.Join(cliDir, "internal", "store", "store.go"))
+}
+
+func cliHasSyncableResources(cliDir string) bool {
+	content := readAllGoFiles(filepath.Join(cliDir, "internal", "cli"))
+	content += readAllGoFiles(filepath.Join(cliDir, "internal", "store"))
+	return hasNonEmptySyncResources(content)
 }
 
 func isAuxiliaryPipelineTable(table string, totalTables int) bool {
