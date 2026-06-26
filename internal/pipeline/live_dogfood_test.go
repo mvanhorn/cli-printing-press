@@ -5256,6 +5256,12 @@ func TestLiveDogfoodSyntheticPositionalValueHandlesBooleanFlags(t *testing.T) {
 		0,
 		1,
 	))
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
+		1,
+	))
 
 	movePath := []string{"widgets", "move"}
 	assert.True(t, liveDogfoodSyntheticPositionalValue(

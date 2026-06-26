@@ -806,12 +806,14 @@ func happyPathSyntheticParamFixtureSkip(command liveDogfoodCommand, happyArgs []
 func liveDogfoodSyntheticPositionalValue(happyArgs, commandPath []string, position, positionalCount int) bool {
 	start := min(len(commandPath), len(happyArgs))
 	seen := 0
+	afterTerminator := false
 	for i := start; i < len(happyArgs); i++ {
 		arg := happyArgs[i]
 		if arg == "--" {
-			break
+			afterTerminator = true
+			continue
 		}
-		if strings.HasPrefix(arg, "-") {
+		if !afterTerminator && strings.HasPrefix(arg, "-") {
 			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValue(happyArgs, start, i, positionalCount) {
 				i++
 			}
