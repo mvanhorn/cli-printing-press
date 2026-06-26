@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.26.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.26.0...v4.26.1) (2026-06-26)
+
+
+### Bug Fixes
+
+* **cli:** calibrate live dogfood fixtures ([#3290](https://github.com/mvanhorn/cli-printing-press/issues/3290)) ([5d70d76](https://github.com/mvanhorn/cli-printing-press/commit/5d70d7606f814642c8f495606f9f43c68d52d735))
+* **cli:** improve phase five and skill validation feedback ([#3288](https://github.com/mvanhorn/cli-printing-press/issues/3288)) ([b9aa369](https://github.com/mvanhorn/cli-printing-press/commit/b9aa369b03978ee279a0beafc157abea2b0d819b))
+* **cli:** treat nested help as success ([#3289](https://github.com/mvanhorn/cli-printing-press/issues/3289)) ([f4f125d](https://github.com/mvanhorn/cli-printing-press/commit/f4f125d1856449232fec5501f72967755f5802fd))
+
 ## [4.26.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.25.1...v4.26.0) (2026-06-26)
 
 
