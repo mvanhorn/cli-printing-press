@@ -1328,6 +1328,22 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Equal(t, "0.1.0", got.Version)
 	})
 
+	t.Run("falls back when API version is not semver", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "demo",
+			MCPBinary:            "demo-pp-mcp",
+			MCPReady:             "full",
+			APIVersion:           "2026-04",
+			PrintingPressVersion: "4.11.0",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "4.11.0", got.Version)
+	})
+
 	t.Run("falls back to printing press version", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{

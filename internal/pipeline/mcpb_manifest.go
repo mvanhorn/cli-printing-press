@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -29,6 +30,8 @@ const (
 // defaultMCPBPlatforms is the set of host platforms our generated bundles
 // target. Matches goreleaser's default Go cross-compile matrix.
 var defaultMCPBPlatforms = []string{"darwin", "linux", "win32"}
+
+var semverVersionRE = regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 
 // minClaudeDesktopVersion is the minimum Claude Desktop release that
 // understands the MCPB bundle format we emit. 1.0.0 is the version that
@@ -229,13 +232,17 @@ func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 // time. Release packaging may still stamp the final public-library version
 // into the ZIP without mutating this generate-time manifest.
 func bundleVersion(m CLIManifest) string {
-	if v := strings.TrimSpace(m.APIVersion); v != "" {
+	if v := strings.TrimSpace(m.APIVersion); isSemverVersion(v) {
 		return v
 	}
 	if v := strings.TrimSpace(m.PrintingPressVersion); v != "" {
 		return v
 	}
 	return version.Version
+}
+
+func isSemverVersion(v string) bool {
+	return semverVersionRE.MatchString(v)
 }
 
 // manifestDescription preserves hand-edited bundle descriptions while letting
