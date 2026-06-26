@@ -32,7 +32,7 @@ func ParseStringList(input string) ([]string, error) {
 	if strings.HasPrefix(trimmed, "[") {
 		var out []string
 		if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("expected JSON array of strings or comma-separated list: %w", err)
 		}
 		return out, nil
 	}

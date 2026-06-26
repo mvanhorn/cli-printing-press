@@ -5761,9 +5761,9 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			if strings.EqualFold(strings.TrimSpace(p.ItemType), "object") {
 				fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), csvArrayValueExpr(p, "body"+ident))
 			} else {
-				fmt.Fprintf(b, "%s\tparsed%s, err := %s\n", indent, ident, csvArrayValueExpr(p, "body"+ident))
-				fmt.Fprintf(b, "%s\tif err != nil {\n", indent)
-				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s list: %%w\", err)\n", indent, flag)
+				fmt.Fprintf(b, "%s\tparsed%s, parseErr := %s\n", indent, ident, csvArrayValueExpr(p, "body"+ident))
+				fmt.Fprintf(b, "%s\tif parseErr != nil {\n", indent)
+				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s list: %%w\", parseErr)\n", indent, flag)
 				fmt.Fprintf(b, "%s\t}\n", indent)
 				fmt.Fprintf(b, "%s\t%s[%q] = parsed%s\n", indent, mapVar, p.BodyWireName(), ident)
 			}

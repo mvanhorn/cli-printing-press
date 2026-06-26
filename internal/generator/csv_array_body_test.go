@@ -60,10 +60,10 @@ func TestGenerateCSVArrayBodyFields(t *testing.T) {
 	code := readGeneratedCLIFileContaining(t, outputDir, `cliutil.ParseStringList(bodyEmails)`)
 
 	require.Contains(t, code, `"csv-array-body-pp-cli/internal/cliutil"`)
-	require.Contains(t, code, `parsedEmails, err := cliutil.ParseStringList(bodyEmails)`)
-	require.Contains(t, code, `return fmt.Errorf("parsing --emails list: %w", err)`)
+	require.Contains(t, code, `parsedEmails, parseErr := cliutil.ParseStringList(bodyEmails)`)
+	require.Contains(t, code, `return fmt.Errorf("parsing --emails list: %w", parseErr)`)
 	require.Contains(t, code, `body["emails"] = parsedEmails`)
-	require.Contains(t, code, `parsedTags, err := cliutil.ParseStringList(bodyTags)`)
+	require.Contains(t, code, `parsedTags, parseErr := cliutil.ParseStringList(bodyTags)`)
 	require.Contains(t, code, `body["tags"] = parsedTags`)
 	require.Contains(t, code, `body["attendees"] = cliutil.CSVTemplateObjects(bodyAttendees, map[string]any{"emailAddress": map[string]any{"address": "$value"}, "type": "required"})`)
 	require.Contains(t, code, `body["subject"] = bodySubject`)
@@ -100,7 +100,10 @@ func TestGeneratedParseStringListAcceptsCSVOrJSONArray(t *testing.T) {
 
 	testSrc := []byte(`package cliutil
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseStringListCSVOrJSON(t *testing.T) {
 	csv, err := ParseStringList("ada@example.com, grace@example.com")
@@ -119,11 +122,13 @@ func TestParseStringListCSVOrJSON(t *testing.T) {
 		t.Fatalf("unexpected JSON parse: %#v", jsonList)
 	}
 
-	if _, err := ParseStringList(` + "`" + `[{"email":"ada@example.com"}]` + "`" + `); err == nil {
-		t.Fatal("object arrays must not be accepted as string lists")
+		if _, err := ParseStringList(` + "`" + `[{"email":"ada@example.com"}]` + "`" + `); err == nil {
+			t.Fatal("object arrays must not be accepted as string lists")
+		} else if !strings.Contains(err.Error(), "expected JSON array of strings or comma-separated list") {
+			t.Fatalf("unexpected object-array error: %v", err)
+		}
 	}
-}
-`)
+	`)
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cliutil", "csv_extra_test.go"), testSrc, 0o600))
 	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
 }
