@@ -100,7 +100,7 @@ func TestGenerateBinaryStoreBackedPromotedThreadsHeader(t *testing.T) {
 		"store-backed binary GET must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
 		"store-backed binary GET must include the binary sentinel")
-	assert.Contains(t, endpointSrc, `resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "voices", false, path, params, headerOverrides, cmd.ErrOrStderr())`,
+	assert.Contains(t, endpointSrc, `resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "voices", false, path, params, headerOverrides, "", cmd.ErrOrStderr())`,
 		"store-backed binary GET must thread headerOverrides through the strategy-aware resolver")
 }
 

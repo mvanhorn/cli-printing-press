@@ -131,10 +131,18 @@ func attachFreshness(prov DataProvenance, flags *rootFlags) DataProvenance {
 //     reads on per-endpoint-versioned APIs silently get the wrong response shape
 //     (cal-com retro #334 F1).
 func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
-	return resolveReadWithStrategy(ctx, c, flags, "auto", resourceType, isList, path, params, headers, hintWriter)
+	return resolveReadWithResponsePath(ctx, c, flags, resourceType, isList, path, params, headers, "", hintWriter)
+}
+
+func resolveReadWithResponsePath(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolveReadWithStrategyAndResponsePath(ctx, c, flags, "auto", resourceType, isList, path, params, headers, responsePath, hintWriter)
 }
 
 func resolveReadWithStrategy(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolveReadWithStrategyAndResponsePath(ctx, c, flags, strategy, resourceType, isList, path, params, headers, "", hintWriter)
+}
+
+func resolveReadWithStrategyAndResponsePath(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
 	if err := validateDataSourceStrategy(flags, strategy); err != nil {
 		return nil, DataProvenance{}, err
 	}
@@ -147,6 +155,7 @@ func resolveReadWithStrategy(ctx context.Context, c *client.Client, flags *rootF
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
+		data = applyResponsePath(data, responsePath)
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 	}
 	switch flags.dataSource {
@@ -159,11 +168,13 @@ func resolveReadWithStrategy(ctx context.Context, c *client.Client, flags *rootF
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
+		data = applyResponsePath(data, responsePath)
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
 		data, err := c.GetWithHeaders(ctx, path, params, headers)
 		if err == nil {
+			data = applyResponsePath(data, responsePath)
 			writeThroughCache(ctx, resourceType, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 		}
@@ -464,7 +475,7 @@ func writeMutationResponseToStore(ctx context.Context, resourceType string, data
 
 func mutationResponseEntityItems(resourceType string, data json.RawMessage, responsePath string) []json.RawMessage {
 	if responsePath != "" {
-		if pathData, ok := mutationResponseAtPath(data, responsePath); ok {
+		if pathData, ok := responsePayloadAtPath(data, responsePath); ok {
 			data = pathData
 		}
 	}
@@ -528,14 +539,6 @@ func mutationResponsePayload(data json.RawMessage) json.RawMessage {
 	default:
 		return data
 	}
-}
-
-func mutationResponseAtPath(data json.RawMessage, responsePath string) (json.RawMessage, bool) {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(data, &root); err != nil {
-		return nil, false
-	}
-	return rawAtPath(root, strings.TrimPrefix(responsePath, "$."))
 }
 
 func mutationResponseHasID(resourceType string, data json.RawMessage) bool {

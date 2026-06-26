@@ -14578,7 +14578,7 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	// Vendor identifiers (gid, sid, uid, uuid, guid) precede `name` so
 	// APIs like Asana don't fall through to a display field — see #1394.
 	assert.Contains(t, storeContent,
-		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}`,
+		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}`,
 		"store.go genericIDFieldFallbacks must include vendor identifiers before name")
 	// Negative: kalshi-specific names must not be in the fallback list.
 	// We assert a robust shape: no occurrence of "ticker" inside the fallback
@@ -14610,6 +14610,12 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	assert.Contains(t, syncContent,
 		`"reason":"all_items_failed_id_extraction"`,
 		"sync.go must preserve the all_items_failed_id_extraction roll-up event")
+	assert.Contains(t, syncContent,
+		`Warn:     fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
+		"sync.go must surface all-items-failed ID extraction as a warning result, not a success")
+	assert.Contains(t, syncContent,
+		`completed with warnings but no successful syncs`,
+		"sync.go all-warned summary must not claim the warning was only access-related")
 
 	// (d) F4b symptom probe at end-of-resource. Fires when consumed > 0
 	// AND totalCount (stored) == 0 AND extraction succeeded for at least
@@ -14648,7 +14654,7 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	// per-resource override, fallback-list, and numeric-ID tests execute against real code.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
-	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_(TemplatedIDFieldOverrideWins|GenericFallbackList|PreservesLargeIntegerResourceIDs|ExtractFailuresReturnedForPerItemMisses)")
+	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_(TemplatedIDFieldOverrideWins|GenericFallbackList|SuffixFallbackAcceptsScopedCamelCaseID|UnwrapsIDBearingEnvelopeItems|PreservesLargeIntegerResourceIDs|ExtractFailuresReturnedForPerItemMisses)")
 	runGoCommand(t, outputDir, "test", "./internal/cli/...", "-run", "TestSyncSingleObject_PreservesLargeIntegerResourceIDs")
 }
 

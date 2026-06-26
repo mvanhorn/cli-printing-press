@@ -324,7 +324,7 @@ func syncResource(ctx context.Context, c *client.Client, db *store.Store, resour
 				if !humanFriendly {
 					fmt.Fprintln(os.Stderr, syncWarningJSON(resource, "", w.Status, w.Reason, w.Message))
 				}
-				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
+				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped due to insufficient access: %s (%s)", resource, w.Reason), Duration: time.Since(started)}
 			}
 			if !humanFriendly {
 				fmt.Fprintln(os.Stderr, syncErrorJSON(resource, "", err))
