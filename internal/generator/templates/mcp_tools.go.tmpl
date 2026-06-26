@@ -5,6 +5,8 @@
 {{- $hasFormRequest := hasFormRequest .APISpec}}
 {{- $hasBodyJSONFallback := hasBodyJSONFallback .APISpec}}
 {{- $hasNestedBodyPath := hasMCPNestedBodyPath .APISpec}}
+{{- $hasMCPJSONOrScalar := hasMCPJSONOrScalarBody .APISpec}}
+{{- $hasMCPBindingFormat := or $hasMultipartRequest $hasFormRequest $hasMCPJSONOrScalar}}
 {{- $hasMCPParamDefault := hasMCPParamDefault .APISpec}}
 
 package mcp
@@ -191,7 +193,7 @@ type mcpParamBinding struct {
 {{- if $hasNestedBodyPath}}
 	BodyPath   []string
 {{- end}}
-{{- if or $hasMultipartRequest $hasFormRequest}}
+{{- if $hasMCPBindingFormat}}
 	Format             string
 	RequestContentType string
 {{- end}}
@@ -284,6 +286,28 @@ func setNestedBodyArg(body map[string]any, path []string, value any) {
 		current = next
 	}
 	current[path[len(path)-1]] = value
+}
+{{- end}}
+
+{{- if $hasMCPJSONOrScalar}}
+func coerceMCPBodyValue(binding mcpParamBinding, value any) (any, error) {
+	if binding.Format != "json_or_scalar" {
+		return value, nil
+	}
+	s, ok := value.(string)
+	if !ok || !looksLikeMCPJSONComposite(s) {
+		return value, nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+		return nil, fmt.Errorf("parsing %s JSON: %w", binding.PublicName, err)
+	}
+	return parsed, nil
+}
+
+func looksLikeMCPJSONComposite(input string) bool {
+	input = strings.TrimSpace(input)
+	return strings.HasPrefix(input, "{") || strings.HasPrefix(input, "[")
 }
 {{- end}}
 
@@ -409,14 +433,32 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				c.Config.TemplateVars[binding.WireName] = formatMCPParamValue(v)
 {{- end}}
 			case "body":
+{{- if $hasMCPJSONOrScalar}}
+				bodyValue, err := coerceMCPBodyValue(binding, v)
+				if err != nil {
+					return mcplib.NewToolResultError(err.Error()), nil
+				}
+{{- end}}
 {{- if $hasNestedBodyPath}}
 				if len(binding.BodyPath) > 0 {
+{{- if $hasMCPJSONOrScalar}}
+					setNestedBodyArg(bodyArgs, binding.BodyPath, bodyValue)
+{{- else}}
 					setNestedBodyArg(bodyArgs, binding.BodyPath, v)
+{{- end}}
 				} else {
+{{- if $hasMCPJSONOrScalar}}
+					bodyArgs[binding.WireName] = bodyValue
+{{- else}}
 					bodyArgs[binding.WireName] = v
+{{- end}}
 				}
 {{- else}}
+{{- if $hasMCPJSONOrScalar}}
+				bodyArgs[binding.WireName] = bodyValue
+{{- else}}
 				bodyArgs[binding.WireName] = v
+{{- end}}
 {{- end}}
 {{- if $hasMultipartRequest}}
 				if multipart {
