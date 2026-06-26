@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -196,10 +197,6 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 	}
 }
 
-func validatePhase5PassMarker(marker Phase5GateMarker) string {
-	return strings.Join(validatePhase5PassMarkerIssues(marker), "; ")
-}
-
 func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 	// api_name and run_id are identity tags: the cross-check in
 	// validatePhase5Marker enforces consistency when both marker and
@@ -267,12 +264,7 @@ func phase5Level(marker Phase5GateMarker) string {
 }
 
 func phase5AcceptedAcceptanceLevel(level string) bool {
-	for _, accepted := range phase5AcceptedAcceptanceLevels {
-		if level == accepted {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(phase5AcceptedAcceptanceLevels, level)
 }
 
 func phase5UnknownStatusDetail(status string, skipFile bool) string {
@@ -285,10 +277,6 @@ func phase5UnknownStatusDetail(status string, skipFile bool) string {
 
 func unknownPhase5AcceptanceLevelDetail(level string) string {
 	return fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `cli-printing-press dogfood --live --write-acceptance` to generate %s)", level, strings.Join(phase5AcceptedAcceptanceLevels, ", "), Phase5AcceptanceFilename)
-}
-
-func validatePhase5SkipMarker(marker Phase5GateMarker) string {
-	return strings.Join(validatePhase5SkipMarkerIssues(marker), "; ")
 }
 
 func validatePhase5SkipMarkerIssues(marker Phase5GateMarker) []string {
