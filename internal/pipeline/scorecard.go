@@ -111,6 +111,7 @@ const (
 	DimAuthProtocol          = "auth_protocol"
 	DimSyncCorrectness       = "sync_correctness"
 	DimTypeFidelity          = "type_fidelity"
+	DimDeadCode              = "dead_code"
 	DimLiveAPIVerification   = "live_api_verification"
 	// HTTP-API-shaped dimensions that do not apply to a BLE device CLI (no remote
 	// API, no sync->sql->search pipeline, no response cache). Marked N/A for
@@ -1390,7 +1391,7 @@ func scorecardTierMax(sc *Scorecard, base int, optionalDimensions ...string) int
 }
 
 func scorecardDimensionMax(name string) int {
-	if name == DimTypeFidelity || name == "dead_code" {
+	if name == DimTypeFidelity || name == DimDeadCode {
 		return 5
 	}
 	return 10
@@ -3707,14 +3708,14 @@ func buildGapReport(s SteinerScore, unscored []string) []string {
 		{"data_pipeline_integrity", s.DataPipelineIntegrity},
 		{"sync_correctness", s.SyncCorrectness},
 		{"type_fidelity", s.TypeFidelity},
-		{"dead_code", s.DeadCode},
+		{DimDeadCode, s.DeadCode},
 	}
 	for _, d := range dimensions {
 		if _, skip := unscoredSet[d.name]; skip {
 			continue
 		}
 		max := 10
-		if d.name == DimTypeFidelity || d.name == "dead_code" {
+		if d.name == DimTypeFidelity || d.name == DimDeadCode {
 			max = 5
 		}
 		if d.score < max/2 {

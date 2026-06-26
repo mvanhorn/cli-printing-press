@@ -170,7 +170,7 @@ func (v *Verifier) PathProof() []PathProofResult {
 		command := strings.TrimSuffix(base, ".go")
 
 		pathMatches := verifyPathAssignRe.FindAllStringSubmatchIndex(src, -1)
-		clientMatches := verifyClientCallRe.FindAllStringSubmatch(src, -1)
+		clientMatches := verifyClientCallRe.FindAllStringSubmatchIndex(src, -1)
 
 		if len(pathMatches) == 0 && len(clientMatches) == 0 {
 			continue
@@ -202,10 +202,11 @@ func (v *Verifier) PathProof() []PathProofResult {
 		}
 
 		for _, m := range clientMatches {
-			method := strings.ToUpper(m[1])
-			url := m[2]
+			method := strings.ToUpper(src[m[2]:m[3]])
+			url := src[m[4]:m[5]]
 			r := PathProofResult{
 				File:         base,
+				Line:         lineNumberAtOffset(src, m[0]),
 				Command:      command,
 				Path:         url,
 				ExtractedURL: url,

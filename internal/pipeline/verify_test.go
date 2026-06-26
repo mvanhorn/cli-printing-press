@@ -76,6 +76,11 @@ func runAccounts() {
 	_ = c.Get(path)
 }
 `)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "direct.go"), `package cli
+func runDirect() {
+	_ = c.Get("/direct/{id}")
+}
+`)
 
 	specPath := filepath.Join(dir, "spec.yaml")
 	writeTestFile(t, specPath, `openapi: 3.0.0
@@ -93,21 +98,27 @@ paths:
       responses:
         "200":
           description: ok
-`)
+  /direct/{id}:
+    get:
+      responses:
+        "200":
+          description: ok`)
 
 	v, err := NewVerifier(dir, specPath)
 	require.NoError(t, err)
 
 	results := v.PathProof()
-	require.Len(t, results, 2)
+	require.Len(t, results, 3)
 
-	var feed, accounts PathProofResult
+	var feed, accounts, direct PathProofResult
 	for _, r := range results {
 		switch r.File {
 		case "feed.go":
 			feed = r
 		case "accounts.go":
 			accounts = r
+		case "direct.go":
+			direct = r
 		}
 	}
 	assert.False(t, feed.Valid)
@@ -116,6 +127,9 @@ paths:
 	assert.True(t, accounts.Valid, "one substitution covers repeated account_id placeholders")
 	assert.Equal(t, 3, accounts.Line)
 	assert.Empty(t, accounts.UnresolvedPlaceholders)
+	assert.False(t, direct.Valid)
+	assert.Equal(t, 3, direct.Line)
+	assert.Equal(t, []string{"id"}, direct.UnresolvedPlaceholders)
 }
 
 func TestNewVerifierAcceptsYAMLSpec(t *testing.T) {

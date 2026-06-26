@@ -321,9 +321,6 @@ func chooseUsagePlaceholderName(raw string) string {
 			return name
 		}
 	}
-	if len(parts) == 0 {
-		return strings.ToLower(strings.TrimSpace(raw))
-	}
 	return strings.ToLower(strings.TrimSpace(parts[0]))
 }
 
