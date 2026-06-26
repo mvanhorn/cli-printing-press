@@ -296,13 +296,19 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 
 func newAuthSetCredentialsCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:   "set-credentials <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}> <{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}>",
+		Use:   "set-credentials <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}>{{if (index $basicAuthEnvVars 1).Required}} <{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}>{{else}} [{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}]{{end}}",
 		Short: "Save Basic auth credentials to the credentials file",
 		Example: "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}",
 		Args: func(cmd *cobra.Command, args []string) error {
+{{- if (index $basicAuthEnvVars 1).Required}}
 			if len(args) != 2 {
 				return fmt.Errorf("requires exactly 2 args: <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}> <{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}>")
 			}
+{{- else}}
+			if len(args) < 1 || len(args) > 2 {
+				return fmt.Errorf("requires 1 or 2 args: <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}> [{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}]")
+			}
+{{- end}}
 {{- if (index $basicAuthEnvVars 0).Required}}
 			if args[0] == "" {
 				return fmt.Errorf("{{(index $basicAuthEnvVars 0).Name}} is required")
@@ -320,7 +326,11 @@ func newAuthSetCredentialsCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return configErr(err)
 			}
-			if err := cfg.SaveCredentials(args[0], args[1]); err != nil {
+			value1 := ""
+			if len(args) > 1 {
+				value1 = args[1]
+			}
+			if err := cfg.SaveCredentials(args[0], value1); err != nil {
 				return configErr(fmt.Errorf("saving credentials: %w", err))
 			}
 			savePath := credentialSavePath(cfg)

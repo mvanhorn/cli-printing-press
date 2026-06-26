@@ -1548,7 +1548,7 @@ func authSetCredentialsAvailable(auth spec.AuthConfig) bool {
 
 func authSetTokenAvailableForRequiredCount(auth spec.AuthConfig, requiredCount int) bool {
 	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
-		return false
+		return requiredCount == 1 && requestAuthEnvVarCount(auth) == 1
 	}
 	switch auth.Type {
 	case "api_key", "bearer_token":

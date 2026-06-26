@@ -435,6 +435,10 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 	credentials := basicAuthPayload("{{.Auth.Format}}", map[string]string{
 {{- $basicAuthEnvVarCount := len $basicAuthEnvVars}}
+{{- $firstBasicAuthPlaceholder := ""}}
+{{- if gt $basicAuthEnvVarCount 0}}
+{{- $firstBasicAuthPlaceholder = envVarPlaceholder (index $basicAuthEnvVars 0).Name}}
+{{- end}}
 {{- range $i, $env := $basicAuthEnvVars}}
 {{- $placeholder := envVarPlaceholder .Name}}
 		"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
@@ -460,10 +464,10 @@ func (c *Config) AuthHeader() string {
 {{- if ne $placeholder "secret"}}
 		"secret": c.{{resolveEnvVarField .Name}},
 {{- end}}
-{{- if ne $placeholder "token"}}
+{{- if and (ne $placeholder "token") (ne $firstBasicAuthPlaceholder "token")}}
 		"token": c.{{resolveEnvVarField .Name}},
 {{- end}}
-{{- if ne $placeholder "access_token"}}
+{{- if and (ne $placeholder "access_token") (ne $firstBasicAuthPlaceholder "access_token")}}
 		"access_token": c.{{resolveEnvVarField .Name}},
 {{- end}}
 {{- end}}

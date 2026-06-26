@@ -2179,6 +2179,12 @@ func TestGenerateHTTPBasicAuthHeaderPreservesSingleTokenColonFallback(t *testing
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
+	authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authSrc := string(authGo)
+	require.Contains(t, authSrc, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
+	require.NotContains(t, authSrc, "newAuthSetCredentialsCmd")
+
 	const inlineTest = `package config
 
 import "testing"
@@ -2241,6 +2247,48 @@ func TestNamedPairBasicAuthHeader(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/config", "-run", "TestNamedPairBasicAuthHeader")
 }
 
+func TestGenerateHTTPBasicAuthHeaderDoesNotShadowTokenUsername(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "basic-token-username",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			In:      "header",
+			Header:  "Authorization",
+			Format:  "Basic {token}:{password}",
+			EnvVars: []string{"TOKEN", "PASSWORD"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+				{Name: "PASSWORD", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/basic-token-username/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const inlineTest = `package config
+
+import "testing"
+
+func TestTokenUsernameBasicAuthHeader(t *testing.T) {
+	cfg := &Config{Token: "user", Password: "secret"}
+	if got := cfg.AuthHeader(); got != "Basic dXNlcjpzZWNyZXQ=" {
+		t.Fatalf("AuthHeader() = %q, want Basic dXNlcjpzZWNyZXQ=", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "basic_auth_token_username_test.go"), []byte(inlineTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/config", "-run", "TestTokenUsernameBasicAuthHeader")
+}
+
 func TestGenerateHTTPBasicAuthAllowsOptionalBlankPasswordAndSetCredentials(t *testing.T) {
 	t.Parallel()
 
@@ -2272,7 +2320,8 @@ func TestGenerateHTTPBasicAuthAllowsOptionalBlankPasswordAndSetCredentials(t *te
 	require.NoError(t, err)
 	authSrc := string(authGo)
 	require.Contains(t, authSrc, "newAuthSetCredentialsCmd")
-	require.Contains(t, authSrc, "auth set-credentials your-username your-password")
+	require.Contains(t, authSrc, `"set-credentials <username> [password]"`)
+	require.Contains(t, authSrc, `requires 1 or 2 args: <username> [password]`)
 	require.NotContains(t, authSrc, "cmd.AddCommand(newAuthSetTokenCmd(flags))")
 
 	const inlineTest = `package config
