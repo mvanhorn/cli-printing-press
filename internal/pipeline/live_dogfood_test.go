@@ -1029,6 +1029,7 @@ Flags:
 	require.Equal(t, "PASS", report.Verdict, report.Tests)
 	assert.NoFileExists(t, filepath.Join(dir, binaryName+"-dogfood"))
 	assert.NotContains(t, report.Binary, dir+string(os.PathSeparator), "fallback dogfood binary should not be built in the CLI dir")
+	assert.NoFileExists(t, report.Binary)
 }
 
 func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
@@ -1971,7 +1972,7 @@ HELP
 fi
 
 if [ "$1" = "workspaces" ] && [ "$2" = "list" ]; then
-  echo 'HTTP 404: {"error":"Workspace not found"}' >&2
+  echo 'HTTP 404: {"error":"feature not enabled for this workspace"}' >&2
   exit 3
 fi
 
@@ -2092,6 +2093,40 @@ func TestLiveDogfoodRequiredParamFixtureReason(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, liveDogfoodRequiredParamFixtureReason(tc.run))
+		})
+	}
+}
+
+func TestLiveDogfoodFeatureAbsentFixtureReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		run  liveDogfoodRun
+		want string
+	}{
+		{
+			name: "explicit feature unavailable 404 is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"feature not enabled for this workspace"}`, exitCode: 1},
+			want: reasonFeatureAbsentFixture,
+		},
+		{
+			name: "plain workspace not found remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"workspace not found"}`, exitCode: 1},
+		},
+		{
+			name: "plain team not found remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"team not found"}`, exitCode: 1},
+		},
+		{
+			name: "successful output is not blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"feature not enabled"}`, exitCode: 0},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, liveDogfoodFeatureAbsentFixtureReason(tc.run))
 		})
 	}
 }
@@ -2503,6 +2538,11 @@ func TestExtractFirstIDFromJSON(t *testing.T) {
 			name:   "provenance envelope with resource id field",
 			stdout: `{"results":{"items":[{"note_id":"note-real-1"}]},"meta":{"source":"live"}}`,
 			want:   "note-real-1", ok: true,
+		},
+		{
+			name:   "ambiguous foreign and resource ids are not harvested",
+			stdout: `{"results":[{"account_id":"acct_1","note_id":"note_1"}]}`,
+			want:   "", ok: false,
 		},
 		{
 			name:   "list shape (long-tail)",
@@ -5182,6 +5222,27 @@ func TestHappyArgsContainSyntheticFlagPlaceholder(t *testing.T) {
 	assert.False(t, happyArgsContainSyntheticFlagPlaceholder(
 		[]string{"widgets", "search", "--query", "example-value"},
 		[]string{"widgets", "search"},
+	))
+}
+
+func TestLiveDogfoodSyntheticPositionalValueHandlesBooleanFlags(t *testing.T) {
+	t.Parallel()
+
+	commandPath := []string{"widgets", "get"}
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--verbose", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
+	))
+	assert.False(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--limit", "5", "real-widget-1"},
+		commandPath,
+		0,
+	))
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--limit", "5", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
 	))
 }
 

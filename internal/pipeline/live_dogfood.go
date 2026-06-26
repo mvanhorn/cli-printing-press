@@ -167,10 +167,11 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		timeout = 30 * time.Second
 	}
 
-	binaryPath, err := liveDogfoodBinaryPath(opts.CLIDir, opts.BinaryName)
+	binaryPath, cleanupBinary, err := liveDogfoodBinaryPath(opts.CLIDir, opts.BinaryName)
 	if err != nil {
 		return nil, err
 	}
+	defer cleanupBinary()
 
 	commands, err := discoverLiveDogfoodCommands(binaryPath)
 	if err != nil {
@@ -435,23 +436,27 @@ func copyLiveDogfoodCredentialFile(src, dst string) (*liveDogfoodCredentialMirro
 	}, nil
 }
 
-func liveDogfoodBinaryPath(dir, name string) (string, error) {
+func liveDogfoodBinaryPath(dir, name string) (string, func(), error) {
 	if refresh, err := refreshLiveCheckStageBinary(dir, name); err != nil {
-		return "", fmt.Errorf("rebuilding staged binary: %w", err)
+		return "", func() {}, fmt.Errorf("rebuilding staged binary: %w", err)
 	} else if refresh.Action == "failed" {
-		return "", fmt.Errorf("rebuilding staged binary: %s", refresh.Reason)
+		return "", func() {}, fmt.Errorf("rebuilding staged binary: %s", refresh.Reason)
 	}
 	if path, err := resolveBinaryPath(dir, name); err == nil {
-		return path, nil
+		return path, func() {}, nil
 	} else if strings.TrimSpace(name) != "" {
-		return "", err
+		return "", func() {}, err
 	}
 
 	cliName := findCLIName(dir)
 	if cliName == "" {
-		return "", fmt.Errorf("no runnable binary found in %q and no cmd/<cli-name> package to build", dir)
+		return "", func() {}, fmt.Errorf("no runnable binary found in %q and no cmd/<cli-name> package to build", dir)
 	}
-	return buildDogfoodBinary(dir, cliName)
+	path, err := buildDogfoodBinary(dir, cliName)
+	if err != nil {
+		return "", func() {}, err
+	}
+	return path, func() { _ = os.Remove(path) }, nil
 }
 
 func discoverLiveDogfoodCommands(binaryPath string) ([]liveDogfoodCommand, error) {
@@ -807,7 +812,7 @@ func liveDogfoodSyntheticPositionalValue(happyArgs, commandPath []string, positi
 			break
 		}
 		if strings.HasPrefix(arg, "-") {
-			if !strings.Contains(arg, "=") && i+1 < len(happyArgs) && !strings.HasPrefix(happyArgs[i+1], "-") {
+			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValue(happyArgs, start, i, position+1) {
 				i++
 			}
 			continue
@@ -1117,8 +1122,8 @@ func firstIDFromArray(arr []any) (string, bool) {
 		}
 	}
 	sort.Strings(keys)
-	for _, key := range keys {
-		if id, ok := idValueAsString(first[key]); ok {
+	if len(keys) == 1 {
+		if id, ok := idValueAsString(first[keys[0]]); ok {
 			return id, true
 		}
 	}
@@ -1974,12 +1979,6 @@ func liveDogfoodFeatureAbsentFixtureReason(run liveDogfoodRun) string {
 		return ""
 	}
 	featureAbsentPhrases := []string{
-		"workspace not found",
-		"workspaces not found",
-		"team not found",
-		"organization not found",
-		"organisation not found",
-		"enterprise not found",
 		"feature not enabled",
 		"not enabled for",
 		"not available on",
