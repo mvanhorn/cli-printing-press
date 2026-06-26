@@ -437,7 +437,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	cursor := existingCursor
-	pageSize := determinePaginationDefaults()
+	pageSize := determinePaginationDefaults(resource)
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
@@ -737,7 +737,16 @@ type paginationDefaults struct {
 
 // determinePaginationDefaults returns the pagination parameter names to use.
 // Values are detected from the API spec by the profiler at generation time.
-func determinePaginationDefaults() paginationDefaults {
+func determinePaginationDefaults(resource string) paginationDefaults {
+	switch resource {
+	case "items":
+		return paginationDefaults{
+			cursorParam: "cursor",
+			cursorType:  "cursor",
+			limitParam:  "limit",
+			limit:       100,
+		}
+	}
 	return paginationDefaults{
 		cursorParam: "cursor",
 		cursorType:  "cursor",

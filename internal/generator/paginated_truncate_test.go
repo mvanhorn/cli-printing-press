@@ -211,7 +211,7 @@ func TestPaginatedGetWarnsWhenAllHasNoAdvanceSignal(t *testing.T) {
 		json.RawMessage(` + "`" + `[{"id":"one"}]` + "`" + `),
 	}}
 	stderr := capturePaginatedStderr(t, func() {
-		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "page", "limit", "", "")
+		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", "", "")
 		if err != nil {
 			t.Fatalf("paginatedGet returned error: %v", err)
 		}
@@ -336,6 +336,60 @@ func TestPaginatedGetAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
 	}
 	if client.params[1]["offset"] != "2" {
 		t.Fatalf("second request offset = %q, want 2", client.params[1]["offset"])
+	}
+}
+
+func TestPaginatedGetAdvancesPageAfterFullPageWithoutHasMore(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"},{"id":"two"}]}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"three"}]}` + "`" + `),
+	}}
+	stderr := capturePaginatedStderr(t, func() {
+		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"per_page":"2"}, nil, true, "page", "page", "per_page", "", "")
+		if err != nil {
+			t.Fatalf("paginatedGet returned error: %v", err)
+		}
+		var got []map[string]string
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal data: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("got %d items, want 3; data=%s", len(got), data)
+		}
+	})
+	if len(client.params) != 2 {
+		t.Fatalf("got %d requests, want 2", len(client.params))
+	}
+	if client.params[1]["page"] != "2" {
+		t.Fatalf("second request page = %q, want 2", client.params[1]["page"])
+	}
+	if strings.Contains(stderr, ` + "`" + `"reason":"pagination_signal_missing"` + "`" + `) {
+		t.Fatalf("stderr should not warn when page pagination advances client-side: %s", stderr)
+	}
+}
+
+func TestPaginatedGetDoesNotWarnWhenOffsetShortPageHasNoSignal(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}]}` + "`" + `),
+	}}
+	stderr := capturePaginatedStderr(t, func() {
+		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"2", "offset":"0"}, nil, true, "offset", "offset", "limit", "", "")
+		if err != nil {
+			t.Fatalf("paginatedGet returned error: %v", err)
+		}
+		var got []map[string]string
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal data: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("got %d items, want 1; data=%s", len(got), data)
+		}
+	})
+	if len(client.params) != 1 {
+		t.Fatalf("got %d requests, want 1", len(client.params))
+	}
+	if strings.Contains(stderr, ` + "`" + `"reason":"pagination_signal_missing"` + "`" + `) {
+		t.Fatalf("stderr should not warn after a short offset page: %s", stderr)
 	}
 }
 

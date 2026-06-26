@@ -7510,7 +7510,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	var pag spec.Pagination
 
 	// Detect limit param
-	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page", "page[size]"} {
+	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "perpage", "per_page", "page[size]"} {
 		if orig, ok := originalCase[name]; ok {
 			pag.LimitParam = orig
 			break
@@ -7536,7 +7536,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		}
 	}
 	if pag.Type == "" {
-		for _, name := range []string{"offset"} {
+		for _, name := range []string{"offset", "skip"} {
 			if orig, ok := originalCase[name]; ok {
 				pag.CursorParam = orig
 				pag.Type = "offset"

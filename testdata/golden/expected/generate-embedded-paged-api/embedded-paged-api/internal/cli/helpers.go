@@ -637,7 +637,7 @@ func paginatedGet(ctx context.Context, c interface {
 						}
 					}
 				}
-				if !hasExplicitNoMore {
+				if !hasExplicitNoMore && nextCursorPath == "" && hasMoreField == "" {
 					if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, limitParam, itemCount); ok {
 						if page >= paginatedGetMaxPages {
 							emitPaginatedGetMaxPagesWarning()
@@ -656,7 +656,7 @@ func paginatedGet(ctx context.Context, c interface {
 		break
 	}
 
-	if fetchAll && page == 1 && nextCursorPath == "" && hasMoreField == "" {
+	if fetchAll && page == 1 && nextCursorPath == "" && hasMoreField == "" && paginationType != "offset" && paginationType != "page" {
 		emitMissingPaginationSignalWarning()
 	}
 	if humanFriendly {
@@ -669,7 +669,7 @@ func paginatedGet(ctx context.Context, c interface {
 }
 
 func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType, limitParam string, itemCount int) (string, bool) {
-	if paginationType != "offset" || itemCount == 0 {
+	if (paginationType != "offset" && paginationType != "page") || itemCount == 0 {
 		return "", false
 	}
 	limit, err := strconv.Atoi(params[limitParam])
