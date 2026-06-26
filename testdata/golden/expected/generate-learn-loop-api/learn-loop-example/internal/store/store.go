@@ -1458,7 +1458,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		// spec declares x-resource-id).
 		id := ExtractResourceID(resourceType, obj)
 		if id == "" {
-			if unwrappedObj, unwrappedItem, ok := unwrapIDBearingEnvelopeItem(resourceType, obj); ok {
+			if unwrappedObj, unwrappedItem, ok := unwrapIDBearingEnvelopeItem(resourceType, item, obj); ok {
 				obj = unwrappedObj
 				item = unwrappedItem
 				id = ExtractResourceID(resourceType, obj)
@@ -1525,10 +1525,11 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	return stored, extractFailures, nil
 }
 
-func unwrapIDBearingEnvelopeItem(resourceType string, obj map[string]any) (map[string]any, json.RawMessage, bool) {
+func unwrapIDBearingEnvelopeItem(resourceType string, item json.RawMessage, obj map[string]any) (map[string]any, json.RawMessage, bool) {
 	var candidate map[string]any
+	candidateKey := ""
 	objectFields := 0
-	for _, value := range obj {
+	for key, value := range obj {
 		inner, ok := value.(map[string]any)
 		if !ok {
 			continue
@@ -1536,13 +1537,18 @@ func unwrapIDBearingEnvelopeItem(resourceType string, obj map[string]any) (map[s
 		objectFields++
 		if ExtractResourceID(resourceType, inner) != "" {
 			candidate = inner
+			candidateKey = key
 		}
 	}
-	if objectFields != 1 || candidate == nil {
+	if objectFields != 1 || candidate == nil || candidateKey == "" {
 		return nil, nil, false
 	}
-	data, err := json.Marshal(candidate)
-	if err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(item, &raw); err != nil {
+		return nil, nil, false
+	}
+	data, ok := raw[candidateKey]
+	if !ok {
 		return nil, nil, false
 	}
 	return candidate, data, true
