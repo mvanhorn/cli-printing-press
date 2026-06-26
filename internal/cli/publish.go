@@ -1393,8 +1393,12 @@ func stagedBinaryNames(cliName, apiSlug string) []string {
 	}
 	add(apiSlug)
 	add(cliName)
+	if cliName != "" {
+		add(cliName + "-dogfood")
+	}
 	if apiSlug != "" {
 		add(apiSlug + "-pp-cli")
+		add(apiSlug + "-pp-cli-dogfood")
 		add(apiSlug + "-pp-mcp")
 	}
 	return names

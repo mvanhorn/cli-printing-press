@@ -772,10 +772,11 @@ trap - EXIT
 
 # Remove root-level binaries (should not be committed). publish package
 # already strips these before the copy; this rm -f is belt-and-suspenders
-# for the agent path. Cover all three names the Makefile/`go build ./cmd/...`
-# can drop: bare slug, CLI binary, MCP peer.
+# for the agent path. Cover the names local build paths can drop: bare slug,
+# CLI binary, live-dogfood probe binary, and MCP peer.
 rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" \
       "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>" \
+      "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>-dogfood" \
       "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>-pp-mcp"
 
 # Defense-in-depth: validate printer attribution before README and registry surfaces.

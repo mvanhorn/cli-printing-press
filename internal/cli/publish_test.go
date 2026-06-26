@@ -1086,12 +1086,12 @@ func TestStagedBinaryNamesDeduplicates(t *testing.T) {
 	t.Parallel()
 
 	got := stagedBinaryNames("foo-pp-cli", "foo")
-	want := []string{"foo", "foo-pp-cli", "foo-pp-mcp"}
+	want := []string{"foo", "foo-pp-cli", "foo-pp-cli-dogfood", "foo-pp-mcp"}
 	assert.Equal(t, want, got)
 
 	// Empty slug returns only the cliName (no -pp-cli/-pp-mcp suffix expansion).
 	got = stagedBinaryNames("custom-binary", "")
-	want = []string{"custom-binary"}
+	want = []string{"custom-binary", "custom-binary-dogfood"}
 	assert.Equal(t, want, got)
 
 	// Empty both is empty.
