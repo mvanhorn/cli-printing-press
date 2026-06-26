@@ -544,6 +544,9 @@ If `$PUBLISH_REPO_DIR` does not exist:
    # on a real working tree. Cross-category collision checks use `git ls-tree`
    # (which reads the full tree from the blobless clone) instead of `ls`.
    git clone --filter=blob:none --depth 1 --sparse "$REPO_URL" "$PUBLISH_REPO_DIR"
+   # Skill-managed clones are owned by this flow; force LF checkout behavior so
+   # Windows core.autocrlf defaults do not create CRLF-only mirror diffs.
+   git -C "$PUBLISH_REPO_DIR" config core.autocrlf false
    git -C "$PUBLISH_REPO_DIR" sparse-checkout set tools cli-skills library/<category>
    ```
 
@@ -570,6 +573,9 @@ If `$PUBLISH_REPO_DIR` does not exist:
    # Lightweight clone (blobless + shallow + sparse) — see the push-access
    # branch above for the rationale and cone contents.
    git clone --filter=blob:none --depth 1 --sparse "$FORK_URL" "$PUBLISH_REPO_DIR"
+   # Skill-managed clones are owned by this flow; force LF checkout behavior so
+   # Windows core.autocrlf defaults do not create CRLF-only mirror diffs.
+   git -C "$PUBLISH_REPO_DIR" config core.autocrlf false
    cd "$PUBLISH_REPO_DIR"
    git sparse-checkout set tools cli-skills library/<category>
    git remote add upstream "$UPSTREAM_URL"
@@ -615,6 +621,7 @@ If the clone was removed due to an access change, re-run first-time setup above.
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
+git config core.autocrlf false
 
 if [ "$(jq -r .access $PUBLISH_CONFIG)" = "push" ]; then
   # Push access: origin IS the upstream
