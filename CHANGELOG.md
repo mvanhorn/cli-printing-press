@@ -1,5 +1,25 @@
 # Changelog
 
+## [4.26.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.25.1...v4.26.0) (2026-06-26)
+
+
+### Features
+
+* **cli:** add internal endpoint command fixtures ([#3278](https://github.com/mvanhorn/cli-printing-press/issues/3278)) ([f945d67](https://github.com/mvanhorn/cli-printing-press/commit/f945d67023ceff23712d5144ad7412430e15da0e))
+
+
+### Bug Fixes
+
+* **cli:** align cobratree MCP tool surface ([#3281](https://github.com/mvanhorn/cli-printing-press/issues/3281)) ([3270718](https://github.com/mvanhorn/cli-printing-press/commit/3270718bfd9b2d364c4a966e7833ed11c66c9284))
+* **cli:** calibrate dogfood auth checks ([#3267](https://github.com/mvanhorn/cli-printing-press/issues/3267)) ([d39ee1c](https://github.com/mvanhorn/cli-printing-press/commit/d39ee1c05d2118ad5432d2b98496211e9c23a8b6))
+* **cli:** classify bot-wall reachability bodies ([#3279](https://github.com/mvanhorn/cli-printing-press/issues/3279)) ([b66706e](https://github.com/mvanhorn/cli-printing-press/commit/b66706e7ab3411c7062fc6de9140e3f83810ad76))
+* **cli:** emit patch go directives ([#3280](https://github.com/mvanhorn/cli-printing-press/issues/3280)) ([32329b5](https://github.com/mvanhorn/cli-printing-press/commit/32329b5571a28033d65ef3880c7951e6bf93d4a5))
+* **cli:** harden browser sniff HAR quality ([#3271](https://github.com/mvanhorn/cli-printing-press/issues/3271)) ([7d7a695](https://github.com/mvanhorn/cli-printing-press/commit/7d7a695d79e8580094e0171f83a077facf6e529b))
+* **cli:** harden publish secret and PII scans ([#3270](https://github.com/mvanhorn/cli-printing-press/issues/3270)) ([79bddbb](https://github.com/mvanhorn/cli-printing-press/commit/79bddbbc4fbd9860199072b581c402e8141912ed))
+* **cli:** preserve novel command test ownership ([#3277](https://github.com/mvanhorn/cli-printing-press/issues/3277)) ([26af081](https://github.com/mvanhorn/cli-printing-press/commit/26af08161edff63128fd5202424646db9bd2160c))
+* **cli:** suppress scorer verifier false positives ([#3272](https://github.com/mvanhorn/cli-printing-press/issues/3272)) ([ce71036](https://github.com/mvanhorn/cli-printing-press/commit/ce71036a222180a50295ffa10cdd6a73c30db761))
+* **skills:** guard publish reprint workflows ([#3266](https://github.com/mvanhorn/cli-printing-press/issues/3266)) ([5c3d695](https://github.com/mvanhorn/cli-printing-press/commit/5c3d69509ab60f0423871572ccccb64c8dbe67ff))
+
 ## [4.25.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.25.0...v4.25.1) (2026-06-25)
 
 
