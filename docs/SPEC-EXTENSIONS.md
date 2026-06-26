@@ -1193,6 +1193,41 @@ paths:
           description: OK
 ```
 
+### `x-pp-syncable`
+
+Opts a list endpoint into generated default sync even when the profiler would
+normally exclude it because required path or query parameters are not
+automatically satisfiable.
+
+Parsed field: `Endpoint.Syncable`
+
+Rules:
+- Optional.
+- Defaults to `false`.
+- Accepts native booleans.
+- May be set on a path item or a single operation.
+- Use only when required inputs are supplied by defaults, endpoint template
+  variables, or another generated runtime mechanism.
+
+Example:
+
+```yaml
+paths:
+  /tenant/{tenant_id}/items:
+    get:
+      operationId: listTenantItems
+      x-pp-syncable: true
+      parameters:
+        - name: tenant_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+```
+
 ### `x-tier`
 
 Selects a tier declared by `x-tier-routing` for a path item or one operation.

@@ -2060,6 +2060,11 @@ type Endpoint struct {
 	// new (non-strict) exit-code policy. Populated from the path-item-level
 	// `x-critical` extension on OpenAPI specs; defaults to false.
 	Critical bool `yaml:"critical,omitempty" json:"critical,omitempty"`
+	// Syncable opts this endpoint into the generated default sync set even when
+	// the profiler's safety heuristic would otherwise exclude it for required
+	// path/query params. Use only when the spec supplies those inputs through
+	// defaults, template vars, or another generated runtime mechanism.
+	Syncable bool `yaml:"syncable,omitempty" json:"syncable,omitempty"`
 	// Walker, when present, declares this endpoint as a hierarchical child
 	// resource fetched by iterating a named parent. Used when the generator's
 	// path-param dependent-resource auto-detection would miss the link — for
