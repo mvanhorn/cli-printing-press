@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 )
 
 // buildShipcheckStub compiles the shipcheck stub once per test run and
@@ -226,6 +228,15 @@ func TestShipcheck_AllLegsPass(t *testing.T) {
 		if invocations[i][1] != want {
 			t.Errorf("invocation %d: want leg %q, got %q (full argv: %v)", i, want, invocations[i][1], invocations[i])
 		}
+	}
+
+	verifyArgs := findInvocation(invocations, "verify")
+	if !argvHas(verifyArgs, "--write-manifest") || !argvHas(verifyArgs, filepath.Join(h.dir, pipeline.CLIManifestFilename)) {
+		t.Errorf("verify argv missing --write-manifest manifest path: %v", verifyArgs)
+	}
+	scorecardArgs := findInvocation(invocations, "scorecard")
+	if !argvHas(scorecardArgs, "--write-manifest") || !argvHas(scorecardArgs, filepath.Join(h.dir, pipeline.CLIManifestFilename)) {
+		t.Errorf("scorecard argv missing --write-manifest manifest path: %v", scorecardArgs)
 	}
 }
 

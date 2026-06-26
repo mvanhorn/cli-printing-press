@@ -94,6 +94,92 @@ func TestWriteCLIManifestPreservesExistingReleaseLedger(t *testing.T) {
 	assert.Contains(t, string(changelog), "Existing history")
 }
 
+func TestPersistScorecardToManifestWritesScoreAndBuiltFeatures(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "api_name": "example",
+  "cli_name": "example-pp-cli",
+  "description": "keep me"
+}
+`), 0o644))
+
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		NovelFeaturesBuilt: &[]NovelFeature{{
+			Name:        "IRMAA",
+			Command:     "irmaa",
+			Description: "Calculate premium brackets.",
+		}},
+	}, researchDir))
+
+	sc := &Scorecard{
+		OverallGrade: "A",
+		Steinberger: SteinerScore{
+			Percentage: 96,
+			Total:      96,
+		},
+	}
+
+	changed, err := PersistScorecardToManifest(filepath.Join(dir, CLIManifestFilename), sc, researchDir)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	scorecard := raw["scorecard"].(map[string]any)
+	steinberger := scorecard["steinberger"].(map[string]any)
+	assert.Equal(t, float64(96), steinberger["percentage"])
+	assert.Equal(t, "A", steinberger["grade"])
+	assert.Equal(t, "keep me", raw["description"])
+
+	built := raw["novel_features_built"].([]any)
+	require.Len(t, built, 1)
+	assert.Equal(t, "irmaa", built[0].(map[string]any)["command"])
+}
+
+func TestPersistVerifyToManifestWritesVerifySummary(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{"schema_version":1,"api_name":"example"}`+"\n"), 0o644))
+
+	changed, err := PersistVerifyToManifest(filepath.Join(dir, CLIManifestFilename), &VerifyReport{
+		Mode:     "live",
+		Total:    8,
+		Passed:   7,
+		Failed:   1,
+		PassRate: 87.5,
+		Verdict:  "WARN",
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	verify := raw["verify"].(map[string]any)
+	assert.Equal(t, "live", verify["mode"])
+	assert.Equal(t, float64(87.5), verify["pass_rate"])
+	assert.Equal(t, float64(7), verify["passed"])
+	assert.Equal(t, float64(8), verify["total"])
+	assert.Equal(t, "WARN", verify["verdict"])
+}
+
+func TestPersistVerifyToManifestNoopsWhenManifestMissing(t *testing.T) {
+	changed, err := PersistVerifyToManifest(filepath.Join(t.TempDir(), CLIManifestFilename), &VerifyReport{
+		Total:    1,
+		Passed:   1,
+		PassRate: 100,
+		Verdict:  "PASS",
+	})
+	require.NoError(t, err)
+	assert.False(t, changed)
+}
+
 func TestWriteCLIManifestSchemaVersionAlwaysOne(t *testing.T) {
 	dir := t.TempDir()
 	m := CLIManifest{SchemaVersion: 1, APIName: "test"}

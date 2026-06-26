@@ -887,11 +887,48 @@ func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
 		MissingDataSourceStrategy: []ReimplementationFinding{{
 			Command: "id-hunt",
 			File:    "id_hunt.go",
-			Reason:  "missing // pp:data-source <auto|local|live> annotation",
+			Reason:  "missing // pp:data-source <auto|local|live|computed> annotation",
 		}},
 	}
 
 	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+}
+
+func TestCheckDescriptionDriftFlagsManifestAndRootShort(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "description": "Old stale headline"
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func newRootCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "example",
+		Short: "Old stale headline",
+	}
+}
+`), 0o644))
+
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		Narrative: &ReadmeNarrative{
+			Headline: "Fresh headline from research",
+		},
+	}, researchDir))
+
+	got := checkDescriptionDrift(dir, researchDir)
+	require.Len(t, got.Findings, 2)
+	assert.Equal(t, "Fresh headline from research", got.Expected)
+	assert.Contains(t, got.Findings[0].Actual, "Old stale headline")
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(&DogfoodReport{
+		PipelineCheck:         PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
+		DescriptionDriftCheck: &got,
+	}, false))
 }
 
 func TestExtractExamplesSection(t *testing.T) {
@@ -3640,13 +3677,13 @@ func TestCollectDogfoodIssues_IncludesMissingDataSourceStrategy(t *testing.T) {
 			MissingDataSourceStrategy: []ReimplementationFinding{{
 				Command: "id-hunt",
 				File:    "id_hunt.go",
-				Reason:  "missing // pp:data-source <auto|local|live> annotation",
+				Reason:  "missing // pp:data-source <auto|local|live|computed> annotation",
 			}},
 		},
 	}
 
 	issues := collectDogfoodIssues(report, false)
-	assert.Contains(t, issues, "1/2 novel features missing data-source strategy: id-hunt (id_hunt.go) — missing // pp:data-source <auto|local|live> annotation")
+	assert.Contains(t, issues, "1/2 novel features missing data-source strategy: id-hunt (id_hunt.go) — missing // pp:data-source <auto|local|live|computed> annotation")
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {

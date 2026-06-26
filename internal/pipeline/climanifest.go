@@ -164,6 +164,25 @@ type CLIManifest struct {
 	NovelFeatures              []NovelFeatureManifest      `json:"novel_features,omitempty"`
 }
 
+type CLIManifestScorecard struct {
+	Steinberger CLIManifestSteinbergerScore `json:"steinberger"`
+}
+
+type CLIManifestSteinbergerScore struct {
+	Percentage int    `json:"percentage"`
+	Grade      string `json:"grade"`
+	Total      int    `json:"total,omitempty"`
+}
+
+type CLIManifestVerify struct {
+	Mode     string  `json:"mode,omitempty"`
+	PassRate float64 `json:"pass_rate"`
+	Passed   int     `json:"passed"`
+	Total    int     `json:"total"`
+	Failed   int     `json:"failed,omitempty"`
+	Verdict  string  `json:"verdict,omitempty"`
+}
+
 type ReviewedSecretSuppression struct {
 	Path        string `json:"path"`
 	Line        int    `json:"line"`
@@ -536,6 +555,82 @@ func SyncCLIManifestNovelFeatures(dir string, features []NovelFeature) (bool, er
 	return true, nil
 }
 
+func PersistScorecardToManifest(manifestPath string, sc *Scorecard, researchDir string) (bool, error) {
+	if sc == nil {
+		return false, fmt.Errorf("scorecard is nil")
+	}
+	updates := map[string]any{
+		"scorecard": CLIManifestScorecard{
+			Steinberger: CLIManifestSteinbergerScore{
+				Percentage: sc.Steinberger.Percentage,
+				Grade:      sc.OverallGrade,
+				Total:      sc.Steinberger.Total,
+			},
+		},
+	}
+	if researchDir != "" {
+		research, err := LoadResearch(researchDir)
+		if err != nil {
+			return false, fmt.Errorf("loading research for manifest scorecard persistence: %w", err)
+		}
+		if research.NovelFeaturesBuilt != nil {
+			updates["novel_features_built"] = novelFeaturesToManifest(*research.NovelFeaturesBuilt)
+		}
+	}
+	return mergeCLIManifestFields(manifestPath, updates)
+}
+
+func PersistVerifyToManifest(manifestPath string, report *VerifyReport) (bool, error) {
+	if report == nil {
+		return false, fmt.Errorf("verify report is nil")
+	}
+	return mergeCLIManifestFields(manifestPath, map[string]any{
+		"verify": CLIManifestVerify{
+			Mode:     report.Mode,
+			PassRate: report.PassRate,
+			Passed:   report.Passed,
+			Total:    report.Total,
+			Failed:   report.Failed,
+			Verdict:  report.Verdict,
+		},
+	})
+}
+
+func mergeCLIManifestFields(manifestPath string, updates map[string]any) (bool, error) {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading CLI manifest: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Errorf("parsing CLI manifest: %w", err)
+	}
+	if raw == nil {
+		return false, fmt.Errorf("parsing CLI manifest: expected JSON object")
+	}
+	for key, value := range updates {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return false, fmt.Errorf("encoding CLI manifest field %q: %w", key, err)
+		}
+		raw[key] = encoded
+	}
+	out, err := marshalCLIManifestObject(raw)
+	if err != nil {
+		return false, err
+	}
+	if bytes.Equal(data, out) {
+		return false, nil
+	}
+	if err := writeFileAtomic(manifestPath, out, 0o644); err != nil {
+		return false, fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return true, nil
+}
+
 func marshalCLIManifestFields(m CLIManifest) (map[string]json.RawMessage, error) {
 	data, err := json.Marshal(m)
 	if err != nil {
@@ -590,10 +685,14 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"spec_url",
 		"spec_path",
 		"spec_format",
+		"spec_kind",
+		"spec_source",
 		"spec_checksum",
 		"run_id",
 		"catalog_entry",
 		"category",
+		"regions",
+		"api_language",
 		"description",
 		"mcp_binary",
 		"mcp_tool_count",
@@ -604,14 +703,19 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"auth_preference",
 		"auth_env_vars",
 		"auth_env_var_specs",
+		"auth_additional_headers",
 		"endpoint_template_vars",
 		"endpoint_template_env_overrides",
+		"endpoint_template_var_defaults",
 		"auth_key_url",
 		"auth_title",
 		"auth_description",
 		"auth_optional",
 		"reviewed_secret_suppressions",
 		"novel_features",
+		"novel_features_built",
+		"verify",
+		"scorecard",
 	}
 
 	keys := make([]string, 0, len(raw))

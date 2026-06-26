@@ -256,6 +256,9 @@ Use exactly one of:
   must reject `--data-source live` with a clear "no live equivalent" error.
 - `live` for commands that only call the remote API. These commands must reject
   `--data-source local` with a clear "no local data source" error.
+- `computed` for pure-computation commands that intentionally calculate from
+  embedded policy/math/reference rules rather than calling an API or reading the
+  local store. TODO stubs still fail dogfood even with this annotation.
 
 Dogfood reports hand-written novel commands that omit the annotation or use an
 unknown strategy.

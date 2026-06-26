@@ -53,6 +53,7 @@ type DogfoodReport struct {
 	NovelFeaturesCheck     NovelFeaturesCheckResult     `json:"novel_features_check"`
 	MCPSurfaceParityCheck  MCPSurfaceResult             `json:"mcp_surface_parity"`
 	ReimplementationCheck  ReimplementationCheckResult  `json:"reimplementation_check"`
+	DescriptionDriftCheck  *DescriptionDriftResult      `json:"description_drift_check,omitempty"`
 	SourceClientCheck      SourceClientCheckResult      `json:"source_client_check"`
 	PrintJSONFilteredCheck PrintJSONFilteredCheckResult `json:"print_json_filtered_check"`
 	TestPresence           TestPresenceResult           `json:"test_presence"`
@@ -76,6 +77,23 @@ type NamingViolation struct {
 	Banned    string `json:"banned"`
 	Preferred string `json:"preferred"`
 	Category  string `json:"category"`
+}
+
+type DescriptionDriftResult struct {
+	Expected string                    `json:"expected,omitempty"`
+	Findings []DescriptionDriftFinding `json:"findings,omitempty"`
+	Skipped  bool                      `json:"skipped,omitempty"`
+}
+
+type DescriptionDriftFinding struct {
+	Surface  string `json:"surface"`
+	File     string `json:"file"`
+	Actual   string `json:"actual"`
+	Expected string `json:"expected"`
+}
+
+func shouldReportDescriptionDrift(result DescriptionDriftResult) bool {
+	return !result.Skipped || result.Expected != "" || len(result.Findings) > 0
 }
 
 // TestPresenceResult reports coverage gaps in agent-authored pure-logic
@@ -342,6 +360,9 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
 	report.MCPSurfaceParityCheck = checkMCPSurfaceParity(dir)
 	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
+	if drift := checkDescriptionDrift(dir, cfg.researchDir); shouldReportDescriptionDrift(drift) {
+		report.DescriptionDriftCheck = &drift
+	}
 	report.SourceClientCheck = checkSourceClients(dir)
 	report.PrintJSONFilteredCheck = checkPrintJSONFiltered(dir)
 	report.TestPresence = checkTestPresence(dir)
@@ -2494,6 +2515,96 @@ func hasPopulatedSyncResources(syncSource string) bool {
 	return !defaultSyncResourcesEmptyRe.MatchString(syncSource)
 }
 
+var rootShortLiteralRe = regexp.MustCompile(`Short:\s*(` + "`[^`]*`" + `|"(?:\\.|[^"])*")`)
+
+func checkDescriptionDrift(cliDir, researchDir string) DescriptionDriftResult {
+	if researchDir == "" {
+		return DescriptionDriftResult{Skipped: true}
+	}
+	research, err := LoadResearch(researchDir)
+	if err != nil || research.Narrative == nil {
+		return DescriptionDriftResult{Skipped: true}
+	}
+	expected := naming.CatalogDescription(research.Narrative.Headline)
+	if expected == "" {
+		expected = naming.CatalogDescription(research.Narrative.ValueProp)
+	}
+	if expected == "" {
+		return DescriptionDriftResult{Skipped: true}
+	}
+
+	result := DescriptionDriftResult{Expected: expected}
+	if actual, ok := readManifestDescription(filepath.Join(cliDir, CLIManifestFilename)); ok && !descriptionSurfaceMatches(actual, expected) {
+		result.Findings = append(result.Findings, DescriptionDriftFinding{
+			Surface:  "manifest.description",
+			File:     CLIManifestFilename,
+			Actual:   actual,
+			Expected: expected,
+		})
+	}
+	rootPath := filepath.Join(cliDir, "internal", "cli", "root.go")
+	if actual, ok := readRootShort(rootPath); ok && !descriptionSurfaceMatches(actual, expected) {
+		result.Findings = append(result.Findings, DescriptionDriftFinding{
+			Surface:  "root.Short",
+			File:     filepath.Join("internal", "cli", "root.go"),
+			Actual:   actual,
+			Expected: expected,
+		})
+	}
+	return result
+}
+
+func readManifestDescription(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var probe struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return "", false
+	}
+	desc := strings.TrimSpace(probe.Description)
+	return desc, desc != ""
+}
+
+func readRootShort(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	m := rootShortLiteralRe.FindStringSubmatch(string(data))
+	if len(m) < 2 {
+		return "", false
+	}
+	lit := m[1]
+	var value string
+	if unwrapped, ok := strings.CutPrefix(lit, "`"); ok {
+		value = strings.TrimSuffix(unwrapped, "`")
+	} else if unquoted, err := strconv.Unquote(lit); err == nil {
+		value = unquoted
+	}
+	value = strings.TrimSpace(value)
+	return value, value != ""
+}
+
+func descriptionSurfaceMatches(actual, expected string) bool {
+	actual = strings.ToLower(naming.CatalogDescription(actual))
+	expected = strings.ToLower(naming.CatalogDescription(expected))
+	if actual == "" || expected == "" {
+		return true
+	}
+	if actual == expected || strings.Contains(actual, expected) || strings.Contains(expected, actual) {
+		return true
+	}
+	if len([]rune(expected)) > 60 {
+		prefix := string([]rune(expected)[:60])
+		return strings.Contains(actual, prefix)
+	}
+	return false
+}
+
 type dogfoodVerdictRule struct {
 	verdict string
 	match   func(*DogfoodReport, bool) bool
@@ -2536,6 +2647,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	// Pure-logic packages with zero tests fail shipcheck; prompts alone have not kept this invariant reliable.
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.TestPresence.MissingTests) > 0 }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.NamingCheck.Violations) > 0 }},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		return r.DescriptionDriftCheck != nil && len(r.DescriptionDriftCheck.Findings) > 0
+	}},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && !r.MCPSurfaceParityCheck.HandEdited && !r.MCPSurfaceParityCheck.Pass
 	}},
@@ -2702,6 +2816,14 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		}
 		issues = append(issues, fmt.Sprintf("%d naming violations: %s",
 			len(report.NamingCheck.Violations), strings.Join(parts, "; ")))
+	}
+	if report.DescriptionDriftCheck != nil && len(report.DescriptionDriftCheck.Findings) > 0 {
+		parts := make([]string, 0, len(report.DescriptionDriftCheck.Findings))
+		for _, f := range report.DescriptionDriftCheck.Findings {
+			parts = append(parts, fmt.Sprintf("%s in %s is %q; expected %q", f.Surface, f.File, f.Actual, f.Expected))
+		}
+		issues = append(issues, fmt.Sprintf("%d description surface(s) drifted from research.json narrative: %s",
+			len(report.DescriptionDriftCheck.Findings), strings.Join(parts, "; ")))
 	}
 	// ThinTests is intentionally NOT added as a hard issue — it's a warning
 	// surfaced to Wave B's Phase 4.85 agentic reviewer for deeper judgment.
