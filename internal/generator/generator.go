@@ -3763,7 +3763,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SearchQueryParam:             g.profile.SearchQueryParam,
 		SearchEndpointMethod:         g.profile.SearchEndpointMethod,
 		SearchBodyFields:             g.profile.SearchBodyFields,
-		SearchResponsePaths:          searchResponsePaths(g.Spec),
+		SearchResponsePaths:          searchResponsePaths(g.Spec, g.profile.SearchEndpointPath, g.profile.SearchEndpointMethod),
 		SearchExampleType:            searchExampleType(g.Spec),
 		GraphQLFieldPaths:            gqlFieldPaths,
 		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
@@ -3772,13 +3772,21 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	}
 }
 
-func searchResponsePaths(apiSpec *spec.APISpec) []string {
-	if apiSpec == nil {
+func searchResponsePaths(apiSpec *spec.APISpec, searchEndpointPath, searchEndpointMethod string) []string {
+	searchEndpointPath = strings.TrimSpace(searchEndpointPath)
+	if apiSpec == nil || searchEndpointPath == "" {
 		return nil
 	}
+	searchEndpointMethod = strings.ToUpper(strings.TrimSpace(searchEndpointMethod))
 	seen := map[string]bool{}
 	for _, resource := range apiSpec.Resources {
 		for _, endpoint := range resource.Endpoints {
+			if endpoint.Path != searchEndpointPath {
+				continue
+			}
+			if searchEndpointMethod != "" && strings.ToUpper(endpoint.Method) != searchEndpointMethod {
+				continue
+			}
 			path := strings.TrimSpace(endpoint.ResponsePath)
 			if path != "" {
 				seen[path] = true

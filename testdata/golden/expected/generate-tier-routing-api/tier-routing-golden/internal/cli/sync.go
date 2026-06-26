@@ -840,7 +840,15 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 			continue
 		}
 		if items, ok := extractObjectArray(pathData); ok {
-			nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			nextCursor, hasMore := "", false
+			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
+				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
+			}
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			if nextCursor == "" {
+				nextCursor = outerCursor
+			}
+			hasMore = hasMore || outerHasMore
 			return items, nextCursor, hasMore
 		}
 		var inner map[string]json.RawMessage

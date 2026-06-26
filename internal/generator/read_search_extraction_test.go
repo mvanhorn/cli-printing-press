@@ -103,10 +103,13 @@ import (
 )
 
 func TestExtractPageItemsHonorsResponsePath(t *testing.T) {
-	body := json.RawMessage(`+"`"+`{"message":"ok","response":{"data":[{"id":"w1"},{"id":"w2"}]}}`+"`"+`)
-	items, _, _ := extractPageItems(body, "cursor", "response.data")
+	body := json.RawMessage(`+"`"+`{"message":"ok","response":{"data":[{"id":"w1"},{"id":"w2"}],"next_cursor":"page-2","has_more":true}}`+"`"+`)
+	items, cursor, hasMore := extractPageItems(body, "cursor", "response.data")
 	if len(items) != 2 {
 		t.Fatalf("response_path extraction got %d items, want 2", len(items))
+	}
+	if cursor != "page-2" || !hasMore {
+		t.Fatalf("response_path cursor = %q/%v, want page-2/true", cursor, hasMore)
 	}
 }
 `), 0o644))
@@ -127,12 +130,13 @@ func TestGeneratedSearchExtractionHonorsResponsePaths(t *testing.T) {
 					Path:         "/photos",
 					Description:  "List photos",
 					Response:     spec.ResponseDef{Type: "array", Item: "Photo"},
-					ResponsePath: "photos",
+					ResponsePath: "catalog.items",
 				},
 				"search": {
-					Method: "GET",
-					Path:   "/photos/search",
-					Params: []spec.Param{{Name: "query", Type: "string"}},
+					Method:       "GET",
+					Path:         "/photos/search",
+					Params:       []spec.Param{{Name: "query", Type: "string"}},
+					ResponsePath: "photos",
 				},
 			},
 		},

@@ -1011,6 +1011,31 @@ func responsePayloadAtPath(data json.RawMessage, responsePath string) (json.RawM
 	return rawAtPath(root, strings.TrimPrefix(responsePath, "$."))
 }
 
+func responsePayloadParentAtPath(data json.RawMessage, responsePath string) (map[string]json.RawMessage, bool) {
+	path := strings.TrimPrefix(strings.TrimSpace(responsePath), "$.")
+	if path == "" {
+		return nil, false
+	}
+	var current map[string]json.RawMessage
+	if err := json.Unmarshal(data, &current); err != nil {
+		return nil, false
+	}
+	parts := strings.Split(path, ".")
+	if len(parts) == 1 {
+		return current, true
+	}
+	for _, part := range parts[:len(parts)-1] {
+		raw, ok := current[part]
+		if !ok {
+			return nil, false
+		}
+		if err := json.Unmarshal(raw, &current); err != nil {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
 // printJSONFiltered marshals a Go-typed value through the same output
 // pipeline endpoint-mirror commands use. Hand-written novel commands that
 // build a typed slice/struct call this so --select, --compact, --csv, and
