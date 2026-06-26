@@ -3644,6 +3644,7 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		// Scan only columns from this result set here. Do NOT query again
 		// inside this loop; drain and close rows first.
 		if err := rows.Scan(&row.ID, &row.Data); err != nil {
+			_ = rows.Close()
 			return fmt.Errorf("scan row: %w", err)
 		}
 		rawRows = append(rawRows, row)
