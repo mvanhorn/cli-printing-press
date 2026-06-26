@@ -90,7 +90,7 @@ func MergeIntoFreshTree(snapshotDir, freshDir string, report *MergeReport, opts 
 			}
 			fc.Applied = true
 		case VerdictTemplatedWithAdditions, VerdictTemplatedBodyDrift, VerdictTemplatedValueDrift:
-			if opts.NovelOnly && !preserveTemplatedDriftInNovelOnly(freshDir, fc.Path) {
+			if opts.NovelOnly && !preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, fc.Path) {
 				continue
 			}
 			if err := copyPreserveFile(snapshotDir, freshDir, fc.Path); err != nil {
@@ -669,12 +669,13 @@ func pruneCollidingSpec(spec ast.Spec, collisions declSet) (ast.Spec, bool) {
 	return spec, false
 }
 
-func preserveTemplatedDriftInNovelOnly(freshDir, rel string) bool {
+func preserveTemplatedDriftInNovelOnly(snapshotDir, freshDir, rel string) bool {
 	rel = filepath.ToSlash(rel)
 	if _, ok := novelOnlyEditableHookPaths[rel]; ok {
 		return true
 	}
-	return isNovelCommandScaffoldTest(freshDir, rel)
+	return isNovelCommandScaffoldTest(freshDir, rel) ||
+		isHandAuthoredNovelCommandScaffold(snapshotDir, freshDir, rel)
 }
 
 // novelOnlyEditableHookPaths lists generator-emitted files whose intended
@@ -684,7 +685,32 @@ var novelOnlyEditableHookPaths = map[string]struct{}{
 	"internal/store/extras.go": {},
 }
 
+const novelCommandScaffoldMarker = "Novel command scaffold"
+const novelCommandScaffoldTODO = "TODO: implement novel feature"
 const novelCommandScaffoldTestMarker = "cli-printing-press: novel-scaffold-test"
+
+func isHandAuthoredNovelCommandScaffold(snapshotDir, freshDir, rel string) bool {
+	if !strings.HasPrefix(rel, "internal/cli/") || !strings.HasSuffix(rel, ".go") || strings.HasSuffix(rel, "_test.go") {
+		return false
+	}
+	snapshotPath := filepath.Join(snapshotDir, rel)
+	freshPath := filepath.Join(freshDir, rel)
+	freshData, err := os.ReadFile(freshPath)
+	if err != nil {
+		return false
+	}
+	if hasGeneratedMarkerBytes(freshData) || !bytes.Contains(freshData, []byte(novelCommandScaffoldMarker)) {
+		return false
+	}
+	snapshotData, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		return false
+	}
+	if bytes.Contains(snapshotData, []byte(novelCommandScaffoldTODO)) {
+		return false
+	}
+	return !bytes.Equal(snapshotData, freshData)
+}
 
 func isNovelCommandScaffoldTest(freshDir, rel string) bool {
 	if !strings.HasPrefix(rel, "internal/cli/") || !strings.HasSuffix(rel, "_test.go") {
