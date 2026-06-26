@@ -424,6 +424,50 @@ resources:
 	assert.Equal(t, "required", template["type"])
 }
 
+func TestParseObjectSchemaArrayBodyItemTypes(t *testing.T) {
+	yamlSpec := []byte(`
+name: typed-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          schema:
+            type: object
+            properties:
+              tags:
+                type: array
+                items:
+                  type: string
+              recipients:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["messages"].Endpoints["send"].Body
+	byName := map[string]Param{}
+	for _, param := range body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "array", byName["tags"].Type)
+	assert.Equal(t, "string", byName["tags"].ItemType)
+	assert.Equal(t, "array", byName["recipients"].Type)
+	assert.Equal(t, "object", byName["recipients"].ItemType)
+	require.Len(t, byName["recipients"].Fields, 1)
+}
+
 func TestParseCSVArrayObjectTemplateMustBeObject(t *testing.T) {
 	yamlSpec := []byte(`
 name: csv-array-body

@@ -2569,8 +2569,12 @@ func bodyParamFromSchemaNode(name string, node *yaml.Node) (Param, error) {
 					return Param{}, err
 				}
 				param.Fields = fields
+				param.ItemType = "object"
 			} else if enum := schemaStringSlice(yamlMappingValue(items, "enum")); len(enum) > 0 {
 				param.Fields = []Param{{Name: "items", Type: "string", Enum: enum}}
+				param.ItemType = "string"
+			} else if itemType := strings.TrimSpace(schemaScalarValue(yamlMappingValue(items, "type"))); itemType != "" {
+				param.ItemType = itemType
 			}
 		}
 	}
