@@ -764,6 +764,20 @@ func TestWriteManifestForGenerateWithSpecURL(t *testing.T) {
 	assert.False(t, got.GeneratedAt.IsZero())
 }
 
+func TestWriteManifestForGenerateRecordsSpecSourceFromSpec(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "sniffed-api",
+		OutputDir: dir,
+		Spec:      &spec.APISpec{Name: "sniffed-api", SpecSource: "sniffed"},
+	})
+	require.NoError(t, err)
+
+	got := readManifest(t, dir)
+	assert.Equal(t, "sniffed", got.SpecSource)
+}
+
 func TestWriteManifestForGenerateRecordsAuthPreference(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1298,13 +1312,65 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.True(t, os.IsNotExist(statErr))
 	})
 
-	t.Run("uses generate-time placeholder instead of printing press version", func(t *testing.T) {
+	t.Run("uses API version before printing press version", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "demo",
+			MCPBinary:            "demo-pp-mcp",
+			MCPReady:             "full",
+			APIVersion:           "0.1.0",
+			PrintingPressVersion: "4.11.0",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "0.1.0", got.Version)
+	})
+
+	t.Run("falls back when API version is not semver", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "demo",
+			MCPBinary:            "demo-pp-mcp",
+			MCPReady:             "full",
+			APIVersion:           "2026-04",
+			PrintingPressVersion: "4.11.0",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "4.11.0", got.Version)
+	})
+
+	t.Run("falls back to printing press version", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{
 			APIName:              "demo",
 			MCPBinary:            "demo-pp-mcp",
 			MCPReady:             "full",
 			PrintingPressVersion: "4.11.0",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "4.11.0", got.Version)
+	})
+
+	t.Run("falls back to valid placeholder when versions are not semver", func(t *testing.T) {
+		prevVersion := version.Version
+		version.Version = "dev"
+		t.Cleanup(func() { version.Version = prevVersion })
+
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "demo",
+			MCPBinary:            "demo-pp-mcp",
+			MCPReady:             "full",
+			APIVersion:           "2026-04",
+			PrintingPressVersion: "dev",
 		})
 
 		require.NoError(t, WriteMCPBManifest(dir))

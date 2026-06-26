@@ -2015,7 +2015,7 @@ func authPlaceholderCredentialError(cfg *config.Config) error {
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login or {{.Name}}-pp-cli auth set-token <token>")
 {{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login --device-code or {{.Name}}-pp-cli auth set-token <token>")
-{{- else if eq .Auth.Type "oauth2"}}
+{{- else if or (eq .Auth.Type "oauth2") (authBrowserLoginAvailable .Auth)}}
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login")
 {{- else}}
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{- with .Auth.CanonicalEnvVar}}export {{.Name}}=<your-token> or {{end}}{{.Name}}-pp-cli auth set-token <token>")

@@ -1122,6 +1122,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if p.Spec != nil && p.Spec.Version != "" {
 		m.APIVersion = p.Spec.Version
 	}
+	if p.Spec != nil && strings.TrimSpace(p.Spec.SpecSource) != "" {
+		m.SpecSource = strings.TrimSpace(p.Spec.SpecSource)
+	}
 	if p.Spec != nil && p.Spec.IsLocalSQLiteSource() {
 		m.SpecFormat = spec.SourceLocalSQLite
 	}

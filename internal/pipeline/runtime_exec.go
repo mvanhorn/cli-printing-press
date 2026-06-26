@@ -33,13 +33,17 @@ func buildCLITo(dir, binaryPath string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binaryPath, "./"+filepath.Base(cmdDir))
+	cmd := exec.CommandContext(ctx, "go", buildCLIArgs(binaryPath, "./"+filepath.Base(cmdDir))...)
 	cmd.Dir = filepath.Dir(cmdDir)
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("go build: %s\n%s", err, string(out))
 	}
 	return nil
+}
+
+func buildCLIArgs(binaryPath, pkg string) []string {
+	return []string{"build", "-trimpath", "-ldflags=-buildid=", "-o", binaryPath, pkg}
 }
 
 func findCLICommandDir(dir string) (string, error) {

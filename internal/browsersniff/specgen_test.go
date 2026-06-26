@@ -1177,6 +1177,18 @@ func TestSampleFilename_StripsBraces(t *testing.T) {
 	assert.Contains(t, got, "orders_orderId_items_itemId")
 }
 
+func TestSampleFilename_TruncatesLongPathSlug(t *testing.T) {
+	t.Parallel()
+
+	got := sampleFilename(EndpointGroup{
+		Method:         "GET",
+		NormalizedPath: "/" + strings.Repeat("playlist_segment_", 40) + "playlist.m3u8",
+	})
+
+	assert.LessOrEqual(t, len(got), 120)
+	assert.Regexp(t, `^get__.*__[0-9a-f]{8}\.json$`, got)
+}
+
 func TestSelectSampleEntry_PrefersMostRecentSuccess(t *testing.T) {
 	t.Parallel()
 
