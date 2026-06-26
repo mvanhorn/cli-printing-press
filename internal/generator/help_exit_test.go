@@ -51,9 +51,11 @@ func TestGeneratedRootTreatsPflagHelpSentinelAsSuccess(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	goMod := readGeneratedFile(t, outputDir, "go.mod")
 	require.Contains(t, rootSrc, `"errors"`)
 	require.Contains(t, rootSrc, `"github.com/spf13/pflag"`)
 	require.Contains(t, rootSrc, "errors.Is(err, pflag.ErrHelp)")
+	require.Contains(t, goMod, "github.com/spf13/pflag v1.0.6")
 	require.Less(t,
 		strings.Index(rootSrc, "errors.Is(err, pflag.ErrHelp)"),
 		strings.Index(rootSrc, "isCobraUsageError(err)"),

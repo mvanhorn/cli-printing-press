@@ -36,12 +36,11 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flagStatus, "status", allowedStatus)
 				}
 			}
+			path := "/projects"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/projects"
 			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "projects", path, map[string]string{
 				"status": formatCLIParamValue(flagStatus),
 				"limit":  formatCLIParamValue(flagLimit),

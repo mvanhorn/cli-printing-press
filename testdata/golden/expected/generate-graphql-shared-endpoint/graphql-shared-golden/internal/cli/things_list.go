@@ -23,12 +23,11 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
 			}
+			path := "/graphql"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/graphql"
 			_ = path
 			params := map[string]string{}
 			var body map[string]any

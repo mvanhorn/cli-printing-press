@@ -38,12 +38,11 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			if !cmd.Flags().Changed("location-id") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "location-id")
 			}
+			path := "/power/store-locator"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/power/store-locator"
 			params := map[string]string{}
 			if flagS != "" {
 				params["s"] = formatCLIParamValue(flagS)

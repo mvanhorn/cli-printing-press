@@ -26,16 +26,15 @@ func newQuotesUpdateStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 			if !stdinBody {
 			}
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-
 			path := "/api/quotes/{quote_id}"
 			if len(args) < 1 || args[0] == "" {
 				return usageErr(fmt.Errorf("quote_id is required\nUsage: %s <%s>", cmd.CommandPath(), "quote_id"))
 			}
 			path = replacePathParam(path, "quote_id", args[0])
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
 			params := map[string]string{}
 			var body map[string]any
 			if stdinBody {

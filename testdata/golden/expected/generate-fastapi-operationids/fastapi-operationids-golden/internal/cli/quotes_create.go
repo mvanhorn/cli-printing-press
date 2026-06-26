@@ -23,12 +23,11 @@ func newQuotesCreateCmd(flags *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
 			}
+			path := "/api/quotes/generate"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/api/quotes/generate"
 			params := map[string]string{}
 			var body map[string]any
 			if stdinBody {

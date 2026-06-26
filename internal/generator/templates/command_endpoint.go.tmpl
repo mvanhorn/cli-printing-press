@@ -155,21 +155,7 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 				return err
 			}
 {{- end}}
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-{{- if .EffectiveTier}}
-			c = c.WithTier({{printf "%q" .EffectiveTier}})
-{{- end}}
-
 			path := "{{.EffectivePath}}"
-{{- if substackPublicationIDTemplatePath .APISpec .EffectivePath}}
-			if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
-				return err
-			}
-			path = strings.ReplaceAll(path, "{publication_id}", c.Config.TemplateVars["publication_id"])
-{{- end}}
 {{- range .Endpoint.Params}}
 {{- if .Positional}}
 {{- $pi := positionalIndex $.Endpoint .Name}}
@@ -182,6 +168,19 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			path = replacePathParam(path, "{{.Name}}", args[{{$pi}}])
 {{- end}}
 {{- end}}
+{{- end}}
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
+{{- if .EffectiveTier}}
+			c = c.WithTier({{printf "%q" .EffectiveTier}})
+{{- end}}
+{{- if substackPublicationIDTemplatePath .APISpec .EffectivePath}}
+			if err := resolveSubstackPublicationIDTemplate(cmd.Context(), c, flags); err != nil {
+				return err
+			}
+			path = strings.ReplaceAll(path, "{publication_id}", c.Config.TemplateVars["publication_id"])
 {{- end}}
 {{- range .Endpoint.Params}}
 {{- if and .PathParam (not .Positional)}}

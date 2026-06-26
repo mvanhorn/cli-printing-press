@@ -40,16 +40,15 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("invalid value %q for --%s: must be one of %v", flagPriority, "priority", allowedPriority)
 				}
 			}
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-
 			path := "/projects/{projectId}/tasks"
 			if len(args) < 1 || args[0] == "" {
 				return usageErr(fmt.Errorf("projectId is required\nUsage: %s <%s>", cmd.CommandPath(), "projectId"))
 			}
 			path = replacePathParam(path, "projectId", args[0])
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
 			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "tasks", path, map[string]string{
 				"priority": formatCLIParamValue(flagPriority),
 				"limit":    formatCLIParamValue(flagLimit),

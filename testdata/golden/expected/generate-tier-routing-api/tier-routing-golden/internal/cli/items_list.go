@@ -20,13 +20,12 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  tier-routing-golden-pp-cli items list",
 		Annotations: map[string]string{"pp:endpoint": "items.list", "pp:method": "GET", "pp:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path := "/items"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 			c = c.WithTier("free")
-
-			path := "/items"
 			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "auto", "items", path, map[string]string{}, nil, flagAll, "cursor", "cursor", "limit", "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
