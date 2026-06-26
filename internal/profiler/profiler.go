@@ -551,9 +551,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				if hasRequiredScopeParams(endpoint) && !endpoint.Syncable {
 					meta.SkipDefaultSync = true
 				}
-				if !hasRequiredScopeParams(endpoint) || endpoint.Syncable || meta.SkipDefaultSync {
-					addSyncCandidate(resourceName, meta)
-				}
+				addSyncCandidate(resourceName, meta)
 			}
 
 			if endpoint.Pagination != nil {

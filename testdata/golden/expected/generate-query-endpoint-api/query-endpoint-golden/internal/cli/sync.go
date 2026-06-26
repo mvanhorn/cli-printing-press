@@ -305,17 +305,17 @@ Resource scoping:
 				return classifyAPIError(firstPlaceholderErr, flags)
 			}
 			if strict && errCount > 0 {
-				return fmt.Errorf("%s", describeFailedResources(errCount, failedResources))
+				return errors.New(describeFailedResources(errCount, failedResources))
 			}
 			if criticalErrCount > 0 {
-				return fmt.Errorf("%s", describeCriticalFailedResources(criticalErrCount, criticalFailedResources))
+				return errors.New(describeCriticalFailedResources(criticalErrCount, criticalFailedResources))
 			}
 			if successCount == 0 {
 				if warnCount > 0 && errCount == 0 {
 					return fmt.Errorf("%d resource(s) completed with warnings but no successful syncs", warnCount)
 				}
 				if errCount > 0 {
-					return fmt.Errorf("%s", describeFailedResources(errCount, failedResources))
+					return errors.New(describeFailedResources(errCount, failedResources))
 				}
 			}
 			if errCount > 0 && !strict && criticalErrCount == 0 && successCount > 0 {
