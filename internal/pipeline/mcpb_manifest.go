@@ -235,10 +235,13 @@ func bundleVersion(m CLIManifest) string {
 	if v := strings.TrimSpace(m.APIVersion); isSemverVersion(v) {
 		return v
 	}
-	if v := strings.TrimSpace(m.PrintingPressVersion); v != "" {
+	if v := strings.TrimSpace(m.PrintingPressVersion); isSemverVersion(v) {
 		return v
 	}
-	return version.Version
+	if v := strings.TrimSpace(version.Version); isSemverVersion(v) {
+		return v
+	}
+	return "0.0.0"
 }
 
 func isSemverVersion(v string) bool {

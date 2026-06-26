@@ -1359,6 +1359,26 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Equal(t, "4.11.0", got.Version)
 	})
 
+	t.Run("falls back to valid placeholder when versions are not semver", func(t *testing.T) {
+		prevVersion := version.Version
+		version.Version = "dev"
+		t.Cleanup(func() { version.Version = prevVersion })
+
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "demo",
+			MCPBinary:            "demo-pp-mcp",
+			MCPReady:             "full",
+			APIVersion:           "2026-04",
+			PrintingPressVersion: "dev",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "0.0.0", got.Version)
+	})
+
 	t.Run("api_key auth emits required user_config fields", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{
