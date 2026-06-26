@@ -678,6 +678,139 @@ func TestNovelCallHelpWires(t *testing.T) {}
 		"NovelOnly force-regen must preserve hand-authored tests replacing a markerless novel command scaffold")
 }
 
+func TestMergeIntoFreshTreeNovelOnlyPreservesHandAuthoredNovelCommandBody(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := "internal/cli/call.go"
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte(`// Copyright 2026 owner. Licensed under Apache-2.0. See LICENSE.
+// Novel command scaffold. Implement the RunE body; generate --force preserves this file.
+
+package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+func newNovelCallCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "call",
+		Short: "Call an actor.",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Fprintln(cmd.OutOrStdout(), "implemented")
+			return nil
+		},
+	}
+	return cmd
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`// Copyright 2026 owner. Licensed under Apache-2.0. See LICENSE.
+// Novel command scaffold. Implement the RunE body; generate --force preserves this file.
+
+package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+func newNovelCallCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "call",
+		Short: "Call an actor.",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if dryRunOK(flags) {
+				return nil
+			}
+			return fmt.Errorf("TODO: implement novel feature %q", "call")
+		},
+	}
+	return cmd
+}
+`), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true, NovelOnly: true}))
+
+	got, err := os.ReadFile(filepath.Join(fresh, rel))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), `"implemented"`,
+		"NovelOnly force-regen must preserve a hand-authored novel command body")
+	assert.NotContains(t, string(got), "TODO: implement novel feature",
+		"NovelOnly force-regen must not overwrite an implementation with the scaffold")
+}
+
+func TestMergeIntoFreshTreeNovelOnlyRefreshesUntouchedNovelCommandScaffold(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := "internal/cli/call.go"
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte(`// Copyright 2026 owner. Licensed under Apache-2.0. See LICENSE.
+// Novel command scaffold. Implement the RunE body; generate --force preserves this file.
+
+package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+func newNovelCallCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "call",
+		Short: "Old scaffold text.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "call")
+		},
+	}
+	return cmd
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`// Copyright 2026 owner. Licensed under Apache-2.0. See LICENSE.
+// Novel command scaffold. Implement the RunE body; generate --force preserves this file.
+
+package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+func newNovelCallCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "call",
+		Short: "Fresh scaffold text.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "call")
+		},
+	}
+	return cmd
+}
+`), 0o644))
+
+	report, err := Classify(snap, fresh, Options{Force: true})
+	require.NoError(t, err)
+	require.NoError(t, MergeIntoFreshTree(snap, fresh, report, Options{Force: true, NovelOnly: true}))
+
+	got, err := os.ReadFile(filepath.Join(fresh, rel))
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "Fresh scaffold text.",
+		"NovelOnly force-regen should keep fresh output for untouched scaffolds")
+	assert.NotContains(t, string(got), "Old scaffold text.")
+}
+
 func TestMergeIntoFreshTreeNovelOnlyDoesNotPreserveOrdinaryGeneratedTestDrift(t *testing.T) {
 	t.Parallel()
 
