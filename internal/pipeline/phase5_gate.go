@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -117,10 +118,10 @@ func validatePhase5MarkerFile(path string, manifest CLIManifest, skipFile bool) 
 func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFile bool) Phase5GateValidation {
 	status := strings.ToLower(strings.TrimSpace(marker.Status))
 	result := Phase5GateValidation{Status: status}
+	var issues []string
 
 	if marker.SchemaVersion != 1 {
-		result.Detail = fmt.Sprintf("unsupported phase5 marker schema_version %d", marker.SchemaVersion)
-		return result
+		issues = append(issues, fmt.Sprintf("unsupported phase5 marker schema_version %d", marker.SchemaVersion))
 	}
 	// Stale-marker protection: when the manifest carries identity, the
 	// marker must carry the same identity. An empty marker.APIName/RunID is
@@ -130,33 +131,27 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 	// rotation.
 	if manifest.APIName != "" {
 		if marker.APIName == "" {
-			result.Detail = "phase5 marker missing api_name (manifest identifies the CLI)"
-			return result
-		}
-		if marker.APIName != manifest.APIName {
-			result.Detail = fmt.Sprintf("phase5 marker api_name %q does not match manifest api_name %q", marker.APIName, manifest.APIName)
-			return result
+			issues = append(issues, "phase5 marker missing api_name (manifest identifies the CLI)")
+		} else if marker.APIName != manifest.APIName {
+			issues = append(issues, fmt.Sprintf("phase5 marker api_name %q does not match manifest api_name %q", marker.APIName, manifest.APIName))
 		}
 	}
 	if manifest.RunID != "" {
 		if marker.RunID == "" {
-			result.Detail = "phase5 marker missing run_id (manifest identifies the run)"
-			return result
-		}
-		if marker.RunID != manifest.RunID {
-			result.Detail = fmt.Sprintf("phase5 marker run_id %q does not match manifest run_id %q", marker.RunID, manifest.RunID)
-			return result
+			issues = append(issues, "phase5 marker missing run_id (manifest identifies the run)")
+		} else if marker.RunID != manifest.RunID {
+			issues = append(issues, fmt.Sprintf("phase5 marker run_id %q does not match manifest run_id %q", marker.RunID, manifest.RunID))
 		}
 	}
 
 	switch status {
 	case "pass":
 		if skipFile {
-			result.Detail = fmt.Sprintf("%s must use status skip, got pass", Phase5SkipFilename)
-			return result
+			issues = append(issues, fmt.Sprintf("%s must use status skip, got pass", Phase5SkipFilename))
 		}
-		if detail := validatePhase5PassMarker(marker); detail != "" {
-			result.Detail = detail
+		issues = append(issues, validatePhase5PassMarkerIssues(marker)...)
+		if len(issues) > 0 {
+			result.Detail = strings.Join(issues, "; ")
 			return result
 		}
 		if ok, detail := phase5AcceptancePassed(marker); !ok {
@@ -166,15 +161,22 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 		result.Passed = true
 		return result
 	case "fail":
+		if skipFile {
+			issues = append(issues, fmt.Sprintf("%s must use status skip, got fail", Phase5SkipFilename))
+		}
+		if len(issues) > 0 {
+			result.Detail = strings.Join(issues, "; ")
+			return result
+		}
 		result.Detail = "phase5 gate status is fail"
 		return result
 	case "skip":
 		if !skipFile {
-			result.Detail = fmt.Sprintf("%s must use status pass or fail, got skip", Phase5AcceptanceFilename)
-			return result
+			issues = append(issues, fmt.Sprintf("%s must use status pass or fail, got skip", Phase5AcceptanceFilename))
 		}
-		if detail := validatePhase5SkipMarker(marker); detail != "" {
-			result.Detail = detail
+		issues = append(issues, validatePhase5SkipMarkerIssues(marker)...)
+		if len(issues) > 0 {
+			result.Detail = strings.Join(issues, "; ")
 			return result
 		}
 		if ok, detail := phase5SkipAllowed(marker, manifest); !ok {
@@ -184,27 +186,37 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 		result.Passed = true
 		return result
 	default:
-		result.Detail = fmt.Sprintf("unknown phase5 gate status %q", marker.Status)
+		issues = append(issues, phase5UnknownStatusDetail(marker.Status, skipFile))
+		if skipFile {
+			issues = append(issues, validatePhase5SkipMarkerIssues(marker)...)
+		} else {
+			issues = append(issues, validatePhase5PassMarkerIssues(marker)...)
+		}
+		result.Detail = strings.Join(issues, "; ")
 		return result
 	}
 }
 
-func validatePhase5PassMarker(marker Phase5GateMarker) string {
+func validatePhase5PassMarkerIssues(marker Phase5GateMarker) []string {
 	// api_name and run_id are identity tags: the cross-check in
 	// validatePhase5Marker enforces consistency when both marker and
 	// manifest carry them, so requiring them here would reject markers
 	// written before the manifest exists (e.g., dogfood --write-acceptance
 	// run prior to `lock promote`).
+	var issues []string
 	switch {
 	case phase5Level(marker) == "":
-		return "phase5 acceptance marker missing level"
-	case marker.MatrixSize <= 0:
-		return "phase5 acceptance marker missing matrix_size"
-	case marker.TestsPassed <= 0:
-		return "phase5 acceptance marker missing tests_passed"
-	default:
-		return ""
+		issues = append(issues, "phase5 acceptance marker missing level")
+	case !phase5AcceptedAcceptanceLevel(phase5Level(marker)):
+		issues = append(issues, unknownPhase5AcceptanceLevelDetail(marker.Level))
 	}
+	if marker.MatrixSize <= 0 {
+		issues = append(issues, "phase5 acceptance marker missing matrix_size")
+	}
+	if marker.TestsPassed <= 0 {
+		issues = append(issues, "phase5 acceptance marker missing tests_passed")
+	}
+	return issues
 }
 
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
@@ -243,7 +255,7 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 		}
 		return true, ""
 	default:
-		return false, fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `cli-printing-press dogfood --live --write-acceptance` to generate %s)", marker.Level, strings.Join(phase5AcceptedAcceptanceLevels, ", "), Phase5AcceptanceFilename)
+		return false, unknownPhase5AcceptanceLevelDetail(marker.Level)
 	}
 }
 
@@ -251,17 +263,34 @@ func phase5Level(marker Phase5GateMarker) string {
 	return strings.ToLower(strings.TrimSpace(marker.Level))
 }
 
-func validatePhase5SkipMarker(marker Phase5GateMarker) string {
-	switch {
-	case strings.TrimSpace(marker.APIName) == "":
-		return "phase5 skip marker missing api_name"
-	case strings.TrimSpace(marker.RunID) == "":
-		return "phase5 skip marker missing run_id"
-	case strings.TrimSpace(marker.SkipReason) == "":
-		return "phase5 skip marker missing skip_reason"
-	default:
-		return ""
+func phase5AcceptedAcceptanceLevel(level string) bool {
+	return slices.Contains(phase5AcceptedAcceptanceLevels, level)
+}
+
+func phase5UnknownStatusDetail(status string, skipFile bool) string {
+	accepted := []string{"pass", "fail"}
+	if skipFile {
+		accepted = []string{"skip"}
 	}
+	return fmt.Sprintf("unknown phase5 gate status %q (accepted: %s)", status, strings.Join(accepted, ", "))
+}
+
+func unknownPhase5AcceptanceLevelDetail(level string) string {
+	return fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `cli-printing-press dogfood --live --write-acceptance` to generate %s)", level, strings.Join(phase5AcceptedAcceptanceLevels, ", "), Phase5AcceptanceFilename)
+}
+
+func validatePhase5SkipMarkerIssues(marker Phase5GateMarker) []string {
+	var issues []string
+	if strings.TrimSpace(marker.APIName) == "" {
+		issues = append(issues, "phase5 skip marker missing api_name")
+	}
+	if strings.TrimSpace(marker.RunID) == "" {
+		issues = append(issues, "phase5 skip marker missing run_id")
+	}
+	if strings.TrimSpace(marker.SkipReason) == "" {
+		issues = append(issues, "phase5 skip marker missing skip_reason")
+	}
+	return issues
 }
 
 func phase5SkipAllowed(marker Phase5GateMarker, manifest CLIManifest) (bool, string) {
