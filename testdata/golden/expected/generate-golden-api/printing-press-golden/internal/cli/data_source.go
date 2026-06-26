@@ -130,11 +130,19 @@ func attachFreshness(prov DataProvenance, flags *rootFlags) DataProvenance {
 //     declares no per-endpoint header overrides. Without this parameter, store-backed
 //     reads on per-endpoint-versioned APIs silently get the wrong response shape
 //     (cal-com retro #334 F1).
-func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
-	return resolveReadWithStrategy(ctx, c, flags, "auto", resourceType, isList, path, params, headers, responsePath, hintWriter)
+func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolveReadWithResponsePath(ctx, c, flags, resourceType, isList, path, params, headers, "", hintWriter)
 }
 
-func resolveReadWithStrategy(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+func resolveReadWithResponsePath(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolveReadWithStrategyAndResponsePath(ctx, c, flags, "auto", resourceType, isList, path, params, headers, responsePath, hintWriter)
+}
+
+func resolveReadWithStrategy(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolveReadWithStrategyAndResponsePath(ctx, c, flags, strategy, resourceType, isList, path, params, headers, "", hintWriter)
+}
+
+func resolveReadWithStrategyAndResponsePath(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
 	if err := validateDataSourceStrategy(flags, strategy); err != nil {
 		return nil, DataProvenance{}, err
 	}

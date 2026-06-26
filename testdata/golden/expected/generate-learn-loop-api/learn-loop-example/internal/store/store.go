@@ -1371,9 +1371,6 @@ func lowerCamelResourceIDBase(base string) string {
 		return base
 	}
 	for i := range parts {
-		if parts[i] == "" {
-			continue
-		}
 		if i == 0 {
 			parts[i] = strings.ToLower(parts[i])
 			continue
