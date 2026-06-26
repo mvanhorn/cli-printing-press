@@ -872,6 +872,13 @@ func resolveClientCredentialsScope() string {
 	return "read write"
 }
 
+func resolveClientCredentialsUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_USER_AGENT")); ua != "" {
+		return ua
+	}
+	return "printing-press-oauth2-pp-cli/1.0.0"
+}
+
 func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecret string) error {
 	tokenURL := ""
 	if c.Config != nil {
@@ -884,9 +891,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 		return nil
 	}
 	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
+		"grant_type": {"client_credentials"},
 	}
 	if scope := resolveClientCredentialsScope(); scope != "" {
 		form.Set("scope", scope)
@@ -896,6 +901,8 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 		return fmt.Errorf("building token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", resolveClientCredentialsUserAgent())
+	req.SetBasicAuth(clientID, clientSecret)
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("calling token endpoint: %w", err)

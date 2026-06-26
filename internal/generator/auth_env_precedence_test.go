@@ -863,13 +863,24 @@ func TestClientCredentialsRuntimeEntraTenantAndScope(t *testing.T) {
 	var gotPath string
 	var gotScope string
 	var gotClientID string
+	var gotClientSecret string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		var ok bool
+		gotClientID, gotClientSecret, ok = r.BasicAuth()
+		if !ok {
+			t.Fatalf("missing HTTP Basic client credentials")
+		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm() error = %v", err)
 		}
 		gotScope = r.Form.Get("scope")
-		gotClientID = r.Form.Get("client_id")
+		if got := r.Form.Get("client_id"); got != "" {
+			t.Fatalf("client_id leaked into form body: %q", got)
+		}
+		if got := r.Form.Get("client_secret"); got != "" {
+			t.Fatalf("client_secret leaked into form body: %q", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, ` + "`" + `{"access_token":"minted-token","expires_in":3600}` + "`" + `)
 	}))
@@ -889,6 +900,9 @@ func TestClientCredentialsRuntimeEntraTenantAndScope(t *testing.T) {
 	}
 	if gotClientID != "client-123" {
 		t.Fatalf("client_id = %q, want client-123", gotClientID)
+	}
+	if gotClientSecret != "secret-456" {
+		t.Fatalf("client_secret = %q, want secret-456", gotClientSecret)
 	}
 
 	t.Setenv("ENTRA_CC_OAUTH_SCOPE", "https://override.example/.default")
@@ -957,11 +971,20 @@ func TestAuthLoginTrimsClientCredentialEnvVars(t *testing.T) {
 	var gotClientID string
 	var gotClientSecret string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ok bool
+		gotClientID, gotClientSecret, ok = r.BasicAuth()
+		if !ok {
+			t.Fatalf("missing HTTP Basic client credentials")
+		}
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("ParseForm() error = %v", err)
 		}
-		gotClientID = r.Form.Get("client_id")
-		gotClientSecret = r.Form.Get("client_secret")
+		if got := r.Form.Get("client_id"); got != "" {
+			t.Fatalf("client_id leaked into form body: %q", got)
+		}
+		if got := r.Form.Get("client_secret"); got != "" {
+			t.Fatalf("client_secret leaked into form body: %q", got)
+		}
 		if gotClientID != "cid.test123" || gotClientSecret != "secret.test456" {
 			http.Error(w, "untrimmed credentials", http.StatusBadRequest)
 			return

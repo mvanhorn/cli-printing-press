@@ -231,6 +231,86 @@ func TestOAuthClientCredentialsUsesNestedAuthLoginHints(t *testing.T) {
 	require.Contains(t, auth, "Mint an OAuth2 bearer token via the client_credentials grant")
 	require.Contains(t, auth, `oauth-client-credentials-login-pp-cli auth login`)
 	require.NotContains(t, auth, `oauth-client-credentials-login-pp-cli login`)
+
+	const cliRuntimeTest = `package cli
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestMintClientCredentialsTokenUsesBasicAuthAndUserAgent(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "client-id" || pass != "client-secret" {
+			t.Fatalf("BasicAuth() = (%q, %q, %v), want client-id/client-secret/true", user, pass, ok)
+		}
+		if got := r.Header.Get("User-Agent"); calls == 1 && got != "oauth-client-credentials-login-pp-cli/0.1.0" {
+			t.Fatalf("default User-Agent = %q", got)
+		} else if calls == 2 && got != "custom-agent/2.0" {
+			t.Fatalf("override User-Agent = %q", got)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		if got := r.Form.Get("grant_type"); got != "client_credentials" {
+			t.Fatalf("grant_type = %q", got)
+		}
+		if got := r.Form.Get("client_id"); got != "" {
+			t.Fatalf("client_id leaked into form body: %q", got)
+		}
+		if got := r.Form.Get("client_secret"); got != "" {
+			t.Fatalf("client_secret leaked into form body: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(` + "`{\"access_token\":\"minted\",\"expires_in\":3600}`" + `))
+	}))
+	defer server.Close()
+
+	tok, err := mintClientCredentialsToken(server.Client(), server.URL, "client-id", "client-secret")
+	if err != nil {
+		t.Fatalf("mintClientCredentialsToken() error = %v", err)
+	}
+	if tok.AccessToken != "minted" {
+		t.Fatalf("AccessToken = %q", tok.AccessToken)
+	}
+
+	t.Setenv("OAUTH_CLIENT_CREDENTIALS_LOGIN_USER_AGENT", "custom-agent/2.0")
+	if _, err := mintClientCredentialsToken(server.Client(), server.URL, "client-id", "client-secret"); err != nil {
+		t.Fatalf("mintClientCredentialsToken() with UA override error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+}
+
+func TestMintClientCredentialsTokenIncludesScopeOnlyWhenSet(t *testing.T) {
+	t.Setenv("OAUTH_CLIENT_CREDENTIALS_LOGIN_OAUTH_SCOPE", "read write")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		if got := strings.Join(r.Form["scope"], ","); got != "read write" {
+			t.Fatalf("scope = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(` + "`{\"access_token\":\"scoped\"}`" + `))
+	}))
+	defer server.Close()
+	if _, err := mintClientCredentialsToken(server.Client(), server.URL, "client-id", "client-secret"); err != nil {
+		t.Fatalf("mintClientCredentialsToken() error = %v", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "client_credentials_mint_test.go"), []byte(cliRuntimeTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestMintClientCredentialsToken", "-count=1")
 }
 
 func TestOAuthLoginTopLevelCommandForBearerTokenAuthCodeSpec(t *testing.T) {

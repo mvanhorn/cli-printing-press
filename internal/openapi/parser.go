@@ -28,6 +28,7 @@ var (
 	maxEndpointsPerResource      = 50
 	endpointLimitExplicit        = false // true when user set --max-endpoints-per-resource
 	globalScopeParamNormalizerRE = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+	authFormatPlaceholderRE      = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 )
 
 type additionalHeaderFallbackMode int
@@ -1120,10 +1121,16 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 		case "bearer":
 			auth.Type = "bearer_token"
 			auth.Header = "Authorization"
+			if xFmt := stringExtension(scheme.Extensions, "x-auth-format"); xFmt != "" {
+				auth.Format = xFmt
+			}
 		case "basic":
 			auth.Type = "api_key"
 			auth.Header = "Authorization"
 			auth.Format = "Basic {username}:{password}"
+			if xFmt := stringExtension(scheme.Extensions, "x-auth-format"); xFmt != "" {
+				auth.Format = xFmt
+			}
 		}
 	case "apikey":
 		auth.Type = "api_key"
@@ -1163,6 +1170,9 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 				if prefix = strings.TrimSpace(prefix); prefix != "" {
 					auth.Format = prefix + " {token}"
 				}
+			}
+			if xFmt := stringExtension(scheme.Extensions, "x-auth-format"); xFmt != "" {
+				auth.Format = xFmt
 			}
 		}
 		// Detect bot token pattern from scheme name (e.g. "BotToken")
@@ -1475,6 +1485,9 @@ func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string
 	switch authType {
 	case "api_key":
 		if authFormatIsBasic(format) {
+			if envVars := basicAuthEnvVarsFromFormat(format, envPrefix); len(envVars) > 0 {
+				return envVars
+			}
 			return []string{envPrefix + "_USERNAME", envPrefix + "_PASSWORD"}
 		}
 		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN).
@@ -1868,6 +1881,33 @@ func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
 		}
 		auth.EnvVarSpecs = append(auth.EnvVarSpecs, envVar)
 	}
+}
+
+func basicAuthEnvVarsFromFormat(format, envPrefix string) []string {
+	matches := authFormatPlaceholderRE.FindAllStringSubmatch(format, -1)
+	if len(matches) == 0 || len(matches) > 2 {
+		return nil
+	}
+	envVars := make([]string, 0, len(matches))
+	seen := map[string]struct{}{}
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		placeholder := strings.TrimSpace(match[1])
+		if placeholder == "" {
+			return nil
+		}
+		if _, ok := seen[placeholder]; ok {
+			continue
+		}
+		seen[placeholder] = struct{}{}
+		envVars = append(envVars, envPrefix+"_"+strings.ToUpper(toSnakeCase(placeholder)))
+	}
+	if len(envVars) == 0 || len(envVars) > 2 {
+		return nil
+	}
+	return envVars
 }
 
 func authFormatIsBasic(format string) bool {

@@ -19,7 +19,7 @@ import (
 )
 
 // OAuth2 client_credentials grant: 2-legged server-to-server flow.
-// POST to TokenURL with form-encoded client_id/client_secret. No user
+// POST to TokenURL with HTTP Basic client authentication. No user
 // redirect, no refresh_token. The client re-mints when within 60s of expiry.
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {
@@ -130,13 +130,18 @@ func resolveClientCredentialsScope() string {
 	return "read write"
 }
 
+func resolveClientCredentialsUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv("PRINTING_PRESS_OAUTH2_USER_AGENT")); ua != "" {
+		return ua
+	}
+	return "printing-press-oauth2-pp-cli/1.0.0"
+}
+
 // mintClientCredentialsToken POSTs grant_type=client_credentials to the
 // token endpoint and returns the parsed token response.
 func mintClientCredentialsToken(httpClient *http.Client, tokenURL, clientID, clientSecret string) (*tokenResponse, error) {
 	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
+		"grant_type": {"client_credentials"},
 	}
 	if scope := resolveClientCredentialsScope(); scope != "" {
 		form.Set("scope", scope)
@@ -146,6 +151,8 @@ func mintClientCredentialsToken(httpClient *http.Client, tokenURL, clientID, cli
 		return nil, fmt.Errorf("building token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", resolveClientCredentialsUserAgent())
+	req.SetBasicAuth(clientID, clientSecret)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
