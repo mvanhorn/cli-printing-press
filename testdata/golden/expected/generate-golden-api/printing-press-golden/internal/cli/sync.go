@@ -16,6 +16,7 @@ import (
 	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/store"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -134,6 +135,7 @@ Resource scoping:
 			if len(resources) == 0 {
 				resources = defaultSyncResources()
 			}
+			resources = flatSyncResources(resources)
 
 			// Reject --resource-param keys that don't match a known resource.
 			// Validates against the full top-level + dependent set, not the
@@ -244,6 +246,8 @@ Resource scoping:
 			var criticalErrCount int
 			var warnCount int
 			var successCount int
+			var failedResources []string
+			var criticalFailedResources []string
 			var firstErr error
 			var firstPlaceholderErr error
 			for res := range results {
@@ -252,6 +256,7 @@ Resource scoping:
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+					failedResources = append(failedResources, res.Resource)
 					if firstErr == nil {
 						firstErr = res.Err
 					}
@@ -260,6 +265,7 @@ Resource scoping:
 					}
 					if criticalResources[res.Resource] {
 						criticalErrCount++
+						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
 				} else if res.Warn != nil {
 					if humanFriendly {
@@ -283,6 +289,7 @@ Resource scoping:
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+					failedResources = append(failedResources, res.Resource)
 					if firstErr == nil {
 						firstErr = res.Err
 					}
@@ -291,6 +298,7 @@ Resource scoping:
 					}
 					if criticalResources[res.Resource] {
 						criticalErrCount++
+						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
 				} else if res.Warn != nil {
 					if humanFriendly {
@@ -334,17 +342,17 @@ Resource scoping:
 				return classifyAPIError(firstPlaceholderErr, flags)
 			}
 			if strict && errCount > 0 {
-				return fmt.Errorf("%d resource(s) failed to sync", errCount)
+				return errors.New(describeFailedResources(errCount, failedResources))
 			}
 			if criticalErrCount > 0 {
-				return fmt.Errorf("%d critical resource(s) failed to sync", criticalErrCount)
+				return errors.New(describeCriticalFailedResources(criticalErrCount, criticalFailedResources))
 			}
 			if successCount == 0 {
 				if warnCount > 0 && errCount == 0 {
 					return fmt.Errorf("%d resource(s) completed with warnings but no successful syncs", warnCount)
 				}
 				if errCount > 0 {
-					return fmt.Errorf("%d resource(s) failed to sync", errCount)
+					return errors.New(describeFailedResources(errCount, failedResources))
 				}
 			}
 			if errCount > 0 && !strict && criticalErrCount == 0 && successCount > 0 {
@@ -1528,6 +1536,23 @@ func knownSyncResourceNames() []string {
 	return names
 }
 
+func describeFailedResources(count int, resources []string) string {
+	return describeResourceFailure(count, "resource(s)", resources)
+}
+
+func describeCriticalFailedResources(count int, resources []string) string {
+	return describeResourceFailure(count, "critical resource(s)", resources)
+}
+
+func describeResourceFailure(count int, label string, resources []string) string {
+	if len(resources) == 0 {
+		return fmt.Sprintf("%d %s failed to sync", count, label)
+	}
+	names := append([]string(nil), resources...)
+	sort.Strings(names)
+	return fmt.Sprintf("%d %s failed to sync: %s", count, label, strings.Join(names, ", "))
+}
+
 // syncResourcePath maps resource names to their actual API endpoint paths.
 // For REST APIs this is typically "/<resource>". For non-REST APIs (e.g., Steam)
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
@@ -1540,6 +1565,28 @@ func syncResourcePath(resource string) (string, error) {
 		return p, nil
 	}
 	return "", fmt.Errorf("unknown sync resource %q", resource)
+}
+
+func flatSyncResources(resources []string) []string {
+	if len(resources) == 0 {
+		return resources
+	}
+	dependents := dependentSyncResourceNames()
+	kept := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		if !dependents[resource] {
+			kept = append(kept, resource)
+		}
+	}
+	return kept
+}
+
+func dependentSyncResourceNames() map[string]bool {
+	names := map[string]bool{}
+	for _, dep := range dependentResourceDefs() {
+		names[dep.Name] = true
+	}
+	return names
 }
 
 // dependentResourceDef describes a child resource that requires iterating parent IDs to sync.

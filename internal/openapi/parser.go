@@ -63,6 +63,7 @@ const (
 	extensionCache                 = "x-cache"
 	extensionStreaming             = "x-streaming"
 	extensionPPQuery               = "x-pp-query"
+	extensionPPSyncable            = "x-pp-syncable"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
 	extensionDispatchParam         = "x-pp-dispatch-param"
@@ -3231,6 +3232,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 		// disagree on the same identity.
 		pathResourceIDOverride := readPathItemResourceID(pathItem, path)
 		pathCritical := readPathItemCritical(pathItem, path)
+		pathSyncable, _ := boolExtension(pathItem.Extensions, extensionPPSyncable)
 		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 		pathDataSourceStrategy := readDataSourceStrategyExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 
@@ -3386,6 +3388,8 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				endpoint.Pagination = detectPostQueryIDWalkPagination(endpoint.Body, op, endpoint.IDField)
 			}
 			endpoint.Critical = pathCritical
+			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
+			endpoint.Syncable = pathSyncable || opSyncable
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 
 			// Binary-only success responses (e.g. PDF/octet-stream downloads)

@@ -1082,6 +1082,111 @@ func TestProfileSimpleListEndpointSyncable(t *testing.T) {
 	assert.NotContains(t, syncNames, "query", "POST-only resource should not be syncable")
 }
 
+func TestProfileRequiredParamResourcesStayExplicitOnlyByDefault(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "param-sync",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"batch_prices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/prices",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "ids", Type: "array", Required: true}},
+					},
+				},
+			},
+			"paged": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/paged",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "limit", Type: "integer", Required: true}},
+					},
+				},
+			},
+			"tenant_items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tenant/{tenant_id}/items",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "tenant_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+			"forced": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/forced",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "ids", Type: "array", Required: true}},
+						Syncable: true,
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "items")
+	require.Contains(t, byName, "batch_prices")
+	require.Contains(t, byName, "paged")
+	require.Contains(t, byName, "forced")
+	assert.False(t, byName["items"].SkipDefaultSync)
+	assert.True(t, byName["batch_prices"].SkipDefaultSync, "required non-paginator params need --resource-param, so default sync/archive must skip them")
+	assert.False(t, byName["paged"].SkipDefaultSync, "required paginator params are supplied by sync itself")
+	assert.False(t, byName["forced"].SkipDefaultSync, "explicit syncable true overrides the default-exclusion heuristic")
+	assert.NotContains(t, byName, "tenant_items", "unresolved path params still cannot run as flat resources")
+}
+
+func TestProfileDependentResourceUsesParentResolvedIDField(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "dependent-parent-key",
+		Resources: map[string]spec.Resource{
+			"designs": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/design", Response: spec.ResponseDef{Type: "array"}, Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"}, IDField: "key"},
+				},
+			},
+			"related": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/design/{design_id}/relate",
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							CursorParam: "after",
+							LimitParam:  "limit",
+						},
+						Params: []spec.Param{{Name: "design_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "designs", dep.ParentResource)
+	require.Len(t, dep.PathParams, 1)
+	assert.Equal(t, "design_id", dep.PathParams[0].Param)
+	assert.Equal(t, "key", dep.PathParams[0].Field)
+	assert.NotEqual(t, "design_id", dep.PathParams[0].Field)
+}
+
 func TestProfileRPCStylePostListEndpointSyncable(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "rpc-post-api",

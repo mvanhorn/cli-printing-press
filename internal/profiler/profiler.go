@@ -482,7 +482,16 @@ func Profile(s *spec.APISpec) *APIProfile {
 				// parent-context iteration like /channels/{channelId}/messages
 				// does.
 				resolvable := pathParamsAllTemplateVars(endpoint.Path, s)
-				standaloneList := (!strings.Contains(endpoint.Path, "{") || resolvable) && !hasRequiredScopeParams(endpoint)
+				pathCallable := !strings.Contains(endpoint.Path, "{") || resolvable || endpoint.Syncable
+				requiredScope := hasRequiredScopeParams(endpoint)
+				standaloneList := pathCallable && (!requiredScope || endpoint.Syncable)
+				addStandaloneCandidate := func() {
+					meta := metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex)
+					if requiredScope && !endpoint.Syncable {
+						meta.SkipDefaultSync = true
+					}
+					addSyncCandidate(resourceName, meta)
+				}
 
 				if endpoint.Pagination != nil {
 					p.ListEndpoints++
@@ -493,7 +502,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 					// GET /v1/api/networkentity?entityType=collection|workspace|api|flow
 					// → sync resources: collection, workspace, api, flow
 					if enumParam := findEntityTypeEnum(endpoint); standaloneList && enumParam != nil && len(enumParam.Enum) >= 2 {
-						addSyncCandidate(resourceName, metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex))
+						addStandaloneCandidate()
 						for _, val := range enumParam.Enum {
 							expandedName := strings.ToLower(val)
 							expandedPath := endpoint.Path + "?" + enumParam.Name + "=" + val
@@ -504,7 +513,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 							meta.Path = expandedPath
 							syncable[expandedName] = meta
 						}
-					} else if strings.Contains(endpoint.Path, "{") && !resolvable && !hasRequiredDependentScopeParams(endpoint) {
+					} else if strings.Contains(endpoint.Path, "{") && !resolvable && !endpoint.Syncable && !hasRequiredDependentScopeParams(endpoint) {
 						// Parameterized paginated paths can't sync standalone — track
 						// them for dependent-resource detection below. Carry the
 						// endpoint's metadata so x-resource-id and x-critical
@@ -520,12 +529,16 @@ func Profile(s *spec.APISpec) *APIProfile {
 							}
 						}
 					} else if standaloneList {
-						addSyncCandidate(resourceName, metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex))
+						addStandaloneCandidate()
+					} else if pathCallable && requiredScope {
+						addStandaloneCandidate()
 					}
 				} else if standaloneList {
-					addSyncCandidate(resourceName, metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex))
+					addStandaloneCandidate()
+				} else if pathCallable && requiredScope {
+					addStandaloneCandidate()
 				}
-			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s)) && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) && !isSamplerEndpoint(endpoint) && !isScalarItemArray(endpoint.Response) {
+			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s) || endpoint.Syncable) && looksLikeCollectionEndpoint(endpointNameLower) && !isSamplerEndpoint(endpoint) && !isScalarItemArray(endpoint.Response) {
 				// Catch-all for simple GET collection endpoints that isListEndpoint
 				// didn't recognise (e.g., response is an untyped object with no
 				// wrapper field defined in the spec's types map).
@@ -534,7 +547,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 				// Re-apply the sampler and scalar-array guards here: this branch runs
 				// when isListEndpoint returned false, so without them a collection-named
 				// sampler/scalar-array endpoint would be re-admitted past those gates.
-				addSyncCandidate(resourceName, metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex))
+				meta := metaFromEndpoint(s, resourceName, r, endpoint, s.Types, resourceNameIndex)
+				if hasRequiredScopeParams(endpoint) && !endpoint.Syncable {
+					meta.SkipDefaultSync = true
+				}
+				addSyncCandidate(resourceName, meta)
 			}
 
 			if endpoint.Pagination != nil {
@@ -923,6 +940,9 @@ func hasRequiredDependentScopeParams(endpoint spec.Endpoint) bool {
 func hasRequiredScopeParamsForSync(endpoint spec.Endpoint, allowEnumExpansion bool) bool {
 	temporalOrFormatParams := map[string]bool{
 		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
+		"from": true, "to": true, "start_date": true, "end_date": true,
+		"start_datetime": true, "end_datetime": true, "start_time": true, "end_time": true,
+		"from_date": true, "to_date": true, "from_datetime": true, "to_datetime": true,
 		"key": true, "format": true,
 	}
 	for _, param := range endpoint.Params {
@@ -1370,7 +1390,7 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 		progressed := false
 		for _, key := range keys {
 			entry := parameterized[key]
-			dep, ok := dependentResourceFromEntry(entry, knownParents, shardedSubResources)
+			dep, ok := dependentResourceFromEntry(entry, knownParents, syncable, shardedSubResources)
 			if !ok {
 				next = append(next, key)
 				continue
@@ -1428,11 +1448,12 @@ func sortDependentResources(deps []DependentResource, knownDepths map[string]int
 	})
 }
 
-func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[string]bool, shardedSubResources spec.SubResourceShards) (DependentResource, bool) {
+func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[string]bool, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) (DependentResource, bool) {
 	ctx, ok := dependentPathContext(entry, knownParents, shardedSubResources)
 	if !ok {
 		return DependentResource{}, false
 	}
+	keyField := parentIDFieldForDependent(ctx.parentResource, syncable)
 
 	return DependentResource{
 		Name:                  ctx.name,
@@ -1441,7 +1462,7 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		Path:                  entry.meta.Path,
 		Method:                entry.meta.Method,
 		Tier:                  entry.meta.Tier,
-		PathParams:            dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, ""),
+		PathParams:            dependentPathParams(entry.meta.Path, ctx.parentPathSegment, ctx.firstParam, keyField),
 		IDField:               entry.meta.IDField,
 		Critical:              entry.meta.Critical,
 		SinceParam:            entry.meta.SinceParam,
@@ -1460,6 +1481,16 @@ func dependentResourceFromEntry(entry parameterizedEntry, knownParents map[strin
 		FieldSelector:         entry.meta.FieldSelector,
 		Discriminator:         entry.meta.Discriminator,
 	}, true
+}
+
+func parentIDFieldForDependent(parentResource string, syncable map[string]syncableMeta) string {
+	if syncable == nil {
+		return ""
+	}
+	if meta, ok := syncable[parentResource]; ok {
+		return strings.TrimSpace(meta.IDField)
+	}
+	return ""
 }
 
 type dependentContext struct {
@@ -1642,6 +1673,9 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				}
 			}
 			keyField := strings.TrimSpace(e.Walker.KeyField)
+			if keyField == "" {
+				keyField = parentIDFieldForDependent(parent, syncable)
+			}
 			lookupKey := "GET " + e.Path
 			if idx, ok := byPath[lookupKey]; ok {
 				deps[idx].ParentResource = parent
