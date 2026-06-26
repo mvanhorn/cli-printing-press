@@ -31,11 +31,6 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			}
 			if !stdinBody {
 			}
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-
 			path := "/projects/{projectId}/tasks/{taskId}"
 			if len(args) < 1 || args[0] == "" {
 				return usageErr(fmt.Errorf("projectId is required\nUsage: %s <%s>", cmd.CommandPath(), "projectId"))
@@ -45,6 +40,10 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("taskId is required\nUsage: %s <%s>", cmd.CommandPath(), "taskId"))
 			}
 			path = replacePathParam(path, "taskId", args[1])
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
 			params := map[string]string{}
 			if flagNotify != false {
 				params["notify"] = formatCLIParamValue(flagNotify)

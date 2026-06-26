@@ -35,12 +35,11 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("required flag \"%s\" not set", "store-code")
 				}
 			}
+			path := "/stores"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/stores"
 			params := map[string]string{}
 			if flagDryRun != false {
 				params["$dry_run"] = formatCLIParamValue(flagDryRun)

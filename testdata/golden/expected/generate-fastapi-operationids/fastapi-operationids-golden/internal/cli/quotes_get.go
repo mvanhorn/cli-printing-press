@@ -22,16 +22,15 @@ func newQuotesGetCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
-			c, err := flags.newClient()
-			if err != nil {
-				return err
-			}
-
 			path := "/api/quotes/{quote_id}"
 			if len(args) < 1 || args[0] == "" {
 				return usageErr(fmt.Errorf("quote_id is required\nUsage: %s <%s>", cmd.CommandPath(), "quote_id"))
 			}
 			path = replacePathParam(path, "quote_id", args[0])
+			c, err := flags.newClient()
+			if err != nil {
+				return err
+			}
 			params := map[string]string{}
 			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "quotes", false, path, params, nil, cmd.ErrOrStderr())
 			if err != nil {

@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"fastapi-operationids-golden-pp-cli/internal/cliutil"
 	"fastapi-operationids-golden-pp-cli/internal/config"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 type rootFlags struct {
@@ -66,6 +68,9 @@ func Execute() error {
 	rootCmd := newRootCmd(&flags)
 
 	err := rootCmd.Execute()
+	if errors.Is(err, pflag.ErrHelp) {
+		return nil
+	}
 	if err != nil && strings.Contains(err.Error(), "unknown flag") {
 		msg := err.Error()
 		// Extract the flag name from the error message (e.g., "unknown flag: --foob")

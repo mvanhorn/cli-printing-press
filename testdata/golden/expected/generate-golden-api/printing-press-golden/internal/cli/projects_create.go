@@ -38,12 +38,11 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 					return fmt.Errorf("required flag \"%s\" not set", "visibility")
 				}
 			}
+			path := "/projects"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/projects"
 			params := map[string]string{}
 			var body map[string]any
 			if stdinBody {
