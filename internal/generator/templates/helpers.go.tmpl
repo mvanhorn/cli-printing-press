@@ -1491,6 +1491,31 @@ func responsePayloadAtPath(data json.RawMessage, responsePath string) (json.RawM
 	return rawAtPath(root, strings.TrimPrefix(responsePath, "$."))
 }
 
+func responsePayloadParentAtPath(data json.RawMessage, responsePath string) (map[string]json.RawMessage, bool) {
+	path := strings.TrimPrefix(strings.TrimSpace(responsePath), "$.")
+	if path == "" {
+		return nil, false
+	}
+	var current map[string]json.RawMessage
+	if err := json.Unmarshal(data, &current); err != nil {
+		return nil, false
+	}
+	parts := strings.Split(path, ".")
+	if len(parts) == 1 {
+		return current, true
+	}
+	for _, part := range parts[:len(parts)-1] {
+		raw, ok := current[part]
+		if !ok {
+			return nil, false
+		}
+		if err := json.Unmarshal(raw, &current); err != nil {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
 // printJSONFiltered marshals a Go-typed value through the same output
 // pipeline endpoint-mirror commands use. Hand-written novel commands that
 // build a typed slice/struct call this so --select, --compact, --csv, and
@@ -2640,14 +2665,28 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s%d results (cached, synced %s)\n", prefix, count, age)
 }
 
+func nonJSONPayloadError(data json.RawMessage) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '<' {
+		return authErr(fmt.Errorf("not authenticated or session expired; API returned HTML instead of JSON. " + {{printf "%q" (authSetupHint .Auth .Name)}}))
+	}
+	if len(trimmed) == 0 {
+		return apiErr(fmt.Errorf("API returned an empty response body; expected JSON"))
+	}
+	return apiErr(fmt.Errorf("API returned a non-JSON response; expected JSON"))
+}
+
+func assertLiveJSONBody(data json.RawMessage) error {
+	if json.Valid(data) {
+		return nil
+	}
+	return nonJSONPayloadError(data)
+}
+
 // wrapWithProvenance wraps response data in a provenance envelope:
-// {"results": ..., "meta": {...}}. When data is valid JSON, it embeds as
-// the parsed shape; when data is non-JSON (e.g., XML/RSS responses, plain
-// text), it embeds as a JSON string so json.Marshal doesn't choke on
-// "invalid character '<'" while still passing the raw payload through to
-// the consumer. Single-key array envelopes from the API (e.g.
-// {"results": [...]}, {"data": [...]}) are unwrapped first so the output
-// shape is the same regardless of the API's wrapper key.
+// {"results": ..., "meta": {...}}. Single-key array envelopes from the API
+// (e.g. {"results": [...]}, {"data": [...]}) are unwrapped first so the
+// output shape is the same regardless of the API's wrapper key.
 func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMessage, error) {
 	meta := map[string]any{"source": prov.Source}
 	if prov.SyncedAt != nil {
@@ -2666,7 +2705,7 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	if json.Valid(data) {
 		results = json.RawMessage(unwrapSingleKeyArray(data))
 	} else {
-		results = string(data)
+		return nil, nonJSONPayloadError(data)
 	}
 	envelope := map[string]any{
 		"results": results,

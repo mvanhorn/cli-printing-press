@@ -143,6 +143,10 @@ func resolveReadWithStrategy(ctx context.Context, c *client.Client, flags *rootF
 }
 
 func resolveReadWithStrategyAndResponsePath(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, responsePath string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
+	return resolveReadWithStrategyResponsePathAndJSONGuard(ctx, c, flags, strategy, resourceType, isList, path, params, headers, responsePath, true, hintWriter)
+}
+
+func resolveReadWithStrategyResponsePathAndJSONGuard(ctx context.Context, c *client.Client, flags *rootFlags, strategy string, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, responsePath string, guardLiveJSON bool, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
 	if err := validateDataSourceStrategy(flags, strategy); err != nil {
 		return nil, DataProvenance{}, err
 	}
@@ -154,6 +158,11 @@ func resolveReadWithStrategyAndResponsePath(ctx context.Context, c *client.Clien
 		data, err := c.GetWithHeaders(ctx, path, params, headers)
 		if err != nil {
 			return nil, DataProvenance{}, err
+		}
+		if guardLiveJSON {
+			if err := assertLiveJSONBody(data); err != nil {
+				return nil, DataProvenance{}, err
+			}
 		}
 		data = applyResponsePath(data, responsePath)
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
@@ -168,12 +177,22 @@ func resolveReadWithStrategyAndResponsePath(ctx context.Context, c *client.Clien
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
+		if guardLiveJSON {
+			if err := assertLiveJSONBody(data); err != nil {
+				return nil, DataProvenance{}, err
+			}
+		}
 		data = applyResponsePath(data, responsePath)
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
 		data, err := c.GetWithHeaders(ctx, path, params, headers)
 		if err == nil {
+			if guardLiveJSON {
+				if err := assertLiveJSONBody(data); err != nil {
+					return nil, DataProvenance{}, err
+				}
+			}
 			data = applyResponsePath(data, responsePath)
 			writeThroughCache(ctx, resourceType, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
@@ -212,6 +231,9 @@ func resolvePaginatedReadWithStrategy(ctx context.Context, c *client.Client, fla
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
+		if err := assertLiveJSONBody(data); err != nil {
+			return nil, DataProvenance{}, err
+		}
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 	}
 	switch flags.dataSource {
@@ -224,11 +246,17 @@ func resolvePaginatedReadWithStrategy(ctx context.Context, c *client.Client, fla
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
+		if err := assertLiveJSONBody(data); err != nil {
+			return nil, DataProvenance{}, err
+		}
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
 		data, err := paginatedGet(ctx, c, path, params, headers, fetchAll, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField)
 		if err == nil {
+			if err := assertLiveJSONBody(data); err != nil {
+				return nil, DataProvenance{}, err
+			}
 			writeThroughCache(ctx, resourceType, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 		}

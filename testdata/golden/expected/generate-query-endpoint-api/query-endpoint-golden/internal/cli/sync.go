@@ -531,7 +531,7 @@ func syncResource(ctx context.Context, c interface {
 
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, dataEnvelopeKeysForResource(resource, path))
+		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
 
 		// Page-int paginator fallback: when the API paginates by integer
 		// ?page=N and emits no body cursor, treat a full page as a signal
@@ -583,7 +583,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 {
-			if isEmptyPageResponse(data, dataEnvelopeKeysForResource(resource, path)) {
+			if isEmptyPageResponse(data, responsePathForResource(resource, path)...) {
 				break
 			}
 			// Single object response - try to store as-is
@@ -646,7 +646,7 @@ func syncResource(ctx context.Context, c interface {
 
 		totalCount += stored
 		atomic.AddInt64(&progressCount, int64(stored))
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, dataEnvelopeKeysForResource(resource, path)) {
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -870,7 +870,7 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 // 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
 // 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
-func extractPageItems(data json.RawMessage, cursorParam string, envelopeKeyOverrides ...[]string) ([]json.RawMessage, string, bool) {
+func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ...string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err == nil {
@@ -883,12 +883,43 @@ func extractPageItems(data json.RawMessage, cursorParam string, envelopeKeyOverr
 		return nil, "", false
 	}
 
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		if items, ok := extractObjectArray(pathData); ok {
+			nextCursor, hasMore := "", false
+			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
+				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
+			}
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			if nextCursor == "" {
+				nextCursor = outerCursor
+			}
+			hasMore = hasMore || outerHasMore
+			return items, nextCursor, hasMore
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil {
+			if items, ok := extractItemsFromEnvelope(inner); ok {
+				nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
+				outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+				if nextCursor == "" {
+					nextCursor = outerCursor
+				}
+				hasMore = hasMore || outerHasMore
+				return items, nextCursor, hasMore
+			}
+		}
+	}
+
 	if items, ok := extractItemsByKnownKeys(envelope); ok {
 		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
 		return items, nextCursor, hasMore
 	}
 
-	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
+	for _, key := range dataEnvelopeKeys {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1007,7 +1038,7 @@ func isDryRunResponse(data json.RawMessage) bool {
 	return json.Unmarshal(raw, &v) == nil && v
 }
 
-func isEmptyPageResponse(data json.RawMessage, envelopeKeyOverrides ...[]string) bool {
+func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
 	var direct []json.RawMessage
 	if err := json.Unmarshal(data, &direct); err == nil && !isJSONNull(data) {
 		return len(direct) == 0
@@ -1022,7 +1053,28 @@ func isEmptyPageResponse(data json.RawMessage, envelopeKeyOverrides ...[]string)
 		return true
 	}
 
-	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		if isJSONNull(pathData) {
+			if envelopeReportsFailure(envelope) {
+				return true
+			}
+			continue
+		}
+		var direct []json.RawMessage
+		if json.Unmarshal(pathData, &direct) == nil && !isJSONNull(pathData) {
+			return len(direct) == 0
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil && isEmptyPageEnvelope(inner) {
+			return true
+		}
+	}
+
+	for _, key := range dataEnvelopeKeys {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1228,12 +1280,12 @@ func pageAllowsPageIntFallback(data json.RawMessage) bool {
 	return pageMayHaveMore(data)
 }
 
-func pageMayHaveMore(data json.RawMessage, envelopeKeyOverrides ...[]string) bool {
-	hasMore, parsed := pageExplicitHasMore(data, envelopeKeyOverrides...)
+func pageMayHaveMore(data json.RawMessage, responsePaths ...string) bool {
+	hasMore, parsed := pageExplicitHasMore(data, responsePaths...)
 	return !parsed || hasMore
 }
 
-func pageExplicitHasMore(data json.RawMessage, envelopeKeyOverrides ...[]string) (bool, bool) {
+func pageExplicitHasMore(data json.RawMessage, responsePaths ...string) (bool, bool) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return false, false
@@ -1241,7 +1293,19 @@ func pageExplicitHasMore(data json.RawMessage, envelopeKeyOverrides ...[]string)
 	if hasMore, parsed := envelopeExplicitHasMore(envelope); parsed {
 		return hasMore, true
 	}
-	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil {
+			if hasMore, parsed := envelopeExplicitHasMore(inner); parsed {
+				return hasMore, true
+			}
+		}
+	}
+	for _, key := range dataEnvelopeKeys {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1608,20 +1672,17 @@ var pageItemKeys = []string{
 
 var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 
-var queryDataEnvelopeKeys = []string{"data", "Data", "result", "Result", "QueryResponse"}
-
-func dataEnvelopeKeysForResource(resource, path string) []string {
+func responsePathForResource(resource, path string) []string {
+	switch resource + "\x00" + path {
+	case "gadgets\x00/query":
+		return []string{"QueryResponse.Gadget"}
+	case "widgets\x00/query":
+		return []string{"QueryResponse.Widget"}
+	}
 	if _, ok := queryEntity[resource]; ok && path == queryPath {
-		return queryDataEnvelopeKeys
+		return []string{"QueryResponse"}
 	}
-	return dataEnvelopeKeys
-}
-
-func envelopeKeysOrDefault(overrides [][]string) []string {
-	if len(overrides) > 0 && len(overrides[0]) > 0 {
-		return overrides[0]
-	}
-	return dataEnvelopeKeys
+	return nil
 }
 
 var pageMetadataArrayKeys = map[string]bool{

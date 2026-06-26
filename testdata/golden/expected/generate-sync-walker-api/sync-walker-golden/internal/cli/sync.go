@@ -547,7 +547,7 @@ func syncResource(ctx context.Context, c interface {
 
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
 
 		// Page-int paginator fallback: when the API paginates by integer
 		// ?page=N and emits no body cursor, treat a full page as a signal
@@ -579,7 +579,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 {
-			if isEmptyPageResponse(data) {
+			if isEmptyPageResponse(data, responsePathForResource(resource, path)...) {
 				break
 			}
 			// Single object response - try to store as-is
@@ -642,7 +642,7 @@ func syncResource(ctx context.Context, c interface {
 
 		totalCount += stored
 		atomic.AddInt64(&progressCount, int64(stored))
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data) {
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -851,7 +851,7 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 // 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
 // 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
-func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessage, string, bool) {
+func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ...string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err == nil {
@@ -862,6 +862,37 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return nil, "", false
+	}
+
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		if items, ok := extractObjectArray(pathData); ok {
+			nextCursor, hasMore := "", false
+			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
+				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
+			}
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			if nextCursor == "" {
+				nextCursor = outerCursor
+			}
+			hasMore = hasMore || outerHasMore
+			return items, nextCursor, hasMore
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil {
+			if items, ok := extractItemsFromEnvelope(inner); ok {
+				nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
+				outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+				if nextCursor == "" {
+					nextCursor = outerCursor
+				}
+				hasMore = hasMore || outerHasMore
+				return items, nextCursor, hasMore
+			}
+		}
 	}
 
 	if items, ok := extractItemsByKnownKeys(envelope); ok {
@@ -988,7 +1019,7 @@ func isDryRunResponse(data json.RawMessage) bool {
 	return json.Unmarshal(raw, &v) == nil && v
 }
 
-func isEmptyPageResponse(data json.RawMessage) bool {
+func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
 	var direct []json.RawMessage
 	if err := json.Unmarshal(data, &direct); err == nil && !isJSONNull(data) {
 		return len(direct) == 0
@@ -1001,6 +1032,27 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 
 	if isEmptyPageEnvelope(envelope) {
 		return true
+	}
+
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		if isJSONNull(pathData) {
+			if envelopeReportsFailure(envelope) {
+				return true
+			}
+			continue
+		}
+		var direct []json.RawMessage
+		if json.Unmarshal(pathData, &direct) == nil && !isJSONNull(pathData) {
+			return len(direct) == 0
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil && isEmptyPageEnvelope(inner) {
+			return true
+		}
 	}
 
 	for _, key := range dataEnvelopeKeys {
@@ -1209,18 +1261,30 @@ func pageAllowsPageIntFallback(data json.RawMessage) bool {
 	return pageMayHaveMore(data)
 }
 
-func pageMayHaveMore(data json.RawMessage) bool {
-	hasMore, parsed := pageExplicitHasMore(data)
+func pageMayHaveMore(data json.RawMessage, responsePaths ...string) bool {
+	hasMore, parsed := pageExplicitHasMore(data, responsePaths...)
 	return !parsed || hasMore
 }
 
-func pageExplicitHasMore(data json.RawMessage) (bool, bool) {
+func pageExplicitHasMore(data json.RawMessage, responsePaths ...string) (bool, bool) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return false, false
 	}
 	if hasMore, parsed := envelopeExplicitHasMore(envelope); parsed {
 		return hasMore, true
+	}
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil {
+			if hasMore, parsed := envelopeExplicitHasMore(inner); parsed {
+				return hasMore, true
+			}
+		}
 	}
 	for _, key := range dataEnvelopeKeys {
 		raw, ok := envelope[key]
@@ -1765,7 +1829,7 @@ func syncDependentResource(ctx context.Context, c interface {
 				return syncResult{Resource: dep.Name, Count: 0, Duration: time.Since(started)}
 			}
 
-			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(dep.Name, path)...)
 
 			// Page-int paginator fallback: mirrors syncResource so dependent
 			// resources on integer ?page=N APIs also advance past page 1.
@@ -1795,7 +1859,7 @@ func syncDependentResource(ctx context.Context, c interface {
 			}
 
 			if len(items) == 0 {
-				if isEmptyPageResponse(data) {
+				if isEmptyPageResponse(data, responsePathForResource(dep.Name, path)...) {
 					outcome.complete = true // parent legitimately has zero children
 				} else {
 					outcome.reason = "empty_non_list_response"
@@ -1869,7 +1933,7 @@ func syncDependentResource(ctx context.Context, c interface {
 					}
 				}
 			}
-			if resourceSupportsPagination(dep.Name) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data) {
+			if resourceSupportsPagination(dep.Name) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(dep.Name, path)...) {
 				emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, dep.Name, parentID)
 			}
 			pagesFetched++
@@ -2050,6 +2114,12 @@ var pageItemKeys = []string{
 }
 
 var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
+
+func responsePathForResource(resource, path string) []string {
+	switch resource + "\x00" + path {
+	}
+	return nil
+}
 
 var pageMetadataArrayKeys = map[string]bool{
 	"errors": true, "Errors": true,
