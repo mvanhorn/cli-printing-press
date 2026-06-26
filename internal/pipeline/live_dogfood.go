@@ -62,6 +62,7 @@ const liveDogfoodVerdictCookieAuthNoSession = "skip-cookie-auth-no-session"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
 const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
+const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner credentials"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
@@ -166,10 +167,11 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		timeout = 30 * time.Second
 	}
 
-	binaryPath, err := liveDogfoodBinaryPath(opts.CLIDir, opts.BinaryName)
+	binaryPath, cleanupBinary, err := liveDogfoodBinaryPath(opts.CLIDir, opts.BinaryName)
 	if err != nil {
 		return nil, err
 	}
+	defer cleanupBinary()
 
 	commands, err := discoverLiveDogfoodCommands(binaryPath)
 	if err != nil {
@@ -434,23 +436,27 @@ func copyLiveDogfoodCredentialFile(src, dst string) (*liveDogfoodCredentialMirro
 	}, nil
 }
 
-func liveDogfoodBinaryPath(dir, name string) (string, error) {
+func liveDogfoodBinaryPath(dir, name string) (string, func(), error) {
 	if refresh, err := refreshLiveCheckStageBinary(dir, name); err != nil {
-		return "", fmt.Errorf("rebuilding staged binary: %w", err)
+		return "", func() {}, fmt.Errorf("rebuilding staged binary: %w", err)
 	} else if refresh.Action == "failed" {
-		return "", fmt.Errorf("rebuilding staged binary: %s", refresh.Reason)
+		return "", func() {}, fmt.Errorf("rebuilding staged binary: %s", refresh.Reason)
 	}
 	if path, err := resolveBinaryPath(dir, name); err == nil {
-		return path, nil
+		return path, func() {}, nil
 	} else if strings.TrimSpace(name) != "" {
-		return "", err
+		return "", func() {}, err
 	}
 
 	cliName := findCLIName(dir)
 	if cliName == "" {
-		return "", fmt.Errorf("no runnable binary found in %q and no cmd/<cli-name> package to build", dir)
+		return "", func() {}, fmt.Errorf("no runnable binary found in %q and no cmd/<cli-name> package to build", dir)
 	}
-	return buildDogfoodBinary(dir, cliName)
+	path, err := buildDogfoodBinary(dir, cliName)
+	if err != nil {
+		return "", func() {}, err
+	}
+	return path, func() { _ = os.Remove(path) }, nil
 }
 
 func discoverLiveDogfoodCommands(binaryPath string) ([]liveDogfoodCommand, error) {
@@ -715,6 +721,9 @@ func resolveCommandPositionals(command liveDogfoodCommand, happyArgs []string, a
 			} else if storeAvailable {
 				return nil, true, reasonRequiredParamFixture, ""
 			}
+			if liveDogfoodSyntheticPositionalValue(happyArgs, command.Path, i, nPlaceholders) {
+				return nil, true, reasonRequiredParamFixture, ""
+			}
 			return nil, true, fmt.Sprintf("no list companion at depth %d for %q", i, name), ""
 		}
 
@@ -792,6 +801,30 @@ func happyPathSyntheticParamFixtureSkip(command liveDogfoodCommand, happyArgs []
 		return ""
 	}
 	return reasonRequiredParamFixture
+}
+
+func liveDogfoodSyntheticPositionalValue(happyArgs, commandPath []string, position, positionalCount int) bool {
+	start := min(len(commandPath), len(happyArgs))
+	seen := 0
+	afterTerminator := false
+	for i := start; i < len(happyArgs); i++ {
+		arg := happyArgs[i]
+		if arg == "--" {
+			afterTerminator = true
+			continue
+		}
+		if !afterTerminator && strings.HasPrefix(arg, "-") {
+			if !strings.Contains(arg, "=") && liveDogfoodFlagHasSeparateValue(happyArgs, start, i, positionalCount) {
+				i++
+			}
+			continue
+		}
+		if seen == position {
+			return liveDogfoodSyntheticExampleValue(arg)
+		}
+		seen++
+	}
+	return false
 }
 
 func happyArgsContainSyntheticFlagPlaceholder(happyArgs, commandPath []string) bool {
@@ -1002,15 +1035,19 @@ func extractFirstIDFromJSON(stdout string) (string, bool) {
 	if id, ok := pickIDFromArrayKey(root, "results"); ok {
 		return id, true
 	}
-	// Path 2: top-level array .[0].id
+	// Path 2: .results.items[0].id / .results.items[0].<resource>_id
+	if id, ok := pickIDFromNestedArrayKey(root, "results", "items"); ok {
+		return id, true
+	}
+	// Path 3: top-level array .[0].id
 	if id, ok := pickIDFromTopArray(root); ok {
 		return id, true
 	}
-	// Path 3: .items[0].id
+	// Path 4: .items[0].id
 	if id, ok := pickIDFromArrayKey(root, "items"); ok {
 		return id, true
 	}
-	// Path 4: .data[0].id (only when .data is an ARRAY — GraphQL data is an object)
+	// Path 5: .data[0].id (only when .data is an ARRAY — GraphQL data is an object)
 	if obj, ok := root.(map[string]any); ok {
 		if dataArr, ok := obj["data"].([]any); ok {
 			if id, ok := firstIDFromArray(dataArr); ok {
@@ -1018,15 +1055,15 @@ func extractFirstIDFromJSON(stdout string) (string, bool) {
 			}
 		}
 	}
-	// Path 5: .list[0].id
+	// Path 6: .list[0].id
 	if id, ok := pickIDFromArrayKey(root, "list"); ok {
 		return id, true
 	}
-	// Path 6: .data.<any>.nodes[0].id
+	// Path 7: .data.<any>.nodes[0].id
 	if id, ok := pickIDFromGraphQLConnection(root, "nodes", false); ok {
 		return id, true
 	}
-	// Path 7: .data.<any>.edges[0].node.id
+	// Path 8: .data.<any>.edges[0].node.id
 	if id, ok := pickIDFromGraphQLConnection(root, "edges", true); ok {
 		return id, true
 	}
@@ -1039,6 +1076,22 @@ func pickIDFromArrayKey(root any, key string) (string, bool) {
 		return "", false
 	}
 	arr, ok := obj[key].([]any)
+	if !ok {
+		return "", false
+	}
+	return firstIDFromArray(arr)
+}
+
+func pickIDFromNestedArrayKey(root any, outerKey, innerKey string) (string, bool) {
+	obj, ok := root.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	outer, ok := obj[outerKey].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	arr, ok := outer[innerKey].([]any)
 	if !ok {
 		return "", false
 	}
@@ -1061,7 +1114,10 @@ func firstIDFromArray(arr []any) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return idValueAsString(first["id"])
+	if id, ok := idValueAsString(first["id"]); ok {
+		return id, true
+	}
+	return "", false
 }
 
 // pickIDFromGraphQLConnection walks .data... looking for a `connectionKey`
@@ -1279,11 +1335,16 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(happyRun); requiredParamReason != "" {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = requiredParamReason
+		} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(happyRun); featureAbsentReason != "" {
+			happyResult.Status = LiveDogfoodStatusSkip
+			happyResult.Reason = featureAbsentReason
 		}
 		results = append(results, happyResult)
 
 		if happyResult.Status == LiveDogfoodStatusSkip &&
-			(happyResult.Reason == reasonUnavailableRunnerCredentials || happyResult.Reason == reasonRequiredParamFixture) {
+			(happyResult.Reason == reasonUnavailableRunnerCredentials ||
+				happyResult.Reason == reasonRequiredParamFixture ||
+				happyResult.Reason == reasonFeatureAbsentFixture) {
 			jsonResult := skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason)
 			jsonResult.FixtureSource = fixtureSource
 			results = append(results, jsonResult)
@@ -1306,6 +1367,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			} else if requiredParamReason := liveDogfoodRequiredParamFixtureReason(jsonRun); requiredParamReason != "" {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = requiredParamReason
+			} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(jsonRun); featureAbsentReason != "" {
+				jsonResult.Status = LiveDogfoodStatusSkip
+				jsonResult.Reason = featureAbsentReason
 			}
 			results = append(results, jsonResult)
 		} else {
@@ -1880,6 +1944,28 @@ func liveDogfoodRequiredParamFixtureReason(run liveDogfoodRun) string {
 	}
 	if containsAnyOf(output, liveDogfoodRequiredParamFixturePhrases) {
 		return reasonRequiredParamFixture
+	}
+	return ""
+}
+
+func liveDogfoodFeatureAbsentFixtureReason(run liveDogfoodRun) string {
+	if run.exitCode == 0 {
+		return ""
+	}
+	output := strings.ToLower(run.stdout + " " + run.stderr)
+	if !strings.Contains(output, "http 404") && !strings.Contains(output, "http 403") {
+		return ""
+	}
+	featureAbsentPhrases := []string{
+		"feature not enabled",
+		"upgrade your plan",
+		"requires a paid plan",
+		"plan does not include",
+		"plan doesn't include",
+		"account does not have access to this feature",
+	}
+	if containsAnyOf(output, featureAbsentPhrases) {
+		return reasonFeatureAbsentFixture
 	}
 	return ""
 }

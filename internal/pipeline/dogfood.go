@@ -2970,16 +2970,23 @@ func findCLINames(dir string) []string {
 }
 
 func buildDogfoodBinary(dir, cliName string) (string, error) {
-	buildPath, err := filepath.Abs(filepath.Join(dir, cliName+"-dogfood"))
+	tmp, err := os.CreateTemp("", cliName+"-dogfood-*")
 	if err != nil {
-		return "", fmt.Errorf("resolving dogfood binary path: %w", err)
+		return "", fmt.Errorf("creating dogfood binary temp file: %w", err)
 	}
+	buildPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(buildPath)
+		return "", fmt.Errorf("closing dogfood binary temp file: %w", err)
+	}
+	_ = os.Remove(buildPath)
 	buildPath = platform.ExecutablePath(buildPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", buildPath, "./cmd/"+cliName)
 	cmd.Dir = dir
 	if err := cmd.Run(); err != nil {
+		_ = os.Remove(buildPath)
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("timed out after 2m")
 		}

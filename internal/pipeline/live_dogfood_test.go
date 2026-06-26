@@ -977,6 +977,61 @@ func main() {
 	assert.Equal(t, LiveDogfoodStatusPass, happy.Status)
 }
 
+func TestRunLiveDogfoodDoesNotLeaveFallbackDogfoodBinary(t *testing.T) {
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfoodCLIName(t, dir, binaryName)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/live-dogfood-artifact-test\n\ngo 1.23\n"), 0o644))
+	cmdDir := filepath.Join(dir, "cmd", binaryName)
+	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	mainPath := filepath.Join(cmdDir, "main.go")
+	mainSource := `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	switch strings.Join(os.Args[1:], " ") {
+	case "agent-context":
+		fmt.Print(` + "`" + `{"commands":[{"name":"widgets","subcommands":[{"name":"list"}]}]}` + "`" + `)
+	case "widgets list --help":
+		fmt.Print(` + "`" + `List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list
+
+Flags:
+      --json    Output JSON
+` + "`" + `)
+	case "widgets list", "widgets list --json":
+		fmt.Print(` + "`" + `{"ok":true}` + "`" + `)
+	default:
+		fmt.Fprintf(os.Stderr, "unexpected args: %v\n", os.Args[1:])
+		os.Exit(2)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(mainPath, []byte(mainSource), 0o644))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: "",
+		Level:      "full",
+		Timeout:    5 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "PASS", report.Verdict, report.Tests)
+	assert.NoFileExists(t, filepath.Join(dir, binaryName+"-dogfood"))
+	assert.NotContains(t, report.Binary, dir+string(os.PathSeparator), "fallback dogfood binary should not be built in the CLI dir")
+	assert.NoFileExists(t, report.Binary)
+}
+
 func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -1824,6 +1879,110 @@ exit 99
 	return dir, binaryName
 }
 
+func writeLiveDogfoodSyntheticID404Fixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"notes","subcommands":[
+      {"name":"get","annotations":{"pp:method":"GET","pp:happy-args":"note_id=550e8400-e29b-41d4-a716-446655440000"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "notes" ] && [ "$2" = "get" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Get a note.
+
+Usage:
+  fixture-pp-cli notes get <note_id> [flags]
+
+Examples:
+  fixture-pp-cli notes get 550e8400-e29b-41d4-a716-446655440000
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "notes" ] && [ "$2" = "get" ]; then
+  if [ "${3:-}" = "__printing_press_invalid__" ]; then
+    echo 'HTTP 404: {"error":"note not found"}' >&2
+    exit 3
+  fi
+  echo 'HTTP 404: {"error":"note not found"}' >&2
+  exit 3
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodFeatureAbsentFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"workspaces","subcommands":[
+      {"name":"list","annotations":{"pp:method":"GET","mcp:read-only":"true"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "workspaces" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List workspaces.
+
+Usage:
+  fixture-pp-cli workspaces list [flags]
+
+Examples:
+  fixture-pp-cli workspaces list
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "workspaces" ] && [ "$2" = "list" ]; then
+  echo 'HTTP 404: {"error":"feature not enabled for this workspace"}' >&2
+  exit 3
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
 func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
 	t.Parallel()
 
@@ -1934,6 +2093,44 @@ func TestLiveDogfoodRequiredParamFixtureReason(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, liveDogfoodRequiredParamFixtureReason(tc.run))
+		})
+	}
+}
+
+func TestLiveDogfoodFeatureAbsentFixtureReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		run  liveDogfoodRun
+		want string
+	}{
+		{
+			name: "explicit feature unavailable 404 is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"feature not enabled for this workspace"}`, exitCode: 1},
+			want: reasonFeatureAbsentFixture,
+		},
+		{
+			name: "plain workspace not found remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"workspace not found"}`, exitCode: 1},
+		},
+		{
+			name: "plain team not found remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"team not found"}`, exitCode: 1},
+		},
+		{
+			name: "generic not available for remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"note is not available for account acct_1"}`, exitCode: 1},
+		},
+		{
+			name: "successful output is not blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"feature not enabled"}`, exitCode: 0},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, liveDogfoodFeatureAbsentFixtureReason(tc.run))
 		})
 	}
 }
@@ -2342,6 +2539,21 @@ func TestExtractFirstIDFromJSON(t *testing.T) {
 			want:   "cus_xyz", ok: true,
 		},
 		{
+			name:   "provenance envelope with only resource id field is not harvested without context",
+			stdout: `{"results":{"items":[{"note_id":"note-real-1"}]},"meta":{"source":"live"}}`,
+			want:   "", ok: false,
+		},
+		{
+			name:   "foreign id-like field is not harvested",
+			stdout: `{"results":{"items":[{"account_id":"acct_1"}]}}`,
+			want:   "", ok: false,
+		},
+		{
+			name:   "ambiguous foreign and resource ids are not harvested",
+			stdout: `{"results":[{"account_id":"acct_1","note_id":"note_1"}]}`,
+			want:   "", ok: false,
+		},
+		{
 			name:   "list shape (long-tail)",
 			stdout: `{"list":[{"id":"L1"}]}`,
 			want:   "L1", ok: true,
@@ -2395,6 +2607,58 @@ func TestExtractFirstIDFromJSON(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestRunLiveDogfoodSkipsAnnotatedSyntheticID404(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodSyntheticID404Fixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	happy := findResultByCommandKind(report, "notes get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "notes get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonRequiredParamFixture, jsonResult.Reason)
+}
+
+func TestRunLiveDogfoodSkipsFeatureAbsentNotFound(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodFeatureAbsentFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	happy := findResultByCommandKind(report, "workspaces list", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, "blocked-fixture: feature absent for runner credentials", happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "workspaces list", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, "blocked-fixture: feature absent for runner credentials", jsonResult.Reason)
 }
 
 func TestBuildSiblingMap(t *testing.T) {
@@ -4921,7 +5185,7 @@ exit 99
 		timeout:  time.Second,
 	})
 	assert.True(t, skipped)
-	assert.Contains(t, reason, "no list companion")
+	assert.Equal(t, reasonRequiredParamFixture, reason)
 
 	// Positional form: <name>=value contributes the value as a positional arg.
 	// resolveCommandPositionals must NOT re-resolve (or skip) it even when the
@@ -4967,6 +5231,44 @@ func TestHappyArgsContainSyntheticFlagPlaceholder(t *testing.T) {
 	assert.False(t, happyArgsContainSyntheticFlagPlaceholder(
 		[]string{"widgets", "search", "--query", "example-value"},
 		[]string{"widgets", "search"},
+	))
+}
+
+func TestLiveDogfoodSyntheticPositionalValueHandlesBooleanFlags(t *testing.T) {
+	t.Parallel()
+
+	commandPath := []string{"widgets", "get"}
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--verbose", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
+		1,
+	))
+	assert.False(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--limit", "5", "real-widget-1"},
+		commandPath,
+		0,
+		1,
+	))
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--limit", "5", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
+		1,
+	))
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
+		1,
+	))
+
+	movePath := []string{"widgets", "move"}
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "move", "--verbose", "550e8400-e29b-41d4-a716-446655440000", "real-target"},
+		movePath,
+		0,
+		2,
 	))
 }
 
