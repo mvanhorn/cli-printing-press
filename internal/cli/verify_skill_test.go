@@ -282,6 +282,39 @@ func Execute() error {
 	require.Contains(t, string(out), "All checks passed")
 }
 
+func TestVerifySkill_QuotedHashIsNotTreatedAsComment(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\n" +
+		"fixture-pp-cli compare \"topic #tag\" expected\n" +
+		"fixture-pp-cli compare 'topic #tag' expected\n" +
+		"fixture-pp-cli compare literal expected # trailing comment\n" +
+		"```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"compare.go": `package cli
+import "github.com/spf13/cobra"
+func newCompareCmd() *cobra.Command {
+	return &cobra.Command{Use: "compare <left> <right>"}
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newCompareCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
+	require.NoError(t, err, "quoted # arguments must remain positional while unquoted trailing comments are stripped: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+}
+
 func TestVerifySkill_PositionalArgsStillFailWithoutShellOperator(t *testing.T) {
 	t.Parallel()
 

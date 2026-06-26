@@ -305,6 +305,29 @@ func TestValidatePhase5Gate_ManualLevelDocumentsAcceptedValues(t *testing.T) {
 	assert.Contains(t, result.Detail, "dogfood --live --write-acceptance")
 }
 
+func TestValidatePhase5Gate_ReportsMultipleAcceptanceMarkerIssues(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 2,
+		Status:        "maybe",
+		Level:         "smoke",
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "unsupported phase5 marker schema_version 2")
+	assert.Contains(t, result.Detail, "phase5 marker missing api_name")
+	assert.Contains(t, result.Detail, "phase5 marker missing run_id")
+	assert.Contains(t, result.Detail, `unknown phase5 gate status "maybe"`)
+	assert.Contains(t, result.Detail, "accepted: pass, fail")
+	assert.Contains(t, result.Detail, `unknown phase5 acceptance level "smoke"`)
+	assert.Contains(t, result.Detail, "accepted: quick, full")
+	assert.Contains(t, result.Detail, "missing matrix_size")
+	assert.Contains(t, result.Detail, "missing tests_passed")
+}
+
 func TestValidatePhase5Gate_UnknownLevelDocumentsAcceptedValues(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}

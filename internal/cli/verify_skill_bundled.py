@@ -813,6 +813,48 @@ def _split_before_shell_operator(line: str) -> str:
     return line
 
 
+def _strip_trailing_shell_comment(line: str) -> str:
+    quote: str | None = None
+    escaped = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if escaped:
+                escaped = False
+                i += 1
+                continue
+            if ch == "\\":
+                escaped = True
+                i += 1
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i].rstrip()
+        i += 1
+    return line
+
+
 def _shell_operator_cut_index(line: str, operator_index: int) -> int:
     # Redirections may be prefixed by a file descriptor, e.g. `2>err`.
     if line[operator_index] in "><":
@@ -915,10 +957,7 @@ def extract_cli_invocations(skill: Path, cli_binary: str, cli_dir: Path | None =
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Strip trailing comment
-            cmt = line.find(" #")
-            if cmt != -1:
-                line = line[:cmt].strip()
+            line = _strip_trailing_shell_comment(line)
             if not line.startswith(cli_binary + " "):
                 continue
             # Strip shell command substitutions $(...) and backtick forms
