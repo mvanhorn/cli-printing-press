@@ -2130,17 +2130,17 @@ func detectIDWalkParams(endpoint spec.Endpoint) (string, string, int) {
 		return "", "", 0
 	}
 	pageSize := 100
-	if defaultSize, ok := paginationLimitDefault(endpoint); ok {
+	if defaultSize, ok := paginationLimitDefault(endpoint, resolvedLimitParam); ok {
 		pageSize = defaultSize
 	}
 	return filterParam, resolvedLimitParam, pageSize
 }
 
-func paginationLimitDefault(endpoint spec.Endpoint) (int, bool) {
-	if endpoint.Pagination == nil || strings.TrimSpace(endpoint.Pagination.LimitParam) == "" {
+func paginationLimitDefault(endpoint spec.Endpoint, limitParam string) (int, bool) {
+	if strings.TrimSpace(limitParam) == "" {
 		return 0, false
 	}
-	limitName := strings.ToLower(endpoint.Pagination.LimitParam)
+	limitName := strings.ToLower(limitParam)
 	params := append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...)
 	for _, param := range params {
 		if strings.ToLower(param.Name) != limitName {
@@ -2190,7 +2190,7 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 		cursorType = inferPaginationType(cursorParam)
 	}
 	pageSize := 100
-	if defaultSize, ok := paginationLimitDefault(endpoint); ok {
+	if defaultSize, ok := paginationLimitDefault(endpoint, limitParam); ok {
 		pageSize = defaultSize
 	}
 	return cursorParam, cursorType, limitParam, pageSize

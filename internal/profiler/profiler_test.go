@@ -2776,7 +2776,7 @@ func TestProfilePagination_InfersFromPlainParamsWhenNoExplicitBlock(t *testing.T
 					"list": {
 						Method:   "GET",
 						Path:     "/agents",
-						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "count", Type: "int"}},
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "count", Type: "int", Default: 25}},
 						Response: spec.ResponseDef{Type: "array"},
 					},
 				},
@@ -2795,8 +2795,15 @@ func TestProfilePagination_InfersFromPlainParamsWhenNoExplicitBlock(t *testing.T
 	}
 
 	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
 	assert.Equal(t, "offset", profile.Pagination.CursorParam, "plain offset param must be picked up")
 	assert.Equal(t, "count", profile.Pagination.PageSizeParam, "plain count param must be picked up as limit")
+	require.Contains(t, byName, "agents")
+	assert.Equal(t, 25, byName["agents"].PaginationPageSize,
+		"inferred limit param must still read the spec-declared default")
 }
 
 // Explicit pagination: blocks must continue to win over plain-param inference.

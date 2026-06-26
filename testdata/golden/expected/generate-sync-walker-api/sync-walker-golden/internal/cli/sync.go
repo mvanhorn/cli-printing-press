@@ -1587,7 +1587,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	var totalCount int
 	var deniedParents int
 	var firstDenial *accessWarning
-	pageSize := determinePaginationDefaults(dep.Name)
+	pageSize := determinePaginationDefaults(dep.ParentTable + "/" + dep.Name)
 	depSinceParam := syncResourceSinceParam(dep.Name)
 	depSinceTS := sinceTS
 	if depSinceTS != "" && depSinceParam == "" {

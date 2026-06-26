@@ -1099,7 +1099,7 @@ type paginationDefaults struct {
 func determinePaginationDefaults(resource string) paginationDefaults {
 	switch resource {
 {{- range .PaginationDefaultResources}}
-	case "{{.Name}}":
+	case "{{.Key}}":
 		return paginationDefaults{
 			cursorParam: "{{if .CursorParam}}{{.CursorParam}}{{else}}{{$.Pagination.CursorParam}}{{end}}",
 			cursorType:  "{{if .CursorType}}{{.CursorType}}{{else}}{{$.Pagination.CursorType}}{{end}}",
@@ -2508,7 +2508,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	var totalCount int
 	var deniedParents int
 	var firstDenial *accessWarning
-	pageSize := determinePaginationDefaults(dep.Name)
+	pageSize := determinePaginationDefaults(dep.ParentTable + "/" + dep.Name)
 	depSinceParam := syncResourceSinceParam(dep.Name)
 {{- if $hasIDWalk}}
 	idWalk, usesIDWalk := syncResourceIDWalkConfig(dep.Name)

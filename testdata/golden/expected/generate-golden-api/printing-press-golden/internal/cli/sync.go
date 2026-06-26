@@ -777,7 +777,7 @@ func determinePaginationDefaults(resource string) paginationDefaults {
 			limitParam:  "limit",
 			limit:       25,
 		}
-	case "tasks":
+	case "projects/tasks":
 		return paginationDefaults{
 			cursorParam: "cursor",
 			cursorType:  "cursor",
@@ -1616,7 +1616,7 @@ func syncDependentResource(ctx context.Context, c interface {
 	var totalCount int
 	var deniedParents int
 	var firstDenial *accessWarning
-	pageSize := determinePaginationDefaults(dep.Name)
+	pageSize := determinePaginationDefaults(dep.ParentTable + "/" + dep.Name)
 	depSinceParam := syncResourceSinceParam(dep.Name)
 	depSinceTS := sinceTS
 	if depSinceTS != "" && depSinceParam == "" {

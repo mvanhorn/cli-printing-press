@@ -3500,6 +3500,7 @@ type criticalResourceEntry struct {
 }
 
 type paginationDefaultEntry struct {
+	Key         string
 	Name        string
 	CursorParam string
 	CursorType  string
@@ -3509,14 +3510,15 @@ type paginationDefaultEntry struct {
 
 func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []paginationDefaultEntry {
 	defaults := map[string]paginationDefaultEntry{}
-	add := func(name, cursorParam, cursorType, limitParam string, limit int, supportsPagination bool) {
-		if !supportsPagination || name == "" {
+	add := func(key, name, cursorParam, cursorType, limitParam string, limit int, supportsPagination bool) {
+		if !supportsPagination || key == "" || name == "" {
 			return
 		}
-		if _, exists := defaults[name]; exists {
+		if _, exists := defaults[key]; exists {
 			return
 		}
-		defaults[name] = paginationDefaultEntry{
+		defaults[key] = paginationDefaultEntry{
+			Key:         key,
 			Name:        name,
 			CursorParam: cursorParam,
 			CursorType:  cursorType,
@@ -3525,21 +3527,21 @@ func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []
 		}
 	}
 	for _, resource := range syncable {
-		add(resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
+		add(resource.Name, resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
 	}
 	for _, resource := range dependent {
-		add(resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
+		add(resource.ParentResource+"/"+resource.Name, resource.Name, resource.PaginationCursorParam, resource.PaginationCursorType, resource.PaginationLimitParam, resource.PaginationPageSize, resource.SupportsPagination)
 	}
 
-	names := make([]string, 0, len(defaults))
-	for name := range defaults {
-		names = append(names, name)
+	keys := make([]string, 0, len(defaults))
+	for key := range defaults {
+		keys = append(keys, key)
 	}
-	sort.Strings(names)
+	sort.Strings(keys)
 
-	entries := make([]paginationDefaultEntry, len(names))
-	for i, name := range names {
-		entries[i] = defaults[name]
+	entries := make([]paginationDefaultEntry, len(keys))
+	for i, key := range keys {
+		entries[i] = defaults[key]
 	}
 	return entries
 }

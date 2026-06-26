@@ -13731,6 +13731,40 @@ func TestGeneratedSyncUsesPerResourcePaginationDefaults(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./internal/cli")
 }
 
+func TestPaginationDefaultEntriesDistinguishDependentContext(t *testing.T) {
+	entries := paginationDefaultEntries(
+		[]profiler.SyncableResource{{
+			Name:                  "tasks",
+			SupportsPagination:    true,
+			PaginationCursorParam: "after",
+			PaginationCursorType:  "cursor",
+			PaginationLimitParam:  "limit",
+			PaginationPageSize:    100,
+		}},
+		[]profiler.DependentResource{{
+			Name:                  "tasks",
+			ParentResource:        "projects",
+			SupportsPagination:    true,
+			PaginationCursorParam: "offset",
+			PaginationCursorType:  "offset",
+			PaginationLimitParam:  "per_page",
+			PaginationPageSize:    25,
+		}},
+	)
+
+	byKey := map[string]paginationDefaultEntry{}
+	for _, entry := range entries {
+		byKey[entry.Key] = entry
+	}
+
+	require.Contains(t, byKey, "tasks")
+	require.Contains(t, byKey, "projects/tasks")
+	assert.Equal(t, "after", byKey["tasks"].CursorParam)
+	assert.Equal(t, "offset", byKey["projects/tasks"].CursorParam)
+	assert.Equal(t, "per_page", byKey["projects/tasks"].LimitParam)
+	assert.Equal(t, 25, byKey["projects/tasks"].Limit)
+}
+
 func TestGeneratedSyncUsesPOSTForRPCStyleListResources(t *testing.T) {
 	t.Parallel()
 
