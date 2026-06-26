@@ -45,7 +45,7 @@ func TestPrintingPressSkillTranscendenceCollectorSliceInit(t *testing.T) {
 	require.NoError(t, err)
 
 	content := string(data)
-	require.Contains(t, content, "results := make([]yourRowType, 0)")
+	require.Contains(t, content, "results := make([]yourRowType, 0, len(rawRows))")
 	require.Contains(t, content, "empty marshals")
 	require.NotContains(t, content, "var results []yourRowType")
 
