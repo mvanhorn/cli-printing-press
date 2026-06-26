@@ -75,7 +75,7 @@ var shipcheckLegs = []shipcheckLeg{
 	{
 		name: "verify",
 		args: func(o *shipcheckOpts) []string {
-			a := []string{"verify", "--dir", o.dir}
+			a := []string{"verify", "--dir", o.dir, "--write-manifest", shipcheckManifestPath(o)}
 			if o.verifyNoSpec && o.spec != "" {
 				a = append(a, "--no-spec")
 			} else if o.spec != "" {
@@ -147,7 +147,7 @@ var shipcheckLegs = []shipcheckLeg{
 	{
 		name: "scorecard",
 		args: func(o *shipcheckOpts) []string {
-			a := []string{"scorecard", "--dir", o.dir}
+			a := []string{"scorecard", "--dir", o.dir, "--write-manifest", shipcheckManifestPath(o)}
 			if o.researchDir != "" {
 				a = append(a, "--research-dir", o.researchDir)
 			}
@@ -160,6 +160,10 @@ var shipcheckLegs = []shipcheckLeg{
 			return a
 		},
 	},
+}
+
+func shipcheckManifestPath(o *shipcheckOpts) string {
+	return filepath.Join(o.dir, pipeline.CLIManifestFilename)
 }
 
 func shipcheckResearchPath(o *shipcheckOpts) string {

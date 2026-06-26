@@ -19,6 +19,7 @@ func newScorecardCmd() *cobra.Command {
 	var asJSON bool
 	var liveCheck bool
 	var liveCheckTimeout time.Duration
+	var writeManifest string
 
 	cmd := &cobra.Command{
 		Use:   "scorecard",
@@ -59,6 +60,11 @@ func newScorecardCmd() *cobra.Command {
 					Timeout:     liveCheckTimeout,
 				})
 				pipeline.ApplyLiveCheckToScorecard(sc, live)
+			}
+			if writeManifest != "" {
+				if _, err := pipeline.PersistScorecardToManifest(writeManifest, sc, researchDir); err != nil {
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("writing scorecard to manifest: %w", err)}
+				}
 			}
 
 			if asJSON {
@@ -135,6 +141,7 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&liveCheck, "live-check", false, "Sample novel-feature examples against real targets and cap Insight when flagships return broken output")
 	cmd.Flags().DurationVar(&liveCheckTimeout, "live-check-timeout", 10*time.Second, "Per-feature timeout for live check invocations")
+	cmd.Flags().StringVar(&writeManifest, "write-manifest", "", "Path to .printing-press.json to update with scorecard summary and built novel features")
 
 	return cmd
 }
