@@ -7134,7 +7134,7 @@ func findEndpoint(t *testing.T, parsed *spec.APISpec, path string) spec.Endpoint
 	return spec.Endpoint{}
 }
 
-func TestParseReadsXResourceIDAndXCritical(t *testing.T) {
+func TestParseReadsXResourceIDCriticalAndSyncable(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -7143,6 +7143,7 @@ func TestParseReadsXResourceIDAndXCritical(t *testing.T) {
 		extraExt     string // extra path-item extensions injected raw
 		wantIDField  string
 		wantCritical bool
+		wantSyncable bool
 	}{
 		{
 			name: "x-resource-id explicit string wins over schema fallbacks",
@@ -7192,10 +7193,16 @@ func TestParseReadsXResourceIDAndXCritical(t *testing.T) {
 			wantCritical: false,
 		},
 		{
-			name:         "no extensions: response-schema fallback picks id",
-			extraExt:     ``,
+			name: "x-pp-syncable marks endpoint syncable",
+			extraExt: `    x-pp-syncable: true
+`,
 			wantIDField:  "id",
-			wantCritical: false,
+			wantSyncable: true,
+		},
+		{
+			name:        "no extensions: response-schema fallback picks id",
+			extraExt:    ``,
+			wantIDField: "id",
 		},
 	}
 
@@ -7233,6 +7240,7 @@ paths:
 			ep := findEndpoint(t, parsed, "/widgets")
 			assert.Equal(t, tt.wantIDField, ep.IDField, "IDField")
 			assert.Equal(t, tt.wantCritical, ep.Critical, "Critical")
+			assert.Equal(t, tt.wantSyncable, ep.Syncable, "Syncable")
 		})
 	}
 }
