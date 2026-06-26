@@ -250,6 +250,17 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 		assert.Equal(t, "FAIL: sync rejected flag --full", detail)
 	})
 
+	t.Run("skips no-store CLIs whose sync command is not the data pipeline", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "browser-sniff"}))
+		binary := buildUnknownFlagSyncDataPipelineProbeBinary(t)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Equal(t, "SKIP (CLI has no local store)", detail)
+	})
+
 	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
 		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0, 2)
 
@@ -329,12 +340,37 @@ func TestRunDataPipelineTestSkipsUnsyncableCLIs(t *testing.T) {
 	t.Run("runs normal sync CLIs", func(t *testing.T) {
 		dir := seedDataPipelineCLIDir(t, true)
 		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		seedDataPipelineStore(t, dir, true)
 		binary := buildDataPipelineProbeBinary(t, 2)
 
 		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
 
 		assert.True(t, pass)
 		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("mock mode skips row requirement for stores without syncable resources", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "browser-sniff"}))
+		seedDataPipelineStore(t, dir, false)
+		binary := buildDataPipelineProbeBinary(t, 0)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Equal(t, "PASS: 1 domain tables created (mock mode; no syncable resources declared)", detail)
+	})
+
+	t.Run("mock mode still fails zero rows when syncable resources exist", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		seedDataPipelineStore(t, dir, true)
+		binary := buildDataPipelineProbeBinary(t, 0)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "1 domain tables created but 0 rows after sync")
 	})
 }
 
@@ -881,6 +917,31 @@ func newItemsCmd(flags any) {}
 	return dir
 }
 
+func seedDataPipelineStore(t *testing.T, dir string, syncableResources bool) {
+	t.Helper()
+
+	storeDir := filepath.Join(dir, "internal", "store")
+	require.NoError(t, os.MkdirAll(storeDir, 0o755))
+	content := `package store
+
+func Open() {}
+`
+	if syncableResources {
+		content += `
+func defaultSyncResources() []string {
+	return []string{"items"}
+}
+`
+	} else {
+		content += `
+func defaultSyncResources() []string {
+	return []string{}
+}
+`
+	}
+	writeTestFile(t, filepath.Join(storeDir, "store.go"), content)
+}
+
 func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T, settingsRows, itemRows int) string {
 	t.Helper()
 
@@ -1230,6 +1291,16 @@ func TestExtractPositionalPlaceholders(t *testing.T) {
 			name:  "lowercases names",
 			usage: " <Region> [flags]",
 			want:  []string{"region"},
+		},
+		{
+			name:  "pipe alternative chooses first id-shaped option",
+			usage: " <name|id|uuid> [flags]",
+			want:  []string{"id"},
+		},
+		{
+			name:  "pipe alternative falls back to first option",
+			usage: " <query|text> [flags]",
+			want:  []string{"query"},
 		},
 	}
 	for _, tt := range tests {

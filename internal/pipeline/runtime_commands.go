@@ -284,8 +284,10 @@ func resolvePositionalValue(name string, paramDefaults map[string]string) string
 var flagDescriptorRe = regexp.MustCompile(`\[\s*-+[^\]]*\]|\[[^\]]*=[^\]]*\]`)
 
 // positionalPlaceholderRe extracts <name> and [name] placeholders from the
-// scrubbed Usage suffix. Runs after flagDescriptorRe.
-var positionalPlaceholderRe = regexp.MustCompile(`[<\[]([a-zA-Z][\w-]*)[>\]]`)
+// scrubbed Usage suffix. Pipe alternatives such as <id|uuid> are one Cobra
+// positional; they resolve to the first id-shaped alternative when present.
+// Runs after flagDescriptorRe.
+var positionalPlaceholderRe = regexp.MustCompile(`[<\[]([a-zA-Z][\w-]*(?:\|[a-zA-Z][\w-]*)*)[>\]]`)
 
 // extractPositionalPlaceholders returns the placeholder names found in a
 // cobra Usage suffix (the part after `Usage:\n  cli-name cmd-name`).
@@ -302,13 +304,28 @@ func extractPositionalPlaceholders(usageSuffix string) []string {
 	}
 	var names []string
 	for _, match := range matches {
-		name := strings.ToLower(match[1])
+		name := chooseUsagePlaceholderName(match[1])
 		if name == "flags" || name == "command" {
 			continue
 		}
 		names = append(names, name)
 	}
 	return names
+}
+
+func chooseUsagePlaceholderName(raw string) string {
+	parts := strings.Split(raw, "|")
+	for _, part := range parts {
+		name := strings.ToLower(strings.TrimSpace(part))
+		if isIDShapePlaceholderName(name) {
+			return name
+		}
+	}
+	return strings.ToLower(strings.TrimSpace(parts[0]))
+}
+
+func isIDShapePlaceholderName(name string) bool {
+	return name == "id" || (strings.HasSuffix(name, "id") && len(name) > 2)
 }
 
 func syntheticArgValue(name string) string {
