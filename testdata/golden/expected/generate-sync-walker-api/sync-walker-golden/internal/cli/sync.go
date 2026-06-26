@@ -511,7 +511,7 @@ func syncResource(ctx context.Context, c interface {
 				if !humanFriendly {
 					fmt.Fprintln(syncEvents, syncWarningJSON(resource, "", w.Status, w.Reason, w.Message))
 				}
-				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
+				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped due to insufficient access: %s (%s)", resource, w.Reason), Duration: time.Since(started)}
 			}
 			if !humanFriendly {
 				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
@@ -1856,7 +1856,7 @@ func syncDependentResource(ctx context.Context, c interface {
 		return syncResult{
 			Resource: dep.Name,
 			Count:    0,
-			Warn:     fmt.Errorf("skipped %s: %s on all %d parents", dep.Name, firstDenial.Reason, len(parentRows)),
+			Warn:     fmt.Errorf("skipped due to insufficient access: %s (%s on all %d parents)", dep.Name, firstDenial.Reason, len(parentRows)),
 			Duration: time.Since(started),
 		}
 	}
