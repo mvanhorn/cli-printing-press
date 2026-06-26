@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"public-param-golden-pp-cli/internal/config"
 	"public-param-golden-pp-cli/internal/mcp/bound"
 	"public-param-golden-pp-cli/internal/mcp/cobratree"
+	"public-param-golden-pp-cli/internal/store"
 )
 
 const (
@@ -54,6 +56,27 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("GET", "/power/store-locator", true, false, nil, mcpPageConfig{}, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}, {PublicName: "locationId", WireName: "location_id", Location: "query"}}, []string{}),
+	)
+	// Search tool — faster than iterating list endpoints for finding specific items
+	s.AddTool(
+		mcplib.NewTool("search",
+			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first."),
+			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
+			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25)")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+		),
+		handleSearch,
+	)
+	// SQL tool — ad-hoc analysis on synced data without API calls
+	s.AddTool(
+		mcplib.NewTool("sql",
+			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first."),
+			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT or WITH...SELECT). Synced records live in resources(resource_type, id, data); filter by resource_type and use json_extract on data, e.g. SELECT json_extract(data,'$.name') FROM resources WHERE resource_type='stores'.")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+		),
+		handleSQL,
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
@@ -349,6 +372,339 @@ func mcpDBPath() (string, error) {
 	return filepath.Join(dir, "data.db"), nil
 }
 
+type mcpStoreStatusKind string
+
+const (
+	mcpStoreStatusEmpty mcpStoreStatusKind = "empty"
+	mcpStoreStatusReady mcpStoreStatusKind = "ready"
+)
+
+func openMCPReadOnlyStore(path string) (*store.Store, *mcplib.CallToolResult) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, mcplib.NewToolResultError(mcpMissingStoreMessage(path))
+		}
+		return nil, mcplib.NewToolResultError(fmt.Sprintf("checking local data store %s: %v", path, err))
+	}
+	db, err := store.OpenReadOnly(path)
+	if err != nil {
+		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. Run public-param-golden-pp-cli sync to refresh the store, or use live endpoint MCP tools for unsynced data.", path, err))
+	}
+	return db, nil
+}
+
+func mcpMissingStoreMessage(path string) string {
+	return fmt.Sprintf("No local data store found at %s. Run public-param-golden-pp-cli sync before using MCP search/sql, or use live endpoint MCP tools for unsynced data.", path)
+}
+
+func mcpStoreStatus(db *store.Store) (mcpStoreStatusKind, error) {
+	status, err := db.Status()
+	if err != nil {
+		return "", err
+	}
+	if len(status) == 0 {
+		return mcpStoreStatusEmpty, nil
+	}
+	return mcpStoreStatusReady, nil
+}
+
+func mcpEmptyStoreNextStep() string {
+	return "Run public-param-golden-pp-cli sync to populate the local SQLite store before using MCP search/sql."
+}
+
+func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	args := req.GetArguments()
+	query, ok := args["query"].(string)
+	if !ok || query == "" {
+		return mcplib.NewToolResultError("query is required"), nil
+	}
+
+	limit := 25
+	if v, ok := args["limit"].(float64); ok && v > 0 {
+		limit = int(v)
+	}
+
+	path, err := mcpDBPath()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("resolving database: %v", err)), nil
+	}
+	db, toolErr := openMCPReadOnlyStore(path)
+	if toolErr != nil {
+		return toolErr, nil
+	}
+	defer db.Close()
+
+	results, err := db.Search(query, limit)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	}
+	storeStatus, err := mcpStoreStatus(db)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("reading store status: %v", err)), nil
+	}
+
+	return toolResultJSON(mcpSearchEnvelope(results, storeStatus))
+}
+
+func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind) map[string]any {
+	if results == nil {
+		results = []json.RawMessage{}
+	}
+	out := map[string]any{
+		"count":        len(results),
+		"results":      results,
+		"store_status": storeStatus,
+		"resumable":    false,
+	}
+	if len(results) == 0 {
+		if storeStatus == mcpStoreStatusEmpty {
+			out["next_step"] = mcpEmptyStoreNextStep()
+		} else {
+			out["next_step"] = "No local search matches. Try a broader query, a lower-specificity FTS expression, or sync again if data may be stale."
+		}
+	}
+	return out
+}
+
+// validateReadOnlyQuery gates the MCP sql tool. The agent contract advertised
+// to the host is ReadOnlyHintAnnotation(true); a false annotation on a
+// mutating tool lets MCP hosts auto-approve writes and is treated as a real
+// bug per the project's agent-native security model.
+//
+// The gate rejects multi-statement input, then applies an allowlist (SELECT or
+// WITH only) AFTER stripping the leading whitespace, line comments, block
+// comments, and semicolons that SQLite itself ignores before parsing. A naive
+// HasPrefix check on a keyword blocklist is bypassable by prefixing the
+// dangerous statement with "/* x */" or "-- x\n"; a naive leading-keyword
+// allowlist is bypassable by appending "; ATTACH DATABASE ...". Combined with
+// the empirical fact that modernc.org/sqlite's mode=ro does NOT block VACUUM
+// INTO (writes a snapshot to a new file) or ATTACH DATABASE (opens a separate
+// writable handle), either bypass produces silent exfiltration to an
+// attacker-chosen path.
+//
+// SELECT and WITH are the only allowed leading keywords. WITH supports
+// SELECT-form CTEs; CTE-wrapped writes ("WITH x AS (...) INSERT ...") are
+// caught by OpenReadOnly's mode=ro one layer down. PRAGMA, ATTACH, VACUUM,
+// and every other DDL/DML keyword fail at this gate before reaching SQLite.
+func validateReadOnlyQuery(query string) error {
+	stripped := stripLeadingSQLNoise(query)
+	if hasTrailingSQLStatement(stripped) {
+		return fmt.Errorf("only a single SELECT or WITH statement is allowed")
+	}
+	upper := strings.ToUpper(stripped)
+	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
+		return fmt.Errorf("only SELECT queries are allowed")
+	}
+	return nil
+}
+
+// stripLeadingSQLNoise removes leading whitespace, SQL line comments
+// (-- to end of line), block comments (/* ... */), and statement
+// separators (;) from query. SQLite skips these before parsing the first
+// keyword, so a security gate that does not strip them mismatches what the
+// driver actually executes.
+func stripLeadingSQLNoise(query string) string {
+	for {
+		query = strings.TrimLeft(query, " \t\r\n;")
+		switch {
+		case strings.HasPrefix(query, "--"):
+			if idx := strings.IndexByte(query, '\n'); idx >= 0 {
+				query = query[idx+1:]
+				continue
+			}
+			return ""
+		case strings.HasPrefix(query, "/*"):
+			if idx := strings.Index(query[2:], "*/"); idx >= 0 {
+				query = query[2+idx+2:]
+				continue
+			}
+			return ""
+		default:
+			return query
+		}
+	}
+}
+
+// hasTrailingSQLStatement reports whether query contains a statement
+// terminator followed by more executable SQL. A trailing semicolon is allowed;
+// a second statement is not. Semicolons inside string literals, quoted
+// identifiers, bracket identifiers, and comments are ignored to match SQLite's
+// parser shape closely enough for this security gate.
+func hasTrailingSQLStatement(query string) bool {
+	inSingle := false
+	inDouble := false
+	inBacktick := false
+	inBracket := false
+	inLineComment := false
+	inBlockComment := false
+
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+		next := byte(0)
+		if i+1 < len(query) {
+			next = query[i+1]
+		}
+
+		switch {
+		case inLineComment:
+			if ch == '\n' {
+				inLineComment = false
+			}
+			continue
+		case inBlockComment:
+			if ch == '*' && next == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		case inSingle:
+			if ch == '\'' {
+				if next == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		case inDouble:
+			if ch == '"' {
+				if next == '"' {
+					i++
+					continue
+				}
+				inDouble = false
+			}
+			continue
+		case inBacktick:
+			if ch == '`' {
+				if next == '`' {
+					i++
+					continue
+				}
+				inBacktick = false
+			}
+			continue
+		case inBracket:
+			if ch == ']' {
+				inBracket = false
+			}
+			continue
+		}
+
+		switch {
+		case ch == '-' && next == '-':
+			inLineComment = true
+			i++
+		case ch == '/' && next == '*':
+			inBlockComment = true
+			i++
+		case ch == '\'':
+			inSingle = true
+		case ch == '"':
+			inDouble = true
+		case ch == '`':
+			inBacktick = true
+		case ch == '[':
+			inBracket = true
+		case ch == ';':
+			if stripLeadingSQLNoise(query[i+1:]) != "" {
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
+
+func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	args := req.GetArguments()
+	query, ok := args["query"].(string)
+	if !ok || query == "" {
+		return mcplib.NewToolResultError("query is required"), nil
+	}
+
+	if err := validateReadOnlyQuery(query); err != nil {
+		return mcplib.NewToolResultError(err.Error()), nil
+	}
+
+	path, err := mcpDBPath()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("resolving database: %v", err)), nil
+	}
+	db, toolErr := openMCPReadOnlyStore(path)
+	if toolErr != nil {
+		return toolErr, nil
+	}
+	defer db.Close()
+
+	rows, err := db.DB().QueryContext(ctx, query)
+	if err != nil {
+		return mcplib.NewToolResultError(mcpSQLQueryError(err)), nil
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("reading columns: %v", err)), nil
+	}
+	var results []map[string]any
+	for rows.Next() {
+		values := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return mcplib.NewToolResultError(fmt.Sprintf("scanning row: %v", err)), nil
+		}
+		row := make(map[string]any)
+		for i, col := range cols {
+			row[col] = values[i]
+		}
+		results = append(results, row)
+	}
+	// rows.Next() stops on a mid-iteration error without failing the loop, so
+	// skipping rows.Err() would return a truncated result set as success.
+	if err := rows.Err(); err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("reading rows: %v", err)), nil
+	}
+	storeStatus, err := mcpStoreStatus(db)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("reading store status: %v", err)), nil
+	}
+
+	return toolResultJSON(mcpSQLEnvelope(results, cols, storeStatus))
+}
+
+func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStoreStatusKind) map[string]any {
+	if rows == nil {
+		rows = []map[string]any{}
+	}
+	out := map[string]any{
+		"count":        len(rows),
+		"columns":      columns,
+		"rows":         rows,
+		"store_status": storeStatus,
+		"resumable":    false,
+	}
+	if len(rows) == 0 {
+		if storeStatus == mcpStoreStatusEmpty {
+			out["next_step"] = mcpEmptyStoreNextStep()
+		} else {
+			out["next_step"] = "The read-only SQL query returned no rows. Check resource_type filters, json_extract paths, or run sync again if data may be stale."
+		}
+	}
+	return out
+}
+
+func mcpSQLQueryError(err error) string {
+	msg := err.Error()
+	if strings.Contains(strings.ToLower(msg), "no such table") {
+		return fmt.Sprintf("query failed: %v. Synced records live in resources(resource_type, id, data), not one SQL table per resource. Filter by resource_type, for example resource_type='stores', and read JSON fields with json_extract(data,'$.field').", err)
+	}
+	return fmt.Sprintf("query failed: %v", err)
+}
+
 // toolResultJSON renders v as the indented JSON body of an MCP text result,
 // surfacing a marshal failure as a tool error instead of empty content.
 func toolResultJSON(v any) (*mcplib.CallToolResult, error) {
@@ -386,12 +742,16 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"name":        "stores",
 				"description": "Store lookup operations",
 				"endpoints":   []string{"create", "find"},
+				"syncable":    true,
 				"searchable":  true,
 			},
 		},
 		"query_tips": []string{
 			"Pagination uses cursor-based paging. Pass after parameter for subsequent pages.",
 			"Control page size with the limit parameter (default 100).",
+			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
+			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
+			"Prefer sql/search over repeated API calls when the data is already synced.",
 		},
 	}
 	return toolResultJSON(ctx)
