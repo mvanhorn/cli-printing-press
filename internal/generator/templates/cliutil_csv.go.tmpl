@@ -3,7 +3,11 @@
 
 package cliutil
 
-import "strings"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
 
 // SplitCSV converts a user-facing comma-separated flag value into JSON array
 // items. Empty tokens are ignored so "a,,b" behaves like "a,b".
@@ -18,6 +22,24 @@ func SplitCSV(input string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+// ParseStringList accepts either a JSON string array or a comma-separated
+// string list. JSON is used when the input begins with "["; object arrays are
+// rejected so arrays-of-objects keep their explicit JSON-only command paths.
+func ParseStringList(input string) ([]string, error) {
+	trimmed := strings.TrimSpace(input)
+	if strings.HasPrefix(trimmed, "[") {
+		var out []string
+		if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+			return nil, fmt.Errorf("expected JSON array of strings or comma-separated list: %w", err)
+		}
+		return out, nil
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		return nil, fmt.Errorf("expected JSON array or comma-separated list")
+	}
+	return SplitCSV(input), nil
 }
 
 // CSVTemplateObjects expands each CSV token into an object based on template.

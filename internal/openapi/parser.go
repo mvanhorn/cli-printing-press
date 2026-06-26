@@ -4703,6 +4703,10 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 			Format:      schemaFormat(paramSchema),
 			Example:     schemaExample(paramSchema),
 		}
+		if schemaHasCompositeUnionAlternative(paramSchema, map[*openapi3.Schema]struct{}{}) {
+			param.Type = "string"
+			param.Format = "json_or_scalar"
+		}
 		if inferCSVArrays && isStringArraySchema(paramSchema) {
 			param.ItemType = "string"
 		}
@@ -4893,6 +4897,10 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited ma
 			Enum:        schemaEnum(fieldSchema),
 			Format:      schemaFormat(fieldSchema),
 		})
+		if schemaHasCompositeUnionAlternative(fieldSchema, map[*openapi3.Schema]struct{}{}) {
+			fields[len(fields)-1].Type = "string"
+			fields[len(fields)-1].Format = "json_or_scalar"
+		}
 		if inferCSVArrays && isStringArraySchema(fieldSchema) {
 			fields[len(fields)-1].ItemType = "string"
 		}
@@ -5939,6 +5947,28 @@ func mapBodyParamType(schema *openapi3.Schema, inferCSVArrays bool) string {
 		return "string_csv_array"
 	}
 	return mapSchemaType(schema)
+}
+
+func schemaHasCompositeUnionAlternative(schema *openapi3.Schema, visited map[*openapi3.Schema]struct{}) bool {
+	if schema == nil {
+		return false
+	}
+	if _, ok := visited[schema]; ok {
+		return false
+	}
+	visited[schema] = struct{}{}
+	defer delete(visited, schema)
+
+	for _, candidate := range append(append([]*openapi3.SchemaRef{}, schema.OneOf...), schema.AnyOf...) {
+		value := schemaRefValue(candidate)
+		if isObjectSchema(value) || isArraySchema(value) {
+			return true
+		}
+		if schemaHasCompositeUnionAlternative(value, visited) {
+			return true
+		}
+	}
+	return false
 }
 
 func isStringArraySchema(schema *openapi3.Schema) bool {
