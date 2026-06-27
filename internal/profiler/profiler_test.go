@@ -206,6 +206,85 @@ func TestProfileSiblingListEndpoints(t *testing.T) {
 	assert.Equal(t, "/portfolio/settlements", syncPaths["portfolio-settlements"])
 }
 
+func TestProfileParentScopedPathTemplateCollectionRegistersSyncResource(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "ads",
+		Resources: map[string]spec.Resource{
+			"me": {
+				Endpoints: map[string]spec.Endpoint{
+					"adaccounts": {
+						Method:   "GET",
+						Path:     "/me/adaccounts",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"campaigns": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/{adAccountId}/campaigns",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncPaths := make(map[string]string)
+	skipDefault := make(map[string]bool)
+	for _, resource := range profile.SyncableResources {
+		syncPaths[resource.Name] = resource.Path
+		skipDefault[resource.Name] = resource.SkipDefaultSync
+	}
+
+	assert.Equal(t, "/{adAccountId}/campaigns", syncPaths["campaigns"])
+	assert.True(t, skipDefault["campaigns"], "parent-scoped path templates should be opt-in via --resources plus --path-context")
+	assert.Empty(t, profile.DependentSyncResources, "external parent path templates are syncable with explicit context, not dependent fan-out")
+}
+
+func TestProfileDependentResourcesPreferCollectionOverNestedDetailPaths(t *testing.T) {
+	paginated := func(path string) spec.Endpoint {
+		return spec.Endpoint{
+			Method:     "GET",
+			Path:       path,
+			Response:   spec.ResponseDef{Type: "array"},
+			Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+		}
+	}
+	s := &spec.APISpec{
+		Name: "plane",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": paginated("/projects/"),
+				},
+			},
+			"projects_issues": {
+				Endpoints: map[string]spec.Endpoint{
+					"list":       paginated("/projects/{project_id}/issues/"),
+					"link":       paginated("/projects/{project_id}/issues/{issue_id}/links/{pk}/"),
+					"activities": paginated("/projects/{project_id}/issues/{issue_id}/activities/{pk}/"),
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	pathsByName := make(map[string][]string)
+	for _, dep := range profile.DependentSyncResources {
+		pathsByName[dep.Name] = append(pathsByName[dep.Name], dep.Path)
+	}
+
+	assert.Equal(t, []string{"/projects/{project_id}/issues/"}, pathsByName["projects_issues"])
+	assert.NotContains(t, pathsByName["projects_issues"], "/projects/{project_id}/issues/{issue_id}/links/{pk}/")
+	assert.NotContains(t, pathsByName["projects_issues"], "/projects/{project_id}/issues/{issue_id}/activities/{pk}/")
+}
+
 func TestProfileDiscriminatorDispatchFromResponseTypeEnum(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "mixed-network",

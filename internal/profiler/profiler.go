@@ -513,7 +513,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 							meta.Path = expandedPath
 							syncable[expandedName] = meta
 						}
-					} else if strings.Contains(endpoint.Path, "{") && !resolvable && !endpoint.Syncable && !hasRequiredDependentScopeParams(endpoint) {
+					} else if strings.Contains(endpoint.Path, "{") && !resolvable && !endpoint.Syncable && !hasRequiredDependentScopeParams(endpoint) && isPathTemplateCollection(endpoint.Path) {
 						// Parameterized paginated paths can't sync standalone — track
 						// them for dependent-resource detection below. Carry the
 						// endpoint's metadata so x-resource-id and x-critical
@@ -656,6 +656,9 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 	p.NeedsSearch = len(listResources) >= 3 && float64(searchEndpointCount)/float64(len(listResources)) < 0.5
 
+	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
+	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
+	addUnresolvedPathTemplateCollections(syncable, parameterized, p.DependentSyncResources)
 	p.SyncableResources = sortedSyncableResources(syncable)
 	// Flat resources carry "none" this round — forward-looking metadata for the
 	// follow-up flat/tenant reconcile. Set explicitly so the value is "none",
@@ -663,8 +666,6 @@ func Profile(s *spec.APISpec) *APIProfile {
 	for i := range p.SyncableResources {
 		p.SyncableResources[i].ReconcileMode = "none"
 	}
-	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
-	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
 	// Populate reconcile metadata for each dependent resource.
 	// per_parent is safe only for a single-path-param dependent with a PK.
 	for i := range p.DependentSyncResources {
@@ -1458,6 +1459,25 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 	return deps
 }
 
+func addUnresolvedPathTemplateCollections(syncable map[string]syncableMeta, parameterized map[string]parameterizedEntry, deps []DependentResource) {
+	dependentPaths := make(map[string]struct{}, len(deps))
+	for _, dep := range deps {
+		dependentPaths[dep.Path] = struct{}{}
+	}
+	for _, key := range sortedKeys(parameterized) {
+		entry := parameterized[key]
+		if _, ok := dependentPaths[entry.meta.Path]; ok {
+			continue
+		}
+		if !isPathTemplateCollection(entry.meta.Path) {
+			continue
+		}
+		meta := entry.meta
+		meta.SkipDefaultSync = true
+		addSyncableIfUnique(syncable, strings.ToLower(entry.name), meta)
+	}
+}
+
 func sortDependentResources(deps []DependentResource, knownDepths map[string]int) {
 	depthByResource := make(map[string]int, len(knownDepths)+len(deps))
 	maps.Copy(depthByResource, knownDepths)
@@ -1937,6 +1957,14 @@ func pathSegments(path string) []string {
 		return nil
 	}
 	return strings.Split(strings.Trim(path, "/"), "/")
+}
+
+func isPathTemplateCollection(path string) bool {
+	segments := pathSegments(path)
+	if len(segments) == 0 || !strings.Contains(path, "{") {
+		return false
+	}
+	return !isPathPlaceholder(segments[len(segments)-1])
 }
 
 func nextStaticSegmentIndex(segments []string, start int) int {

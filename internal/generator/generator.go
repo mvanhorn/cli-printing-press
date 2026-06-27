@@ -2099,6 +2099,7 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
 	}
+	promoteSyncPathTemplateVars(g.Spec, g.profile)
 	if err := g.validateFreshnessCommandCoverage(); err != nil {
 		return err
 	}
@@ -3574,6 +3575,54 @@ func paginationDefaultEntries(syncable []profiler.SyncableResource, dependent []
 		entries[i] = defaults[key]
 	}
 	return entries
+}
+
+func promoteSyncPathTemplateVars(api *spec.APISpec, profile *profiler.APIProfile) {
+	if api == nil || profile == nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(api.EndpointTemplateVars))
+	for _, name := range api.EndpointTemplateVars {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			seen[trimmed] = struct{}{}
+		}
+	}
+	for _, resource := range profile.SyncableResources {
+		if !resource.SkipDefaultSync {
+			continue
+		}
+		for _, name := range pathTemplateVarNames(resource.Path) {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			api.EndpointTemplateVars = append(api.EndpointTemplateVars, name)
+		}
+	}
+	slices.Sort(api.EndpointTemplateVars)
+}
+
+func pathTemplateVarNames(path string) []string {
+	var names []string
+	seen := map[string]struct{}{}
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		name := strings.TrimSpace(path[i+1 : i+j])
+		if name != "" {
+			if _, ok := seen[name]; !ok {
+				seen[name] = struct{}{}
+				names = append(names, name)
+			}
+		}
+		i += j
+	}
+	return names
 }
 
 func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {
