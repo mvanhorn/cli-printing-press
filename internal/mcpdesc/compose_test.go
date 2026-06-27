@@ -470,6 +470,28 @@ func TestCompose_SynthesizesVendorBoilerplateDescriptions(t *testing.T) {
 	assert.Equal(t, SourceGenerated, result.Source)
 }
 
+func TestCompose_PreservesRichDescriptionWithBoilerplatePrefix(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Users",
+			Description: "Use this to return multiple Users. Supports filtering by role, status, and department.",
+			Params: []spec.Param{
+				{Name: "role", Required: false},
+			},
+			Response: spec.ResponseDef{Type: "array", Item: "User"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Contains(t, result.Description, "Supports filtering by role, status, and department.")
+	assert.Contains(t, result.Description, "Optional: role.")
+	assert.NotContains(t, result.Description, "List users.")
+	assert.Equal(t, SourceSpec, result.Source)
+}
+
 func TestCompose_SynthesizesSingleInstanceBoilerplateWithArticle(t *testing.T) {
 	t.Parallel()
 
@@ -488,6 +510,23 @@ func TestCompose_SynthesizesSingleInstanceBoilerplateWithArticle(t *testing.T) {
 
 	assert.Equal(t, "Get an action. Required: id. Returns the Action.", result.Description)
 	assert.Equal(t, SourceGenerated, result.Source)
+}
+
+func TestComposeWithSourceKeepsStructuralBoilerplateOverrideAsSpec(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Actions",
+			Description: "Use this to return multiple Actions. Required: authorization.",
+			Response:    spec.ResponseDef{Type: "array", Item: "Action"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "Use this to return multiple Actions. Required: authorization.", result.Description)
+	assert.Equal(t, SourceSpec, result.Source)
 }
 
 func TestComposeWithSourceMarksAuthoredDescriptionsAsSpec(t *testing.T) {

@@ -90,9 +90,10 @@ func Compose(in Input) string {
 func ComposeWithSource(in Input) Result {
 	desc := in.Endpoint.Description
 	synthesizeAction := shouldSynthesizeAction(in.Endpoint)
+	structuralOverride := hasStructuralOverride(desc)
 
 	var composed string
-	if hasStructuralOverride(desc) {
+	if structuralOverride {
 		composed = composeAction(desc)
 	} else {
 		var parts []string
@@ -115,7 +116,7 @@ func ComposeWithSource(in Input) Result {
 
 	composed = appendMethodMarker(composed, in.Endpoint.Method)
 	source := SourceSpec
-	if synthesizeAction {
+	if synthesizeAction && !structuralOverride {
 		source = SourceGenerated
 	}
 	return Result{
@@ -183,11 +184,19 @@ func isThinSpecDescription(desc string) bool {
 		"use this to update ",
 		"use this to delete ",
 	} {
-		if strings.HasPrefix(normalized, prefix) && strings.TrimSpace(strings.TrimPrefix(normalized, prefix)) != "" {
+		if strings.HasPrefix(normalized, prefix) && isBareBoilerplateResource(strings.TrimSpace(strings.TrimPrefix(normalized, prefix))) {
 			return true
 		}
 	}
 	return false
+}
+
+func isBareBoilerplateResource(remainder string) bool {
+	remainder = strings.TrimSpace(strings.TrimSuffix(remainder, "."))
+	if remainder == "" {
+		return false
+	}
+	return !strings.ContainsAny(remainder, ".;,:!?")
 }
 
 func normalizeDescriptionText(desc string) string {
