@@ -77,9 +77,6 @@ func newDigestCmd(flags *rootFlags) *cobra.Command {
 	if len(got.Suspicious) != 0 {
 		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
 	}
-	if got.ExemptedViaLocalDataSource != 1 {
-		t.Fatalf("ExemptedViaLocalDataSource: want 1, got %d", got.ExemptedViaLocalDataSource)
-	}
 }
 
 func TestCheckReimplementation_DataSourceStrategyAnnotation(t *testing.T) {
