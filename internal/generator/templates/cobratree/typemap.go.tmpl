@@ -54,6 +54,32 @@ func toolOptionsForFlags(cmd *cobra.Command, blocked map[string]bool, positional
 	return opts
 }
 
+func allowedStructuredArgsForCommand(cmd *cobra.Command, blocked map[string]bool, positionals []positionalArg, allowRawArgs bool) map[string]bool {
+	allowed := map[string]bool{}
+	if allowRawArgs {
+		allowed["args"] = true
+	}
+	seen := map[string]bool{}
+	addFlag := func(flag *pflag.Flag) {
+		if flag == nil || flag.Hidden || flag.Deprecated != "" {
+			return
+		}
+		if reservedStructuredArgs[flag.Name] || blocked[flag.Name] || seen[flag.Name] {
+			return
+		}
+		seen[flag.Name] = true
+		allowed[flag.Name] = true
+	}
+	if cmd != nil {
+		cmd.NonInheritedFlags().VisitAll(addFlag)
+		cmd.InheritedFlags().VisitAll(addFlag)
+	}
+	for _, positional := range positionals {
+		allowed[positional.InputName] = true
+	}
+	return allowed
+}
+
 func toolOptionForFlag(flag *pflag.Flag) mcplib.ToolOption {
 	propOpts := []mcplib.PropertyOption{mcplib.Description(flagDescription(flag))}
 	if isRequired(flag) {

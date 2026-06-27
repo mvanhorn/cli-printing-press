@@ -161,6 +161,7 @@ func TestMCPFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
 import (
 	"testing"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
 )
 
@@ -192,31 +193,51 @@ func TestFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
 		Use: "auth",
 		RunE: func(cmd *cobra.Command, args []string) error { return nil },
 	}
-	items := &cobra.Command{Use: "items"}
-	itemSearch := &cobra.Command{
+	library := &cobra.Command{Use: "library"}
+	librarySearch := &cobra.Command{
 		Use: "search",
 		RunE: func(cmd *cobra.Command, args []string) error { return nil },
 	}
-	items.AddCommand(itemSearch)
-	root.AddCommand(topAuth, items)
+	topVersion := &cobra.Command{
+		Use: "version",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	libraryAuth := &cobra.Command{
+		Use: "auth",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	library.AddCommand(librarySearch, libraryAuth)
+	root.AddCommand(topAuth, topVersion, library)
 
 	if got := classify(topAuth); got != commandFramework {
 		t.Fatalf("top-level auth classify() = %v, want commandFramework", got)
 	}
-	if got := classify(itemSearch); got != commandNovel {
-		t.Fatalf("nested items search classify() = %v, want commandNovel", got)
+	if got := classify(topVersion); got != commandFramework {
+		t.Fatalf("top-level version classify() = %v, want commandFramework", got)
 	}
-	var mirrored []string
-	walk(root, nil, func(cmd *cobra.Command, path []string) {
-		if classify(cmd) == commandNovel && cmd.Runnable() {
-			mirrored = append(mirrored, toolNameForPath(path))
+	if got := classify(librarySearch); got != commandNovel {
+		t.Fatalf("nested library search classify() = %v, want commandNovel", got)
+	}
+	if got := classify(libraryAuth); got != commandNovel {
+		t.Fatalf("nested library auth classify() = %v, want commandNovel", got)
+	}
+	if got := toolNameForPath([]string{"library", "search"}); got != "library_search" {
+		t.Fatalf("nested search tool name = %q, want library_search", got)
+	}
+
+	s := server.NewMCPServer("test", "0.0.0")
+	RegisterAll(s, root, func() (string, error) { return "missing-binary", nil })
+	tools := s.ListTools()
+	if _, ok := tools["library_search"]; !ok {
+		t.Fatalf("nested library search was not mirrored: %#v", tools)
+	}
+	if _, ok := tools["library_auth"]; !ok {
+		t.Fatalf("nested library auth was not mirrored: %#v", tools)
+	}
+	for _, excluded := range []string{"auth", "version"} {
+		if _, ok := tools[excluded]; ok {
+			t.Fatalf("top-level framework command %q was mirrored: %#v", excluded, tools)
 		}
-	})
-	if got := toolNameForPath([]string{"items", "search"}); got != "items_search" {
-		t.Fatalf("nested search tool name = %q, want items_search", got)
-	}
-	if len(mirrored) != 1 || mirrored[0] != "items_search" {
-		t.Fatalf("mirrored tools = %v, want only items_search", mirrored)
 	}
 }
 `)
