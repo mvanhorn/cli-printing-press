@@ -49,6 +49,8 @@ const (
 	extensionAuthDescription       = "x-auth-description"
 	extensionAuthCompanion         = "x-auth-companion"
 	extensionAuthSubtype           = "x-auth-subtype"
+	extensionAuthBasicUsername     = "x-auth-basic-username"
+	extensionAuthBasicPassword     = "x-auth-basic-password"
 	extensionOAuthDeviceFlow       = "x-oauth-device-flow"
 	extensionOAuthRefreshTokenMech = "x-oauth-refresh-token-mechanism"
 	extensionSpeakeasyExample      = "x-speakeasy-example"
@@ -1133,6 +1135,7 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 			if xFmt := stringExtension(scheme.Extensions, "x-auth-format"); xFmt != "" {
 				auth.Format = xFmt
 			}
+			applyBasicAuthConstantHints(&auth, scheme.Extensions, scheme.Description)
 		}
 	case "apikey":
 		auth.Type = "api_key"
@@ -1878,10 +1881,23 @@ func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
 		if auth.Type == "cookie" || strings.EqualFold(auth.In, "cookie") {
 			envVar.Kind = spec.AuthEnvVarKindHarvested
 		}
-		if authFormatIsBasic(auth.Format) && i == 0 {
+		if authFormatIsBasic(auth.Format) && i == 0 && basicAuthFirstPlaceholderIsPublic(auth.Format) {
 			envVar.Sensitive = false
 		}
 		auth.EnvVarSpecs = append(auth.EnvVarSpecs, envVar)
+	}
+}
+
+func basicAuthFirstPlaceholderIsPublic(format string) bool {
+	matches := authFormatPlaceholderRE.FindAllStringSubmatch(format, -1)
+	if len(matches) == 0 || len(matches[0]) < 2 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(matches[0][1])) {
+	case "username", "user":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1914,6 +1930,81 @@ func basicAuthEnvVarsFromFormat(format, envPrefix string) []string {
 
 func authFormatIsBasic(format string) bool {
 	return strings.Contains(strings.ToLower(format), "basic ")
+}
+
+func applyBasicAuthConstantHints(auth *spec.AuthConfig, extensions map[string]any, description string) {
+	if auth == nil || !authFormatIsBasic(auth.Format) {
+		return
+	}
+	username := stringExtension(extensions, extensionAuthBasicUsername)
+	password := stringExtension(extensions, extensionAuthBasicPassword)
+	if username == "" && password == "" {
+		username = describedBasicCredentialConstant(description, "username")
+		password = describedBasicCredentialConstant(description, "password")
+	}
+	switch {
+	case username != "" && password == "":
+		auth.Format = "Basic " + username + ":{token}"
+	case password != "" && username == "":
+		auth.Format = "Basic {token}:" + password
+	}
+}
+
+func describedBasicCredentialConstant(description, field string) string {
+	description = strings.TrimSpace(description)
+	field = strings.ToLower(strings.TrimSpace(field))
+	if description == "" || field == "" {
+		return ""
+	}
+	pattern := regexp.MustCompile(`(?i)` + "`?" + regexp.QuoteMeta(field) + "`?" + `\s*(?:is|=|:)\s*([^,.;\n]+)`)
+	match := pattern.FindStringSubmatch(description)
+	if len(match) < 2 {
+		return ""
+	}
+	value := strings.TrimSpace(match[1])
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "`") {
+		if end := strings.Index(value[1:], "`"); end >= 0 {
+			return strings.TrimSpace(value[1 : 1+end])
+		}
+	}
+	if strings.HasPrefix(value, `"`) {
+		if end := strings.Index(value[1:], `"`); end >= 0 {
+			return strings.TrimSpace(value[1 : 1+end])
+		}
+	}
+	if strings.HasPrefix(value, "'") {
+		if end := strings.Index(value[1:], "'"); end >= 0 {
+			return strings.TrimSpace(value[1 : 1+end])
+		}
+	}
+	parts := strings.Fields(value)
+	if len(parts) != 1 {
+		return ""
+	}
+	candidate := strings.Trim(parts[0], "`'\"")
+	if candidate == "" || !looksLikeBasicConstant(candidate) {
+		return ""
+	}
+	return candidate
+}
+
+func looksLikeBasicConstant(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	switch lower {
+	case "", "a", "an", "the", "your", "you", "username", "password", "key", "secret", "token",
+		"always", "required", "provided", "required.", "optional", "empty", "blank":
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func applyAuthVarsRichOverride(auth *spec.AuthConfig, extensions map[string]any, path string) {

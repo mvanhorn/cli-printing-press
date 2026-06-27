@@ -5535,6 +5535,12 @@ func TestNormalizeCookieDomain(t *testing.T) {
 			wantDomain: ".app.example.com",
 		},
 		{
+			name:       "session handshake derives domain too",
+			authType:   "session_handshake",
+			baseURL:    "https://query1.finance.example",
+			wantDomain: ".query1.finance.example",
+		},
+		{
 			name:       "explicit cookie_domain is preserved",
 			authType:   "cookie",
 			baseURL:    "https://www.factor75.com",

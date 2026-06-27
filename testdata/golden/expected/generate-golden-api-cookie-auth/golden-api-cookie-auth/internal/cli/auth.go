@@ -63,6 +63,7 @@ func requiredAuthCookies() []string {
 func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	var browserFlag bool
 	var profileFlag string
+	var cookiesFile string
 
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -71,6 +72,7 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 
 Use --chrome to read cookies from Chrome for .cookie-auth.example.
 Use --browser as an alias for --chrome.
+Use --cookies-file to import Playwright storage-state JSON or a raw Cookie header file.
 Requires a cookie extraction tool (pycookiecheat, cookies, or cookie-scoop-cli).
 
 If you have multiple Chrome profiles, pycookiecheat and cookie-scoop-cli can
@@ -78,22 +80,26 @@ auto-detect which profile is logged in. Use --profile to select a specific
 profile by name when the installed backend supports it.`,
 		Example: `  golden-api-cookie-auth-pp-cli auth login --chrome
   golden-api-cookie-auth-pp-cli auth login --browser
+  golden-api-cookie-auth-pp-cli auth login --cookies-file storage-state.json
   golden-api-cookie-auth-pp-cli auth login --chrome --profile "Work"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !browserFlag {
-				fmt.Fprintln(cmd.OutOrStdout(), "Use --chrome or --browser to authenticate from your browser session:")
+			w := cmd.OutOrStdout()
+			domain := ".cookie-auth.example"
+			if !browserFlag && cookiesFile == "" {
+				fmt.Fprintln(w, "Use --chrome, --browser, or --cookies-file to authenticate from your browser session:")
 				fmt.Fprintf(cmd.OutOrStdout(), "  golden-api-cookie-auth-pp-cli auth login --chrome\n")
 				fmt.Fprintf(cmd.OutOrStdout(), "  golden-api-cookie-auth-pp-cli auth login --browser\n")
+				fmt.Fprintf(cmd.OutOrStdout(), "  golden-api-cookie-auth-pp-cli auth login --cookies-file storage-state.json\n")
 				return nil
+			}
+			if browserFlag && cookiesFile != "" {
+				return authErr(fmt.Errorf("choose either --chrome/--browser or --cookies-file, not both"))
 			}
 			// Check if already authenticated via env var
 			if v := os.Getenv("COOKIE_AUTH_SESSION"); v != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Already authenticated via %s env var.\n", "COOKIE_AUTH_SESSION")
 				return nil
 			}
-
-			w := cmd.OutOrStdout()
-			domain := ".cookie-auth.example"
 
 			// Step 0: Try press-auth, the dedicated cookie capture companion.
 			// press-auth spawns its own controlled Chrome window so users do
@@ -106,21 +112,33 @@ profile by name when the installed backend supports it.`,
 			// are already on disk.
 			var cookies string
 			fromPressAuth := false
-			if pressAuthPath, err := exec.LookPath("press-auth"); err == nil {
-				paCookies, paErr := tryPressAuth(pressAuthPath, domain)
-				if paErr == nil && paCookies != "" {
-					fmt.Fprintf(w, "Loaded cookies via press-auth for %s.\n", domain)
-					cookies = paCookies
-					fromPressAuth = true
-				} else if paErr != nil {
-					fmt.Fprintf(w, "press-auth returned an error: %v\n", paErr)
-					fmt.Fprintln(w, "Falling back to other extraction methods.")
-					fmt.Fprintln(w, "If you haven't logged in yet, run:")
-					fmt.Fprintf(w, "\n  press-auth login %s --login-url <login-url>\n\n", domain)
+			fromCookiesFile := false
+			if cookiesFile != "" {
+				imported, err := loadCookiesFromFile(cookiesFile, domain)
+				if err != nil {
+					return authErr(err)
+				}
+				cookies = imported.Header
+				fromCookiesFile = true
+				fmt.Fprintf(w, "Loaded cookies from %s for %s.\n", cookiesFile, domain)
+			}
+			if !fromCookiesFile {
+				if pressAuthPath, err := exec.LookPath("press-auth"); err == nil {
+					paCookies, paErr := tryPressAuth(pressAuthPath, domain)
+					if paErr == nil && paCookies != "" {
+						fmt.Fprintf(w, "Loaded cookies via press-auth for %s.\n", domain)
+						cookies = paCookies
+						fromPressAuth = true
+					} else if paErr != nil {
+						fmt.Fprintf(w, "press-auth returned an error: %v\n", paErr)
+						fmt.Fprintln(w, "Falling back to other extraction methods.")
+						fmt.Fprintln(w, "If you haven't logged in yet, run:")
+						fmt.Fprintf(w, "\n  press-auth login %s --login-url <login-url>\n\n", domain)
+					}
 				}
 			}
 
-			if !fromPressAuth {
+			if !fromPressAuth && !fromCookiesFile {
 				// Step 1: Detect cookie extraction tool
 				tool, err := detectCookieTool()
 				if err != nil {
@@ -233,6 +251,7 @@ profile by name when the installed backend supports it.`,
 	cmd.Flags().BoolVar(&browserFlag, "chrome", false, "Read cookies from Chrome")
 	cmd.Flags().BoolVar(&browserFlag, "browser", false, "Alias for --chrome")
 	cmd.Flags().StringVar(&profileFlag, "profile", "", "Chrome profile name (e.g. \"Work\", \"Personal\")")
+	cmd.Flags().StringVar(&cookiesFile, "cookies-file", "", "Import cookies from a Playwright storage-state JSON file or raw Cookie header file")
 	return cmd
 }
 func cookieToolSupportsProfiles(tool string) bool {
@@ -919,6 +938,101 @@ func extractViaCookiesCLI(domain string) (string, error) {
 	result := strings.TrimSpace(out.String())
 	result = strings.TrimPrefix(result, "Cookie: ")
 	return result, nil
+}
+
+type importedCookieFile struct {
+	Header  string
+	Cookies []*http.Cookie
+}
+
+func loadCookiesFromFile(path string, domain string) (importedCookieFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return importedCookieFile{}, fmt.Errorf("reading cookies file: %w", err)
+	}
+	var state struct {
+		Cookies []struct {
+			Name     string  `json:"name"`
+			Value    string  `json:"value"`
+			Domain   string  `json:"domain"`
+			Path     string  `json:"path"`
+			Expires  float64 `json:"expires"`
+			Secure   bool    `json:"secure"`
+			HTTPOnly bool    `json:"httpOnly"`
+		} `json:"cookies"`
+	}
+	if err := json.Unmarshal(data, &state); err == nil {
+		if len(state.Cookies) == 0 {
+			return importedCookieFile{}, fmt.Errorf("cookies file contains an empty cookies array")
+		}
+		parts := make([]string, 0, len(state.Cookies))
+		cookies := make([]*http.Cookie, 0, len(state.Cookies))
+		for _, c := range state.Cookies {
+			if !cookieDomainMatches(c.Domain, domain) {
+				continue
+			}
+			name := strings.TrimSpace(c.Name)
+			if name == "" {
+				continue
+			}
+			path := c.Path
+			if path == "" {
+				path = "/"
+			}
+			ck := &http.Cookie{
+				Name:     name,
+				Value:    c.Value,
+				Domain:   c.Domain,
+				Path:     path,
+				Secure:   c.Secure,
+				HttpOnly: c.HTTPOnly,
+			}
+			if c.Expires > 0 {
+				ck.Expires = time.Unix(int64(c.Expires), 0)
+			}
+			cookies = append(cookies, ck)
+			parts = append(parts, name+"="+c.Value)
+		}
+		if len(parts) == 0 {
+			return importedCookieFile{}, fmt.Errorf("cookies file contains no cookies for %s", domain)
+		}
+		return importedCookieFile{Header: strings.Join(parts, "; "), Cookies: cookies}, nil
+	}
+	header := trimCookieHeaderPrefix(string(data))
+	if header == "" {
+		return importedCookieFile{}, fmt.Errorf("cookies file is empty")
+	}
+	return importedCookieFile{Header: header, Cookies: parseCookieHeaderCookies(header)}, nil
+}
+
+func trimCookieHeaderPrefix(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= len("Cookie:") && strings.EqualFold(s[:len("Cookie:")], "Cookie:") {
+		return strings.TrimSpace(s[len("Cookie:"):])
+	}
+	return s
+}
+
+func parseCookieHeaderCookies(header string) []*http.Cookie {
+	parts := strings.Split(header, ";")
+	cookies := make([]*http.Cookie, 0, len(parts))
+	for _, part := range parts {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok || strings.TrimSpace(name) == "" {
+			continue
+		}
+		cookies = append(cookies, &http.Cookie{Name: strings.TrimSpace(name), Value: strings.TrimSpace(value), Path: "/"})
+	}
+	return cookies
+}
+
+func cookieDomainMatches(cookieDomain string, targetDomain string) bool {
+	target := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(targetDomain)), ".")
+	if target == "" {
+		return true
+	}
+	candidate := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(cookieDomain)), ".")
+	return candidate == target || strings.HasSuffix(candidate, "."+target) || (strings.Contains(candidate, ".") && strings.HasSuffix(target, "."+candidate))
 }
 
 // parseCookieString splits a "name1=value1; name2=value2" string into a map.

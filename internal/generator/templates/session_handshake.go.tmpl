@@ -200,7 +200,18 @@ func (m *SessionManager) ImportSession(cookieDomain string, cookies []*http.Cook
 	if err != nil {
 		return fmt.Errorf("invalid cookie domain: %w", err)
 	}
-	m.jar.SetCookies(u, cookies)
+	for _, ck := range cookies {
+		if ck == nil {
+			continue
+		}
+		target := u
+		if ck.Domain != "" {
+			if parsed, err := url.Parse("https://" + strings.TrimPrefix(ck.Domain, ".")); err == nil {
+				target = parsed
+			}
+		}
+		m.jar.SetCookies(target, []*http.Cookie{ck})
+	}
 	m.mu.Lock()
 	m.token = token
 	m.mu.Unlock()

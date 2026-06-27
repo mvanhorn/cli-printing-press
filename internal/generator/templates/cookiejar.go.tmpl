@@ -208,6 +208,19 @@ func mergeAndWriteCookieRows(path string, rows []persistedCookie) error {
 		idx[r.Domain+"|"+r.Path+"|"+r.Name] = i
 	}
 	for _, r := range rows {
+		filtered := all[:0]
+		for _, existing := range all {
+			if shouldReplaceShadowingCookie(existing, r) {
+				delete(idx, existing.Domain+"|"+existing.Path+"|"+existing.Name)
+				continue
+			}
+			filtered = append(filtered, existing)
+		}
+		all = filtered
+		idx = make(map[string]int, len(all))
+		for i, existing := range all {
+			idx[existing.Domain+"|"+existing.Path+"|"+existing.Name] = i
+		}
 		key := r.Domain + "|" + r.Path + "|" + r.Name
 		if i, ok := idx[key]; ok {
 			all[i] = r
@@ -224,6 +237,18 @@ func mergeAndWriteCookieRows(path string, rows []persistedCookie) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
+}
+
+func shouldReplaceShadowingCookie(existing, incoming persistedCookie) bool {
+	if existing.Name != incoming.Name || existing.Path != incoming.Path {
+		return false
+	}
+	return normalizedWWWCookieDomain(existing.Domain) == normalizedWWWCookieDomain(incoming.Domain)
+}
+
+func normalizedWWWCookieDomain(domain string) string {
+	domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	return strings.TrimPrefix(domain, "www.")
 }
 
 func (j *cookieJar) loadFromDisk() {

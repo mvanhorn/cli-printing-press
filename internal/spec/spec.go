@@ -4048,7 +4048,7 @@ func (s *APISpec) NormalizeAuthEnvVarSpecs() {
 	}
 }
 
-// NormalizeCookieDomain backfills Auth.CookieDomain for cookie/composed auth
+// NormalizeCookieDomain backfills Auth.CookieDomain for browser-session auth
 // when no explicit domain came from the spec field, the x-auth-cookie-domain
 // extension, or the sniffer's bound domain. The browser cookie-capture path
 // (`auth login --chrome`) reads cookies scoped to this domain; an empty value
@@ -4060,7 +4060,7 @@ func (s *APISpec) NormalizeCookieDomain() {
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(s.Auth.Type)) {
-	case "cookie", "composed":
+	case "cookie", "composed", "session_handshake":
 	default:
 		return
 	}

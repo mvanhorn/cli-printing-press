@@ -608,6 +608,36 @@ components:
       x-prefix: Klaviyo-API-Key
 ```
 
+### `x-auth-basic-username` / `x-auth-basic-password`
+
+Declares the literal username or password half for HTTP Basic auth schemes
+where only the other half should be supplied by the user.
+
+Parsed field: `APISpec.Auth.Format`
+
+Rules:
+- Optional.
+- Only read for OpenAPI `http` security schemes with `scheme: basic`.
+- Must be a string.
+- Leading and trailing whitespace is trimmed.
+- When only `x-auth-basic-username` is present, the parser stores
+  `"Basic <username>:{token}"` in `Auth.Format`.
+- When only `x-auth-basic-password` is present, the parser stores
+  `"Basic {token}:<password>"` in `Auth.Format`.
+- If both are present or both are absent, the normal Basic auth format remains
+  `"Basic {username}:{password}"`.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      x-auth-basic-username: API_KEY
+```
+
 ### `x-auth-env-vars`
 
 Overrides the generated credential environment variable names.
