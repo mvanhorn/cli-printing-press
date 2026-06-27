@@ -158,3 +158,65 @@ func TestGenerateSyncFlatAPIUnaffected(t *testing.T) {
 	assert.Contains(t, syncContent, `"users": "/users"`,
 		"flat users resource should have a clean path with no placeholders")
 }
+
+func TestGenerateSyncRegistersParentScopedPathTemplateCollection(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "account-scoped",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.test/v1",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/account-scoped-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"me": {
+				Description: "Current account",
+				Endpoints: map[string]spec.Endpoint{
+					"adaccounts": {
+						Method:      "GET",
+						Path:        "/me/adaccounts",
+						Description: "List ad accounts",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"campaigns": {
+				Description: "Campaigns under a caller-provided account",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/{adAccountId}/campaigns",
+						Description: "List campaigns for an ad account",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	assert.Contains(t, syncContent, `"campaigns": "/{adAccountId}/campaigns"`,
+		"parent-scoped collection should be registered in syncResourcePath instead of failing as unknown")
+	assert.Contains(t, syncContent, `cmd.Flags().StringArrayVar(&pathContextFlags, "path-context", nil`,
+		"sync should expose --path-context so callers can provide the parent template value")
+	assert.Contains(t, syncContent, `"adAccountId": true`,
+		"the parent template variable should be treated as runtime-resolvable when --path-context supplies it")
+	defaultResourcesBody := generatedFunctionBody(t, syncContent, "func defaultSyncResources() []string")
+	assert.NotContains(t, defaultResourcesBody, `"campaigns"`,
+		"parent-scoped collections should not run by default without explicit context")
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-count=1")
+}
