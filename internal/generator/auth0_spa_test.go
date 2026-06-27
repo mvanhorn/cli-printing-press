@@ -45,6 +45,12 @@ func TestGenerateAuth0SPAEmitsCDPLoginCmd(t *testing.T) {
 		"auth.go should enable the Fetch domain for outbound interception")
 	assert.Contains(t, authGo, "EventRequestPaused",
 		"auth.go should listen for paused requests to read the Authorization header")
+	assert.Contains(t, authGo, "browserSessionTargetURL(cfg)",
+		"auth0_spa_in_memory login should derive the navigation target from generated spec/config")
+	assert.Contains(t, authGo, "chromedp.Navigate(navigationURL)",
+		"auth0_spa_in_memory capture should navigate the controlled tab so Fetch observes authenticated traffic")
+	assert.NotContains(t, authGo, "factor75.com",
+		"auth0_spa_in_memory capture must not hardcode the navigation target")
 
 	// --auth0-spa flag must be wired.
 	assert.Contains(t, authGo, `"auth0-spa"`,

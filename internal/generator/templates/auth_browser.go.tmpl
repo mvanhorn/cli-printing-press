@@ -495,7 +495,13 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 				return nil
 			}
 
-			token, err := captureAuth0SPABearer(cmd.Context(), debugPort, targetOrigin, captureTimeout, w)
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+			navigationURL := browserSessionTargetURL(cfg)
+
+			token, err := captureAuth0SPABearer(cmd.Context(), debugPort, targetOrigin, navigationURL, captureTimeout, w)
 			if err != nil {
 				fmt.Fprintln(w, red("Could not capture a bearer from Chrome via CDP."))
 				fmt.Fprintln(w, "")
@@ -511,10 +517,6 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 				return authErr(fmt.Errorf("captured Authorization value is not JWT-shaped (got %d chars); refusing to save", len(token)))
 			}
 
-			cfg, err := config.Load(flags.configPath)
-			if err != nil {
-				return configErr(err)
-			}
 			cfg.AuthHeaderVal = ""
 			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
@@ -545,7 +547,7 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 // the Auth0 SPA SDK actively hides the token from window-scope access, and
 // any extraction script would be brittle across SDK versions. Intercepting
 // the outbound header is the SDK's own injection point and is stable.
-func captureAuth0SPABearer(parent context.Context, debugPort int, targetOrigin string, timeout time.Duration, w io.Writer) (string, error) {
+func captureAuth0SPABearer(parent context.Context, debugPort int, targetOrigin string, navigationURL string, timeout time.Duration, w io.Writer) (string, error) {
 	if timeout <= 0 {
 		timeout = 90 * time.Second
 	}
@@ -602,6 +604,12 @@ func captureAuth0SPABearer(parent context.Context, debugPort int, targetOrigin s
 	if err := chromedp.Run(ctx, fetch.Enable()); err != nil {
 		return "", fmt.Errorf("enabling Fetch domain: %w", err)
 	}
+	if navigationURL != "" {
+		fmt.Fprintf(w, "Navigating controlled tab to %s so authenticated traffic occurs where CDP is listening...\n", navigationURL)
+		if err := chromedp.Run(ctx, chromedp.Navigate(navigationURL)); err != nil {
+			return "", fmt.Errorf("navigating controlled tab to %s: %w", navigationURL, err)
+		}
+	}
 
 	select {
 	case token := <-tokenCh:
@@ -650,6 +658,23 @@ Use auth refresh-queries when the site rotates GraphQL persisted-query hashes.
 }
 {{- end}}
 
+{{- if or $hasBrowserCapture $hasAuth0SPA}}
+func browserSessionTargetURL(cfg *config.Config) string {
+	baseURL := strings.TrimRight("{{.BaseURL}}", "/")
+	if cfg != nil && cfg.BaseURL != "" {
+		baseURL = strings.TrimRight(cfg.BaseURL, "/")
+	}
+	validationPath := strings.TrimSpace("{{.Auth.BrowserSessionValidationPath}}")
+	if validationPath == "" {
+		return baseURL
+	}
+	if strings.HasPrefix(validationPath, "http://") || strings.HasPrefix(validationPath, "https://") {
+		return validationPath
+	}
+	return baseURL + "/" + strings.TrimLeft(validationPath, "/")
+}
+{{- end}}
+
 {{- if $hasBrowserCapture}}
 {{- if $hasBrowserRefresh}}
 func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
@@ -693,21 +718,6 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 {{- end}}
-
-func browserSessionTargetURL(cfg *config.Config) string {
-	baseURL := strings.TrimRight("{{.BaseURL}}", "/")
-	if cfg != nil && cfg.BaseURL != "" {
-		baseURL = strings.TrimRight(cfg.BaseURL, "/")
-	}
-	validationPath := strings.TrimSpace("{{.Auth.BrowserSessionValidationPath}}")
-	if validationPath == "" {
-		return baseURL
-	}
-	if strings.HasPrefix(validationPath, "http://") || strings.HasPrefix(validationPath, "https://") {
-		return validationPath
-	}
-	return baseURL + "/" + strings.TrimLeft(validationPath, "/")
-}
 
 type browserCaptureHandle struct {
 	Tool     string
