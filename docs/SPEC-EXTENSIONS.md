@@ -43,6 +43,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
 | `x-data-source-strategy` | path item or operation | `Endpoint.DataSourceStrategy` | No |
+| `x-live-dogfood-requires-tier` | path item or operation | `Endpoint.LiveDogfoodRequiresTier` | No |
 | `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
 | `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
 | `x-pp-resource` | operation | resource name override | No |
@@ -1317,6 +1318,44 @@ paths:
       x-data-source-strategy: local
       responses:
         "200": {description: ok}
+```
+
+### `x-live-dogfood-requires-tier`
+
+Declares the runner credential tier required before `cli-printing-press dogfood
+--live` should probe an endpoint.
+
+Parsed field: `Endpoint.LiveDogfoodRequiresTier`
+
+Rules:
+- Optional.
+- May be declared on a path item or operation.
+- Operation-level values override path-item-level values.
+- Must be a string; non-string values are ignored with a warning.
+- This is dogfood-only. It does not select an upstream auth route and should
+  not be confused with `x-tier`.
+- When absent, the parser may infer `streaming` for obvious `GET` streaming
+  endpoints such as paths ending in `/stream` or responses with
+  `text/event-stream`.
+
+The generator emits the value as the Cobra annotation `pp:requires-tier`.
+Live dogfood skips annotated commands unless `--auth-tier` or `PP_AUTH_TIER`
+matches the value.
+
+Example:
+
+```yaml
+paths:
+  /2/tweets/firehose/stream:
+    get:
+      x-live-dogfood-requires-tier: enterprise
+      responses:
+        "200":
+          description: Streaming response
+          content:
+            text/event-stream:
+              schema:
+                type: string
 ```
 
 ### `x-requires-role`
