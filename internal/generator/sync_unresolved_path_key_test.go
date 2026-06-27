@@ -213,7 +213,8 @@ func TestGenerateSyncRegistersParentScopedPathTemplateCollection(t *testing.T) {
 		"sync should expose --path-context so callers can provide the parent template value")
 	assert.Contains(t, syncContent, `"adAccountId": true`,
 		"the parent template variable should be treated as runtime-resolvable when --path-context supplies it")
-	assert.NotContains(t, syncContent, "func defaultSyncResources() []string {\n\treturn []string{\n\t\t\"campaigns\",",
+	defaultResourcesBody := generatedFunctionBody(t, syncContent, "func defaultSyncResources() []string")
+	assert.NotContains(t, defaultResourcesBody, `"campaigns"`,
 		"parent-scoped collections should not run by default without explicit context")
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
