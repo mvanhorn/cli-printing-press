@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/require"
 )
@@ -60,13 +61,36 @@ func TestGenerateZeroSyncableAPIOmitsSyncAndDoctorCache(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "search.go"))
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 	require.NotContains(t, rootSrc, "newSyncCmd(flags)")
+	require.NotContains(t, rootSrc, "newSearchCmd(flags)")
 	require.NotContains(t, doctorSrc, `report["cache"]`)
 	require.NotContains(t, doctorSrc, "collectCacheReport")
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestConstrainVisionTemplatesKeepsStreamingSyncWhenProfileHasNoBulkResources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := zeroSyncableQuerySpec("streaming-zero-syncable")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Streaming = spec.StreamingConfig{
+		Transport:      spec.StreamingTransportWebSocket,
+		URL:            "wss://api.example.com/v1/ws",
+		SubscribeShape: `{"type":"subscribe","channels":["events"]}`,
+		Framing:        spec.StreamingFramingNDJSON,
+	}
+	visionSet := constrainVisionTemplates(
+		apiSpec,
+		VisionTemplateSet{Store: true, Search: true, Sync: true, MCP: true},
+		&profiler.APIProfile{},
+	)
+
+	require.True(t, visionSet.Store)
+	require.True(t, visionSet.Sync)
 }
 
 func TestGenerateReadOnlyAPIWithoutCreateOmitsImportAndIdempotent(t *testing.T) {
