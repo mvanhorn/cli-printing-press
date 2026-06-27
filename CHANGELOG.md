@@ -1,5 +1,36 @@
 # Changelog
 
+## [4.27.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.26.1...v4.27.0) (2026-06-27)
+
+
+### Features
+
+* **generator:** sync deletion reconciliation (dependent per-parent mark-and-sweep) ([#3206](https://github.com/mvanhorn/cli-printing-press/issues/3206)) ([407433a](https://github.com/mvanhorn/cli-printing-press/commit/407433ac5d85beb3b4b5bd0936bd408e1bf9fe58))
+* **generator:** tenant resolver + flat tenant-scoped reconcile ([#3341](https://github.com/mvanhorn/cli-printing-press/issues/3341)) ([9c3219c](https://github.com/mvanhorn/cli-printing-press/commit/9c3219c108ab9c64921cad30b04f68c6751e3c31))
+
+
+### Bug Fixes
+
+* **cli:** bound sync dogfood and profiler defaults ([#3322](https://github.com/mvanhorn/cli-printing-press/issues/3322)) ([5858b98](https://github.com/mvanhorn/cli-printing-press/commit/5858b98a92045b8af68f7597edc43233c45fae2d))
+* **cli:** correct generated body request serialization ([#3313](https://github.com/mvanhorn/cli-printing-press/issues/3313)) ([246113a](https://github.com/mvanhorn/cli-printing-press/commit/246113acdfdb15db39b1e897f3c85bf6ac589ea3))
+* **cli:** correct generated pagination defaults ([#3299](https://github.com/mvanhorn/cli-printing-press/issues/3299)) ([0bb7820](https://github.com/mvanhorn/cli-printing-press/commit/0bb78200b1cc520499ecadb9df6fa11dfb8680f4))
+* **cli:** gate generated command surfaces ([#3333](https://github.com/mvanhorn/cli-printing-press/issues/3333)) ([b15220f](https://github.com/mvanhorn/cli-printing-press/commit/b15220f0d8bcbc1bb07fb793d71f22b923b5450e))
+* **cli:** harden browser-session auth imports ([#3348](https://github.com/mvanhorn/cli-printing-press/issues/3348)) ([95529b7](https://github.com/mvanhorn/cli-printing-press/commit/95529b721ef96f23595b15bd9e560663c550dc1d))
+* **cli:** harden generated auth runtime ([#3298](https://github.com/mvanhorn/cli-printing-press/issues/3298)) ([103c25a](https://github.com/mvanhorn/cli-printing-press/commit/103c25a231564dcf744521224465c13c7c643df6))
+* **cli:** harden generated read and search extraction ([#3321](https://github.com/mvanhorn/cli-printing-press/issues/3321)) ([99a9e41](https://github.com/mvanhorn/cli-printing-press/commit/99a9e4103b3c3c604e0cc96cbe7245e426ddf6d7))
+* **cli:** harden generated sync identity runtime ([#3312](https://github.com/mvanhorn/cli-printing-press/issues/3312)) ([37f640b](https://github.com/mvanhorn/cli-printing-press/commit/37f640b9d88e58ee6be82e042ef54ecc41e214bc))
+* **cli:** harden provenance and sniff edge cases ([#3320](https://github.com/mvanhorn/cli-printing-press/issues/3320)) ([4a259d6](https://github.com/mvanhorn/cli-printing-press/commit/4a259d670a3f1d2d0d9a015237ee0efe9b0b9c14))
+* **cli:** harden response-path store extraction ([#3300](https://github.com/mvanhorn/cli-printing-press/issues/3300)) ([b8d9b21](https://github.com/mvanhorn/cli-printing-press/commit/b8d9b21ccea71e12726f193dcc5cca4c25df1613))
+* **cli:** harden scorer verify gates ([#3319](https://github.com/mvanhorn/cli-printing-press/issues/3319)) ([3ded211](https://github.com/mvanhorn/cli-printing-press/commit/3ded211ba2f8ea287ee8b2af900dccfd18c832d3))
+* **cli:** persist scorer gates and live polish status ([#3314](https://github.com/mvanhorn/cli-printing-press/issues/3314)) ([161be9c](https://github.com/mvanhorn/cli-printing-press/commit/161be9c836c4f6368c784153566e992759997cf3))
+* **cli:** preserve implemented novel command scaffolds ([#3309](https://github.com/mvanhorn/cli-printing-press/issues/3309)) ([e847c1d](https://github.com/mvanhorn/cli-printing-press/commit/e847c1d319567cbe84565753d07fa64469ef4d5f))
+* **cli:** preserve mcp mirror positional args ([#3332](https://github.com/mvanhorn/cli-printing-press/issues/3332)) ([a2f0842](https://github.com/mvanhorn/cli-printing-press/commit/a2f084239b445ef0ebba98ac98a128993722d8e5))
+* **cli:** reduce scorer dogfood false failures ([#3344](https://github.com/mvanhorn/cli-printing-press/issues/3344)) ([eafd6ba](https://github.com/mvanhorn/cli-printing-press/commit/eafd6ba9a1390a0a81a6d72cd691ea83bad46eb2))
+* **cli:** register parent-scoped sync templates ([#3331](https://github.com/mvanhorn/cli-printing-press/issues/3331)) ([f1510cd](https://github.com/mvanhorn/cli-printing-press/commit/f1510cd13504a21299ef914f2f4606ddce9f7372))
+* **cli:** support POST HTML table sniffing ([#3347](https://github.com/mvanhorn/cli-printing-press/issues/3347)) ([a6e7162](https://github.com/mvanhorn/cli-printing-press/commit/a6e716223af1b94dc967be1bce69caf5e6f1b782))
+* **cli:** sync narrative docs and MCP descriptions ([#3346](https://github.com/mvanhorn/cli-printing-press/issues/3346)) ([76490b8](https://github.com/mvanhorn/cli-printing-press/commit/76490b83e8a1795bd1a14250baf52ba0ef032080))
+* **skills:** harden skill flow scope and CRLF handling ([#3330](https://github.com/mvanhorn/cli-printing-press/issues/3330)) ([7e56e63](https://github.com/mvanhorn/cli-printing-press/commit/7e56e6376bd9fe6fc58209ed005d59d437939085))
+
 ## [4.26.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.26.0...v4.26.1) (2026-06-26)
 
 
