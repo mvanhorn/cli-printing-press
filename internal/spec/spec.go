@@ -91,6 +91,7 @@ const (
 const (
 	HTMLExtractModePage         = "page"
 	HTMLExtractModeLinks        = "links"
+	HTMLExtractModeTable        = "table"
 	HTMLExtractModeEmbeddedJSON = "embedded-json"
 )
 
@@ -4602,17 +4603,17 @@ func validateEndpointResponseFormat(e Endpoint) error {
 		return nil
 	}
 	switch strings.ToUpper(strings.TrimSpace(e.Method)) {
-	case "GET", "HEAD":
+	case "GET", "HEAD", "POST":
 	default:
-		return fmt.Errorf("html response_format is only supported for GET/HEAD endpoints")
+		return fmt.Errorf("html response_format is only supported for GET/HEAD/POST endpoints")
 	}
 	if e.HTMLExtract == nil {
 		return nil
 	}
 	switch e.HTMLExtract.Mode {
-	case "", HTMLExtractModePage, HTMLExtractModeLinks, HTMLExtractModeEmbeddedJSON:
+	case "", HTMLExtractModePage, HTMLExtractModeLinks, HTMLExtractModeTable, HTMLExtractModeEmbeddedJSON:
 	default:
-		return fmt.Errorf("html_extract.mode must be one of: page, links, embedded-json")
+		return fmt.Errorf("html_extract.mode must be one of: page, links, table, embedded-json")
 	}
 	if e.HTMLExtract.Limit < 0 {
 		return fmt.Errorf("html_extract.limit must be >= 0")

@@ -129,6 +129,64 @@ func TestAnalyzeCapture_PrefersCanonicalCollectionEnvelope(t *testing.T) {
 	assert.Equal(t, "title", apiSpec.Types["SearchItem"].Fields[1].Name)
 }
 
+func TestAnalyzeCapture_PromotesPostFormHTMLTableFragment(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := AnalyzeCapture(&EnrichedCapture{
+		TargetURL: "https://www.example.com/contracts",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://www.example.com/nba/contracts/_/position/g",
+				RequestHeaders:      map[string]string{"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "X-Requested-With": "XMLHttpRequest"},
+				RequestBody:         "ajax=table",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<table><thead><tr><th>Player</th><th>Salary</th></tr></thead><tbody><tr><td>Ada Lovelace</td><td>$100</td></tr><tr><td>Grace Hopper</td><td>$200</td></tr></tbody></table>`,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	endpoint, found := findEndpointByPath(apiSpec, "/nba/contracts/_/position/g")
+	require.True(t, found, "expected POST HTML table endpoint to be promoted")
+	assert.Equal(t, "POST", endpoint.Method)
+	assert.Equal(t, "application/x-www-form-urlencoded", endpoint.RequestContentType)
+	assert.Equal(t, spec.ResponseFormatHTML, endpoint.ResponseFormat)
+	require.NotNil(t, endpoint.HTMLExtract)
+	assert.Equal(t, spec.HTMLExtractModeTable, endpoint.HTMLExtract.Mode)
+	assert.Equal(t, spec.ResponseDef{Type: "array", Item: "html_table_row"}, endpoint.Response)
+	assert.Equal(t, map[string]string{"mcp:read-only": "true"}, endpoint.Meta)
+	require.Len(t, endpoint.Body, 1)
+	assert.Equal(t, "ajax", endpoint.Body[0].Name)
+	assert.Equal(t, "table", endpoint.Body[0].Default)
+	require.NoError(t, apiSpec.Validate())
+}
+
+func TestAnalyzeCapture_GetHTMLWithTableStillPrefersLinks(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := AnalyzeCapture(&EnrichedCapture{
+		TargetURL: "https://www.example.com/results",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/products",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<html><body><a href="/products/1">Item 1</a><table><tr><th>Name</th></tr><tr><td>Widget</td></tr></table></body></html>`,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	endpoint, found := findEndpointByPath(apiSpec, "/products")
+	require.True(t, found, "expected GET HTML endpoint")
+	require.NotNil(t, endpoint.HTMLExtract)
+	assert.Equal(t, spec.HTMLExtractModeLinks, endpoint.HTMLExtract.Mode)
+	assert.Equal(t, spec.ResponseDef{Type: "array", Item: "html"}, endpoint.Response)
+}
+
 func TestAnalyzeCapture_ParameterizesCompactSingleSampleIdentifiers(t *testing.T) {
 	t.Parallel()
 

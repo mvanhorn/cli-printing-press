@@ -908,6 +908,19 @@ func (c *Client) PostFormWithParamsAndHeaders(ctx context.Context, path string, 
 	return c.do(ctx, "POST", path, params, formRequestBody{Fields: fields}, headers)
 }
 
+// PostQueryFormWithParams is a form-encoded POST that does not mutate remote
+// state. It is the form-body counterpart to PostQueryWithParams for POST
+// search/table endpoints that return read-only data.
+func (c *Client) PostQueryFormWithParams(ctx context.Context, path string, params map[string]string, fields url.Values) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "POST", path, params, formRequestBody{Fields: fields}, nil)
+}
+
+// PostQueryFormWithParamsAndHeaders is the headers-aware counterpart to
+// PostQueryFormWithParams.
+func (c *Client) PostQueryFormWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "POST", path, params, formRequestBody{Fields: fields}, headers)
+}
+
 {{ end }}
 
 func (c *Client) Delete(ctx context.Context, path string) (json.RawMessage, int, error) {
