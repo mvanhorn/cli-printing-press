@@ -7621,12 +7621,13 @@ func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 			Description: "Lookup a page",
 			Endpoints: map[string]spec.Endpoint{
 				"get": {
-					Method:      "GET",
-					Path:        "/lookup",
-					Description: "Lookup a page",
-					Params:      []spec.Param{{Name: "q", Type: "string", Required: true}},
-					Example:     "  endpoint-fixtures-pp-cli lookup --q example-page",
-					HappyArgs:   "--q=example-page",
+					Method:                  "GET",
+					Path:                    "/lookup",
+					Description:             "Lookup a page",
+					Params:                  []spec.Param{{Name: "q", Type: "string", Required: true}},
+					Example:                 "  endpoint-fixtures-pp-cli lookup --q example-page",
+					HappyArgs:               "--q=example-page",
+					LiveDogfoodRequiresTier: "enterprise",
 				},
 			},
 		},
@@ -7634,12 +7635,13 @@ func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 			Description: "Manage items",
 			Endpoints: map[string]spec.Endpoint{
 				"search": {
-					Method:      "GET",
-					Path:        "/items/search",
-					Description: "Search items",
-					Params:      []spec.Param{{Name: "q", Type: "string", Required: true}},
-					Example:     "  endpoint-fixtures-pp-cli items search --q example-item",
-					HappyArgs:   "--q=example-item",
+					Method:                  "GET",
+					Path:                    "/items/search",
+					Description:             "Search items",
+					Params:                  []spec.Param{{Name: "q", Type: "string", Required: true}},
+					Example:                 "  endpoint-fixtures-pp-cli items search --q example-item",
+					HappyArgs:               "--q=example-item",
+					LiveDogfoodRequiresTier: "streaming",
 				},
 				"get": {
 					Method:      "GET",
@@ -7660,18 +7662,24 @@ func TestEndpointFixturesEmittedFromSpec(t *testing.T) {
 		"promoted command must prefer the spec-declared Cobra example")
 	assert.Contains(t, promoted, `"pp:happy-args": "--q=example-page"`,
 		"promoted command must carry spec-declared happy-path fixtures for live dogfood")
+	assert.Contains(t, promoted, `"pp:requires-tier": "enterprise"`,
+		"promoted command must carry spec-declared live dogfood tier requirements")
 
 	endpoint := readGeneratedFile(t, outputDir, "internal", "cli", "items_search.go")
 	assert.Contains(t, endpoint, `Example:     "  endpoint-fixtures-pp-cli items search --q example-item"`,
 		"non-promoted endpoint commands should also prefer their own spec-declared Cobra example")
 	assert.Contains(t, endpoint, `"pp:happy-args": "--q=example-item"`,
 		"non-promoted endpoint commands should also carry their own happy-path fixtures")
+	assert.Contains(t, endpoint, `"pp:requires-tier": "streaming"`,
+		"non-promoted endpoint commands should carry spec-declared live dogfood tier requirements")
 
 	withoutHappyArgs := readGeneratedFile(t, outputDir, "internal", "cli", "items_get.go")
 	assert.Contains(t, withoutHappyArgs, `Example:     "  endpoint-fixtures-pp-cli items get 550e8400-e29b-41d4-a716-446655440000"`,
 		"endpoints without example must keep the existing synthesized example")
 	assert.NotContains(t, withoutHappyArgs, "pp:happy-args",
 		"endpoints without happy_args must keep the existing annotation shape")
+	assert.NotContains(t, withoutHappyArgs, "pp:requires-tier",
+		"endpoints without a dogfood tier requirement must keep the existing annotation shape")
 	requireGeneratedCompiles(t, outputDir)
 }
 

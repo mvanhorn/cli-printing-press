@@ -2020,6 +2020,11 @@ type Endpoint struct {
 	// conditional input contract. The runtime consumes it from the generated
 	// Cobra annotation `pp:happy-args`.
 	HappyArgs string `yaml:"happy_args,omitempty" json:"happy_args,omitempty"`
+	// LiveDogfoodRequiresTier declares the runner credential tier required
+	// before live dogfood should probe this endpoint. It is dogfood-only and
+	// does not select an upstream auth route; the runtime consumes it from the
+	// generated Cobra annotation `pp:requires-tier`.
+	LiveDogfoodRequiresTier string `yaml:"live_dogfood_requires_tier,omitempty" json:"live_dogfood_requires_tier,omitempty"`
 	// EmbeddedPagedSubresources names paged-envelope properties nested
 	// inside this endpoint's success response (e.g. GET /<resource>/{id}
 	// where the API caps the embedded sub-resource at the first page

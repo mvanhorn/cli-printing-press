@@ -69,6 +69,7 @@ const (
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
+	extensionLiveDogfoodTier       = "x-live-dogfood-requires-tier"
 	extensionDispatchParam         = "x-pp-dispatch-param"
 	extensionPPResource            = "x-pp-resource"
 	extensionParamURLName          = "x-url-name"
@@ -3328,6 +3329,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 		pathSyncable, _ := boolExtension(pathItem.Extensions, extensionPPSyncable)
 		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 		pathDataSourceStrategy := readDataSourceStrategyExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
+		pathLiveDogfoodTier := readLiveDogfoodTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 
 		methods := make([]string, 0, len(operations))
 		for method := range operations {
@@ -3443,6 +3445,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				endpoint.DataSourceStrategy = pathDataSourceStrategy
 			}
 			endpoint.HappyArgs = readHappyArgsExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			endpoint.LiveDogfoodRequiresTier = readLiveDogfoodTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			if endpoint.LiveDogfoodRequiresTier == "" {
+				endpoint.LiveDogfoodRequiresTier = pathLiveDogfoodTier
+			}
+			if endpoint.LiveDogfoodRequiresTier == "" {
+				endpoint.LiveDogfoodRequiresTier = inferLiveDogfoodTier(method, path, op)
+			}
 
 			// Namespace the inline-item synthetic name with the resource so
 			// two resources whose default GET endpoints both compute the
@@ -5415,6 +5424,60 @@ func readHappyArgsExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+func readLiveDogfoodTierExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionLiveDogfoodTier]
+	if !ok || raw == nil {
+		return ""
+	}
+	tier, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionLiveDogfoodTier, raw)
+		return ""
+	}
+	return strings.TrimSpace(tier)
+}
+
+func inferLiveDogfoodTier(method, path string, op *openapi3.Operation) string {
+	if !strings.EqualFold(method, "GET") {
+		return ""
+	}
+	if hasEventStreamResponse(op) || hasTerminalStreamPathSegment(path) {
+		return "streaming"
+	}
+	return ""
+}
+
+func hasEventStreamResponse(op *openapi3.Operation) bool {
+	if op == nil || op.Responses == nil {
+		return false
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return false
+	}
+	for contentType := range success.Value.Content {
+		if strings.EqualFold(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]), "text/event-stream") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTerminalStreamPathSegment(path string) bool {
+	path = strings.TrimRight(strings.TrimSpace(path), "/")
+	lastSlash := strings.LastIndex(path, "/")
+	if lastSlash >= 0 {
+		path = path[lastSlash+1:]
+	}
+	if strings.HasPrefix(path, "{") || strings.HasPrefix(path, ":") {
+		return false
+	}
+	return strings.EqualFold(path, "stream")
 }
 
 func readPaginationExtension(extensions map[string]any, context string) *spec.Pagination {
