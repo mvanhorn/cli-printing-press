@@ -5574,6 +5574,37 @@ paths:
 	assert.Equal(t, []string{"MAILGUN_TOKEN"}, parsed.Auth.EnvVars)
 }
 
+func TestOpenAPIHTTPBasicAuthDoesNotInferProseUsernameFromDescription(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Username is always required. Password is your API key.
+security:
+  - basicAuth: []
+paths:
+  /v1/account:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Basic {username}:{password}", parsed.Auth.Format)
+	assert.Equal(t, []string{"EXAMPLE_USERNAME", "EXAMPLE_PASSWORD"}, parsed.Auth.EnvVars)
+}
+
 func TestOpenAPIHTTPBasicAuthSupportsConstantPassword(t *testing.T) {
 	t.Parallel()
 

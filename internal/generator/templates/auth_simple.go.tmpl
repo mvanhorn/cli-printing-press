@@ -268,7 +268,7 @@ func sessionCookieDomainMatches(cookieDomain string, targetDomain string) bool {
 		return true
 	}
 	candidate := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(cookieDomain)), ".")
-	return candidate == target || strings.HasSuffix(candidate, "."+target) || strings.HasSuffix(target, "."+candidate)
+	return candidate == target || strings.HasSuffix(candidate, "."+target) || (strings.Contains(candidate, ".") && strings.HasSuffix(target, "."+candidate))
 }
 
 {{- end}}

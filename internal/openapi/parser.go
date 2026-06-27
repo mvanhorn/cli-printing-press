@@ -1981,7 +1981,7 @@ func describedBasicCredentialConstant(description, field string) string {
 		}
 	}
 	parts := strings.Fields(value)
-	if len(parts) == 0 {
+	if len(parts) != 1 {
 		return ""
 	}
 	candidate := strings.Trim(parts[0], "`'\"")
@@ -1994,7 +1994,8 @@ func describedBasicCredentialConstant(description, field string) string {
 func looksLikeBasicConstant(value string) bool {
 	lower := strings.ToLower(strings.TrimSpace(value))
 	switch lower {
-	case "", "a", "an", "the", "your", "you", "username", "password", "key", "secret", "token":
+	case "", "a", "an", "the", "your", "you", "username", "password", "key", "secret", "token",
+		"always", "required", "provided", "required.", "optional", "empty", "blank":
 		return false
 	}
 	for _, r := range value {

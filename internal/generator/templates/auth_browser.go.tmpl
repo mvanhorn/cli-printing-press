@@ -2000,7 +2000,7 @@ func cookieDomainMatches(cookieDomain string, targetDomain string) bool {
 		return true
 	}
 	candidate := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(cookieDomain)), ".")
-	return candidate == target || strings.HasSuffix(candidate, "."+target) || strings.HasSuffix(target, "."+candidate)
+	return candidate == target || strings.HasSuffix(candidate, "."+target) || (strings.Contains(candidate, ".") && strings.HasSuffix(target, "."+candidate))
 }
 
 // parseCookieString splits a "name1=value1; name2=value2" string into a map.

@@ -48,6 +48,7 @@ func TestLoadCookiesFromFileFiltersPlaywrightState(t *testing.T) {
 	path := t.TempDir() + "/state.json"
 	data := []byte(` + "`" + `{"cookies":[
 		{"name":"session_id","value":"abc","domain":".example.com","path":"/","secure":true,"httpOnly":true},
+		{"name":"tld","value":"drop","domain":".com","path":"/"},
 		{"name":"other","value":"drop","domain":".not-example.com","path":"/"}
 	]}` + "`" + `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -102,11 +103,39 @@ func TestSessionHandshakeLoginEmitsCookiesFileImport(t *testing.T) {
 	assert.Contains(t, authGo, "newAuthLoginCmd(flags)")
 	assert.Contains(t, authGo, `"cookies-file"`)
 	assert.Contains(t, authGo, "loadSessionCookiesFromFile")
+	assert.Contains(t, authGo, `strings.Contains(candidate, ".") && strings.HasSuffix(target, "."+candidate)`)
 	assert.Contains(t, authGo, `c.Session.ImportSession("https://query1.example.com", imported, "")`)
 	assert.Contains(t, authGo, "c.Session.EnsureToken()")
 
 	sessionGo := readGeneratedFile(t, outputDir, "internal", "client", "session.go")
 	assert.Contains(t, sessionGo, "strings.TrimPrefix(ck.Domain, \".\")")
 
+	cliTest := `package cli
+
+import (
+	"os"
+	"testing"
+)
+
+func TestLoadSessionCookiesFromFileRejectsBareTLDMatch(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	data := []byte(` + "`" + `{"cookies":[
+		{"name":"session","value":"drop","domain":".com","path":"/"},
+		{"name":"crumb","value":"abc","domain":".query1.example.com","path":"/"}
+	]}` + "`" + `)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadSessionCookiesFromFile(path, ".query1.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "crumb" {
+		t.Fatalf("Cookies = %#v, want one scoped cookie", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "session_cookies_file_test.go"), []byte(cliTest), 0o600))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestLoadSessionCookiesFromFileRejectsBareTLDMatch")
 	requireGeneratedCompiles(t, outputDir)
 }
