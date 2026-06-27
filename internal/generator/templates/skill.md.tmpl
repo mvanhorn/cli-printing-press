@@ -209,7 +209,7 @@ These commands are declared by the spec author and require separate hand-written
 
 ## Auth Setup
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
-{{- if and .HasAuth .Narrative .Narrative.AuthNarrative}}
+{{- if and .Narrative .Narrative.AuthNarrative}}
 
 {{.Narrative.AuthNarrative}}
 {{- else if eq .Auth.Type "api_key"}}

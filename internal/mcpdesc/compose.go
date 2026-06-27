@@ -15,6 +15,7 @@ package mcpdesc
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -34,6 +35,13 @@ const optionalListMax = 3
 // detail.
 const defaultValueMaxLen = 30
 
+const (
+	SourceSpec      = "spec"
+	SourceGenerated = "generated"
+)
+
+var htmlTagRE = regexp.MustCompile(`<[^>]+>`)
+
 // HTTP method constants. Method strings are matched at multiple
 // composition sites; defining them once keeps spelling consistent and
 // gives the compiler a chance to catch typos in any future site.
@@ -52,6 +60,11 @@ type Input struct {
 	TotalCount  int
 }
 
+type Result struct {
+	Description string
+	Source      string
+}
+
 // Compose returns the composed description ready for storage in
 // tools-manifest.json or registration in tools.go. Auth annotation is
 // delegated to naming.MCPDescription so the (public)/(requires auth)
@@ -68,14 +81,23 @@ type Input struct {
 //     composing Required/Optional from spec, but skip the generated
 //     Returns clause to avoid "Returns X. Returns the X." doubling.
 func Compose(in Input) string {
+	return ComposeWithSource(in).Description
+}
+
+// ComposeWithSource returns Compose's description plus a coarse source marker
+// for manifest consumers. Rich spec/override descriptions stay source=spec;
+// parser fallbacks and recognized vendor boilerplate are source=generated.
+func ComposeWithSource(in Input) Result {
 	desc := in.Endpoint.Description
+	synthesizeAction := shouldSynthesizeAction(in.Endpoint)
+	structuralOverride := hasStructuralOverride(desc)
 
 	var composed string
-	if hasStructuralOverride(desc) {
+	if structuralOverride {
 		composed = composeAction(desc)
 	} else {
 		var parts []string
-		if action := composeActionWithFallback(in.Endpoint); action != "" {
+		if action := composeActionWithFallback(in.Endpoint, synthesizeAction); action != "" {
 			parts = append(parts, action)
 		}
 		if required := composeRequired(in.Endpoint); required != "" {
@@ -84,7 +106,7 @@ func Compose(in Input) string {
 		if optional := composeOptional(in.Endpoint); optional != "" {
 			parts = append(parts, optional)
 		}
-		if !mentionsReturn(desc) {
+		if synthesizeAction || !mentionsReturn(desc) {
 			if returns := composeReturns(in.Endpoint); returns != "" {
 				parts = append(parts, returns)
 			}
@@ -93,7 +115,14 @@ func Compose(in Input) string {
 	}
 
 	composed = appendMethodMarker(composed, in.Endpoint.Method)
-	return naming.MCPDescription(composed, in.NoAuth, in.AuthType, in.PublicCount, in.TotalCount)
+	source := SourceSpec
+	if synthesizeAction && !structuralOverride {
+		source = SourceGenerated
+	}
+	return Result{
+		Description: naming.MCPDescription(composed, in.NoAuth, in.AuthType, in.PublicCount, in.TotalCount),
+		Source:      source,
+	}
 }
 
 // hasStructuralOverride detects the colon-terminated markers an
@@ -126,18 +155,61 @@ func composeAction(desc string) string {
 	return s
 }
 
-func composeActionWithFallback(ep spec.Endpoint) string {
-	if action := synthesizedResourceAction(ep); action != "" {
-		return action + "."
+func composeActionWithFallback(ep spec.Endpoint, synthesizeAction bool) string {
+	if synthesizeAction {
+		if action := synthesizedResourceAction(ep); action != "" {
+			return action + "."
+		}
 	}
 	return composeAction(ep.Description)
 }
 
-func synthesizedResourceAction(ep spec.Endpoint) string {
-	if !ep.DescriptionSynthesized {
-		return ""
+func shouldSynthesizeAction(ep spec.Endpoint) bool {
+	return ep.DescriptionSynthesized || isThinSpecDescription(ep.Description)
+}
+
+func isThinSpecDescription(desc string) bool {
+	normalized := strings.ToLower(normalizeDescriptionText(desc))
+	if normalized == "" || normalized == "requires authentication." || normalized == "requires authentication" {
+		return true
 	}
+	normalized = strings.TrimSuffix(normalized, ".")
+	normalized = strings.TrimSpace(strings.TrimSuffix(normalized, "requires authentication"))
+	normalized = strings.TrimSpace(strings.TrimSuffix(normalized, "."))
+	for _, prefix := range []string{
+		"use this to return multiple ",
+		"use this to return a single instance of ",
+		"use this to return a single ",
+		"use this to create ",
+		"use this to update ",
+		"use this to delete ",
+	} {
+		if strings.HasPrefix(normalized, prefix) && isBareBoilerplateResource(strings.TrimSpace(strings.TrimPrefix(normalized, prefix))) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBareBoilerplateResource(remainder string) bool {
+	remainder = strings.TrimSpace(strings.TrimSuffix(remainder, "."))
+	if remainder == "" {
+		return false
+	}
+	return !strings.ContainsAny(remainder, ".;,:!?")
+}
+
+func normalizeDescriptionText(desc string) string {
+	desc = strings.NewReplacer("<br>", " ", "<br/>", " ", "<br />", " ").Replace(desc)
+	desc = htmlTagRE.ReplaceAllString(desc, " ")
+	return strings.Join(strings.Fields(desc), " ")
+}
+
+func synthesizedResourceAction(ep spec.Endpoint) string {
 	verb := strings.TrimSpace(ep.Description)
+	if !ep.DescriptionSynthesized || verb == "" || isThinSpecDescription(verb) {
+		verb = synthesizedVerb(ep)
+	}
 	switch verb {
 	case "Create":
 		if singular := singularResourceName(ep.Path); singular != "" {
@@ -149,10 +221,43 @@ func synthesizedResourceAction(ep spec.Endpoint) string {
 		}
 	case "Get", "Update", "Delete":
 		if singular := singularResourceName(ep.Path); singular != "" {
-			return verb + " a " + singular
+			return verb + " " + indefiniteArticle(singular) + " " + singular
 		}
 	}
 	return ""
+}
+
+func synthesizedVerb(ep spec.Endpoint) string {
+	switch strings.ToUpper(ep.Method) {
+	case methodPOST:
+		return "Create"
+	case methodPATCH, methodPUT:
+		return "Update"
+	case methodDELETE:
+		return "Delete"
+	default:
+		if pathHasTemplateParam(ep.Path) {
+			return "Get"
+		}
+		return "List"
+	}
+}
+
+func pathHasTemplateParam(path string) bool {
+	return strings.Contains(path, "{") && strings.Contains(path, "}")
+}
+
+func indefiniteArticle(phrase string) string {
+	phrase = strings.TrimSpace(phrase)
+	if phrase == "" {
+		return "a"
+	}
+	switch strings.ToLower(phrase[:1]) {
+	case "a", "e", "i", "o", "u":
+		return "an"
+	default:
+		return "a"
+	}
 }
 
 func pluralResourceName(path string) string {

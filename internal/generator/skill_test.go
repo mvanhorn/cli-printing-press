@@ -409,6 +409,26 @@ func TestSkillRendersAuthBranchPerType(t *testing.T) {
 	}
 }
 
+func TestSkillAuthSetupPrefersNarrativeEvenWhenSpecAuthIsNone(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("tierfree")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	outputDir := filepath.Join(t.TempDir(), "tierfree-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		AuthNarrative: "Most commands are public, but premium download routes require `AA_API_KEY`.",
+	}
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	assert.Contains(t, content, "Most commands are public, but premium download routes require `AA_API_KEY`.")
+	assert.NotContains(t, content, "No authentication required.")
+}
+
 // TestSkillRendersExtraCommands asserts that hand-written commands declared
 // in spec.ExtraCommands appear in their own `## Hand-written Extensions`
 // section (NOT inside `## Command Reference`), with binary prefix and optional

@@ -344,7 +344,7 @@ func TestCompose_EmptyDescriptionStillBuildsParts(t *testing.T) {
 		AuthType: "none",
 	}
 	got := Compose(in)
-	assert.Equal(t, "Required: name. Returns the new X.", got)
+	assert.Equal(t, "Create a new x. Required: name. Returns the new X.", got)
 }
 
 func TestCompose_SynthesizesResourceAwareActionForParserFallbackDescriptions(t *testing.T) {
@@ -448,4 +448,99 @@ func TestCompose_DoesNotOverrideAuthoredDescriptions(t *testing.T) {
 		AuthType: "none",
 	})
 	assert.Equal(t, "Add a widget to inventory.", got)
+}
+
+func TestCompose_SynthesizesVendorBoilerplateDescriptions(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Actions",
+			Description: "Use this to return multiple Actions.<br>Requires authentication.",
+			Params: []spec.Param{
+				{Name: "page_size", Required: false},
+			},
+			Response: spec.ResponseDef{Type: "array", Item: "Action"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "List actions. Optional: page_size. Returns array of Action.", result.Description)
+	assert.Equal(t, SourceGenerated, result.Source)
+}
+
+func TestCompose_PreservesRichDescriptionWithBoilerplatePrefix(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Users",
+			Description: "Use this to return multiple Users. Supports filtering by role, status, and department.",
+			Params: []spec.Param{
+				{Name: "role", Required: false},
+			},
+			Response: spec.ResponseDef{Type: "array", Item: "User"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Contains(t, result.Description, "Supports filtering by role, status, and department.")
+	assert.Contains(t, result.Description, "Optional: role.")
+	assert.NotContains(t, result.Description, "List users.")
+	assert.Equal(t, SourceSpec, result.Source)
+}
+
+func TestCompose_SynthesizesSingleInstanceBoilerplateWithArticle(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Actions/{id}",
+			Description: "Use this to return a single instance of Actions.<br>Requires authentication.",
+			Params: []spec.Param{
+				{Name: "id", Required: true, Positional: true},
+			},
+			Response: spec.ResponseDef{Type: "object", Item: "Action"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "Get an action. Required: id. Returns the Action.", result.Description)
+	assert.Equal(t, SourceGenerated, result.Source)
+}
+
+func TestComposeWithSourceKeepsStructuralBoilerplateOverrideAsSpec(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/Actions",
+			Description: "Use this to return multiple Actions. Required: authorization.",
+			Response:    spec.ResponseDef{Type: "array", Item: "Action"},
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "Use this to return multiple Actions. Required: authorization.", result.Description)
+	assert.Equal(t, SourceSpec, result.Source)
+}
+
+func TestComposeWithSourceMarksAuthoredDescriptionsAsSpec(t *testing.T) {
+	t.Parallel()
+
+	result := ComposeWithSource(Input{
+		Endpoint: spec.Endpoint{
+			Method:      "POST",
+			Path:        "/widgets",
+			Description: "Add a widget to inventory",
+		},
+		AuthType: "none",
+	})
+
+	assert.Equal(t, "Add a widget to inventory.", result.Description)
+	assert.Equal(t, SourceSpec, result.Source)
 }
