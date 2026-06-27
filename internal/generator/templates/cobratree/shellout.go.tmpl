@@ -17,7 +17,7 @@ import (
 	"{{modulePath}}/internal/mcp/bound"
 )
 
-func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
+func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, allowedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
 	lookupPath, lookupErr := cliPath()
 	prefixArgs := append([]string{}, commandPath...)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -25,6 +25,9 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 			return mcplib.NewToolResultError(fmt.Sprintf("companion CLI binary not found: %v\nTried sibling lookup, {{envPrefix .Name}}_CLI_PATH env var, and PATH.", lookupErr)), nil
 		}
 		args := req.GetArguments()
+		if err := validateMCPArgumentNames(args, allowedStructuredArgs); err != nil {
+			return mcplib.NewToolResultError(err.Error()), nil
+		}
 		finalArgs := append([]string{}, prefixArgs...)
 		finalArgs = append(finalArgs, cliArgsFromMCP(args, blockedStructuredArgs)...)
 		positionalArgs, err := positionalArgsFromMCP(args, positionals, readOnly, positionalWriteSinks)
@@ -33,11 +36,11 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		finalArgs = append(finalArgs, positionalArgs...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
-			tokens := SplitShellArgs(raw)
-			if err := validatePositionalArgsForMCPAtOffset(tokens, readOnly, positionalWriteSinks, len(positionalArgs)); err != nil {
+			rawPositionals := positionalArgsFromRawArgsField(raw, positionals, len(positionalArgs))
+			if err := validatePositionalArgsForMCPAtOffset(rawPositionals, readOnly, positionalWriteSinks, len(positionalArgs)); err != nil {
 				return mcplib.NewToolResultError(err.Error()), nil
 			}
-			finalArgs = append(finalArgs, tokens...)
+			finalArgs = append(finalArgs, rawPositionals...)
 		}
 		out, err := RunCLICommand(ctx, lookupPath, finalArgs)
 		if err != nil {
@@ -45,6 +48,34 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 		}
 		return mcplib.NewToolResultText(bound.Text(out)), nil
 	}
+}
+
+func validateMCPArgumentNames(args map[string]any, allowed map[string]bool) error {
+	if len(args) == 0 {
+		return nil
+	}
+	var unknown []string
+	for k := range args {
+		if !allowed[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	if len(unknown) == 1 {
+		return fmt.Errorf("unknown MCP parameter %q; use the tool schema's named parameters", unknown[0])
+	}
+	return fmt.Errorf("unknown MCP parameters %s; use the tool schema's named parameters", quoteMCPParameterNames(unknown))
+}
+
+func quoteMCPParameterNames(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = strconv.Quote(name)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) ([]string, error) {
@@ -83,6 +114,17 @@ func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, rea
 		return nil, err
 	}
 	return out, nil
+}
+
+func positionalArgsFromRawArgsField(raw string, positionals []positionalArg, structuredCount int) []string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return nil
+	}
+	if len(positionals) == 1 && structuredCount == 0 {
+		return []string{text}
+	}
+	return SplitShellArgs(raw)
 }
 
 func validatePositionalArgsForMCP(tokens []string, readOnly bool, positionalWriteSinks map[int]bool) error {

@@ -5,7 +5,9 @@ package cobratree
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -116,6 +118,29 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 	want := []string{"--limit", "25", "--query", "alpha", "--tags", "a,b", "--verbose"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP per-command passthrough: got %v, want %v", got, want)
+	}
+}
+
+func TestValidateMCPArgumentNamesRejectsArgsWhenNoParamsAllowed(t *testing.T) {
+	err := validateMCPArgumentNames(map[string]any{"query": "alpha"}, nil)
+	if err == nil {
+		t.Fatal("validateMCPArgumentNames accepted an unknown arg for a parameter-free command")
+	}
+	if got, want := err.Error(), `unknown MCP parameter "query"; use the tool schema's named parameters`; got != want {
+		t.Fatalf("validateMCPArgumentNames error = %q, want %q", got, want)
+	}
+}
+
+func TestValidateMCPArgumentNamesQuotesEachUnknownArg(t *testing.T) {
+	err := validateMCPArgumentNames(map[string]any{
+		"zeta":  true,
+		"alpha": "x",
+	}, map[string]bool{})
+	if err == nil {
+		t.Fatal("validateMCPArgumentNames accepted unknown args")
+	}
+	if got, want := err.Error(), `unknown MCP parameters "alpha", "zeta"; use the tool schema's named parameters`; got != want {
+		t.Fatalf("validateMCPArgumentNames error = %q, want %q", got, want)
 	}
 }
 
@@ -449,6 +474,103 @@ func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEqui
 	}
 }
 
+func TestShellOutSinglePositionalArgsFieldPreservesWhitespace(t *testing.T) {
+	bin := writeArgvHelper(t)
+	positionals := []positionalArg{positionalArg{
+		InputName: "query",
+		Display:   "<query>",
+		Required:  true,
+	}}
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"areas", "search"},
+		map[string]bool{"args": true, "query": true},
+		map[string]bool{"args": true, "query": true},
+		positionals,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"args": "New York City"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handler returned tool error: %s", toolResultText(result))
+	}
+	got := decodeArgvResult(t, result)
+	want := []string{"areas", "search", "New York City"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("shellout argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestShellOutStructuredPositionalPreservesWhitespace(t *testing.T) {
+	bin := writeArgvHelper(t)
+	positionals := []positionalArg{positionalArg{
+		InputName: "friend",
+		Display:   "<friend>",
+		Required:  true,
+	}}
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"fairness", "nudge"},
+		map[string]bool{"args": true, "friend": true},
+		map[string]bool{"args": true, "friend": true},
+		positionals,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"friend": "Jane Q Public"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handler returned tool error: %s", toolResultText(result))
+	}
+	got := decodeArgvResult(t, result)
+	want := []string{"fairness", "nudge", "Jane Q Public"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("shellout argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
+	bin := writeArgvHelper(t)
+	positionals := []positionalArg{positionalArg{
+		InputName: "term",
+		Display:   "<term>",
+		Required:  true,
+	}}
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"search"},
+		map[string]bool{"args": true, "term": true},
+		map[string]bool{"args": true, "term": true},
+		positionals,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": "Eli Escobar"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("handler accepted unknown parameter, result=%s", toolResultText(result))
+	}
+	if got := toolResultText(result); !strings.Contains(got, `unknown MCP parameter "query"`) {
+		t.Fatalf("tool error = %q, want unknown parameter message", got)
+	}
+}
+
 func TestRunCLICommandKeepsStdoutSeparateFromStderr(t *testing.T) {
 	bin := writeShelloutHelper(t, "success")
 	got, err := RunCLICommand(context.Background(), bin, []string{"alpha", "beta"})
@@ -528,4 +650,53 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		t.Fatalf("write helper: %v", err)
 	}
 	return path
+}
+
+func writeArgvHelper(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "argvhelper.go")
+	body := `package main
+
+import (
+	"encoding/json"
+	"os"
+)
+
+func main() {
+	_ = json.NewEncoder(os.Stdout).Encode(os.Args[1:])
+}
+`
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatalf("write argv helper source: %v", err)
+	}
+	bin := filepath.Join(dir, "argvhelper")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	cmd := exec.Command("go", "build", "-o", bin, src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build argv helper: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func decodeArgvResult(t *testing.T, result *mcplib.CallToolResult) []string {
+	t.Helper()
+	var got []string
+	if err := json.Unmarshal([]byte(toolResultText(result)), &got); err != nil {
+		t.Fatalf("decode argv result: %v; text=%q", err, toolResultText(result))
+	}
+	return got
+}
+
+func toolResultText(result *mcplib.CallToolResult) string {
+	if result == nil || len(result.Content) == 0 {
+		return ""
+	}
+	text, ok := result.Content[0].(mcplib.TextContent)
+	if !ok {
+		return ""
+	}
+	return text.Text
 }
