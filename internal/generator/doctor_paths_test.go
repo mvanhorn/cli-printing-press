@@ -107,6 +107,53 @@ func TestGeneratedDoctorAuthNoneOmitsCredentialLocations(t *testing.T) {
 	require.NotContains(t, payload, "credentials_location_warning")
 }
 
+func TestGeneratedDoctorDistinguishesEmptyCacheFromFresh(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := readOnlyCollectionSpec("doctor-empty-cache")
+	apiSpec.Cache.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	testSrc := strings.ReplaceAll(`package cli
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestCollectCacheReportEmptyStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+
+	dbPath := defaultDBPath("__CLI_NAME__")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir db dir: %v", err)
+	}
+	if err := os.WriteFile(dbPath, nil, 0o600); err != nil {
+		t.Fatalf("seed empty DB file: %v", err)
+	}
+
+	report := collectCacheReport(context.Background(), "")
+	if got := report["status"]; got != "empty" {
+		t.Fatalf("status = %v, want empty; report=%v", got, report)
+	}
+	if _, ok := report["fresh_resources"]; ok {
+		t.Fatalf("empty store must not report fresh resources: %v", report)
+	}
+}
+`, "__CLI_NAME__", naming.CLI(apiSpec.Name))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "cache_empty_test.go"), []byte(testSrc), 0o644))
+
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestCollectCacheReportEmptyStore", "-count=1")
+}
+
 func TestGeneratedDoctorAgentcookieSuppressesMultiLocationWarn(t *testing.T) {
 	t.Parallel()
 

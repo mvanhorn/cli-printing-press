@@ -483,9 +483,6 @@ func classifyAPIError(err error, flags *rootFlags) error {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "HTTP 409"):
-		if flags != nil && flags.idempotent {
-			return writeNoop(flags, "already_exists", "already exists (no-op)")
-		}
 		classified := apiErr(err)
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified

@@ -305,7 +305,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			} else if cfg != nil && cfg.BaseURL == "" {
 				report["api"] = "not configured (set base_url in config file)"
 			}
-			// Cache health: only reported when this CLI has a local store.
+			// Cache health: only reported when this CLI has generated sync.
 			// Surfaces rows + last_synced_at per resource, schema version,
 			// and a fresh/stale/unknown verdict so agents can introspect
 			// whether to trust the cached data before issuing queries.
@@ -695,8 +695,8 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 
 	switch {
 	case !haveAny && len(resources) == 0:
-		report["status"] = "unknown"
-		report["hint"] = "sync_state is empty; run 'tier-routing-golden-pp-cli sync' to hydrate."
+		report["status"] = "empty"
+		report["hint"] = "Cache is empty; run 'tier-routing-golden-pp-cli sync' to hydrate."
 	case fresh:
 		report["status"] = "fresh"
 	default:
@@ -716,6 +716,8 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 	case "error":
 		indicator = red("FAIL")
 	case "unknown":
+		indicator = yellow("INFO")
+	case "empty":
 		indicator = yellow("INFO")
 	}
 	fmt.Fprintf(w, "  %s Cache: %s\n", indicator, status)

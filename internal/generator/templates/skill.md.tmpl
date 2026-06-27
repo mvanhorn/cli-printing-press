@@ -316,7 +316,9 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 {{- if not .HasWriteCommands}}
 - **Read-only** — do not use this CLI for create, update, delete, publish, comment, upvote, invite, order, send, or other mutating requests
 {{- else}}
-- **Explicit retries** — use `--idempotent` only when an already-existing create should count as success{{if .HasDelete}}, and `--ignore-missing` only when a missing delete target should count as success{{end}}
+{{- if or .HasCreateCommands .HasDelete}}
+- **Explicit retries** — {{if .HasCreateCommands}}use `--idempotent` only when an already-existing create should count as success{{if .HasDelete}}, and {{end}}{{end}}{{if .HasDelete}}use `--ignore-missing` only when a missing delete target should count as success{{end}}
+{{- end}}
 {{- end}}
 {{- if .HasDataLayer}}
 

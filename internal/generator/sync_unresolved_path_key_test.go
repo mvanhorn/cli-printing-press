@@ -55,6 +55,7 @@ func TestGenerateSyncSkipsUnresolvedPathKeys(t *testing.T) {
 						Method:      "GET",
 						Path:        "/parent/{external_team_uuid}/items",
 						Description: "List items under an external parent",
+						Syncable:    true,
 						Response:    spec.ResponseDef{Type: "array"},
 					},
 				},

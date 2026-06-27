@@ -6,7 +6,7 @@
 package cli
 
 import (
-{{- if .HasStore}}
+{{- if .HasCacheReport}}
 	"context"
 {{- end}}
 {{- if .Auth.RequiresBrowserSession}}
@@ -16,7 +16,7 @@ import (
 {{- if or .Auth.RequiresBrowserSession .Auth.VerifyQuery}}
 	"encoding/json"
 {{- end}}
-{{- if .HasStore}}
+{{- if .HasCacheReport}}
 	"database/sql"
 {{- end}}
 	"errors"
@@ -25,7 +25,7 @@ import (
 {{- if .BearerRefresh.Enabled}}
 	"net/http"
 {{- end}}
-{{- if or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders .HasStore .Auth.RequiresBrowserSession .HasTierRouting}}
+{{- if or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders .HasCacheReport .Auth.RequiresBrowserSession .HasTierRouting}}
 	"os"
 {{- end}}
 {{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
@@ -38,7 +38,7 @@ import (
 	"regexp"
 {{- end}}
 	"strings"
-{{- if .HasStore}}
+{{- if .HasCacheReport}}
 	"time"
 {{- else if .BearerRefresh.Enabled}}
 	"time"
@@ -47,7 +47,7 @@ import (
 	"{{modulePath}}/internal/client"
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
-{{- if .HasStore}}
+{{- if .HasCacheReport}}
 	"{{modulePath}}/internal/store"
 {{- end}}
 	"github.com/spf13/cobra"
@@ -671,8 +671,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["api"] = "not configured (set base_url in config file)"
 			}
 
-{{- if .HasStore}}
-			// Cache health: only reported when this CLI has a local store.
+{{- if .HasCacheReport}}
+			// Cache health: only reported when this CLI has generated sync.
 			// Surfaces rows + last_synced_at per resource, schema version,
 			// and a fresh/stale/unknown verdict so agents can introspect
 			// whether to trust the cached data before issuing queries.
@@ -778,7 +778,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintf(w, "  %v\n", instructions)
 			}
 {{- end}}
-{{- if .HasStore}}
+{{- if .HasCacheReport}}
 			// Cache section: render after the primary health block so it
 			// sits next to version info, mirroring the JSON report layout.
 			if cacheAny, ok := report["cache"]; ok {
@@ -1169,7 +1169,7 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 	}
 	return nil
 }
-{{- if .HasStore}}
+{{- if .HasCacheReport}}
 
 // collectCacheReport opens the local store, reads per-resource sync state,
 // and returns a map summarising cache health. Never panics on missing DB
@@ -1260,8 +1260,8 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 
 	switch {
 	case !haveAny && len(resources) == 0:
-		report["status"] = "unknown"
-		report["hint"] = "sync_state is empty; run '{{.Name}}-pp-cli sync' to hydrate."
+		report["status"] = "empty"
+		report["hint"] = "Cache is empty; run '{{.Name}}-pp-cli sync' to hydrate."
 	case fresh:
 		report["status"] = "fresh"
 	default:
@@ -1281,6 +1281,8 @@ func renderCacheReport(w io.Writer, rep map[string]any) {
 	case "error":
 		indicator = red("FAIL")
 	case "unknown":
+		indicator = yellow("INFO")
+	case "empty":
 		indicator = yellow("INFO")
 	}
 	fmt.Fprintf(w, "  %s Cache: %s\n", indicator, status)
