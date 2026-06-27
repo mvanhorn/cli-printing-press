@@ -336,7 +336,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 			report.AuthCheck = checkAuth(dir, spec.Auth)
 		}
 		report.BrowserSessionCheck = checkBrowserSessionAuth(dir, spec.Auth)
-		report.OAuthScopeCoverage = checkOAuthScopeCoverage(dir, spec.OAuthScopeRequirements)
+		report.OAuthScopeCoverage = checkOAuthScopeCoverage(dir, spec.OAuthScopeRequirements, spec.Auth)
 	} else {
 		report.AuthCheck = AuthCheckResult{
 			Match:  true,
@@ -1507,11 +1507,21 @@ func authFormatSchemePrefix(format string) (string, bool) {
 	return fields[0] + " ", true
 }
 
-func checkOAuthScopeCoverage(dir string, requirements []oauthScopeRequirement) OAuthScopeCoverageResult {
+func checkOAuthScopeCoverage(dir string, requirements []oauthScopeRequirement, auth apispec.AuthConfig) OAuthScopeCoverageResult {
 	if len(requirements) == 0 {
 		return OAuthScopeCoverageResult{
 			Skipped: true,
 			Detail:  "no OAuth-scoped endpoints in spec",
+		}
+	}
+	if !oauthScopeCoverageApplies(auth) {
+		authType := strings.TrimSpace(auth.Type)
+		if authType == "" {
+			authType = "none"
+		}
+		return OAuthScopeCoverageResult{
+			Skipped: true,
+			Detail:  fmt.Sprintf("resolved auth type %s does not use OAuth scopes", authType),
 		}
 	}
 
@@ -1543,6 +1553,15 @@ func checkOAuthScopeCoverage(dir string, requirements []oauthScopeRequirement) O
 		result.Detail = fmt.Sprintf("%d OAuth-scoped endpoint(s) lack a generated auth scope", len(result.Violations))
 	}
 	return result
+}
+
+func oauthScopeCoverageApplies(auth apispec.AuthConfig) bool {
+	switch strings.ToLower(strings.TrimSpace(auth.Type)) {
+	case "api_key", "basic", "none", "cookie", "composed":
+		return false
+	default:
+		return true
+	}
 }
 
 func oauthScopeRequirementCovered(requirement oauthScopeRequirement, generated map[string]bool) bool {
