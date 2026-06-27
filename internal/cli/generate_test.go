@@ -3289,12 +3289,113 @@ resources:
 		"--output", outputDir,
 		"--validate=false",
 		"--force",
+		"--traffic-analysis", analysisPath,
 		"--transport", "browser-chrome",
 	})
 
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires live browser page-context execution")
+	assert.NoFileExists(t, filepath.Join(outputDir, "README.md"))
+}
+
+func TestGenerateCmdAllowsBrowserRequiredWithReachabilityOverride(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	analysisPath := filepath.Join(dir, "sample-spec-traffic-analysis.json")
+	outputDir := filepath.Join(dir, "overrideapp")
+
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: overrideapp
+description: Override app API
+version: 0.1.0
+base_url: https://api.example.com
+spec_source: sniffed
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/overrideapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+	require.NoError(t, os.WriteFile(analysisPath, []byte(`{
+  "version": "1",
+  "reachability": {"mode": "browser_required", "confidence": 0.9},
+  "generation_hints": ["reachability_override_browser_required_to_browser_http"]
+}`), 0o600))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+		"--traffic-analysis", analysisPath,
+		"--transport", "browser-chrome",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.FileExists(t, filepath.Join(outputDir, "README.md"))
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+}
+
+func TestGenerateCmdRejectsConflictingReachabilityOverrideTransport(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	analysisPath := filepath.Join(dir, "sample-spec-traffic-analysis.json")
+	outputDir := filepath.Join(dir, "conflictapp")
+
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: conflictapp
+description: Conflict app API
+version: 0.1.0
+base_url: https://api.example.com
+spec_source: sniffed
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/conflictapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+	require.NoError(t, os.WriteFile(analysisPath, []byte(`{
+  "version": "1",
+  "reachability": {"mode": "browser_required", "confidence": 0.9},
+  "generation_hints": ["reachability_override_browser_required_to_browser_http"]
+}`), 0o600))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+		"--traffic-analysis", analysisPath,
+		"--transport", "standard",
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reachability override")
+	assert.Contains(t, err.Error(), "conflicts")
 	assert.NoFileExists(t, filepath.Join(outputDir, "README.md"))
 }
 

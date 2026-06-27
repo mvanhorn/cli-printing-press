@@ -4112,9 +4112,23 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	badFormat.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badFormat.Validate(), "response_format must be one of")
 
+	postSpec := validHTMLSpec()
+	ep = postSpec.Resources["posts"].Endpoints["list"]
+	ep.Method = "POST"
+	postSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, postSpec.Validate())
+
+	tableSpec := validHTMLSpec()
+	ep = tableSpec.Resources["posts"].Endpoints["list"]
+	ep.Method = "POST"
+	ep.HTMLExtract.Mode = HTMLExtractModeTable
+	ep.Response = ResponseDef{Type: "array", Item: "html_table_row"}
+	tableSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, tableSpec.Validate())
+
 	badMethod := validHTMLSpec()
 	ep = badMethod.Resources["posts"].Endpoints["list"]
-	ep.Method = "POST"
+	ep.Method = "PUT"
 	badMethod.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badMethod.Validate(), "html response_format is only supported")
 }

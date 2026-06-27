@@ -663,8 +663,10 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	if err != nil {
 		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: err}
 	}
-	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
-		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
+	if opts.rejectUnshippablePageContextTraffic {
+		if err := validateTrafficAnalysisPageContextGate(trafficAnalysis, apiSpec.HTTPTransport); err != nil {
+			return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: err}
+		}
 	}
 	// ApplyReachabilityDefaults runs first so its HAR-driven HTTP-version
 	// mapping wins for browser_http / browser_clearance_http modes.
@@ -987,6 +989,9 @@ func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.Tra
 	if apiSpec == nil || apiSpec.HTTPTransport != "" {
 		return
 	}
+	if trafficAnalysisReachabilityOverrideMode(analysis) == "standard_http" {
+		return
+	}
 	if trafficAnalysisExplicitlyRecommendsBrowserHTTP3Transport(analysis) {
 		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH3
 		return
@@ -1001,6 +1006,20 @@ func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.Tra
 		// shipped CLIs on origins these heuristics flag behaving identically.
 		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH2
 	}
+}
+
+func validateTrafficAnalysisPageContextGate(analysis *browsersniff.TrafficAnalysis, httpTransport string) error {
+	if !trafficAnalysisRequiresUnshippablePageContext(analysis) {
+		return nil
+	}
+	overrideMode := trafficAnalysisReachabilityOverrideMode(analysis)
+	if overrideMode == "" {
+		return fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")
+	}
+	if !trafficAnalysisReachabilityOverrideMatchesTransport(overrideMode, httpTransport) {
+		return fmt.Errorf("traffic analysis reachability override %q conflicts with --transport/http_transport %q", overrideMode, httpTransport)
+	}
+	return nil
 }
 
 func trafficAnalysisRequiresUnshippablePageContext(analysis *browsersniff.TrafficAnalysis) bool {
@@ -1027,8 +1046,50 @@ func trafficAnalysisRequiresUnshippablePageContext(analysis *browsersniff.Traffi
 	return false
 }
 
+func trafficAnalysisReachabilityOverrideMode(analysis *browsersniff.TrafficAnalysis) string {
+	if analysis == nil {
+		return ""
+	}
+	const prefix = "reachability_override_browser_required_to_"
+	for _, hint := range analysis.GenerationHints {
+		hint = strings.ToLower(strings.TrimSpace(hint))
+		if !strings.HasPrefix(hint, prefix) {
+			continue
+		}
+		mode := strings.TrimSpace(strings.TrimPrefix(hint, prefix))
+		switch mode {
+		case "browser_http", "browser_clearance_http", "standard_http":
+			return mode
+		}
+	}
+	return ""
+}
+
+func trafficAnalysisReachabilityOverrideMatchesTransport(mode string, httpTransport string) bool {
+	httpTransport = strings.TrimSpace(httpTransport)
+	if httpTransport == "" {
+		return true
+	}
+	switch mode {
+	case "standard_http":
+		return httpTransport == spec.HTTPTransportStandard
+	case "browser_http", "browser_clearance_http":
+		switch httpTransport {
+		case spec.HTTPTransportBrowserHTTP, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH2, spec.HTTPTransportBrowserChromeH3:
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
 func trafficAnalysisRecommendsBrowserTransport(analysis *browsersniff.TrafficAnalysis) bool {
 	if analysis == nil {
+		return false
+	}
+	if trafficAnalysisReachabilityOverrideMode(analysis) == "standard_http" {
 		return false
 	}
 	if analysis.Reachability != nil {
