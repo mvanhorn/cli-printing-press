@@ -16,6 +16,7 @@ import (
 	"query-endpoint-golden-pp-cli/internal/cliutil"
 	"query-endpoint-golden-pp-cli/internal/store"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,8 +59,9 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Sync API data to local SQLite for offline search and analysis",
-		Long: `Sync data from the API into a local SQLite database. Supports resumable
-incremental sync (only fetches new data since last sync) and full resync.
+		Long: `Sync data from the API into a local SQLite database. This API does
+not declare temporal sync filters, so sync performs full pagination unless an
+explicit resource declares its own incremental filter.
 Once synced, use the 'search' command for instant full-text search.
 
 Exit codes & warnings:
@@ -149,7 +151,7 @@ Resource scoping:
 			}
 
 			if cliutil.IsDogfoodEnv() && !cmd.Flags().Changed("max-pages") {
-				maxPages = 10
+				maxPages = 1
 			}
 
 			// --latest-only narrows to the first page of each resource
@@ -245,6 +247,8 @@ Resource scoping:
 			var criticalErrCount int
 			var warnCount int
 			var successCount int
+			var failedResources []string
+			var criticalFailedResources []string
 			var firstErr error
 			var firstPlaceholderErr error
 			for res := range results {
@@ -253,6 +257,7 @@ Resource scoping:
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+					failedResources = append(failedResources, res.Resource)
 					if firstErr == nil {
 						firstErr = res.Err
 					}
@@ -261,6 +266,7 @@ Resource scoping:
 					}
 					if criticalResources[res.Resource] {
 						criticalErrCount++
+						criticalFailedResources = append(criticalFailedResources, res.Resource)
 					}
 				} else if res.Warn != nil {
 					if humanFriendly {
@@ -304,17 +310,17 @@ Resource scoping:
 				return classifyAPIError(firstPlaceholderErr, flags)
 			}
 			if strict && errCount > 0 {
-				return fmt.Errorf("%d resource(s) failed to sync", errCount)
+				return errors.New(describeFailedResources(errCount, failedResources))
 			}
 			if criticalErrCount > 0 {
-				return fmt.Errorf("%d critical resource(s) failed to sync", criticalErrCount)
+				return errors.New(describeCriticalFailedResources(criticalErrCount, criticalFailedResources))
 			}
 			if successCount == 0 {
 				if warnCount > 0 && errCount == 0 {
-					return fmt.Errorf("%d resource(s) skipped due to insufficient access", warnCount)
+					return fmt.Errorf("%d resource(s) completed with warnings but no successful syncs", warnCount)
 				}
 				if errCount > 0 {
-					return fmt.Errorf("%d resource(s) failed to sync", errCount)
+					return errors.New(describeFailedResources(errCount, failedResources))
 				}
 			}
 			if errCount > 0 && !strict && criticalErrCount == 0 && successCount > 0 {
@@ -441,7 +447,7 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	cursor := existingCursor
-	pageSize := determinePaginationDefaults()
+	pageSize := determinePaginationDefaults(resource)
 	var progressCount int64
 	pagesFetched := 0
 	lastNextCursor := ""
@@ -516,7 +522,7 @@ func syncResource(ctx context.Context, c interface {
 				if !humanFriendly {
 					fmt.Fprintln(syncEvents, syncWarningJSON(resource, "", w.Status, w.Reason, w.Message))
 				}
-				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
+				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped due to insufficient access: %s (%s)", resource, w.Reason), Duration: time.Since(started)}
 			}
 			if !humanFriendly {
 				fmt.Fprintln(syncEvents, syncErrorJSON(resource, "", err))
@@ -539,7 +545,7 @@ func syncResource(ctx context.Context, c interface {
 
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
-		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, dataEnvelopeKeysForResource(resource, path))
+		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(resource, path)...)
 
 		// Page-int paginator fallback: when the API paginates by integer
 		// ?page=N and emits no body cursor, treat a full page as a signal
@@ -596,7 +602,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 {
-			if isEmptyPageResponse(data, dataEnvelopeKeysForResource(resource, path)) {
+			if isEmptyPageResponse(data, responsePathForResource(resource, path)...) {
 				// Natural end: the API legitimately returned an empty page.
 				outcome.complete = true
 				break
@@ -676,7 +682,7 @@ func syncResource(ctx context.Context, c interface {
 				}
 			}
 		}
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, dataEnvelopeKeysForResource(resource, path)) {
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -856,6 +862,15 @@ func syncResource(ctx context.Context, c interface {
 		fmt.Fprintf(syncEvents, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, totalCount, time.Since(started).Milliseconds())
 	}
 
+	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal >= consumedTotal {
+		return syncResult{
+			Resource: resource,
+			Count:    0,
+			Warn:     fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal),
+			Duration: time.Since(started),
+		}
+	}
+
 	return syncResult{Resource: resource, Count: totalCount, Duration: time.Since(started)}
 }
 
@@ -869,7 +884,9 @@ type paginationDefaults struct {
 
 // determinePaginationDefaults returns the pagination parameter names to use.
 // Values are detected from the API spec by the profiler at generation time.
-func determinePaginationDefaults() paginationDefaults {
+func determinePaginationDefaults(resource string) paginationDefaults {
+	switch resource {
+	}
 	return paginationDefaults{
 		cursorParam: "after",
 		cursorType:  "",
@@ -901,6 +918,13 @@ func syncResourceSinceParamFormat(resource string) string {
 }
 
 func formatSyncSinceValue(value string, paramFormat string) string {
+	if field, ok := strings.CutPrefix(paramFormat, "odata-conditions:"); ok {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			return value
+		}
+		return fmt.Sprintf("%s > [%s]", field, value)
+	}
 	if strings.EqualFold(paramFormat, "date") {
 		if ts, err := time.Parse(time.RFC3339, value); err == nil {
 			return ts.Format("2006-01-02")
@@ -921,7 +945,7 @@ func formatSyncSinceValue(value string, paramFormat string) string {
 // 2. Common wrapper keys: "data", "results", "items", "records", "nodes", "entries"
 // 3. JSend-style nested data envelopes: {"data":{"<resource>":[...]}}
 // It also extracts the next cursor from common response fields.
-func extractPageItems(data json.RawMessage, cursorParam string, envelopeKeyOverrides ...[]string) ([]json.RawMessage, string, bool) {
+func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ...string) ([]json.RawMessage, string, bool) {
 	// Strategy 1: direct array
 	var items []json.RawMessage
 	if err := json.Unmarshal(data, &items); err == nil {
@@ -934,12 +958,43 @@ func extractPageItems(data json.RawMessage, cursorParam string, envelopeKeyOverr
 		return nil, "", false
 	}
 
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		if items, ok := extractObjectArray(pathData); ok {
+			nextCursor, hasMore := "", false
+			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
+				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
+			}
+			outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+			if nextCursor == "" {
+				nextCursor = outerCursor
+			}
+			hasMore = hasMore || outerHasMore
+			return items, nextCursor, hasMore
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil {
+			if items, ok := extractItemsFromEnvelope(inner); ok {
+				nextCursor, hasMore := extractPaginationFromEnvelope(inner, cursorParam)
+				outerCursor, outerHasMore := extractPaginationFromEnvelope(envelope, cursorParam)
+				if nextCursor == "" {
+					nextCursor = outerCursor
+				}
+				hasMore = hasMore || outerHasMore
+				return items, nextCursor, hasMore
+			}
+		}
+	}
+
 	if items, ok := extractItemsByKnownKeys(envelope); ok {
 		nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
 		return items, nextCursor, hasMore
 	}
 
-	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
+	for _, key := range dataEnvelopeKeys {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1058,7 +1113,7 @@ func isDryRunResponse(data json.RawMessage) bool {
 	return json.Unmarshal(raw, &v) == nil && v
 }
 
-func isEmptyPageResponse(data json.RawMessage, envelopeKeyOverrides ...[]string) bool {
+func isEmptyPageResponse(data json.RawMessage, responsePaths ...string) bool {
 	var direct []json.RawMessage
 	if err := json.Unmarshal(data, &direct); err == nil && !isJSONNull(data) {
 		return len(direct) == 0
@@ -1073,7 +1128,28 @@ func isEmptyPageResponse(data json.RawMessage, envelopeKeyOverrides ...[]string)
 		return true
 	}
 
-	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		if isJSONNull(pathData) {
+			if envelopeReportsFailure(envelope) {
+				return true
+			}
+			continue
+		}
+		var direct []json.RawMessage
+		if json.Unmarshal(pathData, &direct) == nil && !isJSONNull(pathData) {
+			return len(direct) == 0
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil && isEmptyPageEnvelope(inner) {
+			return true
+		}
+	}
+
+	for _, key := range dataEnvelopeKeys {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1279,12 +1355,12 @@ func pageAllowsPageIntFallback(data json.RawMessage) bool {
 	return pageMayHaveMore(data)
 }
 
-func pageMayHaveMore(data json.RawMessage, envelopeKeyOverrides ...[]string) bool {
-	hasMore, parsed := pageExplicitHasMore(data, envelopeKeyOverrides...)
+func pageMayHaveMore(data json.RawMessage, responsePaths ...string) bool {
+	hasMore, parsed := pageExplicitHasMore(data, responsePaths...)
 	return !parsed || hasMore
 }
 
-func pageExplicitHasMore(data json.RawMessage, envelopeKeyOverrides ...[]string) (bool, bool) {
+func pageExplicitHasMore(data json.RawMessage, responsePaths ...string) (bool, bool) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return false, false
@@ -1292,7 +1368,19 @@ func pageExplicitHasMore(data json.RawMessage, envelopeKeyOverrides ...[]string)
 	if hasMore, parsed := envelopeExplicitHasMore(envelope); parsed {
 		return hasMore, true
 	}
-	for _, key := range envelopeKeysOrDefault(envelopeKeyOverrides) {
+	for _, responsePath := range responsePaths {
+		pathData, ok := responsePayloadAtPath(data, responsePath)
+		if !ok {
+			continue
+		}
+		var inner map[string]json.RawMessage
+		if json.Unmarshal(pathData, &inner) == nil {
+			if hasMore, parsed := envelopeExplicitHasMore(inner); parsed {
+				return hasMore, true
+			}
+		}
+	}
+	for _, key := range dataEnvelopeKeys {
 		raw, ok := envelope[key]
 		if !ok {
 			continue
@@ -1581,6 +1669,23 @@ func knownSyncResourceNames() []string {
 	return names
 }
 
+func describeFailedResources(count int, resources []string) string {
+	return describeResourceFailure(count, "resource(s)", resources)
+}
+
+func describeCriticalFailedResources(count int, resources []string) string {
+	return describeResourceFailure(count, "critical resource(s)", resources)
+}
+
+func describeResourceFailure(count int, label string, resources []string) string {
+	if len(resources) == 0 {
+		return fmt.Sprintf("%d %s failed to sync", count, label)
+	}
+	names := append([]string(nil), resources...)
+	sort.Strings(names)
+	return fmt.Sprintf("%d %s failed to sync: %s", count, label, strings.Join(names, ", "))
+}
+
 // syncResourcePath maps resource names to their actual API endpoint paths.
 // For REST APIs this is typically "/<resource>". For non-REST APIs (e.g., Steam)
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
@@ -1686,7 +1791,7 @@ const (
 // identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
 // so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
 // field and upsert on names — see #1394.
-var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}
+var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "api_id", "name", "slug", "key", "code"}
 
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,
@@ -1699,20 +1804,17 @@ var pageItemKeys = []string{
 
 var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 
-var queryDataEnvelopeKeys = []string{"data", "Data", "result", "Result", "QueryResponse"}
-
-func dataEnvelopeKeysForResource(resource, path string) []string {
+func responsePathForResource(resource, path string) []string {
+	switch resource + "\x00" + path {
+	case "gadgets\x00/query":
+		return []string{"QueryResponse.Gadget"}
+	case "widgets\x00/query":
+		return []string{"QueryResponse.Widget"}
+	}
 	if _, ok := queryEntity[resource]; ok && path == queryPath {
-		return queryDataEnvelopeKeys
+		return []string{"QueryResponse"}
 	}
-	return dataEnvelopeKeys
-}
-
-func envelopeKeysOrDefault(overrides [][]string) []string {
-	if len(overrides) > 0 && len(overrides[0]) > 0 {
-		return overrides[0]
-	}
-	return dataEnvelopeKeys
+	return nil
 }
 
 var pageMetadataArrayKeys = map[string]bool{
@@ -1809,6 +1911,14 @@ func suffixIDFieldFallback(resourceType string, obj map[string]any) string {
 				}
 			}
 		}
+		camelBase := lowerCamelResourceIDBase(base)
+		for _, suffix := range []string{"Id", "Code", "Key", "Slug"} {
+			if v, ok := obj[camelBase+suffix]; ok {
+				if s := scalarIDString(v); s != "" && s != "<nil>" {
+					return s
+				}
+			}
+		}
 	}
 	return ""
 }
@@ -1874,6 +1984,23 @@ func depluralizeResourceStem(r string) string {
 		return strings.TrimSuffix(r, "s") // languages -> language, cases -> case
 	}
 	return r
+}
+
+func lowerCamelResourceIDBase(base string) string {
+	parts := strings.FieldsFunc(base, func(r rune) bool {
+		return r == '_' || r == '-'
+	})
+	if len(parts) == 0 {
+		return base
+	}
+	for i := range parts {
+		if i == 0 {
+			parts[i] = strings.ToLower(parts[i])
+			continue
+		}
+		parts[i] = strings.ToUpper(parts[i][:1]) + strings.ToLower(parts[i][1:])
+	}
+	return strings.Join(parts, "")
 }
 
 func scalarIDString(value any) string {

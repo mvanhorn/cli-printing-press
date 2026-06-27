@@ -4,7 +4,6 @@
 
 Do not use it for writes.
 
-
 ## Unique Capabilities
 
 These capabilities aren't available in any other tool for this API.

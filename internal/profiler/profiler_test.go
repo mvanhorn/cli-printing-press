@@ -3665,10 +3665,10 @@ func profileFixtureWithTenant(t *testing.T) *APIProfile {
 			"modules": {
 				Endpoints: map[string]spec.Endpoint{
 					"list": {
-						Method:      "GET",
-						Path:        "/projects/{project_id}/modules",
-						Response:    spec.ResponseDef{Type: "array"},
-						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+						Method:     "GET",
+						Path:       "/projects/{project_id}/modules",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
 					},
 				},
 			},

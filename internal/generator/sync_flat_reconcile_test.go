@@ -206,7 +206,7 @@ func TestFlatReconcile_CapHitPrunesNothing(t *testing.T) {
 	seedProjects(t, db, map[string]string{"p1": "ws-A", "p2": "ws-A", "p3": "ws-B"})
 
 	// One full page == the default pagination limit so the cap counts as truncation.
-	limit := determinePaginationDefaults().limit
+	limit := determinePaginationDefaults("projects").limit
 	page := make([]json.RawMessage, 0, limit)
 	for i := 0; i < limit; i++ {
 		raw, _ := json.Marshal(map[string]any{"id": "p1", "workspace": "ws-A", "name": "proj-p1"})

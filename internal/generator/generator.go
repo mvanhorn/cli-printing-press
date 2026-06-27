@@ -3511,10 +3511,10 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 		}
 		storeData := struct {
 			*spec.APISpec
-			SyncableResources      []profiler.SyncableResource
-			DependentSyncResources []profiler.DependentResource
-			SearchableFields       map[string][]string
-			Tables                 []TableDef
+			SyncableResources       []profiler.SyncableResource
+			DependentSyncResources  []profiler.DependentResource
+			SearchableFields        map[string][]string
+			Tables                  []TableDef
 			ChildScopeColumnSources []profiler.ChildScopeSource
 		}{
 			APISpec:                 g.Spec,

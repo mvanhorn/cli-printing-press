@@ -9,8 +9,6 @@ import (
 	"io"
 	"os"
 
-	"graphql-shared-golden-pp-cli/internal/client"
-
 	"github.com/spf13/cobra"
 )
 
