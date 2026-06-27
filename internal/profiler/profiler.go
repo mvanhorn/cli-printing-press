@@ -856,7 +856,15 @@ func (p *APIProfile) ChildScopeColumnSources() []ChildScopeSource {
 			col = dep.ParentResource + "_id"
 		}
 		src := singularParentField(dep.ParentResource)
-		if col == "" || src == "" {
+		if src == "" {
+			continue
+		}
+		// col is non-empty here: either an explicit ParentScopeColumn or the
+		// "<parent>_id" default. If two dependents resolve to the same scope
+		// column with DIFFERENT source fields, keep the first deterministically
+		// and skip the conflicting one rather than letting slice order silently
+		// pick a winner (which could wire the wrong source into deriveScopeColumns).
+		if existing, ok := seen[col]; ok && existing != src {
 			continue
 		}
 		seen[col] = src
