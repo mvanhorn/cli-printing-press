@@ -77,6 +77,9 @@ func newDigestCmd(flags *rootFlags) *cobra.Command {
 	if len(got.Suspicious) != 0 {
 		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
 	}
+	if got.ExemptedViaLocalDataSource != 1 {
+		t.Fatalf("ExemptedViaLocalDataSource: want 1, got %d", got.ExemptedViaLocalDataSource)
+	}
 }
 
 func TestCheckReimplementation_DataSourceStrategyAnnotation(t *testing.T) {
@@ -1352,6 +1355,40 @@ func newMCPServeCmd(flags *rootFlags) *cobra.Command {
 		Use: "serve",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return exec.CommandContext(cmd.Context(), "fixture-pp-mcp", "serve").Run()
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "MCP serve", Command: "mcp serve"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_SidecarExecWithoutContext_Passes(t *testing.T) {
+	files := map[string]string{
+		"mcp_serve.go": `package cli
+
+import (
+	"os/exec"
+
+	"github.com/spf13/cobra"
+)
+
+// pp:data-source live
+func newMCPServeCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "serve",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return exec.Command("fixture-pp-mcp", "serve").Run()
 		},
 	}
 }

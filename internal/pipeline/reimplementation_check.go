@@ -59,6 +59,10 @@ type ReimplementationCheckResult struct {
 	// via // pp:data-source computed. These commands intentionally compute
 	// from embedded policy/math tables instead of calling an API or store.
 	ExemptedViaComputedDataSource int `json:"exempted_via_computed_data_source,omitempty"`
+	// ExemptedViaLocalDataSource is the number of commands that passed
+	// via // pp:data-source local without a store package signal. These
+	// commands intentionally read local files or other local-only state.
+	ExemptedViaLocalDataSource int `json:"exempted_via_local_data_source,omitempty"`
 	// Suspicious is the list of commands whose files show no client
 	// call and no store access - the candidate hand-rolled responses.
 	Suspicious []ReimplementationFinding `json:"suspicious,omitempty"`
@@ -251,6 +255,9 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		case exemptComputedDataSource:
 			result.ExemptedViaComputedDataSource++
 			continue
+		case exemptLocalDataSource:
+			result.ExemptedViaLocalDataSource++
+			continue
 		}
 		if !ok {
 			finding.Command = nf.Command
@@ -304,6 +311,7 @@ const (
 	exemptAnnotation
 	exemptClientDirective
 	exemptComputedDataSource
+	exemptLocalDataSource
 )
 
 // classifyReimplementation returns the best classification across the
@@ -363,7 +371,7 @@ func classifyReimplementation(leaf string, files []string, fileContent map[strin
 			return ReimplementationFinding{File: f}, exemptStore, true
 		}
 		if localDataSource(content) && !hasAnyTODOStub {
-			return ReimplementationFinding{File: f}, exemptNone, true
+			return ReimplementationFinding{File: f}, exemptLocalDataSource, true
 		}
 		commandScan := scanCommandHandler(content, leaf)
 		clientScanContent := content

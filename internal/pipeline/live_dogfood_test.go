@@ -2687,6 +2687,34 @@ func TestRunLiveDogfoodSkipsPPInteractiveAnnotation(t *testing.T) {
 	}
 }
 
+func TestRunLiveDogfoodSkipsMutatingPPInteractiveRealErrorPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodMutatingInteractiveFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	for _, kind := range []LiveDogfoodTestKind{
+		LiveDogfoodTestHappy,
+		LiveDogfoodTestJSON,
+		LiveDogfoodTestError,
+		LiveDogfoodTestErrorReal,
+	} {
+		got := findResultByCommandKind(report, "widgets create", kind)
+		require.NotNil(t, got, "missing %s result", kind)
+		assert.Equal(t, LiveDogfoodStatusSkip, got.Status)
+		assert.Equal(t, "interactive command requires human input", got.Reason)
+	}
+}
+
 func writeLiveDogfoodInteractiveFixture(t *testing.T) (dir string, binaryName string) {
 	t.Helper()
 
@@ -2727,6 +2755,54 @@ HELP
 fi
 
 echo "interactive command should not run: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodMutatingInteractiveFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"create","annotations":{"pp:interactive":"true","pp:method":"POST"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "create" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Create widget.
+
+Usage:
+  fixture-pp-cli widgets create [flags]
+
+Examples:
+  fixture-pp-cli widgets create --name demo --dry-run
+
+Flags:
+      --dry-run    Preview without writing
+      --json       Output JSON
+      --name string
+HELP
+  exit 0
+fi
+
+echo "mutating interactive command should not run: $*" >&2
 exit 99
 `
 	writeStubBinary(t, dir, binaryName, script)
