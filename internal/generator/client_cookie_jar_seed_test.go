@@ -64,10 +64,12 @@ func TestCookieAuthClientSeedsJar(t *testing.T) {
 	runtimeTest := `package client
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -138,6 +140,42 @@ func TestLooksLikeCookieJarRejectsJWT(t *testing.T) {
 	}
 	if !looksLikeCookieJar("session_id=abc") {
 		t.Fatalf("a single legit name=value cookie must still pass the gate")
+	}
+}
+
+func TestWriteCookieJarReplacesWWWShadow(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	path := cookieJarPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := []persistedCookie{{
+		Name:   "session_id",
+		Value:  "",
+		Domain: ".www.cookieseed.example",
+		Path:   "/",
+		Secure: true,
+	}}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteCookieJarFromMap(".cookieseed.example", map[string]string{"session_id": "fresh"}); err != nil {
+		t.Fatal(err)
+	}
+	afterData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after []persistedCookie
+	if err := json.Unmarshal(afterData, &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0].Domain != ".cookieseed.example" || after[0].Value != "fresh" {
+		t.Fatalf("shadowing www cookie was not replaced: %#v", after)
 	}
 }
 `

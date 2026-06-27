@@ -318,7 +318,13 @@ This CLI uses your browser session for authentication. Log in to {{.Auth.CookieD
 {{.Name}}-pp-cli auth login --chrome
 ```
 
-Requires a cookie extraction tool. Install one:
+Or import an existing browser capture:
+
+```bash
+{{.Name}}-pp-cli auth login --cookies-file storage-state.json
+```
+
+`--cookies-file` accepts Playwright storage-state JSON or a raw `Cookie:` header text file. The Chrome path requires a cookie extraction tool. Install one:
 
 ```bash
 pip install pycookiecheat          # Python (recommended)
@@ -326,6 +332,15 @@ brew install barnardb/cookies/cookies  # Homebrew
 ```
 
 When your session expires, run `auth login --chrome` again.
+{{- else if eq .Auth.Type "session_handshake"}}
+
+### 2. Authenticate
+
+This CLI uses a browser-backed session handshake. Import browser cookies from Playwright storage-state JSON or a raw `Cookie:` header text file:
+
+```bash
+{{.Name}}-pp-cli auth login --cookies-file storage-state.json
+```
 {{- end}}
 
 ### {{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}3{{else}}2{{end}}. Verify Setup

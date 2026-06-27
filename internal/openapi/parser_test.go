@@ -5510,6 +5510,103 @@ paths:
 	}, parsed.Auth.EnvVarSpecs[1])
 }
 
+func TestOpenAPIHTTPBasicAuthSupportsConstantUsername(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Intervals ICU
+  version: "1.0.0"
+servers:
+  - url: https://intervals.icu
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      x-auth-basic-username: API_KEY
+security:
+  - basicAuth: []
+paths:
+  /api/v1/athlete:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Basic API_KEY:{token}", parsed.Auth.Format)
+	assert.Equal(t, []string{"INTERVALS_ICU_TOKEN"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+}
+
+func TestOpenAPIHTTPBasicAuthInfersConstantUsernameFromDescription(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Mailgun
+  version: "1.0.0"
+servers:
+  - url: https://api.mailgun.net
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Username is api, Password is your API key.
+security:
+  - basicAuth: []
+paths:
+  /v3/domains:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Basic api:{token}", parsed.Auth.Format)
+	assert.Equal(t, []string{"MAILGUN_TOKEN"}, parsed.Auth.EnvVars)
+}
+
+func TestOpenAPIHTTPBasicAuthSupportsConstantPassword(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Maxio
+  version: "1.0.0"
+servers:
+  - url: https://subdomain.chargify.com
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: The ` + "`username`" + ` is a Maxio Chargify API key. The ` + "`password`" + ` is ` + "`x`" + `.
+security:
+  - basicAuth: []
+paths:
+  /subscriptions.json:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Basic {token}:x", parsed.Auth.Format)
+	assert.Equal(t, []string{"MAXIO_TOKEN"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+}
+
 func TestOpenAPIAPIKeyAuthorizationHonorsAuthFormat(t *testing.T) {
 	t.Parallel()
 
