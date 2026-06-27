@@ -590,6 +590,74 @@ components:
 	assert.Equal(t, []string{"yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
 }
 
+func TestRunDogfoodOAuthScopeCoverageSkipsResolvedAPIKeyAuth(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      responses:
+        "200":
+          description: ok
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            yt-analytics.readonly: Analytics read access
+`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion:  CurrentCLIManifestSchemaVersion,
+		APIName:        "videos",
+		CLIName:        "videos-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "ApiKeyAuth",
+	}))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func addAuth(req interface{ HeaderSet(string, string) }, authHeader string) {
+	req.HeaderSet("X-API-Key", authHeader)
+}
+func wire(req *request, authHeader string) {
+	req.Header.Set("X-API-Key", authHeader)
+}
+type request struct{ Header header }
+type header struct{}
+func (header) Set(string, string) {}
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, "FAIL", report.Verdict, report.Issues)
+	assert.True(t, report.OAuthScopeCoverage.Skipped)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+	assert.Contains(t, report.OAuthScopeCoverage.Detail, "resolved auth type api_key")
+	assert.NotContains(t, report.Issues, "OAuth scope coverage missing for 1 endpoint(s)")
+}
+
 func TestLoadOpenAPISpecCollectsRootOAuthScopeRequirements(t *testing.T) {
 	dir := t.TempDir()
 	specPath := filepath.Join(dir, "spec.yaml")

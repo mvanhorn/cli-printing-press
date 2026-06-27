@@ -315,17 +315,19 @@ const (
 //  2. If any file carries the `// pp:client-call` marker, the command
 //     is exempted as a real API call hidden behind an abstraction.
 //     Return (_, exemptClientDirective, true).
-//  3. If any file declares // pp:data-source computed and does not look
+//  3. If any file declares // pp:data-source local and does not look
+//     like a TODO stub, the command is accepted as intentionally local.
+//  4. If any file declares // pp:data-source computed and does not look
 //     like a TODO stub, the command is exempted as intentional pure
 //     computation.
-//  4. If any file shows a store signal, the command is exempted as a
+//  5. If any file shows a store signal, the command is exempted as a
 //     local-SQLite feature. Return (_, exemptStore, true).
-//  5. If any file shows a client signal, the command is fine. Return
+//  6. If any file shows a client signal, the command is fine. Return
 //     (_, exemptNone, true).
-//  6. Otherwise the command is suspicious. Return a ReimplementationFinding
+//  7. Otherwise the command is suspicious. Return a ReimplementationFinding
 //     naming the primary file and a reason. Return (finding, exemptNone, false).
 //
-// The trivial-body regex is consulted only when rule 5 fires, to pick
+// The trivial-body regex is consulted only when rule 6 fires, to pick
 // between "empty stub" and "hand-rolled response" as the reason.
 func classifyReimplementation(leaf string, files []string, fileContent map[string]string, storeHelpers, clientHelpers map[string]bool) (ReimplementationFinding, exemptionKind, bool) {
 	hasClient := false
@@ -359,6 +361,9 @@ func classifyReimplementation(leaf string, files []string, fileContent map[strin
 		}
 		if callsStoreHelper(content, storeHelpers) {
 			return ReimplementationFinding{File: f}, exemptStore, true
+		}
+		if localDataSource(content) && !hasAnyTODOStub {
+			return ReimplementationFinding{File: f}, exemptNone, true
 		}
 		commandScan := scanCommandHandler(content, leaf)
 		clientScanContent := content
@@ -429,6 +434,11 @@ func dataSourceStrategyFinding(files []string, fileContent map[string]string) (R
 func computedDataSource(content string) bool {
 	m := dataSourceDirectiveRe.FindStringSubmatch(content)
 	return len(m) > 1 && strings.EqualFold(strings.TrimSpace(m[1]), "computed")
+}
+
+func localDataSource(content string) bool {
+	m := dataSourceDirectiveRe.FindStringSubmatch(content)
+	return len(m) > 1 && strings.EqualFold(strings.TrimSpace(m[1]), "local")
 }
 
 func isGeneratedPrintingPressFile(content string) bool {
@@ -570,7 +580,7 @@ func hasBlockClientSignal(body *ast.BlockStmt, imports map[string]clientImportKi
 		if !ok {
 			return true
 		}
-		if isPrimitiveClientCall(call.Fun) || isImportedClientCall(call.Fun, imports, allowAnySiblingSelector) {
+		if isPrimitiveClientCall(call.Fun) || isImportedClientCall(call.Fun, imports, allowAnySiblingSelector) || isSidecarExecCall(call) {
 			found = true
 			return false
 		}
@@ -590,6 +600,34 @@ func isPrimitiveClientCall(expr ast.Expr) bool {
 		return true
 	}
 	return outboundHTTPCallRe.MatchString(strings.Join(parts, ".") + "(")
+}
+
+func isSidecarExecCall(call *ast.CallExpr) bool {
+	parts := selectorParts(call.Fun)
+	if len(parts) != 2 || parts[0] != "exec" {
+		return false
+	}
+	binaryArg := 0
+	switch parts[1] {
+	case "Command":
+		binaryArg = 0
+	case "CommandContext":
+		binaryArg = 1
+	default:
+		return false
+	}
+	if len(call.Args) <= binaryArg {
+		return false
+	}
+	lit, ok := call.Args[binaryArg].(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimSpace(value), "-pp-mcp")
 }
 
 func isImportedClientCall(expr ast.Expr, imports map[string]clientImportKind, allowAnySiblingSelector bool) bool {

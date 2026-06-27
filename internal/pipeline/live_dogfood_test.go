@@ -2661,6 +2661,78 @@ func TestRunLiveDogfoodSkipsFeatureAbsentNotFound(t *testing.T) {
 	assert.Equal(t, "blocked-fixture: feature absent for runner credentials", jsonResult.Reason)
 }
 
+func TestRunLiveDogfoodSkipsPPInteractiveAnnotation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodInteractiveFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	help := findResultByCommandKind(report, "oauth connect", LiveDogfoodTestHelp)
+	require.NotNil(t, help)
+	assert.Equal(t, LiveDogfoodStatusPass, help.Status)
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHappy, LiveDogfoodTestJSON, LiveDogfoodTestError} {
+		got := findResultByCommandKind(report, "oauth connect", kind)
+		require.NotNil(t, got)
+		assert.Equal(t, LiveDogfoodStatusSkip, got.Status)
+		assert.Equal(t, "interactive command requires human input", got.Reason)
+	}
+}
+
+func writeLiveDogfoodInteractiveFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"oauth","subcommands":[
+      {"name":"connect","annotations":{"pp:interactive":"true"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "oauth" ] && [ "$2" = "connect" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Connect OAuth.
+
+Usage:
+  fixture-pp-cli oauth connect [flags]
+
+Examples:
+  fixture-pp-cli oauth connect
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+echo "interactive command should not run: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
 func TestBuildSiblingMap(t *testing.T) {
 	commands := []liveDogfoodCommand{
 		{Path: []string{"projects", "list"}},

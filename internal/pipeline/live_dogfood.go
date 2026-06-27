@@ -64,6 +64,7 @@ const reasonFileFixtureRequired = "file fixture required"
 const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner credentials"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
+const reasonInteractiveCommand = "interactive command requires human input"
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
 // inherits. Generated commands with a long-running happy path detect
@@ -1260,6 +1261,18 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	mutating := liveDogfoodCommandMutates(command)
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
 
+	if annotationIsTrueValue(command.Annotations[interactiveAnnotation]) {
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonInteractiveCommand),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonInteractiveCommand),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonInteractiveCommand),
+		)
+		if useDryRun {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, reasonInteractiveCommand))
+		}
+		return results
+	}
+
 	tierSkip := liveDogfoodRequiresTierSkipReason(command.Annotations, ctx.authTier)
 	if tierSkip != "" {
 		results = append(results,
@@ -1615,6 +1628,7 @@ const (
 	destructiveAuthAnnotation  = "pp:destructive-auth"
 	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
 	requiresTierAnnotation     = "pp:requires-tier"
+	interactiveAnnotation      = "pp:interactive"
 	liveDogfoodMaxOutputBytes  = 10 << 20
 )
 
