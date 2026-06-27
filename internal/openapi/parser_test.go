@@ -7558,6 +7558,8 @@ paths:
 }
 
 func TestParseLiveDogfoodRequiresTierExtensionNonStringWarns(t *testing.T) {
+	t.Parallel()
+
 	yamlSpec := []byte(`openapi: "3.0.3"
 info:
   title: Live Tier API
@@ -7625,6 +7627,24 @@ paths:
       responses:
         "200":
           description: Ordinary report
+  /2/stream/events:
+    get:
+      operationId: midPathStream
+      responses:
+        "200":
+          description: Ordinary nested resource
+  /videos/{stream}/details:
+    get:
+      operationId: streamPathParam
+      responses:
+        "200":
+          description: Ordinary path parameter
+  /feeds/stream/:
+    get:
+      operationId: trailingSlashStream
+      responses:
+        "200":
+          description: Stream with trailing slash
 `)
 	parsed, err := Parse(yamlSpec)
 	require.NoError(t, err)
@@ -7640,6 +7660,15 @@ paths:
 
 	streamline := findEndpoint(t, parsed, "/reports/streamline")
 	assert.Empty(t, streamline.LiveDogfoodRequiresTier)
+
+	midPathStream := findEndpoint(t, parsed, "/2/stream/events")
+	assert.Empty(t, midPathStream.LiveDogfoodRequiresTier)
+
+	streamPathParam := findEndpoint(t, parsed, "/videos/{stream}/details")
+	assert.Empty(t, streamPathParam.LiveDogfoodRequiresTier)
+
+	trailingSlashStream := findEndpoint(t, parsed, "/feeds/stream/")
+	assert.Equal(t, "streaming", trailingSlashStream.LiveDogfoodRequiresTier)
 }
 
 func TestParseIDFieldFallbackChain(t *testing.T) {

@@ -5446,7 +5446,7 @@ func inferLiveDogfoodTier(method, path string, op *openapi3.Operation) string {
 	if !strings.EqualFold(method, "GET") {
 		return ""
 	}
-	if hasEventStreamResponse(op) || hasStreamPathSegment(path) {
+	if hasEventStreamResponse(op) || hasTerminalStreamPathSegment(path) {
 		return "streaming"
 	}
 	return ""
@@ -5468,14 +5468,16 @@ func hasEventStreamResponse(op *openapi3.Operation) bool {
 	return false
 }
 
-func hasStreamPathSegment(path string) bool {
-	for _, segment := range strings.Split(path, "/") {
-		segment = strings.TrimSpace(strings.Trim(segment, "{}:"))
-		if strings.EqualFold(segment, "stream") {
-			return true
-		}
+func hasTerminalStreamPathSegment(path string) bool {
+	path = strings.TrimRight(strings.TrimSpace(path), "/")
+	lastSlash := strings.LastIndex(path, "/")
+	if lastSlash >= 0 {
+		path = path[lastSlash+1:]
 	}
-	return false
+	if strings.HasPrefix(path, "{") || strings.HasPrefix(path, ":") {
+		return false
+	}
+	return strings.EqualFold(path, "stream")
 }
 
 func readPaginationExtension(extensions map[string]any, context string) *spec.Pagination {
