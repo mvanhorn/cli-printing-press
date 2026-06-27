@@ -688,7 +688,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	// (left over from a prior generation under a different spec / parser)
 	// silently misrepresents the current MCP tool set. Non-blocking: a
 	// warning is the same posture publish takes when this fails.
-	if err := pipeline.WriteToolsManifest(absOut, apiSpec); err != nil {
+	if err := pipeline.WriteToolsManifestWithDescription(absOut, apiSpec, gen.CatalogDescription()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", err)
 	}
 	if opts.validate {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -189,6 +190,61 @@ func TestWriteToolsManifestWithDescriptionUsesCanonicalManifestDescription(t *te
 	var got ToolsManifest
 	require.NoError(t, json.Unmarshal(data, &got))
 	assert.Equal(t, canonical, got.Description)
+}
+
+func TestWriteToolsManifestFallsBackToCLIDescriptionBeforeRawSpecBlob(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:           "petstore",
+		CLIDescription: "Manage pets from the terminal.",
+		Description:    strings.Repeat("Legal terms and API policy. ", 200),
+		BaseURL:        "https://petstore.example.com/v3",
+		Auth:           spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Pets": {
+				Description: "Pet operations",
+				Endpoints: map[string]spec.Endpoint{
+					"List": {Method: "GET", Path: "/pets", Description: "List all pets"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "Manage pets from the terminal.", got.Description)
+}
+
+func TestWriteToolsManifestMarksGeneratedThinToolDescriptions(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "halo",
+		BaseURL: "https://halo.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Actions": {
+				Description: "Action operations",
+				Endpoints: map[string]spec.Endpoint{
+					"List": {
+						Method:      "GET",
+						Path:        "/Actions",
+						Description: "Use this to return multiple Actions.<br>Requires authentication.",
+						Response:    spec.ResponseDef{Type: "array", Item: "Action"},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	require.Len(t, got.Tools, 1)
+	assert.Equal(t, "List actions. Returns array of Action.", got.Tools[0].Description)
+	assert.Equal(t, "generated", got.Tools[0].DescriptionSource)
 }
 
 func TestWriteToolsManifest_SubResources(t *testing.T) {
@@ -931,7 +987,7 @@ func TestWriteToolsManifest_EmptyDescription(t *testing.T) {
 
 	assert.Equal(t, "", got.Description)
 	require.Len(t, got.Tools, 1)
-	assert.Equal(t, "", got.Tools[0].Description)
+	assert.Equal(t, "List items.", got.Tools[0].Description)
 }
 
 func TestWriteToolsManifest_RoundTrip(t *testing.T) {

@@ -83,6 +83,72 @@ func TestRenderSkillAuthSetupSectionDoesNotDuplicateDoctorInstruction(t *testing
 	assert.Equal(t, 1, strings.Count(section, "Run `test-pp-cli doctor` to verify setup."))
 }
 
+func TestSyncCLINarrativeDocsRefreshesReadmeAndSkillRecipes(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte(strings.Join([]string{
+		"# Example",
+		"",
+		"## Quick Start",
+		"",
+		"Start here.",
+		"",
+		"## Recipes",
+		"",
+		"### Old recipe",
+		"",
+		"```bash",
+		"example-pp-cli provisionar --dry-run",
+		"```",
+		"",
+		"## Usage",
+		"",
+		"Use commands.",
+		"",
+	}, "\n")), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(strings.Join([]string{
+		"# Example",
+		"",
+		"## Command Reference",
+		"",
+		"Commands.",
+		"",
+		"## Recipes",
+		"",
+		"### Old recipe",
+		"",
+		"```bash",
+		"example-pp-cli provisionar --dry-run",
+		"```",
+		"",
+		"## Auth Setup",
+		"",
+		"No authentication required.",
+		"",
+	}, "\n")), 0o600))
+
+	synced, err := SyncCLINarrativeDocs(dir, "example", &ReadmeNarrative{
+		Recipes: []Recipe{{
+			Title:       "Provision safely",
+			Command:     "example-pp-cli provisionar --simular",
+			Explanation: "Preview provisioning with the current flag name.",
+		}},
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, synced, syncedArtifact{Path: "README.md", Detail: "Recipes"})
+	assert.Contains(t, synced, syncedArtifact{Path: "SKILL.md", Detail: "Recipes"})
+	readme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	require.NoError(t, err)
+	skill, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	require.NoError(t, err)
+	for _, content := range []string{string(readme), string(skill)} {
+		assert.Contains(t, content, "example-pp-cli provisionar --simular")
+		assert.NotContains(t, content, "--dry-run")
+	}
+	requireBefore(t, string(readme), "## Recipes", "## Usage")
+	requireBefore(t, string(skill), "## Recipes", "## Auth Setup")
+}
+
 func TestMarkdownHeadingsRequiresMatchingFenceLength(t *testing.T) {
 	content := strings.Join([]string{
 		"````",
