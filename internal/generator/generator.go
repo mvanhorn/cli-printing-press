@@ -567,6 +567,40 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return string(runes[:max-1]) + "…"
 		},
+		// truncateWords clips a string to at most max runes WITHOUT ever
+		// cutting a word in half. It backs up from the cap to the last
+		// whitespace boundary before appending the ellipsis, so the result
+		// reads as "…over time" rather than the mid-word "…over t…" that a
+		// raw rune slice produces. Used for the root command's Short, where a
+		// length cap is reasonable but a mangled word in `<cli> --help` is not.
+		// If the text has no whitespace before the cap (a single long token),
+		// it falls back to a hard clip so the budget is still honored.
+		"truncateWords": func(max int, s string) string {
+			if max <= 0 {
+				return s
+			}
+			runes := []rune(s)
+			if len(runes) <= max {
+				return s
+			}
+			if max <= 1 {
+				return string(runes[:max])
+			}
+			// Reserve one rune for the ellipsis, then retreat to the last
+			// space so the final word stays whole.
+			cut := runes[:max-1]
+			boundary := -1
+			for i := len(cut) - 1; i >= 0; i-- {
+				if unicode.IsSpace(cut[i]) {
+					boundary = i
+					break
+				}
+			}
+			if boundary > 0 {
+				cut = cut[:boundary]
+			}
+			return strings.TrimRightFunc(string(cut), unicode.IsSpace) + "…"
+		},
 		"yamlDoubleQuoted": yamlDoubleQuoted,
 		// groupNovelFeatures clusters features by their Group field, preserving
 		// first-seen order of group names. Features with empty Group land in a

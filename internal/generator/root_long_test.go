@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -175,13 +176,14 @@ func runGoVet(t *testing.T, dir string) error {
 }
 
 // TestRootLongStaysUnderSizeBudget asserts that an absorb output with
-// ten novel features and a verbose headline does not produce a bloated
+// ten novel features and runaway descriptions does not produce a bloated
 // --help Long. Agents running --help on a wall-of-text CLI is the same
 // token-waste problem this change set is trying to solve — don't fix
 // one discovery-loop problem by creating a different one.
 //
-// Budget (enforced by truncate helper in the template):
-//   - Headline clipped to 120 runes
+// Budget (enforced in the template):
+//   - Headline: carried in full — Long is meant to be complete, so only the
+//     novel-feature wall-of-text is bounded, not the header line
 //   - Top 15 novel features (cap in Go; remaining dropped with overflow breadcrumb)
 //   - Each feature description clipped to 200 runes
 //
@@ -191,12 +193,15 @@ func runGoVet(t *testing.T, dir string) error {
 func TestRootLongStaysUnderSizeBudget(t *testing.T) {
 	t.Parallel()
 
-	longStr := strings.Repeat("x", 500) // intentionally over every cap
+	longStr := strings.Repeat("x", 500) // intentionally over the per-feature cap
 	apiSpec := minimalSpec("bounded")
 	outputDir := filepath.Join(t.TempDir(), "bounded-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.Narrative = &ReadmeNarrative{
-		Headline: "A very verbose headline that exceeds the 120-rune budget: " + longStr,
+		// Normal-length headline: Long now carries headlines in full, so the
+		// runaway bound under test here is the per-feature description cap, not
+		// the header. (Headline handling is covered by the dice regression test.)
+		Headline: "A concise headline well within any reasonable budget",
 	}
 	// Ten features, each with a runaway description.
 	for i := range 10 {
@@ -342,4 +347,130 @@ func TestRootLongFallsBackWhenNoNarrative(t *testing.T) {
 		"fallback Long should still point at doctor")
 	assert.False(t, strings.Contains(content, "Highlights (not in the official API docs):"),
 		"fallback Long should not render a Highlights header when no novel features exist")
+}
+
+// rootField extracts the raw-string body of the named Cobra field (e.g.
+// "Short" or "Long") from generated root.go. Returns the content between the
+// opening backtick and the closing "`," — both Short and Long are emitted as
+// Go raw-string literals with backticks sanitized out of the interior, so the
+// first "`," after the field name is the unambiguous terminator.
+func rootField(t *testing.T, content, field string) string {
+	t.Helper()
+	marker := field + ": `"
+	start := strings.Index(content, marker)
+	require.NotEqualf(t, -1, start, "%s field should be rendered as a raw string", field)
+	start += len(marker)
+	end := strings.Index(content[start:], "`,")
+	require.NotEqualf(t, -1, end, "%s raw string should close", field)
+	return content[start : start+end]
+}
+
+// assertNoMidWordEllipsis fails if val ends with a U+2026 that was placed
+// mid-word — i.e. the visible text immediately before the ellipsis is the
+// prefix of a longer word in source. A word-boundary truncation (or no
+// truncation at all) passes; the broken "…over t…" case does not.
+func assertNoMidWordEllipsis(t *testing.T, name, val, source string) {
+	t.Helper()
+	trimmed := strings.TrimRight(val, " \n")
+	if !strings.HasSuffix(trimmed, "…") {
+		return // not truncated with an ellipsis → nothing to check
+	}
+	head := strings.TrimRightFunc(strings.TrimSuffix(trimmed, "…"), unicode.IsSpace)
+	tokens := strings.Fields(head)
+	require.NotEmptyf(t, tokens, "%s ends in just an ellipsis", name)
+	last := tokens[len(tokens)-1]
+	idx := strings.Index(source, last)
+	require.NotEqualf(t, -1, idx, "%s tail %q should originate from the source text", name, last)
+	after := idx + len(last)
+	if after >= len(source) {
+		return // the cut word is the final word of source → it is whole
+	}
+	next := []rune(source[after:])[0]
+	assert.Falsef(t, unicode.IsLetter(next) || unicode.IsDigit(next),
+		"%s ends mid-word with U+2026: %q is a partial word in the source headline", name, last)
+}
+
+// TestRootShortLongNeverTruncateMidWord reproduces the dice-pp-cli regression
+// (cli-printing-press v4.27.0): the root command's Short and Long were both
+// hard-clipped at a fixed rune count, slicing the headline at "over t…" — a
+// mid-word cut with a literal U+2026 baked into the emitted Go source, and
+// applied to Long even though long help is meant to be complete.
+//
+// Asserts: (1) Long carries the full headline verbatim, never truncated;
+// (2) neither Short nor Long ends a word mid-token with an ellipsis.
+func TestRootShortLongNeverTruncateMidWord(t *testing.T) {
+	t.Parallel()
+
+	headline := "Turn any dice.fm link into structured data, cache it locally, and watch on-sale, price, and availability changes over time — no app, no API key."
+
+	apiSpec := minimalSpec("dice")
+	outputDir := filepath.Join(t.TempDir(), "dice-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{Headline: headline}
+	// dice-pp-cli ships novel features, so Long takes the highlights branch —
+	// the exact path where the headline used to be hard-clipped at 120 runes.
+	gen.NovelFeatures = []NovelFeature{
+		{Command: "watch", Description: "Track on-sale, price, and availability changes over time"},
+		{Command: "cache", Description: "Cache any dice.fm link locally as structured data"},
+	}
+	require.NoError(t, gen.Generate())
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	content := string(rootGo)
+
+	short := rootField(t, content, "Short")
+	long := rootField(t, content, "Long")
+
+	// Long must carry the complete headline — long help is never truncated.
+	assert.Containsf(t, long, headline,
+		"Long should carry the full headline untruncated; got:\n%s", long)
+	// The exact mid-word artifact from the bug report must not appear anywhere.
+	assert.NotContains(t, content, "over t…",
+		"the reported mid-word truncation 'over t…' must never be emitted")
+
+	// Neither field may end a word mid-token with U+2026.
+	assertNoMidWordEllipsis(t, "Short", short, headline)
+	assertNoMidWordEllipsis(t, "Long", long, headline)
+
+	// Generated Go must still compile.
+	require.NoError(t, runGoVet(t, outputDir),
+		"generated root.go with full headline must be parseable Go")
+}
+
+// TestRootLongCarriesHeadlineWithoutNovelFeatures closes a gap where a CLI
+// with a narrative headline but no novel features and no CLIDescription fell
+// straight to the generic "Manage X resources" Long, silently dropping the
+// headline even though Short displayed it. Long should restate the headline
+// in full regardless of whether novel features exist.
+func TestRootLongCarriesHeadlineWithoutNovelFeatures(t *testing.T) {
+	t.Parallel()
+
+	headline := "Turn any dice.fm link into structured data and watch it over time — no app, no API key."
+
+	apiSpec := minimalSpec("dice")
+	outputDir := filepath.Join(t.TempDir(), "dice-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{Headline: headline}
+	// No NovelFeatures and no CLIDescription → the headline-only Long branch.
+	require.NoError(t, gen.Generate())
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	content := string(rootGo)
+
+	long := rootField(t, content, "Long")
+	assert.Containsf(t, long, headline,
+		"Long should carry the full headline even without novel features; got:\n%s", long)
+	// It must not silently fall back to the generic API restatement.
+	assert.NotContains(t, long, "Manage dice resources via the dice API.",
+		"Long should not drop to the generic fallback when a headline is present")
+	// Still points agents at --agent and doctor.
+	assert.Contains(t, long, "Add --agent to any command")
+	assert.Contains(t, long, "dice-pp-cli doctor")
+	// And never truncates mid-word.
+	assertNoMidWordEllipsis(t, "Long", long, headline)
+
+	require.NoError(t, runGoVet(t, outputDir),
+		"headline-only Long must produce parseable Go")
 }
