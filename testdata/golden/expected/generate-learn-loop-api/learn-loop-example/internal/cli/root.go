@@ -21,17 +21,16 @@ import (
 )
 
 type rootFlags struct {
-	asJSON     bool
-	compact    bool
-	csv        bool
-	plain      bool
-	quiet      bool
-	dryRun     bool
-	noCache    bool
-	noInput    bool
-	idempotent bool
-	yes        bool
-	agent      bool
+	asJSON  bool
+	compact bool
+	csv     bool
+	plain   bool
+	quiet   bool
+	dryRun  bool
+	noCache bool
+	noInput bool
+	yes     bool
+	agent   bool
 	// noLearn disables both teach (write) and recall (read) for this
 	// invocation. Mirrors the LEARN_LOOP_EXAMPLE_NO_LEARN env var.
 	noLearn       bool
@@ -168,7 +167,6 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
-	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
 	rootCmd.PersistentFlags().StringVar(&flags.selectFields, "select", "", "Comma-separated fields to include in output (e.g. --select id,name,status)")
 	rootCmd.PersistentFlags().BoolVar(&flags.yes, "yes", false, "Skip confirmation prompts (for agents and scripts)")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
@@ -253,7 +251,6 @@ Run 'learn-loop-example-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newFeedbackCmd(flags))
 	rootCmd.AddCommand(newWhichCmd(flags))
 	rootCmd.AddCommand(newExportCmd(flags))
-	rootCmd.AddCommand(newImportCmd(flags))
 	rootCmd.AddCommand(newSearchCmd(flags))
 	rootCmd.AddCommand(newSyncCmd(flags))
 	rootCmd.AddCommand(newWorkflowCmd(flags))

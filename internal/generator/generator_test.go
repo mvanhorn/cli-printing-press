@@ -19634,8 +19634,10 @@ func TestGenerateParentGroupersEmitReadOnlyAnnotation(t *testing.T) {
 
 	parentSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items.go"))
 	require.NoError(t, err)
-	assert.Regexp(t, `Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`, string(parentSrc),
+	assert.Contains(t, string(parentSrc), `"mcp:read-only": "true"`,
 		"parent groupers must always emit mcp:read-only=true so cobratree/tools-audit treat them as read-only")
+	assert.Contains(t, string(parentSrc), `"pp:typed-exit-codes": "0,2"`,
+		"parent groupers intentionally exit 2 for bare usage, so generated commands must declare that typed exit code")
 	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(parentSrc),
 		"test fixture must exercise a parent grouper command, not a promoted single-endpoint command")
 }

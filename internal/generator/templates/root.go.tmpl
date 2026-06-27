@@ -29,7 +29,9 @@ type rootFlags struct {
 	dryRun       bool
 	noCache      bool
 	noInput      bool
+{{- if .HasCreateCommands}}
 	idempotent   bool
+{{- end}}
 {{- if .HasDelete}}
 	ignoreMissing bool
 {{- end}}
@@ -231,7 +233,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
+{{- if .HasCreateCommands}}
 	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
+{{- end}}
 {{- if .HasDelete}}
 	rootCmd.PersistentFlags().BoolVar(&flags.ignoreMissing, "ignore-missing", false, "Treat missing delete targets as a successful no-op")
 {{- end}}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,6 +57,13 @@ func TestGeneratedRESTImportStaysREST(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("restimportapi")
+	apiSpec.Resources["items"].Endpoints["create"] = spec.Endpoint{
+		Method:      "POST",
+		Path:        "/items",
+		Description: "Create item",
+		Body:        []spec.Param{{Name: "name", Type: "string", Required: true}},
+		Response:    spec.ResponseDef{Type: "object"},
+	}
 	require.False(t, isGraphQLSpec(apiSpec), "minimalSpec must be a REST spec")
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/vision"
 )
@@ -161,15 +162,75 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 	return set
 }
 
-func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet) VisionTemplateSet {
-	if api != nil && api.Streaming.Enabled() {
+func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet, profile *profiler.APIProfile) VisionTemplateSet {
+	streamingEnabled := api != nil && api.Streaming.Enabled()
+	if streamingEnabled {
 		set.Store = true
 		set.Sync = true
+	}
+	if profile != nil && !hasSyncCommandResources(profile) && !streamingEnabled {
+		syncWasRequested := set.Sync
+		set.Sync = false
+		if syncWasRequested {
+			// Local query surfaces depend on sync-populated rows. Keep the store
+			// itself because explicit store-only CLIs, insights, and HTML channel
+			// workflows can still use it without the generic sync command.
+			set.Search = false
+			set.Analytics = false
+		}
 	}
 	if set.Export && len(exportableResources(api)) == 0 {
 		set.Export = false
 	}
+	if set.Import && !hasCreateCommands(api.Resources) {
+		set.Import = false
+	}
 	return set
+}
+
+func hasSyncCommandResources(profile *profiler.APIProfile) bool {
+	if profile == nil {
+		return false
+	}
+	for _, resource := range profile.SyncableResources {
+		if !isVestigialSyncResource(resource) {
+			return true
+		}
+	}
+	for _, resource := range profile.DependentSyncResources {
+		if !isVestigialDependentSyncResource(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func isVestigialSyncResource(resource profiler.SyncableResource) bool {
+	if resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+		return true
+	}
+	// Path-template resources that are excluded from default sync and look like
+	// live query/search endpoints are not viable bulk store population sources.
+	return resource.SkipDefaultSync && looksLikeLiveQueryPath(resource.Path)
+}
+
+func isVestigialDependentSyncResource(resource profiler.DependentResource) bool {
+	if resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+		return true
+	}
+	return false
+}
+
+func looksLikeLiveQueryPath(path string) bool {
+	for _, segment := range strings.FieldsFunc(strings.ToLower(path), func(r rune) bool {
+		return r == '/' || r == '?' || r == '&' || r == '='
+	}) {
+		switch segment {
+		case "search", "query", "find", "lookup":
+			return true
+		}
+	}
+	return false
 }
 
 func exportableResources(api *spec.APISpec) []string {

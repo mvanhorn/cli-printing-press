@@ -767,6 +767,7 @@ type HelperFlags struct {
 	HasResponseUnwrap    bool // at least one generated command can call extractResponseData
 	HasMutationEndpoints bool // spec has any non-GET/HEAD endpoint → emit partial-failure helpers + --allow-partial-failure flag
 	HasRequiredRoles     bool // spec has per-endpoint requires_role gates → emit persona helpers
+	HasCreateCommands    bool // spec has POST/PUT/PATCH write endpoints → emit create retry helpers
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -775,7 +776,7 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 	for _, r := range s.Resources {
 		var scan func(spec.Resource)
 		scan = func(resource spec.Resource) {
-			for _, e := range resource.Endpoints {
+			for name, e := range resource.Endpoints {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
 				}
@@ -787,6 +788,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				if endpointNeedsClientLimit(e) {
 					flags.HasClientLimit = true
+				}
+				if endpointIsCreateCommand(e, name) {
+					flags.HasCreateCommands = true
 				}
 				if len(endpointClientSideFilters(s, e)) > 0 {
 					flags.HasClientFilters = true
@@ -839,13 +843,12 @@ type helpersTemplateData struct {
 	HelperFlags
 }
 
-// doctorTemplateData wraps APISpec with a HasStore flag so the doctor
-// template can gate its cache-health section. Doctor is emitted for every
-// CLI — with or without a local store — so the template needs explicit
-// knowledge of whether internal/store exists.
+// doctorTemplateData wraps APISpec with flags for store-aware credential
+// resolution and generated cache-health checks.
 type doctorTemplateData struct {
 	*spec.APISpec
 	HasStore       bool
+	HasCacheReport bool
 	HasAuthCommand bool
 }
 
@@ -926,6 +929,7 @@ type readmeTemplateData struct {
 	HasDataLayer       bool
 	HasAsyncJobs       bool
 	HasWriteCommands   bool
+	HasCreateCommands  bool
 	HasDelete          bool
 	HasAuth            bool
 	// HasAuthCommand mirrors Generator.shouldEmitAuth() so doc templates can
@@ -991,6 +995,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		HasDataLayer:          g.VisionSet.Store,
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
+		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
 		HasDelete:             computeHelperFlags(g.Spec).HasDelete,
 		HasAuth:               hasAuth(g.Spec.Auth),
 		HasAuthCommand:        g.shouldEmitAuth(),
@@ -1686,6 +1691,15 @@ func hasWriteCommands(resources map[string]spec.Resource) bool {
 	return false
 }
 
+func hasCreateCommands(resources map[string]spec.Resource) bool {
+	for _, resource := range resources {
+		if resourceHasCreateCommand(resource) {
+			return true
+		}
+	}
+	return false
+}
+
 func resourceHasWriteCommand(resource spec.Resource) bool {
 	for name, endpoint := range resource.Endpoints {
 		if endpointIsWriteCommand(endpoint, name) {
@@ -1694,6 +1708,20 @@ func resourceHasWriteCommand(resource spec.Resource) bool {
 	}
 	for _, sub := range resource.SubResources {
 		if resourceHasWriteCommand(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasCreateCommand(resource spec.Resource) bool {
+	for name, endpoint := range resource.Endpoints {
+		if endpointIsCreateCommand(endpoint, name) {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasCreateCommand(sub) {
 			return true
 		}
 	}
@@ -1787,6 +1815,18 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 		return false
 	}
 	return !bodyIsAllFilterShape(endpoint.Body)
+}
+
+func endpointIsCreateCommand(endpoint spec.Endpoint, opName string) bool {
+	if !endpointIsWriteCommand(endpoint, opName) {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(endpoint.Method)) {
+	case "POST", "PUT", "PATCH":
+		return true
+	default:
+		return false
+	}
 }
 
 // endpointIsReadCommand is the inverse of endpointIsWriteCommand.
@@ -2091,7 +2131,7 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
 	}
-	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet)
+	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet, g.profile)
 	if g.Spec.Learn.Enabled && !g.VisionSet.Store {
 		return fmt.Errorf("learn.enabled requires VisionSet.Store=true; the learn package depends on internal/store")
 	}
@@ -2192,6 +2232,7 @@ func (g *Generator) renderSingleFiles() error {
 			data = &doctorTemplateData{
 				APISpec:        g.Spec,
 				HasStore:       g.VisionSet.Store,
+				HasCacheReport: g.hasGeneratedSyncImplementation(),
 				HasAuthCommand: g.shouldEmitAuth(),
 			}
 		case "cliutil_paths.go.tmpl":
@@ -4461,6 +4502,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasAsyncJobs          bool
 		AsyncJobCount         int
 		HasAuthCommand        bool
+		HasCreateCommands     bool
 		HasDelete             bool
 		HasMutationEndpoints  bool
 		HasAutoRefresh        bool
@@ -4480,6 +4522,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		AsyncJobCount:         len(g.AsyncJobs),
 		HasAuthCommand:        hasAuthCommand,
+		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
 		HasDelete:             helperFlags.HasDelete,
 		HasMutationEndpoints:  helperFlags.HasMutationEndpoints,
 		HasAutoRefresh:        g.hasAutoRefresh(),
