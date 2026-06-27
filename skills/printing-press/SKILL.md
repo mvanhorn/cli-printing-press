@@ -364,6 +364,62 @@ PRESS_CURRENT="$PRESS_RUNSTATE/current"
 
 mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
 
+# --- Go toolchain currency (fail-open unless GOTOOLCHAIN=local) ---
+# Generated modules carry a `go <build-version>` directive matching the version
+# the generator binary was compiled with. A user Go older than that forces a
+# toolchain download (GOTOOLCHAIN=auto) or a hard "go.mod requires go >= X"
+# failure (GOTOOLCHAIN=local/offline) minutes into a run. Detect it now. The
+# comparison is self-contained (inline awk) so it can be lifted verbatim into the
+# other flows' contracts. Skip silently if either version is unparseable.
+if command -v go >/dev/null 2>&1 && [ -n "$PRINTING_PRESS_BIN" ]; then
+  _pp_user_go="$(go env GOVERSION 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)"
+  _pp_bin_go="$(go version "$PRINTING_PRESS_BIN" 2>/dev/null | grep -oE 'go[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1 | sed -E 's/^go//')"
+  if [ -n "$_pp_user_go" ] && [ -n "$_pp_bin_go" ] && \
+     [ "$(awk -v a="$_pp_user_go" -v b="$_pp_bin_go" 'BEGIN{split(a,x,".");split(b,y,".");for(i=1;i<=3;i++){if((x[i]+0)<(y[i]+0)){print 1;exit}if((x[i]+0)>(y[i]+0)){print 0;exit}}print 0}')" = "1" ]; then
+    if [ "$(go env GOTOOLCHAIN 2>/dev/null)" = "local" ]; then
+      echo ""
+      echo "[setup-error] Go go$_pp_user_go is older than the generator build toolchain go$_pp_bin_go, and GOTOOLCHAIN=local disables the automatic toolchain download."
+      echo "Generated modules need go$_pp_bin_go to build. Install Go $_pp_bin_go or newer from https://go.dev/dl/ (or unset GOTOOLCHAIN), then re-run."
+      echo ""
+      return 1 2>/dev/null || exit 1
+    fi
+    echo ""
+    echo "[go-toolchain-old] go$_pp_user_go is older than the generator build toolchain go$_pp_bin_go"
+    echo "PRESS_GO_INSTALLED=$_pp_user_go"
+    echo "PRESS_GO_REQUIRED=$_pp_bin_go"
+    echo ""
+  fi
+fi
+
+# --- Disk preflight (fail-open unless critically low) ---
+# Generation writes thousands of files, compiles the module, and populates the
+# module cache; publish/import clone multi-GB repos. A nearly-full volume fails
+# deep into the run with an opaque "no space left on device". Warn early;
+# hard-stop only when space is critically low. Thresholds env-tunable for CI.
+_pp_disk_warn_kb="${PRINTING_PRESS_DISK_WARN_KB:-3145728}"   # 3 GiB
+_pp_disk_fail_kb="${PRINTING_PRESS_DISK_FAIL_KB:-524288}"    # 512 MiB
+_pp_disk_target="$PRESS_HOME"
+while [ -n "$_pp_disk_target" ] && [ "$_pp_disk_target" != "/" ] && [ ! -d "$_pp_disk_target" ]; do
+  _pp_disk_target="$(dirname "$_pp_disk_target")"
+done
+[ -d "$_pp_disk_target" ] || _pp_disk_target="$HOME"
+_pp_disk_avail_kb="$(df -Pk "$_pp_disk_target" 2>/dev/null | awk 'NR==2{print $4}')"
+if printf '%s' "$_pp_disk_avail_kb" | grep -qE '^[0-9]+$'; then
+  if [ "$_pp_disk_avail_kb" -lt "$_pp_disk_fail_kb" ]; then
+    echo ""
+    echo "[setup-error] Only $((_pp_disk_avail_kb / 1024)) MiB free on the volume holding $_pp_disk_target; generation and compilation need more space."
+    echo "Free up space (at least $((_pp_disk_fail_kb / 1024)) MiB, ideally a few GiB) and re-run."
+    echo ""
+    return 1 2>/dev/null || exit 1
+  elif [ "$_pp_disk_avail_kb" -lt "$_pp_disk_warn_kb" ]; then
+    echo ""
+    echo "[low-disk] $((_pp_disk_avail_kb / 1024)) MiB free on the volume holding $_pp_disk_target"
+    echo "PRESS_DISK_AVAIL_KB=$_pp_disk_avail_kb"
+    echo "PRESS_DISK_WARN_KB=$_pp_disk_warn_kb"
+    echo ""
+  fi
+fi
+
 # --- Latest-version advisory (fail-open) ---
 # Repo checkouts track origin/main because their skills and local binary come
 # from the checkout. Standalone installs track the latest released Go module.
@@ -535,7 +591,7 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), `[go-toolchain-old]` (advisory: the installed Go is older than the generator's build toolchain — surface and continue), `[low-disk]` (advisory: the workspace volume is low on free space — surface and continue), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
 
 **Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `cli-printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `cli-printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/cli-printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `cli-printing-press generate ...` for readability — replace `cli-printing-press` with the captured absolute path each time you actually run one.
 

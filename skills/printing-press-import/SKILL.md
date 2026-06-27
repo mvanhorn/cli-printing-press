@@ -49,7 +49,50 @@ PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_LIBRARY="$PRESS_HOME/library"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
 SCRIPTS_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")/references"
+
+# --- Go toolchain present (Phase 4 compiles the imported CLI with Go) ---
+if ! command -v go >/dev/null 2>&1; then
+  echo ""
+  echo "[setup-error] Go toolchain not found."
+  echo "Import compiles the imported CLI (Phase 4) with Go. Install Go from https://go.dev/dl/, verify with 'go version', then re-run."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+
+# --- Disk preflight (fail-open unless critically low) ---
+# Import clones the library CLI tree (multi-GB with --clone), rewrites it, and
+# compiles it. A nearly-full volume fails deep into the run with an opaque "no
+# space left on device". Warn early; hard-stop only when space is critically
+# low. Thresholds env-tunable for CI.
+_pp_disk_warn_kb="${PRINTING_PRESS_DISK_WARN_KB:-3145728}"   # 3 GiB
+_pp_disk_fail_kb="${PRINTING_PRESS_DISK_FAIL_KB:-524288}"    # 512 MiB
+_pp_disk_target="$PRESS_HOME"
+while [ -n "$_pp_disk_target" ] && [ "$_pp_disk_target" != "/" ] && [ ! -d "$_pp_disk_target" ]; do
+  _pp_disk_target="$(dirname "$_pp_disk_target")"
+done
+[ -d "$_pp_disk_target" ] || _pp_disk_target="$HOME"
+_pp_disk_avail_kb="$(df -Pk "$_pp_disk_target" 2>/dev/null | awk 'NR==2{print $4}')"
+if printf '%s' "$_pp_disk_avail_kb" | grep -qE '^[0-9]+$'; then
+  if [ "$_pp_disk_avail_kb" -lt "$_pp_disk_fail_kb" ]; then
+    echo ""
+    echo "[setup-error] Only $((_pp_disk_avail_kb / 1024)) MiB free on the volume holding $_pp_disk_target; import clone and compilation need more space."
+    echo "Free up space (at least $((_pp_disk_fail_kb / 1024)) MiB, ideally a few GiB) and re-run."
+    echo ""
+    return 1 2>/dev/null || exit 1
+  elif [ "$_pp_disk_avail_kb" -lt "$_pp_disk_warn_kb" ]; then
+    echo ""
+    echo "[low-disk] $((_pp_disk_avail_kb / 1024)) MiB free on the volume holding $_pp_disk_target"
+    echo "PRESS_DISK_AVAIL_KB=$_pp_disk_avail_kb"
+    echo "PRESS_DISK_WARN_KB=$_pp_disk_warn_kb"
+    echo ""
+  fi
+fi
 ```
+
+If the setup block printed a `[setup-error]` line (missing Go toolchain or
+critically low disk), it already exited non-zero — surface the message verbatim
+and stop; do not proceed to resolve, clone, or build. If it printed a
+`[low-disk]` advisory, surface the free-space note to the user once and continue.
 
 The four reference scripts live alongside this SKILL.md under
 `references/`:

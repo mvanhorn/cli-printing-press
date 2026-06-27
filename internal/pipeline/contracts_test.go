@@ -119,6 +119,134 @@ func TestPrintingPressSetupContractLeavesFreshRepoLocalBinaryAlone(t *testing.T)
 	assert.NotContains(t, goLog, "build -o ./cli-printing-press ./cmd/cli-printing-press")
 }
 
+func TestPrintingPressSetupContractWarnsOnOldGoToolchain(t *testing.T) {
+	t.Parallel()
+
+	output, _, err := runPressSetupContract(t, pressSetupContractOpts{
+		localVersion:  "4.23.0",
+		sourceVersion: "4.23.0",
+		binBuildGo:    "1.26.4",
+		goEnv:         map[string]string{"GOVERSION": "go1.24.0", "GOTOOLCHAIN": "auto"},
+		extraEnv:      []string{"PRINTING_PRESS_DISK_WARN_KB=0", "PRINTING_PRESS_DISK_FAIL_KB=0"},
+	})
+
+	require.NoError(t, err, output) // GOTOOLCHAIN=auto downloads on demand: advisory, not a hard gate
+	assert.Contains(t, output, "[go-toolchain-old] go1.24.0 is older than the generator build toolchain go1.26.4")
+	assert.Contains(t, output, "PRESS_GO_INSTALLED=1.24.0")
+	assert.Contains(t, output, "PRESS_GO_REQUIRED=1.26.4")
+	assert.NotContains(t, output, "[setup-error]")
+}
+
+func TestPrintingPressSetupContractBlocksOldGoUnderLocalToolchain(t *testing.T) {
+	t.Parallel()
+
+	output, _, err := runPressSetupContract(t, pressSetupContractOpts{
+		localVersion:  "4.23.0",
+		sourceVersion: "4.23.0",
+		binBuildGo:    "1.26.4",
+		goEnv:         map[string]string{"GOVERSION": "go1.24.0", "GOTOOLCHAIN": "local"},
+		extraEnv:      []string{"PRINTING_PRESS_DISK_WARN_KB=0", "PRINTING_PRESS_DISK_FAIL_KB=0"},
+	})
+
+	require.Error(t, err, "GOTOOLCHAIN=local disables auto-download, so an old Go is a hard gate")
+	assert.Contains(t, output, "[setup-error] Go go1.24.0 is older than the generator build toolchain go1.26.4")
+	assert.Contains(t, output, "GOTOOLCHAIN=local")
+	assert.NotContains(t, output, "[go-toolchain-old]")
+}
+
+func TestPrintingPressSetupContractAllowsCurrentGoToolchain(t *testing.T) {
+	t.Parallel()
+
+	output, _, err := runPressSetupContract(t, pressSetupContractOpts{
+		localVersion:  "4.23.0",
+		sourceVersion: "4.23.0",
+		binBuildGo:    "1.26.4",
+		goEnv:         map[string]string{"GOVERSION": "go1.26.4", "GOTOOLCHAIN": "auto"},
+		extraEnv:      []string{"PRINTING_PRESS_DISK_WARN_KB=0", "PRINTING_PRESS_DISK_FAIL_KB=0"},
+	})
+
+	require.NoError(t, err, output)
+	assert.NotContains(t, output, "[go-toolchain-old]")
+	assert.NotContains(t, output, "[setup-error]")
+	assert.Contains(t, output, "PRINTING_PRESS_BIN=")
+}
+
+func TestPrintingPressSetupContractWarnsOnLowDisk(t *testing.T) {
+	t.Parallel()
+
+	// Warn threshold above any real free space forces the advisory; a 1 KiB
+	// fail floor keeps it from escalating to the hard gate.
+	output, _, err := runPressSetupContract(t, pressSetupContractOpts{
+		localVersion:  "4.23.0",
+		sourceVersion: "4.23.0",
+		extraEnv:      []string{"PRINTING_PRESS_DISK_WARN_KB=999999999999", "PRINTING_PRESS_DISK_FAIL_KB=1"},
+	})
+
+	require.NoError(t, err, output)
+	assert.Contains(t, output, "[low-disk]")
+	assert.Contains(t, output, "PRESS_DISK_AVAIL_KB=")
+	assert.NotContains(t, output, "[setup-error]")
+}
+
+func TestPrintingPressSetupContractBlocksOnCriticallyLowDisk(t *testing.T) {
+	t.Parallel()
+
+	// Fail floor above any real free space forces the hard gate.
+	output, _, err := runPressSetupContract(t, pressSetupContractOpts{
+		localVersion:  "4.23.0",
+		sourceVersion: "4.23.0",
+		extraEnv:      []string{"PRINTING_PRESS_DISK_FAIL_KB=999999999999"},
+	})
+
+	require.Error(t, err, "critically low disk is a hard gate")
+	assert.Contains(t, output, "[setup-error]")
+	assert.Contains(t, output, "need more space")
+}
+
+// TestPreflightEnvironmentGatesPresentInContracts locks the Go-toolchain and
+// disk gates into every flow that does heavy Go/clone work, so a future edit
+// cannot silently drop one. The canonical interpretation lives in
+// references/setup-checks.md (asserted last).
+func TestPreflightEnvironmentGatesPresentInContracts(t *testing.T) {
+	t.Parallel()
+
+	read := func(parts ...string) string {
+		return readContractFile(t, filepath.Join(append([]string{"..", "..", "skills"}, parts...)...))
+	}
+
+	// Flows that resolve a binary get the full toolchain-currency + disk gate.
+	for _, skill := range []string{"printing-press", "printing-press-amend", "printing-press-polish", "printing-press-publish"} {
+		t.Run(skill, func(t *testing.T) {
+			body := read(skill, "SKILL.md")
+			assert.Contains(t, body, "[go-toolchain-old]", "missing Go-currency advisory")
+			assert.Contains(t, body, "PRESS_GO_REQUIRED=", "missing Go-currency marker")
+			assert.Contains(t, body, "GOTOOLCHAIN", "missing GOTOOLCHAIN=local hard gate")
+			assert.Contains(t, body, "[low-disk]", "missing low-disk advisory")
+			assert.Contains(t, body, "PRESS_DISK_AVAIL_KB=", "missing disk marker")
+			assert.Contains(t, body, "df -Pk", "missing df disk probe")
+		})
+	}
+
+	// amend/polish/publish/import additionally hard-gate a missing Go toolchain
+	// before heavy work (printing-press already had this check upstream).
+	for _, skill := range []string{"printing-press-amend", "printing-press-polish", "printing-press-publish", "printing-press-import"} {
+		body := read(skill, "SKILL.md")
+		assert.Contains(t, body, "[setup-error] Go toolchain not found.", "%s missing Go-presence gate", skill)
+	}
+
+	// import does heavy clone/build work but resolves no binary, so it carries
+	// the disk gate without the binary-relative currency check.
+	imp := read("printing-press-import", "SKILL.md")
+	assert.Contains(t, imp, "[low-disk]", "import missing low-disk advisory")
+	assert.Contains(t, imp, "df -Pk", "import missing df disk probe")
+
+	// The shared reference documents both new signals.
+	checks := read("printing-press", "references", "setup-checks.md")
+	for _, marker := range []string{"[go-toolchain-old]", "PRESS_GO_INSTALLED", "[low-disk]", "PRESS_DISK_AVAIL_KB"} {
+		assert.Contains(t, checks, marker, "setup-checks.md missing %s handling", marker)
+	}
+}
+
 func TestSkillsEnforceCurrencyFloor(t *testing.T) {
 	const floorURL = "https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/supported-versions.txt"
 
@@ -1000,7 +1128,36 @@ func extractContractBlock(t *testing.T, content string) string {
 	return content[startIdx : startIdx+endIdx]
 }
 
+// pressSetupContractOpts configures the fake environment the printing-press
+// setup contract runs against.
+type pressSetupContractOpts struct {
+	localVersion  string            // version the repo-local cli-printing-press binary reports
+	sourceVersion string            // version.go value (drives rebuild + the binary `go build` writes)
+	goEnv         map[string]string // values returned for `go env <KEY>` (e.g. GOVERSION, GOTOOLCHAIN)
+	binBuildGo    string            // value for `go version <binary>` ("go<binBuildGo>"); empty => no output
+	extraEnv      []string          // appended to the contract's environment
+}
+
+// runPrintingPressSetupContract runs the contract with the default fake `go`
+// (no toolchain-version or disk signals) for the binary-resolution tests.
 func runPrintingPressSetupContract(t *testing.T, localVersion, sourceVersion string) (output string, goLog string) {
+	t.Helper()
+	out, log, err := runPressSetupContract(t, pressSetupContractOpts{
+		localVersion:  localVersion,
+		sourceVersion: sourceVersion,
+		// Neutralize the disk gate so these binary-focused tests do not depend
+		// on the runner's free space.
+		extraEnv: []string{"PRINTING_PRESS_DISK_WARN_KB=0", "PRINTING_PRESS_DISK_FAIL_KB=0"},
+	})
+	require.NoError(t, err, out)
+	return out, log
+}
+
+// runPressSetupContract runs the real printing-press setup contract block in a
+// hermetic temp repo with a fake `go` and binary. It returns the contract's
+// combined output, the fake `go` invocation log, and the process exit error so
+// callers can assert hard-gate (non-zero) behavior.
+func runPressSetupContract(t *testing.T, opts pressSetupContractOpts) (output string, goLog string, runErr error) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -1014,38 +1171,13 @@ func runPrintingPressSetupContract(t *testing.T, localVersion, sourceVersion str
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/press\n\ngo 1.20\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "internal", "version", "version.go"), []byte(`package version
 
-var Version = "`+sourceVersion+`" // x-release-please-version
+var Version = "`+opts.sourceVersion+`" // x-release-please-version
 `), 0o644))
-	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript(localVersion))
+	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript(opts.localVersion))
 
 	goLogPath := filepath.Join(root, "go.log")
 	require.NoError(t, os.WriteFile(goLogPath, nil, 0o644))
-	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
-echo "$@" >> "$GO_LOG"
-if [ "$1" = "run" ]; then
-  exit 0
-fi
-if [ "$1" = "build" ]; then
-  out=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "-o" ]; then
-      shift
-      out="$1"
-      break
-    fi
-    shift
-  done
-  if [ -z "$out" ]; then
-    echo "missing -o" >&2
-    exit 1
-  fi
-  cat > "$out" <<'__PP_FAKE_BINARY__'
-`+versionScript(sourceVersion)+`__PP_FAKE_BINARY__
-  chmod +x "$out"
-  exit 0
-fi
-exit 0
-`)
+	writeExecutable(t, filepath.Join(fakeBin, "go"), fakeGoScript(opts))
 
 	gitInit := exec.Command("git", "init")
 	gitInit.Dir = repo
@@ -1068,11 +1200,66 @@ exit 0
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"PRINTING_PRESS_HOME="+filepath.Join(home, "printing-press"),
 	)
+	cmd.Env = append(cmd.Env, opts.extraEnv...)
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
-	logBytes, err := os.ReadFile(goLogPath)
-	require.NoError(t, err)
-	return string(out), string(logBytes)
+	logBytes, readErr := os.ReadFile(goLogPath)
+	require.NoError(t, readErr)
+	return string(out), string(logBytes), err
+}
+
+// fakeGoScript builds a `go` stub covering every subcommand the setup contract
+// invokes: `env GOVERSION`/`GOTOOLCHAIN`, `version <binary>`, `run` (stdlib
+// smoke test), and `build -o` (stale-binary rebuild).
+func fakeGoScript(opts pressSetupContractOpts) string {
+	goVersion := opts.goEnv["GOVERSION"]
+	goToolchain := opts.goEnv["GOTOOLCHAIN"]
+	binVersionLine := ":" // no-op keeps the `if` body non-empty when no build version is configured
+	if opts.binBuildGo != "" {
+		binVersionLine = `printf '%s: go` + opts.binBuildGo + `\n' "$(basename "$2")"`
+	}
+	return `#!/bin/sh
+echo "$@" >> "$GO_LOG"
+case "$1" in
+env)
+  case "$2" in
+  GOVERSION) printf '%s\n' "` + goVersion + `" ;;
+  GOTOOLCHAIN) printf '%s\n' "` + goToolchain + `" ;;
+  *) printf '\n' ;;
+  esac
+  exit 0
+  ;;
+version)
+  if [ -n "$2" ] && [ "$2" != "--json" ]; then
+    ` + binVersionLine + `
+  fi
+  exit 0
+  ;;
+run)
+  exit 0
+  ;;
+build)
+  out=""
+  shift
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-o" ]; then
+      shift
+      out="$1"
+      break
+    fi
+    shift
+  done
+  if [ -z "$out" ]; then
+    echo "missing -o" >&2
+    exit 1
+  fi
+  cat > "$out" <<'__PP_FAKE_BINARY__'
+` + versionScript(opts.sourceVersion) + `__PP_FAKE_BINARY__
+  chmod +x "$out"
+  exit 0
+  ;;
+esac
+exit 0
+`
 }
 
 func versionScript(version string) string {

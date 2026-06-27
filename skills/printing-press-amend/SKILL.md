@@ -99,6 +99,70 @@ PRESS_CURRENT="$PRESS_RUNSTATE/current"
 
 mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
 
+# --- Go toolchain present (regenerating a CLI compiles it with Go) ---
+if ! command -v go >/dev/null 2>&1; then
+  echo ""
+  echo "[setup-error] Go toolchain not found."
+  echo "The Printing Press compiles regenerated CLIs with Go. Install Go from https://go.dev/dl/, verify with 'go version', then re-run."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+
+# --- Go toolchain currency (fail-open unless GOTOOLCHAIN=local) ---
+# Generated modules carry a `go <build-version>` directive matching the version
+# the generator binary was compiled with. A user Go older than that forces a
+# toolchain download (GOTOOLCHAIN=auto) or a hard "go.mod requires go >= X"
+# failure (GOTOOLCHAIN=local/offline) minutes into a run. Detect it now. Skip
+# silently if either version is unparseable or no binary is resolved.
+if command -v go >/dev/null 2>&1 && [ -n "$PRINTING_PRESS_BIN" ]; then
+  _pp_user_go="$(go env GOVERSION 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1)"
+  _pp_bin_go="$(go version "$PRINTING_PRESS_BIN" 2>/dev/null | grep -oE 'go[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n1 | sed -E 's/^go//')"
+  if [ -n "$_pp_user_go" ] && [ -n "$_pp_bin_go" ] && \
+     [ "$(awk -v a="$_pp_user_go" -v b="$_pp_bin_go" 'BEGIN{split(a,x,".");split(b,y,".");for(i=1;i<=3;i++){if((x[i]+0)<(y[i]+0)){print 1;exit}if((x[i]+0)>(y[i]+0)){print 0;exit}}print 0}')" = "1" ]; then
+    if [ "$(go env GOTOOLCHAIN 2>/dev/null)" = "local" ]; then
+      echo ""
+      echo "[setup-error] Go go$_pp_user_go is older than the generator build toolchain go$_pp_bin_go, and GOTOOLCHAIN=local disables the automatic toolchain download."
+      echo "Generated modules need go$_pp_bin_go to build. Install Go $_pp_bin_go or newer from https://go.dev/dl/ (or unset GOTOOLCHAIN), then re-run."
+      echo ""
+      return 1 2>/dev/null || exit 1
+    fi
+    echo ""
+    echo "[go-toolchain-old] go$_pp_user_go is older than the generator build toolchain go$_pp_bin_go"
+    echo "PRESS_GO_INSTALLED=$_pp_user_go"
+    echo "PRESS_GO_REQUIRED=$_pp_bin_go"
+    echo ""
+  fi
+fi
+
+# --- Disk preflight (fail-open unless critically low) ---
+# Generation writes thousands of files, compiles the module, and populates the
+# module cache; publish/import clone multi-GB repos. A nearly-full volume fails
+# deep into the run with an opaque "no space left on device". Warn early;
+# hard-stop only when space is critically low. Thresholds env-tunable for CI.
+_pp_disk_warn_kb="${PRINTING_PRESS_DISK_WARN_KB:-3145728}"   # 3 GiB
+_pp_disk_fail_kb="${PRINTING_PRESS_DISK_FAIL_KB:-524288}"    # 512 MiB
+_pp_disk_target="$PRESS_HOME"
+while [ -n "$_pp_disk_target" ] && [ "$_pp_disk_target" != "/" ] && [ ! -d "$_pp_disk_target" ]; do
+  _pp_disk_target="$(dirname "$_pp_disk_target")"
+done
+[ -d "$_pp_disk_target" ] || _pp_disk_target="$HOME"
+_pp_disk_avail_kb="$(df -Pk "$_pp_disk_target" 2>/dev/null | awk 'NR==2{print $4}')"
+if printf '%s' "$_pp_disk_avail_kb" | grep -qE '^[0-9]+$'; then
+  if [ "$_pp_disk_avail_kb" -lt "$_pp_disk_fail_kb" ]; then
+    echo ""
+    echo "[setup-error] Only $((_pp_disk_avail_kb / 1024)) MiB free on the volume holding $_pp_disk_target; generation and compilation need more space."
+    echo "Free up space (at least $((_pp_disk_fail_kb / 1024)) MiB, ideally a few GiB) and re-run."
+    echo ""
+    return 1 2>/dev/null || exit 1
+  elif [ "$_pp_disk_avail_kb" -lt "$_pp_disk_warn_kb" ]; then
+    echo ""
+    echo "[low-disk] $((_pp_disk_avail_kb / 1024)) MiB free on the volume holding $_pp_disk_target"
+    echo "PRESS_DISK_AVAIL_KB=$_pp_disk_avail_kb"
+    echo "PRESS_DISK_WARN_KB=$_pp_disk_warn_kb"
+    echo ""
+  fi
+fi
+
 # --- Currency-floor check (standalone, fail-open) ---
 # Hard-stop on binaries below the published supported floor so amend does not
 # regenerate CLIs with since-fixed bugs. Repo checkouts build from source and
@@ -141,6 +205,8 @@ fi
 <!-- PRESS_SETUP_CONTRACT_END -->
 
 After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `cli-printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `cli-printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
+
+If the setup contract printed a `[setup-error]` line (missing Go toolchain; Go older than the generator's build toolchain under `GOTOOLCHAIN=local`; or critically low disk), it already exited non-zero — surface the message verbatim and stop; do not capture scope, regenerate, or open a PR. If it printed a `[go-toolchain-old]` or `[low-disk]` advisory, surface that one-line note to the user once and continue.
 
 After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
 

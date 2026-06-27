@@ -1,6 +1,6 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle the contract output signals: `[setup-error]`, optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
+Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle the contract output signals: `[setup-error]`, optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, the `[go-toolchain-old]` and `[low-disk]` environment advisories, and optional `[binary-shadow]` advisory.
 
 Apply these in order. The preamble below runs unconditionally; each numbered section after it is conditional — do nothing if its trigger isn't present.
 
@@ -280,3 +280,39 @@ Surface a single-line note to the user before continuing — informational only,
 Then continue. Do not modify or remove the global. The note exists so the user can reconcile the divergence on their own time (typically with `go install ...@latest` once they want the new version everywhere).
 
 If no `[binary-shadow]` line was emitted, skip the advisory and continue.
+
+## 8. Go toolchain currency advisory
+
+The contract compares the user's `go env GOVERSION` against the Go version the resolved generator binary was built with (`go version "$PRINTING_PRESS_BIN"`). Generated modules carry a `go <build-version>` directive matching that build toolchain, so an older user Go cannot build them without a toolchain download. The check emits at most one signal:
+
+- A hard `[setup-error]` (handled by section 1) only when the user's Go is older **and** `GOTOOLCHAIN=local` is set — auto-download is disabled, so the build will certainly fail. The contract has already exited non-zero; surface the message verbatim.
+- A soft `[go-toolchain-old]` advisory when the user's Go is older but `GOTOOLCHAIN` permits the automatic download (the default `auto`). Parse the follow-up lines:
+
+  - `PRESS_GO_INSTALLED=<installed Go version>`
+  - `PRESS_GO_REQUIRED=<generator build Go version>`
+
+  Surface a single-line note before continuing — informational only, do not prompt:
+
+  > "Note: your Go toolchain is go`<installed>`, older than the generator's build toolchain go`<required>`. Generation will download a matching toolchain on first build (needs network); if `GOTOOLCHAIN=local` or you are offline, install Go `<required>`+ first."
+
+  Then continue. The advisory is fail-open because `GOTOOLCHAIN=auto` (the Go default) downloads the required toolchain on demand; the note exists so a failed download mid-generation is not a surprise.
+
+If neither line was emitted (Go is current, or either version was unparseable), skip this section entirely.
+
+## 9. Low-disk advisory
+
+The contract checks free space on the volume holding the workspace (`PRESS_HOME`) before long generation/clone/build work. It emits at most one signal:
+
+- A hard `[setup-error]` (handled by section 1) when free space is below the critical floor (default 512 MiB) — generation plus `go build` plus the module cache cannot fit. The contract has already exited non-zero; surface the message verbatim.
+- A soft `[low-disk]` advisory when free space is below the warn threshold (default 3 GiB) but above the critical floor. Parse the follow-up lines:
+
+  - `PRESS_DISK_AVAIL_KB=<available kilobytes>`
+  - `PRESS_DISK_WARN_KB=<warn threshold in kilobytes>`
+
+  Surface a single-line note before continuing — informational only, do not prompt:
+
+  > "Note: only `<avail>` MiB free on the workspace volume. A full generate + build + publish run can need a few GiB; free space if the run fails with a disk error."
+
+  Then continue. Both thresholds are tunable via `PRINTING_PRESS_DISK_WARN_KB` / `PRINTING_PRESS_DISK_FAIL_KB` for small CI runners.
+
+If neither line was emitted (ample free space, or `df` output was unparseable), skip this section entirely.
