@@ -273,7 +273,7 @@ func TestSyncResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 	defer db.Close()
 
 	var events bytes.Buffer
-	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `<html><body>wrong app</body></html>` + "`" + `)}, db, "things", "", false, 1, false, nil, &events)
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `<html><body>wrong app</body></html>` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -290,7 +290,7 @@ func TestSyncResourceValidEmptyJSONDoesNotEmitNonJSONAnomaly(t *testing.T) {
 	defer db.Close()
 
 	var events bytes.Buffer
-	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `[]` + "`" + `)}, db, "things", "", false, 1, false, nil, &events)
+	res := syncResource(context.Background(), fixedBodyClient{body: json.RawMessage(` + "`" + `[]` + "`" + `)}, db, "things", "", false, 1, false, false, nil, &events)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}

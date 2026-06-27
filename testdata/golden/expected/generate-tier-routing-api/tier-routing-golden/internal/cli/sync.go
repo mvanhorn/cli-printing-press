@@ -210,6 +210,11 @@ Resource scoping:
 			}
 
 			started := time.Now()
+			// prune gates deletion reconciliation: a full sync prunes local rows
+			// the API no longer returns within a fully-enumerated partition, unless
+			// --no-prune disables it. Flat tenant-scoped reconcile (per resource)
+			// and dependent per-parent reconcile share this gate.
+			prune := full && !noPrune
 			work := make(chan string, len(resources))
 			results := make(chan syncResult, len(resources))
 
@@ -219,7 +224,7 @@ Resource scoping:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(cmd.Context(), syncClientForResource(c, resource), db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams, syncEventWriter)
+						res := syncResource(cmd.Context(), syncClientForResource(c, resource), db, resource, sinceTS, full, maxPages, effectiveLatestOnly, prune, userParams, syncEventWriter)
 						results <- res
 					}
 				}()
@@ -354,7 +359,7 @@ Resource scoping:
 func syncResource(ctx context.Context, c interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams, syncEvents io.Writer) syncResult {
+}, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool, userParams *syncUserParams, syncEvents io.Writer) syncResult {
 	started := time.Now()
 	if syncEvents == nil {
 		syncEvents = io.Discard
@@ -460,6 +465,15 @@ func syncResource(ctx context.Context, c interface {
 	var consumedTotal int
 	anomalyEmitted := false
 
+	// Flat tenant-scoped reconcile bookkeeping (mirrors the dependent loop's
+	// partitionOutcome machinery). flatReconcilable gates all of it: only
+	// resources classified reconcileMode=="flat" collect seen IDs and prune.
+	// outcome.complete is set ONLY at proven natural ends; any abnormal break
+	// sets outcome.reason and leaves complete=false so the reconcile SKIPS.
+	flatReconcilable := resourceReconcileMode(resource) == "flat"
+	outcome := partitionOutcome{}
+	var seenIDs []string
+
 	for {
 		params := map[string]string{}
 
@@ -531,6 +545,11 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
+			// Abnormal: a 200 with a non-JSON body means the page was not a
+			// trustworthy enumeration — leave outcome.complete=false so reconcile
+			// SKIPS. Reuse the dependent loop's reason string for cross-loop
+			// consistency.
+			outcome.reason = "non_json_200_body"
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\nwarning: %s returned a 200 response with a non-JSON body; no rows were stored.\n", resource)
 			} else {
@@ -541,6 +560,8 @@ func syncResource(ctx context.Context, c interface {
 
 		if len(items) == 0 {
 			if isEmptyPageResponse(data, responsePathForResource(resource, path)...) {
+				// Natural end: the API legitimately returned an empty page.
+				outcome.complete = true
 				break
 			}
 			// Single object response - try to store as-is
@@ -551,6 +572,8 @@ func syncResource(ctx context.Context, c interface {
 				return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
 			}
 			totalCount++
+			// Single-object resources are fully enumerated by definition.
+			outcome.complete = true
 			break
 		}
 
@@ -603,6 +626,19 @@ func syncResource(ctx context.Context, c interface {
 
 		totalCount += stored
 		atomic.AddInt64(&progressCount, int64(stored))
+		// Collect seen IDs for flat tenant-scoped reconcile. extractID resolves
+		// the primary key the same way UpsertBatch does, so seenIDs match stored
+		// row IDs. Only non-empty IDs are tracked; reconcile never deletes a row
+		// whose ID was seen this run.
+		if flatReconcilable {
+			for _, it := range items {
+				if o, derr := store.DecodeJSONObject(it); derr == nil {
+					if id := extractID(resource, o); id != "" {
+						seenIDs = append(seenIDs, id)
+					}
+				}
+			}
+		}
 		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
@@ -654,6 +690,10 @@ func syncResource(ctx context.Context, c interface {
 					}
 				}
 			}
+			// A cap break ends enumeration before exhausting the partition; mirror
+			// the dependent loop and treat it as incomplete (reconcile SKIPS). Safe
+			// default: when the cap may have truncated, never prune.
+			outcome.reason = "max_pages_cap"
 			break
 		}
 
@@ -664,6 +704,9 @@ func syncResource(ctx context.Context, c interface {
 		// check below because the natural-end check would not catch a sticky
 		// non-empty cursor on its own.
 		if nextCursor != "" && nextCursor == lastNextCursor {
+			// Abnormal: a non-advancing cursor means we cannot prove the partition
+			// was fully enumerated — leave outcome.complete=false (reconcile SKIPS).
+			outcome.reason = "stuck_cursor"
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages; aborting to prevent budget waste.\n", resource)
 			} else {
@@ -675,9 +718,11 @@ func syncResource(ctx context.Context, c interface {
 
 		// Determine if there are more pages.
 		if !resourceSupportsPagination(resource) {
+			outcome.complete = true // resource declares no pagination: one page is the whole set
 			break
 		}
 		if !hasMore || len(items) < pageSize.limit {
+			outcome.complete = true
 			break
 		}
 		if nextCursor == "" {
@@ -689,6 +734,7 @@ func syncResource(ctx context.Context, c interface {
 			} else {
 				// A cursor-based API reporting has_more without a next cursor
 				// cannot advance safely; stop instead of looping silently.
+				outcome.reason = "cursor_unavailable"
 				break
 			}
 		}
@@ -700,6 +746,34 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		cursor = nextCursor
+	}
+
+	// Flat tenant-scoped reconcile: prune local rows the API no longer returns
+	// within THIS tenant's partition, gated on a proven-complete sync.
+	//   - Unknown tenant (resolveTenantID()=="") ⇒ SKIP, zero deletes. This is
+	//     the OPPOSITE of the dependent fan-out fallback (which enumerates
+	//     unscoped): a flat delete cannot be safely scoped without a tenant, so
+	//     we never delete on unknown.
+	//   - Incomplete sync (outcome.complete==false) ⇒ SKIP with the recorded
+	//     reason; an abnormal break never proves the partition was enumerated.
+	if prune && flatReconcilable {
+		def := flatReconcileDef(resource)
+		tenantUUID := resolveTenantID()
+		if tenantUUID == "" {
+			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","reason":"unknown-tenant"}`+"\n", resource)
+		} else if outcome.complete {
+			deleted, rerr := db.ReconcilePartition(
+				resource, "$."+def.BodyField, tenantUUID,
+				seenIDs, resource, store.CascadeJunctionsFor(resource),
+			)
+			if rerr != nil {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", resource, tenantUUID, rerr.Error())
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", resource, tenantUUID, deleted)
+			}
+		} else {
+			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", resource, tenantUUID, outcome.reason)
+		}
 	}
 
 	// Final sync state: clear cursor on natural completion, but preserve the
@@ -1590,6 +1664,63 @@ func syncClientForResource(c *client.Client, resource string) *client.Client {
 // annotations on a child path-item are honored at runtime, not just on
 // flat paths.
 var resourceIDFieldOverrides = map[string]string{}
+
+// partitionOutcome tracks whether a sync loop (flat tenant-scoped OR dependent
+// per-parent) enumerated its partition completely. complete is set ONLY at
+// proven natural ends; any abnormal break records a reason and leaves
+// complete=false so the gated reconcile SKIPS. scopeVal carries the dependent
+// loop's parent scope value (unused by the flat path).
+type partitionOutcome struct {
+	complete bool
+	reason   string
+	scopeVal string
+}
+
+// flatReconcileModes maps a flat resource to its reconcile mode classification
+// (from SyncableResource.ReconcileMode, set by the profiler when a flat resource
+// carries a tenant scope column AND an extractable IDField AND no discriminator).
+// Only "flat" resources are emitted; resourceReconcileMode returns "" for any
+// resource absent here, which is all the flat reconcile gate checks for.
+var flatReconcileModes = map[string]string{}
+
+// resourceReconcileMode returns the flat reconcile classification for a resource,
+// or "" when it is not a flat-reconcilable resource.
+func resourceReconcileMode(resource string) string {
+	return flatReconcileModes[resource]
+}
+
+// flatReconcileDefT carries the per-resource metadata the flat reconcile call
+// site needs. BodyField is the JSON body key (== TenantScopeColumn; the column
+// name and the body key coincide) used to scope ReconcilePartition's
+// json_extract($.<BodyField>) partition filter to the active tenant.
+type flatReconcileDefT struct {
+	BodyField string
+}
+
+// flatReconcileDefs maps each flat-reconcilable resource to its tenant body
+// field. Sourced from SyncableResource.TenantScopeColumn for ReconcileMode=="flat".
+var flatReconcileDefs = map[string]flatReconcileDefT{}
+
+// flatReconcileDef returns the flat reconcile metadata for a resource (zero
+// value when absent; the call site only reaches it for flatReconcilable resources).
+func flatReconcileDef(resource string) flatReconcileDefT {
+	return flatReconcileDefs[resource]
+}
+
+// resolveTenantID returns the active tenant's stable ID for tenant-scoped
+// enumeration and reconcile, or "" = unknown. The generated default cannot
+// resolve (a printed CLI has no tenant registry). A novel override reassigns
+// this with a real resolver in RunE (after flag parsing). No-arg by design: it
+// must not reference any novel (hand-patched) type, so the override owns all
+// config/slug access internally. Consumers branch on "" with OPPOSITE fallbacks:
+// fan-out falls back to UNSCOPED enumeration; flat reconcile SKIPS (never
+// deletes).
+var resolveTenantID = func() string { return "" }
+
+// parentTenantScopeColumns maps a dependent-parent table to its tenant
+// discriminator column (from x-pp-tenant-scope-column), used to scope dependent
+// fan-out. Empty when no parent is annotated.
+var parentTenantScopeColumns = map[string]string{}
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec

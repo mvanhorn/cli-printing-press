@@ -503,6 +503,60 @@ func TestGenerate_EmitsReconcile(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./internal/cli", "./internal/store")
 }
 
+// TestGenerate_EmitsTenantSeam verifies that the generated sync.go contains
+// the no-arg resolveTenantID seam and a parentTenantScopeColumns entry for a
+// tenant-annotated parent (projects:workspace). The spec mirrors
+// TestGenerate_EmitsReconcile but adds TenantScopeColumn="workspace" on the
+// projects list endpoint so TenantScopedParents() yields projects->workspace.
+func TestGenerate_EmitsTenantSeam(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("emits-tenant-seam")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"projects": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:            "GET",
+					Path:              "/projects",
+					Response:          spec.ResponseDef{Type: "array"},
+					Pagination:        &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:           "id",
+					TenantScopeColumn: "workspace",
+				},
+			},
+		},
+		"modules": {
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/projects/{projectId}/modules",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:    "id",
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	src := string(syncSrc)
+
+	assert.Contains(t, src, `var resolveTenantID = func() string { return "" }`,
+		"sync.go must contain the no-arg resolveTenantID seam")
+	assert.Contains(t, src, `"projects": "workspace"`,
+		"sync.go must contain the parentTenantScopeColumns entry for projects->workspace")
+
+	// Generated sync.go must COMPILE. Deliberately NOT ./internal/cliutil —
+	// that package has env-sensitive credential/path tests that fail on this
+	// Windows host (pre-existing baseline, unrelated to tenant seam).
+	runGoCommand(t, outputDir, "build", "./internal/cli", "./internal/store")
+}
+
 // TestGenerateFreshnessHelperEmitted verifies that the cliutil freshness
 // helper and auto-refresh wrapper are emitted when the spec opts into
 // cache, and that the resulting CLI compiles end-to-end and its cliutil
@@ -3421,7 +3475,7 @@ func TestSyncResourceExtractsHTMLLinks(t *testing.T) {
 	}
 	defer db.Close()
 
-	res := syncResource(context.Background(), htmlSyncClient{}, db, "pages", "", false, 1, false, nil, nil)
+	res := syncResource(context.Background(), htmlSyncClient{}, db, "pages", "", false, 1, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -5065,7 +5119,7 @@ func TestSyncResourceIDWalksPostQueryPages(t *testing.T) {
 	defer db.Close()
 
 	client := &postQuerySyncClient{}
-	res := syncResource(context.Background(), client, db, "tickets", "", true, 10, false, nil, nil)
+	res := syncResource(context.Background(), client, db, "tickets", "", true, 10, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -12670,7 +12724,7 @@ func TestSyncResourceWarnsOnFullPageWithoutCursor(t *testing.T) {
 
 	client := &fullNoCursorClient{}
 	var events strings.Builder
-	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, nil, &events)
+	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, false, nil, &events)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -12691,7 +12745,7 @@ func TestSyncResourceDoesNotWarnOnExplicitFinalFullPage(t *testing.T) {
 
 	client := &fullNoCursorClient{explicitFinalPage: true}
 	var events strings.Builder
-	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, nil, &events)
+	res := syncResource(context.Background(), client, db, "channels", "", false, 0, false, false, nil, &events)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -12711,7 +12765,7 @@ func TestSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
 	defer db.Close()
 
 	first := &resumeCursorClient{}
-	res := syncResource(context.Background(), first, db, "channels", "", false, 2, false, nil, nil)
+	res := syncResource(context.Background(), first, db, "channels", "", false, 2, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("first syncResource error: %v", res.Err)
 	}
@@ -12727,7 +12781,7 @@ func TestSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
 	}
 
 	second := &resumeCursorClient{}
-	res = syncResource(context.Background(), second, db, "channels", "", false, 2, false, nil, nil)
+	res = syncResource(context.Background(), second, db, "channels", "", false, 2, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("second syncResource error: %v", res.Err)
 	}
@@ -12743,7 +12797,7 @@ func TestSyncResourcePreservesCursorOnMaxPagesCap(t *testing.T) {
 	}
 
 	final := &resumeCursorClient{}
-	res = syncResource(context.Background(), final, db, "channels", "", false, 0, false, nil, nil)
+	res = syncResource(context.Background(), final, db, "channels", "", false, 0, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("final syncResource error: %v", res.Err)
 	}
@@ -12774,7 +12828,7 @@ func TestSyncResourceClearsCursorWhenCapEqualsFinalPage(t *testing.T) {
 	}
 
 	client := &resumeCursorClient{}
-	res := syncResource(context.Background(), client, db, "channels", "", false, 3, false, nil, nil)
+	res := syncResource(context.Background(), client, db, "channels", "", false, 3, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -12805,7 +12859,7 @@ func TestSyncResourceClearsSelfReferentialCursorOnMaxPagesCap(t *testing.T) {
 	}
 
 	client := &resumeCursorClient{stuck: true}
-	res := syncResource(context.Background(), client, db, "channels", "", false, 1, false, nil, nil)
+	res := syncResource(context.Background(), client, db, "channels", "", false, 1, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -13631,7 +13685,7 @@ func TestSyncResourceAdvancesOffsetAfterFullPageWithoutHasMore(t *testing.T) {
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"},{"id":"two"}]}` + "`" + `),
 		json.RawMessage(` + "`" + `{"items":[{"id":"three"}]}` + "`" + `),
 	}}
-	res := syncResource(context.Background(), client, db, "records", "", true, 0, false, nil, nil)
+	res := syncResource(context.Background(), client, db, "records", "", true, 0, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("syncResource error: %v", res.Err)
 	}
@@ -13999,7 +14053,7 @@ func TestSyncResourceIgnoresCheckpointWhenStoreEmpty(t *testing.T) {
 	}
 
 	emptyClient := &checkpointClient{}
-	res := syncResource(context.Background(), emptyClient, db, "events", "", false, 0, false, nil, nil)
+	res := syncResource(context.Background(), emptyClient, db, "events", "", false, 0, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("empty-store syncResource error: %v", res.Err)
 	}
@@ -14015,7 +14069,7 @@ func TestSyncResourceIgnoresCheckpointWhenStoreEmpty(t *testing.T) {
 	}
 
 	populatedClient := &checkpointClient{}
-	res = syncResource(context.Background(), populatedClient, db, "events", "", false, 0, false, nil, nil)
+	res = syncResource(context.Background(), populatedClient, db, "events", "", false, 0, false, false, nil, nil)
 	if res.Err != nil {
 		t.Fatalf("populated-store syncResource error: %v", res.Err)
 	}

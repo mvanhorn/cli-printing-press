@@ -3625,3 +3625,219 @@ func TestSingularParentField(t *testing.T) {
 			"singularParentField(%q)", plural)
 	}
 }
+
+// profileFixtureWithTenant builds a minimal *APIProfile used by
+// TestProfiler_TenantScopeColumnAndViews (Task 2) and Task 3's negative
+// assertion tests. It contains:
+//
+//   - "projects": a flat /projects/ resource with TenantScopeColumn="workspace"
+//     and IDField="id". This is the tenant-scoped parent.
+//   - "modules": a dependent /projects/{project_id}/modules/ resource with no
+//     TenantScopeColumn of its own. Its ParentResource is "projects", making
+//     "projects" appear in TenantScopedParents() and "projects_id" appear in
+//     ChildScopeColumnSources().
+//   - "widgets": a second flat resource WITHOUT a TenantScopeColumn, for Task 3's
+//     negative assertion ("widgets" must NOT appear in TenantScopedParents()).
+//
+// Task 3 implementers: rely on these exact resource names and the absence of
+// TenantScopeColumn on "widgets" and "modules".
+func profileFixtureWithTenant(t *testing.T) *APIProfile {
+	t.Helper()
+	s := &spec.APISpec{
+		Name: "tenant-fixture",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/projects",
+						Response:          spec.ResponseDef{Type: "array"},
+						IDField:           "id",
+						TenantScopeColumn: "workspace",
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/projects/{project_id}",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			"modules": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/projects/{project_id}/modules",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/widgets",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/widgets/{widget_id}",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			// "invoices" is tenant-annotated but has no IDField, so it must
+			// NOT be classified as "flat" — it stays "none". This is the
+			// Task 3 negative case for the PK-less branch.
+			"invoices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/invoices",
+						Response:          spec.ResponseDef{Type: "array"},
+						TenantScopeColumn: "workspace",
+						// IDField intentionally omitted — no stable PK.
+					},
+				},
+			},
+			// "mixed_items" is tenant-annotated AND has a PK IDField but its
+			// list response is discriminator-dispatched (its item type carries
+			// a "type" enum routing items to projects/widgets). It must stay
+			// "none" — this is the Task 3 negative case for the discriminator
+			// branch (guards against a Discriminator.Field sign-flip).
+			"mixed_items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/mixed-items",
+						Response:          spec.ResponseDef{Type: "array", Item: "MixedItem"},
+						IDField:           "id",
+						TenantScopeColumn: "workspace",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"MixedItem": {
+				Fields: []spec.TypeField{
+					{Name: "type", Type: "string", Enum: []string{"projects", "widgets"}},
+					{Name: "id", Type: "string"},
+				},
+			},
+		},
+	}
+	return Profile(s)
+}
+
+func TestProfiler_TenantScopeColumnAndViews(t *testing.T) {
+	// Reuse the existing profiler test harness that builds an APISpec with a
+	// flat /projects/ resource plus a dependent /projects/{id}/modules/.
+	// Annotate projects' endpoint with TenantScopeColumn="workspace".
+	prof := profileFixtureWithTenant(t) // helper: see note below
+
+	var projects *SyncableResource
+	for i := range prof.SyncableResources {
+		if prof.SyncableResources[i].Name == "projects" {
+			projects = &prof.SyncableResources[i]
+		}
+	}
+	if projects == nil || projects.TenantScopeColumn != "workspace" {
+		t.Fatalf("projects.TenantScopeColumn = %v, want workspace", projects)
+	}
+
+	parents := prof.TenantScopedParents()
+	if len(parents) != 1 || parents[0].Parent != "projects" || parents[0].Column != "workspace" {
+		t.Fatalf("TenantScopedParents() = %+v", parents)
+	}
+
+	sources := prof.ChildScopeColumnSources()
+	found := false
+	for _, s := range sources {
+		if s.Column == "projects_id" && s.Source == "project" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ChildScopeColumnSources() missing projects_id->project: %+v", sources)
+	}
+}
+
+// TestProfiler_ChildScopeColumnSources_ExactPair asserts the exact (Column,
+// Source) pair emitted for profileFixtureWithTenant. Guards singularParentField
+// derivation: a wrong singularization (e.g. "projects" → "project_s" or "") would
+// silently break deriveScopeColumns in the generated store.
+func TestProfiler_ChildScopeColumnSources_ExactPair(t *testing.T) {
+	prof := profileFixtureWithTenant(t)
+	sources := prof.ChildScopeColumnSources()
+	want := []ChildScopeSource{{Column: "projects_id", Source: "project"}}
+	if len(sources) != len(want) {
+		t.Fatalf("ChildScopeColumnSources() = %+v, want exactly %+v", sources, want)
+	}
+	for i, got := range sources {
+		if got != want[i] {
+			t.Fatalf("ChildScopeColumnSources()[%d] = %+v, want %+v", i, got, want[i])
+		}
+	}
+}
+
+func TestProfiler_FlatReconcileClassification(t *testing.T) {
+	prof := profileFixtureWithTenant(t) // projects annotated, has a PK IDField
+
+	// Positive case: a tenant-scoped flat resource with a PK must be "flat".
+	var mode string
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "projects" {
+			mode = sr.ReconcileMode
+		}
+	}
+	if mode != "flat" {
+		t.Fatalf("projects.ReconcileMode = %q, want flat", mode)
+	}
+
+	// Negative case 1: a flat resource WITHOUT a tenant column must stay "none".
+	for _, sr := range prof.SyncableResources {
+		if sr.TenantScopeColumn == "" && sr.ReconcileMode == "flat" {
+			t.Fatalf("%s classified flat without a tenant column", sr.Name)
+		}
+	}
+
+	// Negative case 2: "invoices" has TenantScopeColumn but no IDField, so it
+	// must stay "none" (missing stable PK disqualifies flat reconcile).
+	var invoicesMode string
+	found := false
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "invoices" {
+			found = true
+			invoicesMode = sr.ReconcileMode
+		}
+	}
+	if !found {
+		t.Fatal("invoices resource not found in SyncableResources")
+	}
+	if invoicesMode != "none" {
+		t.Fatalf("invoices.ReconcileMode = %q, want none (tenant-annotated but no IDField)", invoicesMode)
+	}
+
+	// Negative case 3: "mixed_items" is tenant-annotated AND has an IDField but
+	// is discriminator-dispatched (Discriminator.Field != ""), so it must stay
+	// "none". This guards the third condition against a sign-flip that would
+	// misclassify every discriminator-dispatched resource as "flat".
+	var mixed *SyncableResource
+	for i := range prof.SyncableResources {
+		if prof.SyncableResources[i].Name == "mixed_items" {
+			mixed = &prof.SyncableResources[i]
+		}
+	}
+	if mixed == nil {
+		t.Fatal("mixed_items resource not found in SyncableResources")
+	}
+	if mixed.Discriminator.Field == "" {
+		t.Fatalf("mixed_items fixture is not discriminator-dispatched (Discriminator.Field empty); negative case is ineffective")
+	}
+	if mixed.TenantScopeColumn == "" || mixed.IDField == "" {
+		t.Fatalf("mixed_items fixture lost its tenant column / IDField (col=%q id=%q); negative case is ineffective", mixed.TenantScopeColumn, mixed.IDField)
+	}
+	if mixed.ReconcileMode != "none" {
+		t.Fatalf("mixed_items.ReconcileMode = %q, want none (discriminator-dispatched)", mixed.ReconcileMode)
+	}
+}

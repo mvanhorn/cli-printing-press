@@ -3511,16 +3511,18 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 		}
 		storeData := struct {
 			*spec.APISpec
-			SyncableResources      []profiler.SyncableResource
-			DependentSyncResources []profiler.DependentResource
-			SearchableFields       map[string][]string
-			Tables                 []TableDef
+			SyncableResources       []profiler.SyncableResource
+			DependentSyncResources  []profiler.DependentResource
+			SearchableFields        map[string][]string
+			Tables                  []TableDef
+			ChildScopeColumnSources []profiler.ChildScopeSource
 		}{
-			APISpec:                g.Spec,
-			SyncableResources:      g.profile.SyncableResources,
-			DependentSyncResources: g.profile.DependentSyncResources,
-			SearchableFields:       g.profile.SearchableFields,
-			Tables:                 schema,
+			APISpec:                 g.Spec,
+			SyncableResources:       g.profile.SyncableResources,
+			DependentSyncResources:  g.profile.DependentSyncResources,
+			SearchableFields:        g.profile.SearchableFields,
+			Tables:                  schema,
+			ChildScopeColumnSources: g.profile.ChildScopeColumnSources(),
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
@@ -3544,6 +3546,7 @@ type visionRenderData struct {
 	VisionSet                    VisionTemplateSet
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
+	TenantScopedParents          []profiler.TenantScopedParent
 	PaginationSupportedResources []string
 	PaginationDefaultResources   []paginationDefaultEntry
 	SpecTimestampFields          []string
@@ -3852,6 +3855,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		VisionSet:                    g.VisionSet,
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
+		TenantScopedParents:          g.profile.TenantScopedParents(),
 		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		PaginationDefaultResources:   paginationDefaultEntries(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		SpecTimestampFields:          specDateTimeFieldNames(g.Spec),

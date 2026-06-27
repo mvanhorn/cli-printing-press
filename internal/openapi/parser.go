@@ -3232,6 +3232,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 		// not method-scoped, so per-operation reads would either duplicate or
 		// disagree on the same identity.
 		pathResourceIDOverride := readPathItemResourceID(pathItem, path)
+		pathTenantScopeColumn := readPathItemTenantScopeColumn(pathItem, path)
 		pathCritical := readPathItemCritical(pathItem, path)
 		pathSyncable, _ := boolExtension(pathItem.Extensions, extensionPPSyncable)
 		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
@@ -3391,6 +3392,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			if strings.ToUpper(method) == "POST" {
 				endpoint.Pagination = detectPostQueryIDWalkPagination(endpoint.Body, op, endpoint.IDField)
 			}
+			endpoint.TenantScopeColumn = pathTenantScopeColumn
 			endpoint.Critical = pathCritical
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
@@ -5198,6 +5200,26 @@ func readPathItemResourceID(pathItem *openapi3.PathItem, path string) string {
 		return strings.TrimSpace(v)
 	default:
 		warnf("path %q: x-resource-id must be a string, got %T; ignoring", path, raw)
+		return ""
+	}
+}
+
+// readPathItemTenantScopeColumn reads `x-pp-tenant-scope-column` from a path
+// item. String-only; other shapes warn and return "". Mirrors
+// readPathItemResourceID.
+func readPathItemTenantScopeColumn(pathItem *openapi3.PathItem, path string) string {
+	if pathItem == nil || pathItem.Extensions == nil {
+		return ""
+	}
+	raw, ok := pathItem.Extensions["x-pp-tenant-scope-column"]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		warnf("path %q: x-pp-tenant-scope-column must be a string, got %T; ignoring", path, raw)
 		return ""
 	}
 }
