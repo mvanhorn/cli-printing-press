@@ -26,6 +26,17 @@ Publish a generated CLI from your local library to the [printing-press-library](
 /printing-press publish
 ```
 
+## This skill opens a CLI publish PR — never a proposal PR
+
+This skill opens exactly one of two PR shapes against `printing-press-library`: a
+**CLI publish PR** carrying the generated CLI tree, or — only with
+`--blocked-api-journal` — a single `blocked-apis.json` **journal entry**. It never
+opens a docs-only, plan, or proposal PR. If the CLI is not publish-ready —
+validation fails, the live test cannot run, or generation is blocked — report the
+exact blocker and stop. Do not substitute a docs-only/plan/proposal PR as a
+fallback for the requested publish; a proposal or spec PR is appropriate only when
+the user explicitly asked for one.
+
 ## Direct User Invocation Required
 
 Publishing can fork `mvanhorn/printing-press-library`, push a branch, and open or

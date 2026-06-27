@@ -4714,6 +4714,8 @@ End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printi
 
 The CLI did not promote to library. The working copy is at `$CLI_WORK_DIR`; manuscripts and proofs are archived. Hold runs are the highest-value retro signal — something blocked the machine from reaching ship, and that signal is most valuable while session context is fresh.
 
+When a run is blocked, report the exact blocker and stop at the menu below — those are the only valid outcomes. Do not substitute a docs-only, plan, or proposal PR (here or in `printing-press-library`) for the requested CLI generation; a proposal or spec PR is appropriate only when the user explicitly asked for one, or explicitly authorizes a docs/spec fallback after seeing the blocker.
+
 Before rendering the menu, decide whether this hold should offer a blocked-API journal entry. Offer journaling only when the one-line hold reason is a reachability or buildability blocker that would likely repeat for another user before a machine or upstream change, for example browser-clearance barriers, Cloudflare Turnstile, login/session surfaces that a pure-HTTP printed CLI cannot replay, unreachable official specs, or an upstream API that cannot be called from generated code. Do not offer journaling for ordinary fix-loop failures, local setup problems, missing credentials, temporary network outages, test flakes, or quality issues that polish can plausibly fix.
 
 Present via `AskUserQuestion`:

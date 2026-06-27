@@ -343,6 +343,29 @@ func TestPrintingPressSkillDistinguishesBearerFromRawAPIKey(t *testing.T) {
 	assert.Contains(t, block, "name: X-API-Key")
 }
 
+// TestSkillsProhibitProposalPRFallback locks the guard that keeps agents from
+// substituting a docs-only / plan / proposal PR for the requested implementation,
+// generation, or publish work when a run is blocked. Content is whitespace-collapsed
+// so prose reflow does not break the assertions; only the wording is pinned.
+func TestSkillsProhibitProposalPRFallback(t *testing.T) {
+	collapse := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+	agents := collapse(readContractFile(t, filepath.Join("..", "..", "AGENTS.md")))
+	assert.Contains(t, agents, "## PR intent: implement vs publish vs propose")
+	assert.Contains(t, agents, "never substitute one for another")
+	assert.Contains(t, agents, "When implementation or generation is blocked, report the exact blocker and stop.")
+
+	publish := collapse(readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md")))
+	assert.Contains(t, publish, "This skill opens a CLI publish PR — never a proposal PR")
+	assert.Contains(t, publish, "It never opens a docs-only, plan, or proposal PR.")
+	assert.Contains(t, publish, "Do not substitute a docs-only/plan/proposal PR as a fallback for the requested publish")
+
+	gen := collapse(readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")))
+	assert.Contains(t, gen, "When a run is blocked, report the exact blocker and stop at the menu below")
+	assert.Contains(t, gen, "Do not substitute a docs-only, plan, or proposal PR")
+	assert.Contains(t, gen, "a proposal or spec PR is appropriate only when the user explicitly asked for one")
+}
+
 func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	template := substringBetween(t, skill, "#### Verify-friendly RunE template", "If the command reads a file or directory")
