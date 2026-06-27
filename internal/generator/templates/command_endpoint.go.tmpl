@@ -405,9 +405,17 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
+{{- if .IsReadOnly}}
+			data, statusCode, err := c.PostQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+{{- else}}
 			data, statusCode, err := c.PostFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+{{- end}}
+{{- else}}
+{{- if .IsReadOnly}}
+			data, statusCode, err := c.PostQueryFormWithParams(cmd.Context(), path, params, fields)
 {{- else}}
 			data, statusCode, err := c.PostFormWithParams(cmd.Context(), path, params, fields)
+{{- end}}
 {{- end}}
 {{- else}}
 			var body map[string]any

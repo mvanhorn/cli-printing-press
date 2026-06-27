@@ -618,27 +618,33 @@ func buildEndpoint(group EndpointGroup, auth spec.AuthConfig) (spec.Endpoint, []
 	if len(params) == 0 && len(responseFields) > 0 {
 		params = responseFields
 	}
+	requestContentType := inferRequestContentType(group.Entries)
 
 	endpoint := spec.Endpoint{
-		Method:       group.Method,
-		Path:         group.NormalizedPath,
-		Description:  fmt.Sprintf("%s %s", group.Method, group.NormalizedPath),
-		Params:       params,
-		Body:         body,
-		ObservedAuth: observedAuthHeaders(group.Entries),
+		Method:             group.Method,
+		Path:               group.NormalizedPath,
+		Description:        fmt.Sprintf("%s %s", group.Method, group.NormalizedPath),
+		Params:             params,
+		Body:               body,
+		RequestContentType: requestContentType,
+		ObservedAuth:       observedAuthHeaders(group.Entries),
 		Response: spec.ResponseDef{
 			Type: responseType,
 			Item: deriveResponseItemName(group.NormalizedPath),
 		},
 	}
 	if groupLooksHTML(group) {
+		htmlExtract := inferHTMLExtract(group)
 		endpoint.ResponseFormat = spec.ResponseFormatHTML
 		endpoint.Response = spec.ResponseDef{
 			Type: htmlResponseType(group),
-			Item: "html",
+			Item: htmlResponseItem(htmlExtract),
 		}
-		endpoint.HTMLExtract = inferHTMLExtract(group)
+		endpoint.HTMLExtract = htmlExtract
 		endpoint.Description = htmlEndpointDescription(group)
+		if strings.EqualFold(group.Method, "POST") {
+			endpoint.Meta = map[string]string{"mcp:read-only": "true"}
+		}
 	}
 	return endpoint, responseFields
 }
@@ -868,7 +874,13 @@ func mostCommonHTMLSurfaceHost(entries []EnrichedEntry) string {
 
 func isUsefulHTMLSurfaceEntry(entry EnrichedEntry, targetHost string) bool {
 	method := strings.ToUpper(strings.TrimSpace(entry.Method))
-	if method != "" && method != "GET" && method != "HEAD" {
+	if method == "" {
+		method = "GET"
+	}
+	if method != "GET" && method != "HEAD" && method != "POST" {
+		return false
+	}
+	if method == "POST" && !strings.Contains(strings.ToLower(getHeaderValue(entry.RequestHeaders, "Content-Type")), "form-urlencoded") {
 		return false
 	}
 	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 400 {
@@ -894,6 +906,9 @@ func isUsefulHTMLSurfaceEntry(entry EnrichedEntry, targetHost string) bool {
 		return false
 	}
 	lower := strings.ToLower(body)
+	if method == "POST" {
+		return looksLikeHTMLTableFragment(lower)
+	}
 	return strings.Contains(lower, "<title") ||
 		strings.Contains(lower, "<meta") ||
 		strings.Contains(lower, "<a ")
@@ -973,22 +988,79 @@ func groupLooksHTML(group EndpointGroup) bool {
 }
 
 func htmlResponseType(group EndpointGroup) string {
-	if inferHTMLExtract(group).EffectiveMode() == spec.HTMLExtractModeLinks {
+	switch inferHTMLExtract(group).EffectiveMode() {
+	case spec.HTMLExtractModeLinks, spec.HTMLExtractModeTable:
 		return "array"
+	default:
+		return "object"
 	}
-	return "object"
+}
+
+func htmlResponseItem(extract *spec.HTMLExtract) string {
+	if extract != nil && extract.EffectiveMode() == spec.HTMLExtractModeTable {
+		return "html_table_row"
+	}
+	return "html"
 }
 
 func inferHTMLExtract(group EndpointGroup) *spec.HTMLExtract {
 	prefixes := inferHTMLLinkPrefixes(group.Entries)
 	mode := spec.HTMLExtractModePage
-	if len(prefixes) > 0 && !strings.Contains(group.NormalizedPath, "{") {
+	if strings.EqualFold(group.Method, "POST") && groupLooksHTMLTable(group) {
+		mode = spec.HTMLExtractModeTable
+	} else if len(prefixes) > 0 && !strings.Contains(group.NormalizedPath, "{") {
 		mode = spec.HTMLExtractModeLinks
 	}
 	return &spec.HTMLExtract{
 		Mode:         mode,
 		LinkPrefixes: prefixes,
 		Limit:        50,
+	}
+}
+
+func groupLooksHTMLTable(group EndpointGroup) bool {
+	for _, entry := range group.Entries {
+		if looksLikeHTMLTableFragment(strings.ToLower(entry.ResponseBody)) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeHTMLTableFragment(lowerBody string) bool {
+	return strings.Contains(lowerBody, "<table") &&
+		strings.Contains(lowerBody, "<tr") &&
+		(strings.Contains(lowerBody, "<td") || strings.Contains(lowerBody, "<th"))
+}
+
+func inferRequestContentType(entries []EnrichedEntry) string {
+	var chosen string
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.RequestBody) == "" {
+			continue
+		}
+		contentType := normalizeRequestContentType(getHeaderValue(entry.RequestHeaders, "Content-Type"))
+		if contentType == "" {
+			continue
+		}
+		if chosen == "" {
+			chosen = contentType
+			continue
+		}
+		if chosen != contentType {
+			return ""
+		}
+	}
+	return chosen
+}
+
+func normalizeRequestContentType(contentType string) string {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	switch contentType {
+	case "application/x-www-form-urlencoded", "multipart/form-data", "application/json":
+		return contentType
+	default:
+		return ""
 	}
 }
 

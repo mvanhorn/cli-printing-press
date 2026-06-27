@@ -93,6 +93,7 @@ func InferRequestSchema(body string, contentType string) []spec.Param {
 				Name:        key,
 				Type:        inferScalarStringType(value),
 				Required:    true,
+				Default:     value,
 				Description: "",
 			})
 		}

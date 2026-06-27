@@ -549,7 +549,15 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- if $hasFormRequest}}
 			if formEncoded {
 				if len(headers) > 0 {
+					if readOnly {
+						data, _, err = c.PostQueryFormWithParamsAndHeaders(ctx, path, params, formFields, headers)
+						break
+					}
 					data, _, err = c.PostFormWithParamsAndHeaders(ctx, path, params, formFields, headers)
+					break
+				}
+				if readOnly {
+					data, _, err = c.PostQueryFormWithParams(ctx, path, params, formFields)
 					break
 				}
 				data, _, err = c.PostFormWithParams(ctx, path, params, formFields)

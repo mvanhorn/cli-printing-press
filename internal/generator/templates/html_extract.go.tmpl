@@ -7,11 +7,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") (.HasHTMLExtractMode "table") }}
 	stdhtml "html"
 {{- end }}
 	"net/url"
-{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") (.HasHTMLExtractMode "table") }}
 	"regexp"
 	"strconv"
 {{- end }}
@@ -31,7 +31,7 @@ type htmlExtractionOptions struct {
 	JSONPath       string // for mode: embedded-json — dot-notation walk
 }
 
-{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") (.HasHTMLExtractMode "table") }}
 
 type htmlExtractedPage struct {
 	Title        string     `json:"title,omitempty"`
@@ -48,6 +48,13 @@ type htmlLink struct {
 	Image string `json:"image,omitempty"`
 	URL   string `json:"url,omitempty"`
 	Slug  string `json:"slug,omitempty"`
+}
+
+type htmlTableRow map[string]string
+
+type htmlTableRawRow struct {
+	cells     []string
+	hasHeader bool
 }
 
 // htmlRawTextTags lists the four HTML5 elements whose content is parsed as
@@ -80,6 +87,10 @@ func extractHTMLResponse(raw []byte, opts htmlExtractionOptions) (json.RawMessag
 {{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 	case "links", "page", "":
 		return extractHTMLPageOrLinks(raw, opts)
+{{- end }}
+{{- if .HasHTMLExtractMode "table" }}
+	case "table":
+		return extractHTMLTable(raw, opts)
 {{- end }}
 	default:
 		return nil, fmt.Errorf("unsupported html_extract mode: %q", opts.Mode)
@@ -140,6 +151,120 @@ func extractHTMLPageOrLinks(raw []byte, opts htmlExtractionOptions) (json.RawMes
 		data, err := json.Marshal(page)
 		return json.RawMessage(data), err
 	}
+}
+
+{{- end }}
+{{- if .HasHTMLExtractMode "table" }}
+
+func extractHTMLTable(raw []byte, opts htmlExtractionOptions) (json.RawMessage, error) {
+	doc, err := parseHTMLDocument(raw, opts.ContentType)
+	if err != nil {
+		return nil, fmt.Errorf("parsing HTML table response: %w", err)
+	}
+
+	rows := firstHTMLTableRows(doc)
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	data, err := json.Marshal(rows)
+	return json.RawMessage(data), err
+}
+
+func firstHTMLTableRows(root *xhtml.Node) []htmlTableRow {
+	var table *xhtml.Node
+	walkHTML(root, func(n *xhtml.Node) {
+		if table == nil && n.Type == xhtml.ElementNode && strings.EqualFold(n.Data, "table") {
+			table = n
+		}
+	})
+	if table == nil {
+		return nil
+	}
+
+	rawRows := htmlTableRows(table)
+	if len(rawRows) == 0 {
+		return nil
+	}
+
+	headers := rawRows[0].cells
+	start := 1
+	if !rawRows[0].hasHeader {
+		headers = syntheticTableHeaders(len(headers))
+		start = 0
+	}
+
+	rows := make([]htmlTableRow, 0, len(rawRows)-start)
+	for _, rawRow := range rawRows[start:] {
+		row := htmlTableRow{}
+		for i, value := range rawRow.cells {
+			if i >= len(headers) {
+				break
+			}
+			key := headers[i]
+			if key == "" {
+				key = fmt.Sprintf("column_%d", i+1)
+			}
+			row[key] = value
+		}
+		if len(row) > 0 {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func htmlTableRows(table *xhtml.Node) []htmlTableRawRow {
+	var rows []htmlTableRawRow
+	walkHTML(table, func(n *xhtml.Node) {
+		if n.Type != xhtml.ElementNode || !strings.EqualFold(n.Data, "tr") {
+			return
+		}
+		if htmlRowBelongsToNestedTable(n, table) {
+			return
+		}
+		var cells []string
+		hasHeader := false
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			if child.Type != xhtml.ElementNode {
+				continue
+			}
+			if !strings.EqualFold(child.Data, "th") && !strings.EqualFold(child.Data, "td") {
+				continue
+			}
+			if strings.EqualFold(child.Data, "th") {
+				hasHeader = true
+			}
+			cells = append(cells, cleanHTMLText(nodeTextSuppressing(child)))
+		}
+		if len(cells) > 0 {
+			rows = append(rows, htmlTableRawRow{cells: cells, hasHeader: hasHeader})
+		}
+	})
+	return rows
+}
+
+func htmlRowBelongsToNestedTable(row, outerTable *xhtml.Node) bool {
+	for p := row.Parent; p != nil; p = p.Parent {
+		if p == outerTable {
+			return false
+		}
+		if p.Type == xhtml.ElementNode && strings.EqualFold(p.Data, "table") {
+			return true
+		}
+	}
+	return false
+}
+
+func syntheticTableHeaders(count int) []string {
+	headers := make([]string, count)
+	for i := range headers {
+		headers[i] = fmt.Sprintf("column_%d", i+1)
+	}
+	return headers
 }
 
 {{- end }}
@@ -298,7 +423,7 @@ func walkHTML(n *xhtml.Node, visit func(*xhtml.Node)) {
 	}
 }
 
-{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") (.HasHTMLExtractMode "table") }}
 
 func applyMeta(page *htmlExtractedPage, n *xhtml.Node) {
 	name := strings.ToLower(attrValue(n, "name"))
@@ -406,7 +531,7 @@ func htmlExtractionRequestURL(base string, path string, params map[string]string
 	return full.String()
 }
 
-{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") (.HasHTMLExtractMode "table") }}
 
 func htmlLinkMatchesPrefixes(path string, prefixes []string) bool {
 	if len(prefixes) == 0 {
@@ -479,7 +604,7 @@ func nodeText(n *xhtml.Node) string {
 	return strings.Join(parts, " ")
 }
 
-{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") (.HasHTMLExtractMode "table") }}
 
 // nodeTextSuppressing walks n's descendants and concatenates TextNode content,
 // skipping subtrees rooted at noscript/script/style/template elements. The
