@@ -102,9 +102,9 @@ func TestInferRequestSchema(t *testing.T) {
 			body:        "q=hello&page=1&limit=20",
 			contentType: "application/x-www-form-urlencoded",
 			want: []spec.Param{
-				{Name: "limit", Type: "integer", Required: true, Description: ""},
-				{Name: "page", Type: "integer", Required: true, Description: ""},
-				{Name: "q", Type: "string", Required: true, Description: ""},
+				{Name: "limit", Type: "integer", Required: true, Default: "20", Description: ""},
+				{Name: "page", Type: "integer", Required: true, Default: "1", Description: ""},
+				{Name: "q", Type: "string", Required: true, Default: "hello", Description: ""},
 			},
 		},
 		{
