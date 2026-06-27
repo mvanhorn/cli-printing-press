@@ -584,6 +584,65 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	assert.NotContains(t, skill, "New CLIs keep the blank skeletons")
 }
 
+func TestPublishSkillDisablesAutocrlfInManagedClone(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+	firstTimeSetup := substringBetween(t, skill, "### First-time setup", "### Subsequent publishes")
+
+	assert.GreaterOrEqual(t, strings.Count(firstTimeSetup, `git -C "$PUBLISH_REPO_DIR" config core.autocrlf false`), 2,
+		"both push-access and fork managed-clone setup paths must force LF checkout behavior")
+	assert.Contains(t, firstTimeSetup, "Skill-managed clones are owned by this flow")
+}
+
+func TestPolishSkillPreservesStandaloneFreeTextScope(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+	resolveBlock := substringBetween(t, skill, "### Resolve CLI", "### Phase 3 gate bundle")
+
+	assert.Contains(t, resolveBlock, "free-text scope")
+	assert.Contains(t, resolveBlock, "STANDALONE_MODE=true")
+	assert.Contains(t, resolveBlock, "trusted user scope")
+	assert.Contains(t, resolveBlock, "Mid-pipeline")
+	assert.Contains(t, resolveBlock, "strict grammar")
+	assert.Contains(t, resolveBlock, "asks which CLI to polish")
+}
+
+func TestAmendSkillHasDocumentationCheckpoint(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"))
+	checkpointBlock := substringBetween(t, skill, "### Step 6 — Documentation update checkpoint", "### Output")
+	prDraftBlock := substringBetween(t, skill, "## Phase 6 — PR Draft Review Checkpoint", "### Assemble the draft")
+
+	assert.Contains(t, checkpointBlock, "new, renamed, or changed user-facing command")
+	assert.Contains(t, checkpointBlock, "cookbook recipe in both `SKILL.md` and `README.md`")
+	assert.Contains(t, checkpointBlock, "Unique Features")
+	assert.Contains(t, checkpointBlock, "verify_skill.py --dir")
+	assert.Contains(t, checkpointBlock, "blocking checklist")
+	assert.Contains(t, prDraftBlock, "documentation checkpoint")
+}
+
+func TestImportRewriteHandlesCRLFGoMod(t *testing.T) {
+	t.Parallel()
+
+	staging := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "go.mod"), []byte("module github.com/mvanhorn/printing-press-library/library/productivity/sample\r\n\r\ngo 1.26.4\r\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(staging, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "internal", "cli", "root.go"), []byte("package cli\r\n\r\nimport \"github.com/mvanhorn/printing-press-library/library/productivity/sample/internal/client\"\r\n\r\nvar _ = client.New\r\n"), 0o644))
+
+	script := filepath.Join("..", "..", "skills", "printing-press-import", "references", "import-rewrite.sh")
+	out, err := exec.Command("bash", script, staging, "sample").CombinedOutput()
+	require.NoError(t, err, "import-rewrite.sh should tolerate CRLF go.mod: %s", string(out))
+
+	goMod, err := os.ReadFile(filepath.Join(staging, "go.mod"))
+	require.NoError(t, err)
+	assert.Contains(t, string(goMod), "module sample-pp-cli\r\n")
+	assert.NotContains(t, string(goMod), "github.com/mvanhorn/printing-press-library")
+	assert.NotContains(t, string(goMod), "\r\r\n")
+
+	root, err := os.ReadFile(filepath.Join(staging, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(root), `"sample-pp-cli/internal/client"`)
+	assert.NotContains(t, string(root), "github.com/mvanhorn/printing-press-library")
+	assert.NotContains(t, string(root), "\r\r\n")
+}
+
 func TestPrintingPressSkillArchivesManuscriptContents(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 

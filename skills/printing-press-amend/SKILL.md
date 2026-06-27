@@ -643,6 +643,29 @@ fi
 
 Missing or empty patch manifest → fix locally before continuing.
 
+### Step 6 — Documentation update checkpoint
+
+Before Phase 4 can emit a pass, inspect the confirmed findings and final diff
+for every new, renamed, or changed user-facing command, flag, workflow, runtime
+mode, or MCP-visible action. Each such change must ship documentation in the
+same public-library PR:
+
+- Add or update a cookbook recipe in both `SKILL.md` and `README.md`.
+- Add or update the matching Unique Features / Unique Capabilities entry so the
+  generated docs and agent-facing summary name the changed workflow.
+- Keep examples honest: commands, flags, positional args, and output snippets
+  must match the code that now exists in `$CLI_DIR`.
+- Run `python3 .github/scripts/verify-skill/verify_skill.py --dir "$CLI_DIR"`
+  from the public-library checkout when that path exists; otherwise run the
+  packaged verifier equivalent available in the checkout and record the command.
+
+If any required doc edit or verifier result is missing, stop with a blocking
+checklist. The blocking checklist names the command and the missing
+README/SKILL/Unique Features piece. Do not move to the PR-draft checkpoint until
+the checklist is empty. If the amend only fixes internals with no user-facing
+behavior change, record `documentation_checkpoint: no-user-facing-doc-change`
+in the Phase 4 output.
+
 ### Output
 
 Phase 4 emits to Phase 5:
@@ -657,6 +680,7 @@ test_status: PASS|FAIL
 dogfood_status: PASS|FAIL|N/A    # PASS|FAIL when MODE=dogfood (or "both"); always N/A when MODE=direct
 validate_iterations: <n>
 patch_entry_count: <n>
+documentation_checkpoint: PASS|no-user-facing-doc-change
 ```
 
 **`dogfood_status` per mode.** When `MODE=dogfood`, the value reflects the result of the dogfood validation step that consumed the transcript-derived findings (PASS if the run produced a clean fix, FAIL if it surfaced a regression). When `MODE=direct`, there is no transcript to dogfood against — set `dogfood_status=N/A`. When `MODE=both`, dogfood validation still runs against the transcript half of the findings; set PASS/FAIL accordingly. This default must be set at the latest by the end of Phase 4 so Phase 7's PR body and Phase 8's RESULT block never emit an empty value.
@@ -682,6 +706,7 @@ The scrub report is written to `$PRESS_MANUSCRIPTS/<slug>/<run-id>/scrub-report.
 ## Phase 6 — PR Draft Review Checkpoint (User-in-Loop #2)
 
 This is the second and final user checkpoint. Everything that follows is unattended (push + PR-open + labels + RESULT block). Show the user EVERYTHING that's about to ship before any `gh` command fires.
+Include the documentation checkpoint result from Phase 4 in this review so undocumented user-facing changes cannot slip into the PR.
 
 ### Assemble the draft
 
@@ -698,7 +723,8 @@ PR body sections (per origin R27):
 1. **Summary** — 1-3 sentences naming the user pain and the shape of the fix
 2. **Findings** — table with ID, category, type (bug/feature), rationale
 3. **Changes** — output of `git diff --stat upstream/main..HEAD`
-4. **Verification** — build/test/dogfood/validate status from Phase 4
+4. **Verification** — build/test/dogfood/validate status from Phase 4, plus the
+   documentation checkpoint result
 5. **Evidence** — full GitHub URLs to the per-run plan doc and the `.printing-press-patches/` directory at the PR's HEAD SHA (captured AFTER push so links don't 404)
 6. **Closes #N** footer when an issue match was found in Step 6 of `library-pr-plumbing.md`
 

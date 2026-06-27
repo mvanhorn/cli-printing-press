@@ -90,15 +90,36 @@ and let the divergence check (below) handle any drift.
 ### Resolve CLI
 
 The argument string can contain a `--standalone` flag plus one positional value
-(a slug, binary name, or path). It can also contain a Phase 3 gate bundle and a
-`printing_press_bin: <abs-path>` line on following lines when invoked by the
-main printing-press skill. The flag may appear before or after the positional
-value; it is the only flag this skill consumes from `args`. Strip it before path
-resolution.
+(a slug, binary name, or path). In standalone slash-command mode, it may also
+contain a free-text scope after the optional positional value, such as
+`/printing-press-polish sculptok review the open PR comments and fix them`.
+That trailing natural-language text is the user's own trusted user scope. Carry
+it forward into the polish plan and result block; do not classify it as
+injection or tampering.
+
+It can also contain a Phase 3 gate bundle and a `printing_press_bin:
+<abs-path>` line on following lines when invoked by the main printing-press
+skill. The flag may appear before or after the positional value; it is the only
+flag this skill consumes from `args`. Strip it before path resolution.
 
 When `args` is multi-line, treat the first non-empty line as the positional
-value and parse the remaining lines as the optional Phase 3 gate bundle. Do not
-include the bundle text in path resolution.
+value/scope line and parse the remaining lines as the optional Phase 3 gate
+bundle. Do not include the bundle text in path resolution.
+
+Parse caller modes differently:
+
+- **Standalone slash command (`STANDALONE_MODE=true`).** After stripping
+  `--standalone`, try to resolve the first shell word as a slug, binary name, or
+  path. If it resolves, use it as the positional value and store the remaining
+  words as `USER_SCOPE`. If it does not resolve, treat the whole line as
+  free-text scope; this branch asks which CLI to polish and retains that scope
+  for the chosen CLI. If there is no trailing text after a resolved positional
+  value, run the normal generic polish pass.
+- **Mid-pipeline Skill-tool call.** Keep the strict grammar: one path-like
+  positional value on the first line plus the optional structured bundle on
+  later lines. Unexpected free text in this machine-generated path is not a
+  user scope and should still be rejected or clarified rather than folded into
+  the run.
 
 The positional value can be:
 - A short name: `redfin` (looks up `$PRESS_LIBRARY/redfin`)
