@@ -208,7 +208,10 @@ func loadSessionCookiesFromFile(path string, domain string) ([]*http.Cookie, err
 			HTTPOnly bool    `json:"httpOnly"`
 		} `json:"cookies"`
 	}
-	if err := json.Unmarshal(data, &state); err == nil && len(state.Cookies) > 0 {
+	if err := json.Unmarshal(data, &state); err == nil {
+		if len(state.Cookies) == 0 {
+			return nil, fmt.Errorf("cookies file contains an empty cookies array")
+		}
 		cookies := make([]*http.Cookie, 0, len(state.Cookies))
 		for _, c := range state.Cookies {
 			if !sessionCookieDomainMatches(c.Domain, domain) {

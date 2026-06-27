@@ -41,6 +41,7 @@ func TestCookieAuthLoginEmitsCookiesFileImport(t *testing.T) {
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +83,17 @@ func TestLoadCookiesFromFileAcceptsRawCookieHeader(t *testing.T) {
 		t.Fatalf("Cookies len = %d, want 2", len(got.Cookies))
 	}
 }
+
+func TestLoadCookiesFromFileRejectsEmptyStorageState(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	if err := os.WriteFile(path, []byte(` + "`" + `{"cookies":[]}` + "`" + `), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadCookiesFromFile(path, ".example.com")
+	if err == nil || !strings.Contains(err.Error(), "empty cookies array") {
+		t.Fatalf("err = %v, want empty cookies array error", err)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "cookies_file_test.go"), []byte(cliTest), 0o600))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestLoadCookiesFromFile")
@@ -114,6 +126,7 @@ func TestSessionHandshakeLoginEmitsCookiesFileImport(t *testing.T) {
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -134,8 +147,19 @@ func TestLoadSessionCookiesFromFileRejectsBareTLDMatch(t *testing.T) {
 		t.Fatalf("Cookies = %#v, want one scoped cookie", got)
 	}
 }
+
+func TestLoadSessionCookiesFromFileRejectsEmptyStorageState(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	if err := os.WriteFile(path, []byte(` + "`" + `{"cookies":[]}` + "`" + `), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadSessionCookiesFromFile(path, ".query1.example.com")
+	if err == nil || !strings.Contains(err.Error(), "empty cookies array") {
+		t.Fatalf("err = %v, want empty cookies array error", err)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "session_cookies_file_test.go"), []byte(cliTest), 0o600))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestLoadSessionCookiesFromFileRejectsBareTLDMatch")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestLoadSessionCookiesFromFile")
 	requireGeneratedCompiles(t, outputDir)
 }
