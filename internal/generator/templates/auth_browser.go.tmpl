@@ -36,7 +36,9 @@ import (
 {{- if $hasCookieBrowserAuth}}
 	"net/http"
 {{- end}}
+{{- if or $hasCookieBrowserAuth $hasBrowserCapture $canonicalEnvVar}}
 	"os"
+{{- end}}
 {{- if or $hasCookieBrowserAuth $hasBrowserCapture}}
 	"os/exec"
 	"path/filepath"
