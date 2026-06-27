@@ -17140,6 +17140,52 @@ func TestGenerateWaitForJobBypassesResponseCache(t *testing.T) {
 		"WaitForJob must not call c.Get(ctx, path, nil); cached non-terminal status would lock the poll")
 }
 
+func TestGenerateJobsCommandsEmitExamples(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("asyncjobs")
+	apiSpec.Types = map[string]spec.TypeDef{
+		"RenderJob": {Fields: []spec.TypeField{
+			{Name: "job_id", Type: "string"},
+			{Name: "status", Type: "string"},
+		}},
+	}
+	apiSpec.Resources = map[string]spec.Resource{
+		"renders": {
+			Description: "Async render jobs",
+			Endpoints: map[string]spec.Endpoint{
+				"submit": {Method: "POST", Path: "/renders", Description: "Submit a render", Response: spec.ResponseDef{Type: "object", Item: "RenderJob"}},
+				"get":    {Method: "GET", Path: "/renders/{id}", Description: "Get a render", Response: spec.ResponseDef{Type: "object", Item: "RenderJob"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	jobsBody := readGeneratedFile(t, outputDir, "internal", "cli", "jobs.go")
+	for _, want := range []string{
+		"Example: `  asyncjobs-pp-cli jobs list --limit 10",
+		"Example:     `  asyncjobs-pp-cli jobs list --limit 10 --json`,",
+		"Example:     `  asyncjobs-pp-cli jobs get example-job-id --json`,",
+		"Example: `  asyncjobs-pp-cli jobs prune --older-than 168h --json`,",
+	} {
+		assert.Contains(t, jobsBody, want)
+	}
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+	for _, args := range [][]string{
+		{"jobs", "--help"},
+		{"jobs", "list", "--help"},
+		{"jobs", "get", "--help"},
+		{"jobs", "prune", "--help"},
+	} {
+		stdout, _ := runGeneratedBinary(t, binaryPath, args...)
+		assert.Contains(t, stdout, "Examples:", "%v help should render an Examples section", args)
+	}
+}
+
 // TestGenerateMCPHandlerPreservesQueryPositionals proves the makeAPIHandler
 // body in generated MCP tools.go distinguishes real URL path placeholders
 // (e.g. /movie/{movieId}) from CLI positional args that map to query

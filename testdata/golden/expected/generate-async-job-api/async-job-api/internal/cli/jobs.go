@@ -237,6 +237,8 @@ the CLI state directory's jobs.jsonl. This command lists, inspects, and prunes t
 
 Submit an async endpoint with --wait to block until completion; submit
 without --wait to get the job ID back immediately and track it later.`,
+		Example: `  async-job-pp-cli jobs list --limit 10
+  async-job-pp-cli jobs get example-job-id --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE:        parentNoSubcommandRunE(flags),
 	}
@@ -252,6 +254,7 @@ func newJobsListCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:         "list",
 		Short:       "List recent async jobs",
+		Example:     `  async-job-pp-cli jobs list --limit 10 --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			rows, err := readJobRows()
@@ -290,6 +293,7 @@ func newJobsGetCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:         "get <job-id>",
 		Short:       "Show the latest state row for a job",
+		Example:     `  async-job-pp-cli jobs get example-job-id --json`,
 		Annotations: map[string]string{"mcp:read-only": "true"},
 		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -319,8 +323,9 @@ func newJobsGetCmd(flags *rootFlags) *cobra.Command {
 func newJobsPruneCmd(flags *rootFlags) *cobra.Command {
 	var olderThan time.Duration
 	cmd := &cobra.Command{
-		Use:   "prune",
-		Short: "Remove job rows older than --older-than",
+		Use:     "prune",
+		Short:   "Remove job rows older than --older-than",
+		Example: `  async-job-pp-cli jobs prune --older-than 168h --json`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			rows, err := readJobRows()
 			if err != nil {
