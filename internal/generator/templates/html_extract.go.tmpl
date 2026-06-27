@@ -223,6 +223,9 @@ func htmlTableRows(table *xhtml.Node) []htmlTableRawRow {
 		if n.Type != xhtml.ElementNode || !strings.EqualFold(n.Data, "tr") {
 			return
 		}
+		if htmlRowBelongsToNestedTable(n, table) {
+			return
+		}
 		var cells []string
 		hasHeader := false
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
@@ -242,6 +245,18 @@ func htmlTableRows(table *xhtml.Node) []htmlTableRawRow {
 		}
 	})
 	return rows
+}
+
+func htmlRowBelongsToNestedTable(row, outerTable *xhtml.Node) bool {
+	for p := row.Parent; p != nil; p = p.Parent {
+		if p == outerTable {
+			return false
+		}
+		if p.Type == xhtml.ElementNode && strings.EqualFold(p.Data, "table") {
+			return true
+		}
+	}
+	return false
 }
 
 func syntheticTableHeaders(count int) []string {

@@ -1006,7 +1006,7 @@ func htmlResponseItem(extract *spec.HTMLExtract) string {
 func inferHTMLExtract(group EndpointGroup) *spec.HTMLExtract {
 	prefixes := inferHTMLLinkPrefixes(group.Entries)
 	mode := spec.HTMLExtractModePage
-	if groupLooksHTMLTable(group) {
+	if strings.EqualFold(group.Method, "POST") && groupLooksHTMLTable(group) {
 		mode = spec.HTMLExtractModeTable
 	} else if len(prefixes) > 0 && !strings.Contains(group.NormalizedPath, "{") {
 		mode = spec.HTMLExtractModeLinks

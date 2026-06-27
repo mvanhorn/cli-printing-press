@@ -163,6 +163,30 @@ func TestAnalyzeCapture_PromotesPostFormHTMLTableFragment(t *testing.T) {
 	require.NoError(t, apiSpec.Validate())
 }
 
+func TestAnalyzeCapture_GetHTMLWithTableStillPrefersLinks(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := AnalyzeCapture(&EnrichedCapture{
+		TargetURL: "https://www.example.com/results",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/products",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<html><body><a href="/products/1">Item 1</a><table><tr><th>Name</th></tr><tr><td>Widget</td></tr></table></body></html>`,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	endpoint, found := findEndpointByPath(apiSpec, "/products")
+	require.True(t, found, "expected GET HTML endpoint")
+	require.NotNil(t, endpoint.HTMLExtract)
+	assert.Equal(t, spec.HTMLExtractModeLinks, endpoint.HTMLExtract.Mode)
+	assert.Equal(t, spec.ResponseDef{Type: "array", Item: "html"}, endpoint.Response)
+}
+
 func TestAnalyzeCapture_ParameterizesCompactSingleSampleIdentifiers(t *testing.T) {
 	t.Parallel()
 

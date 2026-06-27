@@ -128,7 +128,7 @@ func TestGenerateReadOnlyFormHTMLTableEndpoint(t *testing.T) {
 		require.NoError(t, r.ParseForm())
 		assert.Equal(t, "table", r.Form.Get("ajax"))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<table><thead><tr><th>Player</th><th>Salary</th></tr></thead><tbody><tr><td>Ada Lovelace</td><td>$100</td></tr><tr><td>Grace Hopper</td><td>$200</td></tr></tbody></table>`))
+		_, _ = w.Write([]byte(`<table><thead><tr><th>Player</th><th>Salary</th></tr></thead><tbody><tr><td>Ada Lovelace</td><td>$100</td><td><table><tr><td>layout</td><td>ignored</td></tr></table></td></tr><tr><td>Grace Hopper</td><td>$200</td></tr></tbody></table>`))
 	})
 	httpServer := httptest.NewServer(server)
 	t.Cleanup(httpServer.Close)
