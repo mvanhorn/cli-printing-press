@@ -7512,6 +7512,165 @@ paths:
 	assert.Contains(t, warnings, `GET "/referents": x-happy-args must be a string`)
 }
 
+func TestParseLiveDogfoodRequiresTierExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Live Tier API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /streams:
+    x-live-dogfood-requires-tier: streaming
+    get:
+      operationId: listStreams
+      responses:
+        "200":
+          description: OK
+  /enterprise:
+    x-live-dogfood-requires-tier: streaming
+    get:
+      operationId: listEnterprise
+      x-live-dogfood-requires-tier: enterprise
+      responses:
+        "200":
+          description: OK
+  /ordinary:
+    get:
+      operationId: listOrdinary
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	streams := findEndpoint(t, parsed, "/streams")
+	assert.Equal(t, "streaming", streams.LiveDogfoodRequiresTier)
+
+	enterprise := findEndpoint(t, parsed, "/enterprise")
+	assert.Equal(t, "enterprise", enterprise.LiveDogfoodRequiresTier)
+
+	ordinary := findEndpoint(t, parsed, "/ordinary")
+	assert.Empty(t, ordinary.LiveDogfoodRequiresTier)
+}
+
+func TestParseLiveDogfoodRequiresTierExtensionNonStringWarns(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Live Tier API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /streams:
+    get:
+      operationId: listStreams
+      x-live-dogfood-requires-tier: [enterprise]
+      responses:
+        "200":
+          description: OK
+`)
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(yamlSpec)
+	})
+	require.NoError(t, err)
+
+	streams := findEndpoint(t, parsed, "/streams")
+	assert.Empty(t, streams.LiveDogfoodRequiresTier)
+	assert.Contains(t, warnings, `GET "/streams": x-live-dogfood-requires-tier must be a string`)
+}
+
+func TestInferLiveDogfoodTierForStreamingEndpoints(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Streaming API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /tweets/firehose/stream:
+    get:
+      operationId: firehose
+      responses:
+        "200":
+          description: Stream
+          content:
+            application/json:
+              schema: {type: object}
+  /events:
+    get:
+      operationId: events
+      responses:
+        "200":
+          description: Server-sent events
+          content:
+            text/event-stream:
+              schema: {type: string}
+  /stream:
+    post:
+      operationId: createStream
+      responses:
+        "200":
+          description: Not a read stream
+  /reports/streamline:
+    get:
+      operationId: streamline
+      responses:
+        "200":
+          description: Ordinary report
+  /2/stream/events:
+    get:
+      operationId: midPathStream
+      responses:
+        "200":
+          description: Ordinary nested resource
+  /videos/{stream}/details:
+    get:
+      operationId: streamPathParam
+      responses:
+        "200":
+          description: Ordinary path parameter
+  /feeds/stream/:
+    get:
+      operationId: trailingSlashStream
+      responses:
+        "200":
+          description: Stream with trailing slash
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	firehose := findEndpoint(t, parsed, "/tweets/firehose/stream")
+	assert.Equal(t, "streaming", firehose.LiveDogfoodRequiresTier)
+
+	events := findEndpoint(t, parsed, "/events")
+	assert.Equal(t, "streaming", events.LiveDogfoodRequiresTier)
+
+	createStream := findEndpoint(t, parsed, "/stream")
+	assert.Empty(t, createStream.LiveDogfoodRequiresTier)
+
+	streamline := findEndpoint(t, parsed, "/reports/streamline")
+	assert.Empty(t, streamline.LiveDogfoodRequiresTier)
+
+	midPathStream := findEndpoint(t, parsed, "/2/stream/events")
+	assert.Empty(t, midPathStream.LiveDogfoodRequiresTier)
+
+	streamPathParam := findEndpoint(t, parsed, "/videos/{stream}/details")
+	assert.Empty(t, streamPathParam.LiveDogfoodRequiresTier)
+
+	trailingSlashStream := findEndpoint(t, parsed, "/feeds/stream/")
+	assert.Equal(t, "streaming", trailingSlashStream.LiveDogfoodRequiresTier)
+}
+
 func TestParseIDFieldFallbackChain(t *testing.T) {
 	t.Parallel()
 
