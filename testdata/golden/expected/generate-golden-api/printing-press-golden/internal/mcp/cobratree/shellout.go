@@ -51,7 +51,7 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string, blocked
 }
 
 func validateMCPArgumentNames(args map[string]any, allowed map[string]bool) error {
-	if len(args) == 0 || len(allowed) == 0 {
+	if len(args) == 0 {
 		return nil
 	}
 	var unknown []string
@@ -67,7 +67,15 @@ func validateMCPArgumentNames(args map[string]any, allowed map[string]bool) erro
 	if len(unknown) == 1 {
 		return fmt.Errorf("unknown MCP parameter %q; use the tool schema's named parameters", unknown[0])
 	}
-	return fmt.Errorf("unknown MCP parameters %q; use the tool schema's named parameters", strings.Join(unknown, ", "))
+	return fmt.Errorf("unknown MCP parameters %s; use the tool schema's named parameters", quoteMCPParameterNames(unknown))
+}
+
+func quoteMCPParameterNames(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = strconv.Quote(name)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func positionalArgsFromMCP(args map[string]any, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) ([]string, error) {

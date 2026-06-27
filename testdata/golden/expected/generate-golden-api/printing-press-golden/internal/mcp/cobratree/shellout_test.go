@@ -121,6 +121,29 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 	}
 }
 
+func TestValidateMCPArgumentNamesRejectsArgsWhenNoParamsAllowed(t *testing.T) {
+	err := validateMCPArgumentNames(map[string]any{"query": "alpha"}, nil)
+	if err == nil {
+		t.Fatal("validateMCPArgumentNames accepted an unknown arg for a parameter-free command")
+	}
+	if got, want := err.Error(), `unknown MCP parameter "query"; use the tool schema's named parameters`; got != want {
+		t.Fatalf("validateMCPArgumentNames error = %q, want %q", got, want)
+	}
+}
+
+func TestValidateMCPArgumentNamesQuotesEachUnknownArg(t *testing.T) {
+	err := validateMCPArgumentNames(map[string]any{
+		"zeta":  true,
+		"alpha": "x",
+	}, map[string]bool{})
+	if err == nil {
+		t.Fatal("validateMCPArgumentNames accepted unknown args")
+	}
+	if got, want := err.Error(), `unknown MCP parameters "alpha", "zeta"; use the tool schema's named parameters`; got != want {
+		t.Fatalf("validateMCPArgumentNames error = %q, want %q", got, want)
+	}
+}
+
 func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
 	root.PersistentFlags().String("profile", "", "root profile")
