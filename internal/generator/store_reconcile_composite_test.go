@@ -134,6 +134,66 @@ func TestReconcilePartition_CompositeKeyPreservesLiveRows(t *testing.T) {
 		t.Fatalf("stale junction row survived; cascade must delete by the bare resource id")
 	}
 }
+
+// TestReconcilePartition_CompositeKeyCrossParent pins the per-partition
+// invariant that makes the bare-id seen-set test safe even though the same bare
+// id can appear under different parents (composite keys "child\x00A" and
+// "child\x00B"). ReconcilePartition is invoked once per parent — each call gets
+// only that parent's scope (the victim query filters on it) and that parent's
+// seen-set — so a child that is live under A but stale under B is correctly
+// swept in B's partition and kept in A's. The bare-id collision never produces
+// a cross-parent false-negative.
+func TestReconcilePartition_CompositeKeyCrossParent(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+	db := s.DB()
+
+	const childA = "child\x00A"
+	const childB = "child\x00B"
+	for _, r := range []struct{ id, data string }{
+		{childA, ` + "`" + `{"id":"child","scope":"A"}` + "`" + `},
+		{childB, ` + "`" + `{"id":"child","scope":"B"}` + "`" + `},
+	} {
+		if _, err := db.Exec(
+			` + "`" + `INSERT INTO resources (resource_type, id, data) VALUES (?, ?, ?)` + "`" + `,
+			"things", r.id, r.data,
+		); err != nil {
+			t.Fatalf("insert %q: %v", r.id, err)
+		}
+	}
+
+	cnt := func(id string) int {
+		var n int
+		if err := db.QueryRow(` + "`" + `SELECT COUNT(*) FROM resources WHERE id=?` + "`" + `, id).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+
+	// Partition B: B's live items do NOT include child (it was removed under B).
+	delB, err := s.ReconcilePartition("things", "$.scope", "B", []string{"other"}, "things", nil)
+	if err != nil {
+		t.Fatalf("reconcile B: %v", err)
+	}
+	// Partition A: child is still live under A.
+	delA, err := s.ReconcilePartition("things", "$.scope", "A", []string{"child"}, "things", nil)
+	if err != nil {
+		t.Fatalf("reconcile A: %v", err)
+	}
+
+	if cnt(childB) != 0 {
+		t.Fatalf("child under stale parent B survived; per-parent reconcile must sweep it (no cross-parent false-negative)")
+	}
+	if cnt(childA) != 1 {
+		t.Fatalf("child under live parent A deleted; it must be kept")
+	}
+	if delB != 1 || delA != 0 {
+		t.Fatalf("delB=%d delA=%d, want 1 and 0", delB, delA)
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "store", "reconcile_composite_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
@@ -141,5 +201,5 @@ func TestReconcilePartition_CompositeKeyPreservesLiveRows(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
 	// MUST fail before the template fix (live row mis-deleted, cascade orphan) and
 	// pass after.
-	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "TestReconcilePartition_CompositeKeyPreservesLiveRows", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "TestReconcilePartition_CompositeKey", "-count=1")
 }
