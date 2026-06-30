@@ -395,7 +395,7 @@ func TestPrintingPressSkillRoutesNovelFeatureDescriptionFixesThroughResearchJSON
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	skillReview := substringBetween(t, skill, "## Phase 4.8: Agentic SKILL Review", "## Phase 4.9: README/SKILL/AGENTS Correctness Audit")
 	docsReview := substringBetween(t, skill, "## Phase 4.9: README/SKILL/AGENTS Correctness Audit", "## Phase 4.85: Agentic Output Review")
-	codeReview := substringBetween(t, skill, "## Phase 4.95: Local Code Review", "**Native timeout-boundary check.**")
+	codeReview := substringUntilNextHeader(t, skill, "## Phase 4.95: Local Code Review", "##")
 
 	for name, block := range map[string]string{
 		"skill review": skillReview,
@@ -405,6 +405,7 @@ func TestPrintingPressSkillRoutesNovelFeatureDescriptionFixesThroughResearchJSON
 		t.Run(name, func(t *testing.T) {
 			assert.Contains(t, block, "research.json")
 			assert.Contains(t, block, "novel_features[].description")
+			assert.Contains(t, block, "novel_features[].narrative")
 			assert.Contains(t, block, "novel_features_built")
 			assert.Contains(t, block, `README "Unique Features"`)
 			assert.Contains(t, block, `SKILL "Unique Capabilities"`)
@@ -1022,6 +1023,19 @@ func extractContractBlock(t *testing.T, content string) string {
 
 	endIdx := strings.Index(content[startIdx:], end)
 	require.NotEqual(t, -1, endIdx, "missing contract end marker")
+
+	return content[startIdx : startIdx+endIdx]
+}
+
+func substringUntilNextHeader(t *testing.T, content, start, headerPrefix string) string {
+	t.Helper()
+
+	startIdx := strings.Index(content, start)
+	require.NotEqual(t, -1, startIdx, "missing start marker %q", start)
+	startIdx += len(start)
+
+	endIdx := strings.Index(content[startIdx:], "\n"+headerPrefix+" ")
+	require.NotEqual(t, -1, endIdx, "missing next header after %q", start)
 
 	return content[startIdx : startIdx+endIdx]
 }
