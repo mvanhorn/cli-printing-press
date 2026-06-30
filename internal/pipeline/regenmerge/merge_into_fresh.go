@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -231,6 +232,10 @@ func preserveLegacyCLIRootVersionLayout(snapshotDir, freshDir string, report *Me
 }
 
 func preserveMCPMainVersionValues(snapshotDir, freshDir string, report *MergeReport) error {
+	rootVersionLiteral, rootHasVersion, err := readStringVarLiteral(filepath.Join(snapshotDir, "internal", "cli", "root.go"), "version")
+	if err != nil {
+		return err
+	}
 	for _, fc := range report.Files {
 		rel := filepath.ToSlash(fc.Path)
 		if !strings.HasPrefix(rel, "cmd/") || !strings.HasSuffix(rel, "-pp-mcp/main.go") {
@@ -240,9 +245,6 @@ func preserveMCPMainVersionValues(snapshotDir, freshDir string, report *MergeRep
 		if err != nil {
 			return err
 		}
-		if !ok {
-			continue
-		}
 		freshPath := filepath.Join(freshDir, rel)
 		if _, err := os.Stat(freshPath); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -250,7 +252,24 @@ func preserveMCPMainVersionValues(snapshotDir, freshDir string, report *MergeRep
 			}
 			return err
 		}
-		if err := replaceStringVarLiteral(freshPath, "version", literal); err != nil {
+		if ok {
+			if err := replaceStringVarLiteral(freshPath, "version", literal); err != nil {
+				return err
+			}
+			continue
+		}
+		if rootHasVersion {
+			literal = rootVersionLiteral
+		} else {
+			literal, ok, err = readStringVarLiteral(freshPath, "version")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+		}
+		if err := inlineStringVarReferencesAndRemove(freshPath, "version", literal); err != nil {
 			return err
 		}
 	}
@@ -403,6 +422,64 @@ func appendGoSource(path, src string) error {
 	next := trailingWhitespaceRE.ReplaceAll(data, nil)
 	next = append(next, []byte("\n\n"+strings.TrimSpace(src)+"\n")...)
 	return writeFileAtomic(path, next)
+}
+
+func inlineStringVarReferencesAndRemove(path, name, literal string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, data, parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+
+	declNameOffsets := map[int]struct{}{}
+	var references []int
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			valueSpec, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, ident := range valueSpec.Names {
+				if ident.Name == name {
+					declNameOffsets[fset.Position(ident.Pos()).Offset] = struct{}{}
+				}
+			}
+		}
+	}
+
+	ast.Inspect(file, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if !ok || ident.Name != name {
+			return true
+		}
+		offset := fset.Position(ident.Pos()).Offset
+		if _, isDeclName := declNameOffsets[offset]; isDeclName {
+			return true
+		}
+		references = append(references, offset)
+		return true
+	})
+	if len(references) == 0 {
+		return pruneDeclsFromGoFile(path, declSet{name: struct{}{}})
+	}
+
+	next := append([]byte{}, data...)
+	sort.Sort(sort.Reverse(sort.IntSlice(references)))
+	for _, offset := range references {
+		next = append(next[:offset], append([]byte(literal), next[offset+len(name):]...)...)
+	}
+	if err := writeFileAtomic(path, next); err != nil {
+		return err
+	}
+	return pruneDeclsFromGoFile(path, declSet{name: struct{}{}})
 }
 
 // pruneFreshDeclCollisions removes declarations from fresh-owned Go files when
