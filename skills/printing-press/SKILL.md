@@ -3857,6 +3857,18 @@ Use the Agent tool (general-purpose or a dedicated reviewer) with this prompt co
 >
 > Return a list of findings. For each: check name, severity (error/warning), line number, one-sentence fix. If SKILL passes all seven checks, return "PASS — no findings."
 
+**Description source-of-truth fix path.** When a finding says a novel-feature
+description, capability summary, or surrounding narrative content is inaccurate,
+fix the source text in `$RESEARCH_DIR/research.json`
+(`novel_features[].description`, `novel_features[].narrative`, or the matching
+`novel_features_built` entry) and regenerate/sync from there. Do not patch only
+README.md or SKILL.md for content-level description fixes: the same description
+fans out to README "Unique Features", SKILL "Unique Capabilities",
+`internal/cli/root.go` Highlights, `internal/cli/which.go`,
+`internal/mcp/tools.go`, and `.printing-press.json`. Flag, command, auth,
+example, and structural findings that are not generated from research.json keep
+their current local fix path.
+
 ### Gate
 
 - If the reviewer returns PASS, proceed to Phase 5.
@@ -3894,6 +3906,18 @@ Use the Agent tool or review directly with this prompt contract:
 >
 > Return findings with file, line, severity, and fix. If both files are correct, return `PASS — README/SKILL correctness verified`.
 
+**Description source-of-truth fix path.** When a finding says a novel-feature
+description, capability summary, or surrounding narrative content is inaccurate,
+fix the source text in `$RESEARCH_DIR/research.json`
+(`novel_features[].description`, `novel_features[].narrative`, or the matching
+`novel_features_built` entry) and regenerate/sync from there. Do not patch only
+README.md, SKILL.md, or AGENTS.md for content-level description fixes: the same
+description fans out to README "Unique Features", SKILL "Unique Capabilities",
+`internal/cli/root.go` Highlights, `internal/cli/which.go`,
+`internal/mcp/tools.go`, and `.printing-press.json`. Flag, command, auth,
+example, and structural findings that are not generated from research.json keep
+their current local fix path.
+
 **Gate:** Any error finding is fix-before-Phase-5. Warnings may proceed only when they are explicitly explained in the acceptance report.
 
 ## Phase 4.85: Agentic Output Review
@@ -3918,6 +3942,16 @@ The sub-skill carries `context: fork` so the reviewer agent's diagnostic chatter
 **Runs after Phase 4.85, before Phase 5.** Reviews the printed CLI source for security and correctness issues *before* any PR exists. This is the cheapest fix window in the pipeline — session context is hot, no PR feedback round-trip, no CI comments to chase. Catching issues here means they never become PR-time review comments, which is the wrong fix window for the same problems.
 
 **Target.** The generated CLI and MCP source under `$CLI_WORK_DIR`. In scope: `internal/cli/`, `internal/mcp/` (excluding `cobratree/`), `internal/store/`, `internal/client/`, and `cmd/`. **Out of scope:** `internal/cliutil/` and `internal/mcp/cobratree/` — these are generator-reserved packages. Any finding there is a machine bug; route to retro, do not patch in place.
+
+**Generated description source-of-truth.** If review flags inaccurate
+novel-feature description text in generated code surfaces such as
+`internal/cli/root.go` Highlights, `internal/cli/which.go`, or
+`internal/mcp/tools.go`, do not patch those files directly. Fix the source text
+in `$RESEARCH_DIR/research.json` (`novel_features[].description`,
+`novel_features[].narrative`, or the matching `novel_features_built` entry) and
+regenerate/sync so README "Unique Features", SKILL "Unique Capabilities",
+root help Highlights, which output, MCP tools, and `.printing-press.json` stay
+aligned. Non-description code findings keep the normal Phase 4.95 autofix path.
 
 **Native timeout-boundary check.** Before reviewer dispatch, scan every hand-written file under `internal/cli/` that imports a sibling internal package (`internal/<api>/`, `internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc.) and makes live requests. Each such command file must call `boundCtx(cmd.Context(), flags)` and pass that context into the sibling client or store query path before the first request. Files that only use `flags.newClient()` / generated `internal/client` are already covered by `client.New(cfg, flags.timeout, ...)` and should not be flagged for missing `boundCtx`.
 
