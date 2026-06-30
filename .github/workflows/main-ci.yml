@@ -207,19 +207,19 @@ jobs:
           # No -short: main-ci is the full-coverage gate, unlike lint.yml's
           # fast -short shards.
           if [[ "$run_partition" == "true" ]]; then
-            mapfile -t selected_tests < <(
-              go test -list '^(Test|Example)' "${packages[0]}" |
-                python3 -c 'import hashlib, sys; idx = int(sys.argv[1]); total = int(sys.argv[2]); [print(name) for name in (line.strip() for line in sys.stdin) if name.startswith(("Test", "Example")) and int(hashlib.sha256(name.encode()).hexdigest(), 16) % total == idx]' "$shard_index" "$shard_total"
-            )
-            if [[ "${#selected_tests[@]}" -eq 0 ]]; then
+            test_list=/tmp/go-test-list.txt
+            selected_list=/tmp/go-test-selected.txt
+            go test -list '^(Test|Example)' "${packages[0]}" > "$test_list"
+            python3 -c 'import hashlib, sys; idx = int(sys.argv[1]); total = int(sys.argv[2]); [print(name) for name in (line.strip() for line in sys.stdin) if name.startswith(("Test", "Example")) and int(hashlib.sha256(name.encode()).hexdigest(), 16) % total == idx]' "$shard_index" "$shard_total" < "$test_list" > "$selected_list"
+            selected_count="$(awk 'NF { count++ } END { print count + 0 }' "$selected_list")"
+            if [[ "$selected_count" -eq 0 ]]; then
               echo "No tests selected for shard ${{ matrix.shard }}."
               exit 0
             fi
             pattern="$(
-              printf '%s\n' "${selected_tests[@]}" |
-                python3 -c 'import re, sys; names = [line.strip() for line in sys.stdin if line.strip()]; print("^(" + "|".join(re.escape(name) for name in names) + ")$")'
+              python3 -c 'import re, sys; names = [line.strip() for line in sys.stdin if line.strip()]; print("^(" + "|".join(re.escape(name) for name in names) + ")$")' < "$selected_list"
             )"
-            echo "Selected ${#selected_tests[@]} top-level tests for shard ${{ matrix.shard }}."
+            echo "Selected $selected_count top-level tests for shard ${{ matrix.shard }}."
             set +e
             go test -json -timeout 15m -run "$pattern" "${packages[@]}" 2>&1 | tee /tmp/go-test.json
             status=${PIPESTATUS[0]}
