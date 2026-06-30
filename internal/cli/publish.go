@@ -86,6 +86,8 @@ type RenameResult struct {
 	Error         string `json:"error,omitempty"`
 }
 
+var runValidationForPublishPackage = runValidation
+
 func newPublishRenameCmd() *cobra.Command {
 	var dir string
 	var oldName string
@@ -269,7 +271,7 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 
 			// Re-validate before packaging
-			vResult := runValidation(dir)
+			vResult := runValidationForPublishPackage(dir)
 			if !vResult.Passed {
 				if asJSON {
 					enc := json.NewEncoder(os.Stdout)

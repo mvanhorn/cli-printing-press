@@ -5,10 +5,11 @@ name: Main CI
 # trigger lets a branch protection rule require the stable build-and-test check
 # with "Require branches to be up to date before merging" enabled.
 #
-# The existing CI in lint.yml runs sharded, change-gated tests to keep PR
-# turnaround fast. This workflow is intentionally redundant as a single
-# load-bearing signal branch protection can pin against. Its expensive work is
-# split across parallel jobs, then folded into the stable build-and-test check.
+# For main-targeted PRs, lint.yml delegates duplicate Go/generated tests here
+# and keeps the faster lint/docs checks. This workflow is the load-bearing
+# build/test/golden/generated-output signal branch protection can pin against.
+# Its expensive work is split across parallel jobs, then folded into the stable
+# build-and-test check.
 on:
   push:
     branches: [main]
@@ -71,7 +72,6 @@ jobs:
                   needs_build=true
                   needs_tests=true
                   needs_golden=true
-                  needs_generated_output=true
                   ;;
                 *.go|go.mod|go.sum|cmd/*|internal/*)
                   needs_build=true
@@ -92,7 +92,7 @@ jobs:
               esac
 
               case "$file" in
-                .github/workflows/main-ci.yml|scripts/verify-generator-output.sh|cmd/*|internal/generator/*|internal/openapi/*|testdata/golden/cases/generate-*|testdata/golden/fixtures/*|go.mod|go.sum)
+                scripts/verify-generator-output.sh|cmd/*|internal/generator/*|internal/openapi/*|testdata/golden/cases/generate-*|testdata/golden/fixtures/*|go.mod|go.sum)
                   needs_generated_output=true
                   ;;
               esac
@@ -119,7 +119,9 @@ jobs:
     name: full-build
     runs-on: ubuntu-latest
     needs: classify
-    if: needs.classify.outputs.needs_build == 'true'
+    # Full tests compile every package already, so keep the standalone build
+    # only for future scopes that need build proof without running tests.
+    if: needs.classify.outputs.needs_build == 'true' && needs.classify.outputs.needs_tests != 'true'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -141,19 +143,18 @@ jobs:
     needs: classify
     if: needs.classify.outputs.needs_tests == 'true'
     timeout-minutes: 20
-    # Shard the full (non-short) suite across the same package partition
-    # lint.yml uses so the queue's speculative re-run isn't pinned to one
-    # ~12m unsharded job. The union of the four shards is `go test ./...`;
-    # sharding by package is semantically identical because `go test`
-    # already runs each package in its own binary. fail-fast: false so one
-    # shard's failure still reports the others. The aggregate result feeds
-    # `build-and-test` via needs.full-test.result, so the required check
-    # name is unchanged.
+    # Shard the full (non-short) suite across package partitions, then split
+    # the slow single-package generator shard by top-level test name. The
+    # aggregate result feeds `build-and-test` via needs.full-test.result, so
+    # the required check name is unchanged.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - shard: generator
+          - shard: generator-0
+          - shard: generator-1
+          - shard: generator-2
+          - shard: generator-3
           - shard: pipeline
           - shard: cli
           - shard: rest
@@ -173,9 +174,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          run_partition=false
+          shard_index=0
+          shard_total=1
+
           case "${{ matrix.shard }}" in
-            generator)
-              packages=(./internal/generator/...)
+            generator-*)
+              packages=(./internal/generator)
+              run_partition=true
+              shard_index="${{ matrix.shard }}"
+              shard_index="${shard_index#generator-}"
+              shard_total=4
               ;;
             pipeline)
               packages=(./internal/pipeline/...)
@@ -197,7 +206,55 @@ jobs:
 
           # No -short: main-ci is the full-coverage gate, unlike lint.yml's
           # fast -short shards.
-          go test -timeout 15m "${packages[@]}"
+          if [[ "$run_partition" == "true" ]]; then
+            test_list=/tmp/go-test-list.txt
+            selected_list=/tmp/go-test-selected.txt
+            go test -list '^(Test|Example)' "${packages[0]}" > "$test_list"
+            python3 -c 'import hashlib, sys; idx = int(sys.argv[1]); total = int(sys.argv[2]); [print(name) for name in (line.strip() for line in sys.stdin) if name.startswith(("Test", "Example")) and int(hashlib.sha256(name.encode()).hexdigest(), 16) % total == idx]' "$shard_index" "$shard_total" < "$test_list" > "$selected_list"
+            selected_count="$(awk 'NF { count++ } END { print count + 0 }' "$selected_list")"
+            if [[ "$selected_count" -eq 0 ]]; then
+              echo "No tests selected for shard ${{ matrix.shard }}."
+              exit 0
+            fi
+            pattern="$(
+              python3 -c 'import re, sys; names = [line.strip() for line in sys.stdin if line.strip()]; print("^(" + "|".join(re.escape(name) for name in names) + ")$")' < "$selected_list"
+            )"
+            echo "Selected $selected_count top-level tests for shard ${{ matrix.shard }}."
+            set +e
+            go test -json -timeout 15m -run "$pattern" "${packages[@]}" 2>&1 | tee /tmp/go-test.json
+            status=${PIPESTATUS[0]}
+            set -e
+          else
+            set +e
+            go test -json -timeout 15m "${packages[@]}" 2>&1 | tee /tmp/go-test.json
+            status=${PIPESTATUS[0]}
+            set -e
+          fi
+
+          python3 - /tmp/go-test.json <<'PY'
+          import json
+          import sys
+
+          packages = {}
+          tests = 0
+          with open(sys.argv[1]) as events:
+              for line in events:
+                  try:
+                      event = json.loads(line)
+                  except Exception:
+                      continue
+                  if event.get("Action") == "pass" and event.get("Test"):
+                      tests += 1
+                  if event.get("Action") in {"pass", "fail"} and event.get("Test") is None:
+                      packages[event["Package"]] = event.get("Elapsed", 0)
+
+          print("Slowest Go packages:")
+          for pkg, elapsed in sorted(packages.items(), key=lambda item: -item[1])[:15]:
+              print(f"{elapsed:6.1f}s {pkg}")
+          print(f"test_pass_events {tests}")
+          PY
+
+          exit "$status"
 
   full-golden:
     name: full-golden
@@ -257,7 +314,7 @@ jobs:
             echo "change classification failed or was cancelled."
             exit 1
           fi
-          if [[ "${{ needs.classify.outputs.needs_build }}" == "true" && "${{ needs.full-build.result }}" != "success" ]]; then
+          if [[ "${{ needs.classify.outputs.needs_build }}" == "true" && "${{ needs.classify.outputs.needs_tests }}" != "true" && "${{ needs.full-build.result }}" != "success" ]]; then
             echo "full-build failed or was cancelled."
             exit 1
           fi
@@ -275,7 +332,7 @@ jobs:
           fi
 
           echo "Full-suite scope:"
-          echo "  build=${{ needs.classify.outputs.needs_build }} result=${{ needs.full-build.result }}"
+          echo "  build=${{ needs.classify.outputs.needs_build }} result=${{ needs.full-build.result }} (covered by full-test when tests=true)"
           echo "  tests=${{ needs.classify.outputs.needs_tests }} result=${{ needs.full-test.result }}"
           echo "  golden=${{ needs.classify.outputs.needs_golden }} result=${{ needs.full-golden.result }}"
           echo "  generated-output=${{ needs.classify.outputs.needs_generated_output }} result=${{ needs.generated_output_compile.result }}"

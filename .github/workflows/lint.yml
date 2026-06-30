@@ -111,6 +111,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ "${{ github.base_ref }}" == "main" ]]; then
+            echo "Delegating Go tests to Main CI for main-targeted PRs."
+            echo "needs_tests=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           git fetch --no-tags --prune origin "${{ github.base_ref }}"
           mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
 
@@ -218,7 +224,7 @@ jobs:
       - name: Skip Go tests
         if: needs.test-changes.outputs.needs_tests != 'true'
         run: |
-          echo "Skipping Go tests: no Go, module, CI workflow, script, or testdata changes."
+          echo "Skipping Go tests in CI: no relevant changes, or this main-targeted PR is covered by Main CI."
 
       - name: Check test shards
         if: needs.test-changes.outputs.needs_tests == 'true'
@@ -246,6 +252,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          if [[ "${{ github.base_ref }}" == "main" ]]; then
+            echo "Delegating generated compile tests to Main CI for main-targeted PRs."
+            echo "needs_full=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           git fetch --no-tags --prune origin "${{ github.base_ref }}"
           mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
@@ -345,7 +357,7 @@ jobs:
       - name: Skip generated compile tests
         if: needs.generated-test-changes.outputs.needs_full != 'true'
         run: |
-          echo "Skipping generated compile tests: no generator, parser, pipeline, CLI, module, workflow, or testdata changes."
+          echo "Skipping generated compile tests in CI: no relevant changes, or this main-targeted PR is covered by Main CI."
 
       - name: Check generated compile shards
         if: needs.generated-test-changes.outputs.needs_full == 'true'
