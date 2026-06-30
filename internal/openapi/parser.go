@@ -5459,7 +5459,11 @@ func readExampleExtension(extensions map[string]any, context string) string {
 	// synthesized examples carry a leading two-space indent. Normalize the
 	// authored value to the same indent so x-pp-example renders identically
 	// whether or not the author included the leading spaces.
-	return "  " + trimmed
+	lines := strings.Split(trimmed, "\n")
+	for i, line := range lines {
+		lines[i] = "  " + strings.TrimLeft(line, " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func readLiveDogfoodTierExtension(extensions map[string]any, context string) string {

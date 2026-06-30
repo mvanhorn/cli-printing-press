@@ -347,7 +347,8 @@ Rules:
   byte-for-byte.
 - Operation-level only. The value is the full invocation including the binary
   name (`<api-slug>-pp-cli <command> <args>`); the parser normalizes it to the
-  canonical two-space indent, so authors may omit the leading spaces.
+  canonical two-space indent on each line, so authors may omit the leading
+  spaces.
 - Use it instead of marking a param `required` to force it into the example —
   marking it required would also make the generated CLI flag mandatory, which a
   one-of endpoint must not be.

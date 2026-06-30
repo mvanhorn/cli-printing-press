@@ -7505,6 +7505,36 @@ paths:
 	require.Empty(t, songs.Example)
 }
 
+func TestParseExampleExtensionNormalizesBlockScalarLines(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: PP Example Block
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /channel:
+    get:
+      operationId: getChannel
+      x-pp-example: |
+        pp-example-pp-cli channel --handle mkbhd
+          pp-example-pp-cli channel --url https://example.com/channel/mkbhd
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	channel := findEndpoint(t, parsed, "/channel")
+	require.Equal(t, strings.Join([]string{
+		"  pp-example-pp-cli channel --handle mkbhd",
+		"  pp-example-pp-cli channel --url https://example.com/channel/mkbhd",
+	}, "\n"), channel.Example)
+}
+
 func TestParseExampleExtensionWhitespaceOnly(t *testing.T) {
 	t.Parallel()
 
