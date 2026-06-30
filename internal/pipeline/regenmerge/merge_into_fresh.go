@@ -430,12 +430,13 @@ func inlineStringVarReferencesAndRemove(path, name, literal string) error {
 		return err
 	}
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, data, parser.SkipObjectResolution)
+	file, err := parser.ParseFile(fset, path, data, 0)
 	if err != nil {
 		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 
 	declNameOffsets := map[int]struct{}{}
+	targetObjects := map[*ast.Object]struct{}{}
 	var references []int
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -450,9 +451,15 @@ func inlineStringVarReferencesAndRemove(path, name, literal string) error {
 			for _, ident := range valueSpec.Names {
 				if ident.Name == name {
 					declNameOffsets[fset.Position(ident.Pos()).Offset] = struct{}{}
+					if ident.Obj != nil {
+						targetObjects[ident.Obj] = struct{}{}
+					}
 				}
 			}
 		}
+	}
+	if len(targetObjects) == 0 {
+		return nil
 	}
 
 	ast.Inspect(file, func(node ast.Node) bool {
@@ -462,6 +469,9 @@ func inlineStringVarReferencesAndRemove(path, name, literal string) error {
 		}
 		offset := fset.Position(ident.Pos()).Offset
 		if _, isDeclName := declNameOffsets[offset]; isDeclName {
+			return true
+		}
+		if _, matchesTarget := targetObjects[ident.Obj]; !matchesTarget {
 			return true
 		}
 		references = append(references, offset)

@@ -171,6 +171,8 @@ var version = "0.0.0-dev"
 `), nil, 1)
 	mcpMain = bytes.Replace(mcpMain, []byte("\t\tversion,\n"), []byte("\t\t\"2026.6.1\",\n"), 1)
 	require.NoError(t, os.WriteFile(mcpMainPath, mcpMain, 0o644))
+	require.NotContains(t, string(mcpMain), `var version =`,
+		"legacy MCP fixture must strip the generated version var before the second generate")
 
 	runGenerate()
 

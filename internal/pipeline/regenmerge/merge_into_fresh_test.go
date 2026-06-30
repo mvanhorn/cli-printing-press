@@ -209,6 +209,42 @@ func main() {
 	assert.Contains(t, string(got), `_ = "2.0.0"`)
 }
 
+func TestInlineStringVarReferencesAndRemoveSkipsLocalBindings(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	require.NoError(t, os.WriteFile(path, []byte(`package main
+
+var version = "0.0.0-dev"
+
+func mcpVersion() string { return "local" }
+
+func localParameter(version string) string {
+	return version
+}
+
+func localShortDecl() string {
+	version := mcpVersion()
+	return version
+}
+
+func main() {
+	_ = version
+}
+`), 0o644))
+
+	require.NoError(t, inlineStringVarReferencesAndRemove(path, "version", `"1.2.3"`))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	gotSrc := string(got)
+	assert.NotContains(t, gotSrc, `var version =`)
+	assert.Contains(t, gotSrc, `func localParameter(version string) string`)
+	assert.Contains(t, gotSrc, `version := mcpVersion()`)
+	assert.Contains(t, gotSrc, `_ = "1.2.3"`)
+}
+
 func TestMergeIntoFreshTreePrunesOnlyCollidingNameFromMultiNameValueSpec(t *testing.T) {
 	t.Parallel()
 
