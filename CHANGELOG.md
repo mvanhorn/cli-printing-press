@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.27.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.27.0...v4.27.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* **cli:** add examples to jobs commands ([#3356](https://github.com/mvanhorn/cli-printing-press/issues/3356)) ([a264fd5](https://github.com/mvanhorn/cli-printing-press/commit/a264fd5eae790ea66a7769e0fe42b940ec8de9b4))
+* **cli:** emit live dogfood tier annotations ([#3355](https://github.com/mvanhorn/cli-printing-press/issues/3355)) ([1f65658](https://github.com/mvanhorn/cli-printing-press/commit/1f6565860a98c69eee20d993a5b5fe9202c942b0))
+* **cli:** preserve reprint runtime version layout ([#3389](https://github.com/mvanhorn/cli-printing-press/issues/3389)) ([39fa634](https://github.com/mvanhorn/cli-printing-press/commit/39fa63410ea6b3c7d5ac04b926897864c7e84776))
+* **skills:** route description review fixes through research ([#3386](https://github.com/mvanhorn/cli-printing-press/issues/3386)) ([4407f1a](https://github.com/mvanhorn/cli-printing-press/commit/4407f1a899efd8c9e0e13570e64dc80eb5d28761))
+
+
+### Code Refactoring
+
+* **cli:** remove embedded catalog ([#3385](https://github.com/mvanhorn/cli-printing-press/issues/3385)) ([74fcff8](https://github.com/mvanhorn/cli-printing-press/commit/74fcff8ddc06e21925829096849ad07df7ca31b0))
+
 ## [4.27.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.26.1...v4.27.0) (2026-06-27)
 
 
