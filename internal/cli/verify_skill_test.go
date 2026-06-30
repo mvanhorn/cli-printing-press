@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -944,17 +945,35 @@ func writeVerifySkillFixture(t *testing.T, dir string, files map[string]string, 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"fixture-pp-cli"}`), 0o644))
 }
 
-// buildPrintingPressBinary compiles the printing-press binary into a test
-// tempdir and returns its path. Built once per test because each test's
-// TempDir is fresh; Go's test cache ensures the compile is fast.
+var (
+	printingPressBinaryOnce sync.Once
+	printingPressBinaryPath string
+	printingPressBinaryErr  error
+)
+
+// buildPrintingPressBinary compiles the printing-press binary once for this
+// package's verify-skill subprocess tests and returns its path.
 func buildPrintingPressBinary(t *testing.T) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "printing-press")
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/cli-printing-press")
-	// The test runs from internal/cli; go up to repo root.
-	cmd.Dir = "../.."
-	if buildOut, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building printing-press: %v\n%s", err, string(buildOut))
-	}
-	return out
+
+	printingPressBinaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "printing-press-test-bin-*")
+		if err != nil {
+			printingPressBinaryErr = err
+			return
+		}
+
+		out := filepath.Join(dir, "printing-press")
+		cmd := exec.Command("go", "build", "-o", out, "./cmd/cli-printing-press")
+		// The test runs from internal/cli; go up to repo root.
+		cmd.Dir = "../.."
+		if buildOut, err := cmd.CombinedOutput(); err != nil {
+			printingPressBinaryErr = fmt.Errorf("building printing-press: %w\n%s", err, string(buildOut))
+			return
+		}
+		printingPressBinaryPath = out
+	})
+
+	require.NoError(t, printingPressBinaryErr)
+	return printingPressBinaryPath
 }

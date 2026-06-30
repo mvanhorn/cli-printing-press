@@ -16,10 +16,17 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        if: github.event.pull_request.base.ref != 'main'
         with:
           fetch-depth: 0
 
+      - name: Golden verification delegated to Main CI
+        if: github.event.pull_request.base.ref == 'main'
+        run: |
+          echo "Golden verification for pull requests targeting main runs in Main CI's full-golden job."
+
       - name: Check whether golden verification is needed
+        if: github.event.pull_request.base.ref != 'main'
         id: changes
         shell: bash
         run: |
@@ -44,23 +51,23 @@ jobs:
           echo "needs_golden=$needs_golden" >> "$GITHUB_OUTPUT"
 
       - name: Skip golden verification
-        if: steps.changes.outputs.needs_golden != 'true'
+        if: github.event.pull_request.base.ref != 'main' && steps.changes.outputs.needs_golden != 'true'
         run: |
           echo "Skipping golden verification: no generator, CLI, golden fixture, module, or golden workflow files changed."
 
       - uses: actions/setup-go@v6
-        if: steps.changes.outputs.needs_golden == 'true'
+        if: github.event.pull_request.base.ref != 'main' && steps.changes.outputs.needs_golden == 'true'
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
 
       - name: Verify golden outputs
-        if: steps.changes.outputs.needs_golden == 'true'
+        if: github.event.pull_request.base.ref != 'main' && steps.changes.outputs.needs_golden == 'true'
         run: scripts/golden.sh verify
 
       - name: Dump golden diffs on failure
-        if: failure() && steps.changes.outputs.needs_golden == 'true'
+        if: failure() && github.event.pull_request.base.ref != 'main' && steps.changes.outputs.needs_golden == 'true'
         run: |
           echo "::group::Golden diff content"
           find .gotmp/golden/actual -name '*.diff' -print -exec cat {} \;

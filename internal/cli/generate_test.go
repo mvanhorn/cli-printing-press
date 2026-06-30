@@ -3851,6 +3851,12 @@ func TestApplyResearchAuthMetadataRejectsUnsafeCanonicalEnvVars(t *testing.T) {
 
 func runGoCommandForCLITest(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	if testing.Short() && len(args) > 0 {
+		if args[0] == "build" || (len(args) >= 2 && args[0] == "mod" && args[1] == "tidy") {
+			t.Logf("skipping go %s in -short mode; full CI runs generated CLI compile coverage", strings.Join(args, " "))
+			return
+		}
+	}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
