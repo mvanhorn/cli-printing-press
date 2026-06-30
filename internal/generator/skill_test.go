@@ -349,7 +349,7 @@ func TestCompactDescriptionPrefersCLIShapedCopy(t *testing.T) {
 	assert.NotContains(t, string(goreleaser), "# Introduction")
 }
 
-func TestCatalogDescriptionPreservesCompleteLongCopy(t *testing.T) {
+func TestManifestDescriptionPreservesCompleteLongCopy(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("longcopy")
@@ -357,10 +357,10 @@ func TestCatalogDescriptionPreservesCompleteLongCopy(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "longcopy-pp-cli")
 	gen := New(apiSpec, outputDir)
 
-	assert.Equal(t, apiSpec.CLIDescription, gen.CatalogDescription())
+	assert.Equal(t, apiSpec.CLIDescription, gen.ManifestDescription())
 }
 
-func TestCatalogDescriptionSkipsLiteralEllipsisCandidates(t *testing.T) {
+func TestManifestDescriptionSkipsLiteralEllipsisCandidates(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("longcopy")
@@ -368,7 +368,7 @@ func TestCatalogDescriptionSkipsLiteralEllipsisCandidates(t *testing.T) {
 	apiSpec.Description = "Complete fallback sentence."
 	gen := New(apiSpec, filepath.Join(t.TempDir(), "longcopy-pp-cli"))
 
-	assert.Equal(t, "Complete fallback sentence.", gen.CatalogDescription())
+	assert.Equal(t, "Complete fallback sentence.", gen.ManifestDescription())
 }
 
 // TestSkillRendersAuthBranchPerType asserts the deterministic Auth Setup

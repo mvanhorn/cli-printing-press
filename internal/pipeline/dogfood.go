@@ -2544,9 +2544,9 @@ func checkDescriptionDrift(cliDir, researchDir string) DescriptionDriftResult {
 	if err != nil || research.Narrative == nil {
 		return DescriptionDriftResult{Skipped: true}
 	}
-	expected := naming.CatalogDescription(research.Narrative.Headline)
+	expected := naming.ManifestDescription(research.Narrative.Headline)
 	if expected == "" {
-		expected = naming.CatalogDescription(research.Narrative.ValueProp)
+		expected = naming.ManifestDescription(research.Narrative.ValueProp)
 	}
 	if expected == "" {
 		return DescriptionDriftResult{Skipped: true}
@@ -2609,8 +2609,8 @@ func readRootShort(path string) (string, bool) {
 }
 
 func descriptionSurfaceMatches(actual, expected string) bool {
-	actual = strings.ToLower(naming.CatalogDescription(actual))
-	expected = strings.ToLower(naming.CatalogDescription(expected))
+	actual = strings.ToLower(naming.ManifestDescription(actual))
+	expected = strings.ToLower(naming.ManifestDescription(expected))
 	if actual == "" || expected == "" {
 		return true
 	}

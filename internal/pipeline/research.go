@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
 )
 
@@ -249,28 +247,17 @@ type Alternative struct {
 }
 
 // RunResearch executes the research phase for an API.
-// It checks the catalog for known alternatives, then optionally
-// queries the GitHub API for additional CLI tools.
+// It queries the GitHub API for CLI tools and summarizes the competitive surface.
 func RunResearch(apiName, pipelineDir string) (*ResearchResult, error) {
 	result := &ResearchResult{
 		APIName:      apiName,
 		ResearchedAt: time.Now(),
 	}
 
-	// Step 1: Check catalog for known alternatives
-	catalogAlts := loadCatalogAlternatives(apiName)
-	for _, alt := range catalogAlts {
-		result.Alternatives = append(result.Alternatives, Alternative{
-			Name:     alt.Name,
-			URL:      alt.URL,
-			Language: alt.Language,
-		})
-	}
-
-	// Step 2: Search GitHub for "<api-name> cli" repos
+	// Search GitHub for "<api-name> cli" repos.
 	ghAlts, err := searchGitHubCLIs(apiName)
 	if err != nil {
-		// Non-fatal: log and continue with catalog-only results
+		// Non-fatal: log and continue with an empty alternative list.
 		fmt.Fprintf(os.Stderr, "warning: GitHub search failed: %v\n", err)
 	} else {
 		result.Alternatives = append(result.Alternatives, ghAlts...)
@@ -435,14 +422,6 @@ func SourcesForREADME(r *ResearchResult) []ReadmeSource {
 		return sources[i].Stars > sources[j].Stars
 	})
 	return sources
-}
-
-func loadCatalogAlternatives(apiName string) []catalog.KnownAlt {
-	entry, err := catalog.LookupFS(catalogfs.FS, apiName)
-	if err != nil {
-		return nil
-	}
-	return entry.KnownAlternatives
 }
 
 // ghSearchResponse models the GitHub search API response.

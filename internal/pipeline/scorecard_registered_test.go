@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+const rawSQLiteInventoryCommandFixture = `package cli
+import "database/sql"
+func newInventoryCmd(flags any) {}
+func open() (*sql.DB, error) { return sql.Open("sqlite", "inventory.db") }
+`
+
 // TestRegisteredCommandFiles_OrphanIgnored verifies that scoreWorkflows and
 // scoreInsight no longer count files whose constructor is never registered in
 // root.go. This prevents dead-code removal from dropping the score and ensures
@@ -875,13 +881,9 @@ func TestScoreWorkflows_RecognizesRawSQLiteDataLayer(t *testing.T) {
 	}
 
 	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
-func newRootCmd() { rootCmd.AddCommand(newCatalogCmd(nil)) }
-`)
-	writeFile(t, filepath.Join(cliDir, "catalog.go"), `package cli
-import "database/sql"
-func newCatalogCmd(flags any) {}
-func open() (*sql.DB, error) { return sql.Open("sqlite", "catalog.db") }
-`)
+func newRootCmd() { rootCmd.AddCommand(newInventoryCmd(nil)) }
+	`)
+	writeFile(t, filepath.Join(cliDir, "inventory.go"), rawSQLiteInventoryCommandFixture)
 
 	if score := scoreWorkflows(dir); score != 2 {
 		t.Fatalf("expected raw SQLite-backed command to count as workflow, got %d", score)
@@ -897,8 +899,8 @@ func TestScoreInsight_UsesEveryCobraUseLiteralAndRawSQLiteDataLayer(t *testing.T
 	writeFile(t, filepath.Join(dir, CLIManifestFilename), `{"novel_features":[{"name":"Check watchlist","command":"watch check","description":"Check watchlist drift"}]}`)
 
 	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
-func newRootCmd() { rootCmd.AddCommand(newWatchCmd(nil), newCatalogCmd(nil)) }
-`)
+func newRootCmd() { rootCmd.AddCommand(newWatchCmd(nil), newInventoryCmd(nil)) }
+	`)
 	writeFile(t, filepath.Join(cliDir, "watch.go"), `package cli
 import "github.com/spf13/cobra"
 func newWatchCmd(flags any) *cobra.Command {
@@ -907,11 +909,7 @@ func newWatchCmd(flags any) *cobra.Command {
 	return cmd
 }
 `)
-	writeFile(t, filepath.Join(cliDir, "catalog.go"), `package cli
-import "database/sql"
-func newCatalogCmd(flags any) {}
-func open() (*sql.DB, error) { return sql.Open("sqlite", "catalog.db") }
-const q = "SELECT COUNT(*) FROM discs GROUP BY format"
+	writeFile(t, filepath.Join(cliDir, "inventory.go"), rawSQLiteInventoryCommandFixture+`const q = "SELECT COUNT(*) FROM discs GROUP BY format"
 `)
 
 	if score := scoreInsight(dir); score != 4 {

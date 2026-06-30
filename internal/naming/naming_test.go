@@ -261,8 +261,8 @@ func TestCompactDescriptionsStripHTMLTags(t *testing.T) {
 	if got := CompactDescription(input); got != want {
 		t.Fatalf("CompactDescription(%q) = %q, want %q", input, got, want)
 	}
-	if got := CatalogDescription(input); got != want {
-		t.Fatalf("CatalogDescription(%q) = %q, want %q", input, got, want)
+	if got := ManifestDescription(input); got != want {
+		t.Fatalf("ManifestDescription(%q) = %q, want %q", input, got, want)
 	}
 }
 
@@ -302,10 +302,10 @@ func TestCompactDescriptionFallsBackToNonEmptyHardTruncation(t *testing.T) {
 	}
 }
 
-func TestCatalogDescriptionPreservesCompleteLongCopy(t *testing.T) {
+func TestManifestDescriptionPreservesCompleteLongCopy(t *testing.T) {
 	input := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
-	if got := CatalogDescription(input); got != input {
-		t.Fatalf("CatalogDescription(%q) = %q, want complete source sentence", input, got)
+	if got := ManifestDescription(input); got != input {
+		t.Fatalf("ManifestDescription(%q) = %q, want complete source sentence", input, got)
 	}
 }
 

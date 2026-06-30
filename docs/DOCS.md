@@ -23,7 +23,6 @@ The extracted developer docs are:
 - `docs/GLOSSARY.md` — naming conventions, disambiguation defaults, and the implementation reference behind the concepts in `CONCEPTS.md`
 - `docs/RELEASE.md` — release-please / goreleaser flow
 - `docs/ATTRIBUTION.md` — creator + contributors attribution model
-- `docs/CATALOG.md` — catalog validator rationale and wrapper-only shape
 - `docs/ARTIFACTS.md` — local library, manuscripts, and public-library flow
 - `docs/CODEX.md` — installing and using Printing Press skills in Codex
 - `docs/CURSOR.md` — using printed CLIs and skills in Cursor

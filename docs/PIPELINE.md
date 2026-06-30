@@ -74,7 +74,6 @@ Purpose: discover and score the existing CLI landscape for the target API before
 
 Inputs:
 - Validated spec URL from preflight
-- `catalog/<api>.yaml` if the API is catalog-known (for `known_alternatives`)
 
 Outputs:
 - `research.json` in the pipeline directory with:

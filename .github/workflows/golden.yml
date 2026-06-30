@@ -34,7 +34,7 @@ jobs:
           needs_golden=false
           for file in "${changed[@]}"; do
             case "$file" in
-              cmd/*|internal/*|catalog/*|testdata/golden/*|scripts/golden.sh|go.mod|go.sum|.github/workflows/golden.yml)
+              cmd/*|internal/*|testdata/golden/*|scripts/golden.sh|go.mod|go.sum|.github/workflows/golden.yml)
                 needs_golden=true
                 break
                 ;;
@@ -46,7 +46,7 @@ jobs:
       - name: Skip golden verification
         if: steps.changes.outputs.needs_golden != 'true'
         run: |
-          echo "Skipping golden verification: no generator, CLI, catalog, golden fixture, module, or golden workflow files changed."
+          echo "Skipping golden verification: no generator, CLI, golden fixture, module, or golden workflow files changed."
 
       - uses: actions/setup-go@v6
         if: steps.changes.outputs.needs_golden == 'true'

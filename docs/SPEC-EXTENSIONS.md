@@ -91,7 +91,7 @@ Rules:
 - Must be a string.
 - Leading and trailing whitespace is trimmed.
 - Empty or non-string values leave `DisplayName` empty, so downstream code falls
-  back to catalog metadata or slug-derived naming.
+  back to spec metadata or slug-derived naming.
 - The parser does not enforce a length cap for `x-display-name`. The separate
   `registry.json` display-name fallback used by `mcp-sync` rejects registry
   values longer than 40 characters, but that limit does not apply here.
@@ -661,15 +661,6 @@ Rules:
   the parser derives a required per-call env var from the API slug and header
   name, for example `DISPATCH_ST_APP_KEY` for `ST-App-Key`.
 
-Catalog-driven equivalent: when a catalog entry declares `auth_env_vars`, the
-generator layers the canonical names on top of the parser-derived default at
-runtime without editing the upstream spec. The catalog list takes precedence,
-the parser default trails as a backwards-compat fallback, and the rebuilt env
-var list is emitted as an OR-case (any one satisfies auth). The catalog field
-is ignored for HTTP Basic auth (credential-pair shape); declare basic-auth
-env var pairs via `x-auth-env-vars` on the security scheme instead. See
-[`docs/CATALOG.md`](CATALOG.md#auth_env_vars).
-
 ### `x-auth-vars`
 
 Overrides the generated credential environment variable metadata.
@@ -762,9 +753,8 @@ When `KeyURL` ends up empty, the printed CLI uses `WebsiteURL` (already
 populated from `externalDocs.url`, `info.contact.url`, and `x-website`) under
 a separate `See API docs: <URL>` line — honest framing for those URLs.
 
-Catalog YAML's `auth_key_url:` (see [`CATALOG.md`](CATALOG.md)) overrides the
-inference. The result drives the printed CLI's `Get a key at: <URL>` output in
-auth prompts and `doctor`.
+The result drives the printed CLI's `Get a key at: <URL>` output in auth
+prompts and `doctor`.
 
 ### `x-auth-instructions`
 
@@ -780,8 +770,6 @@ Rules:
 - Leading and trailing whitespace is trimmed.
 - Use this when `x-auth-key-url` lands on a docs page rather than the keys UI;
   the URL says where to start, the instruction says what to do once there.
-
-Catalog YAML's `auth_instructions:` overrides any spec-supplied value.
 
 ### `x-auth-title`
 

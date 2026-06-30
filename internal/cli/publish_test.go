@@ -140,7 +140,7 @@ func TestPublishValidateRejectsStaleAttributionManifest(t *testing.T) {
 
 	manifestCheck := publishCheckByName(t, result, "manifest")
 	assert.False(t, manifestCheck.Passed)
-	assert.Contains(t, manifestCheck.Error, "schema_version must be 1")
+	assert.Contains(t, manifestCheck.Error, fmt.Sprintf("schema_version must be %d", pipeline.CurrentCLIManifestSchemaVersion))
 }
 
 func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {

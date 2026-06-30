@@ -53,7 +53,7 @@ const MCPBManifestVersion = "0.3"
 // root of an MCPB bundle ZIP. Field names and JSON tags match the upstream
 // schema at https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md.
 // We do not exhaustively model every optional field — only what the
-// generator can fill from existing spec/catalog metadata. Authors who need
+// generator can fill from existing spec or manifest metadata. Authors who need
 // niche fields (icons, screenshots, prompts, localization) can hand-edit
 // the emitted manifest.json before bundling, which lives next to the CLI
 // source like .printing-press.json does.

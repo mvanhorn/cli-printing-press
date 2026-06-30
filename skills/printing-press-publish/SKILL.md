@@ -321,13 +321,7 @@ Read `.printing-press.json` from the resolved CLI directory.
    > "Publishing as **<category>**. OK?"
    Give the user the option to change it
 
-2. If no `category` but `catalog_entry` is present, look it up:
-   ```bash
-   cli-printing-press catalog show <catalog_entry> --json
-   ```
-   Extract the category from the result. Present for confirmation
-
-3. If neither provides a category, present the full list via AskUserQuestion:
+2. If the manifest does not provide a category, present the full list via AskUserQuestion:
    - developer-tools, monitoring, cloud, project-management
    - productivity, social-and-messaging, sales-and-crm, marketing
    - payments, auth, commerce, ai, food-and-dining, health, maps, media-and-entertainment, devices, other

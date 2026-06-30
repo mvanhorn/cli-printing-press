@@ -535,7 +535,7 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public catalog installer on `PATH` shadowed the local build. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles the contract output signals: `[setup-error]` (refuse to run, surface the install instructions), optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `PRESS_REPO_MODE=<true|false>` plus the targeted global open-agent-skills freshness check, the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-required]` (hard gate below the published currency floor — interactive upgrade-or-abort, no skip), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent generator invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, run with stale global skill text when the session is managed by open-agent-skills, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global or the public-library installer on `PATH` shadowed the local build. Do not skip.
 
 **Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `cli-printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `cli-printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/cli-printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `cli-printing-press generate ...` for readability — replace `cli-printing-press` with the captured absolute path each time you actually run one.
 
@@ -822,7 +822,7 @@ Before new research:
    - If the user passed `--har <path>`, this is a HAR-first run. Before invoking browser-sniff, parse the file as JSON and verify it contains traffic: HAR files must have `.log.entries | length > 0`; enriched capture JSON must have `.entries | length > 0`. If the file is missing, invalid JSON, or has zero entries, do not continue silently. Print `HAR/capture contains no network entries; the export likely recorded no traffic.` and ask via `AskUserQuestion` with exactly these choices: **Capture again (Recommended)** — "Re-export a HAR after recording a real user flow"; **Proceed with docs-only** — "Skip HAR/browser-sniff and continue from docs/spec discovery only"; **HOLD** — "Stop this run until a valid capture is available." Only proceed to browser-sniff when the parsed entry count is non-zero.
    - For a valid `--har <path>`, run `cli-printing-press browser-sniff --har <path> --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"` to generate a spec and traffic analysis from captured traffic. If `$API_RUN_DIR/source-priority.json` exists with two or more sources, add `--preserve-hosts` so combo-CLI captures retain peer API hosts with per-endpoint `base_url` overrides instead of collapsing them into secondary evidence. Immediately inspect `$DISCOVERY_DIR/traffic-analysis.json`: if it contains the `empty_response_shapes` warning, or if every endpoint cluster has `size_class: "empty"` and `response_shape: {}`, use curl/direct HTTP to call each discovered endpoint and capture response structure before writing or trusting the spec. Do not proceed to `generate` with a sniffed spec that has no type information. Use the generated spec as the primary spec source for the rest of the pipeline only after this quality check passes. Skip the browser-sniff gate in Phase 1.7 (browser-sniff already ran).
    - If the user passed `--spec`, use it directly (existing behavior).
-   - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
+   - Otherwise, proceed with normal discovery (KnownSpecs, apis-guru, web search, and researched docs).
 
    #### Directory spec-source guard
 
@@ -1164,37 +1164,11 @@ Resolve the API key gate (or skip it for public APIs) before moving to Phase 1.
 
 ## Phase 1: Research Brief
 
-**When `BROWSER_SNIFF_TARGET_URL` is set:** Skip the catalog check, spec/docs search, and SDK wrapper search — none of these exist for an undocumented website feature. Focus research on understanding what the site/feature does, who uses it, what workflows it supports, and what competitors offer similar functionality. The spec will come from browser-sniffing in Phase 1.7.
+**When `BROWSER_SNIFF_TARGET_URL` is set:** Skip spec/docs search and SDK wrapper search — none of these exist for an undocumented website feature. Focus research on understanding what the site/feature does, who uses it, what workflows it supports, and what competitors offer similar functionality. The spec will come from browser-sniffing in Phase 1.7.
 
 Before reading documentation, read [references/fetch-docs.md](references/fetch-docs.md). Use `fetch-docs.sh` for the API's primary docs, OpenAPI/Postman links, auth guides, error handling, rate limits, pagination, webhooks, and any per-endpoint reference page. Preserve exact status codes and inspect the returned local file directly so enum values, field constraints, casing, examples, and nav/link variants are not lost through summarization.
 
-Before starting research, check if the API has a built-in catalog entry:
-
-```bash
-cli-printing-press catalog show <api> --json 2>/dev/null
-```
-
-If the catalog has an entry for this API, branch on the entry type:
-
-**Spec-based entry** (`spec_url` populated) — present the user with a choice:
-
-> "<API> is in the built-in catalog (spec: <spec_url>). Use the catalog config to skip discovery, or run full discovery?"
-
-- If catalog config: use the spec_url from the catalog entry, skip the research/discovery phase
-- If full discovery: proceed with the normal research workflow
-
-**Wrapper-only entry** (no `spec_url`, `wrapper_libraries` populated) — this is a reverse-engineered API that has no official spec but has known community libraries. The catalog entry is a **discovery aid only**: `cli-printing-press generate` requires `--spec` and does not consume wrapper-library metadata, so there is no direct generation path from a wrapper-only entry today. Tell the user this up front via `AskUserQuestion`:
-
-> "<API> has no official spec. The catalog knows about these community-maintained wrappers, but the Printing Press cannot generate a CLI directly from a wrapper. The next step has to be browser-sniffing the upstream to author an internal YAML spec, browser-sniffing or HAR-capturing the dominant source first and then using the multi-source aggregator pattern for secondary hand-authored sources, or hand-writing a Go module that imports the wrapper. Which path do you want?"
-
-Present each `wrapper_libraries` entry alongside the question with language, integration mode, and notes so the user can see what implementation backing exists. Example for `google-flights`:
-- **krisukox/google-flights-api** (Go, native, MIT) — Pure Go, importable; single-binary CLI with no runtime deps.
-
-Record the user's choice (and the selected wrapper, when relevant) in `$API_RUN_DIR/state.json` under an `implementation` field so later phases can read it. For wrapper or hand-written-module paths, use `{ "kind": "wrapper", "library": "<name>", "url": "<url>", "integration_mode": "native|subprocess|html-scrape", "next_step": "browser-sniff|hand-written-module" }`. For the aggregator path, use `{ "kind": "aggregator-pattern", "dominant_source": "<source>", "spec_source": "browser-sniff|har|provided-spec", "spec_path": "<path-to-generated-spec>", "secondary_sources": ["<source>"], "next_step": "aggregator-pattern" }`; do not populate `library` or `integration_mode` unless a specific secondary source is backed by a wrapper. This field is for skill bookkeeping; the generator does not currently read it. If the user picks browser-sniff, route into the Phase 1.7 browser-sniff path to produce a spec, then run `generate --spec` against it. If the user picks the aggregator path, first route the dominant source through Phase 1.7 browser-sniff or HAR capture to produce the primary spec, then read and apply [references/aggregator-pattern.md](references/aggregator-pattern.md): generate from that spec, then hand-author the secondary source clients and `sources` command tree. If the user picks a hand-written module, stop the press here and hand off — there is no generator path to drop them into.
-
-**No catalog hit** — proceed normally without mentioning the catalog.
-
-**Adding new wrapper-only APIs:** drop a YAML file in `catalog/` with `wrapper_libraries` populated and rebuild the binary. No skill changes needed.
+There is no built-in catalog lookup in this repo. New CLIs start from researched specs, documentation, browser/crowd/device discovery, or a reprint of an existing local/public-library artifact. If the target already exists in the public library, use the reprint/publish workflow rather than adding source metadata here.
 
 Write one build-driving brief, not a stack of phase essays.
 
@@ -1283,7 +1257,7 @@ Suggested shape:
 3. ...
 ```
 
-**MANDATORY: Before proceeding to Phase 1.5 (Absorb Gate), you MUST evaluate Phase 1.6 (Pre-Browser-Sniff Auth Intelligence), Phase 1.7 (Browser-Sniff Gate), and Phase 1.8 (Crowd-Sniff Gate) below.** If no spec source has been resolved yet (no `--spec`, no `--har`, no catalog spec URL), the browser-sniff gate decision matrix MUST be evaluated. Do not skip to Phase 1.5.
+**MANDATORY: Before proceeding to Phase 1.5 (Absorb Gate), you MUST evaluate Phase 1.6 (Pre-Browser-Sniff Auth Intelligence), Phase 1.7 (Browser-Sniff Gate), and Phase 1.8 (Crowd-Sniff Gate) below.** If no spec source has been resolved yet (no `--spec`, no `--har`, no researched spec URL), the browser-sniff gate decision matrix MUST be evaluated. Do not skip to Phase 1.5.
 
 **Phase 1.5 will refuse to proceed without a `browser-browser-sniff-gate.json` marker file.** Phase 1.7 writes this file with one entry per source (one entry for single-source CLIs, one entry per named source for combo CLIs). Missing marker = HARD STOP back to Phase 1.7. See Phase 1.7 "Enforcement" below for the contract.
 
@@ -2180,38 +2154,30 @@ Proceed silently to Phase 2.
 
 ### Pre-Generation Category Enrichment
 
-Before generating a non-catalog CLI, set the spec's top-level `category` before
-running `generate`. The category must come from the Phase 1 research brief's
-domain judgment, mapped to the public catalog enum documented in
-`docs/CATALOG.md`.
-
-Non-catalog means the run is based on browser-sniffed traffic, HAR capture,
-docs-derived specs, or a hand-authored internal spec rather than
-`cli-printing-press generate <name>` using a built-in catalog entry. For
-internal YAML specs, add:
+Before generating, set the spec's top-level `category` before running
+`generate`. The category must come from the Phase 1 research brief's domain
+judgment, mapped to the public-library category enum. For internal YAML specs,
+add:
 
 ```yaml
-category: <catalog-category>
+category: <public-library-category>
 ```
 
 If the source is an OpenAPI file and the workflow has an editable overlay or
 derived internal spec, carry the same top-level category into that generated
 spec artifact before the final `generate` invocation. If there is no editable
 spec artifact, such as direct `--docs` generation, pass
-`--category <catalog-category>` on the final `generate` invocation. Do not add
+`--category <public-library-category>` on the final `generate` invocation. Do not add
 the category after generation just to satisfy publish; the generated manifest,
 README, and SKILL install section must all come from the same category-aware
 spec, or `verify-skill canonical-sections` can drift.
-
-Catalog-mode runs skip this step: keep the built-in catalog entry's category
-unchanged, even if Phase 1 research would classify the API differently.
 
 ### Pre-Generation Cache Enrichment
 
 Before generating, decide whether the spec should opt into generator-owned cache
 freshness. The generator already has the freshness helpers and auto-refresh hook,
 but it emits them only when the spec declares `cache.enabled: true` and the CLI
-has a real sync path. Stateful catalog-shaped CLIs otherwise serve local data
+has a real sync path. Stateful CLIs otherwise serve local data
 exactly as it was last synced, which caps the cache freshness score and can leave
 agents reading stale SQLite rows without a warning.
 
@@ -2226,10 +2192,6 @@ leave it disabled for quota-metered, paid, rate-limited, or expensive bulk
 refresh APIs unless the refresh path is cheap, bounded, and clearly valuable;
 those CLIs should rely on manual `sync` plus the generated `doctor` cache report
 instead of surprising users with pre-read upstream calls.
-
-Catalog-mode runs skip this step: keep the built-in catalog entry's cache
-settings unchanged. Do not pass a flag or patch generated files after the fact;
-cache freshness must come from the spec that drives generation.
 
 For internal YAML specs, add the cache block before the final `generate`
 invocation only when at least one generated syncable resource read command will
@@ -2282,11 +2244,7 @@ auth signals, enrich the spec before generation:
 3. Check Phase 1.6 Pre-Browser-Sniff Auth Intelligence results (if the user confirmed auth)
 
 If any source identified auth, **edit the spec YAML** to add the auth section before
-running generate. Catalog-mode runs (`cli-printing-press generate <name>` where `<name>`
-is in `catalog/`) can skip the spec edit when the catalog entry declares
-`auth_env_vars` — those canonical names are applied automatically and the
-parser's name-derived default name is retained as a trailing fallback so
-operators on existing setups don't need a rename. For internal YAML specs:
+running generate. For internal YAML specs:
 
 ```yaml
 auth:
@@ -2616,7 +2574,7 @@ Typical unauthenticated endpoints worth tagging:
 - **Auth-flow primitives:** login, registration, password-reset, email-confirm,
   refresh-token, OAuth callback. The user isn't authenticated when calling these —
   they ARE the auth flow.
-- **Public discovery:** store/location finder, menu browse, public catalog,
+- **Public discovery:** store/location finder, menu browse, public listings,
   category listing, public search, public product detail.
 - **Health/metadata:** health checks, version probes, capability flags, sitemap.
 
@@ -2802,9 +2760,8 @@ cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"
 
 If acquire fails (another session holds a fresh lock), present the lock status to the user and let them decide: wait, use a different CLI name, force-reclaim, or pick a different API.
 
-The `--category <catalog-category>` flag shown below is for non-catalog runs
-whose category was not already authored into an editable spec. Omit it for
-catalog-config runs; the built-in catalog category is authoritative there.
+The `--category <public-library-category>` flag shown below is for runs whose
+category was not already authored into an editable spec.
 
 `--lenient` stubs missing local `#/components/schemas/<Name>` refs as
 permissive object schemas with warnings so converted OpenAPI specs can still
@@ -2818,7 +2775,7 @@ cli-printing-press generate \
   --spec <spec-path-or-url> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
-  --category <catalog-category> \
+  --category <public-library-category> \
   --force --lenient --validate
 ```
 
@@ -2831,7 +2788,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
-  --category <catalog-category> \
+  --category <public-library-category> \
   --spec-source browser-sniffed \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
@@ -2846,7 +2803,7 @@ cli-printing-press generate \
   --spec "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
-  --category <catalog-category> \
+  --category <public-library-category> \
   --spec-source browser-sniffed \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
@@ -2863,7 +2820,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
-  --category <catalog-category> \
+  --category <public-library-category> \
   --force --lenient --validate
 ```
 
@@ -2874,7 +2831,7 @@ cli-printing-press generate \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
-  --category <catalog-category> \
+  --category <public-library-category> \
   --force --lenient --validate
 ```
 
@@ -2888,7 +2845,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
-  --category <catalog-category> \
+  --category <public-library-category> \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
 ```
@@ -2901,7 +2858,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
-  --category <catalog-category> \
+  --category <public-library-category> \
   --force --validate
 ```
 
@@ -3840,7 +3797,7 @@ The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed 
 
 **Runs after shipcheck, before Phase 4.8.** Generated endpoint commands are param-cardinality-checked mechanically by `cobratree` against the spec — hand-authored sync / transcendence code is not. When the printed CLI's `internal/syncer/` calls `client.Get(<path>, params)` (or `Post`/`Put`/`Patch`/`Delete` with body params) against an endpoint the browser-sniff capture also observed, the gate compares the passed-key set against the captured-key set and flags any call where the capture is a strict superset of the code. Same JSON structure on both sides; only cardinality drift catches the "5 params here, 11 on the live site" failure mode.
 
-Skip the gate when there's no `traffic-analysis.json` for this CLI (catalog wrapper-only entries, vendor-spec CLIs without a browser-sniff phase). Otherwise:
+Skip the gate when there's no `traffic-analysis.json` for this CLI (vendor-spec CLIs without a browser-sniff phase). Otherwise:
 
 ```bash
 printing-press sync-param-drop \
@@ -4007,7 +3964,7 @@ The retro skill scans the template-shape and out-of-scope sections for candidate
 
 **Harness exemption — narrow.** Skipping this phase is legitimate only when the current harness has *neither* a working-dir-shaped review skill *nor* the Agent/subagent capability needed for the direct-dispatch fallback. In practice this is almost never true — any harness that runs the press skill has access to subagents. The following rationales are **not** acceptable for skipping:
 
-- "The first tool name I tried (e.g., `/review`, `code-review:code-review`) didn't fit, so the harness must have no review path." Survey the catalog before claiming exemption; if no skill fits, dispatch reviewer subagents directly via the Agent tool.
+- "The first tool name I tried (e.g., `/review`, `code-review:code-review`) didn't fit, so the harness must have no review path." Survey the tool catalog before claiming exemption; if no skill fits, dispatch reviewer subagents directly via the Agent tool.
 - "There's no PR yet, so code review can't run here." Pre-PR is the *point* of this phase. CI-time PR review is too late.
 - "PR-time CI review will catch it." That defeats the purpose of running review in the cheapest fix window.
 

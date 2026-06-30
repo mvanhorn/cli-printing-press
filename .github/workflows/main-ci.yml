@@ -73,7 +73,7 @@ jobs:
                   needs_golden=true
                   needs_generated_output=true
                   ;;
-                *.go|go.mod|go.sum|cmd/*|catalog/*|internal/*)
+                *.go|go.mod|go.sum|cmd/*|internal/*)
                   needs_build=true
                   needs_tests=true
                   ;;
@@ -86,7 +86,7 @@ jobs:
               esac
 
               case "$file" in
-                .github/workflows/main-ci.yml|.github/workflows/golden.yml|cmd/*|internal/*|catalog/*|testdata/golden/*|scripts/golden.sh|go.mod|go.sum)
+                .github/workflows/main-ci.yml|.github/workflows/golden.yml|cmd/*|internal/*|testdata/golden/*|scripts/golden.sh|go.mod|go.sum)
                   needs_golden=true
                   ;;
               esac

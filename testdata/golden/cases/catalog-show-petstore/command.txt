@@ -1,1 +1,0 @@
-"$BINARY" catalog show petstore

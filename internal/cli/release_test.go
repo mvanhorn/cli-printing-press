@@ -85,7 +85,6 @@ func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
 	want := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
 	paths := []string{
 		"../../skills/printing-press/SKILL.md",
-		"../../skills/printing-press-catalog/SKILL.md",
 		"../../skills/printing-press-polish/SKILL.md",
 		"../../skills/printing-press-publish/SKILL.md",
 		"../../skills/printing-press-score/SKILL.md",

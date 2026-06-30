@@ -48,11 +48,10 @@ Discover existing CLI tools for the {{.APIName}} API and assess whether generati
 
 ## Steps
 
-1. Check catalog/{{.APIName}}.yaml for known_alternatives field
-2. Search GitHub for "{{.APIName}} cli" repos sorted by stars
-3. Deduplicate and score alternatives
-4. If novelty score <= 3, flag: "Official CLI exists - consider whether this CLI adds value"
-5. Write research.json
+1. Search GitHub for "{{.APIName}} cli" repos sorted by stars
+2. Deduplicate and score alternatives
+3. If novelty score <= 3, flag: "Official CLI exists - consider whether this CLI adds value"
+4. Write research.json
 
 ## Prior Phase Outputs
 
@@ -61,7 +60,6 @@ Discover existing CLI tools for the {{.APIName}} API and assess whether generati
 ## Codebase Pointers
 
 - Research logic: internal/pipeline/research.go
-- Catalog entries: catalog/
 - Known specs registry: internal/pipeline/discover.go
 `,
 	PhaseComparative: `---

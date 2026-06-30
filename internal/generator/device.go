@@ -257,7 +257,7 @@ func (g *DeviceGenerator) templateData() deviceTemplateData {
 		HasSession:      g.Spec.Session.Mode == devicespec.SessionModeOptional || g.Spec.Session.Mode == devicespec.SessionModeRequired,
 		SessionRequired: g.Spec.Session.Mode == devicespec.SessionModeRequired,
 		HasStore:        hasStore,
-		// Device specs carry no catalog category, so the canonical install block
+		// Device specs carry no public-library category, so the canonical install block
 		// uses the category-agnostic installer path — matching what the verify-skill
 		// canonical-sections check expects (CanonicalSkillInstallSection(name, "")).
 		InstallSection: CanonicalSkillInstallSection(name, ""),

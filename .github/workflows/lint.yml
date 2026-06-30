@@ -120,7 +120,7 @@ jobs:
           needs_tests=false
           for file in "${changed[@]}"; do
             case "$file" in
-              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|catalog/*|internal/*|scripts/*|testdata/*)
+              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|internal/*|scripts/*|testdata/*)
                 needs_tests=true
                 break
                 ;;
@@ -218,7 +218,7 @@ jobs:
       - name: Skip Go tests
         if: needs.test-changes.outputs.needs_tests != 'true'
         run: |
-          echo "Skipping Go tests: no Go, module, CI workflow, catalog, script, or testdata changes."
+          echo "Skipping Go tests: no Go, module, CI workflow, script, or testdata changes."
 
       - name: Check test shards
         if: needs.test-changes.outputs.needs_tests == 'true'
@@ -256,7 +256,7 @@ jobs:
           needs_full=false
           for file in "${changed[@]}"; do
             case "$file" in
-              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|catalog/*|internal/cli/*|internal/generator/*|internal/openapi/*|internal/pipeline/*|internal/spec/*|testdata/*)
+              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|internal/cli/*|internal/generator/*|internal/openapi/*|internal/pipeline/*|internal/spec/*|testdata/*)
                 needs_full=true
                 break
                 ;;
@@ -345,7 +345,7 @@ jobs:
       - name: Skip generated compile tests
         if: needs.generated-test-changes.outputs.needs_full != 'true'
         run: |
-          echo "Skipping generated compile tests: no generator, parser, pipeline, CLI, module, workflow, catalog, or testdata changes."
+          echo "Skipping generated compile tests: no generator, parser, pipeline, CLI, module, workflow, or testdata changes."
 
       - name: Check generated compile shards
         if: needs.generated-test-changes.outputs.needs_full == 'true'

@@ -78,7 +78,6 @@ If `PRESS_REPO_MODE=false`, run the targeted global open-agent-skills updater be
 npx -y skills@latest update -g \
   printing-press \
   printing-press-amend \
-  printing-press-catalog \
   printing-press-import \
   printing-press-output-review \
   printing-press-polish \

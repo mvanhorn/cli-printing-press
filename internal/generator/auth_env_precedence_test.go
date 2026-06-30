@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1924,83 +1923,6 @@ func TestTierRouting_BearerPrefix(t *testing.T) {
 		"per-tier bearer auth must honor configured prefix")
 	assert.NotContains(t, content, `value := "Bearer " + tierValue0`,
 		"default Bearer literal must not leak when tier prefix is overridden")
-}
-
-// TestCatalogAuthEnvVars_GenerateReadsCatalogNamesFirst pins the issue #1482
-// acceptance criterion: when a catalog entry declares auth_env_vars, the
-// generator emits config.go reading the catalog-declared names first, in
-// order, with the parser's name-derived default trailing as a fallback so
-// operators who already export the legacy name keep working without a
-// migration.
-func TestCatalogAuthEnvVars_GenerateReadsCatalogNamesFirst(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("stripe")
-	apiSpec.Auth = spec.AuthConfig{
-		Type:    "bearer_token",
-		Header:  "Authorization",
-		EnvVars: []string{"STRIPE_BEARER_AUTH"},
-		EnvVarSpecs: []spec.AuthEnvVar{
-			{Name: "STRIPE_BEARER_AUTH", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
-		},
-	}
-
-	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, []string{"STRIPE_SECRET_KEY", "STRIPE_API_KEY"})
-
-	outputDir := filepath.Join(t.TempDir(), "stripe-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
-	require.NoError(t, err)
-	content := string(cfgSrc)
-
-	for _, name := range []string{"STRIPE_SECRET_KEY", "STRIPE_API_KEY", "STRIPE_BEARER_AUTH"} {
-		field := resolveEnvVarField(name)
-		assert.Contains(t, content, "if v := os.Getenv(\""+name+"\"); v != \"\" {",
-			"Load() must read env var %s", name)
-		assert.Contains(t, content, "cfg."+field, "Config struct must carry field for %s", name)
-	}
-
-	body := authHeaderBody(t, content)
-	secretIdx := strings.Index(body, "if c."+resolveEnvVarField("STRIPE_SECRET_KEY")+` != ""`)
-	apiIdx := strings.Index(body, "if c."+resolveEnvVarField("STRIPE_API_KEY")+` != ""`)
-	bearerIdx := strings.Index(body, "if c."+resolveEnvVarField("STRIPE_BEARER_AUTH")+` != ""`)
-
-	require.NotEqual(t, -1, secretIdx, "AuthHeader must check STRIPE_SECRET_KEY first")
-	require.NotEqual(t, -1, apiIdx, "AuthHeader must check STRIPE_API_KEY")
-	require.NotEqual(t, -1, bearerIdx, "AuthHeader must retain STRIPE_BEARER_AUTH fallback")
-	assert.Less(t, secretIdx, apiIdx, "STRIPE_SECRET_KEY must be tried before STRIPE_API_KEY")
-	assert.Less(t, apiIdx, bearerIdx, "STRIPE_API_KEY must be tried before legacy STRIPE_BEARER_AUTH fallback")
-}
-
-// TestCatalogAuthEnvVars_GenerateUnchangedWithoutCatalogList pins the
-// negative acceptance criterion: an API without catalog auth_env_vars
-// continues to emit only the parser's name-derived default env var, so
-// existing CLIs regenerate to byte-equivalent config.go.
-func TestCatalogAuthEnvVars_GenerateUnchangedWithoutCatalogList(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("legacy")
-	apiSpec.Auth = spec.AuthConfig{
-		Type:    "bearer_token",
-		Header:  "Authorization",
-		EnvVars: []string{"LEGACY_BEARER_AUTH"},
-		EnvVarSpecs: []spec.AuthEnvVar{
-			{Name: "LEGACY_BEARER_AUTH", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
-		},
-	}
-
-	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, nil)
-
-	outputDir := filepath.Join(t.TempDir(), "legacy-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
-	require.NoError(t, err)
-	content := string(cfgSrc)
-
-	assert.Contains(t, content, "if v := os.Getenv(\"LEGACY_BEARER_AUTH\"); v != \"\"")
-	assert.NotContains(t, content, "STRIPE_SECRET_KEY")
 }
 
 func TestAuthNoneDoesNotEmitCredentialsScaffolding(t *testing.T) {

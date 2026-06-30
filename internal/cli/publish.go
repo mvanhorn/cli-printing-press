@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
-	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/categories"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
@@ -240,10 +240,10 @@ func newPublishPackageCmd() *cobra.Command {
 			if strings.Contains(category, "/") || strings.Contains(category, "\\") || strings.Contains(category, "..") {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--category must be a simple slug (no path separators or '..')")}
 			}
-			if !catalogpkg.IsPublicCategory(category) {
+			if !categories.IsPublic(category) {
 				return &ExitError{
 					Code: ExitInputError,
-					Err:  fmt.Errorf("--category must be one of: %s", strings.Join(catalogpkg.PublicCategories(), ", ")),
+					Err:  fmt.Errorf("--category must be one of: %s", strings.Join(categories.Public(), ", ")),
 				}
 			}
 			if target == "" && dest == "" {

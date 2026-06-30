@@ -132,15 +132,11 @@ type Generator struct {
 	VisionSet       VisionTemplateSet
 	FixtureSet      *browsersniff.FixtureSet
 	TrafficAnalysis *browsersniff.TrafficAnalysis
-	Sources         []ReadmeSource   // Ecosystem tools to credit in README
-	DiscoveryPages  []string         // Pages visited during browser-sniff discovery
-	NovelFeatures   []NovelFeature   // Transcendence features for README/SKILL
-	Narrative       *ReadmeNarrative // LLM-authored prose for README/SKILL; optional
-	// CatalogEntryDescription carries curated catalog copy into durable
-	// generated metadata without making compact Homebrew/SKILL surfaces depend
-	// on it.
-	CatalogEntryDescription string
-	AsyncJobs               map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
+	Sources         []ReadmeSource          // Ecosystem tools to credit in README
+	DiscoveryPages  []string                // Pages visited during browser-sniff discovery
+	NovelFeatures   []NovelFeature          // Transcendence features for README/SKILL
+	Narrative       *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
+	AsyncJobs       map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 
 	// ModulePath overrides the Go module import path emitted by templates that
 	// reference internal packages (`{{modulePath}}/internal/client`, etc.).
@@ -210,8 +206,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	}
 
 	// Owner is the slug form (Go-module-adjacent, copyright-recoverable).
-	// Derive it from the creator handle when not explicitly set (e.g. by a
-	// catalog override), then always sanitize.
+	// Derive it from the creator handle when not explicitly set, then always
+	// sanitize before rendering generated files.
 	if s.Owner == "" {
 		s.Owner = s.Creator.Handle
 	}
@@ -1024,19 +1020,18 @@ func (g *Generator) compactDescription() string {
 	return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
 }
 
-// CatalogDescription returns the best generated user-facing description for
-// durable catalog metadata.
-func (g *Generator) CatalogDescription() string {
+// ManifestDescription keeps durable manifest prose intact; compact command
+// surfaces can apply their own truncation later.
+func (g *Generator) ManifestDescription() string {
 	candidates := []string{}
 	if g.Narrative != nil {
 		candidates = append(candidates, g.Narrative.Headline)
 	}
-	candidates = append(candidates, g.CatalogEntryDescription)
 	if g.Spec != nil {
 		candidates = append(candidates, g.Spec.CLIDescription)
 	}
 	for _, candidate := range candidates {
-		if desc := naming.CatalogDescription(candidate); desc != "" {
+		if desc := naming.ManifestDescription(candidate); desc != "" {
 			if !naming.HasLiteralEllipsisSuffix(desc) {
 				return desc
 			}
@@ -1050,9 +1045,9 @@ func (g *Generator) CatalogDescription() string {
 	return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
 }
 
-// CatalogDisplayName returns the best generated brand name for durable catalog
+// ManifestDisplayName returns the best generated brand name for durable CLI
 // metadata.
-func (g *Generator) CatalogDisplayName() string {
+func (g *Generator) ManifestDisplayName() string {
 	if g.Narrative != nil {
 		if displayName := strings.TrimSpace(g.Narrative.DisplayName); displayName != "" {
 			return displayName

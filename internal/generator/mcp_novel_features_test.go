@@ -79,7 +79,7 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 }
 
 // TestMCPNovelFeatureToolNameSanitization pins the snake-case tool-name
-// derivation across the corner cases the catalog actually uses.
+// derivation across the corner cases published CLIs use.
 func TestMCPNovelFeatureToolNameSanitization(t *testing.T) {
 	t.Parallel()
 

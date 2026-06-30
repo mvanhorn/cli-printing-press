@@ -16,8 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v4/catalog"
-	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -37,7 +35,7 @@ const CLIReleaseManifestFilename = ".printing-press-release.json"
 const CLIChangelogFilename = "CHANGELOG.md"
 
 // CurrentCLIManifestSchemaVersion is the public-library provenance contract.
-const CurrentCLIManifestSchemaVersion = 1
+const CurrentCLIManifestSchemaVersion = 2
 
 // PatchesIndexFilename is the legacy single-array customizations file. It is
 // superseded by PatchesDirName (one file per patch) because the single array
@@ -90,7 +88,7 @@ type CLIManifest struct {
 	// surfaces that don't want a kebab-case slug — Claude Desktop's
 	// connector list, the MCPB manifest's display_name field, the MCP
 	// server's protocol-level name. Sourced from the spec's display_name
-	// (if set) or a matching catalog entry, with a title-cased fallback.
+	// (if set), with a title-cased fallback.
 	DisplayName string `json:"display_name,omitempty"`
 	// CLIName is the executable/binary name (for example "espn-pp-cli").
 	// It does not track the slug-keyed library directory.
@@ -118,7 +116,6 @@ type CLIManifest struct {
 	SpecSource         string            `json:"spec_source,omitempty"`
 	SpecChecksum       string            `json:"spec_checksum,omitempty"`
 	RunID              string            `json:"run_id,omitempty"`
-	CatalogEntry       string            `json:"catalog_entry,omitempty"`
 	Category           string            `json:"category,omitempty"`
 	Regions            []string          `json:"regions,omitempty"`
 	APILanguage        string            `json:"api_language,omitempty"`
@@ -271,7 +268,7 @@ func ReadCLIManifest(dir string) (CLIManifest, error) {
 //
 // Generate-time fields (spec_url, spec_path, spec_checksum,
 // generated_at, printing_press_version, schema_version, novel_features,
-// catalog_entry, category, cli_name, api_name, api_version, description)
+// category, cli_name, api_name, api_version, description)
 // are preserved as-is. Only the spec-driven MCP/auth/display fields
 // are refreshed.
 //
@@ -689,7 +686,6 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"spec_source",
 		"spec_checksum",
 		"run_id",
-		"catalog_entry",
 		"category",
 		"regions",
 		"api_language",
@@ -823,20 +819,28 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
 	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
 	m.EndpointTemplateVarDefaults = parsed.EndpointTemplateVarDefaults
-	m.AuthKeyURL = parsed.Auth.KeyURL
-	m.AuthTitle = parsed.Auth.Title
-	m.AuthDescription = parsed.Auth.Description
-	m.AuthOptional = parsed.Auth.Optional
+	if parsed.Auth.KeyURL != "" {
+		m.AuthKeyURL = parsed.Auth.KeyURL
+	}
+	if parsed.Auth.Title != "" {
+		m.AuthTitle = parsed.Auth.Title
+	}
+	if parsed.Auth.Description != "" {
+		m.AuthDescription = parsed.Auth.Description
+	}
+	if parsed.Auth.Optional {
+		m.AuthOptional = true
+	}
 	if len(parsed.Regions) > 0 {
 		m.Regions = append([]string(nil), parsed.Regions...)
 	}
 	if parsed.APILanguage != "" {
 		m.APILanguage = parsed.APILanguage
 	}
-	// DisplayName precedence: explicit spec field > catalog-set existing
+	// DisplayName precedence: explicit spec field > existing manifest
 	// value > spec/title-derived fallback > slug-derived fallback.
 	// OpenAPI info.title is useful as a fallback, but it is not explicit
-	// enough to clobber a curated catalog value.
+	// enough to clobber a curated manifest value.
 	if parsed.DisplayName != "" && !parsed.DisplayNameDerivedFromTitle {
 		m.DisplayName = parsed.DisplayName
 	} else if m.DisplayName == "" && parsed.DisplayName != "" {
@@ -846,7 +850,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	}
 	// CLIDescription overrides existing m.Description so the spec's
 	// CLI-shaped copy ships in manifest.json instead of the API-shaped
-	// catalog default.
+	// existing manifest default.
 	if parsed.CLIDescription != "" {
 		m.Description = parsed.CLIDescription
 	}
@@ -932,8 +936,8 @@ type GenerateManifestParams struct {
 	SpecURL        string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
 	DocsURL        string   // --docs URL, if used
 	OutputDir      string
-	Description    string                 // best generated user-facing catalog description
-	DisplayName    string                 // best generated user-facing catalog display name
+	Description    string                 // best generated user-facing manifest description
+	DisplayName    string                 // best generated user-facing manifest display name
 	Creator        spec.Person            // resolved creator (manifest preserve > legacy fields > git config)
 	Contributors   []spec.Person          // resolved contributors, preserved from the existing manifest
 	Owner          string                 // legacy, derived from Creator.Handle (dual-write)
@@ -1093,27 +1097,6 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		}
 	}
 
-	// Look up catalog entry for category/description/display-name enrichment.
-	if entry := lookupCatalogEntryForGenerate(p.APIName, m.SpecURL); entry != nil {
-		m.CatalogEntry = entry.Name
-		m.Category = entry.Category
-		m.Regions = append([]string(nil), entry.Regions...)
-		m.APILanguage = entry.APILanguage
-		m.Description = entry.Description
-		// Catalog's display_name wins over spec/title fallback, while explicit
-		// spec display_name / x-display-name still wins in populateMCPMetadata.
-		if entry.DisplayName != "" {
-			m.DisplayName = entry.DisplayName
-		}
-	}
-	// Fall back to spec.Category for synthetic CLIs that aren't in the
-	// embedded catalog. Without this, manifest.Category stays empty even
-	// when the spec sets `category: travel`, and verify-skill's canonical-
-	// sections check then expects the install URL to use "other" — putting
-	// the rendered SKILL (which read category from the spec via the
-	// template's .Category) and the manifest-derived expected SKILL out of
-	// sync. The README/SKILL templates already resolve category through the
-	// spec; the manifest writer was the lone holdout.
 	if m.Category == "" && p.Spec != nil && p.Spec.Category != "" {
 		m.Category = p.Spec.Category
 	}
@@ -1257,6 +1240,7 @@ func writeCLIManifestForGenerate(dir string, m CLIManifest, existingRaw map[stri
 	for key := range clearFields {
 		delete(merged, key)
 	}
+	delete(merged, "catalog_entry")
 	maps.Copy(merged, generatedFields)
 	data, err := marshalCLIManifestObject(merged)
 	if err != nil {
@@ -1301,25 +1285,6 @@ func sanitizeManifestSpecPath(specPath string) string {
 		return specPath
 	}
 	return filepath.Base(specPath)
-}
-
-func lookupCatalogEntryForGenerate(apiName, specURL string) *catalogpkg.Entry {
-	if entry, err := catalogpkg.LookupFS(catalog.FS, apiName); err == nil {
-		return entry
-	}
-	if specURL == "" {
-		return nil
-	}
-	entries, err := catalogpkg.ParseFS(catalog.FS)
-	if err != nil {
-		return nil
-	}
-	for i := range entries {
-		if entries[i].SpecURL == specURL {
-			return &entries[i]
-		}
-	}
-	return nil
 }
 
 // detectSpecFormat examines the raw spec bytes and returns a format

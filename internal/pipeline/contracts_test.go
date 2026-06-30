@@ -51,7 +51,6 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 	}{
 		{path: filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"), expectsManuscripts: true},
 		{path: filepath.Join("..", "..", "skills", "printing-press-score", "SKILL.md"), expectsManuscripts: true},
-		{path: filepath.Join("..", "..", "skills", "printing-press-catalog", "SKILL.md"), expectsManuscripts: false},
 		{path: filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"), expectsManuscripts: true},
 		{path: filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"), expectsManuscripts: true},
 	}
@@ -509,19 +508,17 @@ func TestPrintingPressSkillReprintPromoteRoutingHandlesRebuiltNovels(t *testing.
 	assert.Contains(t, reprint, "Do not repair this by hand-editing")
 }
 
-func TestPrintingPressSkillSetsNonCatalogCategoryBeforeGenerate(t *testing.T) {
+func TestPrintingPressSkillSetsPublicLibraryCategoryBeforeGenerate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	block := substringBetween(t, skill, "### Pre-Generation Category Enrichment", "### Pre-Generation Auth Enrichment")
 	generateBlocks := substringBetween(t, skill, "OpenAPI / internal YAML:", "GraphQL-only APIs:")
 
-	assert.Contains(t, block, "non-catalog CLI")
+	assert.Contains(t, block, "public-library category enum")
 	assert.Contains(t, block, "set the spec's top-level `category` before")
-	assert.Contains(t, block, "`docs/CATALOG.md`")
 	assert.Contains(t, block, "before the final `generate` invocation")
-	assert.Contains(t, block, "`--category <catalog-category>`")
-	assert.Contains(t, block, "Catalog-mode runs skip this step")
+	assert.Contains(t, block, "`--category <public-library-category>`")
 	assert.Contains(t, block, "verify-skill canonical-sections")
-	assert.GreaterOrEqual(t, strings.Count(generateBlocks, "--category <catalog-category>"), 7)
+	assert.GreaterOrEqual(t, strings.Count(generateBlocks, "--category <public-library-category>"), 7)
 }
 
 func TestPrintingPressSkillExamplesUseCurrentCLINaming(t *testing.T) {
@@ -763,18 +760,18 @@ func TestAmendSkillFiltersMissingTargetRepoLabels(t *testing.T) {
 	assert.Contains(t, skill, "do not let a missing per-CLI or priority label fail the amend flow")
 }
 
-func TestGeneratedAgentsTemplatePointsToCatalogForPatchMechanics(t *testing.T) {
+func TestGeneratedAgentsTemplatePointsToPublicLibraryForPatchMechanics(t *testing.T) {
 	template := readContractFile(t, filepath.Join("..", "generator", "templates", "agents.md.tmpl"))
 
 	// The per-CLI guide keeps CLI-local orientation plus a pointer to where
 	// customizations are recorded, but must NOT duplicate the patch-entry
 	// mechanics (schema, deferred_to_upstream, upstream_issue) -- those live once
-	// in the source catalog's AGENTS.md, the single source of truth. Duplicating
+	// in the public library's AGENTS.md, the single source of truth. Duplicating
 	// ecosystem schema into every generated CLI is what let published AGENTS.md
 	// drift to the legacy patch form; a stable pointer cannot rot.
 	assert.Contains(t, template, "## Local Customizations")
 	assert.Contains(t, template, ".printing-press-patches/")
-	assert.Contains(t, template, "source catalog's `AGENTS.md`")
+	assert.Contains(t, template, "public library's `AGENTS.md`")
 
 	// Mechanics must not be re-inlined into the per-CLI template.
 	assert.NotContains(t, template, "deferred_to_upstream")

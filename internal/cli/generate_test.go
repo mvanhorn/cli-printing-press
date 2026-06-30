@@ -13,14 +13,11 @@ import (
 	"testing"
 	"time"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/specmeta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -3498,23 +3495,6 @@ resources:
 		"the spec-derived directory must not be created when --output is explicit")
 }
 
-func TestOpenAPIAuthPreferenceForGenerateFromJiraCatalogEntry(t *testing.T) {
-	t.Parallel()
-
-	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
-	require.NoError(t, err)
-	require.Equal(t, "basicAuth", jira.AuthPreference)
-
-	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "", ""),
-		"catalog spec_url match should forward auth_preference without --auth-preference")
-	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{jira.SpecURL}, "", ""),
-		"explicit --auth-preference must override catalog")
-
-	localSpec := filepath.Join(t.TempDir(), "swagger.json")
-	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "jira", []string{localSpec}, "", ""),
-		"catalog slug via --name should resolve auth_preference without https spec refs")
-}
-
 func TestOpenAPIAuthPreferenceForGenerateFromPriorManifest(t *testing.T) {
 	t.Parallel()
 
@@ -3526,9 +3506,9 @@ func TestOpenAPIAuthPreferenceForGenerateFromPriorManifest(t *testing.T) {
 		AuthPreference: "ApiKeyAuth",
 	}))
 
-	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", "", []string{filepath.Join(dir, "spec.yaml")}, "", dir),
-		"prior manifest auth_preference should be the fallback below flag and catalog")
-	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{filepath.Join(dir, "spec.yaml")}, "", dir),
+	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", dir),
+		"prior manifest auth_preference should be the fallback below the explicit flag")
+	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", dir),
 		"explicit --auth-preference must override prior manifest")
 }
 
@@ -3543,7 +3523,7 @@ func TestOpenAPIAuthPreferenceForGenerateSkipsPriorManifestWhenDirUnknown(t *tes
 		AuthPreference: "UnrelatedAuth",
 	}))
 
-	assert.Empty(t, openAPIAuthPreferenceForGenerate("", "", []string{filepath.Join(t.TempDir(), "spec.yaml")}, "", ""),
+	assert.Empty(t, openAPIAuthPreferenceForGenerate("", ""),
 		"unknown manifest dir must not fall back to the current working directory")
 }
 
@@ -3586,85 +3566,8 @@ paths:
 
 	manifestDir := openAPIAuthPreferenceManifestDir("", "", []string{specPath}, "", specBytes)
 	require.Equal(t, defaultDir, manifestDir)
-	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", "", []string{specPath}, "", manifestDir),
+	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", manifestDir),
 		"default-output regen should find the prior manifest before full OpenAPI parsing")
-}
-
-func TestOpenAPIAuthPreferenceForGenerateParsesJiraLikeSpecWithCatalogDefault(t *testing.T) {
-	t.Parallel()
-
-	// Mirrors real Jira-style specs: OAuth2 authorizationCode + HTTP Basic; default
-	// parser choice is OAuth2 unless AuthPreference pins basicAuth (see openapi parser tests).
-	specBytes := []byte(`openapi: "3.0.3"
-info:
-  title: Atlassian-like
-  version: "1.0"
-servers:
-  - url: https://example.atlassian.net
-components:
-  securitySchemes:
-    OAuth2:
-      type: oauth2
-      flows:
-        authorizationCode:
-          authorizationUrl: https://auth.example.com/authorize
-          tokenUrl: https://auth.example.com/token
-          scopes:
-            read: read access
-    basicAuth:
-      type: http
-      scheme: basic
-paths:
-  /v1/things:
-    get:
-      operationId: list things
-      security:
-        - basicAuth: []
-        - OAuth2: [read]
-      responses: {"200": {description: ok}}
-`)
-
-	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
-	require.NoError(t, err)
-
-	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "", "")
-	require.Equal(t, "basicAuth", pref)
-
-	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, openapi.ParseOptions{AuthPreference: pref})
-	require.NoError(t, err)
-	assert.Equal(t, "basicAuth", parsed.Auth.Scheme)
-	assert.Equal(t, "api_key", parsed.Auth.Type)
-
-	defaultParsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec2.yaml"), specBytes, openapi.ParseOptions{})
-	require.NoError(t, err)
-	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without catalog-driven preference, OAuth2 wins")
-}
-
-func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
-	apiSpec := &spec.APISpec{Name: "test-api", BaseURL: spec.PlaceholderBaseURL, BaseURLIsPlaceholder: true}
-
-	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
-		DisplayName: "Test.API",
-		OwnerName:   "Trevin Chow",
-		BaseURL:     "https://api.example.com/",
-		Regions:     []string{"NL"},
-		APILanguage: "nl",
-		MCP: spec.MCPConfig{
-			Transport:     []string{"stdio", "http"},
-			Orchestration: "code",
-			EndpointTools: "hidden",
-		},
-	})
-
-	assert.Equal(t, "Test.API", apiSpec.DisplayName)
-	assert.Equal(t, "Trevin Chow", apiSpec.OwnerName)
-	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
-	assert.Equal(t, []string{"NL"}, apiSpec.Regions)
-	assert.Equal(t, "nl", apiSpec.APILanguage)
-	assert.False(t, apiSpec.BaseURLIsPlaceholder)
-	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
-	assert.Equal(t, "code", apiSpec.MCP.Orchestration)
-	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
 }
 
 func TestRebaseAuthEnvPrefix(t *testing.T) {
@@ -3676,71 +3579,14 @@ func TestRebaseAuthEnvPrefix(t *testing.T) {
 		},
 	}
 
-	catalogmeta.RebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
+	specmeta.RebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
 
 	assert.Equal(t, []string{"ELEVENLABS_API_KEY", "UNCHANGED_TOKEN"}, auth.EnvVars)
 	assert.Equal(t, "ELEVENLABS_CLIENT_ID", auth.EnvVarSpecs[0].Name)
 	assert.Equal(t, "CUSTOM_SECRET", auth.EnvVarSpecs[1].Name)
 }
 
-func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {
-	apiSpec := &spec.APISpec{
-		Name:                        "cloud-run-admin",
-		DisplayName:                 "Cloud Run Admin",
-		DisplayNameDerivedFromTitle: true,
-	}
-
-	enrichSpecFromCatalog(apiSpec, "https://api.apis.guru/v2/specs/googleapis.com/run/v2/openapi.yaml")
-
-	assert.Equal(t, "Google Cloud Run", apiSpec.DisplayName)
-	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
-	assert.Equal(t, "cloud", apiSpec.Category)
-	assert.Equal(t, "https://cloud.google.com/run/docs/reference/rest", apiSpec.WebsiteURL)
-}
-
-func TestEnrichSpecFromCatalogCategoryWinsOverFlagValue(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := &spec.APISpec{
-		Name:     "asana",
-		Category: "developer-tools",
-	}
-
-	enrichSpecFromCatalog(apiSpec)
-
-	assert.Equal(t, "project-management", apiSpec.Category)
-}
-
-func TestRunGenerateProjectUsesCatalogDescription(t *testing.T) {
-	t.Parallel()
-
-	entry, err := catalog.LookupFS(catalogfs.FS, "asana")
-	require.NoError(t, err)
-	apiSpec := &spec.APISpec{
-		Name:        "asana",
-		Description: "Weak source-spec fallback copy.",
-		Version:     "1.0",
-		BaseURL:     "https://api.example.com",
-		Auth:        spec.AuthConfig{Type: "none"},
-		Resources: map[string]spec.Resource{
-			"items": {
-				Description: "Items",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {Method: "GET", Path: "/items", Description: "List items"},
-				},
-			},
-		},
-	}
-	outputDir := filepath.Join(t.TempDir(), "asana")
-
-	got, err := runGenerateProject(apiSpec, outputDir, generateProjectOptions{})
-	require.NoError(t, err)
-
-	assert.Equal(t, entry.Description, got.CatalogDescription)
-	assert.False(t, strings.HasSuffix(got.CatalogDescription, "..."))
-}
-
-func TestRunGenerateProjectReturnsResearchNarrativeCatalogMetadata(t *testing.T) {
+func TestRunGenerateProjectReturnsResearchNarrativeManifestMetadata(t *testing.T) {
 	t.Parallel()
 
 	researchDir := t.TempDir()
@@ -3775,10 +3621,10 @@ func TestRunGenerateProjectReturnsResearchNarrativeCatalogMetadata(t *testing.T)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Alaska Airlines", got.DisplayName)
-	assert.Equal(t, "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.", got.CatalogDescription)
+	assert.Equal(t, "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.", got.ManifestDescription)
 	toolsManifest, err := pipeline.ReadToolsManifest(outputDir)
 	require.NoError(t, err)
-	assert.Equal(t, got.CatalogDescription, toolsManifest.Description)
+	assert.Equal(t, got.ManifestDescription, toolsManifest.Description)
 	assert.NotContains(t, toolsManifest.Description, "Weak source-spec fallback copy.")
 	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
 	require.NoError(t, err)
@@ -3994,34 +3840,6 @@ func TestApplyResearchAuthMetadataRejectsUnsafeCanonicalEnvVars(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {
-	apiSpec := &spec.APISpec{
-		Name:                        "trigger-dev",
-		DisplayName:                 "Trigger Dev",
-		DisplayNameDerivedFromTitle: true,
-	}
-
-	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
-		DisplayName: "Trigger.dev",
-	})
-
-	assert.Equal(t, "Trigger.dev", apiSpec.DisplayName)
-	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
-}
-
-func TestEnrichSpecFromCatalogKeepsExplicitDisplayName(t *testing.T) {
-	apiSpec := &spec.APISpec{
-		Name:        "trigger-dev",
-		DisplayName: "Spec.dev",
-	}
-
-	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
-		DisplayName: "Trigger.dev",
-	})
-
-	assert.Equal(t, "Spec.dev", apiSpec.DisplayName)
 }
 
 func runGoCommandForCLITest(t *testing.T, dir string, args ...string) {

@@ -36,7 +36,7 @@ const canonicalSkillInstallSectionStartFormat = "## Prerequisites: Install the C
 	"\n"
 
 // canonicalSkillInstallSectionGoFallbackFormat is appended only once the
-// catalog category is known. Before publish, the category-agnostic installer is
+// public-library category is known. Before publish, the category-agnostic installer is
 // the only canonical path; emitting library/other/<slug> creates drift.
 const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.4 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:\n" +
 	"\n" +
@@ -52,7 +52,7 @@ const canonicalSkillInstallSectionEnd = "If `--version` reports \"command not fo
 
 // CanonicalSkillInstallSection returns the exact text of the install/
 // prerequisites section that the generator emits into a printed CLI's
-// SKILL.md, given the CLI slug and catalog category. A blank category emits
+// SKILL.md, given the CLI slug and public-library category. A blank category emits
 // only the category-agnostic installer path so generate-time output does not
 // bake in the publish-time placeholder category.
 //

@@ -198,12 +198,11 @@ type APISpec struct {
 	// name in `server.NewMCPServer(...)`. Authors can set it explicitly
 	// (e.g. "Company GOAT", "Cal.com", "PokéAPI") to preserve unusual
 	// capitalization or punctuation; when empty the generator title-cases
-	// Name as a fallback. The generate command also fills this from a
-	// matching catalog entry's display_name when available.
+	// Name as a fallback.
 	DisplayName string `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	// DisplayNameDerivedFromTitle marks OpenAPI parser fallbacks from
-	// info.title. Catalog enrichment may replace that fallback, but must not
-	// replace explicit display_name / x-display-name values.
+	// info.title. Manifest regeneration may replace that fallback, but must
+	// not replace explicit display_name / x-display-name values.
 	DisplayNameDerivedFromTitle bool `yaml:"-" json:"-"`
 	// BaseURLIsPlaceholder is set by parsers that filled BaseURL with the
 	// PlaceholderBaseURL fallback because the source declared no real host.
@@ -298,7 +297,7 @@ type APISpec struct {
 	ProxyRoutes     map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
 	BearerRefresh   BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
 	WebsiteURL      string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
-	Category        string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
+	Category        string              `yaml:"category,omitempty" json:"category,omitempty"`            // public-library category (e.g., productivity, developer-tools) — used for library install path
 	Regions         []string            `yaml:"regions,omitempty" json:"regions,omitempty"`              // geographic availability/scope tokens (ISO 3166-1 alpha-2 like NL, EU, or * for global)
 	APILanguage     string              `yaml:"api_language,omitempty" json:"api_language,omitempty"`    // BCP 47 language tag for the API's native/domain language
 	Auth            AuthConfig          `yaml:"auth" json:"auth"`

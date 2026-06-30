@@ -34,11 +34,8 @@ cli-printing-press/
     vision/                  # Feature scoring model
     llm/                     # Claude/Codex integration
     llmpolish/               # Post-gen help text polish
-    catalog/                 # Catalog schema validator
-  catalog/                   # 17 API catalog entries
   skills/                    # Claude Code skill defs
     printing-press/          # Main generation skill
-    printing-press-catalog/  # Catalog browsing skill
   testdata/                  # Test fixtures
   docs/plans/                # Project planning docs for this repo itself
 ```
@@ -54,7 +51,6 @@ cli-printing-press/
 | `internal/pipeline/` | Orchestrates the optional resumable plan pipeline plus shipcheck helpers |
 | `internal/vision/` | Defines the feature scoring model used by the profiler |
 | `internal/cli/` | Wires all Cobra commands: `generate`, `print`, `scorecard`, `dogfood`, `vision` |
-| `catalog/` | YAML entries for known APIs (Discord, Stripe, Linear, etc.) with spec URLs |
 
 Data flows through the system like this: a spec file (OpenAPI, GraphQL SDL, or internal YAML) gets parsed into an `APISpec` struct. The profiler analyzes that struct to detect domain signals and recommend features. The generator takes both the spec and the profile, selects the right templates, and renders a full Go project to disk.
 
@@ -77,7 +73,6 @@ This project has no external service dependencies. It's a pure Go binary that re
 | Two-tier scoring | Infrastructure scoring (50 pts: output modes, auth, errors, agent-native flags) + Domain correctness scoring (50 pts: path validity, auth protocol, data pipeline, dead code). |
 | Dogfood validator | Catches dead flags, dead functions, invalid API paths, and auth mismatches by cross-referencing generated code against the source spec. |
 | Pipeline phases | Optional 9-phase resumable pipeline: preflight, research, scaffold, enrich, regenerate, review, agent-readiness, comparative, ship. |
-| Catalog entry | A YAML file in `catalog/` that maps an API name to its spec URL, format, category, and tier. Used by `DiscoverSpec()` to auto-resolve API names. |
 | Creativity ladder | Rung 1-2: API wrappers + output formatting (always generated). Rung 3: local persistence. Rung 4: domain analytics. Rung 5: behavioral insights. |
 
 ---
@@ -142,7 +137,7 @@ Quality gates (if --validate)
 Use this only when you explicitly want on-disk phase seeds and resumable state:
 
 1. `internal/cli/root.go` (`newPrintCmd`) calls `pipeline.Init()` with the API name
-2. `pipeline.Init()` calls `DiscoverSpec()` which looks up the API in `catalog/` entries
+2. `pipeline.Init()` calls `DiscoverSpec()` which checks the small known-spec registry and fallback spec patterns
 3. A managed run is created under `~/printing-press/.runstate/<scope>/runs/<run-id>/`
 4. Seeds are written into `pipeline/`, research artifacts into `research/`, and scorecard/dogfood evidence into `proofs/`
 5. `state.json` tracks progress across sessions, and completed runs archive to `~/printing-press/manuscripts/<api>/<run-id>/`
@@ -176,7 +171,7 @@ go test ./...
 **Common changes:**
 
 - To add a new Go template for generated CLIs, create a `.tmpl` file in `internal/generator/templates/` and wire it into `generator.go`'s `Generate()` method.
-- To add a new API to the catalog, create a YAML file in `catalog/` following the schema in `CLAUDE.md` (name, display_name, description, category, spec_url, spec_format, tier). It must pass `internal/catalog` validation.
+- To publish a newly generated CLI for users, use the public-library publish workflow; do not add generated CLIs or source metadata to this repo.
 - To add a new CLI subcommand to the printing press itself, add a `newXxxCmd()` function in `internal/cli/` and register it with `rootCmd.AddCommand()` in `root.go`.
 - To support a new spec format, implement a parser that returns `*spec.APISpec` and add format detection in `newGenerateCmd()`.
 - To add a new domain archetype, add the constant in `internal/profiler/profiler.go`, add resource keywords to `detectDomainSignals()`, and create workflow/insight templates in `internal/generator/templates/`.

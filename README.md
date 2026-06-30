@@ -58,7 +58,7 @@ Verify with `cli-printing-press --version`. If install fails, confirm Go 1.26.4 
 
 Older releases installed a generator binary named `printing-press`. That legacy
 entrypoint still works for compatibility, but the canonical generator command is
-now `cli-printing-press` so the public catalog installer can own
+now `cli-printing-press` so the public library installer can own
 `printing-press list`, `printing-press search`, and `printing-press install`.
 
 <details>
@@ -325,7 +325,7 @@ Phase 5     Live Smoke (optional)     (2-5 min)    Read-only API smoke + data-fl
 
 Three entry paths. Got an OpenAPI spec? Use `--spec`. Got a URL to a website with no docs? The browser-sniff gate launches a browser, captures traffic, and generates the spec. Got a HAR file from DevTools? Pass `--har`. The press handles all three.
 
-19 APIs in the catalog. Asana, DigitalOcean, Discord, Front, GitHub, Google Flights, HubSpot, Kayak, LaunchDarkly, Mercury, Pipedrive, Plaid, Postman Explore, Product Hunt, Sentry, Stripe, Stytch, Telegram, Twilio, plus Petstore for testing. Each pre-verified with spec URL, auth type, and category.
+Published CLIs live in the Printing Press Library. The repo no longer carries a source catalog; new and updated CLIs should be published through the public-library workflow so the listing, skills mirror, and release metadata stay in one place.
 
 Discovery provenance. When the press sniffs a website, it archives everything - pages visited, endpoints discovered, response samples, rate limiting events, and `traffic-analysis.json` with protocol/auth/protection signals and discovery warnings - into a `discovery/` manuscript alongside the research and proofs. Full audit trail.
 

@@ -16,15 +16,14 @@ import (
 
 // LibraryEntry represents a CLI in the local library for listing purposes.
 type LibraryEntry struct {
-	CLIName      string    `json:"cli_name"`
-	Dir          string    `json:"dir"`
-	APIName      string    `json:"api_name,omitempty"`
-	Category     string    `json:"category,omitempty"`
-	CatalogEntry string    `json:"catalog_entry,omitempty"`
-	Regions      []string  `json:"regions,omitempty"`
-	APILanguage  string    `json:"api_language,omitempty"`
-	Description  string    `json:"description,omitempty"`
-	Modified     time.Time `json:"modified"`
+	CLIName     string    `json:"cli_name"`
+	Dir         string    `json:"dir"`
+	APIName     string    `json:"api_name,omitempty"`
+	Category    string    `json:"category,omitempty"`
+	Regions     []string  `json:"regions,omitempty"`
+	APILanguage string    `json:"api_language,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Modified    time.Time `json:"modified"`
 }
 
 func newLibraryCmd() *cobra.Command {
@@ -232,7 +231,6 @@ func scanLibrary() ([]LibraryEntry, error) {
 				}
 				entry.APIName = m.APIName
 				entry.Category = m.Category
-				entry.CatalogEntry = m.CatalogEntry
 				entry.Regions = m.Regions
 				entry.APILanguage = m.APILanguage
 				entry.Description = m.Description
