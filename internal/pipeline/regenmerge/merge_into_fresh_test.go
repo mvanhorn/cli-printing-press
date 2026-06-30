@@ -128,10 +128,15 @@ func newVersionCmd() string { return version }
 		"the published runtime version value stays in root.go")
 }
 
-func TestPreserveMCPMainVersionValuesSkipsMissingSnapshotVersion(t *testing.T) {
+func TestPreserveMCPMainVersionValuesRemovesFreshVarWhenSnapshotHasNoMCPVersion(t *testing.T) {
 	t.Parallel()
 
 	snap, fresh := makeMergeFixture(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, "internal", "cli", "root.go"), []byte(`package cli
+
+var version = "1.2.3"
+`), 0o644))
 	staleRel := "cmd/stale-pp-mcp/main.go"
 	currentRel := "cmd/current-pp-mcp/main.go"
 	for _, rel := range []string{staleRel, currentRel} {
@@ -145,6 +150,10 @@ func main() {}
 	require.NoError(t, os.WriteFile(filepath.Join(fresh, staleRel), []byte(`package main
 
 var version = "2.0.0"
+
+func main() {
+	_ = version
+}
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(snap, currentRel), []byte(`package main
 
@@ -165,6 +174,75 @@ var version = "2.0.0"
 	require.NoError(t, err)
 	assert.Contains(t, string(got), `var version = "1.2.3"`,
 		"a missing snapshot version in one MCP file must not skip later MCP files")
+	got, err = os.ReadFile(filepath.Join(fresh, staleRel))
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), `var version =`)
+	assert.Contains(t, string(got), `_ = "1.2.3"`)
+}
+
+func TestPreserveMCPMainVersionValuesFallsBackToFreshLiteral(t *testing.T) {
+	t.Parallel()
+
+	snap, fresh := makeMergeFixture(t)
+	rel := "cmd/stale-pp-mcp/main.go"
+	require.NoError(t, os.MkdirAll(filepath.Join(snap, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(fresh, filepath.Dir(rel)), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(snap, rel), []byte(`package main
+
+func main() {}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fresh, rel), []byte(`package main
+
+var version = "2.0.0"
+
+func main() {
+	_ = version
+}
+`), 0o644))
+
+	report := &MergeReport{Files: []FileClassification{{Path: rel}}}
+	require.NoError(t, preserveMCPMainVersionValues(snap, fresh, report))
+
+	got, err := os.ReadFile(filepath.Join(fresh, rel))
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), `var version =`)
+	assert.Contains(t, string(got), `_ = "2.0.0"`)
+}
+
+func TestInlineStringVarReferencesAndRemoveSkipsLocalBindings(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	require.NoError(t, os.WriteFile(path, []byte(`package main
+
+var version = "0.0.0-dev"
+
+func mcpVersion() string { return "local" }
+
+func localParameter(version string) string {
+	return version
+}
+
+func localShortDecl() string {
+	version := mcpVersion()
+	return version
+}
+
+func main() {
+	_ = version
+}
+`), 0o644))
+
+	require.NoError(t, inlineStringVarReferencesAndRemove(path, "version", `"1.2.3"`))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	gotSrc := string(got)
+	assert.NotContains(t, gotSrc, `var version =`)
+	assert.Contains(t, gotSrc, `func localParameter(version string) string`)
+	assert.Contains(t, gotSrc, `version := mcpVersion()`)
+	assert.Contains(t, gotSrc, `_ = "1.2.3"`)
 }
 
 func TestMergeIntoFreshTreePrunesOnlyCollidingNameFromMultiNameValueSpec(t *testing.T) {

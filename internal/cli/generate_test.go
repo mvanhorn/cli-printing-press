@@ -165,8 +165,14 @@ func newVersionCmd() *cobra.Command {
 	mcpMainPath := filepath.Join(outputDir, "cmd", "legacyversion-pp-mcp", "main.go")
 	mcpMain, err := os.ReadFile(mcpMainPath)
 	require.NoError(t, err)
-	mcpMain = bytes.Replace(mcpMain, []byte(`var version = "0.0.0-dev"`), []byte(`var version = "2026.6.1"`), 1)
+	mcpMain = bytes.Replace(mcpMain, []byte(`// version is the printed MCP server's version, overridable at build time via ldflags.
+var version = "0.0.0-dev"
+
+`), nil, 1)
+	mcpMain = bytes.Replace(mcpMain, []byte("\t\tversion,\n"), []byte("\t\t\"2026.6.1\",\n"), 1)
 	require.NoError(t, os.WriteFile(mcpMainPath, mcpMain, 0o644))
+	require.NotContains(t, string(mcpMain), `var version =`,
+		"legacy MCP fixture must strip the generated version var before the second generate")
 
 	runGenerate()
 
@@ -177,7 +183,8 @@ func newVersionCmd() *cobra.Command {
 	assert.Contains(t, string(rootSrc), "func newVersionCmd() *cobra.Command")
 	mcpMain, err = os.ReadFile(mcpMainPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(mcpMain), `var version = "2026.6.1"`)
+	assert.NotContains(t, string(mcpMain), `var version =`)
+	assert.Contains(t, string(mcpMain), `"2026.6.1"`)
 
 	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
 	runGoCommandForCLITest(t, outputDir, "build", "./...")
