@@ -37,7 +37,7 @@ AGENTS.override.md
 .codex/skills/
 .cursor/skills/
 .gemini/skills/
-skills-lock.json
+/skills-lock.json
 
 # Planning documents stay local — this is a public repo and plans
 # frequently describe in-progress, unreleased, or third-party work.
