@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -430,13 +431,12 @@ func inlineStringVarReferencesAndRemove(path, name, literal string) error {
 		return err
 	}
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, data, 0)
+	file, err := parser.ParseFile(fset, path, data, parser.SkipObjectResolution)
 	if err != nil {
 		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 
 	declNameOffsets := map[int]struct{}{}
-	targetObjects := map[*ast.Object]struct{}{}
 	var references []int
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -451,32 +451,174 @@ func inlineStringVarReferencesAndRemove(path, name, literal string) error {
 			for _, ident := range valueSpec.Names {
 				if ident.Name == name {
 					declNameOffsets[fset.Position(ident.Pos()).Offset] = struct{}{}
-					if ident.Obj != nil {
-						targetObjects[ident.Obj] = struct{}{}
-					}
 				}
 			}
 		}
 	}
-	if len(targetObjects) == 0 {
+	if len(declNameOffsets) == 0 {
 		return nil
 	}
 
-	ast.Inspect(file, func(node ast.Node) bool {
-		ident, ok := node.(*ast.Ident)
-		if !ok || ident.Name != name {
-			return true
+	identDeclaresName := func(ident *ast.Ident) bool {
+		return ident != nil && ident.Name == name
+	}
+	fieldListDeclaresName := func(fields *ast.FieldList) bool {
+		if fields == nil {
+			return false
+		}
+		for _, field := range fields.List {
+			if slices.ContainsFunc(field.Names, identDeclaresName) {
+				return true
+			}
+		}
+		return false
+	}
+	exprsDeclareName := func(exprs []ast.Expr) bool {
+		for _, expr := range exprs {
+			if ident, ok := expr.(*ast.Ident); ok && identDeclaresName(ident) {
+				return true
+			}
+		}
+		return false
+	}
+	addReference := func(ident *ast.Ident, shadowed bool) {
+		if shadowed || !identDeclaresName(ident) {
+			return
 		}
 		offset := fset.Position(ident.Pos()).Offset
 		if _, isDeclName := declNameOffsets[offset]; isDeclName {
-			return true
-		}
-		if _, matchesTarget := targetObjects[ident.Obj]; !matchesTarget {
-			return true
+			return
 		}
 		references = append(references, offset)
-		return true
-	})
+	}
+
+	var collectExpr func(ast.Expr, bool)
+	collectExpr = func(expr ast.Expr, shadowed bool) {
+		ast.Inspect(expr, func(node ast.Node) bool {
+			switch n := node.(type) {
+			case nil:
+				return true
+			case *ast.SelectorExpr:
+				collectExpr(n.X, shadowed)
+				return false
+			case *ast.KeyValueExpr:
+				if _, keyIsIdent := n.Key.(*ast.Ident); !keyIsIdent {
+					collectExpr(n.Key, shadowed)
+				}
+				collectExpr(n.Value, shadowed)
+				return false
+			case *ast.Ident:
+				addReference(n, shadowed)
+			}
+			return true
+		})
+	}
+	collectExprs := func(exprs []ast.Expr, shadowed bool) {
+		for _, expr := range exprs {
+			collectExpr(expr, shadowed)
+		}
+	}
+
+	var collectBlock func(*ast.BlockStmt, bool)
+	var collectStmt func(ast.Stmt, bool) bool
+	collectBlock = func(block *ast.BlockStmt, shadowed bool) {
+		if block == nil {
+			return
+		}
+		blockShadowed := shadowed
+		for _, stmt := range block.List {
+			if collectStmt(stmt, blockShadowed) {
+				blockShadowed = true
+			}
+		}
+	}
+	collectStmt = func(stmt ast.Stmt, shadowed bool) bool {
+		switch s := stmt.(type) {
+		case *ast.AssignStmt:
+			collectExprs(s.Rhs, shadowed)
+			return s.Tok == token.DEFINE && exprsDeclareName(s.Lhs)
+		case *ast.DeclStmt:
+			gen, ok := s.Decl.(*ast.GenDecl)
+			if !ok {
+				return false
+			}
+			declaresName := false
+			for _, spec := range gen.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				collectExprs(valueSpec.Values, shadowed)
+				for _, ident := range valueSpec.Names {
+					if identDeclaresName(ident) {
+						declaresName = true
+					}
+				}
+			}
+			return declaresName
+		case *ast.ExprStmt:
+			collectExpr(s.X, shadowed)
+		case *ast.ReturnStmt:
+			collectExprs(s.Results, shadowed)
+		case *ast.IfStmt:
+			stmtShadowed := shadowed
+			if s.Init != nil && collectStmt(s.Init, shadowed) {
+				stmtShadowed = true
+			}
+			collectExpr(s.Cond, stmtShadowed)
+			collectBlock(s.Body, stmtShadowed)
+			if s.Else != nil {
+				switch elseNode := s.Else.(type) {
+				case *ast.BlockStmt:
+					collectBlock(elseNode, stmtShadowed)
+				case *ast.IfStmt:
+					collectStmt(elseNode, stmtShadowed)
+				}
+			}
+		case *ast.ForStmt:
+			stmtShadowed := shadowed
+			if s.Init != nil && collectStmt(s.Init, shadowed) {
+				stmtShadowed = true
+			}
+			if s.Cond != nil {
+				collectExpr(s.Cond, stmtShadowed)
+			}
+			if s.Post != nil {
+				collectStmt(s.Post, stmtShadowed)
+			}
+			collectBlock(s.Body, stmtShadowed)
+		case *ast.RangeStmt:
+			collectExpr(s.X, shadowed)
+			bodyShadowed := shadowed
+			if s.Tok == token.DEFINE && exprsDeclareName([]ast.Expr{s.Key, s.Value}) {
+				bodyShadowed = true
+			}
+			collectBlock(s.Body, bodyShadowed)
+		case *ast.BlockStmt:
+			collectBlock(s, shadowed)
+		}
+		return false
+	}
+
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			shadowed := fieldListDeclaresName(d.Recv) ||
+				fieldListDeclaresName(d.Type.Params) ||
+				fieldListDeclaresName(d.Type.Results)
+			collectBlock(d.Body, shadowed)
+		case *ast.GenDecl:
+			if d.Tok == token.VAR {
+				for _, spec := range d.Specs {
+					valueSpec, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					collectExprs(valueSpec.Values, false)
+				}
+			}
+		}
+	}
 	if len(references) == 0 {
 		return pruneDeclsFromGoFile(path, declSet{name: struct{}{}})
 	}
