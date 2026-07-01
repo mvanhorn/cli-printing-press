@@ -621,6 +621,9 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 		if !cliHasLocalStore(cliDir) {
 			return true, "SKIP (CLI has no local store)"
 		}
+		if mode == "mock" && cliIsGraphQLCLIDir(cliDir) {
+			return true, "SKIP (GraphQL CLI: mock server cannot synthesize sync data)"
+		}
 	}
 
 	env := envFn()
@@ -744,6 +747,10 @@ func allSyncAttemptsWereUnknownCommand(errs []error) bool {
 		}
 	}
 	return true
+}
+
+func cliIsGraphQLCLIDir(dir string) bool {
+	return fileExists(filepath.Join(dir, "internal", "client", "graphql.go"))
 }
 
 func isUnknownSyncCommandError(err error) bool {

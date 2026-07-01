@@ -245,10 +245,12 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) (*openAPISpe
 		return nil, err
 	}
 
-	if spec.IsSynthetic() {
-		// Hand-built commands intentionally go beyond the spec; path-validity
-		// is not applicable. Mark unscored so the tier-2 denominator excludes
-		// it rather than awarding a 10-point cushion the CLI didn't earn.
+	if spec.IsSynthetic() || spec.IsGraphQL {
+		// Hand-built commands intentionally go beyond the spec, and GraphQL
+		// CLIs expose semantic command paths over one POST endpoint. In both
+		// cases path-validity is not applicable. Mark unscored so the tier-2
+		// denominator excludes it rather than awarding a 10-point cushion the
+		// CLI didn't earn.
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity)
 	} else {
 		pathValidity := evaluatePathValidity(outputDir, spec)
@@ -2144,6 +2146,7 @@ type openAPISpecInfo struct {
 	OAuthScopeRequirements []oauthScopeRequirement
 	PositionalParamCount   int
 	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
+	IsGraphQL              bool
 }
 
 func (s *openAPISpecInfo) IsSynthetic() bool {

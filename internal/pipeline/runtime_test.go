@@ -361,6 +361,20 @@ func TestRunDataPipelineTestSkipsUnsyncableCLIs(t *testing.T) {
 		assert.Equal(t, "PASS: 1 domain tables created (mock mode; no syncable resources declared)", detail)
 	})
 
+	t.Run("mock mode skips graphql sync data pipeline", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		seedDataPipelineStore(t, dir, true)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+		writeTestFile(t, filepath.Join(dir, "internal", "client", "graphql.go"), "package client\n")
+		binary := buildFailingSyncDataPipelineProbeBinary(t)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Equal(t, "SKIP (GraphQL CLI: mock server cannot synthesize sync data)", detail)
+	})
+
 	t.Run("mock mode still fails zero rows when syncable resources exist", func(t *testing.T) {
 		dir := seedDataPipelineCLIDir(t, true)
 		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
