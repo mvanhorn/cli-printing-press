@@ -1,6 +1,6 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle the contract output signals: `[setup-error]`, optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
+Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle the contract output signals: `[setup-error]`, optional `[local-binary-stale]` / `[local-binary-rebuilt]` repo-mode rebuild markers, `[go-toolchain-old]`, `[low-disk]`, `[repo-upgrade-available]`, the always-emitted `PRINTING_PRESS_BIN=<abs-path>` and `PRESS_REPO_MODE=<true|false>` markers, the global open-agent-skills freshness check, the `min-binary-version` compatibility check, `[upgrade-required]`, `[upgrade-available]`, `[browser-tools-missing]`, and optional `[binary-shadow]` advisory.
 
 Apply these in order. The preamble below runs unconditionally; each numbered section after it is conditional — do nothing if its trigger isn't present.
 
@@ -16,13 +16,30 @@ This rule applies to *all* generator command references in the rest of this docu
 
 ## 1. Refusal: missing prerequisite
 
-If the setup contract output contains a line starting with `[setup-error]`, a required prerequisite is missing (the cli-printing-press binary or the Go toolchain) and the contract has already exited non-zero.
+If the setup contract output contains a line starting with `[setup-error]`, a required prerequisite or environment floor is missing (for example: the cli-printing-press binary, the Go toolchain, an old Go toolchain under `GOTOOLCHAIN=local`, an incomplete Go standard library, or critically low disk space) and the contract has already exited non-zero.
 
 **Stop the skill immediately.** Do not proceed to research, generation, or any other work. Surface the message the contract printed (it includes the exact install command or download URL) verbatim to the user.
 
 The user must install the missing prerequisite in their terminal before re-running. Do not offer to auto-install — the README's install flow is the source of truth for the binary, and silent auto-install hides failure modes (network, wrong GOPATH, no Go toolchain) inside an opaque skill invocation.
 
 If the contract output contains `[local-binary-stale]` followed by `[local-binary-rebuilt]`, continue setup. The repo-mode local binary was older than the checked-out source version and the contract rebuilt it before emitting `PRINTING_PRESS_BIN`. If `[local-binary-stale]` is followed by `[setup-error]`, this section's refusal rule applies.
+
+## 1.5. Environment advisories
+
+If the setup contract output contains a line starting with `[go-toolchain-old]`, the installed `go` is older than the toolchain used to build the resolved `cli-printing-press` binary. Parse the follow-up lines:
+
+- `PRESS_GO_INSTALLED=<installed Go version>`
+- `PRESS_GO_REQUIRED=<binary build Go version>`
+
+This is advisory by default because `GOTOOLCHAIN=auto` may download and use the required toolchain on the first Go command. Tell the user the later Go quality gates may download Go `<required>` or fail if the environment is offline or toolchain downloads are blocked. Do not stop the skill unless the setup contract also emitted `[setup-error]`.
+
+If the setup contract output contains a line starting with `[low-disk]`, the volume holding `PRINTING_PRESS_HOME` has less than the warning threshold free. Parse the follow-up lines:
+
+- `PRESS_DISK_PATH=<checked path>`
+- `PRESS_DISK_AVAIL_KB=<available KiB>`
+- `PRESS_DISK_WARN_KB=<warning threshold KiB>`
+
+This is advisory. Tell the user the current run may need several GiB for generated files, Go build cache, module downloads, or repository clones. Continue unless the setup contract also emitted `[setup-error]`. The thresholds can be tuned for small runners with `PRINTING_PRESS_DISK_WARN_KB` and `PRINTING_PRESS_DISK_FAIL_KB`; invalid threshold values make the disk probe skip silently.
 
 ## 2. Interactive repo upgrade prompt
 
