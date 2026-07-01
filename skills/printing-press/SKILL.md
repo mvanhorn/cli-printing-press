@@ -2657,36 +2657,41 @@ fragments across 4+ files, won't be byte-identical, and the polish skill cannot
 fix it (polish doesn't re-run generation). Enriching the spec means every
 template emits the right surface from the start.
 
-**Count the tool surface.** Two parts:
+**Count the tool surface.** Keep two counts separate:
 
 1. **Typed endpoints** — count `endpoints` across all `resources` (and
    `sub_resources`) in the spec. These become per-endpoint MCP tools at
-   generate-time.
+   generate-time. This is the only count that selects the >50 automatic
+   Cloudflare pattern and the only surface `mcp.orchestration: code` collapses.
 2. **Cobratree-walked tools** — the runtime walker registers user-facing Cobra
    commands as MCP tools. Estimate as: `extra_commands` count + ~13 framework
    tools that ship by default (sql, search, context, sync, stale, doctor,
    reconcile, etc., minus framework-skipped). When novel features are planned,
-   add their estimated command count.
+   add their estimated command count. These tools still register in code
+   orchestration mode so novel commands remain agent-reachable.
 
-The total is what an agent loads at MCP server start.
+The total startup-visible tool count is the visible typed-endpoint tools plus
+cobratree-walked tools and explicit framework tools. Use it to estimate runtime
+context pressure, but do not treat cobratree tools as reducible by
+`mcp.orchestration: code`.
 
 **Decision table:**
 
-| Total tools | Action |
-|-------------|--------|
-| <30 | Skip — default endpoint-mirror surface is fine. |
-| 30–50 | Ask the user. Suggest `mcp.transport: [stdio, http]` for remote reach; suggest `mcp.intents` if there are clear multi-step workflows. |
-| >50 | The generator auto-applies the Cloudflare pattern (transport + code orchestration + hidden endpoint tools) unless `mcp.orchestration` / `x-mcp.orchestration` is explicitly set. |
+| Typed endpoint count | Action |
+|----------------------|--------|
+| <30 | Skip — default endpoint-mirror surface is fine unless the cobratree count is unusually high. |
+| 30–50 | Ask the user. Suggest `mcp.transport: [stdio, http]` for remote reach; suggest `mcp.intents` if there are clear multi-step workflows. If cobratree-walked tools dominate the total, say that code orchestration will not shrink them. |
+| >50 | The generator auto-applies the Cloudflare pattern (transport + code orchestration + hidden endpoint tools) unless `mcp.orchestration` / `x-mcp.orchestration` is explicitly set. This collapses typed endpoint mirrors, not the runtime command mirror. |
 
 **Mandatory >50 endpoint-tools confirmation.** If the pre-generation count
 predicts more than 50 endpoint tools, expect `generate` to print an informational
 line beginning `info: applied Cloudflare MCP pattern`. This is the intended
 default and does not require a blocking question. Before verification, polish,
 dogfood, or publish, confirm the generated MCP surface is the thin
-`<api>_search` + `<api>_execute` pair. If the user explicitly wants raw
-endpoint tools past the threshold, set `mcp.orchestration: endpoint-mirror`
-(internal YAML) or `x-mcp.orchestration: endpoint-mirror` (OpenAPI) before
-regenerating.
+`<api>_search` + `<api>_execute` pair plus any cobratree-walked command tools.
+If the user explicitly wants raw endpoint tools past the threshold, set
+`mcp.orchestration: endpoint-mirror` (internal YAML) or
+`x-mcp.orchestration: endpoint-mirror` (OpenAPI) before regenerating.
 
 **The Cloudflare pattern** (default for large surfaces without explicit
 orchestration) — the generator applies this shape automatically. Add the spec
@@ -2720,9 +2725,17 @@ mcp:
 
 `mcp.transport: [stdio, http]` adds HTTP streamable transport so cloud-hosted
 agents (Managed Agents, web clients) can connect. `mcp.orchestration: code`
-emits the thin search+execute pair that covers the full surface in ~1K tokens.
+emits the thin search+execute pair that covers the typed-endpoint surface in
+~1K tokens.
 `mcp.endpoint_tools: hidden` removes the raw per-endpoint tools that would
 otherwise still show up alongside the orchestration pair.
+
+For command-dominant CLIs where cobratree-walked tools greatly outnumber typed
+endpoints, do not present code orchestration as the context-reduction remedy for
+the command mirror. Keep novel commands reachable by default, and reduce that
+surface only with deliberate per-command `cmd.Annotations["mcp:hidden"] =
+"true"` opt-outs or framework-command classification in
+`internal/mcp/cobratree/classify.go.tmpl`.
 
 For OpenAPI input specs, declare these fields under `x-mcp:` at the document
 root (OpenAPI 3.0 `x-*` vendor extensions). The shape is identical to the
