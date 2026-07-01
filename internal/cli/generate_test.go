@@ -3459,6 +3459,56 @@ func TestGenerateCmdRejectsTrafficAnalysisWithPlan(t *testing.T) {
 	assert.Contains(t, err.Error(), "--traffic-analysis cannot be used with --plan")
 }
 
+func TestGenerateCmdPlanDryRunWritesNoFiles(t *testing.T) {
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	outputDir := filepath.Join(dir, "plan-output")
+	plan := "# Plan\n\n## Commands\n\n- `doctor` - Check health\n- `scan` - Scan things\n"
+	require.NoError(t, os.WriteFile(planPath, []byte(plan), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--plan", planPath,
+		"--name", "plan-dry-run",
+		"--output", outputDir,
+		"--dry-run",
+	})
+
+	stderr, err := runWithCapturedStderr(t, cmd.Execute)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "Commands:   1")
+	assert.Contains(t, stderr, "Contract:   lightweight scaffold, not a full Printing Press CLI")
+	_, err = os.Stat(outputDir)
+	assert.True(t, os.IsNotExist(err), "plan dry-run must not create output directory")
+
+	stdout, err := runWithCapturedStdout(t, func() error {
+		return printPlanDryRun(&generator.PlanSpec{
+			CLIName: "plan-dry-run",
+			Commands: []generator.PlanCommand{
+				{Name: "doctor", Description: "Check health"},
+				{Name: "version", Description: "Show version"},
+				{Name: "scan", Description: "Scan things"},
+			},
+		}, outputDir, planPath, 1)
+	})
+	require.NoError(t, err)
+	var dryRunSummary map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &dryRunSummary))
+	assert.Equal(t, float64(1), dryRunSummary["commands"])
+
+	writeOutputDir := filepath.Join(dir, "plan-write-output")
+	cmd = newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--plan", planPath,
+		"--name", "plan-dry-run",
+		"--output", writeOutputDir,
+	})
+
+	stderr, err = runWithCapturedStderr(t, cmd.Execute)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "Notice: plan mode emits a lightweight scaffold, not a full Printing Press CLI.")
+}
+
 func TestGenerateCmdHonorsExplicitOutput(t *testing.T) {
 	t.Parallel()
 

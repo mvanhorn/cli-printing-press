@@ -67,6 +67,24 @@ func (planStreamingData) Enabled() bool {
 	return false
 }
 
+var planScaffoldRootCommands = map[string]struct{}{
+	"doctor":  {},
+	"version": {},
+}
+
+// GeneratedPlanCommandCount reports how many command files GenerateFromPlan
+// will emit for user-declared plan commands after scaffold-owned names are
+// filtered out.
+func GeneratedPlanCommandCount(commands []PlanCommand) int {
+	topLevel, parents := partitionCommands(commands)
+	count := len(topLevel)
+	for _, parent := range parents {
+		count++
+		count += len(parent.SubCommands)
+	}
+	return count
+}
+
 // GenerateFromPlan creates a CLI scaffold from a parsed plan spec.
 func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 	cliName := planSpec.CLIName
@@ -262,11 +280,14 @@ func partitionCommands(commands []PlanCommand) (topLevel []PlanCommand, parents 
 
 	for _, cmd := range commands {
 		if parent := cmd.Parent(); parent != "" {
+			if isPlanScaffoldRootCommand(parent) {
+				continue
+			}
 			parentMap[parent] = append(parentMap[parent], cmd)
 			if parentDescs[parent] == "" {
 				parentDescs[parent] = parent + " commands"
 			}
-		} else {
+		} else if !isPlanScaffoldRootCommand(cmd.Leaf()) {
 			// Check if this command is also a parent of other commands
 			topLevel = append(topLevel, cmd)
 		}
@@ -308,6 +329,11 @@ func partitionCommands(commands []PlanCommand) (topLevel []PlanCommand, parents 
 	}
 
 	return filteredTopLevel, parents
+}
+
+func isPlanScaffoldRootCommand(name string) bool {
+	_, ok := planScaffoldRootCommands[strings.ToLower(strings.TrimSpace(name))]
+	return ok
 }
 
 // resolveOwnerForExisting returns the owner attribution for a regeneration

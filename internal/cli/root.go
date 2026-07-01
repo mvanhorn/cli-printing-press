@@ -281,10 +281,14 @@ func newGenerateCmd() *cobra.Command {
 				if len(planSpec.Commands) == 0 {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("plan contains no command definitions")}
 				}
+				planCommandCount := generator.GeneratedPlanCommandCount(planSpec.Commands)
 
-				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, !dryRun)
 				if err != nil {
 					return err
+				}
+				if dryRun {
+					return printPlanDryRun(planSpec, absOut, planFile, planCommandCount)
 				}
 
 				if err := generator.GenerateFromPlan(planSpec, absOut); err != nil {
@@ -302,12 +306,13 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from plan)\n", naming.CLI(planSpec.CLIName), absOut)
+				fmt.Fprintln(os.Stderr, "Notice: plan mode emits a lightweight scaffold, not a full Printing Press CLI. Use spec generation for store, MCP, manifest, and framework commands.")
 				if asJSON {
 					if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 						"name":       planSpec.CLIName,
 						"output_dir": absOut,
 						"plan_file":  planFile,
-						"commands":   len(planSpec.Commands),
+						"commands":   planCommandCount,
 					}); err != nil {
 						return fmt.Errorf("encoding JSON: %w", err)
 					}
@@ -2435,6 +2440,27 @@ func printDryRun(apiSpec *spec.APISpec, absOut string, specFiles []string) error
 		"spec_files":     specFiles,
 		"resource_count": resourceCount,
 		"endpoint_count": endpointCount,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(summary)
+}
+
+func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string, commandCount int) error {
+	fmt.Fprintf(os.Stderr, "Dry run — plan parsed, no files will be generated\n")
+	fmt.Fprintf(os.Stderr, "  Plan file:  %s\n", planFile)
+	fmt.Fprintf(os.Stderr, "  CLI name:   %s\n", planSpec.CLIName)
+	fmt.Fprintf(os.Stderr, "  Output dir: %s\n", absOut)
+	fmt.Fprintf(os.Stderr, "  Commands:   %d\n", commandCount)
+	fmt.Fprintln(os.Stderr, "  Contract:   lightweight scaffold, not a full Printing Press CLI")
+
+	summary := map[string]any{
+		"dry_run":    true,
+		"name":       planSpec.CLIName,
+		"output_dir": absOut,
+		"plan_file":  planFile,
+		"commands":   commandCount,
+		"contract":   "lightweight scaffold, not a full Printing Press CLI",
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

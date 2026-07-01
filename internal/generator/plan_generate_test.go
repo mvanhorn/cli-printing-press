@@ -2,7 +2,6 @@ package generator
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,10 +70,42 @@ func TestGenerateFromPlan_BasicScaffold(t *testing.T) {
 	assert.Contains(t, string(recordGo), "not implemented")
 
 	// Verify it compiles
-	buildCmd := exec.Command("go", "build", "./...")
-	buildCmd.Dir = outputDir
-	buildOut, err := buildCmd.CombinedOutput()
-	require.NoError(t, err, "go build failed: %s", string(buildOut))
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGenerateFromPlan_DeduplicatesScaffoldRootCommands(t *testing.T) {
+	t.Parallel()
+
+	planSpec := &PlanSpec{
+		CLIName:     "scaffold-collision",
+		Description: "Plan CLI with scaffold command collisions",
+		Commands: []PlanCommand{
+			{Name: "doctor", Description: "Check health"},
+			{Name: "doctor status", Description: "Check detailed health"},
+			{Name: "version", Description: "Print version"},
+			{Name: "scan", Description: "Scan things"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(planSpec.CLIName))
+	require.NoError(t, os.MkdirAll(outputDir, 0o755))
+
+	require.NoError(t, GenerateFromPlan(planSpec, outputDir))
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	rootContent := string(rootGo)
+	assert.Equal(t, 1, strings.Count(rootContent, "rootCmd.AddCommand(newDoctorCmd())"))
+	assert.Equal(t, 1, strings.Count(rootContent, "rootCmd.AddCommand(newVersionCliCmd())"))
+	assert.NotContains(t, rootContent, "newVersionCmd()")
+	assert.Contains(t, rootContent, "newScanCmd()")
+
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "version.go"))
+	assert.True(t, os.IsNotExist(err), "version should be provided by the scaffold root command")
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "doctor_status.go"))
+	assert.True(t, os.IsNotExist(err), "doctor subcommands should be reserved for the scaffold root command")
+
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerateFromPlan_WithSubcommands(t *testing.T) {
@@ -118,10 +149,7 @@ func TestGenerateFromPlan_WithSubcommands(t *testing.T) {
 	assert.Contains(t, rootContent, "newDeployCmd()")
 
 	// Verify it compiles
-	buildCmd := exec.Command("go", "build", "./...")
-	buildCmd.Dir = outputDir
-	buildOut, err := buildCmd.CombinedOutput()
-	require.NoError(t, err, "go build failed: %s", string(buildOut))
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestGenerateFromPlan_EmptyName(t *testing.T) {
@@ -247,4 +275,19 @@ func TestPartitionCommands(t *testing.T) {
 	assert.Len(t, parents[0].SubCommands, 2)
 	assert.Equal(t, "config", parents[1].Name)
 	assert.Len(t, parents[1].SubCommands, 2)
+}
+
+func TestGeneratedPlanCommandCountSkipsScaffoldCommands(t *testing.T) {
+	t.Parallel()
+
+	commands := []PlanCommand{
+		{Name: "doctor", Description: "Check health"},
+		{Name: "doctor status", Description: "Check health status"},
+		{Name: "version", Description: "Show version"},
+		{Name: "scan", Description: "Scan things"},
+		{Name: "auth login", Description: "Log in"},
+		{Name: "auth logout", Description: "Log out"},
+	}
+
+	assert.Equal(t, 4, GeneratedPlanCommandCount(commands))
 }
