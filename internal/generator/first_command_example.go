@@ -75,10 +75,7 @@ func commandExampleArgs(ep spec.Endpoint) string {
 
 func commandExampleArgParts(ep spec.Endpoint) []string {
 	var parts []string
-	for _, p := range ep.Params {
-		if !p.Positional {
-			continue
-		}
+	for _, p := range orderedPositionalParams(ep) {
 		val := exampleValue(p)
 		if val == "" {
 			val = "<" + p.Name + ">"
@@ -90,10 +87,8 @@ func commandExampleArgParts(ep spec.Endpoint) []string {
 
 func readmeExampleArgs(ep spec.Endpoint) []string {
 	var parts []string
-	for _, p := range ep.Params {
-		if p.Positional {
-			parts = append(parts, skillExamplePositionalValue(p))
-		}
+	for _, p := range orderedPositionalParams(ep) {
+		parts = append(parts, skillExamplePositionalValue(p))
 	}
 	return append(parts, requiredFlagExampleParts(ep)...)
 }
