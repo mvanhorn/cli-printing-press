@@ -1256,6 +1256,18 @@ func writeExecutable(t *testing.T, path, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o755))
 }
 
+func linkHostToolIfNeeded(t *testing.T, dir, name string) {
+	t.Helper()
+
+	target := filepath.Join(dir, name)
+	if _, err := os.Stat(target); err == nil {
+		return
+	}
+	hostPath, err := exec.LookPath(name)
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(hostPath, target))
+}
+
 type setupSkill struct {
 	name string
 	path string
@@ -1284,6 +1296,8 @@ func goRequiredSetupSkills() []setupSkill {
 }
 
 func goCurrencySetupSkills() []setupSkill {
+	// printing-press-import resolves PRINTING_PRESS_BIN after setup, once the
+	// imported CLI has been selected, so setup cannot compare Go currency yet.
 	return []setupSkill{
 		{name: "printing-press", path: filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")},
 		{name: "printing-press-amend", path: filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md")},
@@ -1362,6 +1376,13 @@ esac
 exit 0
 `)
 	}
+	pathValue := fakeBin + string(os.PathListSeparator) + "/usr/bin:/bin:/usr/sbin:/sbin"
+	if !opts.includeGo {
+		for _, tool := range []string{"awk", "dirname", "git", "head", "sed"} {
+			linkHostToolIfNeeded(t, fakeBin, tool)
+		}
+		pathValue = fakeBin
+	}
 
 	gitInit := exec.Command("git", "init")
 	gitInit.Dir = repo
@@ -1375,7 +1396,7 @@ exit 0
 	env := append(os.Environ(),
 		"ARGUMENTS=",
 		"HOME="+home,
-		"PATH="+fakeBin+string(os.PathListSeparator)+"/usr/bin:/bin:/usr/sbin:/sbin",
+		"PATH="+pathValue,
 		"PRINTING_PRESS_HOME="+pressHome,
 		"PP_FAKE_GO_INSTALLED="+opts.goInstalled,
 		"PP_FAKE_GO_BINARY="+opts.goBinary,
