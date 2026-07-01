@@ -276,3 +276,18 @@ func TestPartitionCommands(t *testing.T) {
 	assert.Equal(t, "config", parents[1].Name)
 	assert.Len(t, parents[1].SubCommands, 2)
 }
+
+func TestGeneratedPlanCommandCountSkipsScaffoldCommands(t *testing.T) {
+	t.Parallel()
+
+	commands := []PlanCommand{
+		{Name: "doctor", Description: "Check health"},
+		{Name: "doctor status", Description: "Check health status"},
+		{Name: "version", Description: "Show version"},
+		{Name: "scan", Description: "Scan things"},
+		{Name: "auth login", Description: "Log in"},
+		{Name: "auth logout", Description: "Log out"},
+	}
+
+	assert.Equal(t, 4, GeneratedPlanCommandCount(commands))
+}

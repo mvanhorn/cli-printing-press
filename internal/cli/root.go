@@ -281,13 +281,14 @@ func newGenerateCmd() *cobra.Command {
 				if len(planSpec.Commands) == 0 {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("plan contains no command definitions")}
 				}
+				planCommandCount := generator.GeneratedPlanCommandCount(planSpec.Commands)
 
 				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, !dryRun)
 				if err != nil {
 					return err
 				}
 				if dryRun {
-					return printPlanDryRun(planSpec, absOut, planFile)
+					return printPlanDryRun(planSpec, absOut, planFile, planCommandCount)
 				}
 
 				if err := generator.GenerateFromPlan(planSpec, absOut); err != nil {
@@ -311,7 +312,7 @@ func newGenerateCmd() *cobra.Command {
 						"name":       planSpec.CLIName,
 						"output_dir": absOut,
 						"plan_file":  planFile,
-						"commands":   len(planSpec.Commands),
+						"commands":   planCommandCount,
 					}); err != nil {
 						return fmt.Errorf("encoding JSON: %w", err)
 					}
@@ -2445,12 +2446,12 @@ func printDryRun(apiSpec *spec.APISpec, absOut string, specFiles []string) error
 	return enc.Encode(summary)
 }
 
-func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string) error {
+func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string, commandCount int) error {
 	fmt.Fprintf(os.Stderr, "Dry run — plan parsed, no files will be generated\n")
 	fmt.Fprintf(os.Stderr, "  Plan file:  %s\n", planFile)
 	fmt.Fprintf(os.Stderr, "  CLI name:   %s\n", planSpec.CLIName)
 	fmt.Fprintf(os.Stderr, "  Output dir: %s\n", absOut)
-	fmt.Fprintf(os.Stderr, "  Commands:   %d\n", len(planSpec.Commands))
+	fmt.Fprintf(os.Stderr, "  Commands:   %d\n", commandCount)
 	fmt.Fprintln(os.Stderr, "  Contract:   lightweight scaffold, not a full Printing Press CLI")
 
 	summary := map[string]any{
@@ -2458,7 +2459,7 @@ func printPlanDryRun(planSpec *generator.PlanSpec, absOut, planFile string) erro
 		"name":       planSpec.CLIName,
 		"output_dir": absOut,
 		"plan_file":  planFile,
-		"commands":   len(planSpec.Commands),
+		"commands":   commandCount,
 		"contract":   "lightweight scaffold, not a full Printing Press CLI",
 	}
 	enc := json.NewEncoder(os.Stdout)

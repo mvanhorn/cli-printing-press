@@ -3476,9 +3476,25 @@ func TestGenerateCmdPlanDryRunWritesNoFiles(t *testing.T) {
 
 	stderr, err := runWithCapturedStderr(t, cmd.Execute)
 	require.NoError(t, err)
+	assert.Contains(t, stderr, "Commands:   1")
 	assert.Contains(t, stderr, "Contract:   lightweight scaffold, not a full Printing Press CLI")
 	_, err = os.Stat(outputDir)
 	assert.True(t, os.IsNotExist(err), "plan dry-run must not create output directory")
+
+	stdout, err := runWithCapturedStdout(t, func() error {
+		return printPlanDryRun(&generator.PlanSpec{
+			CLIName: "plan-dry-run",
+			Commands: []generator.PlanCommand{
+				{Name: "doctor", Description: "Check health"},
+				{Name: "version", Description: "Show version"},
+				{Name: "scan", Description: "Scan things"},
+			},
+		}, outputDir, planPath, 1)
+	})
+	require.NoError(t, err)
+	var dryRunSummary map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &dryRunSummary))
+	assert.Equal(t, float64(1), dryRunSummary["commands"])
 
 	writeOutputDir := filepath.Join(dir, "plan-write-output")
 	cmd = newGenerateCmd()

@@ -109,3 +109,24 @@ func TestRunWithCapturedStdoutRestoresStdoutAfterPanic(t *testing.T) {
 	require.True(t, didPanic)
 	assert.True(t, restored, "stdout should be restored while unwinding a panic")
 }
+
+func TestRunWithCapturedStderrRestoresStderrAfterPanic(t *testing.T) {
+	origStderr := os.Stderr
+	var didPanic bool
+	var restored bool
+
+	func() {
+		defer func() {
+			didPanic = recover() != nil
+			restored = os.Stderr == origStderr
+			os.Stderr = origStderr
+		}()
+
+		_, _ = runWithCapturedStderr(t, func() error {
+			panic("boom")
+		})
+	}()
+
+	require.True(t, didPanic)
+	assert.True(t, restored, "stderr should be restored while unwinding a panic")
+}

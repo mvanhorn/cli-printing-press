@@ -72,6 +72,19 @@ var planScaffoldRootCommands = map[string]struct{}{
 	"version": {},
 }
 
+// GeneratedPlanCommandCount reports how many command files GenerateFromPlan
+// will emit for user-declared plan commands after scaffold-owned names are
+// filtered out.
+func GeneratedPlanCommandCount(commands []PlanCommand) int {
+	topLevel, parents := partitionCommands(commands)
+	count := len(topLevel)
+	for _, parent := range parents {
+		count++
+		count += len(parent.SubCommands)
+	}
+	return count
+}
+
 // GenerateFromPlan creates a CLI scaffold from a parsed plan spec.
 func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 	cliName := planSpec.CLIName
