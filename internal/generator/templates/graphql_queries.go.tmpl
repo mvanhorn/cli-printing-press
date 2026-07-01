@@ -10,6 +10,7 @@ package client
 {{- $queryField := graphqlQueryField $endpoint.ResponsePath}}
 {{- $params := graphqlListParams $endpoint}}
 
+{{- if $queryField}}
 const {{pascal $rName}}ListQuery = {{backtick}}query{{if $params}}({{- range $i, $p := $params}}{{if $i}}, {{end}}${{$p.Name}}: {{graphqlVariableType $p}}{{- end}}){{end}} {
   {{$queryField}}{{if $params}}({{- range $i, $p := $params}}{{if $i}}, {{end}}{{$p.Name}}: ${{$p.Name}}{{- end}}){{end}} {
     nodes {
@@ -20,9 +21,16 @@ const {{pascal $rName}}ListQuery = {{backtick}}query{{if $params}}({{- range $i,
     pageInfo { hasNextPage endCursor }
   }
 }{{backtick}}
+{{- else}}
+// {{pascal $rName}}ListQuery is intentionally empty because the spec does not
+// declare the GraphQL response path needed to infer an operation. Hand-author
+// this query for the target API before using the generated list command.
+const {{pascal $rName}}ListQuery = ""
+{{- end}}
 {{- if hasGraphQLParam $endpoint "last"}}
 {{- $latestParams := graphqlLatestParams $endpoint}}
 
+{{- if $queryField}}
 const {{pascal $rName}}ListLatestQuery = {{backtick}}query{{if $latestParams}}({{- range $i, $p := $latestParams}}{{if $i}}, {{end}}${{$p.Name}}: {{graphqlVariableType $p}}{{- end}}){{end}} {
   {{$queryField}}{{if $latestParams}}({{- range $i, $p := $latestParams}}{{if $i}}, {{end}}{{$p.Name}}: ${{$p.Name}}{{- end}}){{end}} {
     nodes {
@@ -33,11 +41,18 @@ const {{pascal $rName}}ListLatestQuery = {{backtick}}query{{if $latestParams}}({
     pageInfo { hasNextPage endCursor }
   }
 }{{backtick}}
+{{- else}}
+// {{pascal $rName}}ListLatestQuery is intentionally empty because the spec does
+// not declare the GraphQL response path needed to infer an operation. Hand-author
+// this query for the target API before using the generated list-latest command.
+const {{pascal $rName}}ListLatestQuery = ""
+{{- end}}
 {{- end}}
 {{- end}}
 {{- if eq $eName "get"}}
 {{- $queryField := graphqlQueryField $endpoint.ResponsePath}}
 
+{{- if $queryField}}
 const {{pascal $rName}}GetQuery = {{backtick}}query($id: String!) {
   {{$queryField}}(id: $id) {
 {{- range graphqlFieldSelection $endpoint.Response.Item $.Types}}
@@ -45,6 +60,12 @@ const {{pascal $rName}}GetQuery = {{backtick}}query($id: String!) {
 {{- end}}
   }
 }{{backtick}}
+{{- else}}
+// {{pascal $rName}}GetQuery is intentionally empty because the spec does not
+// declare the GraphQL response path needed to infer an operation. Hand-author
+// this query for the target API before using the generated get command.
+const {{pascal $rName}}GetQuery = ""
+{{- end}}
 {{- end}}
 {{- end}}
 {{- end}}

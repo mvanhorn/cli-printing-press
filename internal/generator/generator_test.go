@@ -15390,6 +15390,88 @@ func TestGenerateGraphQLCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateGraphQLInternalSpecEmitsEmptyQueryStubs(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:                "events-graphql",
+		Description:         "GraphQL endpoint fixture",
+		Version:             "0.1.0",
+		BaseURL:             "https://api.example.com",
+		GraphQLEndpointPath: "/graphql",
+		Auth:                spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/events-graphql-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"events": {
+				Description: "Events",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "POST",
+						Path:        "/graphql",
+						Description: "List events",
+						Response: spec.ResponseDef{
+							Type: "array",
+							Item: "Event",
+						},
+					},
+					"get": {
+						Method:      "POST",
+						Path:        "/graphql",
+						Description: "Get event",
+						Params: []spec.Param{{
+							Name:       "event_id",
+							Type:       "string",
+							Required:   true,
+							Positional: true,
+						}},
+						Response: spec.ResponseDef{
+							Type: "object",
+							Item: "Event",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	queriesGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "queries.go"))
+	require.NoError(t, err)
+	queriesContent := string(queriesGo)
+	assert.Contains(t, queriesContent, `const EventsListQuery = ""`)
+	assert.Contains(t, queriesContent, `const EventsGetQuery = ""`)
+	assert.Contains(t, queriesContent, "Hand-author")
+	assert.NotContains(t, queriesContent, "query {\n   {")
+	assert.NotContains(t, queriesContent, "(id: $id)")
+
+	emptyQueryTest := `package client
+
+import (
+	"context"
+	"testing"
+)
+
+func TestGraphQLQueryRejectsEmptyQuery(t *testing.T) {
+	_, err := (&Client{}).Query(context.Background(), "", nil)
+	if err == nil {
+		t.Fatal("expected empty GraphQL query to fail")
+	}
+	if got := err.Error(); got != "graphql query is empty; hand-author the query constant for this API" {
+		t.Fatalf("error = %q", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "empty_query_test.go"), []byte(emptyQueryTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestGraphQLQueryRejectsEmptyQuery$")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 func TestGenerateGraphQLListWiresOptionalQueryVariable(t *testing.T) {
 	t.Parallel()
 

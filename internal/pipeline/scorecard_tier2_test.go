@@ -1305,6 +1305,33 @@ func runMessages() {
 
 		assert.Equal(t, 5, scoreDeadCode(dir))
 	})
+
+	t.Run("generated helper extension points are not dead code", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func applyResponsePath() {}
+func emitMissingPaginationCursorWarning() {}
+func emitMissingPaginationSignalWarning() {}
+func emitPaginatedGetMaxPagesWarning() {}
+func emitTruncationWarning() {}
+func extractGraphQLConnection() {}
+func extractGraphQLObject() {}
+func formatCLIParamValue() {}
+func nextClientSidePaginationCursor() {}
+func nextFullPageOffsetCursor() {}
+func paginatedGet() {}
+func paginationCursorToken() {}
+func replacePathParam() {}
+func responsePayloadParentAtPath() {}
+func writeNoop() {}
+`)
+
+		assert.Equal(t, 5, scoreDeadCode(dir))
+	})
 }
 
 func TestScorecard_VerifyCalibration(t *testing.T) {
@@ -1418,6 +1445,76 @@ func runLinks() string {
 		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "data_pipeline_integrity", "sync_correctness", "type_fidelity", "live_api_verification"}, sc.UnscoredDimensions)
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 		assert.NotContains(t, sc.GapReport, "auth_protocol scored 0/10 - needs improvement")
+	})
+
+	t.Run("graphql specs omit rest path validity from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+func runEvents() string {
+	path := "/events"
+	return path
+}
+`)
+		specPath := filepath.Join(dir, "spec.yaml")
+		writeScorecardFixture(t, dir, "spec.yaml", `
+name: events-graphql
+version: "0.1.0"
+base_url: https://api.example.com
+graphql_endpoint_path: /graphql
+auth:
+  type: none
+resources:
+  events:
+    description: Events
+    endpoints:
+      list:
+        method: POST
+        path: /graphql
+        description: List events
+`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+		assert.Zero(t, sc.Steinberger.PathValidity)
+		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
+	})
+
+	t.Run("OpenAPI GraphQL specs omit rest path validity from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+func runEvents() string {
+	path := "/events"
+	return path
+}
+`)
+		specPath := filepath.Join(dir, "openapi.yaml")
+		writeScorecardFixture(t, dir, "openapi.yaml", `
+openapi: 3.0.3
+info:
+  title: Events GraphQL
+  version: 1.0.0
+  x-graphql-endpoint: /graphql
+paths:
+  /graphql:
+    post:
+      operationId: graphql
+      responses:
+        "200":
+          description: ok
+`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+		assert.Zero(t, sc.Steinberger.PathValidity)
+		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 	})
 
 	t.Run("no store omits store pipeline dimensions from scoring", func(t *testing.T) {
