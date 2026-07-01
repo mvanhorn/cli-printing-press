@@ -1285,7 +1285,7 @@ git add -f "library/<category>/<api-slug>/"
 # Pre-commit scope guard: only this CLI's replacement plus any pre-existing
 # merged paths for the same slug may be staged. This catches stale untracked
 # fragments from previous publish branches before they leak into the wrong PR.
-EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/<category>/<api-slug>/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d' | sort -u)
+EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/<category>/<api-slug>/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d; s#/*$#/#' | sort -u)
 UNEXPECTED_STAGED=$(git diff --cached --name-only | awk -v prefixes="$EXPECTED_STAGE_PREFIXES" '
 BEGIN { n = split(prefixes, p, "\n") }
 {

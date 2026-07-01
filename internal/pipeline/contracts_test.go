@@ -976,13 +976,13 @@ func TestPublishSkillCommitStageForceAddsIgnoredPackageArtifactsAndRejectsOutOfS
 		require.NoError(t, err, "git %v failed:\n%s", args, out)
 		return string(out)
 	}
-	runStageScript := func() (string, error) {
+	runStageScript := func(env ...string) (string, error) {
 		t.Helper()
 		const script = `set -euo pipefail
 PREEXISTING_MERGED_PATHS="${PREEXISTING_MERGED_PATHS:-}"
 git add -A library/
 git add -f "library/other/acme/"
-EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/other/acme/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d' | sort -u)
+EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/other/acme/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d; s#/*$#/#' | sort -u)
 UNEXPECTED_STAGED=$(git diff --cached --name-only | awk -v prefixes="$EXPECTED_STAGE_PREFIXES" '
 BEGIN { n = split(prefixes, p, "\n") }
 {
@@ -1003,6 +1003,7 @@ fi
 `
 		cmd := exec.Command("bash", "-c", script)
 		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), env...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -1035,6 +1036,16 @@ fi
 
 	runGit("reset")
 	require.NoError(t, os.RemoveAll(filepath.Join(repo, "library", "other", "stale-fragment")))
+	siblingPath := filepath.Join(repo, "library", "other", "acme-extra", "README.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(siblingPath), 0o755))
+	require.NoError(t, os.WriteFile(siblingPath, []byte("# sibling\n"), 0o644))
+	out, err = runStageScript("PREEXISTING_MERGED_PATHS=library/other/acme")
+	require.Error(t, err)
+	assert.Contains(t, out, "publish staged paths outside the expected CLI scope")
+	assert.Contains(t, out, "library/other/acme-extra/README.md")
+
+	runGit("reset")
+	require.NoError(t, os.RemoveAll(filepath.Join(repo, "library", "other", "acme-extra")))
 	out, err = runStageScript()
 	require.NoError(t, err, out)
 
