@@ -135,9 +135,8 @@ type WaitOptions struct {
 // final response body as a parsed map, or an error.
 //
 // Terminal statuses recognised:
-//
-//	done, complete, completed, success, succeeded, finished,
-//	failed, errored, cancelled, canceled
+//   done, complete, completed, success, succeeded, finished,
+//   failed, errored, cancelled, canceled
 func WaitForJob(ctx context.Context, c *client.Client, statusPath string, jobID string, opts WaitOptions) (map[string]any, error) {
 	interval := opts.Interval
 	if interval <= 0 {
