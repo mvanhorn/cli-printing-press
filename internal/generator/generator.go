@@ -3518,6 +3518,7 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 			SearchableFields        map[string][]string
 			Tables                  []TableDef
 			ChildScopeColumnSources []profiler.ChildScopeSource
+			MembershipScopedParents []profiler.MembershipScopedParent
 		}{
 			APISpec:                 g.Spec,
 			SyncableResources:       g.profile.SyncableResources,
@@ -3525,6 +3526,7 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 			SearchableFields:        g.profile.SearchableFields,
 			Tables:                  schema,
 			ChildScopeColumnSources: g.profile.ChildScopeColumnSources(),
+			MembershipScopedParents: g.profile.MembershipScopedParents(),
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
@@ -3549,6 +3551,7 @@ type visionRenderData struct {
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
 	TenantScopedParents          []profiler.TenantScopedParent
+	MembershipScopedParents      []profiler.MembershipScopedParent
 	PaginationSupportedResources []string
 	PaginationDefaultResources   []paginationDefaultEntry
 	SpecTimestampFields          []string
@@ -3858,6 +3861,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
 		TenantScopedParents:          g.profile.TenantScopedParents(),
+		MembershipScopedParents:      g.profile.MembershipScopedParents(),
 		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		PaginationDefaultResources:   paginationDefaultEntries(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		SpecTimestampFields:          specDateTimeFieldNames(g.Spec),

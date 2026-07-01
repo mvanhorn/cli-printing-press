@@ -2071,6 +2071,14 @@ type Endpoint struct {
 	// Consumed by tenant-scoped dependent fan-out (parent tables) and flat
 	// tenant-scoped reconcile (the swept table). Empty when unannotated.
 	TenantScopeColumn string `yaml:"tenant_scope_column,omitempty" json:"tenant_scope_column,omitempty"`
+	// MembershipField is a boolean field in this collection's own row payload
+	// (declared by the path-item-level `x-pp-membership-field` extension, e.g.
+	// "is_member") indicating whether the authenticated user is a member of the
+	// resource. Dependent fan-out over this parent table skips rows whose field
+	// is false — their sub-resources would 403 — reporting one clear "not a
+	// member" summary instead of a 403 per (sub-resource, parent). Empty when
+	// unannotated.
+	MembershipField string `yaml:"membership_field,omitempty" json:"membership_field,omitempty"`
 	// IDFieldFromPathParam is parser-only provenance used by the profiler to
 	// promote member-path primary-key hints onto same-resource list endpoints
 	// without re-inferring how IDField was resolved. It is intentionally not

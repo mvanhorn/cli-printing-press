@@ -986,6 +986,50 @@ func (s *Store) List(resourceType string, limit int) ([]json.RawMessage, error) 
 	}
 	return results, rows.Err()
 }
+{{- if .MembershipScopedParents}}
+
+// NonMemberParents returns id -> name for every synced row of resourceType whose
+// declared boolean membership field is false — i.e. the authenticated user is
+// explicitly NOT a member. Rows lacking the field (json_extract → NULL) are
+// treated as member and omitted, so a missing flag never silently skips a
+// parent. The dependent fan-out uses this to skip sub-resources that would
+// otherwise 403, reporting one clear "not a member" line instead of a 403 per
+// (resource, parent). membershipField is validated against validIdentifierRE
+// before interpolation; an invalid name yields an empty set (feature no-op).
+func (s *Store) NonMemberParents(resourceType, membershipField string) (map[string]string, error) {
+	if !validIdentifierRE.MatchString(membershipField) {
+		return map[string]string{}, nil
+	}
+	// json_extract aborts the WHOLE query with "malformed JSON" if ANY scanned
+	// row's data is invalid JSON (real stores accumulate such rows, e.g. a
+	// non-list 200 body cached as-is). Guard by filtering to json_valid(data) in
+	// the inner WHERE so the json_extract calls (SELECT list + outer predicate)
+	// only ever see rows that already passed json_valid — a single junk row must
+	// not silently disable the whole skip feature.
+	rows, err := s.db.Query(
+		fmt.Sprintf(`SELECT id, name FROM (
+		   SELECT id,
+		          COALESCE(json_extract(data, '$.name'), '') AS name,
+		          json_extract(data, '$.%s') AS is_member
+		   FROM resources
+		   WHERE resource_type = ? AND json_valid(data)
+		 ) WHERE is_member = 0`, membershipField), resourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+{{- end}}
 
 func (s *Store) Search(query string, limit int, resourceTypes ...string) ([]json.RawMessage, error) {
 	if limit <= 0 {
