@@ -300,6 +300,131 @@ func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	assert.Contains(t, block, `https://go.dev/dl/`)
 }
 
+func TestSetupContractsRequireGoToolchain(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range goRequiredSetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{includeGo: false})
+
+			require.Error(t, err, output)
+			assert.Contains(t, output, "[setup-error] Go toolchain not found.")
+		})
+	}
+}
+
+func TestSetupContractsStayQuietInHealthyEnvironment(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range diskCheckedSetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.26.4",
+				goBinary:        "1.26.4",
+				diskAvailableKB: "4194304",
+			})
+
+			require.NoError(t, err, output)
+			assert.NotContains(t, output, "[setup-error]")
+			assert.NotContains(t, output, "[go-toolchain-old]")
+			assert.NotContains(t, output, "[low-disk]")
+		})
+	}
+}
+
+func TestSetupContractsWarnOnOldGoToolchain(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range goCurrencySetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.25.0",
+				goBinary:        "1.26.4",
+				diskAvailableKB: "4194304",
+			})
+
+			require.NoError(t, err, output)
+			assert.Contains(t, output, "[go-toolchain-old]")
+			assert.Contains(t, output, "PRESS_GO_INSTALLED=1.25.0")
+			assert.Contains(t, output, "PRESS_GO_REQUIRED=1.26.4")
+		})
+	}
+}
+
+func TestSetupContractsBlockOldGoWhenToolchainLocal(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range goCurrencySetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.25.0",
+				goBinary:        "1.26.4",
+				goToolchain:     "local",
+				diskAvailableKB: "4194304",
+			})
+
+			require.Error(t, err, output)
+			assert.Contains(t, output, "[setup-error] Go 1.26.4 or newer is required")
+			assert.NotContains(t, output, "[go-toolchain-old]")
+		})
+	}
+}
+
+func TestSetupContractsWarnOnLowDisk(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range diskCheckedSetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.26.4",
+				goBinary:        "1.26.4",
+				diskAvailableKB: "1048576",
+			})
+
+			require.NoError(t, err, output)
+			assert.Contains(t, output, "[low-disk]")
+			assert.Contains(t, output, "PRESS_DISK_AVAIL_KB=1048576")
+			assert.Contains(t, output, "PRESS_DISK_WARN_KB=3145728")
+		})
+	}
+}
+
+func TestSetupContractsBlockCriticallyLowDisk(t *testing.T) {
+	t.Parallel()
+
+	for _, skill := range diskCheckedSetupSkills() {
+		t.Run(skill.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSkillSetupContract(t, skill, setupContractOptions{
+				includeGo:       true,
+				goInstalled:     "1.26.4",
+				goBinary:        "1.26.4",
+				diskAvailableKB: "1024",
+			})
+
+			require.Error(t, err, output)
+			assert.Contains(t, output, "[setup-error] Critically low disk space")
+			assert.Contains(t, output, "PRESS_DISK_AVAIL_KB=1024")
+			assert.Contains(t, output, "PRESS_DISK_FAIL_KB=524288")
+		})
+	}
+}
+
 func TestPrintingPressSkillPreflightSmokeTestsGoStdlib(t *testing.T) {
 	skillPath := filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")
 	full := readContractFile(t, skillPath)
@@ -1154,6 +1279,193 @@ func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o755))
+}
+
+func linkHostToolIfNeeded(t *testing.T, dir, name string) {
+	t.Helper()
+
+	target := filepath.Join(dir, name)
+	if _, err := os.Stat(target); err == nil {
+		return
+	}
+	hostPath, err := exec.LookPath(name)
+	require.NoError(t, err)
+	require.NoError(t, os.Symlink(hostPath, target))
+}
+
+type setupSkill struct {
+	name string
+	path string
+}
+
+type setupContractOptions struct {
+	includeGo       bool
+	goInstalled     string
+	goBinary        string
+	goToolchain     string
+	diskAvailableKB string
+}
+
+func goRequiredSetupSkills() []setupSkill {
+	// Issue #3365 is scoped to the generation/build/publish/import flows that
+	// can fail late after writing generated files or cloning library repos.
+	// printing-press-score has a setup contract too, but it is intentionally
+	// outside this preflight-hardening selector.
+	return []setupSkill{
+		{name: "printing-press", path: filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")},
+		{name: "printing-press-amend", path: filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md")},
+		{name: "printing-press-polish", path: filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md")},
+		{name: "printing-press-publish", path: filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md")},
+		{name: "printing-press-import", path: filepath.Join("..", "..", "skills", "printing-press-import", "SKILL.md")},
+	}
+}
+
+func goCurrencySetupSkills() []setupSkill {
+	// printing-press-import resolves PRINTING_PRESS_BIN after setup, once the
+	// imported CLI has been selected, so setup cannot compare Go currency yet.
+	return []setupSkill{
+		{name: "printing-press", path: filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")},
+		{name: "printing-press-amend", path: filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md")},
+		{name: "printing-press-polish", path: filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md")},
+		{name: "printing-press-publish", path: filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md")},
+	}
+}
+
+func diskCheckedSetupSkills() []setupSkill {
+	return goRequiredSetupSkills()
+}
+
+func runSkillSetupContract(t *testing.T, skill setupSkill, opts setupContractOptions) (string, error) {
+	t.Helper()
+
+	if opts.goInstalled == "" {
+		opts.goInstalled = "1.26.4"
+	}
+	if opts.goBinary == "" {
+		opts.goBinary = opts.goInstalled
+	}
+	if opts.diskAvailableKB == "" {
+		opts.diskAvailableKB = "4194304"
+	}
+
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fakeBin := filepath.Join(root, "bin")
+	home := filepath.Join(root, "home")
+	pressHome := filepath.Join(home, "printing-press")
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "cmd", "cli-printing-press"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "internal", "version"), 0o755))
+	require.NoError(t, os.MkdirAll(fakeBin, 0o755))
+	require.NoError(t, os.MkdirAll(home, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/press\n\ngo 1.20\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "internal", "version", "version.go"), []byte(`package version
+
+var Version = "4.23.0" // x-release-please-version
+`), 0o644))
+	writeExecutable(t, filepath.Join(repo, "cli-printing-press"), versionScript("4.23.0"))
+	writeExecutable(t, filepath.Join(fakeBin, "cli-printing-press"), versionScript("4.23.0"))
+	writeExecutable(t, filepath.Join(fakeBin, "curl"), "#!/bin/sh\nexit 1\n")
+	writeExecutable(t, filepath.Join(fakeBin, "shasum"), "#!/bin/sh\ncat >/dev/null\necho \"0123456789abcdef  -\"\n")
+	writeExecutable(t, filepath.Join(fakeBin, "df"), `#!/bin/sh
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "fake 9999999 0 ${PP_FAKE_DF_AVAIL_KB:-4194304} 0% /"
+`)
+	if opts.includeGo {
+		writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
+case "$1" in
+  env)
+    if [ "$2" = "GOVERSION" ]; then
+      echo "go${PP_FAKE_GO_INSTALLED:-1.26.4}"
+      exit 0
+    fi
+    exit 0
+    ;;
+  version)
+    if [ "$#" -ge 2 ]; then
+      echo "$2: go${PP_FAKE_GO_BINARY:-1.26.4}"
+    else
+      echo "go version go${PP_FAKE_GO_INSTALLED:-1.26.4} test/amd64"
+    fi
+    exit 0
+    ;;
+  run)
+    exit 0
+    ;;
+  list)
+    exit 1
+    ;;
+  build)
+    exit 0
+    ;;
+esac
+exit 0
+`)
+	}
+	pathValue := fakeBin + string(os.PathListSeparator) + "/usr/bin:/bin:/usr/sbin:/sbin"
+	if !opts.includeGo {
+		for _, tool := range []string{"awk", "dirname", "git", "head", "sed"} {
+			linkHostToolIfNeeded(t, fakeBin, tool)
+		}
+		pathValue = fakeBin
+	}
+
+	gitInit := exec.Command("git", "init")
+	gitInit.Dir = repo
+	gitInitOutput, err := gitInit.CombinedOutput()
+	require.NoError(t, err, string(gitInitOutput))
+
+	contract := setupBlockForSkill(t, skill.path)
+	scriptPath := filepath.Join(root, "setup-contract.sh")
+	writeExecutable(t, scriptPath, "#!/bin/sh\n"+contract)
+
+	env := append(os.Environ(),
+		"ARGUMENTS=",
+		"HOME="+home,
+		"PATH="+pathValue,
+		"PRINTING_PRESS_HOME="+pressHome,
+		"PP_FAKE_GO_INSTALLED="+opts.goInstalled,
+		"PP_FAKE_GO_BINARY="+opts.goBinary,
+		"PP_FAKE_DF_AVAIL_KB="+opts.diskAvailableKB,
+	)
+	if opts.goToolchain != "" {
+		env = append(env, "GOTOOLCHAIN="+opts.goToolchain)
+	} else {
+		env = append(env, "GOTOOLCHAIN=auto")
+	}
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func setupBlockForSkill(t *testing.T, path string) string {
+	t.Helper()
+
+	full := readContractFile(t, path)
+	var block string
+	if strings.Contains(full, "<!-- PRESS_SETUP_CONTRACT_START -->") {
+		block = extractContractBlock(t, full)
+	} else {
+		block = firstBashBlockAfter(t, full, "## Setup")
+	}
+	block = strings.ReplaceAll(block, "```bash\n", "")
+	block = strings.ReplaceAll(block, "\n```", "")
+	return block
+}
+
+func firstBashBlockAfter(t *testing.T, content, marker string) string {
+	t.Helper()
+
+	start := strings.Index(content, marker)
+	require.NotEqual(t, -1, start, "missing setup marker %q", marker)
+	fenceStart := strings.Index(content[start:], "```bash\n")
+	require.NotEqual(t, -1, fenceStart, "missing setup bash fence after %q", marker)
+	fenceStart = start + fenceStart + len("```bash\n")
+	fenceEnd := strings.Index(content[fenceStart:], "\n```")
+	require.NotEqual(t, -1, fenceEnd, "missing setup bash fence end after %q", marker)
+	return content[fenceStart : fenceStart+fenceEnd]
 }
 
 func substringBetween(t *testing.T, content, start, end string) string {
