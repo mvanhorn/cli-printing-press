@@ -270,6 +270,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"pathKindEnvSuffix":                   pathKindEnvSuffix,
 		"authPlacement":                       authPlacement,
 		"authParameterName":                   authParameterName,
+		"isBrowserCookieAuth":                 isBrowserCookieAuth,
 		"authCommandShort":                    authCommandShort,
 		"authHarvestedEnvHint":                authHarvestedEnvHint,
 		"oauth2AccessTokenAuth":               oauth2AccessTokenAuth,
@@ -1130,6 +1131,12 @@ func authParameterName(auth spec.AuthConfig) string {
 		return "api_key"
 	}
 	return "Authorization"
+}
+
+func isBrowserCookieAuth(auth spec.AuthConfig) bool {
+	return strings.TrimSpace(auth.Type) == "cookie" &&
+		strings.EqualFold(strings.TrimSpace(auth.In), "cookie") &&
+		(strings.TrimSpace(auth.Header) == "" || strings.EqualFold(strings.TrimSpace(auth.Header), "Cookie"))
 }
 
 func authCommandShort(api *spec.APISpec) string {
