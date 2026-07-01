@@ -121,6 +121,7 @@ func internalSpecToOpenAPISpecInfo(s *apispec.APISpec) *openAPISpecInfo {
 		SecuritySchemes:      make(map[string]openAPISecurityScheme),
 		PositionalParamCount: countInternalSpecPositionals(s),
 		Kind:                 s.Kind,
+		IsGraphQL:            strings.TrimSpace(s.GraphQLEndpointPath) != "",
 	}
 
 	// Map auth config to a synthetic security scheme so scorecard auth
