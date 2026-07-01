@@ -1890,39 +1890,25 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 	}
 	defer tx.Rollback()
 
-	// Per-call seen-set staging. A TEMP TABLE is connection-scoped, not
-	// transaction-scoped: its lifetime is decoupled from this tx. We deliberately
-	// do not rely on either lifetime — CREATE ... IF NOT EXISTS is a no-op when the
-	// table survived a previous call (standard SQLite keeps it; a ROLLBACK does not
-	// drop it), and the unconditional DELETE that follows clears any rows a prior
-	// partition left behind. So the pair is correct whether or not the underlying
-	// driver (modernc.org/sqlite here) drops temp tables on rollback — we never
-	// assume a fresh table, only an empty one before insert.
-	if _, err := tx.Exec(`CREATE TEMP TABLE IF NOT EXISTS reconcile_seen (id TEXT PRIMARY KEY)`); err != nil {
-		return 0, fmt.Errorf("reconcile %s: temp: %w", resourceType, err)
-	}
-	if _, err := tx.Exec(`DELETE FROM reconcile_seen`); err != nil {
-		return 0, fmt.Errorf("reconcile %s: clear temp: %w", resourceType, err)
-	}
-	ins, err := tx.Prepare(`INSERT OR IGNORE INTO reconcile_seen (id) VALUES (?)`)
-	if err != nil {
-		return 0, err
-	}
+	// Seen-set membership is tested in Go, not SQL. Parent-keyed dependent rows
+	// carry a NUL-composite storage id ("<id>\x00<parent>", built by
+	// resourceStorageID) while seenIDs holds the BARE API ids sync enumerated, so
+	// each stored id must run through BareResourceID before the comparison. A SQL
+	// seen-set is not viable here: SQLite string functions treat the embedded NUL
+	// as a C-string terminator, so an instr/substr or `IN` test over a key
+	// containing "\x00" silently truncates and mis-matches. BareResourceID is a
+	// no-op for plain ids, so flat/non-composite partitions are unaffected.
+	seen := make(map[string]struct{}, len(seenIDs))
 	for _, id := range seenIDs {
-		if _, err := ins.Exec(id); err != nil {
-			ins.Close()
-			return 0, err
-		}
+		seen[id] = struct{}{}
 	}
-	ins.Close()
 
 	// CASE guards against a malformed-JSON row aborting the victim scan:
 	// a row we cannot parse is never a victim — it is skipped (never deleted).
 	rows, err := tx.Query(
 		`SELECT id FROM resources
 		 WHERE resource_type = ?
-		   AND (CASE WHEN json_valid(data) THEN json_extract(data, ?) END) = ?
-		   AND id NOT IN (SELECT id FROM reconcile_seen)`,
+		   AND (CASE WHEN json_valid(data) THEN json_extract(data, ?) END) = ?`,
 		resourceType, genericScopeJSONPath, scopeValue,
 	)
 	if err != nil {
@@ -1934,6 +1920,9 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return 0, err
+		}
+		if _, ok := seen[BareResourceID(id)]; ok {
+			continue // bare id was enumerated this run — keep the row
 		}
 		victims = append(victims, id)
 	}
@@ -1957,8 +1946,10 @@ func (s *Store) ReconcilePartition(resourceType, genericScopeJSONPath, scopeValu
 		if _, err := tx.Exec(`DELETE FROM resources WHERE resource_type = ? AND id = ?`, resourceType, id); err != nil {
 			return 0, fmt.Errorf("reconcile %s: generic delete: %w", resourceType, err)
 		}
+		// Cascade junction FKs hold the BARE entity id, never the NUL-composite
+		// storage key, so strip the suffix before matching (no-op for plain ids).
 		for _, c := range cascades {
-			if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM "%s" WHERE "%s" = ?`, c.Table, c.FKColumn), id); err != nil {
+			if _, err := tx.Exec(fmt.Sprintf(`DELETE FROM "%s" WHERE "%s" = ?`, c.Table, c.FKColumn), BareResourceID(id)); err != nil {
 				return 0, fmt.Errorf("reconcile %s: cascade %s: %w", resourceType, c.Table, err)
 			}
 		}
