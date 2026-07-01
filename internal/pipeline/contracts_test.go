@@ -342,6 +342,31 @@ func TestPrintingPressSkillDistinguishesBearerFromRawAPIKey(t *testing.T) {
 	assert.Contains(t, block, "name: X-API-Key")
 }
 
+func TestSkillsProhibitProposalFallbackForRequestedArtifacts(t *testing.T) {
+	collapse := func(s string) string {
+		return strings.Join(strings.Fields(s), " ")
+	}
+
+	agents := collapse(readContractFile(t, filepath.Join("..", "..", "AGENTS.md")))
+	agentsBlock := substringBetween(t, agents, "## PR intent: implementation, publish, or proposal", "## Automated code review with Greptile")
+	assert.Contains(t, agentsBlock, "A request to generate, fix, or implement means produce the requested artifact, not a docs-only, plan, proposal, or spec PR.")
+	assert.Contains(t, agentsBlock, "Do not substitute one PR shape for another")
+	assert.Contains(t, agentsBlock, "When implementation or generation is blocked, report the exact blocker and stop.")
+	assert.Contains(t, agentsBlock, "Do not open a docs-only, plan, proposal, or spec PR here or in `printing-press-library` unless the user explicitly requested that shape")
+
+	publish := collapse(readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md")))
+	publishBlock := substringBetween(t, publish, "## PR shape guard", "## Direct User Invocation Required")
+	assert.Contains(t, publishBlock, "This skill opens only a generated CLI publish PR or, with `--blocked-api-journal`, a `blocked-apis.json` journal PR.")
+	assert.Contains(t, publishBlock, "It never opens a docs-only, plan, proposal, or spec PR as a substitute for a CLI that is not ready to publish.")
+	assert.Contains(t, publishBlock, "If generation, validation, or live testing is blocked, report the exact blocker and stop.")
+
+	printingPress := collapse(readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")))
+	holdBlock := substringBetween(t, printingPress, "### Hold-path menu", "#### If \"Run retro\"")
+	assert.Contains(t, holdBlock, "A hold is not permission to change PR shape.")
+	assert.Contains(t, holdBlock, "Do not substitute a docs-only, plan, proposal, or spec PR for the requested generated CLI.")
+	assert.Contains(t, holdBlock, "The only public-library PR this menu may lead to is the explicit `blocked-apis.json` journal option")
+}
+
 func TestPrintingPressSkillRunERequiredInputContract(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 	template := substringBetween(t, skill, "#### Verify-friendly RunE template", "If the command reads a file or directory")
