@@ -2961,6 +2961,7 @@ func TestGenerateCookieAuthAttachesRealRequestHeader(t *testing.T) {
 	cookieSpec.Auth = spec.AuthConfig{
 		Type:         "cookie",
 		Header:       "Cookie",
+		In:           "cookie",
 		CookieDomain: ".example.com",
 		Cookies:      []string{"session_id"},
 		EnvVars:      []string{"GENUINECOOKIE_COOKIES"},
@@ -2970,8 +2971,13 @@ func TestGenerateCookieAuthAttachesRealRequestHeader(t *testing.T) {
 	cookieClient := readGeneratedFile(t, cookieDir, "internal", "client", "client.go")
 	assert.NotContains(t, cookieClient, `req.Header.Set("Cookie", authHeader)`,
 		"genuine cookie auth must rely on the jar, not set a Cookie header on the wire")
+	assert.NotContains(t, cookieClient, `req.AddCookie(&http.Cookie{Name: "Cookie"`,
+		"genuine cookie auth with in:cookie/header Cookie must not treat Cookie as a cookie name")
+	assert.NotContains(t, cookieClient, `"  Cookie: %s=%s\n", "Cookie"`,
+		"genuine cookie auth dry-run must not preview the Cookie header name as a cookie name")
 	assert.Contains(t, cookieClient, "the cookie jar is the sole source of outbound",
 		"genuine cookie auth should keep the jar-only comment block")
+	requireGeneratedCompiles(t, cookieDir)
 }
 
 // TestGenerateCookieAuthDerivesCookieDomainFromBaseURL verifies that a

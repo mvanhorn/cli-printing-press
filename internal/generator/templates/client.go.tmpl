@@ -537,7 +537,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 		// Auth lives on URL query; Go preserves the query on relative
 		// redirects, so nothing to re-derive.
-{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 		// The auth cookie set on the initial request is carried verbatim by Go
 		// on same-host redirects, so re-adding it here would double the Cookie
 		// header (the same hazard the cookie-jar branch below avoids). Only the
@@ -1440,7 +1440,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			q := req.URL.Query()
 			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
 			req.URL.RawQuery = q.Encode()
-{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 			req.AddCookie(&http.Cookie{Name: "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", Value: authHeader})
 {{- else if eq .Auth.Type "cookie"}}
 {{- if and .Auth.Header (ne .Auth.Header "Cookie")}}
@@ -1755,7 +1755,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{.Auth.TokenParamName}}", maskToken(authHeader))
 	}
 {{- end}}
-{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 	if authHeader != "" {
 		// in:cookie auth ships on the Cookie header; preview it as such so the
 		// dry run matches the live wire format.
