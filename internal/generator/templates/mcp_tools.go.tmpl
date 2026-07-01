@@ -14,6 +14,10 @@ package mcp
 
 import (
 	"context"
+{{- if and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource}}
+	"database/sql"
+	"errors"
+{{- end}}
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -56,7 +60,7 @@ func RegisterTools(s *server.MCPServer) {
 	// (<api>_search + <api>_execute). Endpoint-mirror tools are suppressed.
 	RegisterCodeOrchestrationTools(s)
 {{- else}}
-{{- if ne .MCP.EndpointTools "hidden"}}
+{{- if and (ne .MCP.EndpointTools "hidden") (not .APISpec.IsLocalSQLiteSource)}}
 {{- range $name, $resource := .Resources}}
 {{- range $eName, $endpoint := $resource.Endpoints}}
 {{- $isReadOnly := endpointIsReadCommand $endpoint $eName}}
@@ -842,13 +846,21 @@ func openMCPReadOnlyStore(path string) (*store.Store, *mcplib.CallToolResult) {
 	}
 	db, err := store.OpenReadOnly(path)
 	if err != nil {
+{{- if .APISpec.IsLocalSQLiteSource}}
+		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. Run {{.Name}}-pp-cli sync to refresh the store before using MCP search/sql.", path, err))
+{{- else}}
 		return nil, mcplib.NewToolResultError(fmt.Sprintf("opening local data store %s: %v. Run {{.Name}}-pp-cli sync to refresh the store, or use live endpoint MCP tools for unsynced data.", path, err))
+{{- end}}
 	}
 	return db, nil
 }
 
 func mcpMissingStoreMessage(path string) string {
+{{- if .APISpec.IsLocalSQLiteSource}}
+	return fmt.Sprintf("No local data store found at %s. Run {{.Name}}-pp-cli sync before using MCP search/sql.", path)
+{{- else}}
 	return fmt.Sprintf("No local data store found at %s. Run {{.Name}}-pp-cli sync before using MCP search/sql, or use live endpoint MCP tools for unsynced data.", path)
+{{- end}}
 }
 
 func mcpStoreStatus(db *store.Store) (mcpStoreStatusKind, error) {
@@ -861,6 +873,49 @@ func mcpStoreStatus(db *store.Store) (mcpStoreStatusKind, error) {
 	}
 	return mcpStoreStatusReady, nil
 }
+
+{{- if .APISpec.IsLocalSQLiteSource}}
+func mcpLocalStoreMeta(db *store.Store) (map[string]any, error) {
+	meta := map[string]any{"source": "local"}
+	lastSynced, err := mcpOldestSyncTime(db)
+	if err != nil {
+		return nil, err
+	}
+	if !lastSynced.IsZero() {
+		meta["oldest_synced_at"] = lastSynced.UTC().Format(time.RFC3339)
+	}
+	return meta, nil
+}
+
+func mcpOldestSyncTime(db *store.Store) (time.Time, error) {
+	if db == nil {
+		return time.Time{}, nil
+	}
+	var lastSynced sql.NullTime
+	err := db.DB().QueryRow(`SELECT last_synced_at FROM sync_state WHERE last_synced_at IS NOT NULL ORDER BY last_synced_at ASC LIMIT 1`).Scan(&lastSynced)
+	if err == nil {
+		if lastSynced.Valid {
+			return lastSynced.Time, nil
+		}
+		return time.Time{}, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) || mcpSyncStateUnavailable(err) {
+		return time.Time{}, nil
+	}
+	return time.Time{}, err
+}
+
+func mcpSyncStateUnavailable(err error) bool {
+	for err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") || strings.Contains(msg, "no such column") {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
+}
+{{- end}}
 
 func mcpEmptyStoreNextStep() string {
 	return "Run {{.Name}}-pp-cli sync to populate the local SQLite store before using MCP search/sql."
@@ -899,11 +954,23 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("reading store status: %v", err)), nil
 	}
+{{ if .APISpec.IsLocalSQLiteSource}}
+	meta, err := mcpLocalStoreMeta(db)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("reading store provenance: %v", err)), nil
+	}
 
+	return toolResultJSON(mcpSearchEnvelope(results, storeStatus, meta))
+{{ else}}
 	return toolResultJSON(mcpSearchEnvelope(results, storeStatus))
+{{- end}}
 }
 
+{{ if .APISpec.IsLocalSQLiteSource -}}
+func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind, meta map[string]any) map[string]any {
+{{ else -}}
 func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind) map[string]any {
+{{ end -}}
 	if results == nil {
 		results = []json.RawMessage{}
 	}
@@ -912,6 +979,9 @@ func mcpSearchEnvelope(results []json.RawMessage, storeStatus mcpStoreStatusKind
 		"results":      results,
 		"store_status": storeStatus,
 		"resumable":    false,
+{{- if .APISpec.IsLocalSQLiteSource}}
+		"meta":         meta,
+{{- end}}
 	}
 	if len(results) == 0 {
 		if storeStatus == mcpStoreStatusEmpty {
@@ -1132,11 +1202,23 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("reading store status: %v", err)), nil
 	}
+{{ if .APISpec.IsLocalSQLiteSource}}
+	meta, err := mcpLocalStoreMeta(db)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("reading store provenance: %v", err)), nil
+	}
 
+	return toolResultJSON(mcpSQLEnvelope(results, cols, storeStatus, meta))
+{{ else}}
 	return toolResultJSON(mcpSQLEnvelope(results, cols, storeStatus))
+{{- end}}
 }
 
+{{ if .APISpec.IsLocalSQLiteSource -}}
+func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStoreStatusKind, meta map[string]any) map[string]any {
+{{ else -}}
 func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStoreStatusKind) map[string]any {
+{{ end -}}
 	if rows == nil {
 		rows = []map[string]any{}
 	}
@@ -1146,6 +1228,9 @@ func mcpSQLEnvelope(rows []map[string]any, columns []string, storeStatus mcpStor
 		"rows":         rows,
 		"store_status": storeStatus,
 		"resumable":    false,
+{{- if .APISpec.IsLocalSQLiteSource}}
+		"meta":         meta,
+{{- end}}
 	}
 	if len(rows) == 0 {
 		if storeStatus == mcpStoreStatusEmpty {
