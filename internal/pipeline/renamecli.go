@@ -58,6 +58,9 @@ func RenameCLI(dir, oldCLIName, newCLIName, _ string) (int, error) {
 	if dirBase != oldCLIName && dirBase != naming.LibraryDirName(oldCLIName) {
 		return 0, fmt.Errorf("directory base %q does not match old CLI name %q", dirBase, oldCLIName)
 	}
+	if err := rejectStrayRenameSlugDirs(absDir, oldSlug, newSlug); err != nil {
+		return 0, err
+	}
 
 	filesModified := 0
 
@@ -151,6 +154,29 @@ func RenameCLI(dir, oldCLIName, newCLIName, _ string) (int, error) {
 	}
 
 	return filesModified, nil
+}
+
+func rejectStrayRenameSlugDirs(dir string, slugs ...string) error {
+	blocked := make(map[string]bool, len(slugs))
+	for _, slug := range slugs {
+		if slug != "" {
+			blocked[slug] = true
+		}
+	}
+	if len(blocked) == 0 {
+		return nil
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("reading rename directory: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && blocked[entry.Name()] {
+			return fmt.Errorf("stray top-level directory %q would make publish rename ambiguous; remove it before renaming", entry.Name())
+		}
+	}
+	return nil
 }
 
 func renameCLIContent(content, oldCLIName, newCLIName, oldMCPName, newMCPName, oldSlug, newSlug string) string {

@@ -723,11 +723,21 @@ if [ "$(jq -r .access $PUBLISH_CONFIG)" = "push" ]; then
   git fetch --filter=blob:none --depth 1 origin
   git checkout main
   git reset --hard origin/main
+  # Remove stale untracked library fragments from prior publish branches before
+  # copying this CLI. Ignored files hidden by a branch-local .gitignore can
+  # become ordinary untracked files after checkout, and a later broad library
+  # add must not sweep another CLI's leftovers into this PR.
+  git clean -fdq library/
 else
   # Fork: origin is the fork, upstream is canonical
   git fetch --filter=blob:none --depth 1 upstream
   git checkout main
   git reset --hard upstream/main
+  # Remove stale untracked library fragments from prior publish branches before
+  # copying this CLI. Ignored files hidden by a branch-local .gitignore can
+  # become ordinary untracked files after checkout, and a later broad library
+  # add must not sweep another CLI's leftovers into this PR.
+  git clean -fdq library/
   # Also sync origin (fork) so git push works cleanly
   git push origin main --force-with-lease 2>/dev/null || true
 fi
@@ -1364,15 +1374,37 @@ git checkout -B feat/<api-slug>
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
-git add library/
-# The library .gitignore has a `*-pp-mcp` rule intended for the built MCP
-# binary, but the pattern also matches the generated MCP *source* directory
-# `cmd/<api-slug>-pp-mcp/`. A plain `git add library/` silently skips it, and
-# the PR then fails the "Validate MCPB manifest contract" CI check with
-# "cmd/<api-slug>-pp-mcp directory is missing". Force-add the source directory
-# so all MCP entry-point files ship. The built binary stays ignored because it
-# lives at the packaged CLI root, not under cmd/.
-git add -f "library/<category>/<api-slug>/cmd/<api-slug>-pp-mcp/" 2>/dev/null || true
+git add -A library/
+# The staged package has already stripped local binaries and passed the
+# mandatory secret/PII scans, so it is the source of truth for this publish.
+# Force-add the whole CLI directory after the broad add: destination-repo or
+# package-local .gitignore rules such as `*-pp-cli`, `*-pp-mcp`,
+# `/.manuscripts/`, or report filenames must not silently suppress required
+# publish artifacts under cmd/, .manuscripts/, or metadata files.
+git add -f "library/<category>/<api-slug>/"
+
+# Pre-commit scope guard: only this CLI's replacement plus any pre-existing
+# merged paths for the same slug may be staged. This catches stale untracked
+# fragments from previous publish branches before they leak into the wrong PR.
+EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/<category>/<api-slug>/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d; s#/*$#/#' | sort -u)
+UNEXPECTED_STAGED=$(git diff --cached --name-only | awk -v prefixes="$EXPECTED_STAGE_PREFIXES" '
+BEGIN { n = split(prefixes, p, "\n") }
+{
+  matched = 0
+  for (i = 1; i <= n; i++) {
+    if (p[i] != "" && ($0 == p[i] || index($0, p[i]) == 1)) {
+      matched = 1
+      break
+    }
+  }
+  if (!matched) print
+}')
+if [ -n "$UNEXPECTED_STAGED" ]; then
+  echo "ERROR: publish staged paths outside the expected CLI scope:" >&2
+  printf '%s\n' "$UNEXPECTED_STAGED" | sed 's/^/- /' >&2
+  echo "Reset the managed clone and rerun publish package before committing." >&2
+  exit 1
+fi
 git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 

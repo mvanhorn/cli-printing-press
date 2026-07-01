@@ -744,9 +744,12 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	// no longer has an in-PR auto-fix path for either.
 	assert.Contains(t, skill, "Fail on changes to generated artifacts")
 	assert.Contains(t, skill, "Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` or")
-	assert.Contains(t, skill, "git add library/")
-	assert.Contains(t, skill, `git add -f "library/<category>/<api-slug>/cmd/<api-slug>-pp-mcp/"`)
+	assert.Contains(t, skill, "git clean -fdq library/")
+	assert.Contains(t, skill, "git add -A library/")
+	assert.Contains(t, skill, `git add -f "library/<category>/<api-slug>/"`)
+	assert.Contains(t, skill, "UNEXPECTED_STAGED")
 	assert.Contains(t, skill, `git commit -m "feat(<api-slug>): add <api-slug>"`)
+	assert.NotContains(t, skill, `git add -f "library/<category>/<api-slug>/cmd/<api-slug>-pp-mcp/"`)
 	assert.NotContains(t, skill, "git add library/ cli-skills/")
 	assert.NotContains(t, skill, "git add library/ cli-skills/ registry.json")
 	assert.NotContains(t, skill, "REGISTRY_HAS_ENTRY")
@@ -1111,6 +1114,97 @@ func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {
 	assert.Contains(t, skill, "`Alongside print`")
 	assert.Contains(t, skill, "--body-file \"$PR_BODY_FILE\"")
 	assert.NotContains(t, skill, "--body \"<constructed PR body>\"")
+}
+
+func TestPublishSkillCommitStageForceAddsIgnoredPackageArtifactsAndRejectsOutOfScopeStaging(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v failed:\n%s", args, out)
+		return string(out)
+	}
+	runStageScript := func(env ...string) (string, error) {
+		t.Helper()
+		const script = `set -euo pipefail
+PREEXISTING_MERGED_PATHS="${PREEXISTING_MERGED_PATHS:-}"
+git add -A library/
+git add -f "library/other/acme/"
+EXPECTED_STAGE_PREFIXES=$(printf '%s\n' "library/other/acme/" "$PREEXISTING_MERGED_PATHS" | sed '/^$/d; s#/*$#/#' | sort -u)
+UNEXPECTED_STAGED=$(git diff --cached --name-only | awk -v prefixes="$EXPECTED_STAGE_PREFIXES" '
+BEGIN { n = split(prefixes, p, "\n") }
+{
+  matched = 0
+  for (i = 1; i <= n; i++) {
+    if (p[i] != "" && ($0 == p[i] || index($0, p[i]) == 1)) {
+      matched = 1
+      break
+    }
+  }
+  if (!matched) print
+}')
+if [ -n "$UNEXPECTED_STAGED" ]; then
+  echo "ERROR: publish staged paths outside the expected CLI scope:" >&2
+  printf '%s\n' "$UNEXPECTED_STAGED" | sed 's/^/- /' >&2
+  exit 1
+fi
+`
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), env...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	runGit("init")
+	runGit("config", "user.email", "test@example.com")
+	runGit("config", "user.name", "Test User")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("*-pp-cli\n*-pp-mcp\n.manuscripts/\nworkflow-verify-report.json\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("# fixture\n"), 0o644))
+	runGit("add", ".gitignore", "README.md")
+	runGit("commit", "-m", "base")
+
+	packageDir := filepath.Join(repo, "library", "other", "acme")
+	require.NoError(t, os.MkdirAll(filepath.Join(packageDir, "cmd", "acme-pp-cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(packageDir, "cmd", "acme-pp-cli", "main.go"), []byte("package main\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(packageDir, "cmd", "acme-pp-mcp"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(packageDir, "cmd", "acme-pp-mcp", "main.go"), []byte("package main\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(packageDir, ".manuscripts", "run-1", "research"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(packageDir, ".manuscripts", "run-1", "research", "brief.md"), []byte("# research\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(packageDir, "workflow-verify-report.json"), []byte("{}\n"), 0o644))
+
+	stalePath := filepath.Join(repo, "library", "other", "stale-fragment", "README.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stalePath), 0o755))
+	require.NoError(t, os.WriteFile(stalePath, []byte("# stale\n"), 0o644))
+
+	out, err := runStageScript()
+	require.Error(t, err)
+	assert.Contains(t, out, "publish staged paths outside the expected CLI scope")
+	assert.Contains(t, out, "library/other/stale-fragment/README.md")
+
+	runGit("reset")
+	require.NoError(t, os.RemoveAll(filepath.Join(repo, "library", "other", "stale-fragment")))
+	siblingPath := filepath.Join(repo, "library", "other", "acme-extra", "README.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(siblingPath), 0o755))
+	require.NoError(t, os.WriteFile(siblingPath, []byte("# sibling\n"), 0o644))
+	out, err = runStageScript("PREEXISTING_MERGED_PATHS=library/other/acme")
+	require.Error(t, err)
+	assert.Contains(t, out, "publish staged paths outside the expected CLI scope")
+	assert.Contains(t, out, "library/other/acme-extra/README.md")
+
+	runGit("reset")
+	require.NoError(t, os.RemoveAll(filepath.Join(repo, "library", "other", "acme-extra")))
+	out, err = runStageScript()
+	require.NoError(t, err, out)
+
+	staged := runGit("diff", "--cached", "--name-only")
+	assert.Contains(t, staged, "library/other/acme/cmd/acme-pp-cli/main.go")
+	assert.Contains(t, staged, "library/other/acme/cmd/acme-pp-mcp/main.go")
+	assert.Contains(t, staged, "library/other/acme/.manuscripts/run-1/research/brief.md")
+	assert.Contains(t, staged, "library/other/acme/workflow-verify-report.json")
+	assert.NotContains(t, staged, "library/other/stale-fragment/README.md")
 }
 
 func TestREADMEOutputContract(t *testing.T) {
