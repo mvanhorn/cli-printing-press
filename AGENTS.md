@@ -173,6 +173,14 @@ Every commit and PR title must include one of the allowed scopes. GitHub squash-
 - If unsure whether a PR is exempt, keep the template.
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the human-facing contributor guide and AI / automation disclosure definitions.
 
+## PR intent: implementation, publish, or proposal
+A request to generate, fix, or implement means produce the requested artifact, not a docs-only, plan, proposal, or spec PR. Do not substitute one PR shape for another:
+- **Implementation PR** (this repo): code, skill, generator, template, CLI, or test changes that make the requested behavior real.
+- **Library publish PR** (`mvanhorn/printing-press-library`, via `/printing-press-publish`): a generated CLI tree, or the explicit blocked-API journal entry described below.
+- **Proposal / spec / plan PR**: docs-only description of intended future work.
+
+When implementation or generation is blocked, report the exact blocker and stop. Do not open a docs-only, plan, proposal, or spec PR here or in `printing-press-library` unless the user explicitly requested that shape, or explicitly authorizes that fallback after seeing the blocker. Plan documents stay local (see "Plan documents stay local" below).
+
 ## Automated code review with Greptile
 
 Every PR gets automated Greptile review alongside CI. Resolve every Greptile finding before calling a PR ready: P0 and P1 comments block merge, and P2 comments need either a fix or a concrete reply explaining why the deferral is intentional. Do not use the score alone as the gate.

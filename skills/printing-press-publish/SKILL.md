@@ -26,6 +26,14 @@ Publish a generated CLI from your local library to the [printing-press-library](
 /printing-press publish
 ```
 
+## PR shape guard
+
+This skill opens only a generated CLI publish PR or, with
+`--blocked-api-journal`, a `blocked-apis.json` journal PR. It never opens a
+docs-only, plan, proposal, or spec PR as a substitute for a CLI that is not
+ready to publish. If generation, validation, or live testing is blocked, report
+the exact blocker and stop.
+
 ## Direct User Invocation Required
 
 Publishing can fork `mvanhorn/printing-press-library`, push a branch, and open or
