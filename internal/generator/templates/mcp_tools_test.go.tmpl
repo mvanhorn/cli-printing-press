@@ -219,7 +219,7 @@ func TestMCPSearchEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 
 {{- if and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource}}
 
-func TestMCPLocalStoreMetaIncludesSyncedAt(t *testing.T) {
+func TestMCPLocalStoreMetaIncludesOldestSyncedAt(t *testing.T) {
 	resetMCPPathEnv(t)
 	path, err := mcpDBPath()
 	if err != nil {
@@ -243,8 +243,8 @@ func TestMCPLocalStoreMetaIncludesSyncedAt(t *testing.T) {
 	if meta["source"] != "local" {
 		t.Fatalf("meta.source = %#v, want local", meta["source"])
 	}
-	if meta["synced_at"] != syncedAt.Format(time.RFC3339) {
-		t.Fatalf("meta.synced_at = %#v, want %q", meta["synced_at"], syncedAt.Format(time.RFC3339))
+	if meta["oldest_synced_at"] != syncedAt.Format(time.RFC3339) {
+		t.Fatalf("meta.oldest_synced_at = %#v, want %q", meta["oldest_synced_at"], syncedAt.Format(time.RFC3339))
 	}
 }
 {{- end}}

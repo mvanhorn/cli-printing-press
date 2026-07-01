@@ -33,6 +33,7 @@ func TestGeneratedLocalSQLiteMCPUsesCobraMirrorInsteadOfHTTPTools(t *testing.T) 
 	require.NotContains(t, mcpSrc, `makeAPIHandler("GET", "/items"`)
 	require.Contains(t, mcpSrc, `func mcpLocalStoreMeta(db *store.Store)`)
 	require.Contains(t, mcpSrc, `"source": "local"`)
+	require.Contains(t, mcpSrc, `"oldest_synced_at"`)
 	require.Contains(t, mcpSrc, `"meta":         meta`)
 	require.Contains(t, mcpSrc, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)")
 
