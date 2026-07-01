@@ -46,6 +46,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-live-dogfood-requires-tier` | path item or operation | `Endpoint.LiveDogfoodRequiresTier` | No |
 | `x-requires-role` | operation | `Endpoint.RequiresRole` | No |
 | `x-happy-args` | operation | `Endpoint.HappyArgs` | No |
+| `x-pp-example` | operation | `Endpoint.Example` (verbatim Cobra example override) | No |
 | `x-pp-resource` | operation | resource name override | No |
 | `x-pp-pagination` | operation | `Endpoint.Pagination` | No |
 | `x-pp-safe-probe` | operation | *skill guidance only; not parsed in parser.go* | No |
@@ -327,6 +328,45 @@ x-cache:
   commands:
     - name: dashboard
       resources: [quotes]
+```
+
+### `x-pp-example`
+
+Overrides the generated command's `--help` Example with a verbatim, authored
+invocation. The synthesized example only includes **required** params, so an
+endpoint whose params are all optional — the common "pass one of `channelId` /
+`handle` / `url`" shape — otherwise advertises a bare command the API rejects
+with a 4xx. That broken example also fails the live-dogfood happy-path and
+json-fidelity probes, which run the Example verbatim.
+
+Parsed field: `Endpoint.Example` (the same field the internal YAML spec sets via
+`example:`).
+
+Rules:
+- Optional. Endpoints without `x-pp-example` keep today's synthesized example
+  byte-for-byte.
+- Operation-level only. The value is the full invocation including the binary
+  name (`<api-slug>-pp-cli <command> <args>`); the parser normalizes it to the
+  canonical two-space indent on each line, so authors may omit the leading
+  spaces.
+- Use it instead of marking a param `required` to force it into the example —
+  marking it required would also make the generated CLI flag mandatory, which a
+  one-of endpoint must not be.
+- Whitespace-only values are ignored (treated as absent); non-string values warn
+  and are ignored.
+
+Example:
+
+```yaml
+paths:
+  /v1/youtube/channel:
+    get:
+      operationId: getYoutubeChannel
+      x-pp-example: "scrape-creators-pp-cli youtube list-channel --handle mkbhd"
+      parameters:
+        - { name: channelId, in: query, required: false, schema: { type: string } }
+        - { name: handle, in: query, required: false, schema: { type: string } }
+        - { name: url, in: query, required: false, schema: { type: string } }
 ```
 
 ### `x-pp-query`

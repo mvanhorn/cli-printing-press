@@ -7459,6 +7459,107 @@ paths:
 	require.Empty(t, songs.HappyArgs)
 }
 
+func TestParseExampleExtension(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: PP Example
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /channel:
+    get:
+      operationId: getChannel
+      x-pp-example: "  pp-example-pp-cli channel --handle mkbhd"
+      parameters:
+        - name: channelId
+          in: query
+          required: false
+          schema: { type: string }
+        - name: handle
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+  /songs:
+    get:
+      operationId: listSongs
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	// x-pp-example overrides the synthesized (otherwise bare) example for an
+	// all-optional endpoint.
+	channel := findEndpoint(t, parsed, "/channel")
+	require.Equal(t, "  pp-example-pp-cli channel --handle mkbhd", channel.Example)
+
+	// Endpoints without the extension keep an empty Example so synthesis runs.
+	songs := findEndpoint(t, parsed, "/songs")
+	require.Empty(t, songs.Example)
+}
+
+func TestParseExampleExtensionNormalizesBlockScalarLines(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: PP Example Block
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /channel:
+    get:
+      operationId: getChannel
+      x-pp-example: |
+        pp-example-pp-cli channel --handle mkbhd
+          pp-example-pp-cli channel --url https://example.com/channel/mkbhd
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	channel := findEndpoint(t, parsed, "/channel")
+	require.Equal(t, strings.Join([]string{
+		"  pp-example-pp-cli channel --handle mkbhd",
+		"  pp-example-pp-cli channel --url https://example.com/channel/mkbhd",
+	}, "\n"), channel.Example)
+}
+
+func TestParseExampleExtensionWhitespaceOnly(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: PP Example Whitespace
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /channel:
+    get:
+      operationId: getChannel
+      x-pp-example: "   "
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	channel := findEndpoint(t, parsed, "/channel")
+	require.Empty(t, channel.Example)
+}
+
 func TestParseHappyArgsExtensionWhitespaceOnly(t *testing.T) {
 	t.Parallel()
 

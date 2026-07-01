@@ -69,6 +69,7 @@ const (
 	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
+	extensionPPExample             = "x-pp-example"
 	extensionLiveDogfoodTier       = "x-live-dogfood-requires-tier"
 	extensionDispatchParam         = "x-pp-dispatch-param"
 	extensionPPResource            = "x-pp-resource"
@@ -3445,6 +3446,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				endpoint.DataSourceStrategy = pathDataSourceStrategy
 			}
 			endpoint.HappyArgs = readHappyArgsExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			if ex := readExampleExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path)); ex != "" {
+				endpoint.Example = ex
+			}
 			endpoint.LiveDogfoodRequiresTier = readLiveDogfoodTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if endpoint.LiveDogfoodRequiresTier == "" {
 				endpoint.LiveDogfoodRequiresTier = pathLiveDogfoodTier
@@ -5424,6 +5428,42 @@ func readHappyArgsExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+// readExampleExtension reads an operation-level x-pp-example string and returns
+// it as the verbatim Cobra Example for the generated command, overriding the
+// synthesized example. It exists for all-optional "one-of" endpoints (pass one
+// of channelId / handle / url): the synthesized example only includes required
+// params, so such endpoints would otherwise advertise a bare command the API
+// rejects with a 4xx. Marking a param required to force it into the example
+// would wrongly make the CLI flag mandatory; x-pp-example fixes only the
+// example. Absent (the common case) returns "", preserving synthesis exactly.
+func readExampleExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionPPExample]
+	if !ok || raw == nil {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionPPExample, raw)
+		return ""
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	// Endpoint.Example is emitted as the verbatim Cobra Example line, and
+	// synthesized examples carry a leading two-space indent. Normalize the
+	// authored value to the same indent so x-pp-example renders identically
+	// whether or not the author included the leading spaces.
+	lines := strings.Split(trimmed, "\n")
+	for i, line := range lines {
+		lines[i] = "  " + strings.TrimLeft(line, " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func readLiveDogfoodTierExtension(extensions map[string]any, context string) string {
