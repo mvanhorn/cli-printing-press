@@ -1135,6 +1135,7 @@ func authParameterName(auth spec.AuthConfig) string {
 
 func isBrowserCookieAuth(auth spec.AuthConfig) bool {
 	return strings.TrimSpace(auth.Type) == "cookie" &&
+		strings.EqualFold(strings.TrimSpace(auth.In), "cookie") &&
 		(strings.TrimSpace(auth.Header) == "" || strings.EqualFold(strings.TrimSpace(auth.Header), "Cookie"))
 }
 
