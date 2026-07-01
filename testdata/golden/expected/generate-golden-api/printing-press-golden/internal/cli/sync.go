@@ -2020,10 +2020,10 @@ func syncDependentResource(ctx context.Context, c interface {
 			}
 
 			totalCount += stored
-			// seenIDs are stored primary keys; extractID resolves the PK the same
-			// way UpsertBatch does. Assumes storageID==id (true for per_parent
-			// resources lacking a composite parent key; composite-key per_parent
-			// resources are out of scope this round).
+			// seenIDs carries BARE entity ids; extractID resolves the PK the same
+			// way UpsertBatch does. ReconcilePartition compares these against the
+			// stored keys via BareResourceID, so parent-keyed (NUL-composite)
+			// dependents reconcile correctly without composite seen ids here.
 			for _, it := range items {
 				if o, derr := store.DecodeJSONObject(it); derr == nil {
 					if id := extractID(dep.Name, o); id != "" {
