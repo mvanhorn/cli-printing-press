@@ -1483,6 +1483,40 @@ resources:
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 	})
 
+	t.Run("OpenAPI GraphQL specs omit rest path validity from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+func runEvents() string {
+	path := "/events"
+	return path
+}
+`)
+		specPath := filepath.Join(dir, "openapi.yaml")
+		writeScorecardFixture(t, dir, "openapi.yaml", `
+openapi: 3.0.3
+info:
+  title: Events GraphQL
+  version: 1.0.0
+  x-graphql-endpoint: /graphql
+paths:
+  /graphql:
+    post:
+      operationId: graphql
+      responses:
+        "200":
+          description: ok
+`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+		assert.Zero(t, sc.Steinberger.PathValidity)
+		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
+	})
+
 	t.Run("no store omits store pipeline dimensions from scoring", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli

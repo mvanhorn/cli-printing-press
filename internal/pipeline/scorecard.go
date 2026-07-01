@@ -2201,6 +2201,7 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 
 	info := &openAPISpecInfo{
 		SecuritySchemes: make(map[string]openAPISecurityScheme),
+		IsGraphQL:       hasGraphQLEndpointExtension(raw),
 	}
 	if paths, ok := raw["paths"].(map[string]any); ok {
 		for path := range paths {
@@ -2329,6 +2330,47 @@ func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error)
 	}
 
 	return info, nil
+}
+
+func hasGraphQLEndpointExtension(raw map[string]any) bool {
+	if hasNonEmptyStringExtension(raw, "x-graphql-endpoint") {
+		return true
+	}
+	if info, ok := raw["info"].(map[string]any); ok && hasNonEmptyStringExtension(info, "x-graphql-endpoint") {
+		return true
+	}
+	if paths, ok := raw["paths"].(map[string]any); ok {
+		for _, pathValue := range paths {
+			pathItem, ok := pathValue.(map[string]any)
+			if !ok {
+				continue
+			}
+			if hasNonEmptyStringExtension(pathItem, "x-graphql-endpoint") {
+				return true
+			}
+			for method, operationValue := range pathItem {
+				if !isHTTPMethod(method) {
+					continue
+				}
+				operation, ok := operationValue.(map[string]any)
+				if ok && hasNonEmptyStringExtension(operation, "x-graphql-endpoint") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasNonEmptyStringExtension(fields map[string]any, key string) bool {
+	if fields == nil {
+		return false
+	}
+	value, ok := fields[key]
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(asString(value)) != ""
 }
 
 func operationIDFromRaw(operation map[string]any) string {

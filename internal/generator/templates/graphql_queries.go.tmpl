@@ -43,7 +43,8 @@ const {{pascal $rName}}ListLatestQuery = {{backtick}}query{{if $latestParams}}({
 }{{backtick}}
 {{- else}}
 // {{pascal $rName}}ListLatestQuery is intentionally empty because the spec does
-// not declare the GraphQL response path needed to infer an operation.
+// not declare the GraphQL response path needed to infer an operation. Hand-author
+// this query for the target API before using the generated list-latest command.
 const {{pascal $rName}}ListLatestQuery = ""
 {{- end}}
 {{- end}}
