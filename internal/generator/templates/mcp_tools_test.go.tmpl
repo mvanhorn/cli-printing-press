@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+{{- if and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource}}
+	"time"
+{{- end}}
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -187,6 +190,9 @@ func TestMCPSearchEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 		StoreStatus string            `json:"store_status"`
 		Resumable   bool              `json:"resumable"`
 		NextStep    string            `json:"next_step"`
+{{- if .APISpec.IsLocalSQLiteSource}}
+		Meta        map[string]any    `json:"meta"`
+{{- end}}
 	}
 	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
 		t.Fatalf("empty-store result must be valid JSON: %v\n%s", err, text)
@@ -200,8 +206,45 @@ func TestMCPSearchEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 	if envelope.Resumable {
 		t.Fatalf("empty-store envelope should not claim cursor support: %s", text)
 	}
+{{- if .APISpec.IsLocalSQLiteSource}}
+	if envelope.Meta["source"] != "local" {
+		t.Fatalf("empty-store meta.source = %#v, want local in %s", envelope.Meta["source"], text)
+	}
+{{- end}}
 	if !strings.Contains(envelope.NextStep, "sync") {
 		t.Fatalf("empty-store next_step should mention sync: %s", text)
+	}
+}
+{{- end}}
+
+{{- if and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource}}
+
+func TestMCPLocalStoreMetaIncludesOldestSyncedAt(t *testing.T) {
+	resetMCPPathEnv(t)
+	path, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	defer db.Close()
+
+	syncedAt := time.Date(2026, 6, 30, 12, 34, 56, 0, time.UTC)
+	if _, err := db.DB().Exec(`INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES (?, ?, ?)`, "{{firstResource .Resources}}", syncedAt, 0); err != nil {
+		t.Fatalf("seed sync_state: %v", err)
+	}
+
+	meta, err := mcpLocalStoreMeta(db)
+	if err != nil {
+		t.Fatalf("mcpLocalStoreMeta() error = %v", err)
+	}
+	if meta["source"] != "local" {
+		t.Fatalf("meta.source = %#v, want local", meta["source"])
+	}
+	if meta["oldest_synced_at"] != syncedAt.Format(time.RFC3339) {
+		t.Fatalf("meta.oldest_synced_at = %#v, want %q", meta["oldest_synced_at"], syncedAt.Format(time.RFC3339))
 	}
 }
 {{- end}}
@@ -262,6 +305,9 @@ func TestMCPSQLEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 		StoreStatus string             `json:"store_status"`
 		Resumable   bool               `json:"resumable"`
 		NextStep    string             `json:"next_step"`
+{{- if .APISpec.IsLocalSQLiteSource}}
+		Meta        map[string]any     `json:"meta"`
+{{- end}}
 	}
 	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
 		t.Fatalf("empty-store SQL result must be valid JSON: %v\n%s", err, text)
@@ -278,6 +324,11 @@ func TestMCPSQLEmptyStoreReturnsActionableEnvelope(t *testing.T) {
 	if envelope.Resumable {
 		t.Fatalf("empty-store SQL envelope should not claim cursor support: %s", text)
 	}
+{{- if .APISpec.IsLocalSQLiteSource}}
+	if envelope.Meta["source"] != "local" {
+		t.Fatalf("empty-store SQL meta.source = %#v, want local in %s", envelope.Meta["source"], text)
+	}
+{{- end}}
 	if !strings.Contains(envelope.NextStep, "sync") {
 		t.Fatalf("empty-store SQL next_step should mention sync: %s", text)
 	}
