@@ -6738,12 +6738,50 @@ func csvItemTemplateLiteral(v any) string {
 	}
 }
 
-func positionalArgs(e spec.Endpoint) string {
-	var args []string
+// orderedPositionalParams returns an endpoint's positional params with the
+// path-param positionals sorted into URL-path order (left-to-right by where
+// each {placeholder} appears in Endpoint.Path). The OpenAPI parser appends path
+// params in parameters-array order, which some specs declare deepest-first
+// (Cloudflare lists project_name before account_id for
+// /accounts/{account_id}/pages/projects/{project_name}). Emitting them in that
+// order made commands accept <project_name> <account_id> — the reverse of the
+// URL and of the conventional parent-first ordering — so args passed in natural
+// path order routed each value into the wrong slot and 404'd. Only path-param
+// positionals are reordered, and only among the slots they already hold; any
+// non-path positional keeps its declared place.
+func orderedPositionalParams(e spec.Endpoint) []spec.Param {
+	positionals := make([]spec.Param, 0, len(e.Params))
 	for _, p := range e.Params {
 		if p.Positional {
-			args = append(args, "<"+p.Name+">")
+			positionals = append(positionals, p)
 		}
+	}
+	pathRank := func(p spec.Param) int { return strings.Index(e.Path, "{"+p.Name+"}") }
+
+	pathParams := make([]spec.Param, 0, len(positionals))
+	for _, p := range positionals {
+		if pathRank(p) >= 0 {
+			pathParams = append(pathParams, p)
+		}
+	}
+	sort.SliceStable(pathParams, func(i, j int) bool {
+		return pathRank(pathParams[i]) < pathRank(pathParams[j])
+	})
+
+	j := 0
+	for i, p := range positionals {
+		if pathRank(p) >= 0 {
+			positionals[i] = pathParams[j]
+			j++
+		}
+	}
+	return positionals
+}
+
+func positionalArgs(e spec.Endpoint) string {
+	var args []string
+	for _, p := range orderedPositionalParams(e) {
+		args = append(args, "<"+p.Name+">")
 	}
 	if len(args) > 0 {
 		return " " + strings.Join(args, " ")
@@ -6752,23 +6790,16 @@ func positionalArgs(e spec.Endpoint) string {
 }
 
 // positionalIndex returns the args[] slot a positional param fills at runtime.
-// Cobra populates args from CLI positionals in Positional-only declaration
-// order, but Endpoint.Params interleaves query/header params alongside path
-// params. The full-Params index drifts from the Positional ordinal as soon as
-// a non-positional param sits before a positional one (common when an OpenAPI
-// list endpoint declares query params before the path param) and the runtime
-// fails with "<name> is required" no matter what positional the user passes.
-// Returns -1 if name is not a positional param.
+// Cobra populates args from CLI positionals in the order they appear in the
+// command's Use string, which orderedPositionalParams fixes to URL-path order.
+// The slot therefore tracks that path order rather than the raw Endpoint.Params
+// order, which interleaves query/header params and may declare path params in
+// reverse path order. Returns -1 if name is not a positional param.
 func positionalIndex(e spec.Endpoint, name string) int {
-	idx := 0
-	for _, p := range e.Params {
-		if !p.Positional {
-			continue
-		}
+	for i, p := range orderedPositionalParams(e) {
 		if p.Name == name {
-			return idx
+			return i
 		}
-		idx++
 	}
 	return -1
 }
