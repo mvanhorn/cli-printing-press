@@ -47,6 +47,38 @@ func runWithCapturedStdout(t *testing.T, fn func() error) (string, error) {
 	return out, execErr
 }
 
+func runWithCapturedStderr(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	origStderr := os.Stderr
+	os.Stderr = w
+
+	errCh := make(chan string, 1)
+	go func() {
+		defer r.Close()
+		out, _ := io.ReadAll(r)
+		errCh <- string(out)
+	}()
+
+	stderrRestored := false
+	restoreStderr := func() {
+		if stderrRestored {
+			return
+		}
+		w.Close()
+		os.Stderr = origStderr
+		stderrRestored = true
+	}
+	defer restoreStderr()
+
+	execErr := fn()
+	restoreStderr()
+
+	out := <-errCh
+	return out, execErr
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	out, err := runWithCapturedStdout(t, func() error {
