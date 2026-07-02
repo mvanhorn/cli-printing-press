@@ -425,6 +425,7 @@ type recallEnvelope struct {
 	Warnings      []string                `json:"warnings,omitempty"`
 	Playbook      *learn.ResolvedPlaybook `json:"playbook,omitempty"`
 	Notes         string                  `json:"notes,omitempty"`
+	Candidates    []learn.Candidate       `json:"candidates,omitempty"`
 }
 
 type recallEnvelopeResult struct {
@@ -518,6 +519,12 @@ when learnings exist.`,
 			envelope.Warnings = result.Warnings
 			envelope.Playbook = result.Playbook
 			envelope.Notes = result.Notes
+			envelope.Candidates = result.Candidates
+			// Stage the recall's family + unresolved entities for the
+			// post-run journal entry: flag derivation anchors candidates
+			// on this family, and teach-time synthesis locates the
+			// recall->teach episode by it.
+			learn.SetJournalLearnContext(result.Family, result.UnresolvedEntities)
 			// Measurement: record hit/miss (+ playbook hit) AFTER the
 			// match completed, so the event write never holds the store
 			// lock across the recall scan. Telemetry-class: failures go

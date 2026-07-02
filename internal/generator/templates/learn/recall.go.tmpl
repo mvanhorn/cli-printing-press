@@ -104,6 +104,10 @@ type Result struct {
 	Playbook      *ResolvedPlaybook `json:"playbook,omitempty"`
 	Notes         string            `json:"notes,omitempty"`
 	Candidates    []Candidate       `json:"candidates,omitempty"`
+	// UnresolvedEntities feeds the invocation journal's learn context
+	// (SetJournalLearnContext) so derivation and synthesis can anchor
+	// on the recall entry. Never serialized into the envelope.
+	UnresolvedEntities []string `json:"-"`
 }
 
 // Opts tunes Recall behavior. Zero-value defaults:
@@ -251,6 +255,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	if len(unresolvedEntities) > 0 {
 		_ = lookups.RecordMisses(ctx, db, unresolvedEntities)
 	}
+	result.UnresolvedEntities = append([]string(nil), unresolvedEntities...)
 
 	rows, err := db.QueryContext(ctx, `SELECT id, query_pattern, COALESCE(query_entities, ''),
 		COALESCE(venue, ''), COALESCE(resource_type, ''), resource_id, action,

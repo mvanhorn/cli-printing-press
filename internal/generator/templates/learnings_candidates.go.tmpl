@@ -271,6 +271,31 @@ Usage errors (unknown id, non-open status) exit 2.`,
 	return cmd
 }
 
+// confirmingSessionRecallFamily returns the query family of the most
+// recent recall entry journaled under the current session key, or ""
+// when this session has not recalled. It is the KTD8 anchor fallback
+// for a flag-correction candidate derived outside a recall window: the
+// confirming agent recalls the query it cares about, then confirms, and
+// the correction note lands under that family. Best-effort: any journal
+// read error yields "" and the caller reports the missing anchor.
+func confirmingSessionRecallFamily() string {
+	sessionKey := learn.JournalSessionKey()
+	if sessionKey == "" {
+		return ""
+	}
+	entries, _, err := learn.ReadJournalFrom(learn.JournalOffset{})
+	if err != nil {
+		return ""
+	}
+	family := ""
+	for _, e := range entries {
+		if e.SessionKey == sessionKey && len(e.Cmd) > 0 && e.Cmd[0] == "recall" && e.QueryFamily != "" {
+			family = e.QueryFamily
+		}
+	}
+	return family
+}
+
 // materializeCandidate writes a candidate's payload into the verified
 // playbook tables per class and describes what it wrote. Called before
 // the status flips to confirmed, so a failure leaves the candidate
@@ -316,7 +341,16 @@ func materializeCandidate(s *store.Store, row store.CandidateRow) (map[string]an
 		}
 		family := strings.TrimSpace(row.QueryFamily)
 		if family == "" {
-			return nil, fmt.Errorf("candidate %d has no query_family anchor for its correction note", row.ID)
+			// The failure was observed outside a recall window (the
+			// derive-time anchor is empty), so land the correction under
+			// the family the confirming session's own recall resolved.
+			// This is the KTD8 fallback: an agent that recalls, sees the
+			// candidate, then confirms it anchors the note to the query
+			// it is actually working on.
+			family = confirmingSessionRecallFamily()
+		}
+		if family == "" {
+			return nil, fmt.Errorf("candidate %d has no query_family anchor for its correction note; recall the query family first, then confirm", row.ID)
 		}
 		marker := flagAliasAmendMarker(row, p)
 		pbID, inserted, err := s.AppendPlaybookNotes(family, marker)

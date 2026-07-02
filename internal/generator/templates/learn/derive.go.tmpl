@@ -101,7 +101,14 @@ func DeriveFlagCorrections(openStore func() (CandidateStore, error), flagExists 
 	if len(entries) == 0 && next == offset {
 		return nil
 	}
-	pairs, pending := pairFlagCorrections(entries, time.Now().UTC(), flagExists)
+	// Seed the per-session recall-family anchor from the FULL journal,
+	// not just the unprocessed batch: a prior derive pass on the recall
+	// invocation already advanced the offset past that recall entry, so
+	// the entry that carries the family is usually behind the batch by
+	// the time the failure/success pair completes. The seed is read-only
+	// context; pairing itself still happens only within the batch.
+	recallSeed := sessionRecallFamilies()
+	pairs, pending := pairFlagCorrections(entries, recallSeed, time.Now().UTC(), flagExists)
 	if pending {
 		return nil
 	}
@@ -148,13 +155,17 @@ func flagCorrectionSignature(commandPath, failedFlag, correctedFlag string) stri
 // rule, and reports whether any unpaired failure is still fresh enough
 // that its correction may yet arrive (the caller then holds the whole
 // batch).
-func pairFlagCorrections(entries []JournalEntry, now time.Time, flagExists func(name string) bool) ([]flagCorrection, bool) {
+func pairFlagCorrections(entries []JournalEntry, recallSeed map[string]string, now time.Time, flagExists func(name string) bool) ([]flagCorrection, bool) {
 	var pairs []flagCorrection
 	pending := false
 	// The family anchor for a derived candidate is the family of the
-	// session's most recent recall entry, tracked as the walk passes
-	// each learn entry. The bounded batch is the session window.
+	// session's most recent recall entry. Seed from the full-journal
+	// scan (recall entries commonly predate the batch), then let any
+	// fresher in-batch recall override it as the walk proceeds.
 	lastRecallFamily := map[string]string{}
+	for k, v := range recallSeed {
+		lastRecallFamily[k] = v
+	}
 	for i := range entries {
 		e := entries[i]
 		if len(e.Cmd) > 0 && e.Cmd[0] == "recall" && e.QueryFamily != "" {
@@ -214,6 +225,29 @@ func pairFlagCorrections(entries []JournalEntry, now time.Time, flagExists func(
 		})
 	}
 	return pairs, pending
+}
+
+// sessionRecallFamilies scans the full journal and returns, per session
+// key, the family of that session's most recent recall entry. It exists
+// because derivation runs once per invocation and advances the offset,
+// so a recall entry is usually already behind the batch by the time the
+// failure/success pair it should anchor completes. Best-effort: a read
+// error yields an empty map and derived candidates simply carry no
+// anchor (the confirm path then falls back to the confirming session's
+// recall). Bounded by the journal's own retention caps.
+func sessionRecallFamilies() map[string]string {
+	entries, _, err := ReadJournalFrom(JournalOffset{})
+	if err != nil {
+		return map[string]string{}
+	}
+	families := make(map[string]string, 4)
+	for i := range entries {
+		e := entries[i]
+		if len(e.Cmd) > 0 && e.Cmd[0] == "recall" && e.QueryFamily != "" {
+			families[e.SessionKey] = e.QueryFamily
+		}
+	}
+	return families
 }
 
 // sanitizedInvocationExample renders a journal entry as a replayable

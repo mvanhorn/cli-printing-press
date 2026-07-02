@@ -87,7 +87,8 @@ func TestGeneratedProseOmitsLearnProtocolWhenDisabled(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-prose-off")
-	apiSpec.Learn.Enabled = false
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
 	outputDir := filepath.Join(t.TempDir(), "learn-prose-off-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true}

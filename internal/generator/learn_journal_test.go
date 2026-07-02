@@ -95,7 +95,8 @@ func TestGenerateJournalGatedOff(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("journal-gated")
-	apiSpec.Learn.Enabled = false
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
 	outputDir := filepath.Join(t.TempDir(), "journal-gated-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true}

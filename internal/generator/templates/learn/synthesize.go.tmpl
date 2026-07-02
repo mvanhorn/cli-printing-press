@@ -141,10 +141,13 @@ func extractSynthesisEpisode(entries []JournalEntry, queryFamily, sessionKey str
 		}
 		// A journaled failed/suggested flag pair is a correction the
 		// session already paid for; carry it as a candidate note so the
-		// confirmed playbook warns the next session up front.
+		// confirmed playbook warns the next session up front. Normalize
+		// both tokens to a single-dash form (the journal spelling
+		// varies) so the note never double-dashes a flag.
 		if e.FailedFlag != "" && e.SuggestedFlag != "" {
 			ep.notes = append(ep.notes, fmt.Sprintf(
-				"observed in-session correction: --%s failed; --%s succeeded", e.FailedFlag, e.SuggestedFlag))
+				"observed in-session correction: use %s instead of %s",
+				normalizeFlagToken(e.SuggestedFlag), normalizeFlagToken(e.FailedFlag)))
 		}
 		if e.ExitCode != 0 || len(e.Cmd) == 0 || synthesisStepExcluded(e.Cmd) {
 			continue

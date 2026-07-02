@@ -15,7 +15,12 @@ func generateLearnStore(t *testing.T, name string, learnEnabled bool) (string, s
 	t.Helper()
 
 	apiSpec := minimalSpec(name)
-	apiSpec.Learn.Enabled = learnEnabled
+	if learnEnabled {
+		apiSpec.Learn.Enabled = true
+	} else {
+		// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+		apiSpec.Learn.Disabled = true
+	}
 	outputDir := filepath.Join(t.TempDir(), name+"-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true}

@@ -40,6 +40,8 @@ func TestGeneratePostOnlyAPIStillSkipsLocalDataLayer(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := postOnlyOutputSpec("post-only-output")
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())

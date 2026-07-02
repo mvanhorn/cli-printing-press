@@ -113,7 +113,10 @@ func TestGenerateLearnCandidates_GatedByLearnEnabled(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("cand-gated")
-	apiSpec.Learn.Enabled = false
+	// Post-flip, learn is on by default; `Enabled = false` is a
+	// documented no-op (a plain bool can't distinguish it from unset),
+	// so the opt-out is `Disabled = true`.
+	apiSpec.Learn.Disabled = true
 	outputDir := filepath.Join(t.TempDir(), "cand-gated-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true}

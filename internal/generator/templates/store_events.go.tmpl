@@ -111,6 +111,13 @@ func validLearnEvent(event string) bool {
 // callers log the returned error to teach.log and never fail the
 // parent command. The writeMu hold spans exactly this one INSERT.
 func (s *Store) InsertLearnEvent(event, familyHash string, matchedRowID int64, entityMatch bool, surface string) error {
+	// Harness silence: verify/dogfood runs must leave zero measurement
+	// rows in the developer's store, matching the journal's posture.
+	// Env names mirror cliutil.IsVerifyEnv / IsDogfoodEnv (the store
+	// package stays import-light, so the check is inlined here).
+	if os.Getenv("PRINTING_PRESS_VERIFY") == "1" || os.Getenv("PRINTING_PRESS_DOGFOOD") == "1" {
+		return nil
+	}
 	if !validLearnEvent(event) {
 		return fmt.Errorf("insert learn event: unknown event %q", event)
 	}

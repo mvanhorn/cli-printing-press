@@ -131,6 +131,9 @@ func TestGeneratedGraphQLGetHonorsLocalStrategy(t *testing.T) {
 		}},
 	}
 	apiSpec.Resources["items"] = items
+	// Post-flip: opt out so the no-store arm below exercises the non-learn
+	// shape it asserts.
+	apiSpec.Learn.Disabled = true
 
 	storeOutputDir := filepath.Join(t.TempDir(), "graphql-get-local-strategy-store-pp-cli")
 	storeGen := New(apiSpec, storeOutputDir)
