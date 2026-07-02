@@ -2211,9 +2211,14 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
 	}
-	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet, g.profile)
+	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet, g.profile, os.Stderr)
 	if g.Spec.Learn.Enabled && !g.VisionSet.Store {
-		return fmt.Errorf("learn.enabled requires VisionSet.Store=true; the learn package depends on internal/store")
+		// Defensive: constrainVisionTemplates already promotes Store for
+		// learn-enabled specs, so this branch is unreachable through the
+		// normal path. Promote rather than error so callers that force-set
+		// VisionSet around constrain keep working (soft-validation posture).
+		g.VisionSet.Store = true
+		fmt.Fprint(os.Stderr, learnStorePromotionInfo)
 	}
 	if g.renameActiveFrameworkResourceCollisions() {
 		g.profile = profiler.Profile(g.Spec)
@@ -2522,6 +2527,20 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("store_playbooks_test.go.tmpl", filepath.Join("internal", "store", "playbooks_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering store playbooks test: %w", err)
 		}
+		// store/candidates.go ships the quarantined learn_candidates
+		// lifecycle (DeriveCandidate signature upsert plus the
+		// confirm/reject/expire/purge state machine) beside
+		// learnings.go and playbooks.go. The backing table is created
+		// by store.go.tmpl at schema v9 under the same Learn gate;
+		// candidates never touch the verified learning tables until an
+		// explicit confirm materializes them through the playbook
+		// machinery.
+		if err := g.renderTemplate("store_candidates.go.tmpl", filepath.Join("internal", "store", "candidates.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store candidates lifecycle: %w", err)
+		}
+		if err := g.renderTemplate("store_candidates_test.go.tmpl", filepath.Join("internal", "store", "candidates_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store candidates lifecycle test: %w", err)
+		}
 		// teach.go and teach_test.go are emitted into internal/cli/
 		// (not the learn package) because they wire cobra commands;
 		// the learn package itself stays cobra-free per the boundary
@@ -2544,6 +2563,17 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 		if err := g.renderTemplate("teach_playbook_test.go.tmpl", filepath.Join("internal", "cli", "teach_playbook_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering teach-playbook commands test: %w", err)
+		}
+		// learnings_candidates.go ships the candidate control surface
+		// (`learnings candidates|confirm|reject|purge`) plus the
+		// teach-promotion helper teach.go calls after a successful
+		// teach. The commands register on the existing learnings group
+		// inside teach.go's newLearningsCmd.
+		if err := g.renderTemplate("learnings_candidates.go.tmpl", filepath.Join("internal", "cli", "learnings_candidates.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings candidates commands: %w", err)
+		}
+		if err := g.renderTemplate("learnings_candidates_test.go.tmpl", filepath.Join("internal", "cli", "learnings_candidates_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings candidates commands test: %w", err)
 		}
 		// internal/cli/playbooks/ ships the embed.FS scaffold for hand-
 		// authored playbook content (JSON + notes files). U9 emits the

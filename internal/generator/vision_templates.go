@@ -1,6 +1,8 @@
 package generator
 
 import (
+	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -162,7 +164,27 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 	return set
 }
 
-func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet, profile *profiler.APIProfile) VisionTemplateSet {
+// learnStorePromotionInfo is printed whenever learn.enabled forces Store on a
+// VisionSet that skipped it, so operators can see why a thin CLI grew a store.
+// Shared with Generate's defensive post-constrain check in generator.go.
+const learnStorePromotionInfo = `info: learn.enabled promotes VisionSet.Store=true (the learn package depends on internal/store)
+`
+
+func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet, profile *profiler.APIProfile, w io.Writer) VisionTemplateSet {
+	// Learn promotion runs before the sync/search strip below: the learn
+	// package depends on internal/store, so learn.enabled forces Store
+	// instead of hard-erroring (soft-validation posture). Store-forces-Sync
+	// is re-derived here because SelectVisionTemplates already ran; specs
+	// with non-vestigial syncable resources get a populated store, while
+	// zero-syncable specs keep store+learn and let the strip below drop
+	// sync/search/analytics.
+	if api != nil && api.Learn.Enabled && !set.Store {
+		set.Store = true
+		if hasSyncCommandResources(profile) && !set.Sync {
+			set.Sync = true
+		}
+		fmt.Fprint(w, learnStorePromotionInfo)
+	}
 	streamingEnabled := api != nil && api.Streaming.Enabled()
 	if streamingEnabled {
 		set.Store = true

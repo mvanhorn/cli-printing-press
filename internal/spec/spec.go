@@ -5090,6 +5090,19 @@ func (s *APISpec) ApplyLargeMCPSurfaceDefault() LargeMCPSurfaceDefaultResult {
 	return result
 }
 
+// ApplyLearnLoopDefault applies the learn-loop default in place: a spec that
+// neither opts out (learn.disabled: true) nor already opts in gets
+// learn.enabled=true, with one info line to w naming the opt-out. Explicit
+// states short-circuit silently: disabled is the authoritative off switch,
+// and an already-enabled spec keeps its config untouched.
+func (s *APISpec) ApplyLearnLoopDefault(w io.Writer) {
+	if s == nil || s.Learn.Disabled || s.Learn.Enabled {
+		return
+	}
+	s.Learn.Enabled = true
+	fmt.Fprintf(w, "info: learn: defaulting self-learning loop on (opt out with learn.disabled: true)\n")
+}
+
 // IsCodeOrchestration reports whether this MCP config opts into the
 // code-orchestration thin surface. Templates branch on this to emit only
 // <api>_search + <api>_execute instead of the endpoint-mirror.

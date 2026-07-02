@@ -3551,6 +3551,48 @@ resources:
 	}
 }
 
+func TestApplyLearnLoopDefault(t *testing.T) {
+	base := func() *APISpec {
+		return &APISpec{Name: "demo"}
+	}
+
+	t.Run("learn-less spec defaults Enabled on and writes the info line", func(t *testing.T) {
+		s := base()
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.True(t, s.Learn.Enabled)
+		assert.Contains(t, buf.String(), "defaulting self-learning loop on (opt out with learn.disabled: true)")
+	})
+
+	t.Run("disabled spec short-circuits with no change and no output", func(t *testing.T) {
+		s := base()
+		s.Learn.Disabled = true
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.Disabled)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("explicitly enabled spec is a no-op with no output", func(t *testing.T) {
+		s := base()
+		s.Learn.Enabled = true
+		s.Learn.Stopwords = []string{"the"}
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.True(t, s.Learn.Enabled)
+		assert.Equal(t, []string{"the"}, s.Learn.Stopwords)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("nil receiver is safe", func(t *testing.T) {
+		var s *APISpec
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.Empty(t, buf.String())
+	})
+}
+
 func TestMCPConfigAbsentIsBackwardCompatible(t *testing.T) {
 	input := `
 name: demo

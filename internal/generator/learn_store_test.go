@@ -157,7 +157,11 @@ func TestGenerateStoreCompilesUnderLearnEnabled(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "-c", "-o", filepath.Join(t.TempDir(), "store.test"), "./internal/store/...")
 }
 
-func TestGenerateLearnEnabledRequiresStoreVision(t *testing.T) {
+// TestGenerateLearnEnabledWithoutStoreVisionPromotes replaces the old
+// hard-error contract: learn.enabled with a VisionSet that skipped Store no
+// longer fails Generate; constrainVisionTemplates promotes Store so the learn
+// package's internal/store dependency is always satisfiable.
+func TestGenerateLearnEnabledWithoutStoreVisionPromotes(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("learn-no-store")
@@ -166,8 +170,9 @@ func TestGenerateLearnEnabledRequiresStoreVision(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: false, Export: true}
 
-	err := gen.Generate()
-	require.ErrorContains(t, err, "learn.enabled requires VisionSet.Store=true; the learn package depends on internal/store")
+	require.NoError(t, gen.Generate())
+	require.True(t, gen.VisionSet.Store, "learn.enabled must promote Store instead of erroring")
+	require.FileExists(t, filepath.Join(outputDir, "internal", "store", "store.go"))
 }
 
 // TestLearnConfigIsZeroValueByDefault pins the LearnConfig default-disabled
