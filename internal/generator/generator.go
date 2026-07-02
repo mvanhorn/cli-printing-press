@@ -2684,6 +2684,8 @@ func (g *Generator) renderLearnFiles() error {
 		"learn/teach_test.go.tmpl":            filepath.Join("internal", "learn", "teach_test.go"),
 		"learn/teach_log.go.tmpl":             filepath.Join("internal", "learn", "teach_log.go"),
 		"learn/teach_log_test.go.tmpl":        filepath.Join("internal", "learn", "teach_log_test.go"),
+		"learn/journal.go.tmpl":               filepath.Join("internal", "learn", "journal.go"),
+		"learn/journal_test.go.tmpl":          filepath.Join("internal", "learn", "journal_test.go"),
 		"learn/preseed.go.tmpl":               filepath.Join("internal", "learn", "preseed.go"),
 		"learn/preseed_test.go.tmpl":          filepath.Join("internal", "learn", "preseed_test.go"),
 		"learn/playbooks.go.tmpl":             filepath.Join("internal", "learn", "playbooks.go"),
