@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"{{modulePath}}/internal/learn/entities"
+	"{{modulePath}}/internal/learn/lookups"
 	"{{modulePath}}/internal/learn/patterns"
 )
 
@@ -206,6 +207,22 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			result.Warnings = append(result.Warnings, WarningAmbiguousAlias)
 			break
 		}
+	}
+
+	// Lookup-refresh capture: entities with no entity_lookups row under
+	// ANY source are recorded as recall lookup misses. The post-sync
+	// scanner (lookups.RefreshFromSynced) uses the recorded set as its
+	// noise filter — only entities a recall actually failed to resolve
+	// are eligible for derivation from synced resources. Recording is
+	// telemetry-class: best-effort, local-only, never fails the recall.
+	var unresolvedEntities []string
+	for _, e := range normalized.Entities {
+		if len(resolver.Resolve(e)) == 0 {
+			unresolvedEntities = append(unresolvedEntities, e)
+		}
+	}
+	if len(unresolvedEntities) > 0 {
+		_ = lookups.RecordMisses(ctx, db, unresolvedEntities)
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT query_pattern, COALESCE(query_entities, ''),
@@ -518,6 +535,19 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 
 	if !result.Found && len(mismatches) == 0 {
 		result.Warnings = append(result.Warnings, TopWarningNoLearningsForQueryFamily)
+	}
+
+	// Stateless run-sync suggestion: a cold recall whose entities have
+	// no lookup coverage under any source points the agent at `sync` —
+	// the post-sync scanner derives synced lookup rows from local data,
+	// healing print-time seed staleness without a reprint. No candidate
+	// row backs this; the warning is recomputed each call and clears on
+	// its own once the entity resolves.
+	if !result.Found {
+		for _, e := range unresolvedEntities {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s:%s (run sync to refresh entity lookups)", TopWarningLookupRefreshAvailable, e))
+		}
 	}
 
 	// Playbook + notes surface: orthogonal to the per-resource path.

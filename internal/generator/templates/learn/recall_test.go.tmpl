@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -256,5 +257,105 @@ func TestRecall_ResourceNotInStoreWarning(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("missing resource_not_in_store warning; got %v", got.Results[0].Warnings)
+	}
+}
+
+// TestRecall_ColdUnresolvableEntityWarnsRunSyncAndRecordsMiss covers
+// the staleness-heal capture side: a cold recall whose entity has no
+// entity_lookups row under any source (1) surfaces the stateless
+// lookup_refresh_available warning naming `sync`, and (2) records the
+// entity in the learn_recall_misses table the post-sync scanner
+// filters on.
+func TestRecall_ColdUnresolvableEntityWarnsRunSyncAndRecordsMiss(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+
+	got, err := Recall(context.Background(), db, "standings for Zephyrium", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if got.Found {
+		t.Fatalf("want cold recall (Found=false); got %+v", got)
+	}
+
+	var sawNoLearnings, sawRefresh bool
+	for _, w := range got.Warnings {
+		if w == TopWarningNoLearningsForQueryFamily {
+			sawNoLearnings = true
+		}
+		if strings.HasPrefix(w, TopWarningLookupRefreshAvailable+":") {
+			sawRefresh = true
+			if !strings.Contains(w, "Zephyrium") {
+				t.Errorf("refresh warning should name the entity; got %q", w)
+			}
+			if !strings.Contains(w, "sync") {
+				t.Errorf("refresh warning text must name running sync; got %q", w)
+			}
+		}
+	}
+	if !sawNoLearnings {
+		t.Errorf("missing %q warning; got %v", TopWarningNoLearningsForQueryFamily, got.Warnings)
+	}
+	if !sawRefresh {
+		t.Errorf("missing %q warning; got %v", TopWarningLookupRefreshAvailable, got.Warnings)
+	}
+
+	var entity string
+	if err := db.QueryRow(`SELECT entity FROM learn_recall_misses`).Scan(&entity); err != nil {
+		t.Fatalf("recall did not record the lookup miss: %v", err)
+	}
+	if entity != "zephyrium" {
+		t.Errorf("recorded miss = %q, want lowercased %q", entity, "zephyrium")
+	}
+}
+
+// TestRecall_SyncedLookupRowPromotesPreviouslyMissedEntity is the heal
+// half of the incident replay: after a synced-source row lands (what
+// the post-sync scanner writes), the same recall that previously
+// warned lookup_refresh_available now resolves and promotes the
+// entity — even from its lowercase form, which the capitalization-
+// based extractor alone cannot catch.
+func TestRecall_SyncedLookupRowPromotesPreviouslyMissedEntity(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	if _, err := db.Exec(`INSERT INTO entity_lookups (kind, canonical, value, source)
+		VALUES ('events', 'Zephyrium', 'Zephyrium', 'synced')`); err != nil {
+		t.Fatalf("insert synced lookup row: %v", err)
+	}
+
+	got, err := Recall(context.Background(), db, "standings for zephyrium", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+
+	promoted := false
+	for _, e := range got.QueryEntities {
+		if strings.EqualFold(e, "zephyrium") {
+			promoted = true
+			break
+		}
+	}
+	if !promoted {
+		t.Errorf("synced lookup row should promote the entity; QueryEntities = %v", got.QueryEntities)
+	}
+	for _, w := range got.Warnings {
+		if strings.HasPrefix(w, TopWarningLookupRefreshAvailable+":") {
+			t.Errorf("resolved entity must not surface %q; got %v", TopWarningLookupRefreshAvailable, got.Warnings)
+		}
+	}
+
+	// A resolvable entity is not a lookup miss: nothing recorded.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'learn_recall_misses'`).Scan(&n); err != nil {
+		t.Fatalf("sqlite_master: %v", err)
+	}
+	if n != 0 {
+		var misses int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM learn_recall_misses`).Scan(&misses); err != nil {
+			t.Fatalf("count misses: %v", err)
+		}
+		if misses != 0 {
+			t.Errorf("resolved entity recorded %d miss rows, want 0", misses)
+		}
 	}
 }

@@ -4,6 +4,7 @@
 package lookups
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -18,13 +19,25 @@ import (
 //
 // Source is the provenance string: "seeded" for migration-time inserts,
 // "taught" for user / runtime adds, "inferred" for rows the pattern
-// engine derives at recall time.
+// engine derives at recall time, "synced" for rows the post-sync
+// scanner derives from already-synced local resources.
 type LookupRow struct {
 	Kind      string
 	Canonical string
 	Value     string
 	Source    string
 }
+
+// Source provenance strings for entity_lookups rows, listed in the
+// priority order Lookup and LookupAll apply (highest first). Both
+// functions hardcode this ladder in their CASE expressions; keep the
+// two SQL sites and this constant block in sync.
+const (
+	SourceTaught   = "taught"
+	SourceInferred = "inferred"
+	SourceSynced   = "synced"
+	SourceSeeded   = "seeded"
+)
 
 // computedKinds enumerates the kinds whose Lookup result is derived
 // purely from the canonical input by string transform, with no
@@ -91,8 +104,8 @@ func capitalizeFirst(canonical string) string {
 // Canonical comparison is case-insensitive on the canonical side.
 // When multiple rows match the same (kind, canonical) pair, Lookup
 // returns the first one ordered by source priority
-// ('taught' > 'inferred' > 'seeded') then by created_at ascending.
-// For all-values access use LookupAll.
+// ('taught' > 'inferred' > 'synced' > 'seeded') then by created_at
+// ascending. For all-values access use LookupAll.
 func Lookup(db *sql.DB, kind, canonical string) (string, bool, error) {
 	if v, ok := computedLookup(kind, canonical); ok {
 		return v, true, nil
@@ -107,8 +120,9 @@ func Lookup(db *sql.DB, kind, canonical string) (string, bool, error) {
 		ORDER BY CASE source
 		  WHEN 'taught' THEN 0
 		  WHEN 'inferred' THEN 1
-		  WHEN 'seeded' THEN 2
-		  ELSE 3
+		  WHEN 'synced' THEN 2
+		  WHEN 'seeded' THEN 3
+		  ELSE 4
 		END ASC, created_at ASC
 		LIMIT 1
 	`
@@ -141,8 +155,9 @@ func LookupAll(db *sql.DB, kind, canonical string) ([]string, error) {
 		ORDER BY CASE source
 		  WHEN 'taught' THEN 0
 		  WHEN 'inferred' THEN 1
-		  WHEN 'seeded' THEN 2
-		  ELSE 3
+		  WHEN 'synced' THEN 2
+		  WHEN 'seeded' THEN 3
+		  ELSE 4
 		END ASC, created_at ASC
 	`
 	rows, err := db.Query(q, kind, canonical)
@@ -194,7 +209,7 @@ func Upsert(db *sql.DB, kind, canonical, value, source string) error {
 		return errors.New("lookups.Upsert: value is required")
 	}
 	if source == "" {
-		source = "taught"
+		source = SourceTaught
 	}
 	_, err := db.Exec(`
 		INSERT OR IGNORE INTO entity_lookups (kind, canonical, value, source)
@@ -226,7 +241,7 @@ func SeedBatch(tx *sql.Tx, seeds []LookupRow) (int, error) {
 	for _, r := range seeds {
 		source := r.Source
 		if source == "" {
-			source = "seeded"
+			source = SourceSeeded
 		}
 		res, err := stmt.Exec(r.Kind, r.Canonical, r.Value, source)
 		if err != nil {
@@ -238,4 +253,293 @@ func SeedBatch(tx *sql.Tx, seeds []LookupRow) (int, error) {
 		}
 	}
 	return inserted, nil
+}
+
+// recallMissesTable captures entities the recall path could not
+// resolve through entity_lookups. RecordMisses creates it lazily on
+// first write, so no schema migration carries it; RefreshFromSynced
+// treats a missing table as "no misses recorded".
+const recallMissesTable = "learn_recall_misses"
+
+// createRecallMissesSQL is the lazy DDL for recallMissesTable. Entity
+// is stored lowercased so the scanner's case-insensitive matching
+// needs no per-row folding on read.
+const createRecallMissesSQL = `CREATE TABLE IF NOT EXISTS ` + recallMissesTable + ` (
+	entity TEXT PRIMARY KEY,
+	miss_count INTEGER NOT NULL DEFAULT 1,
+	first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`
+
+// RecordMisses upserts the lowercased form of each entity into the
+// recall-miss capture table, bumping miss_count and last_seen_at on
+// repeats. Telemetry-class: the recall hot path calls it best-effort
+// and ignores the error. Local-only — a single SQLite handle, never
+// the network.
+func RecordMisses(ctx context.Context, db *sql.DB, entities []string) error {
+	if db == nil {
+		return errors.New("lookups.RecordMisses: db is nil")
+	}
+	if len(entities) == 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, createRecallMissesSQL); err != nil {
+		return fmt.Errorf("lookups.RecordMisses create: %w", err)
+	}
+	for _, e := range entities {
+		key := strings.ToLower(strings.TrimSpace(e))
+		if key == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO `+recallMissesTable+` (entity) VALUES (?)
+			ON CONFLICT(entity) DO UPDATE SET miss_count = miss_count + 1, last_seen_at = CURRENT_TIMESTAMP`,
+			key); err != nil {
+			return fmt.Errorf("lookups.RecordMisses insert %q: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// DefaultSyncedPerKindCap bounds how many source='synced' rows
+// RefreshFromSynced will hold per kind (kind = resource_type),
+// counting rows from previous refreshes. The cap is a noise guard: a
+// huge resources table must not flood entity_lookups and dilute the
+// resolver.
+const DefaultSyncedPerKindCap = 200
+
+// RefreshOpts tunes RefreshFromSynced.
+type RefreshOpts struct {
+	// Extract derives entity tokens from one stored resource row's
+	// JSON payload. The caller composes it (the sync command wraps
+	// learn.ResourceEntitiesFromJSON with the per-CLI entity config)
+	// so this package stays free of the extraction layer. Nil makes
+	// the refresh a no-op.
+	Extract func(resourceType string, data []byte) []string
+	// PerKindCap overrides DefaultSyncedPerKindCap when > 0.
+	PerKindCap int
+}
+
+// RefreshResult reports what a RefreshFromSynced pass did.
+type RefreshResult struct {
+	Scanned  int // resource rows walked
+	Inserted int // entity_lookups rows actually inserted (source='synced')
+}
+
+// RefreshFromSynced derives entity_lookups rows (source='synced') from
+// the already-synced local `resources` table, so entities absent from
+// print-time seeds become resolvable at runtime without a reprint. Its
+// only inputs are the local SQLite handle and a pure extraction
+// function — by construction it performs no network I/O.
+//
+// Noise guards, in order:
+//   - only entities recorded as recall lookup misses are eligible
+//     (exact or substring match against the recorded lowercased set,
+//     mirroring ClassifyEntityMatch's permissive containment);
+//   - entities already resolvable via ANY existing row (canonical or
+//     value side, any source) are skipped;
+//   - at most PerKindCap synced rows exist per kind afterward.
+//
+// Derived rows are self-canonical — (kind=resource_type,
+// canonical=entity, value=entity) — which is exactly what the recall
+// resolver needs to promote and resolve the entity. INSERT OR IGNORE
+// keeps repeat passes idempotent.
+func RefreshFromSynced(ctx context.Context, db *sql.DB, opts RefreshOpts) (RefreshResult, error) {
+	var res RefreshResult
+	if db == nil {
+		return res, errors.New("lookups.RefreshFromSynced: db is nil")
+	}
+	if opts.Extract == nil {
+		return res, nil
+	}
+	perKindCap := opts.PerKindCap
+	if perKindCap <= 0 {
+		perKindCap = DefaultSyncedPerKindCap
+	}
+
+	missed, err := loadRecallMisses(ctx, db)
+	if err != nil {
+		return res, err
+	}
+	if len(missed) == 0 {
+		return res, nil
+	}
+	resolvable, err := loadResolvableForms(ctx, db)
+	if err != nil {
+		return res, err
+	}
+	syncedCounts, err := loadSyncedKindCounts(ctx, db)
+	if err != nil {
+		return res, err
+	}
+
+	// Phase 1: walk resources and collect candidate rows. Collecting
+	// first keeps the read cursor free of interleaved writes.
+	candidates, scanned, err := collectSyncedCandidates(ctx, db, opts.Extract, missed, resolvable, syncedCounts, perKindCap)
+	if err != nil {
+		return res, err
+	}
+	res.Scanned = scanned
+
+	// Phase 2: insert. INSERT OR IGNORE makes a lost race with another
+	// process a silent no-op rather than an error.
+	for _, c := range candidates {
+		r, err := db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO entity_lookups (kind, canonical, value, source) VALUES (?, ?, ?, ?)`,
+			c.Kind, c.Canonical, c.Value, SourceSynced)
+		if err != nil {
+			return res, fmt.Errorf("lookups.RefreshFromSynced insert (%s, %s): %w", c.Kind, c.Canonical, err)
+		}
+		if n, err := r.RowsAffected(); err == nil {
+			res.Inserted += int(n)
+		}
+	}
+	return res, nil
+}
+
+// collectSyncedCandidates walks the resources table and returns the
+// LookupRows RefreshFromSynced should insert, respecting the miss
+// filter, the already-resolvable dedup set, and the per-kind cap.
+// Mutates resolvable and syncedCounts as it tentatively claims slots
+// so a candidate seen twice in one pass counts once.
+func collectSyncedCandidates(ctx context.Context, db *sql.DB, extract func(string, []byte) []string, missed map[string]struct{}, resolvable map[string]struct{}, syncedCounts map[string]int, perKindCap int) ([]LookupRow, int, error) {
+	rows, err := db.QueryContext(ctx, `SELECT resource_type, data FROM resources ORDER BY resource_type, id`)
+	if err != nil {
+		// A store that has never synced has no resources table yet;
+		// there is simply nothing to scan.
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, 0, nil
+		}
+		return nil, 0, fmt.Errorf("lookups.RefreshFromSynced query resources: %w", err)
+	}
+	defer rows.Close()
+
+	var out []LookupRow
+	scanned := 0
+	for rows.Next() {
+		var resourceType string
+		var data []byte
+		if err := rows.Scan(&resourceType, &data); err != nil {
+			return nil, scanned, fmt.Errorf("lookups.RefreshFromSynced scan resource: %w", err)
+		}
+		scanned++
+		if syncedCounts[resourceType] >= perKindCap {
+			continue
+		}
+		for _, ent := range extract(resourceType, data) {
+			ent = strings.TrimSpace(ent)
+			key := strings.ToLower(ent)
+			if key == "" {
+				continue
+			}
+			if !matchesRecordedMiss(key, missed) {
+				continue
+			}
+			if _, ok := resolvable[key]; ok {
+				continue
+			}
+			if syncedCounts[resourceType] >= perKindCap {
+				break
+			}
+			out = append(out, LookupRow{Kind: resourceType, Canonical: ent, Value: ent, Source: SourceSynced})
+			resolvable[key] = struct{}{}
+			syncedCounts[resourceType]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, scanned, fmt.Errorf("lookups.RefreshFromSynced rows: %w", err)
+	}
+	return out, scanned, nil
+}
+
+// matchesRecordedMiss reports whether a lowercased resource-side
+// entity corresponds to a recorded recall miss. Containment is
+// permissive in both directions for the same reason
+// ClassifyEntityMatch's is: resource titles carry compound entities a
+// query names only partially.
+func matchesRecordedMiss(key string, missed map[string]struct{}) bool {
+	if _, ok := missed[key]; ok {
+		return true
+	}
+	for m := range missed {
+		if strings.Contains(key, m) || strings.Contains(m, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// loadRecallMisses returns the lowercased recorded-miss set. A missing
+// table means recall has never missed: an empty set, not an error.
+func loadRecallMisses(ctx context.Context, db *sql.DB) (map[string]struct{}, error) {
+	rows, err := db.QueryContext(ctx, `SELECT entity FROM `+recallMissesTable)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("lookups.RefreshFromSynced query misses: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			return nil, fmt.Errorf("lookups.RefreshFromSynced scan miss: %w", err)
+		}
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			out[e] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("lookups.RefreshFromSynced miss rows: %w", err)
+	}
+	return out, nil
+}
+
+// loadResolvableForms returns every lowercased canonical AND value
+// currently in entity_lookups, the dedup set that keeps the scanner
+// from re-deriving entities the resolver can already resolve.
+func loadResolvableForms(ctx context.Context, db *sql.DB) (map[string]struct{}, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT LOWER(canonical) FROM entity_lookups UNION SELECT LOWER(value) FROM entity_lookups`)
+	if err != nil {
+		return nil, fmt.Errorf("lookups.RefreshFromSynced query existing: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			return nil, fmt.Errorf("lookups.RefreshFromSynced scan existing: %w", err)
+		}
+		out[f] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("lookups.RefreshFromSynced existing rows: %w", err)
+	}
+	return out, nil
+}
+
+// loadSyncedKindCounts returns the current number of synced rows per
+// kind so per-kind caps hold across repeated refresh passes, not just
+// within one.
+func loadSyncedKindCounts(ctx context.Context, db *sql.DB) (map[string]int, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT kind, COUNT(*) FROM entity_lookups WHERE source = ? GROUP BY kind`, SourceSynced)
+	if err != nil {
+		return nil, fmt.Errorf("lookups.RefreshFromSynced query synced counts: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]int)
+	for rows.Next() {
+		var kind string
+		var n int
+		if err := rows.Scan(&kind, &n); err != nil {
+			return nil, fmt.Errorf("lookups.RefreshFromSynced scan synced count: %w", err)
+		}
+		out[kind] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("lookups.RefreshFromSynced synced count rows: %w", err)
+	}
+	return out, nil
 }
