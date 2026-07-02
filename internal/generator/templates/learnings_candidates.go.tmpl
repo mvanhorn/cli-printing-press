@@ -201,7 +201,9 @@ Usage errors (unknown id, non-open status) exit 2.`,
 		Example: `  {{.Name}}-pp-cli learnings confirm 3`,
 		// Usage errors here exit 2 by design; declare it so
 		// `cli-printing-press verify` scores the Execute cell honestly.
-		Annotations: map[string]string{"pp:typed-exit-codes": "0,2"},
+		// Confirm materializes into the CLI's own local store only, so it
+		// carries the non-destructive local-write hints.
+		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRunOK(flags) {
 				return nil

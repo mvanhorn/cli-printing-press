@@ -116,6 +116,13 @@ agents can record playbooks without a file on disk.`,
 				return fmt.Errorf("teach-playbook: %w", err)
 			}
 
+			// Usage-event insert is best-effort telemetry: failures go to
+			// teach.log and never fail the teach-playbook.
+			if evErr := s.InsertLearnEvent(store.LearnEventTeachPlaybook,
+				learn.FamilyHash(family), 0, false, store.LearnEventSurface()); evErr != nil {
+				writeTeachErrLog(fmt.Sprintf("teach-playbook: event insert: %v", evErr))
+			}
+
 			_ = appendLearningsAudit(map[string]any{
 				"action":         "teach-playbook",
 				"query":          query,
@@ -240,6 +247,13 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 			if _, _, err := s.AppendPlaybookNotes(family, marker); err != nil {
 				writeTeachErrLog(fmt.Sprintf("playbook amend: append family=%q: %v", family, err))
 				return silentCodeErr(1)
+			}
+
+			// Amend events feed the playbook-resolution metric (hits later
+			// amended count against resolution success). Best-effort only.
+			if evErr := s.InsertLearnEvent(store.LearnEventAmend,
+				learn.FamilyHash(family), 0, false, store.LearnEventSurface()); evErr != nil {
+				writeTeachErrLog(fmt.Sprintf("playbook amend: event insert: %v", evErr))
 			}
 
 			if auditErr := appendLearningsAudit(map[string]any{
