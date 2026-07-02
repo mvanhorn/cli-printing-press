@@ -266,6 +266,15 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				}
 			}
 
+			// Shared key space with auto-capture: a teach whose query
+			// family matches an open auto-captured playbook candidate
+			// promotes that candidate (materialize if needed + confirm)
+			// instead of leaving a duplicate artifact. Best-effort --
+			// failures log to teach.log and never fail the teach.
+			if promoErr := promoteCandidateOnTeach(s, learn.QueryFamily(normalized)); promoErr != nil {
+				writeTeachErrLog(fmt.Sprintf("teach: candidate promotion: %v", promoErr))
+			}
+
 			if auditErr := appendLearningsAudit(map[string]any{
 				"action":     "teach",
 				"query":      query,
@@ -507,6 +516,9 @@ search_learnings table that the LLM populates via the 'teach' command.`,
 	}
 	cmd.AddCommand(newLearningsListCmd(flags))
 	cmd.AddCommand(newLearningsForgetCmd(flags))
+	// Candidate lifecycle control surface (candidates | confirm |
+	// reject | purge) -- defined in learnings_candidates.go.
+	registerLearningsCandidateCommands(cmd, flags)
 	return cmd
 }
 
