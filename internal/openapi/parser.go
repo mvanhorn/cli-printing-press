@@ -63,6 +63,7 @@ const (
 	extensionLegacyMCP             = "mcp"
 	extensionDataSourceStrategy    = "x-data-source-strategy"
 	extensionCache                 = "x-cache"
+	extensionLearn                 = "x-learn"
 	extensionStreaming             = "x-streaming"
 	extensionPPQuery               = "x-pp-query"
 	extensionPPSyncable            = "x-pp-syncable"
@@ -641,6 +642,10 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	learnConfig, err := parseTypedExtension[spec.LearnConfig](doc, extensionLearn)
+	if err != nil {
+		return nil, err
+	}
 	streamingConfig, err := parseTypedExtension[spec.StreamingConfig](doc, extensionStreaming)
 	if err != nil {
 		return nil, err
@@ -675,6 +680,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		TierRouting:                  tierRouting,
 		MCP:                          mcpConfig,
 		Cache:                        cacheConfig,
+		Learn:                        learnConfig,
 		Streaming:                    streamingConfig,
 		QuerySync:                    querySyncConfig,
 		EndpointTemplateVars:         templateVars,

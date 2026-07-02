@@ -3430,6 +3430,127 @@ resources:
 	})
 }
 
+func TestLearnConfigDisabledAndSynonyms(t *testing.T) {
+	learnSpecYAML := func(learnBlock string) []byte {
+		return []byte(`
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+` + learnBlock)
+	}
+
+	t.Run("disabled round-trips through parse and marshal", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  disabled: true\n"))
+		require.NoError(t, err)
+		assert.True(t, s.Learn.Disabled)
+		assert.False(t, s.Learn.Enabled)
+
+		out, err := yaml.Marshal(s.Learn)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "disabled: true")
+
+		var back LearnConfig
+		require.NoError(t, yaml.Unmarshal(out, &back))
+		assert.True(t, back.Disabled)
+	})
+
+	t.Run("disabled true with enabled true rejected as contradictory, naming both fields", func(t *testing.T) {
+		_, err := ParseBytes(learnSpecYAML("learn:\n  disabled: true\n  enabled: true\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "learn.disabled")
+		assert.Contains(t, err.Error(), "learn.enabled")
+	})
+
+	// The generator default treats `enabled: false` as unset: a plain Go bool
+	// cannot distinguish "explicitly off" from "absent", so the documented
+	// opt-out is `disabled: true`. Pin that `enabled: false` still parses
+	// cleanly and stays false so the no-op is intentional, not accidental.
+	t.Run("enabled false alone parses cleanly and Enabled stays false", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: false\n"))
+		require.NoError(t, err)
+		assert.False(t, s.Learn.Enabled)
+		assert.False(t, s.Learn.Disabled)
+	})
+
+	t.Run("synonyms round-trip through parse", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: true\n  synonyms:\n    last night: yesterday\n"))
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"last night": "yesterday"}, s.Learn.Synonyms)
+	})
+
+	synonymCases := []struct {
+		name     string
+		synonyms map[string]string
+		wantErr  string
+	}{
+		{
+			name:     "valid lowercase pair accepted",
+			synonyms: map[string]string{"last night": "yesterday"},
+		},
+		{
+			name:     "empty key rejected",
+			synonyms: map[string]string{"": "yesterday"},
+			wantErr:  "learn.synonyms",
+		},
+		{
+			name:     "empty value rejected",
+			synonyms: map[string]string{"last night": ""},
+			wantErr:  "learn.synonyms",
+		},
+		{
+			name:     "uppercase key rejected",
+			synonyms: map[string]string{"Last Night": "yesterday"},
+			wantErr:  "lowercase",
+		},
+		{
+			name:     "uppercase value rejected",
+			synonyms: map[string]string{"last night": "Yesterday"},
+			wantErr:  "lowercase",
+		},
+		{
+			name:     "self-referential pair rejected",
+			synonyms: map[string]string{"yesterday": "yesterday"},
+			wantErr:  "itself",
+		},
+		{
+			name:     "chained pair rejected: a value must not itself be a key",
+			synonyms: map[string]string{"last night": "yesterday", "yesterday": "prior day"},
+			wantErr:  "chain",
+		},
+	}
+	for _, tc := range synonymCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := APISpec{
+				Name:      "demo",
+				BaseURL:   "http://x",
+				Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+				Learn: LearnConfig{
+					Enabled:  true,
+					Synonyms: tc.synonyms,
+				},
+			}
+			err := s.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestMCPConfigAbsentIsBackwardCompatible(t *testing.T) {
 	input := `
 name: demo

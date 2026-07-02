@@ -22,6 +22,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-rate-class` | root or `info` | `APISpec.RateClass` | No |
 | `x-mcp` | root or `info` | `APISpec.MCP` | No |
 | `x-cache` | root or `info` | `APISpec.Cache` | No |
+| `x-learn` | root or `info` | `APISpec.Learn` | No |
 | `x-pp-query` | root | `APISpec.QuerySync` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -328,6 +329,49 @@ x-cache:
   commands:
     - name: dashboard
       resources: [quotes]
+```
+
+### `x-learn`
+
+Declares the self-learning loop configuration for generated CLIs. Mirrors the
+internal YAML spec's top-level `learn:` block so OpenAPI-sourced prints can
+author ticker patterns, stopwords, synonym folds, and entity-lookup seeds the
+same way internal specs do.
+
+Parsed field: `APISpec.Learn` (`spec.LearnConfig`)
+
+Rules:
+- Optional. Specs without `x-learn` express no learn preference and take the
+  generator's learn-loop default. `enabled: false` is likewise treated as
+  unset under that default (a plain bool cannot express "explicitly off");
+  the authoritative opt-out is `disabled: true`.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- Shape mirrors the internal YAML `learn:` block field-for-field: `enabled`,
+  `disabled`, `ticker_patterns`, `stopwords`, `synonyms`,
+  `entity_lookup_seeds`.
+- `disabled: true` is the generation-time opt-out. Combining it with an
+  explicit `enabled: true` is rejected at parse time as contradictory.
+- Validated by the same learn validation as internal YAML specs: ticker
+  patterns must compile as Go regexps, seed kinds must be lowercase
+  identifiers, canonicals must be non-empty and unique within a kind, and
+  synonym pairs must be non-empty lowercase single-hop folds (no chains, no
+  self-references).
+
+Example:
+
+```yaml
+x-learn:
+  enabled: true
+  ticker_patterns:
+    - "[A-Z]{2,6}-[0-9]+"
+  stopwords: [the, of]
+  synonyms:
+    last night: yesterday
+  entity_lookup_seeds:
+    country:
+      - canonical: USA
+        aliases: [united states, america]
 ```
 
 ### `x-pp-example`
