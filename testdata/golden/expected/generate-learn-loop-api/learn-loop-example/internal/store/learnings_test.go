@@ -564,3 +564,64 @@ func TestListLearnings_FiltersByQueryAndSource(t *testing.T) {
 		t.Errorf("filter by source: want 2, got %d", len(rows))
 	}
 }
+
+func TestNormalizeQuery_SameReferentSynonymsFold(t *testing.T) {
+	cases := []struct {
+		a, b string
+	}{
+		// Multiword variant vs canonical, with punctuation noise.
+		{"why did x win last night?", "why did x win yesterday"},
+		// Spelling variants.
+		{"plans for tonite", "plans for tonight"},
+		{"report for to-day", "report for today"},
+	}
+	for _, tc := range cases {
+		ga, gb := store.NormalizeQuery(tc.a), store.NormalizeQuery(tc.b)
+		if ga != gb || ga == "" {
+			t.Errorf("write-side fold broken: NormalizeQuery(%q)=%q vs NormalizeQuery(%q)=%q",
+				tc.a, ga, tc.b, gb)
+		}
+	}
+}
+
+func TestNormalizeQuery_TonightDoesNotFoldToYesterday(t *testing.T) {
+	got := store.NormalizeQuery("who wins tonight")
+	if got != "who wins tonight" {
+		t.Errorf("NormalizeQuery = %q, want %q (same-referent only, never across day boundaries)",
+			got, "who wins tonight")
+	}
+}
+
+func TestRegisterQuerySynonyms_DeclaredFoldsUndeclaredDoesNot(t *testing.T) {
+	// Uses a vocabulary no other test touches; registration is
+	// process-wide and additive by design (one-shot at CLI startup).
+	store.RegisterQuerySynonyms(map[string]string{"foo bar": "baz"})
+	if got, want := store.NormalizeQuery("check foo bar now"), store.NormalizeQuery("check baz now"); got != want {
+		t.Errorf("declared pair should fold: %q vs %q", got, want)
+	}
+	if got := store.NormalizeQuery("check foo qux now"); got != "check foo qux now" {
+		t.Errorf("undeclared pair must not fold: got %q", got)
+	}
+}
+
+func TestUpsertAndRecall_SynonymPhrasingSymmetry(t *testing.T) {
+	s := openLearnings(t)
+	// Teach with phrasing A ("last night"), recall with phrasing B
+	// ("yesterday"): the write-side fold keys the row under the
+	// canonical form, so the read-side fold finds it as an exact
+	// pattern match.
+	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+		Query:      "why did x win last night",
+		ResourceID: "resource-1",
+		Source:     store.LearningSourceTaught,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	matches, err := s.Recall(context.Background(), "why did x win yesterday", store.RecallOptions{})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(matches) != 1 || matches[0].ResourceID != "resource-1" {
+		t.Fatalf("phrasing B must recall phrasing A's learning; got %+v", matches)
+	}
+}

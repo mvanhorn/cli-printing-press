@@ -21,6 +21,7 @@ import (
 	"tier-routing-golden-pp-cli/internal/client"
 	"tier-routing-golden-pp-cli/internal/cliutil"
 	"tier-routing-golden-pp-cli/internal/config"
+	"tier-routing-golden-pp-cli/internal/learn"
 	"tier-routing-golden-pp-cli/internal/mcp/bound"
 	"tier-routing-golden-pp-cli/internal/mcp/cobratree"
 	"tier-routing-golden-pp-cli/internal/store"
@@ -751,6 +752,11 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"paths":       paths,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion tier-routing-golden-pp-cli binary.",
+		// learn_protocol is generated from the single shared source of
+		// truth (the exported constant internal/learn.RecallFirstProtocol)
+		// also consumed by the CLI agent-context command, so the MCP and
+		// CLI agent surfaces cannot drift.
+		"learn_protocol": learn.RecallFirstProtocol,
 		"auth": map[string]any{
 			"type": "bearer_token",
 			"env_vars": []map[string]any{
