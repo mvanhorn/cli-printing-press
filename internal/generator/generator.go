@@ -2774,6 +2774,11 @@ func (g *Generator) renderLearnFiles() error {
 
 func (g *Generator) Generate() error {
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
+	// Fresh prints default the self-learning loop on (opt out with
+	// learn.disabled: true). Deliberately absent from GenerateMCPSurface:
+	// mcp-sync regenerates the MCP surface of published CLIs whose trees
+	// may lack the learn package, and the default must never flip there.
+	g.Spec.ApplyLearnLoopDefault(os.Stderr)
 	if g.Spec.OwnerName == "" {
 		// OwnerName flows into Hermes `author:` and other prose
 		// surfaces. We don't hard-fail on an empty value because the
