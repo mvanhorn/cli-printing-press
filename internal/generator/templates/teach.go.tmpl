@@ -275,6 +275,18 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				writeTeachErrLog(fmt.Sprintf("teach: candidate promotion: %v", promoErr))
 			}
 
+			// Teach-time playbook synthesis, composed with the promotion
+			// hook above: promotion runs first, and a promoted candidate
+			// (or an agent-supplied --playbook-file) leaves a playbook row
+			// that makes synthesis a no-op. Only when the family still
+			// lacks a playbook does this session's recall-to-teach journal
+			// episode become a quarantined playbook_candidate awaiting an
+			// explicit `learnings confirm`. Best-effort — failures log to
+			// teach.log and never fail the teach.
+			if _, _, synthErr := learn.SynthesizePlaybookCandidate(s, learn.QueryFamily(normalized), learn.JournalSessionKey()); synthErr != nil {
+				writeTeachErrLog(fmt.Sprintf("teach: playbook synthesis: %v", synthErr))
+			}
+
 			if auditErr := appendLearningsAudit(map[string]any{
 				"action":     "teach",
 				"query":      query,
