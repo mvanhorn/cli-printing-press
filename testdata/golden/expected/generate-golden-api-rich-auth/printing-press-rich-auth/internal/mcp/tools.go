@@ -29,10 +29,8 @@ import (
 const (
 	// MCP hosts can fan out tool calls faster than a human CLI session.
 	// Keep them on the same polite-client limiter path instead of disabling
-	// pacing with rate=0. "Auto" lets the server's X-Ratelimit-* headers govern
-	// (adaptive 429-probe fallback for header-less servers) rather than pinning a
-	// fixed ceiling that would clamp the server's real advertised budget down.
-	defaultMCPRateLimit = client.RateLimitAuto
+	// pacing with rate=0; users can still tune human CLI calls with --rate-limit.
+	defaultMCPRateLimit = 2
 )
 
 // RegisterTools registers all API operations as MCP tools.

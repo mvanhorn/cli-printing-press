@@ -3521,7 +3521,7 @@ func TestSyncDependentResourceContinuesAfterHTMLExtractionError(t *testing.T) {
 		dependentHTMLSyncClient{},
 		db,
 		dependentResourceDef{Name: "messages", ParentTable: "channels", ParentIDParam: "channelId", PathTemplate: "/channels/{channelId}/messages"},
-		"", false, 1, false, false, nil, nil,
+		"", false, 1, false, false, nil, nil, 1,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -5915,7 +5915,7 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 		dependentParentFKClient{},
 		db,
 		dependentResourceDef{Name: "contacts", ParentTable: "lists", ParentIDParam: "listId", PathTemplate: "/lists/{listId}/contacts"},
-		"", false, 1, false, false, nil, nil,
+		"", false, 1, false, false, nil, nil, 1,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
@@ -6081,7 +6081,7 @@ func TestSyncDependentResourceSubstitutesChainedPathParams(t *testing.T) {
 				{Param: "messageId", Field: "id"},
 			},
 		},
-		"", false, 1, false, false, nil, nil,
+		"", false, 1, false, false, nil, nil, 1,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)
