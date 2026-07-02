@@ -168,6 +168,10 @@ func newTeachCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "teach",
 		Short: "Record a query -> resource mapping for future recall (LLM-fired, silent)",
+		// Bare invocation intentionally exits 2 (silent usage error to
+		// teach.log); declare it so `cli-printing-press verify` scores the
+		// Execute cell honestly instead of masking a FAIL.
+		Annotations: map[string]string{"pp:typed-exit-codes": "0,2"},
 		Long: `Record one or more "this query -> this resource" mappings so the next
 query that matches surfaces the right resources without re-running discovery.
 
