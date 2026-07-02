@@ -177,6 +177,7 @@ func TestEnvelopeWarningCodesStable(t *testing.T) {
 		{"similar_shape_different_entity", WarningSimilarShapeDifferentEntity, "similar_shape_different_entity"},
 		{"ambiguous_alias", WarningAmbiguousAlias, "ambiguous_alias"},
 		{"lookup_refresh_available", TopWarningLookupRefreshAvailable, "lookup_refresh_available"},
+		{"candidates_present", TopWarningCandidatesPresent, "candidates_present"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

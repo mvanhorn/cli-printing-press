@@ -63,6 +63,14 @@ const (
 	// lookups)" — one per unresolvable entity — and disappears on its
 	// own once the entity resolves.
 	TopWarningLookupRefreshAvailable = "lookup_refresh_available"
+	// TopWarningCandidatesPresent surfaces exactly when the envelope's
+	// `candidates` array is non-empty: quarantined auto-captured
+	// candidates rode along for this query, each carrying a two-step
+	// byte-exact next_action (try the candidate, then
+	// `learnings confirm <id>`). With nothing open the warning is
+	// absent AND the candidates key is omitted entirely, keeping the
+	// envelope byte-stable for stores with nothing pending.
+	TopWarningCandidatesPresent = "candidates_present"
 )
 
 // Jaccard returns the token-set Jaccard coefficient of two string

@@ -6,6 +6,7 @@ package learn
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -67,6 +68,13 @@ type Hit struct {
 // agent can surface the gotchas/workarounds even when the structured
 // playbook itself is sparse (or absent -- a notes-only row still
 // surfaces Notes).
+//
+// Candidates is the quarantined-knowledge section: open
+// learn_candidates rows surfaced for judgment. Structurally separate
+// by contract -- a candidate never appears inside Results, Playbook,
+// or Notes, and the key is omitted entirely when nothing is open so
+// the envelope stays byte-stable for stores with no pending
+// candidates.
 type Result struct {
 	Query         string            `json:"query"`
 	Normalized    string            `json:"normalized"`
@@ -78,6 +86,7 @@ type Result struct {
 	Warnings      []string          `json:"warnings,omitempty"`
 	Playbook      *ResolvedPlaybook `json:"playbook,omitempty"`
 	Notes         string            `json:"notes,omitempty"`
+	Candidates    []Candidate       `json:"candidates,omitempty"`
 }
 
 // Opts tunes Recall behavior. Zero-value defaults:
@@ -599,6 +608,19 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		}
 	}
 
+	// Quarantined-candidate surface: open learn_candidates rows ride
+	// the envelope in their own capped section, ranked family-anchor
+	// first. Read-only by contract -- it runs regardless of the
+	// capture-disable switch (which gates journaling and derivation
+	// only) and swallows errors so stores predating the candidates
+	// table keep working. Runs after the playbook lookup because the
+	// resolved playbook's steps feed the command-path-overlap rank
+	// tier.
+	if cands := surfaceCandidates(ctx, db, family, result.Playbook); len(cands) > 0 {
+		result.Candidates = cands
+		result.Warnings = append(result.Warnings, TopWarningCandidatesPresent)
+	}
+
 	return result, nil
 }
 
@@ -753,4 +775,277 @@ func canonicalJaccard(a, b map[string]struct{}) float64 {
 		return 0
 	}
 	return float64(inter) / float64(union)
+}
+
+// Candidate classes mirror the CHECK constraint on learn_candidates
+// (and the store package's exported constants; the learn package reads
+// the table directly, like the playbook lookup above, so the literals
+// live here too).
+const (
+	candidateClassFlagAlias = "flag_alias"
+	candidateClassPlaybook  = "playbook_candidate"
+)
+
+// candidateSurfaceCap caps the envelope's candidates array. The full
+// open set stays reachable via the `learnings candidates` control
+// command; the envelope only carries the few worth acting on now.
+const candidateSurfaceCap = 3
+
+// candidateScanLimit bounds the single candidates SELECT on the recall
+// hot path. Family-anchored rows sort first inside the query itself,
+// so the bound can never starve the rows most relevant to this query.
+const candidateScanLimit = 24
+
+// candidateCommandBinary is the installed binary name next_action
+// steps are composed against. Byte-exact by contract: agents copy the
+// steps verbatim, so the confirm step must match the command names
+// registered under the `learnings` group.
+const candidateCommandBinary = "{{.Name}}-pp-cli"
+
+// Candidate is one open learn_candidates row surfaced in the recall
+// envelope for judgment. Quarantined knowledge: it sits below the
+// confidence skip floor and alters nothing until an explicit confirm.
+// NextAction is always exactly two steps -- try the candidate, then
+// the literal confirm command -- both copy-exact.
+type Candidate struct {
+	ID         int64     `json:"id"`
+	Class      string    `json:"class"`
+	Summary    string    `json:"summary"`
+	Sightings  int       `json:"sightings"`
+	LastSeen   time.Time `json:"last_seen"`
+	Rationale  string    `json:"rationale"`
+	NextAction []string  `json:"next_action"`
+}
+
+// candidateScan is the raw row shape surfaceCandidates ranks before
+// composing the envelope entries.
+type candidateScan struct {
+	id          int64
+	class       string
+	payload     string
+	sightings   int
+	queryFamily string
+	commandPath string
+	lastSeen    time.Time
+}
+
+// surfaceCandidates returns the capped, ranked candidates section for
+// the envelope. One bounded query on the hot path: open rows only,
+// family-anchored rows first, then sightings, then recency. The
+// command-path-overlap tier (between family anchor and raw sightings)
+// is resolved in Go against the already-resolved playbook. Errors are
+// swallowed by contract -- recall never fails, and stores predating
+// the learn_candidates table simply surface nothing.
+func surfaceCandidates(ctx context.Context, db *sql.DB, family string, resolved *ResolvedPlaybook) []Candidate {
+	rows, err := db.QueryContext(ctx, `SELECT id, class, payload, sightings,
+		COALESCE(query_family, ''), COALESCE(command_path, ''), last_seen_at
+		FROM learn_candidates
+		WHERE status = 'open'
+		ORDER BY CASE WHEN ? != '' AND query_family = ? THEN 0 ELSE 1 END,
+			sightings DESC, last_seen_at DESC, id ASC
+		LIMIT ?`, family, family, candidateScanLimit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var scanned []candidateScan
+	for rows.Next() {
+		var c candidateScan
+		var lastSeen string
+		if err := rows.Scan(&c.id, &c.class, &c.payload, &c.sightings,
+			&c.queryFamily, &c.commandPath, &lastSeen); err != nil {
+			return nil
+		}
+		// Tolerant parse: a foreign timestamp yields the zero time
+		// rather than dropping the row.
+		if t, perr := time.Parse(time.RFC3339, lastSeen); perr == nil {
+			c.lastSeen = t
+		}
+		scanned = append(scanned, c)
+	}
+	if rows.Err() != nil || len(scanned) == 0 {
+		return nil
+	}
+
+	tier := func(c candidateScan) int {
+		switch {
+		case family != "" && c.queryFamily == family:
+			return 0
+		case playbookUsesCommandPath(resolved, c.commandPath):
+			return 1
+		default:
+			return 2
+		}
+	}
+	// High-sighting unconfirmed rows must outrank fresh low-sighting
+	// ones within a tier: the no-confirm steady state depends on the
+	// same proven candidates resurfacing session after session.
+	sort.SliceStable(scanned, func(i, j int) bool {
+		ti, tj := tier(scanned[i]), tier(scanned[j])
+		if ti != tj {
+			return ti < tj
+		}
+		if scanned[i].sightings != scanned[j].sightings {
+			return scanned[i].sightings > scanned[j].sightings
+		}
+		if !scanned[i].lastSeen.Equal(scanned[j].lastSeen) {
+			return scanned[i].lastSeen.After(scanned[j].lastSeen)
+		}
+		return scanned[i].id < scanned[j].id
+	})
+	if len(scanned) > candidateSurfaceCap {
+		scanned = scanned[:candidateSurfaceCap]
+	}
+
+	out := make([]Candidate, 0, len(scanned))
+	for _, c := range scanned {
+		out = append(out, Candidate{
+			ID:         c.id,
+			Class:      c.class,
+			Summary:    candidateSummary(c.class, c.payload, c.queryFamily),
+			Sightings:  c.sightings,
+			LastSeen:   c.lastSeen,
+			Rationale:  candidateRationale(tier(c), c.sightings),
+			NextAction: candidateNextAction(c.id, c.class, c.payload, c.commandPath),
+		})
+	}
+	return out
+}
+
+// playbookUsesCommandPath reports whether the resolved playbook runs
+// the candidate's command path in any step -- the middle ranking tier:
+// a correction observed on a command this query's choreography uses is
+// more actionable here than an unrelated one.
+func playbookUsesCommandPath(resolved *ResolvedPlaybook, commandPath string) bool {
+	if resolved == nil {
+		return false
+	}
+	commandPath = strings.TrimSpace(commandPath)
+	if commandPath == "" {
+		return false
+	}
+	for _, step := range resolved.Playbook.Steps {
+		cmd := strings.TrimSpace(step.Cmd)
+		if cmd == commandPath || strings.HasPrefix(cmd, commandPath+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// candidateSummary renders a compact, human-scannable digest of the
+// payload -- never the full payload; `learnings confirm` prints that
+// before anything is blessed. Malformed payloads fall back to a
+// truncated verbatim form so the row stays identifiable.
+func candidateSummary(class, payload, family string) string {
+	switch class {
+	case candidateClassFlagAlias:
+		var p struct {
+			CommandPath   string `json:"command_path"`
+			FailedFlag    string `json:"failed_flag"`
+			CorrectedFlag string `json:"corrected_flag"`
+		}
+		if err := json.Unmarshal([]byte(payload), &p); err == nil &&
+			strings.TrimSpace(p.FailedFlag) != "" && strings.TrimSpace(p.CorrectedFlag) != "" {
+			if strings.TrimSpace(p.CommandPath) != "" {
+				return fmt.Sprintf("observed flag correction on `%s`: use %s instead of %s",
+					strings.TrimSpace(p.CommandPath), p.CorrectedFlag, p.FailedFlag)
+			}
+			return fmt.Sprintf("observed flag correction: use %s instead of %s", p.CorrectedFlag, p.FailedFlag)
+		}
+	case candidateClassPlaybook:
+		var p struct {
+			QueryFamily  string `json:"query_family"`
+			PlaybookJSON string `json:"playbook_json"`
+			NotesText    string `json:"notes_text"`
+		}
+		if err := json.Unmarshal([]byte(payload), &p); err == nil {
+			if family == "" {
+				family = strings.TrimSpace(p.QueryFamily)
+			}
+			steps := 0
+			if strings.TrimSpace(p.PlaybookJSON) != "" {
+				if pb, perr := ParsePlaybook([]byte(p.PlaybookJSON), "candidate"); perr == nil {
+					steps = len(pb.Steps)
+				}
+			}
+			switch {
+			case steps > 0 && family != "":
+				return fmt.Sprintf("proposed playbook (%d step(s)) for query family %q", steps, family)
+			case steps > 0:
+				return fmt.Sprintf("proposed playbook (%d step(s))", steps)
+			case strings.TrimSpace(p.NotesText) != "" && family != "":
+				return fmt.Sprintf("proposed guidance notes for query family %q", family)
+			case strings.TrimSpace(p.NotesText) != "":
+				return "proposed guidance notes"
+			}
+		}
+	}
+	return truncateForSummary(payload)
+}
+
+// truncateForSummary keeps a malformed payload identifiable in the
+// summary slot without dumping it wholesale. Rune-safe cut.
+func truncateForSummary(payload string) string {
+	const maxRunes = 120
+	payload = strings.TrimSpace(payload)
+	runes := []rune(payload)
+	if len(runes) <= maxRunes {
+		return payload
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+// candidateRationale explains in plain words why the row surfaced and
+// how often it has been seen. No scores, no bare floats -- agents read
+// this verbatim.
+func candidateRationale(tier, sightings int) string {
+	times := fmt.Sprintf("seen %d time", sightings)
+	if sightings != 1 {
+		times += "s"
+	}
+	switch tier {
+	case 0:
+		return "matches this query's family; " + times
+	case 1:
+		return "observed on a command this query's playbook runs; " + times
+	default:
+		return "unconfirmed observation from this CLI's own usage; " + times
+	}
+}
+
+// candidateNextAction composes the two byte-exact steps: first the
+// trial derived from the payload (for flag corrections, the corrected
+// example invocation; for playbook candidates, a note to try the
+// surfaced steps), then the literal confirm command registered under
+// the `learnings` group.
+func candidateNextAction(id int64, class, payload, commandPath string) []string {
+	confirm := fmt.Sprintf("%s learnings confirm %d", candidateCommandBinary, id)
+
+	trial := ""
+	if class == candidateClassFlagAlias {
+		var p struct {
+			CommandPath   string `json:"command_path"`
+			CorrectedFlag string `json:"corrected_flag"`
+		}
+		if err := json.Unmarshal([]byte(payload), &p); err == nil && strings.TrimSpace(p.CorrectedFlag) != "" {
+			path := strings.TrimSpace(p.CommandPath)
+			if path == "" {
+				path = strings.TrimSpace(commandPath)
+			}
+			if path == "" {
+				path = "<command>"
+			}
+			trial = fmt.Sprintf("%s %s %s <value>", candidateCommandBinary, path, strings.TrimSpace(p.CorrectedFlag))
+		}
+	}
+	if trial == "" {
+		if class == candidateClassPlaybook {
+			trial = "try the surfaced playbook steps for this query family and verify they answer the query"
+		} else {
+			trial = fmt.Sprintf("review the payload via `%s learnings candidates`, then retry the corrected invocation", candidateCommandBinary)
+		}
+	}
+	return []string{trial, confirm}
 }
