@@ -18,6 +18,7 @@ import (
 	"{{modulePath}}/internal/config"
 {{- if .Learn.Enabled}}
 	"{{modulePath}}/internal/learn"
+	"{{modulePath}}/internal/store"
 {{- end}}
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -101,6 +102,9 @@ func Execute() error {
 	var journalFailedFlag, journalSuggestedFlag string
 	defer func() {
 		journalInvocation(&flags, rootCmd, executedCmd, retErr, journalFailedFlag, journalSuggestedFlag)
+		// Derivation runs after the journal write so the entry this
+		// invocation just recorded is visible to the tail scan.
+		deriveFlagCorrections(&flags, rootCmd, executedCmd)
 	}()
 {{- else}}
 
@@ -622,6 +626,71 @@ func argsDisableLearn(args []string) bool {
 			default:
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// learnFamilyCommands are the commands whose own invocations must
+// never trigger a derivation pass — deriving off the learn surface's
+// own journal traffic would compound into derive-on-derive noise.
+// Their entries still land in the journal; only the pass is skipped.
+var learnFamilyCommands = map[string]struct{}{
+	"teach":          {},
+	"recall":         {},
+	"learnings":      {},
+	"playbook":       {},
+	"teach-pattern":  {},
+	"teach-lookup":   {},
+	"teach-playbook": {},
+}
+
+// deriveFlagCorrections runs the post-run flag-correction derivation
+// pass from Execute()'s single post-ExecuteC site, right after the
+// invocation's own journal entry lands. Best-effort and silent: it is
+// skipped under every switch the journal honors, and any failure is
+// swallowed — derivation may never fail, slow, or add output to the
+// command that triggered it.
+func deriveFlagCorrections(flags *rootFlags, rootCmd, executed *cobra.Command) {
+	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) || learn.JournalCaptureDisabled() {
+		return
+	}
+	chain := journalVerbChain(rootCmd, executed)
+	if len(chain) > 0 {
+		if _, isLearn := learnFamilyCommands[chain[0]]; isLearn {
+			return
+		}
+	}
+	flagExists := func(name string) bool {
+		return commandTreeHasFlag(rootCmd, strings.TrimLeft(name, "-"))
+	}
+	// The opener is lazy: the pass touches SQLite only when it paired
+	// a correction, so framework-only invocations never create the
+	// learn database from this path.
+	openStore := func() (learn.CandidateStore, error) {
+		return store.Open(learnDBPath(""))
+	}
+	_ = learn.DeriveFlagCorrections(openStore, flagExists)
+}
+
+// commandTreeHasFlag reports whether any command in the tree registers
+// a flag with the given name (long name or single-letter shorthand).
+// The derivation pairing rule only heals flags that resolve nowhere —
+// a name that exists on any command, even a sibling of the failed one,
+// is a usage error rather than an alias candidate.
+func commandTreeHasFlag(cmd *cobra.Command, name string) bool {
+	if name == "" {
+		return false
+	}
+	if cmd.Flags().Lookup(name) != nil || cmd.PersistentFlags().Lookup(name) != nil {
+		return true
+	}
+	if len(name) == 1 && cmd.Flags().ShorthandLookup(name) != nil {
+		return true
+	}
+	for _, child := range cmd.Commands() {
+		if commandTreeHasFlag(child, name) {
+			return true
 		}
 	}
 	return false
