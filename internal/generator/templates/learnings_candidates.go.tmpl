@@ -28,6 +28,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"{{modulePath}}/internal/learn"
 	"{{modulePath}}/internal/store"
 )
 
@@ -239,6 +240,11 @@ Usage errors (unknown id, non-open status) exit 2.`,
 			if err != nil {
 				return fmt.Errorf("learnings confirm: %w", err)
 			}
+			// Measurement: telemetry-class, errors to teach.log only.
+			if evErr := s.InsertLearnEvent(store.LearnEventCandidateConfirmed,
+				learn.FamilyHash(row.QueryFamily), 0, false, store.LearnEventSurface()); evErr != nil {
+				writeTeachErrLog(fmt.Sprintf("learnings confirm: event insert: %v", evErr))
+			}
 			_ = appendLearningsAudit(map[string]any{
 				"action":       "candidate-confirm",
 				"candidate_id": id,
@@ -399,6 +405,11 @@ Usage errors (unknown id, no-reject-path candidates) exit 2.`,
 			}
 			if err != nil {
 				return usageErr(fmt.Errorf("learnings reject: %w", err))
+			}
+			// Measurement: telemetry-class, errors to teach.log only.
+			if evErr := s.InsertLearnEvent(store.LearnEventCandidateRejected,
+				learn.FamilyHash(row.QueryFamily), 0, false, store.LearnEventSurface()); evErr != nil {
+				writeTeachErrLog(fmt.Sprintf("learnings reject: event insert: %v", evErr))
 			}
 			_ = appendLearningsAudit(map[string]any{
 				"action":       "candidate-reject",

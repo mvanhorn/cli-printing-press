@@ -5,9 +5,12 @@ package learn
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -44,7 +47,15 @@ const LearningActionBoost = "boost"
 
 // Hit is one row in the recall envelope. Field tags mirror the JSON
 // contract agents read.
+//
+// LearningID is the search_learnings row id backing this hit (0 for
+// pattern-synthesized hits, which have no backing row). The command
+// side records it as the recall_hit event's matched_row_id so
+// teach-to-reuse joins by row id — an alias-mediated or paraphrased
+// recall then credits the taught row even when the query family
+// differs from the teach-time family.
 type Hit struct {
+	LearningID       int64      `json:"learning_id,omitempty"`
 	ResourceID       string     `json:"resource_id"`
 	ResourceType     string     `json:"resource_type,omitempty"`
 	Venue            string     `json:"venue,omitempty"`
@@ -75,8 +86,14 @@ type Hit struct {
 // or Notes, and the key is omitted entirely when nothing is open so
 // the envelope stays byte-stable for stores with no pending
 // candidates.
+//
+// Family is the structural query family key (QueryFamily over the
+// promoted normalized form) — internal plumbing for the command
+// side's event instrumentation, deliberately kept out of the JSON
+// envelope (the agent-facing family surface is the playbook block).
 type Result struct {
 	Query         string            `json:"query"`
+	Family        string            `json:"-"`
 	Normalized    string            `json:"normalized"`
 	QueryEntities []string          `json:"query_entities"`
 	Found         bool              `json:"found"`
@@ -198,6 +215,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	// runs at teach time so stored query_entities stays symmetric
 	// with what recall sees.
 	normalized = PromoteEntities(normalized, resolver)
+	result.Family = QueryFamily(normalized)
 	queryTokens := strings.Fields(normalized.NonEntityNormalized)
 	result.QueryEntities = append([]string(nil), normalized.Entities...)
 	if result.QueryEntities == nil {
@@ -234,7 +252,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		_ = lookups.RecordMisses(ctx, db, unresolvedEntities)
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT query_pattern, COALESCE(query_entities, ''),
+	rows, err := db.QueryContext(ctx, `SELECT id, query_pattern, COALESCE(query_entities, ''),
 		COALESCE(venue, ''), COALESCE(resource_type, ''), resource_id, action,
 		COALESCE(alias_target, ''), source, confidence, created_at, last_observed_at
 		FROM search_learnings
@@ -256,6 +274,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 
 	for rows.Next() {
 		var (
+			learningID     int64
 			queryPattern   string
 			storedEntities string
 			venue          string
@@ -268,7 +287,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			createdAt      time.Time
 			lastObserved   sql.NullTime
 		)
-		if err := rows.Scan(&queryPattern, &storedEntities, &venue, &resourceType,
+		if err := rows.Scan(&learningID, &queryPattern, &storedEntities, &venue, &resourceType,
 			&resourceID, &action, &aliasTarget, &source, &confidence, &createdAt, &lastObserved); err != nil {
 			return result, fmt.Errorf("recall scan: %w", err)
 		}
@@ -416,6 +435,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		}
 
 		hit := Hit{
+			LearningID:   learningID,
 			ResourceID:   resourceID,
 			ResourceType: resourceType,
 			Venue:        venue,
@@ -1048,4 +1068,52 @@ func candidateNextAction(id int64, class, payload, commandPath string) []string 
 		}
 	}
 	return []string{trial, confirm}
+}
+
+// FamilyHash derives the stable, non-reversible key the measurement
+// layer stores as learn_events.query_family_hash. Hashing keeps the
+// events table free of query-derived text (the family key is built
+// from the user's words) while still supporting equality joins for
+// teach-to-reuse fallback, playbook-amend correlation, and the forget
+// cascade. Empty family hashes to "" so callers store NULL.
+func FamilyHash(family string) string {
+	if strings.TrimSpace(family) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(family))
+	return hex.EncodeToString(sum[:8])
+}
+
+// PII rule names ScanPII returns. Stable vocabulary: the teach-path
+// warning names the rule verbatim, and generated SKILL/AGENTS prose
+// references the same names.
+const (
+	PIIRuleEmail = "email"
+	PIIRulePhone = "phone"
+)
+
+// piiEmailRE matches obvious email-address shapes.
+var piiEmailRE = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
+// piiPhoneRE matches obvious phone-number shapes. Deliberately
+// conservative: it requires separator formatting (or an international
+// +prefix) so bare numeric identifiers — resource ids, timestamps,
+// zip+4 codes — never trip the warning.
+var piiPhoneRE = regexp.MustCompile(`(?:\+\d{1,3}[\s.\-]?)?(?:\(\d{3}\)[\s.\-]?|\b\d{3}[\s.\-])\d{3}[\s.\-]\d{4}\b`)
+
+// ScanPII checks freeform text about to be persisted by a teach-side
+// write for obvious personally-identifying shapes and returns the
+// names of the rules that matched (empty when clean). The contract is
+// warn-only: callers surface a stderr warning naming the rule and
+// proceed — never block, never redact silently. Shared by the teach
+// and teach-playbook insert paths.
+func ScanPII(text string) []string {
+	var rules []string
+	if piiEmailRE.MatchString(text) {
+		rules = append(rules, PIIRuleEmail)
+	}
+	if piiPhoneRE.MatchString(text) {
+		rules = append(rules, PIIRulePhone)
+	}
+	return rules
 }

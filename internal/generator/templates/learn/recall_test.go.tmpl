@@ -673,3 +673,94 @@ func TestRecall_PlaybookCommandOverlapCandidateOutranksGlobal(t *testing.T) {
 		t.Errorf("overlap rationale should say why in plain words; got %q", got.Candidates[0].Rationale)
 	}
 }
+
+// TestRecall_HitCarriesLearningID pins the row-id linkage the
+// measurement layer joins on: every direct hit exposes the backing
+// search_learnings row id, and the command side records it as the
+// recall_hit event's matched_row_id.
+func TestRecall_HitCarriesLearningID(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
+
+	var wantID int64
+	if err := db.QueryRow(`SELECT id FROM search_learnings WHERE resource_id = 'PREFIX-AL'`).Scan(&wantID); err != nil {
+		t.Fatalf("read seeded id: %v", err)
+	}
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{
+		EntityConfig:       testConfig(),
+		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if !got.Found || len(got.Results) != 1 {
+		t.Fatalf("want 1 hit, got %+v", got)
+	}
+	if got.Results[0].LearningID != wantID {
+		t.Errorf("LearningID = %d, want %d", got.Results[0].LearningID, wantID)
+	}
+	if got.Family == "" {
+		t.Error("Result.Family should carry the structural family key for event instrumentation")
+	}
+}
+
+// TestFamilyHash_StableNonReversibleEmpty pins the event-key contract:
+// deterministic, distinct across families, no family text leaking
+// through, and "" for an empty family (stored as NULL).
+func TestFamilyHash_StableNonReversibleEmpty(t *testing.T) {
+	t.Parallel()
+	a1 := FamilyHash("orders pending show")
+	a2 := FamilyHash("orders pending show")
+	b := FamilyHash("orders list show")
+	if a1 == "" || a1 != a2 {
+		t.Errorf("FamilyHash must be deterministic; got %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Errorf("distinct families must hash apart; both %q", a1)
+	}
+	if strings.Contains(a1, "orders") {
+		t.Errorf("hash must not carry family text; got %q", a1)
+	}
+	if FamilyHash("") != "" || FamilyHash("   ") != "" {
+		t.Error("empty family must hash to \"\" (stored as NULL)")
+	}
+}
+
+// TestScanPII_EmailAndPhoneShapes pins the R18 insert-time guard's
+// vocabulary: obvious email/phone shapes match by rule name, and
+// bare numeric identifiers stay clean (the conservative side).
+func TestScanPII_EmailAndPhoneShapes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"clean structural query", "list pending orders for the northwest region", nil},
+		{"email", "orders placed by jane.doe@example.com yesterday", []string{PIIRuleEmail}},
+		{"email with plus tag", "tickets from support+urgent@example.co.uk", []string{PIIRuleEmail}},
+		{"dashed phone", "call the customer at 555-123-4567 about the order", []string{PIIRulePhone}},
+		{"paren phone", "contact (555) 123-4567 for delivery", []string{PIIRulePhone}},
+		{"international phone", "reach them at +1 555 123 4567", []string{PIIRulePhone}},
+		{"both", "email a@b.io or call 555-123-4567", []string{PIIRuleEmail, PIIRulePhone}},
+		{"bare numeric id stays clean", "status of order 5551234567", nil},
+		{"date stays clean", "orders between 2026-07-01 and 2026-07-02", nil},
+		{"version stays clean", "changes in release 1.2.3", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ScanPII(tc.text)
+			if len(got) != len(tc.want) {
+				t.Fatalf("ScanPII(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("ScanPII(%q)[%d] = %q, want %q", tc.text, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

@@ -377,3 +377,78 @@ func TestTeachPromotesOpenCandidate_OneArtifact(t *testing.T) {
 func itoa64(id int64) string {
 	return strconv.FormatInt(id, 10)
 }
+
+// TestLearnEvents_ConfirmRecordsCandidateConfirmed pins the judgment
+// half of the measurement layer: a successful confirm records a
+// candidate_confirmed event keyed by the candidate's family hash.
+func TestLearnEvents_ConfirmRecordsCandidateConfirmed(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+
+	id := seedCandidate(t, dbPath, store.CandidateClassPlaybookCandidate,
+		`{"notes_text":"list before fetch"}`,
+		"sig-ev-confirm", "fam-ev-confirm", "")
+
+	if _, _, err := runRootArgs(t,
+		"learnings", "confirm", itoa64(id), "--db", dbPath,
+	); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+
+	events := readLearnEvents(t, dbPath)
+	confirmed := filterLearnEvents(events, store.LearnEventCandidateConfirmed)
+	if len(confirmed) != 1 {
+		t.Fatalf("want 1 candidate_confirmed event, got %d (%+v)", len(confirmed), events)
+	}
+	if want := learn.FamilyHash("fam-ev-confirm"); confirmed[0].FamilyHash != want {
+		t.Errorf("event family hash = %q, want %q", confirmed[0].FamilyHash, want)
+	}
+}
+
+// TestLearnEvents_RejectRecordsCandidateRejected mirrors the confirm
+// pin for the reject path.
+func TestLearnEvents_RejectRecordsCandidateRejected(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+
+	id := seedCandidate(t, dbPath, store.CandidateClassFlagAlias,
+		`{"failed_flag":"--date","corrected_flag":"--dates","command_path":"items list"}`,
+		"sig-ev-reject", "fam-ev-reject", "items list")
+
+	if _, _, err := runRootArgs(t,
+		"learnings", "reject", itoa64(id), "--db", dbPath,
+	); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	events := readLearnEvents(t, dbPath)
+	rejected := filterLearnEvents(events, store.LearnEventCandidateRejected)
+	if len(rejected) != 1 {
+		t.Fatalf("want 1 candidate_rejected event, got %d (%+v)", len(rejected), events)
+	}
+	if want := learn.FamilyHash("fam-ev-reject"); rejected[0].FamilyHash != want {
+		t.Errorf("event family hash = %q, want %q", rejected[0].FamilyHash, want)
+	}
+}
+
+// TestLearnEvents_FailedConfirmRecordsNoEvent guards the judgment
+// counters against inflation: a confirm that errors (unknown id)
+// records nothing.
+func TestLearnEvents_FailedConfirmRecordsNoEvent(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+
+	// Materialize the DB so the events readback has a store to open.
+	seedCandidate(t, dbPath, store.CandidateClassPlaybookCandidate,
+		`{"notes_text":"anything"}`, "sig-ev-noop", "fam-ev-noop", "")
+
+	if _, _, err := runRootArgs(t,
+		"learnings", "confirm", "99999", "--db", dbPath,
+	); err == nil {
+		t.Fatal("confirm of unknown id should error")
+	}
+
+	if events := readLearnEvents(t, dbPath); len(events) != 0 {
+		t.Errorf("failed confirm must record no events, got %+v", events)
+	}
+}
