@@ -2191,7 +2191,6 @@ func syncDependentResource(ctx context.Context, c interface {
 	// So no cross-parent barrier is needed for correctness — only an aggregation
 	// barrier before the post-loop summary reads the counters.
 	type parentJob struct {
-		idx int
 		row map[string]string
 	}
 	jobs := make(chan parentJob, len(parentRows))
@@ -2202,6 +2201,11 @@ func syncDependentResource(ctx context.Context, c interface {
 	if workers > len(parentRows) {
 		workers = len(parentRows)
 	}
+	// Monotonic display counter: workers consume parents out of order, so the
+	// original job index would make the human-mode "(n/N parents)" progress
+	// jump around. An atomic tick keeps it increasing 1..N regardless of which
+	// worker picks up which parent.
+	var startedParents int64
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
@@ -2211,14 +2215,14 @@ func syncDependentResource(ctx context.Context, c interface {
 					return
 				}
 				if humanFriendly {
-					fmt.Fprintf(os.Stderr, "\r  %s: syncing for %s (%d/%d parents)", dep.Name, dep.ParentTable, job.idx+1, len(parentRows))
+					fmt.Fprintf(os.Stderr, "\r  %s: syncing for %s (%d/%d parents)", dep.Name, dep.ParentTable, atomic.AddInt64(&startedParents, 1), len(parentRows))
 				}
 				reports <- syncOneParent(ctx, c, db, dep, job.row, pathParams, pageSize, depSinceParam, depSinceTS, maxPages, latestOnly, prune, userParams, syncEvents)
 			}
 		}()
 	}
-	for idx, parentRow := range parentRows {
-		jobs <- parentJob{idx: idx, row: parentRow}
+	for _, parentRow := range parentRows {
+		jobs <- parentJob{row: parentRow}
 	}
 	close(jobs)
 	go func() { wg.Wait(); close(reports) }()
