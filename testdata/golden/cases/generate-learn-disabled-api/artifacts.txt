@@ -1,0 +1,19 @@
+# Locks the learn.disabled opt-out contract. The loop is on by default for
+# every fresh print; this case pins the opted-out shape. If the opt-out
+# regresses, root.go grows teach/recall/learnings registrations, store.go
+# grows the learn tables and the v9 stamp, and README/SKILL/AGENTS grow
+# self-learning sections - all of which would diff the artifacts below.
+
+# Provenance manifest.
+learn-disabled-example/.printing-press.json
+
+# Command tree: must register NO learn-family commands.
+learn-disabled-example/internal/cli/root.go
+
+# Store: non-learn shape (v4 stamp, no learn tables).
+learn-disabled-example/internal/store/store.go
+
+# Prose surfaces: no self-learning sections.
+learn-disabled-example/README.md
+learn-disabled-example/SKILL.md
+learn-disabled-example/AGENTS.md
