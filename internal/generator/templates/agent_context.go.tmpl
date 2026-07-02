@@ -9,6 +9,9 @@ import (
 	"sort"
 
 	"{{modulePath}}/internal/cliutil"
+{{- if .Learn.Enabled}}
+	"{{modulePath}}/internal/learn"
+{{- end}}
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -31,6 +34,12 @@ type agentContext struct {
 	Commands                    []agentContextCommand `json:"commands"`
 	AvailableProfiles           []string              `json:"available_profiles"`
 	FeedbackEndpointConfigured  bool                  `json:"feedback_endpoint_configured"`
+{{- if .Learn.Enabled}}
+	// LearnProtocol carries the recall-first protocol from the single
+	// shared source (internal/learn.RecallFirstProtocol) also consumed by
+	// the MCP context tool, so the two agent surfaces cannot drift.
+	LearnProtocol               string                `json:"learn_protocol"`
+{{- end}}
 }
 
 type agentContextCLI struct {
@@ -152,6 +161,9 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 		Commands:                   collectAgentCommands(rootCmd),
 		AvailableProfiles:          profiles,
 		FeedbackEndpointConfigured: FeedbackEndpointConfigured(),
+{{- if .Learn.Enabled}}
+		LearnProtocol:              learn.RecallFirstProtocol,
+{{- end}}
 	}
 }
 
