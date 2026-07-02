@@ -36,6 +36,19 @@ config:                           # object (ConfigSpec)
   format: toml                    # string config format: toml | yaml (other values fall back to json tags)
   path: "~/.config/my-api/config.toml" # string config file path
 
+learn:                            # object (LearnConfig) per-CLI vocabulary for the default-on learn loop
+  disabled: false                 # bool generation-time opt-out; the authoritative off switch (enabled: false is a no-op once the loop is default-on; disabled: true with an explicit enabled: true is rejected at parse time)
+  ticker_patterns:                # []string Go regexes recognizing ID-shaped tokens in free-text queries; each must compile; anchor with ^...$
+    - "^ew-[a-z0-9]+$"
+  stopwords:                      # []string domain filler words merged with the built-in English set; whitespace-only entries dropped at parse time
+    - widget
+  synonyms:                       # map[string]string same-referent variant -> canonical phrasing folds; lowercase, single-hop (chains rejected)
+    "most recent": "latest"
+  entity_lookup_seeds:            # map[string][]LookupSeed keyed by entity kind; canonical must match upstream API responses exactly
+    widget_series:
+      - canonical: Example Widget Series Alpha # string (required, non-empty)
+        aliases: [alpha, series a]  # []string alternate strings agents type for the same entity
+
 resources:                        # map[string]Resource (REQUIRED: at least one key)
   users:                          # resource key becomes top-level command: <name>-cli users
     description: "Manage users"  # string resource help text
@@ -112,6 +125,15 @@ types:                            # map[string]TypeDef named response/body model
       - name: user_id             # string field name
         type: string              # string field type (typically string/int/bool/float)
 ```
+
+**`learn:` is the sanctioned home for per-CLI domain vocabulary.** The learn
+loop is emitted by default for every print; the generated `internal/learn`
+package stays domain-neutral, so seeds, ticker patterns, synonyms, and
+stopwords enter only through this block (or its `x-learn` OpenAPI
+equivalent). Empty seeds parse fine but cap recall at exact-match. For
+field-by-field sourcing guidance, a worked example, and the local validation
+workflow, see
+[`docs/SPEC-LEARN-AUTHORING.md`](../../../docs/SPEC-LEARN-AUTHORING.md).
 
 For OAuth2 refresh-token rotation without an interactive browser flow, use
 `auth.type: oauth2_refresh` with `auth.token_url`. When `env_vars` is omitted,
