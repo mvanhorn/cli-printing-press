@@ -6,6 +6,7 @@ package learn
 import (
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 
 	"{{modulePath}}/internal/learn/entities"
@@ -105,5 +106,84 @@ func TestNormalize_StableSort(t *testing.T) {
 	if a.NonEntityNormalized != b.NonEntityNormalized || b.NonEntityNormalized != c.NonEntityNormalized {
 		t.Errorf("order independence broken:\n  a = %q\n  b = %q\n  c = %q",
 			a.NonEntityNormalized, b.NonEntityNormalized, c.NonEntityNormalized)
+	}
+}
+
+func TestNormalize_SynonymFoldsToOneFamily(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	a := Normalize("why did Alpha win yesterday", cfg)
+	b := Normalize("why did Alpha win last night", cfg)
+	if a.NonEntityNormalized == "" {
+		t.Fatal("expected non-empty non-entity form")
+	}
+	if a.NonEntityNormalized != b.NonEntityNormalized {
+		t.Errorf("same-referent phrasings landed in different families:\n  a = %q\n  b = %q",
+			a.NonEntityNormalized, b.NonEntityNormalized)
+	}
+	if !reflect.DeepEqual(a.Entities, b.Entities) {
+		t.Errorf("entities diverged: %v vs %v", a.Entities, b.Entities)
+	}
+}
+
+func TestNormalize_SentenceInitialVariantNotAnEntity(t *testing.T) {
+	t.Parallel()
+	// Folding runs before extraction, so the capitalized "Last" in a
+	// sentence-initial "Last night" never reaches the entity classifier.
+	got := Normalize("Last night Alpha won", testConfig())
+	if !reflect.DeepEqual(got.Entities, []string{"Alpha"}) {
+		t.Errorf("Entities = %v, want [Alpha]", got.Entities)
+	}
+	if got.NonEntityNormalized != "won yesterday" {
+		t.Errorf("NonEntityNormalized = %q, want %q", got.NonEntityNormalized, "won yesterday")
+	}
+}
+
+func TestNormalize_TonightDoesNotFoldToYesterday(t *testing.T) {
+	t.Parallel()
+	got := Normalize("who wins tonight", testConfig())
+	if strings.Contains(got.NonEntityNormalized, "yesterday") {
+		t.Errorf("tonight crossed a day boundary: %q", got.NonEntityNormalized)
+	}
+	if !strings.Contains(got.NonEntityNormalized, "tonight") {
+		t.Errorf("tonight should survive normalization: %q", got.NonEntityNormalized)
+	}
+}
+
+func TestNormalize_RegisteredSynonymFoldsUndeclaredDoesNot(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.RegisterSynonyms(map[string]string{"foo bar": "baz"})
+	declared := Normalize("check foo bar now", cfg)
+	canonical := Normalize("check baz now", cfg)
+	if declared.NonEntityNormalized != canonical.NonEntityNormalized {
+		t.Errorf("declared pair should share a family: %q vs %q",
+			declared.NonEntityNormalized, canonical.NonEntityNormalized)
+	}
+	undeclared := Normalize("check foo qux now", cfg)
+	if undeclared.NonEntityNormalized == canonical.NonEntityNormalized {
+		t.Errorf("undeclared pair must not fold: %q", undeclared.NonEntityNormalized)
+	}
+}
+
+func TestNormalizeUnfolded_SkipsSynonymFolding(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	got := NormalizeUnfolded("why did Alpha win last night", cfg)
+	if got.NonEntityNormalized != "last night win" {
+		t.Errorf("NonEntityNormalized = %q, want %q (pre-fold form)",
+			got.NonEntityNormalized, "last night win")
+	}
+	if got.Original != "why did Alpha win last night" {
+		t.Errorf("Original = %q must stay untouched", got.Original)
+	}
+}
+
+func TestNormalize_OriginalPreservedThroughFold(t *testing.T) {
+	t.Parallel()
+	in := "why did Alpha win last night"
+	got := Normalize(in, testConfig())
+	if got.Original != in {
+		t.Errorf("Original = %q, want %q", got.Original, in)
 	}
 }

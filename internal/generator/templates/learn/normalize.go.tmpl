@@ -30,14 +30,42 @@ type NormalizedQuery struct {
 }
 
 // Normalize parses a query into its entity-aware form. cfg controls the
-// CLI-specific ticker patterns and stopwords; pass nil to use the
-// default Config (domain-agnostic stopwords, no ticker patterns).
+// CLI-specific ticker patterns, stopwords, and same-referent synonym
+// folds; pass nil to use the default Config (domain-agnostic stopwords
+// and synonyms, no ticker patterns).
+//
+// Synonym folding runs BEFORE extraction so same-referent phrasings
+// ("yesterday" / "last night") land in one query family, and so a
+// capitalized sentence-initial variant never reaches the entity
+// classifier. The store package applies the same folds inside
+// NormalizeQuery, keeping write (teach) and read (recall) symmetric —
+// mirroring how PromoteEntities is applied on both sides.
 //
 // The caller owns the Config — the recall and teach hot paths build it
 // once via NewConfig at CLI startup and pass it explicitly to every
 // Normalize call. Configs are not safe for concurrent mutation.
 func Normalize(query string, cfg *entities.Config) NormalizedQuery {
-	result := entities.Extract(query, cfg)
+	return normalize(query, cfg, true)
+}
+
+// NormalizeUnfolded parses a query WITHOUT applying synonym folds.
+// Sole intended consumer is the playbook dual-key lookup: its raw-key
+// fallback needs the family a pre-fold CLI build would have derived,
+// so rows stored before folding shipped stay reachable (and get
+// rekeyed in place on first hit). Everything else uses Normalize.
+func NormalizeUnfolded(query string, cfg *entities.Config) NormalizedQuery {
+	return normalize(query, cfg, false)
+}
+
+func normalize(query string, cfg *entities.Config, fold bool) NormalizedQuery {
+	if cfg == nil {
+		cfg = entities.NewConfig()
+	}
+	extracted := query
+	if fold {
+		extracted = cfg.FoldSynonyms(query)
+	}
+	result := entities.Extract(extracted, cfg)
 
 	// Sort non-entity tokens for stable Jaccard. Without this,
 	// "alpha bravo" and "bravo alpha" would normalize differently
