@@ -16,10 +16,7 @@ func commandBlock(t *testing.T, src, useMarker string) string {
 	t.Helper()
 	idx := strings.Index(src, useMarker)
 	require.GreaterOrEqual(t, idx, 0, "command marker %q not found in emitted source", useMarker)
-	end := idx + 1500
-	if end > len(src) {
-		end = len(src)
-	}
+	end := min(idx+1500, len(src))
 	return src[idx:end]
 }
 

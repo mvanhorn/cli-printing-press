@@ -167,13 +167,13 @@ func (h *incidentHarness) run(home, sessionKey string, verifyEnv bool, args ...s
 // Envelope shapes for the slices of the recall JSON the harness
 // asserts on. Field names pin the agent-visible JSON contract.
 type incidentRecallEnvelope struct {
-	Found      bool                     `json:"found"`
-	Normalized string                   `json:"normalized"`
-	Warnings   []string                 `json:"warnings"`
-	Notes      string                   `json:"notes"`
-	Playbook   *incidentResolvedPB      `json:"playbook"`
-	Candidates []incidentEnvelopeCand   `json:"candidates"`
-	Results    []map[string]interface{} `json:"results"`
+	Found      bool                   `json:"found"`
+	Normalized string                 `json:"normalized"`
+	Warnings   []string               `json:"warnings"`
+	Notes      string                 `json:"notes"`
+	Playbook   *incidentResolvedPB    `json:"playbook"`
+	Candidates []incidentEnvelopeCand `json:"candidates"`
+	Results    []map[string]any       `json:"results"`
 }
 
 type incidentResolvedPB struct {
@@ -245,7 +245,7 @@ func (h *incidentHarness) readJournal(home string) []incidentJournalEntry {
 	for _, seg := range segments {
 		data, err := os.ReadFile(seg)
 		require.NoError(h.t, err)
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			if !strings.HasPrefix(line, "{") {
 				continue
 			}
