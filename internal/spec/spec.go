@@ -2259,6 +2259,18 @@ type Param struct {
 	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
 	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
 	Format      string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	// Maximum captures an inclusive numeric `maximum` schema constraint on the
+	// parameter. Sync uses it to clamp the page size it requests so a generated
+	// CLI never sends a page size the API rejects (e.g. a page_size param with
+	// maximum: 30).
+	Maximum *float64 `yaml:"maximum,omitempty" json:"maximum,omitempty"`
+	// ExclusiveMaximum captures an *exclusive* upper bound: the largest legal
+	// value is strictly below it. It normalizes both OpenAPI styles —
+	// 3.1's numeric `exclusiveMaximum: N`, and 3.0's `maximum: N` +
+	// `exclusiveMaximum: true` (which makes `maximum` exclusive). In OpenAPI
+	// 3.1 `maximum` and `exclusiveMaximum` are independent assertions, so both
+	// this and Maximum can be set; consumers take the most restrictive.
+	ExclusiveMaximum *float64 `yaml:"exclusive_maximum,omitempty" json:"exclusive_maximum,omitempty"`
 	// DispatchParam marks a fixed discriminator such as type=domain_rank.
 	// Generated runnable examples keep its default instead of substituting
 	// synthetic dogfood values that would address a different upstream route.
