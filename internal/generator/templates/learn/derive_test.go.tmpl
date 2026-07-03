@@ -170,6 +170,60 @@ func correctedDatesEntry(session, ts string) learn.JournalEntry {
 	}
 }
 
+func TestDeriveFlagCorrections_NoSuggestionInfersNewSuccessFlag(t *testing.T) {
+	withJournalHome(t)
+	dbPath := deriveDBPath(t)
+	appendDeriveEntry(t, learn.JournalEntry{
+		TS:         deriveTS(2 * time.Minute),
+		SessionKey: "sess-a",
+		Cmd:        []string{"scoreboard"},
+		ArgvShape:  map[string]string{"agent": "bool", "date": "str"},
+		ExitCode:   2,
+		ErrorClass: "usage",
+		FailedFlag: "--date",
+	})
+	appendDeriveEntry(t, learn.JournalEntry{
+		TS:         deriveTS(time.Minute),
+		SessionKey: "sess-a",
+		Cmd:        []string{"scoreboard"},
+		ArgvShape:  map[string]string{"agent": "bool", "dates": "str"},
+		ExitCode:   0,
+	})
+
+	err := learn.DeriveFlagCorrections(deriveOpener(dbPath), flagExistsInTree(newDeriveCommandTree(false)))
+	if err != nil {
+		t.Fatalf("DeriveFlagCorrections: %v", err)
+	}
+
+	rows := listCandidateRows(t, dbPath)
+	if len(rows) != 1 {
+		t.Fatalf("candidate rows = %d, want 1 (%+v)", len(rows), rows)
+	}
+	if rows[0].Class != store.CandidateClassFlagAlias {
+		t.Errorf("class = %q, want %q", rows[0].Class, store.CandidateClassFlagAlias)
+	}
+	var payload struct {
+		CommandPath   string `json:"command_path"`
+		FailedFlag    string `json:"failed_flag"`
+		CorrectedFlag string `json:"corrected_flag"`
+	}
+	if err := json.Unmarshal([]byte(rows[0].Payload), &payload); err != nil {
+		t.Fatalf("payload not JSON: %v (%s)", err, rows[0].Payload)
+	}
+	if payload.CommandPath != "scoreboard" {
+		t.Errorf("payload command_path = %q, want scoreboard", payload.CommandPath)
+	}
+	if payload.FailedFlag != "--date" {
+		t.Errorf("payload failed_flag = %q, want --date", payload.FailedFlag)
+	}
+	if payload.CorrectedFlag != "--dates" {
+		t.Errorf("payload corrected_flag = %q, want --dates", payload.CorrectedFlag)
+	}
+	if rows[0].DerivationSignature != "flag_alias|scoreboard|--date|--dates" {
+		t.Errorf("signature = %q, want scoreboard --date -> --dates", rows[0].DerivationSignature)
+	}
+}
+
 func TestDeriveFlagCorrections_HappyPairDerivesOneCandidate(t *testing.T) {
 	withJournalHome(t)
 	dbPath := deriveDBPath(t)
@@ -318,14 +372,36 @@ func TestDeriveFlagCorrections_Negatives(t *testing.T) {
 			},
 		},
 		{
-			name: "no did-you-mean suggestion recorded",
+			name: "no suggestion and ambiguous new success flags",
 			entries: []learn.JournalEntry{
 				func() learn.JournalEntry {
 					e := failedDateEntry("sess-a", deriveTS(30*time.Minute))
 					e.SuggestedFlag = ""
 					return e
 				}(),
-				correctedDatesEntry("sess-a", deriveTS(29*time.Minute)),
+				func() learn.JournalEntry {
+					e := correctedDatesEntry("sess-a", deriveTS(29*time.Minute))
+					e.ArgvShape["dater"] = "str"
+					return e
+				}(),
+			},
+		},
+		{
+			name: "no suggestion and only an unrelated new success flag",
+			entries: []learn.JournalEntry{
+				func() learn.JournalEntry {
+					e := failedDateEntry("sess-a", deriveTS(30*time.Minute))
+					e.SuggestedFlag = ""
+					return e
+				}(),
+				func() learn.JournalEntry {
+					e := correctedDatesEntry("sess-a", deriveTS(29*time.Minute))
+					// The only new success flag (--sport) is far from --date in
+					// edit distance; the cap must reject inference rather than
+					// alias --date -> --sport.
+					e.ArgvShape = map[string]string{"sport": "str"}
+					return e
+				}(),
 			},
 		},
 		{

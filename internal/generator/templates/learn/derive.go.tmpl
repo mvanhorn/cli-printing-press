@@ -72,8 +72,13 @@ type flagAliasDerivedPayload struct {
 //     that session, within flagCorrectionWindow of the failure;
 //   - the failed flag resolves to no real flag anywhere in the command
 //     tree (flagExists probes the whole tree, dashes stripped);
-//   - the journal's did-you-mean suggestion names the correction, and
-//     that corrected flag appears in the success entry's argv shape.
+//   - when the journal has a did-you-mean suggestion, that suggestion
+//     names the correction and appears in the success entry's argv
+//     shape;
+//   - when no suggestion was recorded, the correction is the one new
+//     success-entry flag absent from the failed entry's argv shape, or
+//     the closest such flag by edit distance when multiple were added;
+//     ties are skipped rather than guessed.
 //
 // Batches are consumed atomically. When the tail still holds an
 // unpaired failure fresh enough to pair (its correction may not be
@@ -175,9 +180,7 @@ func pairFlagCorrections(entries []JournalEntry, recallSeed map[string]string, n
 			continue
 		}
 		failed := normalizeFlagToken(e.FailedFlag)
-		corrected := normalizeFlagToken(e.SuggestedFlag)
-		if failed == "" || corrected == "" || corrected == failed {
-			// No observable correction hint: decided, never pending.
+		if failed == "" {
 			continue
 		}
 		if flagExists != nil && flagExists(strings.TrimLeft(failed, "-")) {
@@ -213,7 +216,8 @@ func pairFlagCorrections(entries []JournalEntry, recallSeed map[string]string, n
 		if !ok || succeededAt.Before(failedAt) || succeededAt.Sub(failedAt) > flagCorrectionWindow {
 			continue
 		}
-		if _, present := success.ArgvShape[strings.TrimLeft(corrected, "-")]; !present {
+		corrected := correctedFlagForPair(e, success)
+		if corrected == "" || corrected == failed {
 			continue
 		}
 		pairs = append(pairs, flagCorrection{
@@ -225,6 +229,75 @@ func pairFlagCorrections(entries []JournalEntry, recallSeed map[string]string, n
 		})
 	}
 	return pairs, pending
+}
+
+// correctedFlagForPair chooses the correction for one decided
+// failure/success pair. Cobra's did-you-mean suggestion remains the
+// strongest signal; when Cobra had no suggestion, infer from the new
+// flag name introduced by the successful retry. Ambiguous deltas return
+// empty so derivation records no candidate.
+func correctedFlagForPair(failed, success JournalEntry) string {
+	suggested := normalizeFlagToken(failed.SuggestedFlag)
+	if suggested != "" {
+		if _, present := success.ArgvShape[strings.TrimLeft(suggested, "-")]; present {
+			return suggested
+		}
+		return ""
+	}
+	return inferCorrectedFlagFromNewSuccessFlag(failed, success)
+}
+
+func inferCorrectedFlagFromNewSuccessFlag(failed, success JournalEntry) string {
+	failedName := strings.TrimLeft(normalizeFlagToken(failed.FailedFlag), "-")
+	if failedName == "" {
+		return ""
+	}
+	failedShape := make(map[string]struct{}, len(failed.ArgvShape))
+	for name := range failed.ArgvShape {
+		name = strings.TrimLeft(normalizeFlagToken(name), "-")
+		if name != "" {
+			failedShape[name] = struct{}{}
+		}
+	}
+	bestName := ""
+	bestDistance := 0
+	ambiguous := false
+	for name := range success.ArgvShape {
+		name = strings.TrimLeft(normalizeFlagToken(name), "-")
+		if name == "" {
+			continue
+		}
+		if _, alreadyPresent := failedShape[name]; alreadyPresent {
+			continue
+		}
+		distance := editDistance(failedName, name)
+		if bestName == "" || distance < bestDistance {
+			bestName = name
+			bestDistance = distance
+			ambiguous = false
+			continue
+		}
+		if distance == bestDistance {
+			ambiguous = true
+		}
+	}
+	// Cap the inferred correction to a meaningful edit distance. An
+	// unrelated new success flag (e.g. --sport when --date failed) must
+	// not be promoted as a correction: distance beyond half the shorter
+	// name's length means the two share no meaningful overlap.
+	if bestName != "" {
+		maxDistance := min(len([]rune(failedName)), len([]rune(bestName))) / 2
+		if maxDistance < 1 {
+			maxDistance = 1
+		}
+		if bestDistance > maxDistance {
+			return ""
+		}
+	}
+	if bestName == "" || ambiguous {
+		return ""
+	}
+	return "--" + bestName
 }
 
 // sessionRecallFamilies scans the full journal and returns, per session
@@ -276,6 +349,37 @@ func normalizeFlagToken(tok string) string {
 		return ""
 	}
 	return "--" + name
+}
+
+func editDistance(a, b string) int {
+	ar := []rune(a)
+	br := []rune(b)
+	prev := make([]int, len(br)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i, ra := range ar {
+		curr := make([]int, len(br)+1)
+		curr[0] = i + 1
+		for j, rb := range br {
+			cost := 0
+			if ra != rb {
+				cost = 1
+			}
+			del := prev[j+1] + 1
+			ins := curr[j] + 1
+			sub := prev[j] + cost
+			curr[j+1] = del
+			if ins < curr[j+1] {
+				curr[j+1] = ins
+			}
+			if sub < curr[j+1] {
+				curr[j+1] = sub
+			}
+		}
+		prev = curr
+	}
+	return prev[len(br)]
 }
 
 func sameVerbChain(a, b []string) bool {
