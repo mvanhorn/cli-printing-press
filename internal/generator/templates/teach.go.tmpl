@@ -245,7 +245,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				if rid == "" {
 					continue
 				}
-				learningID, _, uerr := s.UpsertLearning(store.UpsertLearningInput{
+				learningID, _, uerr := s.UpsertLearning(cmd.Context(), store.UpsertLearningInput{
 					Query:         query,
 					QueryEntities: normalized.Entities,
 					ResourceID:    rid,
@@ -654,8 +654,8 @@ type learningRow struct {
 
 // listLearningsRows queries the store via the canonical ListLearnings
 // API and translates each row into the CLI envelope shape.
-func listLearningsRows(s *store.Store, f store.ListLearningsFilter) ([]learningRow, error) {
-	stored, err := s.ListLearnings(f)
+func listLearningsRows(ctx context.Context, s *store.Store, f store.ListLearningsFilter) ([]learningRow, error) {
+	stored, err := s.ListLearnings(ctx, f)
 	if err != nil {
 		return nil, err
 	}
@@ -735,7 +735,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer s.Close()
 
-			rows, err := listLearningsRows(s, store.ListLearningsFilter{
+			rows, err := listLearningsRows(cmd.Context(), s, store.ListLearningsFilter{
 				Query:         queryFilter,
 				Source:        sourceFilter,
 				ResourceID:    resourceFilter,
@@ -776,7 +776,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 // canonical store.ForgetLearningsFilter and returns the count
 // removed. Requires at least one of ResourceID, Action, or All on the
 // filter (enforced by the store side).
-func forgetLearningsRows(s *store.Store, query string, f store.ForgetLearningsFilter) (int64, error) {
+func forgetLearningsRows(ctx context.Context, s *store.Store, query string, f store.ForgetLearningsFilter) (int64, error) {
 	if s == nil {
 		return 0, errors.New("forgetLearningsRows: store is nil")
 	}
@@ -784,7 +784,7 @@ func forgetLearningsRows(s *store.Store, query string, f store.ForgetLearningsFi
 		return 0, errors.New("forgetLearningsRows: query is required")
 	}
 	f.Query = query
-	return s.ForgetLearnings(f)
+	return s.ForgetLearnings(ctx, f)
 }
 
 func newLearningsForgetCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
@@ -817,7 +817,7 @@ Requires at least one of --resource, --action, or --all.`,
 			}
 			defer s.Close()
 
-			n, err := forgetLearningsRows(s, query, store.ForgetLearningsFilter{
+			n, err := forgetLearningsRows(cmd.Context(), s, query, store.ForgetLearningsFilter{
 				ResourceID: resourceArg,
 				Action:     actionArg,
 				All:        all,

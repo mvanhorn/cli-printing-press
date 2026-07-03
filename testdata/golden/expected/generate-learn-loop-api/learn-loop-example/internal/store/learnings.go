@@ -283,7 +283,7 @@ type UpsertLearningInput struct {
 // refreshes last_observed_at. Source on the existing row is preserved;
 // only confidence + last_observed_at update on re-teach. Returns the
 // row's ID and a bool indicating whether the row was newly inserted.
-func (s *Store) UpsertLearning(in UpsertLearningInput) (int64, bool, error) {
+func (s *Store) UpsertLearning(ctx context.Context, in UpsertLearningInput) (int64, bool, error) {
 	if strings.TrimSpace(in.ResourceID) == "" {
 		return 0, false, fmt.Errorf("upsert learning: resource_id is required")
 	}
@@ -312,20 +312,20 @@ func (s *Store) UpsertLearning(in UpsertLearningInput) (int64, bool, error) {
 	defer s.writeMu.Unlock()
 
 	now := time.Now().UTC()
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, false, err
 	}
 	defer tx.Rollback()
 
 	var existingID int64
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(ctx,
 		`SELECT id FROM search_learnings
 		 WHERE query_pattern = ? AND resource_id = ? AND action = ?`,
 		pattern, in.ResourceID, action,
 	).Scan(&existingID)
 	if err == nil {
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`UPDATE search_learnings
 			 SET confidence = confidence + 1, last_observed_at = ?
 			 WHERE id = ?`,
@@ -417,7 +417,7 @@ type ListLearningsFilter struct {
 // filter applies a normalized LIKE match against query_pattern so a
 // filter value of "portugal" matches a row taught for "portugal world
 // cup odds".
-func (s *Store) ListLearnings(f ListLearningsFilter) ([]LearningRow, error) {
+func (s *Store) ListLearnings(ctx context.Context, f ListLearningsFilter) ([]LearningRow, error) {
 	clauses := []string{}
 	args := []any{}
 	if f.Query != "" {
@@ -457,7 +457,7 @@ func (s *Store) ListLearnings(f ListLearningsFilter) ([]LearningRow, error) {
 		ORDER BY last_observed_at DESC, id DESC
 		LIMIT ?`, where)
 
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list learnings: %w", err)
 	}
@@ -495,7 +495,7 @@ type ForgetLearningsFilter struct {
 // removed. If All is false the filter must specify at least one of
 // ResourceID or Action (the Query is the primary scoping key and is
 // always required).
-func (s *Store) ForgetLearnings(f ForgetLearningsFilter) (int64, error) {
+func (s *Store) ForgetLearnings(ctx context.Context, f ForgetLearningsFilter) (int64, error) {
 	if f.Query == "" {
 		return 0, fmt.Errorf("forget learnings: query is required")
 	}
@@ -521,7 +521,7 @@ func (s *Store) ForgetLearnings(f ForgetLearningsFilter) (int64, error) {
 		args = append(args, f.Action)
 	}
 	q := "DELETE FROM search_learnings WHERE " + strings.Join(clauses, " AND ")
-	res, err := s.db.Exec(q, args...)
+	res, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return 0, fmt.Errorf("forget learnings: %w", err)
 	}

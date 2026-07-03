@@ -91,7 +91,7 @@ func TestTeachCommand_SilentOnSuccess(t *testing.T) {
 		t.Fatalf("reopen db: %v", err)
 	}
 	defer s.Close()
-	rows, err := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, err := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	if err != nil {
 		t.Fatalf("listLearnings: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestTeachCommand_RespectsNoLearnEnvVar(t *testing.T) {
 	if _, statErr := os.Stat(dbPath); statErr == nil {
 		s, _ := store.OpenWithContext(context.Background(), dbPath)
 		defer s.Close()
-		rows, _ := listLearningsRows(s, store.ListLearningsFilter{})
+		rows, _ := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 		if len(rows) != 0 {
 			t.Errorf("NO_LEARN should leave DB empty; got %d rows", len(rows))
 		}
@@ -564,7 +564,7 @@ func TestTeachCommand_IntegratedPlaybookFile(t *testing.T) {
 	defer s.Close()
 
 	// Resource learning landed.
-	rows, err := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, err := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	if err != nil {
 		t.Fatalf("listLearnings: %v", err)
 	}
@@ -612,7 +612,7 @@ func TestTeachCommand_IntegratedNoPlaybookFlags(t *testing.T) {
 		t.Fatalf("reopen: %v", err)
 	}
 	defer s.Close()
-	rows, _ := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, _ := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 learning, got %d", len(rows))
 	}
@@ -772,7 +772,7 @@ func TestLearnEvents_MissTeachHitSequenceRowIDLinkage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	rows, err := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, err := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	s.Close()
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("want exactly 1 learning row (err=%v), got %d", err, len(rows))
@@ -851,7 +851,7 @@ func TestLearnEvents_AliasMediatedRecallCreditsTaughtRowID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	rows, err := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, err := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	if err != nil || len(rows) != 1 {
 		s.Close()
 		t.Fatalf("want 1 learning row (err=%v), got %d", err, len(rows))
@@ -1026,7 +1026,7 @@ func TestLearnEvents_ForgetCascadesFamilyEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	rows, err := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, err := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	s.Close()
 	if err != nil {
 		t.Fatalf("listLearnings: %v", err)
@@ -1067,7 +1067,7 @@ func TestTeachCommand_PIIEmailWarnsAndSucceeds(t *testing.T) {
 
 	s, _ := store.OpenWithContext(context.Background(), dbPath)
 	defer s.Close()
-	rows, _ := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, _ := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	if len(rows) != 1 {
 		t.Errorf("the learning must still land (warn-only); got %d rows", len(rows))
 	}
@@ -1114,7 +1114,7 @@ func TestTeachCommand_PlaybookJSONInline(t *testing.T) {
 
 	s, _ := store.OpenWithContext(context.Background(), dbPath)
 	defer s.Close()
-	rows, _ := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, _ := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 learning, got %d", len(rows))
 	}
@@ -1190,7 +1190,7 @@ func TestTeachCommand_IntegratedPlaybookErrorDegrades(t *testing.T) {
 
 	s, _ := store.OpenWithContext(context.Background(), dbPath)
 	defer s.Close()
-	rows, _ := listLearningsRows(s, store.ListLearningsFilter{})
+	rows, _ := listLearningsRows(context.Background(), s, store.ListLearningsFilter{})
 	if len(rows) != 1 {
 		t.Errorf("resource learning should still land despite playbook failure; got %d rows", len(rows))
 	}
