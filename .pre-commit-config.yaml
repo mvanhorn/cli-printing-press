@@ -1,0 +1,16 @@
+# Secret scanning — gitleaks + private-key/large-file guards.
+# Mirrors mighty/agents/.pre-commit-config.yaml (the gold standard).
+# Protects the nightly com.workspace-config.github-sync auto-commit/auto-merge.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: detect-private-key
+      - id: check-merge-conflict
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.3
+    hooks:
+      - id: gitleaks
