@@ -1,0 +1,19 @@
+# Locks the OAuth2 authorization_code + PKCE auth shape contract:
+#
+#   parser.go    → AuthConfig.OAuth2Grant=authorization_code,
+#                  AuthorizationURL + TokenURL set
+#   generator.go → auth.go.tmpl selected (browser loopback login)
+#   auth.go.tmpl → RFC 8252 loopback redirect (127.0.0.1, not localhost),
+#                  PKCE on the secretless path: generatePKCEVerifier /
+#                  pkceCodeChallengeS256 / code_challenge_method=S256 on
+#                  the authorize request, and exactly one of client_secret
+#                  or code_verifier on the token exchange
+#
+# If a refactor regresses template selection or drops the PKCE branch,
+# auth.go either disappears or loses the PKCE helpers and the harness
+# fails with a content diff.
+printing-press-oauth2-authcode/internal/cli/auth.go
+
+# client.go carries refreshAccessToken, which must keep the public-client
+# refresh shape (client_id always sent, client_secret only when present).
+printing-press-oauth2-authcode/internal/client/client.go
