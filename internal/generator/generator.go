@@ -763,7 +763,8 @@ type HelperFlags struct {
 	HasClientFilters     bool // at least one docs-derived endpoint needs client-side response filtering
 	HasEmbeddedPaged     bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
 	HasResponseUnwrap    bool // at least one generated command can call extractResponseData
-	HasMutationEndpoints bool // spec has any non-GET/HEAD endpoint → emit partial-failure helpers + --allow-partial-failure flag
+	HasMutationEndpoints bool // emitted commands can detect partial failures → emit partial-failure support + --allow-partial-failure flag
+	HasPartialFailureErr bool // emitted command_endpoint.go command can call partialFailureErr
 	HasRequiredRoles     bool // spec has per-endpoint requires_role gates → emit persona helpers
 	HasCreateCommands    bool // spec has POST/PUT/PATCH write endpoints → emit create retry helpers
 }
@@ -819,6 +820,54 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 		scan(r)
 	}
 	return flags
+}
+
+func applyPartialFailureFlags(flags *HelperFlags, apiSpec *spec.APISpec, promotedCommands []PromotedCommand, promotedEndpointNames map[string]string, hasStore bool) {
+	flags.HasMutationEndpoints, flags.HasPartialFailureErr = partialFailureEmissionFlags(apiSpec, promotedCommands, promotedEndpointNames, hasStore)
+}
+
+func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []PromotedCommand, promotedEndpointNames map[string]string, hasStore bool) (bool, bool) {
+	hasSupport := false
+	hasTypedErr := false
+
+	var scan func(spec.Resource, string)
+	scan = func(originalResource spec.Resource, promotedEndpointName string) {
+		resource := withoutOptionsEndpoints(originalResource)
+		for endpointName, endpoint := range resource.Endpoints {
+			if promotedEndpointName == endpointName {
+				continue
+			}
+			if isMutationMethod(endpoint.Method) {
+				hasSupport = true
+				hasTypedErr = true
+			}
+		}
+		for _, originalSubResource := range resource.SubResources {
+			scan(originalSubResource, "")
+		}
+	}
+
+	for resourceName, originalResource := range apiSpec.Resources {
+		scan(originalResource, promotedEndpointNames[resourceName])
+	}
+
+	for _, command := range promotedCommands {
+		if promotedCommandCanDetectPartialFailure(command, hasStore) {
+			// command_promoted.go.tmpl detects partial failures for store
+			// write-back only; it never calls partialFailureErr.
+			hasSupport = true
+		}
+	}
+
+	return hasSupport, hasTypedErr
+}
+
+func promotedCommandCanDetectPartialFailure(command PromotedCommand, hasStore bool) bool {
+	if !hasStore || command.Endpoint.UsesBinaryResponse() || endpointIsReadCommand(command.Endpoint, command.EndpointName) {
+		return false
+	}
+	method := strings.ToUpper(strings.TrimSpace(command.Endpoint.Method))
+	return method == "POST" || method == "PUT" || method == "PATCH"
 }
 
 // isMutationMethod reports whether method is a mutation verb that reaches the
@@ -2224,6 +2273,7 @@ func (g *Generator) renderSingleFiles() error {
 			data = g.readmeData()
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
+			applyPartialFailureFlags(&hFlags, g.Spec, g.PromotedCommands, g.PromotedEndpointNames, g.VisionSet.Store)
 			hFlags.HasDataLayer = g.VisionSet.Store
 			hFlags.HasSyncHelpers = g.hasGeneratedSyncImplementation()
 			hFlags.HasResponseUnwrap = g.VisionSet.Store && promotedCommandsCanUnwrapResponse(g.PromotedCommands, g.Spec.Types)
@@ -4493,6 +4543,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 	// undefined symbol when auth.go was skipped.
 	hasAuthCommand := g.shouldEmitAuth()
 	helperFlags := computeHelperFlags(g.Spec)
+	applyPartialFailureFlags(&helperFlags, g.Spec, promotedCommands, g.PromotedEndpointNames, g.VisionSet.Store)
 
 	rootData := struct {
 		*spec.APISpec

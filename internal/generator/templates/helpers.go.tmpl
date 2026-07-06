@@ -325,6 +325,7 @@ func RequireRoleWith(flags *rootFlags, cfg *config.Config, cmdName string, requi
 {{- end}}
 
 {{- if .HasMutationEndpoints}}
+{{- if .HasPartialFailureErr}}
 // partialFailureErr signals that the upstream API returned a 2xx with a
 // body shape indicating some operations in a batch failed (e.g. Google
 // Ads `partialFailureError`, similar shapes from Drive batch, Sheets
@@ -333,6 +334,7 @@ func RequireRoleWith(flags *rootFlags, cfg *config.Config, cmdName string, requi
 // accepted but some ops failed".
 func partialFailureErr(err error) error { return &cliError{code: 6, err: err} }
 
+{{- end}}
 // partialFailureReport describes the structured detection result for a
 // mutate-style response body. Emitted in the envelope under
 // "partial_failure" so machine-readable callers can route per-operation
