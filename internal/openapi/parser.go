@@ -4398,6 +4398,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		if schema != nil && schema.Default != nil {
 			param.Default = schema.Default
 		}
+		setParamMaximum(&param, schema)
 		if param.Positional {
 			param.Required = true
 		}
@@ -4410,6 +4411,36 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 	reclassifyPathParamModifiers(params)
 
 	return params
+}
+
+// setParamMaximum records a numeric upper-bound constraint from the schema onto
+// the param, normalizing the two OpenAPI encodings of an exclusive bound.
+// OpenAPI 3.1 writes `exclusiveMaximum: N` as a number; OpenAPI 3.0 writes
+// `maximum: N` plus `exclusiveMaximum: true`. Either way the largest legal value
+// is strictly below N, so it lands in ExclusiveMaximum; a plain inclusive
+// `maximum` lands in Maximum. Downstream (the sync profiler) turns whichever is
+// set into an effective integer page-size cap.
+func setParamMaximum(param *spec.Param, schema *openapi3.Schema) {
+	if param == nil || schema == nil {
+		return
+	}
+	// OpenAPI 3.0: `exclusiveMaximum: true` turns `maximum` into an exclusive
+	// bound — it is not also an inclusive one.
+	if schema.ExclusiveMax.IsTrue() {
+		if schema.Max != nil {
+			param.ExclusiveMaximum = schema.Max
+		}
+		return
+	}
+	// OpenAPI 3.1 (or no exclusive modifier): `maximum` is inclusive, and a
+	// numeric `exclusiveMaximum` is an independent assertion. Both may be
+	// present; capture each so the profiler can take the most restrictive.
+	if schema.Max != nil {
+		param.Maximum = schema.Max
+	}
+	if schema.ExclusiveMax.Value != nil {
+		param.ExclusiveMaximum = schema.ExclusiveMax.Value
+	}
 }
 
 func readParamURLNameOverrides(pathItem *openapi3.PathItem, op *openapi3.Operation) map[string]string {
@@ -4827,6 +4858,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		if paramSchema != nil && paramSchema.Default != nil {
 			param.Default = paramSchema.Default
 		}
+		setParamMaximum(&param, paramSchema)
 		// For array types, propagate item-level enum as a Fields entry
 		// so downstream consumers (profiler) can access it.
 		if paramSchema != nil && paramSchema.Type != nil && paramSchema.Type.Is(openapi3.TypeArray) &&

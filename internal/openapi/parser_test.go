@@ -11838,3 +11838,53 @@ paths:
 		t.Fatalf("TenantScopeColumn = %q, want %q", got, "workspace")
 	}
 }
+
+// setParamMaximum must normalize both OpenAPI encodings of an upper bound: a
+// plain inclusive `maximum` into Maximum, and either exclusive form (3.1
+// numeric `exclusiveMaximum`, or 3.0 `maximum` + `exclusiveMaximum: true`) into
+// ExclusiveMaximum. Only one field is ever set. Guards the sync page-size clamp
+// (mvanhorn/cli-printing-press#3440) at the parse boundary.
+func TestSetParamMaximumNormalizesBounds(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	tru := true
+
+	t.Run("inclusive maximum", func(t *testing.T) {
+		var p spec.Param
+		setParamMaximum(&p, &openapi3.Schema{Max: f(30)})
+		require.NotNil(t, p.Maximum)
+		assert.Equal(t, 30.0, *p.Maximum)
+		assert.Nil(t, p.ExclusiveMaximum)
+	})
+
+	t.Run("openapi 3.1 numeric exclusiveMaximum", func(t *testing.T) {
+		var p spec.Param
+		setParamMaximum(&p, &openapi3.Schema{ExclusiveMax: openapi3.ExclusiveBound{Value: f(30)}})
+		require.NotNil(t, p.ExclusiveMaximum)
+		assert.Equal(t, 30.0, *p.ExclusiveMaximum)
+		assert.Nil(t, p.Maximum)
+	})
+
+	t.Run("openapi 3.0 maximum plus exclusiveMaximum true", func(t *testing.T) {
+		var p spec.Param
+		setParamMaximum(&p, &openapi3.Schema{Max: f(30), ExclusiveMax: openapi3.ExclusiveBound{Bool: &tru}})
+		require.NotNil(t, p.ExclusiveMaximum)
+		assert.Equal(t, 30.0, *p.ExclusiveMaximum)
+		assert.Nil(t, p.Maximum, "an exclusive maximum must not also populate the inclusive field")
+	})
+
+	t.Run("openapi 3.1 both maximum and numeric exclusiveMaximum", func(t *testing.T) {
+		var p spec.Param
+		setParamMaximum(&p, &openapi3.Schema{Max: f(30), ExclusiveMax: openapi3.ExclusiveBound{Value: f(100)}})
+		require.NotNil(t, p.Maximum, "an inclusive maximum must survive alongside a numeric exclusiveMaximum")
+		assert.Equal(t, 30.0, *p.Maximum)
+		require.NotNil(t, p.ExclusiveMaximum)
+		assert.Equal(t, 100.0, *p.ExclusiveMaximum)
+	})
+
+	t.Run("no bound", func(t *testing.T) {
+		var p spec.Param
+		setParamMaximum(&p, &openapi3.Schema{})
+		assert.Nil(t, p.Maximum)
+		assert.Nil(t, p.ExclusiveMaximum)
+	})
+}
