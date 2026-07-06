@@ -34,7 +34,13 @@ func IsUUID(s string) bool {
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 1
+//
+// v2 (2026-07): resources gains a composite PRIMARY KEY (resource_type, id).
+// Under the v1 single-column PK, two resource types sharing an id silently
+// MERGED on upsert (a markets row for id "bitcoin" overwrote the coins row,
+// a ping health row ate a real coin named "ping") - fetched rows vanished
+// while sync reported success. v1 databases are rebuilt in place on open.
+const StoreSchemaVersion = 2
 
 type Store struct {
 	db *sql.DB
@@ -243,11 +249,12 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS resources (
-			id TEXT PRIMARY KEY,
+			id TEXT NOT NULL,
 			resource_type TEXT NOT NULL,
 			data JSON NOT NULL,
 			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_synced ON resources(synced_at)`,
@@ -337,6 +344,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("database schema version %d is newer than supported version %d; upgrade the CLI binary or open an older database", current, StoreSchemaVersion)
 		}
 
+		if err := s.rebuildLegacyResourcesPK(ctx, conn, current); err != nil {
+			return fmt.Errorf("rebuilding resources composite PK: %w", err)
+		}
 		if err := s.backfillColumns(ctx, conn); err != nil {
 			return fmt.Errorf("backfilling columns: %w", err)
 		}
@@ -355,6 +365,55 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+// rebuildLegacyResourcesPK upgrades a v1 database (resources PRIMARY KEY on id
+// alone) to the v2 composite PRIMARY KEY (resource_type, id). SQLite cannot
+// alter a primary key in place, so the table is rebuilt: create the v2 shape,
+// copy every row, swap, and reindex. INSERT OR IGNORE keeps the first row when
+// a v1 database already collapsed two types onto one id (the v1 defect this
+// migration exists to stop); nothing more can be recovered from a merged row.
+// The generic FTS index is emptied - rowids are namespaced by type in v2 and
+// the next sync repopulates it.
+func (s *Store) rebuildLegacyResourcesPK(ctx context.Context, conn *sql.Conn, current int) error {
+	if current >= 2 {
+		return nil
+	}
+	var ddl sql.NullString
+	if err := conn.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE type='table' AND name='resources'`).Scan(&ddl); err != nil {
+		if err == sql.ErrNoRows {
+			return nil // fresh database: the v2 CREATE below builds the right shape
+		}
+		return err
+	}
+	if !ddl.Valid || strings.Contains(ddl.String, "PRIMARY KEY (resource_type, id)") {
+		return nil // already v2-shaped
+	}
+	stmts := []string{
+		`CREATE TABLE resources_v2 (
+			id TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			data JSON NOT NULL,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)`,
+		`INSERT OR IGNORE INTO resources_v2 (id, resource_type, data, synced_at, updated_at)
+		 SELECT id, resource_type, data, synced_at, updated_at FROM resources`,
+		`DROP TABLE resources`,
+		`ALTER TABLE resources_v2 RENAME TO resources`,
+		`CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_resources_synced ON resources(synced_at)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	// Old FTS rowids hashed id alone; v2 namespaces by resource_type. Empty
+	// the index rather than leave stale rowids - the next sync repopulates.
+	_, _ = conn.ExecContext(ctx, `DELETE FROM resources_fts`)
+	return nil
 }
 
 const (
@@ -468,14 +527,16 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	_, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET data = excluded.data, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
+		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
 		id, resourceType, string(data), time.Now(), time.Now(),
 	)
 	if err != nil {
 		return err
 	}
 
-	ftsRowid := ftsRowID(id)
+	// Namespace the FTS rowid by resource type: v2's composite PK means two
+	// types can legitimately share an id, and a shared hash would cross-delete.
+	ftsRowid := ftsRowID(resourceType + "\x1f" + id)
 	// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
 	// Standard DELETE WHERE column=? may not work on FTS5 virtual tables.
 	if _, err = tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowid); err != nil {
