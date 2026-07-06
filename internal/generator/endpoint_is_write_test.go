@@ -400,6 +400,35 @@ func TestPromotedReadOnlyPOSTDoesNotEmitPartialFailureSupport(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
+func TestPartialFailureEmissionFlagsRecurseIntoNestedSubresources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("nested-mutation")
+	apiSpec.Resources = map[string]spec.Resource{
+		"orgs": {
+			SubResources: map[string]spec.Resource{
+				"projects": {
+					SubResources: map[string]spec.Resource{
+						"tasks": {
+							Endpoints: map[string]spec.Endpoint{
+								"update": {
+									Method:      "PATCH",
+									Path:        "/orgs/{org_id}/projects/{project_id}/tasks/{task_id}",
+									Description: "Update a task",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	hasSupport, hasTypedErr := partialFailureEmissionFlags(apiSpec, nil, nil, false)
+	require.True(t, hasSupport, "nested mutation endpoints need partial-failure support")
+	require.True(t, hasTypedErr, "nested command_endpoint.go callers need partialFailureErr")
+}
+
 func TestPromotedCommandSubstitutesFlagPathParams(t *testing.T) {
 	t.Parallel()
 

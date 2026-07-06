@@ -829,10 +829,11 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 	hasSupport := false
 	hasTypedErr := false
 
-	for resourceName, originalResource := range apiSpec.Resources {
+	var scan func(spec.Resource, string)
+	scan = func(originalResource spec.Resource, promotedEndpointName string) {
 		resource := withoutOptionsEndpoints(originalResource)
 		for endpointName, endpoint := range resource.Endpoints {
-			if promotedEndpointNames[resourceName] == endpointName {
+			if promotedEndpointName == endpointName {
 				continue
 			}
 			if isMutationMethod(endpoint.Method) {
@@ -841,18 +842,18 @@ func partialFailureEmissionFlags(apiSpec *spec.APISpec, promotedCommands []Promo
 			}
 		}
 		for _, originalSubResource := range resource.SubResources {
-			subResource := withoutOptionsEndpoints(originalSubResource)
-			for _, endpoint := range subResource.Endpoints {
-				if isMutationMethod(endpoint.Method) {
-					hasSupport = true
-					hasTypedErr = true
-				}
-			}
+			scan(originalSubResource, "")
 		}
+	}
+
+	for resourceName, originalResource := range apiSpec.Resources {
+		scan(originalResource, promotedEndpointNames[resourceName])
 	}
 
 	for _, command := range promotedCommands {
 		if promotedCommandCanDetectPartialFailure(command, hasStore) {
+			// command_promoted.go.tmpl detects partial failures for store
+			// write-back only; it never calls partialFailureErr.
 			hasSupport = true
 		}
 	}
