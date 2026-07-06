@@ -3,6 +3,7 @@ package profiler
 import (
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"regexp"
 	"slices"
@@ -2394,6 +2395,12 @@ func detectIDWalkParams(endpoint spec.Endpoint) (string, string, int) {
 	if defaultSize, ok := paginationLimitDefault(endpoint, resolvedLimitParam); ok {
 		pageSize = defaultSize
 	}
+	// Clamp to the body limit param's declared maximum, same as the cursor/page
+	// sync path — an ID-walk POST search endpoint that caps its limit below 100
+	// would otherwise be rejected with a validation error on every page.
+	if maxSize, ok := paginationLimitMaximum(endpoint, resolvedLimitParam); ok && pageSize > maxSize {
+		pageSize = maxSize
+	}
 	return filterParam, resolvedLimitParam, pageSize
 }
 
@@ -2429,6 +2436,42 @@ func paginationLimitDefault(endpoint spec.Endpoint, limitParam string) (int, boo
 	return 0, false
 }
 
+// paginationLimitMaximum returns the largest page size the pagination limit
+// param permits, if it declares an upper bound. Sync uses it to clamp the
+// requested page size below an API-enforced ceiling. An inclusive `maximum: N`
+// yields floor(N); an exclusive bound (OpenAPI 3.1 `exclusiveMaximum: N`, or
+// 3.0 `maximum: N` + `exclusiveMaximum: true`) yields ceil(N)-1 so the returned
+// value is always the largest legal integer strictly below the bound.
+func paginationLimitMaximum(endpoint spec.Endpoint, limitParam string) (int, bool) {
+	if strings.TrimSpace(limitParam) == "" {
+		return 0, false
+	}
+	limitName := strings.ToLower(limitParam)
+	params := append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...)
+	for _, param := range params {
+		if strings.ToLower(param.Name) != limitName {
+			continue
+		}
+		// A param may declare both an inclusive `maximum` and an exclusive bound
+		// (independent assertions in OpenAPI 3.1). Take the most restrictive.
+		effMax, have := 0, false
+		if param.Maximum != nil {
+			if m := int(math.Floor(*param.Maximum)); m > 0 {
+				effMax, have = m, true
+			}
+		}
+		if param.ExclusiveMaximum != nil {
+			if m := int(math.Ceil(*param.ExclusiveMaximum)) - 1; m > 0 && (!have || m < effMax) {
+				effMax, have = m, true
+			}
+		}
+		if have {
+			return effMax, true
+		}
+	}
+	return 0, false
+}
+
 func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string, string, int) {
 	cursorParam := ""
 	cursorType := ""
@@ -2456,6 +2499,13 @@ func syncPaginationDefaultsFromEndpoint(endpoint spec.Endpoint) (string, string,
 	pageSize := 100
 	if defaultSize, ok := paginationLimitDefault(endpoint, limitParam); ok {
 		pageSize = defaultSize
+	}
+	// Clamp to the limit param's declared maximum so sync never requests a
+	// page size the API rejects with a validation error. An API-declared cap
+	// always wins over the default (e.g. Granola's public API caps page_size
+	// at 30, and a spec may declare a maximum without any default).
+	if maxSize, ok := paginationLimitMaximum(endpoint, limitParam); ok && pageSize > maxSize {
+		pageSize = maxSize
 	}
 	return cursorParam, cursorType, limitParam, pageSize
 }
