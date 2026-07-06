@@ -60,7 +60,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		// TODO: replace placeholder example values before relying on this for live dogfood.
 {{- end}}
 		Example: {{printf "%q" $example}},
-		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}},
+		Annotations: map[string]string{ {{- if not .APISpec.IsLocalSQLiteSource}}"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, {{end}}"pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}{{if endpointSkipsErrorPathProbe .Endpoint}}, "pp:no-error-path-probe": "true"{{end}}{{if .Endpoint.HappyArgs}}, "pp:happy-args": {{printf "%q" .Endpoint.HappyArgs}}{{end}}{{if .Endpoint.LiveDogfoodRequiresTier}}, "pp:requires-tier": {{printf "%q" .Endpoint.LiveDogfoodRequiresTier}}{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- if endpointHasRequiredInput .Endpoint}}
 			// Bare invocation of a command with a required flag/body prints help
