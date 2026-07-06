@@ -228,9 +228,15 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	}
 
 	// The browser-wait timeout above does not apply here; the token exchange
-	// is a plain server-to-server POST and gets its own short network timeout.
+	// is a plain server-to-server POST and gets its own short network timeout,
+	// while cmd.Context() keeps it cancellable from the terminal.
+	tokenReq, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, tokenURL, strings.NewReader(tokenParams.Encode()))
+	if err != nil {
+		return fmt.Errorf("building token request: %w", err)
+	}
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokenClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := tokenClient.PostForm(tokenURL, tokenParams)
+	resp, err := tokenClient.Do(tokenReq)
 	if err != nil {
 		return fmt.Errorf("exchanging code for token: %w", err)
 	}

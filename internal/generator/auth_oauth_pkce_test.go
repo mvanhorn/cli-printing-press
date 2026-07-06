@@ -38,8 +38,10 @@ func TestOAuthLoginUsesPKCEWhenNoClientSecret(t *testing.T) {
 	require.Contains(t, auth, `params.Set("code_challenge_method", "S256")`)
 
 	// Token exchange authenticates with exactly one of client_secret or
-	// code_verifier; the bare authorization_code grant is gone.
-	require.Contains(t, auth, "tokenParams.Set(\"client_secret\", clientSecret)\n\t} else {\n\t\ttokenParams.Set(\"code_verifier\", codeVerifier)\n\t}")
+	// code_verifier (mutual exclusivity is validated behaviorally below);
+	// the bare authorization_code grant is gone.
+	require.Contains(t, auth, `tokenParams.Set("client_secret", clientSecret)`)
+	require.Contains(t, auth, `tokenParams.Set("code_verifier", codeVerifier)`)
 
 	// RFC 8252 loopback redirect: IP literal, never "localhost".
 	require.Contains(t, auth, `redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback"`)
@@ -113,5 +115,6 @@ func TestGeneratePKCEVerifierShapeAndUniqueness(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "oauth_pkce_test.go"), []byte(runtimeTest), 0o644))
 	runGoCommand(t, outputDir, "test", "-race", "./internal/cli", "-run", "Test(PKCECodeChallengeS256|GeneratePKCEVerifier)")
 
+	require.Contains(t, auth, "http.NewRequestWithContext(cmd.Context(), http.MethodPost, tokenURL", "token exchange should be context-cancellable")
 	require.False(t, strings.Contains(auth, "http.PostForm(tokenURL"), "token exchange should use a client with its own timeout, not the shared default client")
 }
