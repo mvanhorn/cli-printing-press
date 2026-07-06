@@ -37,6 +37,29 @@ func TestEndpointSkipsErrorPathProbe(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "untyped free-text query positional skips probe",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/images/search",
+				Params: []spec.Param{{Name: "q", Required: true, Positional: true}},
+			},
+			want: true,
+		},
+		{
+			name: "untyped JSON-described positional still gets probed",
+			endpoint: spec.Endpoint{
+				Method: "GET",
+				Path:   "/images/search",
+				Params: []spec.Param{{
+					Name:        "filter",
+					Required:    true,
+					Positional:  true,
+					Description: "{\"field\":\"value\"}",
+				}},
+			},
+			want: false,
+		},
+		{
 			name: "path positional still gets probed",
 			endpoint: spec.Endpoint{
 				Method: "GET",

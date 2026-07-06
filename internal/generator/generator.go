@@ -6513,7 +6513,7 @@ func isComplexBodyField(p spec.Param) bool {
 }
 
 func isJSONStringParam(p spec.Param) bool {
-	if p.Type != "string" {
+	if p.Type != "" && !strings.EqualFold(strings.TrimSpace(p.Type), "string") {
 		return false
 	}
 
