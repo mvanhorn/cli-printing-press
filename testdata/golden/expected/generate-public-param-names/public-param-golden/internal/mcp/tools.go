@@ -744,6 +744,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"endpoints":   []string{"create", "find"},
 				"syncable":    true,
 				"searchable":  true,
+				"writable":    true,
 			},
 		},
 		"query_tips": []string{
