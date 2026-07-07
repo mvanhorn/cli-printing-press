@@ -779,7 +779,7 @@ func (c *Client) readCache(path string, params map[string]string) (json.RawMessa
 	if err != nil || time.Since(info.ModTime()) > 5*time.Minute {
 		return nil, {{if .HasHTMLExtraction}}"", {{end}}false
 	}
-	data, err := os.ReadFile(cacheFile)
+	data, err := os.ReadFile(filepath.Clean(cacheFile)) // #nosec G304 -- app-derived cache path from sha256 cache key.
 	if err != nil {
 		return nil, {{if .HasHTMLExtraction}}"", {{end}}false
 	}
@@ -792,9 +792,9 @@ func (c *Client) readCache(path string, params map[string]string) (json.RawMessa
 }
 
 func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage{{if .HasHTMLExtraction}}, contentType string{{end}}) {
-	os.MkdirAll(c.cacheDir, 0o700)
+	_ = os.MkdirAll(c.cacheDir, 0o700)
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
-	os.WriteFile(cacheFile, []byte(data), 0o600)
+	_ = os.WriteFile(cacheFile, []byte(data), 0o600)
 {{- if .HasHTMLExtraction}}
 	c.writeCacheContentType(cacheFile, contentType)
 {{- end}}
@@ -807,7 +807,7 @@ type cacheMetadata struct {
 }
 
 func (c *Client) readCacheContentType(cacheFile string) string {
-	data, err := os.ReadFile(cacheFile + ".meta.json")
+	data, err := os.ReadFile(filepath.Clean(cacheFile + ".meta.json")) // #nosec G304 -- app-derived cache metadata path.
 	if err != nil {
 		return ""
 	}
@@ -1547,7 +1547,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
@@ -1845,12 +1845,12 @@ func (c *Client) persistedQueryHashes() map[string]string {
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- app-owned persisted-query registry path.
 	if err != nil {
 		if c != nil && c.Config != nil && c.Config.Path != "" {
 			legacyPath := filepath.Join(filepath.Dir(c.Config.Path), "persisted-queries.json")
 			if legacyPath != path {
-				data, err = os.ReadFile(legacyPath)
+					data, err = os.ReadFile(filepath.Clean(legacyPath)) // #nosec G304 -- app-owned legacy persisted-query registry path.
 			}
 		}
 		if err != nil {

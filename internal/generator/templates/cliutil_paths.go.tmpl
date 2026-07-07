@@ -108,14 +108,14 @@ func CacheDir() (string, error) {
 }
 
 func ReadFileWithLegacyFallback(primary, legacy string) ([]byte, string, error) {
-	data, err := os.ReadFile(primary)
+	data, err := os.ReadFile(filepath.Clean(primary)) // #nosec G304 -- app-derived config/data path.
 	if err == nil {
 		return data, primary, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) || legacy == "" || legacy == primary {
 		return nil, primary, err
 	}
-	data, legacyErr := os.ReadFile(legacy)
+	data, legacyErr := os.ReadFile(filepath.Clean(legacy)) // #nosec G304 -- app-derived legacy config/data path.
 	if legacyErr != nil {
 		return nil, legacy, legacyErr
 	}
@@ -133,12 +133,12 @@ func AtomicWritePrivateFile(path string, data []byte, fileMode, dirMode os.FileM
 	}
 	tmpPath := tmp.Name()
 	if err := tmp.Chmod(fileMode); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("securing temporary private file: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("writing temporary private file: %w", err)
 	}

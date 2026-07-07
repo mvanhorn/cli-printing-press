@@ -35,7 +35,7 @@ func (s *Store) Get(key string) (json.RawMessage, bool) {
 	if err != nil || time.Since(info.ModTime()) > s.TTL {
 		return nil, false
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- app-derived cache path from sha256 cache key.
 	if err != nil {
 		return nil, false
 	}
