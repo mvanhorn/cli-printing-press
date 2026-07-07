@@ -3035,6 +3035,137 @@ func TestProfilePagination_InfersFromPlainParamsWhenNoExplicitBlock(t *testing.T
 		"inferred limit param must still read the spec-declared default")
 }
 
+// A limit param's declared `maximum` must cap the sync page size: the 100
+// fallback (and any larger default) would otherwise trip an API validation
+// error. Regression guard for the Granola public API, which caps page_size
+// at 30 with no default. See mvanhorn/cli-printing-press#3440.
+func TestProfilePagination_ClampsToParamMaximum(t *testing.T) {
+	max30 := 30.0
+	excl30 := 30.0
+	excl100 := 100.0
+	s := &spec.APISpec{
+		Name: "capped-pagination",
+		Resources: map[string]spec.Resource{
+			// maximum only, no default: must clamp the 100 fallback to 30.
+			"notes": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/notes",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", Maximum: &max30}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			// default above the maximum: the API-declared cap must win.
+			"folders": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/folders",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", Default: 50, Maximum: &max30}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			// default under the maximum: no clamp, the default stands.
+			"tags": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tags",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", Default: 20, Maximum: &max30}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			// exclusive maximum: the largest legal value is 29, not 30.
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/events",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", ExclusiveMaximum: &excl30}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			// both bounds present (OpenAPI 3.1): the stricter inclusive maximum
+			// (30) wins over the looser exclusive bound (100 -> 99).
+			"webhooks": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/webhooks",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", Maximum: &max30, ExclusiveMaximum: &excl100}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "notes")
+	require.Contains(t, byName, "folders")
+	require.Contains(t, byName, "tags")
+	require.Contains(t, byName, "events")
+	require.Contains(t, byName, "webhooks")
+	assert.Equal(t, 30, byName["notes"].PaginationPageSize,
+		"maximum must clamp the 100 fallback when no default is declared")
+	assert.Equal(t, 30, byName["folders"].PaginationPageSize,
+		"maximum must win over a larger declared default")
+	assert.Equal(t, 20, byName["tags"].PaginationPageSize,
+		"a default under the maximum must stand unchanged")
+	assert.Equal(t, 29, byName["events"].PaginationPageSize,
+		"an exclusive maximum must clamp to the largest value strictly below it")
+	assert.Equal(t, 30, byName["webhooks"].PaginationPageSize,
+		"the most restrictive of a co-declared inclusive and exclusive bound must win")
+}
+
+// The ID-walk sync path (pagination.type: id_walk over a POST search endpoint)
+// resolves its page size independently via detectIDWalkParams, so the maximum
+// clamp must apply there too. Regression guard for #3440.
+func TestProfilePagination_IDWalkClampsToBodyParamMaximum(t *testing.T) {
+	max25 := 25.0
+	s := &spec.APISpec{
+		Name: "id-walk-capped",
+		Resources: map[string]spec.Resource{
+			"records": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method:  "POST",
+						Path:    "/records/search",
+						IDField: "id",
+						Pagination: &spec.Pagination{
+							Type:       spec.PaginationTypeIDWalk,
+							LimitParam: "limit",
+						},
+						Body: []spec.Param{
+							{Name: "filter", Type: "array"},
+							{Name: "limit", Type: "int", Maximum: &max25},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "records")
+	assert.Equal(t, 25, byName["records"].IDWalkPageSize,
+		"ID-walk page size must clamp to the body limit param's maximum")
+}
+
 // Explicit pagination: blocks must continue to win over plain-param inference.
 // Mixing the two on the same endpoint would otherwise double-count or let
 // inference shadow the author's deliberate choice.
