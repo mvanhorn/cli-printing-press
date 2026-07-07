@@ -166,7 +166,7 @@ paths:
 	assert.NotContains(t, uploadSrc, `body["filename"] = bodyFilename`)
 
 	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_notes.go")
-	assert.Contains(t, createSrc, `body["title"] = bodyTitle`)
+	assert.Contains(t, createSrc, `bodyMap["title"] = bodyTitle`)
 	assert.Contains(t, createSrc, `c.PostWithParams(cmd.Context(), path, params, body)`)
 	assert.NotContains(t, createSrc, `c.PostMultipartWithParams`)
 

@@ -48,7 +48,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			if flagNotify != false {
 				params["notify"] = formatCLIParamValue(flagNotify)
 			}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
@@ -60,15 +60,16 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
+				bodyMap := map[string]any{}
+				body = bodyMap
 				if cmd.Flags().Changed("completed") {
-					body["completed"] = bodyCompleted
+					bodyMap["completed"] = bodyCompleted
 				}
 				if bodyPriority != "" {
-					body["priority"] = bodyPriority
+					bodyMap["priority"] = bodyPriority
 				}
 				if bodyTitle != "" {
-					body["title"] = bodyTitle
+					bodyMap["title"] = bodyTitle
 				}
 			}
 			data, statusCode, err := c.PatchWithParams(cmd.Context(), path, params, body)

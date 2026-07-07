@@ -256,8 +256,12 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}
 {{- if $hasJSONBody}}
-			body := map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t"}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}{{if endpointHasRequestParams .Endpoint}}			data, _, err := c.DeleteWithParamsAndBodyAndHeaders(cmd.Context(), path, params, body, headerOverrides)
+{{- if and .Endpoint.BodyJSONFallback .Endpoint.BodyIsArray}}
+			var body any = []any{}
+{{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{else}}
+			bodyMap := map[string]any{}
+			var body any = bodyMap
+{{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}{{if endpointHasRequestParams .Endpoint}}			data, _, err := c.DeleteWithParamsAndBodyAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{else}}			data, _, err := c.DeleteWithBodyAndHeaders(cmd.Context(), path, body, headerOverrides)
 {{end}}{{else}}{{if endpointHasRequestParams .Endpoint}}			data, _, err := c.DeleteWithParamsAndBody(cmd.Context(), path, params, body)
 {{else}}			data, _, err := c.DeleteWithBody(cmd.Context(), path, body)
@@ -300,8 +304,12 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// rather than through resolveRead (GET-only internally); a
 			// body-aware cached read helper is filed as #425 for when a
 			// second store-backed POST-search consumer ships.
-			body := map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t"}}{{if and .IsReadOnly (eq (upper .Endpoint.Method) "POST")}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, _, err := c.PostQueryWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
+{{- if and .Endpoint.BodyJSONFallback .Endpoint.BodyIsArray}}
+			var body any = []any{}
+{{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{else}}
+			bodyMap := map[string]any{}
+			var body any = bodyMap
+{{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if and .IsReadOnly (eq (upper .Endpoint.Method) "POST")}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, _, err := c.PostQueryWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{else}}			data, _, err := c.PostQueryWithParams(cmd.Context(), path, params, body)
 {{end}}{{else}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{else}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(cmd.Context(), path, params, body)

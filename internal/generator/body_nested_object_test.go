@@ -104,9 +104,9 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 		`nestedStart["dateTime"] = bodyStartDateTime`,
 		`nestedStart["timeZone"] = bodyStartTimeZone`,
 		`if len(nestedStart) > 0 {`,
-		`body["start"] = nestedStart`,
+		`bodyMap["start"] = nestedStart`,
 		"nestedEnd := map[string]any{}",
-		`body["end"] = nestedEnd`,
+		`bodyMap["end"] = nestedEnd`,
 	} {
 		require.Containsf(t, got, want, "expected nested-map fragment %q", want)
 	}
@@ -188,7 +188,7 @@ resources:
 		`json.Unmarshal([]byte(bodyVariables), &parsedVariables)`,
 		`json.Unmarshal([]byte(bodyQueries), &parsedQueries)`,
 		`nestedSerializerSettings["includeNulls"] = bodySerializerSettingsIncludeNulls`,
-		`body["serializerSettings"] = nestedSerializerSettings`,
+		`bodyMap["serializerSettings"] = nestedSerializerSettings`,
 	} {
 		require.Containsf(t, got, want, "expected generated fragment %q", want)
 	}

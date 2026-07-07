@@ -44,7 +44,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 			params := map[string]string{}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
@@ -56,15 +56,16 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
+				bodyMap := map[string]any{}
+				body = bodyMap
 				if bodyName != "" {
-					body["name"] = bodyName
+					bodyMap["name"] = bodyName
 				}
 				if bodyOwnerEmail != "" {
-					body["owner_email"] = bodyOwnerEmail
+					bodyMap["owner_email"] = bodyOwnerEmail
 				}
 				if bodyVisibility != "" {
-					body["visibility"] = bodyVisibility
+					bodyMap["visibility"] = bodyVisibility
 				}
 			}
 			data, statusCode, err := c.PostWithParams(cmd.Context(), path, params, body)

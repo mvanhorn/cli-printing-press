@@ -655,9 +655,9 @@ func TestPromotedCommandPlumbsBodyFields(t *testing.T) {
 
 	// 4. The RunE builds a body map from the body* vars and passes it
 	// to c.Post — not `params`, which is what the OLD template did.
-	require.Contains(t, src, `body := map[string]any{}`,
+	require.Contains(t, src, `bodyMap := map[string]any{}`,
 		"promoted command must build a body map from body flags")
-	require.Contains(t, src, `body["name"] = bodyName`,
+	require.Contains(t, src, `bodyMap["name"] = bodyName`,
 		"body map must use the spec-declared field name, not the camelCased flag var")
 	require.Contains(t, src, `c.PostWithParams(cmd.Context(), path, params, body)`,
 		"promoted command must pass the body map to c.PostWithParams, not the params map")

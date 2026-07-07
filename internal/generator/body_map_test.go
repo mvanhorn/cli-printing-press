@@ -573,6 +573,17 @@ func TestBodyJSONFallback_FlagRegs(t *testing.T) {
 	}
 }
 
+func TestBodyJSONFallback_FlagRegs_ArrayBody(t *testing.T) {
+	t.Parallel()
+	got := bodyFlagRegs(spec.Endpoint{BodyJSONFallback: true, BodyIsArray: true})
+	if !strings.Contains(got, "JSON array string") {
+		t.Errorf("expected array-shaped body-json help text, got:\n%s", got)
+	}
+	if strings.Contains(got, "JSON object string") {
+		t.Errorf("array body-json help must not describe an object, got:\n%s", got)
+	}
+}
+
 // TestBodyJSONFallback_RequiredChecks emits no required-flag check
 // because the parser cannot tell whether the request body is mandatory
 // for an opaque schema. An empty body either succeeds or surfaces a
@@ -604,6 +615,27 @@ func TestBodyJSONFallback_BodyMap(t *testing.T) {
 		if !strings.Contains(got, s) {
 			t.Errorf("body-json fallback output missing %q, got:\n%s", s, got)
 		}
+	}
+}
+
+func TestBodyJSONFallback_BodyMap_ArrayBody(t *testing.T) {
+	t.Parallel()
+	got := bodyMapForEndpointVars(spec.Endpoint{BodyJSONFallback: true, BodyIsArray: true}, "\t", "bodyMap", "body")
+	wantSubstrings := []string{
+		`if flagBodyJSON != ""`,
+		`var parsedBodyJSON any`,
+		`json.Unmarshal([]byte(flagBodyJSON), &parsedBodyJSON)`,
+		`asArray, ok := parsedBodyJSON.([]any)`,
+		`body = asArray`,
+		`--body-json must be a JSON array, got JSON %T`,
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(got, s) {
+			t.Errorf("array body-json fallback output missing %q, got:\n%s", s, got)
+		}
+	}
+	if strings.Contains(got, `asMap, ok := parsedBodyJSON.(map[string]any)`) {
+		t.Errorf("array body-json fallback must not force an object map, got:\n%s", got)
 	}
 }
 
