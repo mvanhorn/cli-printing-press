@@ -53,10 +53,10 @@ func TestBuildDomainContext_SubResourcesSurfacedAsOwnEntries(t *testing.T) {
 				"issues": {
 					Description: "Manage work items",
 					Endpoints: map[string]spec.Endpoint{
-						"list-work-items":   {Method: "GET", Path: "/projects/{pid}/issues"},
-						"create-work-item":  {Method: "POST", Path: "/projects/{pid}/issues"},
-						"update-work-item":  {Method: "PATCH", Path: "/projects/{pid}/issues/{id}"},
-						"delete-work-item":  {Method: "DELETE", Path: "/projects/{pid}/issues/{id}"},
+						"list-work-items":  {Method: "GET", Path: "/projects/{pid}/issues"},
+						"create-work-item": {Method: "POST", Path: "/projects/{pid}/issues"},
+						"update-work-item": {Method: "PATCH", Path: "/projects/{pid}/issues/{id}"},
+						"delete-work-item": {Method: "DELETE", Path: "/projects/{pid}/issues/{id}"},
 					},
 					SubResources: map[string]spec.Resource{
 						// Nested-within-nested: read-only comments.
