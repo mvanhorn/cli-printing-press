@@ -134,3 +134,44 @@ func TestBuildDomainContext_NoSubResourcesIsFlat(t *testing.T) {
 	assert.Equal(t, []string{"list"}, ctx.Resources[0].Endpoints)
 	assert.False(t, ctx.Resources[0].Writable, "GET-only resource is not writable")
 }
+
+// TestBuildDomainContext_ReadOnlyParentWritableChild verifies the inverse of the
+// nested-comments case that resourceHasMutation's "and vice versa" comment claims:
+// a GET-only PARENT carrying a mutating CHILD keeps the parent read-only while the
+// child is writable — writability never flows upward from a sub-resource. It also
+// exercises the PUT arm of the mutation switch, which the main fixture does not.
+func TestBuildDomainContext_ReadOnlyParentWritableChild(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("plane")
+	apiSpec.Resources = map[string]spec.Resource{
+		// Read-only parent: get/list only, no mutating endpoint of its own.
+		"catalog": {
+			Description: "Browse the catalog",
+			Endpoints: map[string]spec.Endpoint{
+				"list":     {Method: "GET", Path: "/catalog"},
+				"retrieve": {Method: "GET", Path: "/catalog/{id}"},
+			},
+			SubResources: map[string]spec.Resource{
+				// Mutating child, reached via a PUT (upsert-style).
+				"settings": {
+					Description: "Manage catalog settings",
+					Endpoints: map[string]spec.Endpoint{
+						"replace-settings": {Method: "PUT", Path: "/catalog/{id}/settings"},
+					},
+				},
+			},
+		},
+	}
+
+	g := &Generator{Spec: apiSpec, profile: &profiler.APIProfile{}}
+	ctx := g.buildDomainContext()
+
+	parent := summaryByName(t, ctx, "catalog")
+	assert.Equal(t, []string{"list", "retrieve"}, parent.Endpoints)
+	assert.False(t, parent.Writable, "GET-only parent must not inherit its child's writability")
+
+	child := summaryByName(t, ctx, "catalog.settings")
+	assert.Equal(t, []string{"replace-settings"}, child.Endpoints)
+	assert.True(t, child.Writable, "child with a PUT endpoint is writable")
+}
