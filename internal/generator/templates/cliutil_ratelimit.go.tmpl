@@ -190,10 +190,17 @@ func (l *AdaptiveLimiter) OnRateLimit() {
 	if l.rate < l.floor {
 		l.rate = l.floor
 	}
-	// A 429 means the inferred refill rate was too high; decay it too, otherwise
-	// the next ObserveHeaders would snap the rate straight back to the pre-429
-	// high and re-trip the limit.
-	l.budgetRate = l.budgetRate / 2
+	// Decay the inferred refill rate ONLY on the blind, header-less path. When
+	// the limiter is header-driven, ObserveHeaders has already paced down from
+	// this same 429's Remaining/Reset headers (its low-remaining brake), so
+	// halving budgetRate here as well would double-brake — and budgetRate is a
+	// high-water mark that self-corrects up to limit/window once the bucket
+	// refills, so the decay wouldn't stick anyway. (On the header-less path
+	// budgetRate is always 0, since ObserveHeaders never ran; the guard just
+	// makes the invariant explicit.)
+	if !l.headerDriven {
+		l.budgetRate = l.budgetRate / 2
+	}
 	l.successes = 0
 }
 
