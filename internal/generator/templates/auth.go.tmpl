@@ -313,6 +313,9 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		return fmt.Errorf("building token request: %w", err)
 	}
 	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Intuit's token endpoint returns HTTP 500 (not 4xx) when the Accept
+	// header is missing; other providers ignore it, so always send it.
+	tokenReq.Header.Set("Accept", "application/json")
 	// Intuit and other strict providers require client credentials in an HTTP
 	// Basic Authorization header at the token endpoint, not the form body.
 	tokenReq.SetBasicAuth(clientID, clientSecret)

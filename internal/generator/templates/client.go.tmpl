@@ -2105,6 +2105,9 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("building refresh request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Intuit's token endpoint returns HTTP 500 (not 4xx) when the Accept
+	// header is missing; other providers ignore it, so always send it.
+	req.Header.Set("Accept", "application/json")
 {{- if .Auth.UsesBasicClientAuth}}
 	// Strict providers (Intuit/QuickBooks) require client credentials in an HTTP
 	// Basic Authorization header at the refresh endpoint, not the form body.
