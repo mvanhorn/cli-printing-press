@@ -984,6 +984,7 @@ type endpointTemplateData struct {
 	HasStore      bool
 	IsAsync       bool
 	Async         AsyncJobInfo
+	PageSize      int
 	// IsReadOnly mirrors !endpointIsWriteCommand(endpoint, name). The
 	// emitted command sets Annotations["mcp:read-only"] = "true" when
 	// it's true so the cobratree MCP walker marks the tool with
@@ -3375,6 +3376,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				HasStore:      g.VisionSet.Store,
 				IsAsync:       isAsync,
 				Async:         asyncInfo,
+				PageSize:      g.paginationDefaultPageSize(),
 				IsReadOnly:    endpointIsReadCommand(endpoint, eName),
 				APISpec:       g.Spec,
 			}
@@ -3434,6 +3436,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					HasStore:      g.VisionSet.Store,
 					IsAsync:       isAsync,
 					Async:         asyncInfo,
+					PageSize:      g.paginationDefaultPageSize(),
 					IsReadOnly:    endpointIsReadCommand(endpoint, eName),
 					APISpec:       g.Spec,
 				}
@@ -4580,6 +4583,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			EffectiveTier     string
 			HasStore          bool
 			HasResponseUnwrap bool
+			PageSize          int
 			Resource          spec.Resource
 			FuncPrefix        string
 			IsReadOnly        bool
@@ -4600,6 +4604,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			// when ANY promoted command qualifies), so call ⊆ emit — no call to
 			// an unemitted helper.
 			HasResponseUnwrap: g.VisionSet.Store && !pc.Endpoint.UsesBinaryResponse() && endpointHasStatusDataEnvelope(pc.Endpoint, g.Spec.Types),
+			PageSize:          g.paginationDefaultPageSize(),
 			Resource:          resource,
 			FuncPrefix:        pc.ResourceName,
 			IsReadOnly:        endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
@@ -4613,6 +4618,13 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	}
 
 	return nil
+}
+
+func (g *Generator) paginationDefaultPageSize() int {
+	if g != nil && g.profile != nil && g.profile.Pagination.DefaultPageSize > 0 {
+		return g.profile.Pagination.DefaultPageSize
+	}
+	return 100
 }
 
 func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool, renderedWorkflowConstructors, renderedInsightConstructors []string, novelCommandStubs []novelFeatureCommandRender) error {
