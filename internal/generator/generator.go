@@ -118,6 +118,7 @@ type ResourceSummary struct {
 	Endpoints   []string `json:"endpoints"`
 	Syncable    bool     `json:"syncable,omitempty"`
 	Searchable  bool     `json:"searchable,omitempty"`
+	Writable    bool     `json:"writable,omitempty"`
 }
 
 // PlaybookEntry is a domain-specific insight for agents.
@@ -2056,6 +2057,21 @@ func safeDisplayURL(value string) string {
 	return parsed.String()
 }
 
+// resourceHasMutation reports whether the resource has any mutating endpoint
+// (POST/PUT/PATCH/DELETE) directly on itself. Each sub-resource is surfaced as
+// its own taxonomy entry and evaluated independently, so this deliberately does
+// NOT recurse into r.SubResources — a read-only parent must not inherit a
+// child's writability, and vice versa.
+func resourceHasMutation(r spec.Resource) bool {
+	for _, e := range r.Endpoints {
+		switch strings.ToUpper(e.Method) {
+		case "POST", "PUT", "PATCH", "DELETE":
+			return true
+		}
+	}
+	return false
+}
+
 // buildDomainContext constructs structured domain knowledge for MCP agents
 // from the spec and profiler output. This is front-loaded context that prevents
 // agents from wasting tokens discovering what the API is about.
@@ -2075,18 +2091,39 @@ func (g *Generator) buildDomainContext() DomainContext {
 			syncSet[sr.Name] = true
 		}
 
-		for rName, r := range g.Spec.Resources {
+		// addResourceSummaries emits one ResourceSummary for the resource named
+		// `name` (dotted path for sub-resources, e.g. "projects.issues") and
+		// then recurses into its sub-resources. syncable/searchable are looked
+		// up by the qualified name: the profiler keys those maps by bare
+		// top-level name, so a dotted name is never a key and correctly resolves
+		// to false (omit-over-guess) for sub-entries.
+		var addResourceSummaries func(name string, r spec.Resource)
+		addResourceSummaries = func(name string, r spec.Resource) {
 			rs := ResourceSummary{
-				Name:        rName,
+				Name:        name,
 				Description: naming.OneLine(r.Description),
-				Syncable:    syncSet[rName],
-				Searchable:  len(g.profile.SearchableFields[rName]) > 0,
+				Syncable:    syncSet[name],
+				Searchable:  len(g.profile.SearchableFields[name]) > 0,
+				Writable:    resourceHasMutation(r),
 			}
 			for eName := range r.Endpoints {
 				rs.Endpoints = append(rs.Endpoints, eName)
 			}
 			sort.Strings(rs.Endpoints)
 			ctx.Resources = append(ctx.Resources, rs)
+
+			subNames := make([]string, 0, len(r.SubResources))
+			for subName := range r.SubResources {
+				subNames = append(subNames, subName)
+			}
+			sort.Strings(subNames)
+			for _, subName := range subNames {
+				addResourceSummaries(name+"."+subName, r.SubResources[subName])
+			}
+		}
+
+		for rName, r := range g.Spec.Resources {
+			addResourceSummaries(rName, r)
 		}
 		sort.Slice(ctx.Resources, func(i, j int) bool {
 			return ctx.Resources[i].Name < ctx.Resources[j].Name
