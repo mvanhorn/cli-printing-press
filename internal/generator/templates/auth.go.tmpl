@@ -7,6 +7,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -153,6 +155,18 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	}
 	state := hex.EncodeToString(stateBytes)
 
+	// RFC 7636 PKCE: with no client secret this is a public client, and a
+	// bare authorization_code grant reaches the token endpoint with no
+	// client authentication at all — providers reject that. When a secret
+	// is configured, keep the plain Authorization Code flow unchanged.
+	codeVerifier := ""
+	if clientSecret == "" {
+		codeVerifier, err = generatePKCEVerifier()
+		if err != nil {
+			return err
+		}
+	}
+
 	authURL := ""
 {{- if .Auth.AuthorizationURL}}
 	authURL = cfg.AuthorizationURL
@@ -165,6 +179,10 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 		"client_id":     {clientID},
 		"response_type": {"code"},
 		"state":         {state},
+	}
+	if codeVerifier != "" {
+		params.Set("code_challenge", pkceCodeChallengeS256(codeVerifier))
+		params.Set("code_challenge_method", "S256")
 	}
 {{- if eq $refreshMech.Kind "query"}}
 	params.Set({{printf "%q" $refreshMech.Key}}, {{printf "%q" $refreshMech.Value}})
@@ -184,7 +202,7 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	// derived from the configured --port; the live flow below uses the actual
 	// bound port, which the OS assigns when --port 0 is passed.
 	if cliutil.IsVerifyEnv() {
-		params.Set("redirect_uri", fmt.Sprintf("http://localhost:%d/callback", port))
+		params.Set("redirect_uri", fmt.Sprintf("http://127.0.0.1:%d/callback", port))
 		fmt.Fprintf(w, "would launch: %s\n", authURL+"?"+params.Encode())
 		return nil
 	}
@@ -197,8 +215,10 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 
 	// Derive the redirect URI from the live listener address so an OS-assigned
 	// ephemeral port (--port 0) is reflected in both the auth request and the
-	// token exchange below.
-	redirectURI := fmt.Sprintf("http://localhost:%d/callback", listener.Addr().(*net.TCPAddr).Port)
+	// token exchange below. Use 127.0.0.1, not "localhost": RFC 8252 §7.3
+	// prescribes the loopback IP literal, and some providers reject
+	// "localhost" redirect URIs outright.
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", listener.Addr().(*net.TCPAddr).Port)
 	params.Set("redirect_uri", redirectURI)
 	fullURL := authURL + "?" + params.Encode()
 
@@ -261,9 +281,20 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	}
 	if clientSecret != "" {
 		tokenParams.Set("client_secret", clientSecret)
+	} else {
+		tokenParams.Set("code_verifier", codeVerifier)
 	}
 
-	resp, err := http.PostForm(tokenURL, tokenParams)
+	// The browser-wait timeout above does not apply here; the token exchange
+	// is a plain server-to-server POST and gets its own short network timeout,
+	// while cmd.Context() keeps it cancellable from the terminal.
+	tokenReq, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, tokenURL, strings.NewReader(tokenParams.Encode()))
+	if err != nil {
+		return fmt.Errorf("building token request: %w", err)
+	}
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokenClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := tokenClient.Do(tokenReq)
 	if err != nil {
 		return fmt.Errorf("exchanging code for token: %w", err)
 	}
@@ -444,6 +475,24 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// generatePKCEVerifier returns a fresh RFC 7636 code verifier: 32 bytes of
+// CSPRNG output, base64url-encoded without padding (43 chars, within the
+// 43-128 range the RFC requires).
+func generatePKCEVerifier() (string, error) {
+	verifierBytes := make([]byte, 32)
+	if _, err := rand.Read(verifierBytes); err != nil {
+		return "", fmt.Errorf("generating PKCE verifier: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(verifierBytes), nil
+}
+
+// pkceCodeChallengeS256 derives the S256 code challenge for a verifier:
+// base64url(SHA-256(verifier)) without padding.
+func pkceCodeChallengeS256(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func openBrowser(url string) {

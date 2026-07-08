@@ -30,7 +30,7 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 			}
 			_ = path
 			params := map[string]string{}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
@@ -42,7 +42,8 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 				}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
+				bodyMap := map[string]any{}
+				body = bodyMap
 			}
 			data, statusCode, err := c.PostQueryWithParams(cmd.Context(), path, params, body)
 			if err != nil {

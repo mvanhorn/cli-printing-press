@@ -316,7 +316,7 @@ func TestSyncDependentResourceNonJSONBodyEmitsAnomaly(t *testing.T) {
 		fixedBodyClient{body: json.RawMessage(` + "`" + `<html><body>wrong app</body></html>` + "`" + `)},
 		db,
 		dependentResourceDef{Name: "children", ParentTable: "parents", ParentIDParam: "parentId", PathTemplate: "/parents/{parentId}/children"},
-		"", false, 1, false, false, nil, &events,
+		"", false, 1, false, false, nil, &events, 1,
 	)
 	if res.Err != nil {
 		t.Fatalf("syncDependentResource error: %v", res.Err)

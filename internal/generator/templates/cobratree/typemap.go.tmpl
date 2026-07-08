@@ -147,6 +147,7 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 		}
 	})
 	var out []positionalArg
+	seenPositional := map[string]bool{}
 	for _, match := range positionalTokenPattern.FindAllStringSubmatch(cmd.Use, -1) {
 		if len(match) < 2 {
 			continue
@@ -156,8 +157,11 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 			continue
 		}
 		required := strings.HasPrefix(raw, "<")
-		name := strings.Trim(raw, "<>[]")
-		name = strings.TrimSuffix(name, "...")
+		// Strip positional decorations outright. A nested variadic like
+		// "[<slug>...]" leaves an inner ">" that end-trimming cannot reach
+		// (the "..." shields it), which would emit an invalid schema key.
+		name := strings.NewReplacer("<", "", ">", "", "[", "", "]", "").Replace(raw)
+		name = strings.TrimSuffix(strings.TrimSpace(name), "...")
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
@@ -166,6 +170,12 @@ func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []pos
 		if reservedStructuredArgs[inputName] || flagNames[inputName] {
 			inputName = "positional-" + inputName
 		}
+		// Collapse repeats of the same name (e.g. "<slug> [<slug>...]") into a
+		// single positional slot; distinct-index dedup happens downstream.
+		if seenPositional[inputName] {
+			continue
+		}
+		seenPositional[inputName] = true
 		out = append(out, positionalArg{
 			InputName: inputName,
 			Display:   raw,

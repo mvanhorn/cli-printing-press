@@ -20,7 +20,7 @@ umask 022
 
 readonly PROJECT_NAME="CLI Printing Press"
 readonly BINARY_NAME="cli-printing-press"
-readonly GO_MIN_VERSION="1.26.4"
+readonly GO_MIN_VERSION="1.26.5"
 readonly GO_INSTALL_TARGET="github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
 readonly SKILL_SOURCE="mvanhorn/cli-printing-press/skills"
 readonly SKILLS_PACKAGE="skills@latest"

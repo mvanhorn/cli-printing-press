@@ -357,6 +357,78 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 	}
 }
 
+func TestPromotedReadOnlyPOSTDoesNotEmitPartialFailureSupport(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("promoted-readonly-post")
+	apiSpec.Resources = map[string]spec.Resource{
+		"queries": {
+			Description: "Search queries",
+			Endpoints: map[string]spec.Endpoint{
+				"searchAll": {
+					Method:      "POST",
+					Path:        "/search-all",
+					Description: "Search collections by free text",
+					Body:        []spec.Param{{Name: "queryText", Type: "string"}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promoted-readonly-post-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet.Store = true
+	gen.VisionSet.MCP = true
+	require.NoError(t, gen.Generate())
+
+	promotedSrc := readPromotedCommandFile(t, outputDir)
+	require.Contains(t, promotedSrc, "c.PostQueryWithParams(")
+	require.NotContains(t, promotedSrc, "detectPartialFailure(")
+	require.NotContains(t, promotedSrc, "flags.allowPartialFailure")
+
+	helpers, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	helpersSrc := string(helpers)
+	require.NotContains(t, helpersSrc, "func partialFailureErr(")
+	require.NotContains(t, helpersSrc, "type partialFailureReport struct")
+	require.NotContains(t, helpersSrc, "func detectPartialFailure(")
+
+	root, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(root), "allow-partial-failure")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestPartialFailureEmissionFlagsRecurseIntoNestedSubresources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("nested-mutation")
+	apiSpec.Resources = map[string]spec.Resource{
+		"orgs": {
+			SubResources: map[string]spec.Resource{
+				"projects": {
+					SubResources: map[string]spec.Resource{
+						"tasks": {
+							Endpoints: map[string]spec.Endpoint{
+								"update": {
+									Method:      "PATCH",
+									Path:        "/orgs/{org_id}/projects/{project_id}/tasks/{task_id}",
+									Description: "Update a task",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	hasSupport, hasTypedErr := partialFailureEmissionFlags(apiSpec, nil, nil, false)
+	require.True(t, hasSupport, "nested mutation endpoints need partial-failure support")
+	require.True(t, hasTypedErr, "nested command_endpoint.go callers need partialFailureErr")
+}
+
 func TestPromotedCommandSubstitutesFlagPathParams(t *testing.T) {
 	t.Parallel()
 
@@ -583,9 +655,9 @@ func TestPromotedCommandPlumbsBodyFields(t *testing.T) {
 
 	// 4. The RunE builds a body map from the body* vars and passes it
 	// to c.Post — not `params`, which is what the OLD template did.
-	require.Contains(t, src, `body := map[string]any{}`,
+	require.Contains(t, src, `bodyMap := map[string]any{}`,
 		"promoted command must build a body map from body flags")
-	require.Contains(t, src, `body["name"] = bodyName`,
+	require.Contains(t, src, `bodyMap["name"] = bodyName`,
 		"body map must use the spec-declared field name, not the camelCased flag var")
 	require.Contains(t, src, `c.PostWithParams(cmd.Context(), path, params, body)`,
 		"promoted command must pass the body map to c.PostWithParams, not the params map")

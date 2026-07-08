@@ -796,6 +796,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"name":        "items",
 				"description": "Manage items",
 				"endpoints":   []string{"list"},
+				"writable":    true,
 			},
 			{
 				"name":        "quotes",
@@ -803,6 +804,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"endpoints":   []string{"create", "delete", "get", "list", "update", "update-status"},
 				"syncable":    true,
 				"searchable":  true,
+				"writable":    true,
 			},
 		},
 		"query_tips": []string{

@@ -44,7 +44,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 			if flagDryRun != false {
 				params["$dry_run"] = formatCLIParamValue(flagDryRun)
 			}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
@@ -56,9 +56,10 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
+				bodyMap := map[string]any{}
+				body = bodyMap
 				if bodyStoreCode != "" {
-					body["store_code"] = bodyStoreCode
+					bodyMap["store_code"] = bodyStoreCode
 				}
 			}
 			data, statusCode, err := c.PostWithParams(cmd.Context(), path, params, body)

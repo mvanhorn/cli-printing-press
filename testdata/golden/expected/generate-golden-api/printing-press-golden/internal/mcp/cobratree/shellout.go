@@ -259,7 +259,7 @@ func SplitShellArgs(s string) []string {
 // machine-readable channel. Stderr is included only in error text so post-run
 // telemetry or quota output cannot corrupt JSON results.
 func RunCLICommand(ctx context.Context, binPath string, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, binPath, args...)
+	cmd := exec.CommandContext(ctx, binPath, args...) // #nosec G204 -- trusted companion CLI path, args pre-tokenized.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
