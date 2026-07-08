@@ -9768,6 +9768,19 @@ x-learn:
 	assert.False(t, parsed.Learn.Enabled)
 }
 
+func TestParseLearnExtensionEnabledFalsePreservesLegacyOptOut(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Legacy Learn API", `
+x-learn:
+  enabled: false
+`, "", false)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.False(t, parsed.Learn.Enabled)
+	assert.True(t, parsed.Learn.EnabledSet)
+}
+
 func TestParseLearnExtensionAbsentLeavesZeroValue(t *testing.T) {
 	t.Parallel()
 	data := cacheExtensionSpec("No Learn API", "", "", false)

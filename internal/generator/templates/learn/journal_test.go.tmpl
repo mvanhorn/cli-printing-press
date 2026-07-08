@@ -537,3 +537,20 @@ func TestJournal_ReaderToleratesTornAndForeignLines(t *testing.T) {
 		t.Errorf("offset %d must stop before the torn tail (size %d)", off.Byte, info.Size())
 	}
 }
+
+func TestJournal_AppendAfterTornTailKeepsNewEntryReadable(t *testing.T) {
+	withJournalHome(t)
+	today := "journal-" + time.Now().UTC().Format("20060102") + ".jsonl"
+	writeRawSegment(t, today, `{"ts":"2026-01-01T00:00:00Z","cmd":["torn"]`)
+
+	if err := learn.AppendJournalEntry(learn.JournalEntry{Cmd: []string{"fresh"}, ExitCode: 0}); err != nil {
+		t.Fatalf("AppendJournalEntry: %v", err)
+	}
+	entries, _, err := learn.ReadJournalFrom(learn.JournalOffset{})
+	if err != nil {
+		t.Fatalf("ReadJournalFrom: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Cmd[0] != "fresh" {
+		t.Fatalf("entries = %+v, want appended fresh entry only", entries)
+	}
+}

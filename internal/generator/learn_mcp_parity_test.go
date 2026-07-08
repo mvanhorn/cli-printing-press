@@ -42,6 +42,7 @@ func TestGenerateLearnMCPParity_SharedProtocolSource(t *testing.T) {
 	for _, want := range []string{
 		// recall-first
 		"Recall first",
+		`recall "<question>" --agent`,
 		// empty-store short-circuit: cold CLIs must not tax every query
 		"Empty-store short-circuit",
 		"skip recall for the rest of this session",
@@ -57,6 +58,8 @@ func TestGenerateLearnMCPParity_SharedProtocolSource(t *testing.T) {
 	} {
 		require.Contains(t, protoSrc, want, "protocol content must contain %q", want)
 	}
+	require.NotContains(t, protoSrc, "recall --query",
+		"protocol must name recall's positional query shape, not a non-existent --query flag")
 	// `learnings stats` does not exist yet; the protocol must not name it.
 	require.NotContains(t, protoSrc, "learnings stats")
 
@@ -158,9 +161,29 @@ func TestGenerateLearnMCPParity_LocalWriteAnnotations(t *testing.T) {
 
 	// learnings reject tombstones and can delete materialized rows: same.
 	candSrc := readEmitted(t, outputDir, "internal", "cli", "learnings_candidates.go")
+	confirmBlock := commandBlock(t, candSrc, `Use:   "confirm <id>"`)
+	require.Regexp(t, `"mcp:local-write":\s+"true"`, confirmBlock,
+		"learnings confirm must carry the local-write annotation")
 	rejectBlock := commandBlock(t, candSrc, `Use:   "reject <id>"`)
 	require.NotContains(t, rejectBlock, "mcp:local-write",
 		"learnings reject must not carry local-write hints")
+}
+
+func TestGenerateLearnMCPParity_StatsReadOnlyDoesNotPrune(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("parity-stats")
+	apiSpec.Learn.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), "parity-stats-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	statsSrc := readEmitted(t, outputDir, "internal", "cli", "learnings_stats.go")
+	statsBlock := commandBlock(t, statsSrc, `Use:   "stats"`)
+	require.Contains(t, statsBlock, `"mcp:read-only": "true"`)
+	require.NotContains(t, statsBlock, "PruneLearnEvents",
+		"read-only MCP stats must not mutate the local events table")
 }
 
 // TestGenerateTeachPlaybookInlineJSON verifies the R16 inline playbook

@@ -137,10 +137,7 @@ func TestLearningsStats_ReportsFourHeadlineMetrics(t *testing.T) {
 	}
 }
 
-// TestLearningsStats_PrunesOpportunistically pins the retention hook:
-// stats runs the prune (default cap; here verified via the age half by
-// backdating rows beyond 90 days) and still reports.
-func TestLearningsStats_PrunesOpportunistically(t *testing.T) {
+func TestLearningsStats_ReadOnlyDoesNotPrune(t *testing.T) {
 	home := withTempLearnHome(t)
 	dbPath := filepath.Join(home, "data.db")
 
@@ -153,8 +150,6 @@ func TestLearningsStats_PrunesOpportunistically(t *testing.T) {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 	}
-	// Backdate one row beyond the 90-day default so the stats-time
-	// prune has something to drop.
 	if _, err := s.DB().Exec(
 		`UPDATE learn_events SET ts = '2000-01-01T00:00:00Z' WHERE id = 1`,
 	); err != nil {
@@ -163,11 +158,11 @@ func TestLearningsStats_PrunesOpportunistically(t *testing.T) {
 	s.Close()
 
 	env := runLearningsStatsJSON(t, dbPath)
-	if env.EventsPruned != 1 {
-		t.Errorf("events_pruned = %d, want 1", env.EventsPruned)
+	if env.EventsPruned != 0 {
+		t.Errorf("events_pruned = %d, want 0", env.EventsPruned)
 	}
-	if env.RecallMisses != 2 {
-		t.Errorf("recall_misses after prune = %d, want 2", env.RecallMisses)
+	if env.RecallMisses != 3 {
+		t.Errorf("recall_misses = %d, want 3", env.RecallMisses)
 	}
 	if env.RecallHitRate == nil || *env.RecallHitRate != 0 {
 		t.Errorf("recall_hit_rate = %v, want 0 (misses only)", env.RecallHitRate)

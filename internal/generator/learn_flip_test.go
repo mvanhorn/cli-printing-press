@@ -44,6 +44,24 @@ func TestGenerateLearnDisabledOptsOut(t *testing.T) {
 	require.NotContains(t, string(rootGo), "newTeachCmd", "opt-out must not register learn commands")
 }
 
+// TestGenerateLearnEnabledFalseOptsOut preserves the pre-default-on meaning
+// of specs that already said learn.enabled: false.
+func TestGenerateLearnEnabledFalseOptsOut(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("learn-flip-enabled-false")
+	apiSpec.Learn.EnabledSet = true
+	outputDir := filepath.Join(t.TempDir(), "learn-flip-enabled-false-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	require.False(t, apiSpec.Learn.Enabled)
+	require.NoDirExists(t, filepath.Join(outputDir, "internal", "learn"))
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(rootGo), "newTeachCmd")
+}
+
 // TestGenerateMCPSurfaceNeverAppliesLearnDefault pins the mcp-sync back-door
 // shut: regenerating only the MCP surface (what mcp-sync does to published
 // CLIs) must leave a learn-less spec learn-less and emit no learn-gated

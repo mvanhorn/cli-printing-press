@@ -1783,10 +1783,36 @@ type ShareConfig struct {
 type LearnConfig struct {
 	Enabled           bool                    `yaml:"enabled,omitempty" json:"enabled,omitempty"`                         // master switch; when false, the loop's commands and pre-seeding hook are not emitted
 	Disabled          bool                    `yaml:"disabled,omitempty" json:"disabled,omitempty"`                       // generation-time opt-out. A plain Enabled bool cannot distinguish "explicitly off" from "absent" once the generator defaults the loop on, so this is the authoritative off switch. Contradicts an explicit enabled: true and is rejected at parse time.
+	EnabledSet        bool                    `yaml:"-" json:"-"`                                                         // internal presence bit: legacy specs with learn.enabled: false remain opted out when the default-on pass runs.
 	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty"`         // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile.
 	Stopwords         []string                `yaml:"stopwords,omitempty" json:"stopwords,omitempty"`                     // domain-specific stopwords stripped from queries before recall match; merged with a built-in default set. Whitespace-only entries are dropped at parse time.
 	Synonyms          map[string]string       `yaml:"synonyms,omitempty" json:"synonyms,omitempty"`                       // per-CLI variant -> canonical query-phrasing folds (e.g., "last night" -> "yesterday") applied symmetrically at write and read so same-referent phrasings share one query family. Keys and values must be lowercase; chains are rejected so folding is a single hop.
 	EntityLookupSeeds map[string][]LookupSeed `yaml:"entity_lookup_seeds,omitempty" json:"entity_lookup_seeds,omitempty"` // canonical-name + aliases table keyed by seed kind (e.g., "country"). Used by the recall path to substitute one entity for another and generalize learned templates.
+}
+
+func (c *LearnConfig) UnmarshalYAML(value *yaml.Node) error {
+	type learnConfigAlias LearnConfig
+	var out learnConfigAlias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*c = LearnConfig(out)
+	c.EnabledSet = yamlMappingHasKey(value, "enabled")
+	return nil
+}
+
+func (c *LearnConfig) UnmarshalJSON(data []byte) error {
+	type learnConfigAlias LearnConfig
+	var out learnConfigAlias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*c = LearnConfig(out)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		_, c.EnabledSet = raw["enabled"]
+	}
+	return nil
 }
 
 // LookupSeed is one canonical entity plus optional aliases inside a
@@ -5091,12 +5117,12 @@ func (s *APISpec) ApplyLargeMCPSurfaceDefault() LargeMCPSurfaceDefaultResult {
 }
 
 // ApplyLearnLoopDefault applies the learn-loop default in place: a spec that
-// neither opts out (learn.disabled: true) nor already opts in gets
+// neither opts out nor already opts in gets
 // learn.enabled=true, with one info line to w naming the opt-out. Explicit
-// states short-circuit silently: disabled is the authoritative off switch,
-// and an already-enabled spec keeps its config untouched.
+// states short-circuit silently: learn.disabled and legacy learn.enabled=false
+// are off switches, and an already-enabled spec keeps its config untouched.
 func (s *APISpec) ApplyLearnLoopDefault(w io.Writer) {
-	if s == nil || s.Learn.Disabled || s.Learn.Enabled {
+	if s == nil || s.Learn.Disabled || s.Learn.Enabled || s.Learn.EnabledSet {
 		return
 	}
 	s.Learn.Enabled = true

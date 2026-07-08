@@ -33,6 +33,8 @@ func TestGenerateLearnCandidates_EmitsStoreLifecycle(t *testing.T) {
 		"func (s *Store) ListCandidates(",
 		"func (s *Store) GetCandidate(",
 		"func (s *Store) ConfirmCandidate(",
+		"func (s *Store) ConfirmCandidateWithPlaybook(",
+		"func (s *Store) ConfirmCandidateWithPlaybookNote(",
 		"func (s *Store) RejectCandidate(",
 		"func (s *Store) ExpireCandidates(",
 		"func (s *Store) PurgeCandidates(",
@@ -88,11 +90,15 @@ func TestGenerateLearnCandidates_EmitsControlSurface(t *testing.T) {
 	// `learnings candidates` is read-only; purge is operator-only.
 	require.Contains(t, src, `"mcp:read-only": "true"`)
 	require.Contains(t, src, `"mcp:hidden": "true"`)
-	// confirm/reject stay unannotated for MCP in this unit (the
-	// local-write tier is a later unit): the only annotation on them
-	// is the typed-exit-codes declaration.
 	confirmIdx := strings.Index(src, `Use:   "confirm <id>"`)
 	require.Greater(t, confirmIdx, 0)
+	confirmBlock := src[confirmIdx:min(confirmIdx+1200, len(src))]
+	require.Contains(t, confirmBlock, `"mcp:local-write": "true"`,
+		"confirm must carry local-write MCP hints")
+	require.Contains(t, src, "confirmAndMaterializeCandidate(",
+		"confirm must materialize and mark the candidate confirmed in one store transaction")
+	require.NotContains(t, src, "materializeCandidate(",
+		"confirm must not regress to separate materialize + confirm writes")
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "learnings_candidates_test.go"))
 	require.NoError(t, err, "emitted cli must include learnings_candidates_test.go")

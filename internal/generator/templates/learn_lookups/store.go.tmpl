@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"{{modulePath}}/internal/cliutil"
 )
 
 // LookupRow is the canonical seed-row shape used by both the seeds
@@ -277,6 +279,9 @@ const createRecallMissesSQL = `CREATE TABLE IF NOT EXISTS ` + recallMissesTable 
 // and ignores the error. Local-only — a single SQLite handle, never
 // the network.
 func RecordMisses(ctx context.Context, db *sql.DB, entities []string) error {
+	if cliutil.IsVerifyEnv() || cliutil.IsDogfoodEnv() {
+		return nil
+	}
 	if db == nil {
 		return errors.New("lookups.RecordMisses: db is nil")
 	}

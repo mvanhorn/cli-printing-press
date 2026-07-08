@@ -60,8 +60,10 @@ func TestGenerateLookupStoreEmitsSyncedPriorityTier(t *testing.T) {
 	// package so the sync command and the recall path share one owner
 	// for the learn_recall_misses table.
 	for _, want := range []string{
+		"/internal/cliutil",
 		"func RefreshFromSynced(",
 		"func RecordMisses(",
+		"cliutil.IsVerifyEnv() || cliutil.IsDogfoodEnv()",
 		"learn_recall_misses",
 		"DefaultSyncedPerKindCap",
 		`SourceSynced   = "synced"`,
@@ -112,6 +114,7 @@ func TestGenerateSyncWiresPostSyncLookupRefresh(t *testing.T) {
 		"refreshLookupsFromSyncedStore(",
 		"lookups.RefreshFromSynced(",
 		"learn.ResourceEntitiesFromJSON(",
+		"!cliutil.IsDogfoodEnv()",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("cli/sync.go missing %q", want)

@@ -3304,6 +3304,32 @@ learn: {}
 		assert.Empty(t, s.Learn.EntityLookupSeeds)
 	})
 
+	t.Run("enabled false records explicit legacy opt-out", func(t *testing.T) {
+		input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+learn:
+  enabled: false
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+	})
+
 	t.Run("absent block: omitting learn yields zero-value LearnConfig", func(t *testing.T) {
 		input := `
 name: demo
@@ -3472,14 +3498,11 @@ resources:
 		assert.Contains(t, err.Error(), "learn.enabled")
 	})
 
-	// The generator default treats `enabled: false` as unset: a plain Go bool
-	// cannot distinguish "explicitly off" from "absent", so the documented
-	// opt-out is `disabled: true`. Pin that `enabled: false` still parses
-	// cleanly and stays false so the no-op is intentional, not accidental.
-	t.Run("enabled false alone parses cleanly and Enabled stays false", func(t *testing.T) {
+	t.Run("enabled false alone parses cleanly as a legacy opt-out", func(t *testing.T) {
 		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: false\n"))
 		require.NoError(t, err)
 		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
 		assert.False(t, s.Learn.Disabled)
 	})
 
@@ -3571,6 +3594,16 @@ func TestApplyLearnLoopDefault(t *testing.T) {
 		s.ApplyLearnLoopDefault(&buf)
 		assert.False(t, s.Learn.Enabled)
 		assert.True(t, s.Learn.Disabled)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("explicit enabled false short-circuits with no change and no output", func(t *testing.T) {
+		s := base()
+		s.Learn.EnabledSet = true
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
 		assert.Empty(t, buf.String())
 	})
 

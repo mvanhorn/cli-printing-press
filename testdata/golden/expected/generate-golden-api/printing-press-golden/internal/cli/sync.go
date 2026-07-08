@@ -345,7 +345,7 @@ Resource scoping:
 			// The PersistentPreRunE learn hook skips `sync` via
 			// shouldSkipLearnHook, so this explicit post-sync call is the
 			// one wiring point for the staleness-heal loop.
-			if successCount > 0 && !c.DryRun && !noLearnActive(flags) && !cliutil.IsVerifyEnv() {
+			if successCount > 0 && !c.DryRun && !noLearnActive(flags) && !cliutil.IsVerifyEnv() && !cliutil.IsDogfoodEnv() {
 				refreshLookupsFromSyncedStore(cmd.Context(), db.DB(), syncEventWriter)
 			}
 

@@ -245,7 +245,7 @@ func TestRejectCandidate_TombstonesSignature(t *testing.T) {
 	}
 }
 
-func TestRejectCandidate_ConfirmedPlaybookRollbackDeletesMaterializedRow(t *testing.T) {
+func TestRejectCandidate_ConfirmedPlaybookKeepsMaterializedRow(t *testing.T) {
 	t.Parallel()
 	s := openTestCandidatesStore(t)
 
@@ -276,8 +276,8 @@ func TestRejectCandidate_ConfirmedPlaybookRollbackDeletesMaterializedRow(t *test
 	if rejected.Status != CandidateStatusRejected {
 		t.Errorf("want rejected, got %q", rejected.Status)
 	}
-	if _, ok, err := s.GetPlaybookByFamily("fam-roll"); err != nil || ok {
-		t.Errorf("rollback must delete the materialized playbook row: ok=%v err=%v", ok, err)
+	if _, ok, err := s.GetPlaybookByFamily("fam-roll"); err != nil || !ok {
+		t.Errorf("reject must leave the playbook row intact: ok=%v err=%v", ok, err)
 	}
 }
 

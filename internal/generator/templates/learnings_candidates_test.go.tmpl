@@ -103,18 +103,15 @@ func TestLearningsConfirm_PlaybookCandidateMaterializesAtConfidence2(t *testing.
 	if err != nil {
 		t.Fatalf("learnings confirm: %v (stderr=%q)", err, stderr)
 	}
-	// The full payload prints before the confirmation record: the
-	// agent must see what it blesses.
-	payloadIdx := strings.Index(stdout, "start narrow")
-	confirmIdx := strings.Index(stdout, `"confirmed"`)
-	if payloadIdx < 0 {
-		t.Fatalf("confirm must print the full payload; stdout=%q", stdout)
+	var confirmOut struct {
+		Confirmed bool            `json:"confirmed"`
+		Payload   json.RawMessage `json:"payload"`
 	}
-	if confirmIdx < 0 {
-		t.Fatalf("confirm must emit a confirmation record; stdout=%q", stdout)
+	if err := json.Unmarshal([]byte(stdout), &confirmOut); err != nil {
+		t.Fatalf("confirm must emit machine-readable JSON on captured stdout: %v (stdout=%q)", err, stdout)
 	}
-	if payloadIdx > confirmIdx {
-		t.Errorf("payload must print before the confirmation record; stdout=%q", stdout)
+	if !confirmOut.Confirmed || !strings.Contains(string(confirmOut.Payload), "start narrow") {
+		t.Fatalf("confirm output must include confirmation and payload: %+v stdout=%q", confirmOut, stdout)
 	}
 
 	s, err := store.OpenWithContext(context.Background(), dbPath)
@@ -141,7 +138,31 @@ func TestLearningsConfirm_PlaybookCandidateMaterializesAtConfidence2(t *testing.
 	}
 }
 
-func TestLearningsReject_ConfirmedPlaybookCandidateDeletesMaterializedRow(t *testing.T) {
+func TestLearningsConfirm_JSONOutputIsSingleObject(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+
+	id := seedCandidate(t, dbPath, store.CandidateClassPlaybookCandidate,
+		`{"notes_text":"machine readable"}`,
+		"sig-conf-json", "fam-conf-json", "")
+
+	stdout, stderr, err := runRootArgs(t, "learnings", "confirm", itoa64(id), "--db", dbPath, "--json")
+	if err != nil {
+		t.Fatalf("learnings confirm --json: %v (stderr=%q)", err, stderr)
+	}
+	var out struct {
+		Confirmed bool            `json:"confirmed"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("confirm --json must be one JSON object: %v (stdout=%q)", err, stdout)
+	}
+	if !out.Confirmed || !strings.Contains(string(out.Payload), "machine readable") {
+		t.Fatalf("confirm --json payload missing confirmation or payload: %+v stdout=%q", out, stdout)
+	}
+}
+
+func TestLearningsReject_ConfirmedPlaybookCandidateKeepsMaterializedRow(t *testing.T) {
 	home := withTempLearnHome(t)
 	dbPath := filepath.Join(home, "data.db")
 
@@ -161,8 +182,8 @@ func TestLearningsReject_ConfirmedPlaybookCandidateDeletesMaterializedRow(t *tes
 		t.Fatalf("reopen store: %v", err)
 	}
 	defer s.Close()
-	if _, ok, err := s.GetPlaybookByFamily("fam-rollback"); err != nil || ok {
-		t.Errorf("rollback must delete the materialized playbook row: ok=%v err=%v", ok, err)
+	if _, ok, err := s.GetPlaybookByFamily("fam-rollback"); err != nil || !ok {
+		t.Errorf("reject must leave the playbook row intact: ok=%v err=%v", ok, err)
 	}
 	row, ok, err := s.GetCandidate(id)
 	if err != nil || !ok {
