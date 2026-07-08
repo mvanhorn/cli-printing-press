@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -48,7 +49,7 @@ but do not stop the import.`,
 			if inputFile == "-" || inputFile == "" {
 				reader = os.Stdin
 			} else {
-				f, err := os.Open(inputFile)
+				f, err := os.Open(filepath.Clean(inputFile)) // #nosec G304 -- user-specified input file is this flag's documented purpose.
 				if err != nil {
 					return fmt.Errorf("opening input file: %w", err)
 				}
