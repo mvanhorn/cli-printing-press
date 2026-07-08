@@ -249,6 +249,23 @@ class SetupGoVersionSignalTest(unittest.TestCase):
         self.assertTrue(findings[0].is_block())
         self.assertEqual(findings[0].signal_id, "setup_go_hardcoded_version")
 
+    def test_unquoted_two_segment_setup_go_version_blocks(self) -> None:
+        head = textwrap.dedent(
+            """
+            jobs:
+              x:
+                steps:
+                  - uses: actions/setup-go@v6
+                    with:
+                      go-version: 1.22
+            """
+        )
+        findings = signals.signal_setup_go_uses_go_version_file(
+            _fc(".github/workflows/build.yml", head=head)
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].is_block())
+
     def test_go_version_file_does_not_block(self) -> None:
         head = textwrap.dedent(
             """

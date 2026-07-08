@@ -258,8 +258,8 @@ def _walk_setup_go_version_literals(parsed: Any) -> list[str]:
             if not isinstance(with_block, dict):
                 continue
             version = with_block.get("go-version")
-            if isinstance(version, str):
-                found.append(version.strip())
+            if version is not None:
+                found.append(str(version).strip())
     return found
 
 
