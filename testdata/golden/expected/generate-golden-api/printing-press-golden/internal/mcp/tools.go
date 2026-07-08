@@ -911,6 +911,19 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"endpoints":   []string{"create", "get", "list"},
 				"syncable":    true,
 				"searchable":  true,
+				"writable":    true,
+			},
+			{
+				"name":        "projects.avatar",
+				"description": "Manage avatar",
+				"endpoints":   []string{"upload-project"},
+				"writable":    true,
+			},
+			{
+				"name":        "projects.tasks",
+				"description": "Manage tasks",
+				"endpoints":   []string{"list-project", "update-project"},
+				"writable":    true,
 			},
 			{
 				"name":        "public",
@@ -921,6 +934,16 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"name":        "reports",
 				"description": "Manage reports",
 				"endpoints":   []string{},
+			},
+			{
+				"name":        "reports.export",
+				"description": "Manage export",
+				"endpoints":   []string{"report-year"},
+			},
+			{
+				"name":        "reports.summary",
+				"description": "Manage summary",
+				"endpoints":   []string{"get-report-year"},
 			},
 		},
 		"query_tips": []string{

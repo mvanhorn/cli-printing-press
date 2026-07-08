@@ -28,7 +28,7 @@ You need both the **binary** and the **Printing Press skills**. The skills (`/pr
 
 The binary alone works (research, generation, verification, scoring) but skips the curated agent loop. The skills alone have nothing to call. Install both.
 
-**Prerequisites:** [Go 1.26.4 or newer](https://go.dev/dl/), [Claude Code](https://claude.ai/code) or another `skills`-supported agent, and Node/npm for `npx`. The skills are tested with Claude Code; install for Codex with `--agent codex` when you want to try the same slash-command workflow there. **Use Claude Code for the best-tested experience.**
+**Prerequisites:** [Go 1.26.5 or newer](https://go.dev/dl/), [Claude Code](https://claude.ai/code) or another `skills`-supported agent, and Node/npm for `npx`. The skills are tested with Claude Code; install for Codex with `--agent codex` when you want to try the same slash-command workflow there. **Use Claude Code for the best-tested experience.**
 
 ### 1. Install
 
@@ -54,7 +54,7 @@ npx -y skills@latest list -g -a codex --json
 
 See [docs/CODEX.md](docs/CODEX.md) for the Codex-specific notes.
 
-Verify with `cli-printing-press --version`. If install fails, confirm Go 1.26.4 or newer is installed, Node/npm is installed for `npx`, and `$GOPATH/bin` is on your `PATH`.
+Verify with `cli-printing-press --version`. If install fails, confirm Go 1.26.5 or newer is installed, Node/npm is installed for `npx`, and `$GOPATH/bin` is on your `PATH`.
 
 Older releases installed a generator binary named `printing-press`. That legacy
 entrypoint still works for compatibility, but the canonical generator command is
@@ -529,7 +529,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 ## Limitations
 
 - **Technical capability is not legal permission.** Before generating a CLI for any service, review its Terms of Service. Many services explicitly prohibit automated access. Using this tool against such services may violate their terms or applicable law. You are responsible for ensuring your use is authorized.
-- **Requires Go 1.26.4 or newer and an agent that can load open-agent-skills.** Claude Code is the tested path; Codex installation is documented but may lag Claude Code behavior. No standalone distribution today; the slash command is the supported entry point for Claude Code.
+- **Requires Go 1.26.5 or newer and an agent that can load open-agent-skills.** Claude Code is the tested path; Codex installation is documented but may lag Claude Code behavior. No standalone distribution today; the slash command is the supported entry point for Claude Code.
 - **Generated CLIs are domain-shaped, not vendor-replacements.** A `<api>-pp-cli` covers the agent power-user surface, not every back-office knob a vendor's official CLI ships.
 - **Browser-sniff requires manual capture.** You point a browser at the site (or import a HAR); the press doesn't crawl autonomously.
 - **Live verify is read-only.** Phase 5 runs GET only and never mutates. Real write-path coverage lives in unit tests and the dogfood structural checks.

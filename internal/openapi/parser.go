@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -59,6 +60,7 @@ const (
 	extensionRoles                 = "x-roles"
 	extensionRequiresRole          = "x-requires-role"
 	extensionRateClass             = "x-rate-class"
+	extensionDefaultRateLimit      = "x-pp-default-rate-limit"
 	extensionMCP                   = "x-mcp"
 	extensionLegacyMCP             = "mcp"
 	extensionDataSourceStrategy    = "x-data-source-strategy"
@@ -628,6 +630,10 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	defaultRateLimit, err := parseDefaultRateLimitOpenAPIExtension(doc, extensionDefaultRateLimit)
+	if err != nil {
+		return nil, err
+	}
 	roles, err := parseStringListOpenAPIExtension(doc, extensionRoles)
 	if err != nil {
 		return nil, err
@@ -670,6 +676,7 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		WebsiteURL:                   websiteURL,
 		ProxyRoutes:                  proxyRoutes,
 		RateClass:                    rateClass,
+		DefaultRateLimit:             defaultRateLimit,
 		Auth:                         auth,
 		Roles:                        roles,
 		TierRouting:                  tierRouting,
@@ -913,6 +920,66 @@ func parseStringOpenAPIExtension(doc *openapi3.T, key string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// parseDefaultRateLimitOpenAPIExtension reads x-pp-default-rate-limit from the
+// root or info object. The value may be the string "auto" (case-insensitive) or
+// a non-negative number (JSON number or numeric string); it returns the
+// canonical string form ("auto" or e.g. "2"). Absent → "".
+func parseDefaultRateLimitOpenAPIExtension(doc *openapi3.T, key string) (string, error) {
+	var raw any
+	var ok bool
+	if doc != nil && doc.Extensions != nil {
+		raw, ok = doc.Extensions[key]
+	}
+	if !ok {
+		if doc != nil && doc.Info != nil && doc.Info.Extensions != nil {
+			raw, ok = doc.Info.Extensions[key]
+		}
+	}
+	if !ok {
+		return "", nil
+	}
+	invalid := fmt.Errorf("%s must be \"auto\" or a non-negative number", key)
+	switch v := raw.(type) {
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return "", nil
+		}
+		if strings.EqualFold(s, "auto") {
+			return "auto", nil
+		}
+		if f, err := parseNonNegativeFloat(s); err == nil {
+			return f, nil
+		}
+		return "", invalid
+	case json.Number:
+		if f, err := parseNonNegativeFloat(v.String()); err == nil {
+			return f, nil
+		}
+		return "", invalid
+	case float64:
+		if v < 0 {
+			return "", invalid
+		}
+		return strconv.FormatFloat(v, 'g', -1, 64), nil
+	default:
+		return "", invalid
+	}
+}
+
+// parseNonNegativeFloat validates a numeric string is a non-negative number and
+// returns it in canonical (no trailing-zero) form.
+func parseNonNegativeFloat(s string) (string, error) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return "", err
+	}
+	if f < 0 {
+		return "", fmt.Errorf("negative")
+	}
+	return strconv.FormatFloat(f, 'g', -1, 64), nil
 }
 
 func parseStringListOpenAPIExtension(doc *openapi3.T, key string) ([]string, error) {
@@ -3326,6 +3393,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 		// disagree on the same identity.
 		pathResourceIDOverride := readPathItemResourceID(pathItem, path)
 		pathTenantScopeColumn := readPathItemTenantScopeColumn(pathItem, path)
+		pathMembershipField := readPathItemMembershipField(pathItem, path)
 		pathCritical := readPathItemCritical(pathItem, path)
 		pathSyncable, _ := boolExtension(pathItem.Extensions, extensionPPSyncable)
 		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
@@ -3497,6 +3565,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				endpoint.Pagination = detectPostQueryIDWalkPagination(endpoint.Body, op, endpoint.IDField)
 			}
 			endpoint.TenantScopeColumn = pathTenantScopeColumn
+			endpoint.MembershipField = pathMembershipField
 			endpoint.Critical = pathCritical
 			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
 			endpoint.Syncable = pathSyncable || opSyncable
@@ -5356,6 +5425,26 @@ func readPathItemTenantScopeColumn(pathItem *openapi3.PathItem, path string) str
 		return strings.TrimSpace(v)
 	default:
 		warnf("path %q: x-pp-tenant-scope-column must be a string, got %T; ignoring", path, raw)
+		return ""
+	}
+}
+
+// readPathItemMembershipField reads `x-pp-membership-field` from a path item.
+// String-only; other shapes warn and return "". Mirrors
+// readPathItemTenantScopeColumn.
+func readPathItemMembershipField(pathItem *openapi3.PathItem, path string) string {
+	if pathItem == nil || pathItem.Extensions == nil {
+		return ""
+	}
+	raw, ok := pathItem.Extensions["x-pp-membership-field"]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		warnf("path %q: x-pp-membership-field must be a string, got %T; ignoring", path, raw)
 		return ""
 	}
 }

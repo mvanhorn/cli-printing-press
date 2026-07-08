@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -283,39 +284,48 @@ type APISpec struct {
 	// (so older skills/library tooling that still read them keep working
 	// during the transition window). Derived from Creator at write time; a
 	// future major release removes them. See AGENTS.md "Attribution".
-	Owner           string              `yaml:"owner,omitempty" json:"owner,omitempty"`                   // legacy: slug, derived from Creator.Handle
-	OwnerName       string              `yaml:"owner_name,omitempty" json:"owner_name,omitempty"`         // legacy: display, derived from Creator.Name
-	Printer         string              `yaml:"printer,omitempty" json:"printer,omitempty"`               // legacy: @handle, derived from Creator.Handle
-	PrinterName     string              `yaml:"printer_name,omitempty" json:"printer_name,omitempty"`     // legacy: display, derived from Creator.Name
-	Kind            string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
-	Source          string              `yaml:"source,omitempty" json:"source,omitempty"`                 // source archetype; local-sqlite declares an operator-local SQLite source with no HTTP base URL
-	SpecSource      string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
-	ClientPattern   string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
-	HTTPTransport   string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
-	RateClass       string              `yaml:"rate_class,omitempty" json:"rate_class,omitempty"`         // per-second, daily, monthly, or unlimited — affects generated sync concurrency defaults
-	HealthCheckPath string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
-	ProxyRoutes     map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
-	BearerRefresh   BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
-	WebsiteURL      string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
-	Category        string              `yaml:"category,omitempty" json:"category,omitempty"`            // public-library category (e.g., productivity, developer-tools) — used for library install path
-	Regions         []string            `yaml:"regions,omitempty" json:"regions,omitempty"`              // geographic availability/scope tokens (ISO 3166-1 alpha-2 like NL, EU, or * for global)
-	APILanguage     string              `yaml:"api_language,omitempty" json:"api_language,omitempty"`    // BCP 47 language tag for the API's native/domain language
-	Auth            AuthConfig          `yaml:"auth" json:"auth"`
-	AuthWarnings    []string            `yaml:"auth_warnings,omitempty" json:"auth_warnings,omitempty"`
-	Roles           []string            `yaml:"roles,omitempty" json:"roles,omitempty"` // per-spec authenticated persona labels that endpoints may require (e.g. parent, teacher, admin)
-	TierRouting     TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
-	RequiredHeaders []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
-	Config          ConfigSpec          `yaml:"config" json:"config"`
-	Resources       map[string]Resource `yaml:"resources" json:"resources"`
-	Types           map[string]TypeDef  `yaml:"types" json:"types"`
-	ExtraCommands   []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
-	Cache           CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
-	Share           ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
-	Learn           LearnConfig         `yaml:"learn,omitempty" json:"learn,omitzero"`                    // self-learning loop config: ticker patterns, stopwords, and entity-lookup seeds the generated CLI uses to cache teaches and generalize through entity substitution. Absent or disabled is a benign no-op.
-	MCP             MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, small APIs (typed-endpoint count <= DefaultRemoteTransportEndpointThreshold) get stdio+http compiled in by APISpec.EffectiveMCPTransports so the same binary can serve cloud-hosted agents. Larger APIs without an explicit orchestration mode default to the Cloudflare MCP pattern during generation. Opting into http explicitly adds a --transport/--addr flag surface regardless of size.
-	Throttling      ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
-	Streaming       StreamingConfig     `yaml:"streaming,omitempty" json:"streaming"`                     // streaming-primary ingest config; when Transport is websocket, emits a live ws sync scaffold plus REST metadata refresh and rebase-log support.
-	QuerySync       *QuerySyncConfig    `yaml:"query_sync,omitempty" json:"query_sync,omitempty"`         // SQL-query-endpoint sync hint (QuickBooks Online / Salesforce SOQL): one shared query endpoint read with an injected SELECT, an entity-named result envelope, and in-query offset paging. When set, the sync generator emits the query injection + envelope unwrap + offset-paging loop by construction.
+	Owner         string `yaml:"owner,omitempty" json:"owner,omitempty"`                   // legacy: slug, derived from Creator.Handle
+	OwnerName     string `yaml:"owner_name,omitempty" json:"owner_name,omitempty"`         // legacy: display, derived from Creator.Name
+	Printer       string `yaml:"printer,omitempty" json:"printer,omitempty"`               // legacy: @handle, derived from Creator.Handle
+	PrinterName   string `yaml:"printer_name,omitempty" json:"printer_name,omitempty"`     // legacy: display, derived from Creator.Name
+	Kind          string `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
+	Source        string `yaml:"source,omitempty" json:"source,omitempty"`                 // source archetype; local-sqlite declares an operator-local SQLite source with no HTTP base URL
+	SpecSource    string `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
+	ClientPattern string `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
+	HTTPTransport string `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
+	RateClass     string `yaml:"rate_class,omitempty" json:"rate_class,omitempty"`         // per-second, daily, monthly, or unlimited — affects generated sync concurrency defaults
+	// DefaultRateLimit sets the built-in default for the generated CLI's
+	// --rate-limit flag. "auto" selects the header-driven adaptive limiter
+	// (client.RateLimitAuto) so the CLI paces itself to the server's
+	// X-Ratelimit-* headers with no hardcoded ceiling; a numeric string
+	// (e.g. "2") pins a fixed requests-per-second ceiling. Empty keeps the
+	// legacy provenance default (2 for sniffed specs, else 0 = disabled).
+	// Populated from the yaml field or the OpenAPI x-pp-default-rate-limit
+	// extension.
+	DefaultRateLimit string              `yaml:"default_rate_limit,omitempty" json:"default_rate_limit,omitempty"`
+	HealthCheckPath  string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
+	ProxyRoutes      map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
+	BearerRefresh    BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
+	WebsiteURL       string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
+	Category         string              `yaml:"category,omitempty" json:"category,omitempty"`            // public-library category (e.g., productivity, developer-tools) — used for library install path
+	Regions          []string            `yaml:"regions,omitempty" json:"regions,omitempty"`              // geographic availability/scope tokens (ISO 3166-1 alpha-2 like NL, EU, or * for global)
+	APILanguage      string              `yaml:"api_language,omitempty" json:"api_language,omitempty"`    // BCP 47 language tag for the API's native/domain language
+	Auth             AuthConfig          `yaml:"auth" json:"auth"`
+	AuthWarnings     []string            `yaml:"auth_warnings,omitempty" json:"auth_warnings,omitempty"`
+	Roles            []string            `yaml:"roles,omitempty" json:"roles,omitempty"` // per-spec authenticated persona labels that endpoints may require (e.g. parent, teacher, admin)
+	TierRouting      TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
+	RequiredHeaders  []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
+	Config           ConfigSpec          `yaml:"config" json:"config"`
+	Resources        map[string]Resource `yaml:"resources" json:"resources"`
+	Types            map[string]TypeDef  `yaml:"types" json:"types"`
+	ExtraCommands    []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
+	Cache            CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
+	Share            ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
+	Learn            LearnConfig         `yaml:"learn,omitempty" json:"learn,omitzero"`                    // self-learning loop config: ticker patterns, stopwords, and entity-lookup seeds the generated CLI uses to cache teaches and generalize through entity substitution. Absent or disabled is a benign no-op.
+	MCP              MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, small APIs (typed-endpoint count <= DefaultRemoteTransportEndpointThreshold) get stdio+http compiled in by APISpec.EffectiveMCPTransports so the same binary can serve cloud-hosted agents. Larger APIs without an explicit orchestration mode default to the Cloudflare MCP pattern during generation. Opting into http explicitly adds a --transport/--addr flag surface regardless of size.
+	Throttling       ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
+	Streaming        StreamingConfig     `yaml:"streaming,omitempty" json:"streaming"`                     // streaming-primary ingest config; when Transport is websocket, emits a live ws sync scaffold plus REST metadata refresh and rebase-log support.
+	QuerySync        *QuerySyncConfig    `yaml:"query_sync,omitempty" json:"query_sync,omitempty"`         // SQL-query-endpoint sync hint (QuickBooks Online / Salesforce SOQL): one shared query endpoint read with an injected SELECT, an entity-named result envelope, and in-query offset paging. When set, the sync generator emits the query injection + envelope unwrap + offset-paging loop by construction.
 }
 
 type TierRoutingConfig struct {
@@ -2061,6 +2071,14 @@ type Endpoint struct {
 	// Consumed by tenant-scoped dependent fan-out (parent tables) and flat
 	// tenant-scoped reconcile (the swept table). Empty when unannotated.
 	TenantScopeColumn string `yaml:"tenant_scope_column,omitempty" json:"tenant_scope_column,omitempty"`
+	// MembershipField is a boolean field in this collection's own row payload
+	// (declared by the path-item-level `x-pp-membership-field` extension, e.g.
+	// "is_member") indicating whether the authenticated user is a member of the
+	// resource. Dependent fan-out over this parent table skips rows whose field
+	// is false — their sub-resources would 403 — reporting one clear "not a
+	// member" summary instead of a 403 per (sub-resource, parent). Empty when
+	// unannotated.
+	MembershipField string `yaml:"membership_field,omitempty" json:"membership_field,omitempty"`
 	// IDFieldFromPathParam is parser-only provenance used by the profiler to
 	// promote member-path primary-key hints onto same-resource list endpoints
 	// without re-inferring how IDField was resolved. It is intentionally not
@@ -3840,6 +3858,11 @@ func (s *APISpec) Validate() error {
 	case "", RateClassPerSecond, RateClassDaily, RateClassMonthly, RateClassUnlimited:
 	default:
 		return fmt.Errorf("rate_class must be one of: per-second, daily, monthly, unlimited")
+	}
+	if v := strings.TrimSpace(s.DefaultRateLimit); v != "" && !strings.EqualFold(v, "auto") {
+		if f, err := strconv.ParseFloat(v, 64); err != nil || f < 0 {
+			return fmt.Errorf("default_rate_limit must be \"auto\" or a non-negative number")
+		}
 	}
 	if err := validateExtraCommands(s.ExtraCommands); err != nil {
 		return err

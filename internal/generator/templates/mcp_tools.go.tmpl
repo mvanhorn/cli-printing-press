@@ -1380,6 +1380,9 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- if .Searchable}}
 				"searchable": true,
 {{- end}}
+{{- if .Writable}}
+				"writable": true,
+{{- end}}
 			},
 {{- end}}
 		},

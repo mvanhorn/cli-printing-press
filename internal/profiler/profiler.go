@@ -187,6 +187,12 @@ type SyncableResource struct {
 	// be fetched through an item endpoint before store upsert.
 	HydratePath    string
 	HydrateIDParam string
+
+	// MembershipField is the boolean membership flag in this resource's own row
+	// payload (from x-pp-membership-field, e.g. "is_member"). For parent tables
+	// it drives membership-aware dependent fan-out (skip non-member parents).
+	// Empty when unannotated.
+	MembershipField string
 }
 
 // DependentResource describes a child resource that requires iterating a parent
@@ -839,6 +845,36 @@ func (p *APIProfile) TenantScopedParents() []TenantScopedParent {
 	out := make([]TenantScopedParent, 0, len(seen))
 	for parent, col := range seen {
 		out = append(out, TenantScopedParent{Parent: parent, Column: col})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Parent < out[j].Parent })
+	return out
+}
+
+// MembershipScopedParent names a parent table and its boolean membership field.
+type MembershipScopedParent struct {
+	Parent string
+	Field  string
+}
+
+// MembershipScopedParents lists dependent-parent tables that declare a
+// membership field (x-pp-membership-field), for the generated
+// membershipScopedParents map. Only parents that actually have dependents are
+// included. Sorted by parent for deterministic output.
+func (p *APIProfile) MembershipScopedParents() []MembershipScopedParent {
+	seen := map[string]string{}
+	for _, sr := range p.SyncableResources {
+		if sr.MembershipField == "" {
+			continue
+		}
+		for _, dep := range p.DependentSyncResources {
+			if dep.ParentResource == sr.Name {
+				seen[sr.Name] = sr.MembershipField
+			}
+		}
+	}
+	out := make([]MembershipScopedParent, 0, len(seen))
+	for parent, field := range seen {
+		out = append(out, MembershipScopedParent{Parent: parent, Field: field})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Parent < out[j].Parent })
 	return out
@@ -2167,6 +2203,7 @@ type syncableMeta struct {
 	TenantScopeColumn     string
 	HydratePath           string
 	HydrateIDParam        string
+	MembershipField       string
 }
 
 type syncableCandidate struct {
@@ -2219,6 +2256,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		TenantScopeColumn:     e.TenantScopeColumn,
 		HydratePath:           hydratePath,
 		HydrateIDParam:        hydrateIDParam,
+		MembershipField:       e.MembershipField,
 	}
 }
 
@@ -3085,6 +3123,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			TenantScopeColumn:     meta.TenantScopeColumn,
 			HydratePath:           meta.HydratePath,
 			HydrateIDParam:        meta.HydrateIDParam,
+			MembershipField:       meta.MembershipField,
 		}
 	}
 	return resources

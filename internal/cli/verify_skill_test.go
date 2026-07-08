@@ -815,7 +815,7 @@ func Execute() error { return (&cobra.Command{Use: "`+name+`-pp-cli"}).Execute()
 `), 0o644))
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-		[]byte("module github.com/example/"+name+"-pp-cli\n\ngo 1.26.4\n"), 0o644))
+		[]byte("module github.com/example/"+name+"-pp-cli\n\ngo 1.26.5\n"), 0o644))
 
 	manifest := fmt.Sprintf(`{"api_name":%q,"cli_name":%q,"category":%q}`,
 		name, name+"-pp-cli", category)
