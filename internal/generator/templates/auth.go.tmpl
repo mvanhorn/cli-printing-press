@@ -117,6 +117,7 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	var clientID string
 	var clientSecret string
 	var port int
+	var redirectOverride string
 
 	cmd := &cobra.Command{
 		Use:   "login",
@@ -125,18 +126,19 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 			"mcp:hidden": "true",
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runOAuthLogin(cmd, flags, clientID, clientSecret, port)
+			return runOAuthLogin(cmd, flags, clientID, clientSecret, port, redirectOverride)
 		},
 	}
 
 	cmd.Flags().StringVar(&clientID, "client-id", os.Getenv("{{envName .Name}}_CLIENT_ID"), "OAuth2 client ID")
 	cmd.Flags().StringVar(&clientSecret, "client-secret", os.Getenv("{{envName .Name}}_CLIENT_SECRET"), "OAuth2 client secret")
 	cmd.Flags().IntVar(&port, "port", 8085, "Local callback server port")
+	cmd.Flags().StringVar(&redirectOverride, "redirect-uri", os.Getenv("{{envName .Name}}_REDIRECT_URI"), "Registered OAuth2 redirect URI, for providers that reject http://localhost redirects (e.g. Intuit production). Must be a page that forwards the callback query string to http://localhost:<port>/callback")
 
 	return cmd
 }
 
-func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int) error {
+func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int, redirectOverride string) error {
 	w := cmd.OutOrStdout()
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
@@ -184,7 +186,11 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	// derived from the configured --port; the live flow below uses the actual
 	// bound port, which the OS assigns when --port 0 is passed.
 	if cliutil.IsVerifyEnv() {
-		params.Set("redirect_uri", fmt.Sprintf("http://localhost:%d/callback", port))
+		if redirectOverride != "" {
+			params.Set("redirect_uri", redirectOverride)
+		} else {
+			params.Set("redirect_uri", fmt.Sprintf("http://localhost:%d/callback", port))
+		}
 		fmt.Fprintf(w, "would launch: %s\n", authURL+"?"+params.Encode())
 		return nil
 	}
@@ -197,8 +203,13 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 
 	// Derive the redirect URI from the live listener address so an OS-assigned
 	// ephemeral port (--port 0) is reflected in both the auth request and the
-	// token exchange below.
+	// token exchange below. When --redirect-uri is set (providers that reject
+	// localhost redirects), that registered URI is sent to the provider instead;
+	// the local listener still receives the forwarded callback.
 	redirectURI := fmt.Sprintf("http://localhost:%d/callback", listener.Addr().(*net.TCPAddr).Port)
+	if redirectOverride != "" {
+		redirectURI = redirectOverride
+	}
 	params.Set("redirect_uri", redirectURI)
 	fullURL := authURL + "?" + params.Encode()
 
