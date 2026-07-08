@@ -662,11 +662,14 @@ func TestIssue3497BareAllOffsetUsesDefaultPageSize(t *testing.T) {
 	if len(client.params) != 2 {
 		t.Fatalf("got %d requests, want 2", len(client.params))
 	}
-	if _, ok := client.params[0]["limit"]; ok {
-		t.Fatalf("first request should strip unset limit=0, params=%v", client.params[0])
+	if client.params[0]["limit"] != "2" {
+		t.Fatalf("first request limit = %q, want 2; params=%v", client.params[0]["limit"], client.params[0])
 	}
 	if client.params[0]["offset"] != "0" {
 		t.Fatalf("first request offset = %q, want 0", client.params[0]["offset"])
+	}
+	if client.params[1]["limit"] != "2" {
+		t.Fatalf("second request limit = %q, want 2; params=%v", client.params[1]["limit"], client.params[1])
 	}
 	if client.params[1]["offset"] != "2" {
 		t.Fatalf("second request offset = %q, want 2", client.params[1]["offset"])

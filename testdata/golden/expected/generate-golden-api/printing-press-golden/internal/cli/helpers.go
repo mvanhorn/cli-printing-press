@@ -639,13 +639,18 @@ func paginatedGet(ctx context.Context, c interface {
 	pageSize := 0
 	if paginationType == "offset" || paginationType == "page" {
 		pageSize = defaultPageSize
+		hasPositiveLimit := false
 		if limitParam != "" {
 			if limit, err := strconv.Atoi(clean[limitParam]); err == nil && limit > 0 {
 				pageSize = limit
+				hasPositiveLimit = true
 			}
 		}
 		if pageSize <= 0 {
 			pageSize = 100
+		}
+		if limitParam != "" && !hasPositiveLimit {
+			clean[limitParam] = strconv.Itoa(pageSize)
 		}
 	}
 
