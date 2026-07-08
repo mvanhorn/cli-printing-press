@@ -509,6 +509,7 @@ func TestJournal_ReaderToleratesTornAndForeignLines(t *testing.T) {
 	today := "journal-" + time.Now().UTC().Format("20060102") + ".jsonl"
 	writeRawSegment(t, today,
 		`{"ts":"2026-01-01T00:00:00Z","cmd":["ok"],"exit_code":0}`,
+		"",
 		"not json at all",
 	)
 	// A torn trailing write (no newline) must not be consumed.

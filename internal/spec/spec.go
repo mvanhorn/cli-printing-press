@@ -1781,7 +1781,7 @@ type ShareConfig struct {
 // outer map key (e.g., "country", "team"); each value is an ordered list
 // of canonical entities and their aliases.
 type LearnConfig struct {
-	Enabled           bool                    `yaml:"enabled,omitempty" json:"enabled,omitempty"`                         // master switch; when false, the loop's commands and pre-seeding hook are not emitted
+	Enabled           bool                    `yaml:"enabled" json:"enabled,omitempty"`                                   // master switch; when false, the loop's commands and pre-seeding hook are not emitted
 	Disabled          bool                    `yaml:"disabled,omitempty" json:"disabled,omitempty"`                       // generation-time opt-out. A plain Enabled bool cannot distinguish "explicitly off" from "absent" once the generator defaults the loop on, so this is the authoritative off switch. Contradicts an explicit enabled: true and is rejected at parse time.
 	EnabledSet        bool                    `yaml:"-" json:"-"`                                                         // internal presence bit: legacy specs with learn.enabled: false remain opted out when the default-on pass runs.
 	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty"`         // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile.

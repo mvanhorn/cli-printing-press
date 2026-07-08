@@ -254,7 +254,7 @@ func AppendJournalEntry(entry JournalEntry) error {
 }
 
 func repairJournalSegmentTail(p string) error {
-	f, err := os.OpenFile(p, os.O_RDWR, 0o600) // #nosec G304 -- path derived from state dir
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_APPEND, 0o600) // #nosec G304 -- path derived from state dir
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -279,9 +279,6 @@ func repairJournalSegmentTail(p string) error {
 	}
 	if last[0] == '\n' {
 		return nil
-	}
-	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("journal: seek end %s: %w", p, err)
 	}
 	if _, err := f.Write([]byte{'\n'}); err != nil {
 		return fmt.Errorf("journal: repair tail %s: %w", p, err)

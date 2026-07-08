@@ -4585,6 +4585,18 @@ func SeedFromConfig(db any, seedsByKind map[string][]SeedConfig) (int, error) {
 		assert.False(t, learnEntitySeedsNonEmpty(dir))
 	})
 
+	t.Run("commented seed shape earns nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+// SeedConfig example only: Canonical: "SEA"
+func initLearn(db any) error {
+	_ = db
+	return nil
+}
+`)
+		assert.False(t, learnEntitySeedsNonEmpty(dir))
+	})
+
 	t.Run("hand-authored seed table under lookups counts", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/learn/lookups/seeds.go", `package lookups

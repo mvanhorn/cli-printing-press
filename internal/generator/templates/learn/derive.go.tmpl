@@ -4,8 +4,11 @@
 package learn
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -106,13 +109,7 @@ func DeriveFlagCorrections(openStore func() (CandidateStore, error), flagExists 
 	if len(entries) == 0 && next == offset {
 		return nil
 	}
-	// Seed the per-session recall-family anchor from the FULL journal,
-	// not just the unprocessed batch: a prior derive pass on the recall
-	// invocation already advanced the offset past that recall entry, so
-	// the entry that carries the family is usually behind the batch by
-	// the time the failure/success pair completes. The seed is read-only
-	// context; pairing itself still happens only within the batch.
-	recallSeed := sessionRecallFamilies()
+	recallSeed := sessionRecallFamiliesBeforeBatch(entries, offset)
 	pairs, pending := pairFlagCorrections(entries, recallSeed, time.Now().UTC(), flagExists)
 	if pending {
 		return nil
@@ -300,27 +297,69 @@ func inferCorrectedFlagFromNewSuccessFlag(failed, success JournalEntry) string {
 	return "--" + bestName
 }
 
-// sessionRecallFamilies scans the full journal and returns, per session
-// key, the family of that session's most recent recall entry. It exists
-// because derivation runs once per invocation and advances the offset,
-// so a recall entry is usually already behind the batch by the time the
-// failure/success pair it should anchor completes. Best-effort: a read
-// error yields an empty map and derived candidates simply carry no
-// anchor (the confirm path then falls back to the confirming session's
-// recall). Bounded by the journal's own retention caps.
-func sessionRecallFamilies() map[string]string {
-	entries, _, err := ReadJournalFrom(JournalOffset{})
+// sessionRecallFamiliesBeforeBatch returns, for sessions touched by the
+// current batch, the most recent recall family before the persisted offset.
+// Best-effort: read errors yield no seed and derivation still proceeds.
+func sessionRecallFamiliesBeforeBatch(batch []JournalEntry, offset JournalOffset) map[string]string {
+	if offset.Segment == "" && offset.Byte == 0 {
+		return map[string]string{}
+	}
+	active := make(map[string]struct{}, 4)
+	for _, e := range batch {
+		if e.SessionKey != "" {
+			active[e.SessionKey] = struct{}{}
+		}
+	}
+	if len(active) == 0 {
+		return map[string]string{}
+	}
+	dir, err := JournalDir()
+	if err != nil {
+		return map[string]string{}
+	}
+	segs, err := listJournalSegments(dir)
 	if err != nil {
 		return map[string]string{}
 	}
 	families := make(map[string]string, 4)
-	for i := range entries {
-		e := entries[i]
+	for i := len(segs) - 1; i >= 0 && len(families) < len(active); i-- {
+		seg := segs[i]
+		if offset.Segment != "" && seg.name > offset.Segment {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, seg.name)) // #nosec G304 -- listed from state dir
+		if err != nil {
+			continue
+		}
+		if seg.name == offset.Segment && offset.Byte < int64(len(data)) {
+			data = data[:offset.Byte]
+		}
+		scanRecallFamiliesReverse(data, active, families)
+	}
+	return families
+}
+
+func scanRecallFamiliesReverse(data []byte, active map[string]struct{}, families map[string]string) {
+	lines := bytes.Split(data, []byte{'\n'})
+	for i := len(lines) - 1; i >= 0 && len(families) < len(active); i-- {
+		line := lines[i]
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var e JournalEntry
+		if err := json.Unmarshal(line, &e); err != nil {
+			continue
+		}
+		if _, ok := active[e.SessionKey]; !ok {
+			continue
+		}
+		if _, seen := families[e.SessionKey]; seen {
+			continue
+		}
 		if len(e.Cmd) > 0 && e.Cmd[0] == "recall" && e.QueryFamily != "" {
 			families[e.SessionKey] = e.QueryFamily
 		}
 	}
-	return families
 }
 
 // sanitizedInvocationExample renders a journal entry as a replayable

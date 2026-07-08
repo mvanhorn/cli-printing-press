@@ -3504,6 +3504,15 @@ resources:
 		assert.False(t, s.Learn.Enabled)
 		assert.True(t, s.Learn.EnabledSet)
 		assert.False(t, s.Learn.Disabled)
+
+		out, err := yaml.Marshal(s.Learn)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "enabled: false")
+
+		var back LearnConfig
+		require.NoError(t, yaml.Unmarshal(out, &back))
+		assert.False(t, back.Enabled)
+		assert.True(t, back.EnabledSet)
 	})
 
 	t.Run("synonyms round-trip through parse", func(t *testing.T) {

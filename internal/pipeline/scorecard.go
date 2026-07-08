@@ -1631,6 +1631,9 @@ func learnCommandSurfaceRegistered(cliDir string) bool {
 	return ctors["newTeachCmd"] && ctors["newRecallCmd"] && ctors["newLearningsCmd"]
 }
 
+// learnSeedMapRe matches the emitted shape that can actually carry seed rows.
+var learnSeedMapRe = regexp.MustCompile(`map\s*\[\s*string\s*\]\s*\[\s*\](?:lookups\.)?SeedConfig`)
+
 // learnSeedDataRe matches a stamped entity-lookup seed row: a Canonical
 // field assigned a string literal ({Canonical: "SEA", ...}). The generic
 // lookups library only ever writes variable references (Canonical:
@@ -1652,7 +1655,7 @@ func learnEntitySeedsNonEmpty(dir string) bool {
 		if content == "" {
 			continue
 		}
-		if strings.Contains(content, "SeedConfig") && learnSeedDataRe.MatchString(content) {
+		if learnSeedMapRe.MatchString(content) && learnSeedDataRe.MatchString(content) {
 			return true
 		}
 	}
