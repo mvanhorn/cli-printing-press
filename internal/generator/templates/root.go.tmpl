@@ -177,8 +177,8 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 
        Short carries a length cap (it renders on one line); Long never does —
        long help is meant to be complete.
-         • Short: capped at a word boundary via truncateWords, so it never
-           cuts a word in half or bakes a mid-word "…" into the source.
+         • Short: capped at a word boundary via truncateWords, preserving
+           the legacy 200-rune CLIDescription budget and 120-rune headline budget.
          • Long header: the full CLIDescription / narrative headline, no cap.
          • Long per-feature: each description clipped to 200 runes — that is
            the wall-of-text bound, fitting typical novel-feature blurbs
@@ -190,7 +190,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
        Full novel-feature details with examples live in README/SKILL; Long
        names the capabilities so an agent can pick the right subcommand. */}}
 {{- if .CLIDescription}}
-		Short: {{backtick}}{{goRawSafe (truncateWords 120 .CLIDescription)}}{{backtick}},
+		Short: {{backtick}}{{goRawSafe (truncateWords 200 .CLIDescription)}}{{backtick}},
 {{- else if and .Narrative .Narrative.Headline}}
 		Short: {{backtick}}{{humanName .Name}} CLI — {{goRawSafe (truncateWords 120 .Narrative.Headline)}}{{backtick}},
 {{- else}}
