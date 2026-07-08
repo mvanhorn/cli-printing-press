@@ -1696,7 +1696,7 @@ func describeResourceFailure(count int, label string, resources []string) string
 // For REST APIs this is typically "/<resource>". For non-REST APIs (e.g., Steam)
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
 func syncResourcePath(resource string) (string, error) {
-	paths := map[string]string{
+	paths := map[string]string{ // #nosec G101 -- endpoint paths, not credentials.
 		"currencies": "/currencies",
 		"projects":   "/projects",
 	}
