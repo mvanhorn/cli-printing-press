@@ -11566,9 +11566,9 @@ func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {
 	require.NotEmpty(t, content)
 	assert.Contains(t, content, `StringVar(&bodyVariables, "variables", "{\"date\":\"2026-04-22\"}"`)
 	assert.Contains(t, content, `json.Unmarshal([]byte(bodyVariables), &parsedVariables)`)
-	assert.Contains(t, content, `body["variables"] = parsedVariables`)
+	assert.Contains(t, content, `bodyMap["variables"] = parsedVariables`)
 	assert.Contains(t, content, `json.Unmarshal([]byte(bodyExtensions), &parsedExtensions)`)
-	assert.Contains(t, content, `body["extensions"] = parsedExtensions`)
+	assert.Contains(t, content, `bodyMap["extensions"] = parsedExtensions`)
 	_, err = parser.ParseFile(token.NewFileSet(), "graphql_posts_today.go", content, parser.ParseComments)
 	require.NoError(t, err)
 
@@ -17494,7 +17494,7 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	createSource := readGeneratedFile(t, outputDir, "internal", "cli", "stores_create.go")
 	assert.Contains(t, createSource, `public-params-pp-cli stores create --store-code example-value`)
 	assert.Contains(t, createSource, `StringVar(&bodyStoreCode, "store-code", "", "Store code")`)
-	assert.Contains(t, createSource, `body["store_code"] = bodyStoreCode`)
+	assert.Contains(t, createSource, `bodyMap["store_code"] = bodyStoreCode`)
 
 	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	assert.Contains(t, mcpSource, `mcplib.WithString("address", mcplib.Required(), mcplib.Description("Street address"))`)
@@ -17535,8 +17535,8 @@ func TestGenerateBodyNameAcrossCLISurfaces(t *testing.T) {
 
 	searchSource := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_contacts.go")
 	assert.Contains(t, searchSource, `StringVar(&bodyStartAfter, "start-after", "", "Pagination cursor")`)
-	assert.Contains(t, searchSource, `body["searchAfter"] = parsedStartAfter`)
-	assert.NotContains(t, searchSource, `body["startAfter"] = parsedStartAfter`)
+	assert.Contains(t, searchSource, `bodyMap["searchAfter"] = parsedStartAfter`)
+	assert.NotContains(t, searchSource, `bodyMap["startAfter"] = parsedStartAfter`)
 
 	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	// CLI takes the array cursor as a JSON-string flag (StringVar + json.Unmarshal

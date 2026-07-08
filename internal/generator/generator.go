@@ -369,6 +369,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"jsonEnumSuggestion":           jsonEnumSuggestion,
 		"bodyMap":                      bodyMap,
 		"bodyMapForEndpoint":           bodyMapForEndpoint,
+		"bodyMapForEndpointVars":       bodyMapForEndpointVars,
 		"bodyVarDecls":                 bodyVarDecls,
 		"bodyFlagRegs":                 bodyFlagRegs,
 		"bodyRequiredChecks":           bodyRequiredChecks,
@@ -5922,8 +5923,12 @@ const maxBodyFlagDepth = 3
 // map[string]any rather than a single JSON-string flag. Recursion stops
 // at maxBodyFlagDepth; deeper subtrees are only reachable via `--stdin`.
 func bodyMap(body []spec.Param, indent string) string {
+	return bodyMapForVar(body, indent, "body")
+}
+
+func bodyMapForVar(body []spec.Param, indent, mapVar string) string {
 	var b strings.Builder
-	renderBodyMap(&b, flattenCollidingBodyFields(body), 0, indent, "body", "", "")
+	renderBodyMap(&b, flattenCollidingBodyFields(body), 0, indent, mapVar, "", "")
 	return b.String()
 }
 
@@ -5931,35 +5936,47 @@ func bodyMap(body []spec.Param, indent string) string {
 // and the --body-json fallback renderer. Templates call this in place of
 // bodyMap so the BodyJSONFallback decision lives in one place.
 func bodyMapForEndpoint(endpoint spec.Endpoint, indent string) string {
+	return bodyMapForEndpointVars(endpoint, indent, "body", "body")
+}
+
+func bodyMapForEndpointVars(endpoint spec.Endpoint, indent, mapVar, bodyVar string) string {
 	if endpoint.BodyJSONFallback {
-		return bodyJSONFallbackMap(indent)
+		return bodyJSONFallbackMap(endpoint, indent, bodyVar)
 	}
-	return bodyMap(endpoint.Body, indent)
+	return bodyMapForVar(endpoint.Body, indent, mapVar)
 }
 
 // bodyJSONFallbackMap renders the body-population block used when an
 // endpoint's request body schema is a oneOf/anyOf (or otherwise opaque)
 // and we expose a single `--body-json` string flag. The caller has
-// already emitted `body = map[string]any{}`; this block conditionally
-// overwrites body with a parsed JSON object when the user passed a value.
+// already initialized the body value; this block conditionally overwrites it
+// with a parsed JSON value when the user passed a value.
 //
-// The fallback intentionally accepts only JSON objects. Top-level
-// discriminated unions in real-world specs (Cloudflare DNS records,
-// Stripe PaymentMethod, Notion blocks, Linear filters) are object-shaped;
-// rare array-typed bodies are out of scope for the minimum-viable
-// fallback and surface as a clear error message.
-func bodyJSONFallbackMap(indent string) string {
+// The fallback defaults to JSON objects because top-level discriminated
+// unions in real-world specs (Cloudflare DNS records, Stripe PaymentMethod,
+// Notion blocks, Linear filters) are object-shaped; array-root bodies are
+// accepted only when the parser marked the endpoint BodyIsArray.
+func bodyJSONFallbackMap(endpoint spec.Endpoint, indent, bodyVar string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%sif flagBodyJSON != \"\" {\n", indent)
 	fmt.Fprintf(&b, "%s\tvar parsedBodyJSON any\n", indent)
 	fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(flagBodyJSON), &parsedBodyJSON); err != nil {\n", indent)
 	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --body-json: %%w\", err)\n", indent)
 	fmt.Fprintf(&b, "%s\t}\n", indent)
+	if endpoint.BodyIsArray {
+		fmt.Fprintf(&b, "%s\tasArray, ok := parsedBodyJSON.([]any)\n", indent)
+		fmt.Fprintf(&b, "%s\tif !ok {\n", indent)
+		fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON array, got JSON %%T\", parsedBodyJSON)\n", indent)
+		fmt.Fprintf(&b, "%s\t}\n", indent)
+		fmt.Fprintf(&b, "%s\t%s = asArray\n", indent, bodyVar)
+		fmt.Fprintf(&b, "%s}\n", indent)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "%s\tasMap, ok := parsedBodyJSON.(map[string]any)\n", indent)
 	fmt.Fprintf(&b, "%s\tif !ok {\n", indent)
 	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON object, got JSON %%T\", parsedBodyJSON)\n", indent)
 	fmt.Fprintf(&b, "%s\t}\n", indent)
-	fmt.Fprintf(&b, "%s\tbody = asMap\n", indent)
+	fmt.Fprintf(&b, "%s\t%s = asMap\n", indent, bodyVar)
 	fmt.Fprintf(&b, "%s}\n", indent)
 	return b.String()
 }
@@ -6147,7 +6164,11 @@ func renderBodyVarDecls(b *strings.Builder, body []spec.Param, depth int, identP
 func bodyFlagRegs(endpoint spec.Endpoint) string {
 	var b strings.Builder
 	if endpoint.BodyJSONFallback {
-		b.WriteString("\n\tcmd.Flags().StringVar(&flagBodyJSON, \"body-json\", \"\", \"Provide the full request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)\")")
+		bodyShape := "object"
+		if endpoint.BodyIsArray {
+			bodyShape = "array"
+		}
+		fmt.Fprintf(&b, "\n\tcmd.Flags().StringVar(&flagBodyJSON, \"body-json\", \"\", \"Provide the full request body as a JSON %s string (this endpoint accepts a polymorphic schema: oneOf/anyOf)\")", bodyShape)
 		return b.String()
 	}
 	if bodyUsesFlatEmission(endpoint) {
