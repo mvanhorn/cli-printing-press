@@ -615,6 +615,9 @@ func syncResource(ctx context.Context, c interface {
 			break
 		}
 
+		fetchedThisPage := len(items)
+		items, hydrateFailures := hydrateScalarItems(ctx, c, resource, items)
+
 		// Batch upsert all items from this page. UpsertBatch returns
 		// (stored, extractFailures, err): stored counts rows actually
 		// landed; extractFailures counts items that survived JSON
@@ -634,19 +637,19 @@ func syncResource(ctx context.Context, c interface {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("upserting batch for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
-		consumedTotal += len(items)
-		extractFailureTotal += extractFailures
+		consumedTotal += fetchedThisPage
+		extractFailureTotal += extractFailures + hydrateFailures
 
 		// When a non-empty page yielded zero stored rows, the API
 		// returned items in a shape we couldn't extract IDs from —
 		// likely scalar IDs (Firebase /topstories.json, GitHub user-
 		// repo lists) where the spec author should declare a hydration
 		// pattern, or an unrecognized primary-key field name.
-		if len(items) > 0 && stored == 0 {
+		if fetchedThisPage > 0 && stored == 0 {
 			if humanFriendly {
-				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: scalar item shape rather than objects with extractable IDs.\n", resource, len(items))
+				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: scalar item shape rather than objects with extractable IDs.\n", resource, fetchedThisPage)
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", resource, len(items))
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", resource, fetchedThisPage)
 			}
 			anomalyEmitted = true
 		} else if extractFailures > 0 && !anomalyEmitted {
@@ -677,7 +680,7 @@ func syncResource(ctx context.Context, c interface {
 				}
 			}
 		}
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && fetchedThisPage >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -960,7 +963,7 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		if !ok {
 			continue
 		}
-		if items, ok := extractObjectArray(pathData); ok {
+		if items, ok := extractJSONItemsArray(pathData); ok {
 			nextCursor, hasMore := "", false
 			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
 				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
@@ -1039,7 +1042,11 @@ func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMe
 func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
-			if items, ok := extractObjectArray(raw); ok {
+			extract := extractObjectArray
+			if key == "items" || key == "Items" {
+				extract = extractJSONItemsArray
+			}
+			if items, ok := extract(raw); ok {
 				return items, true
 			}
 		}
@@ -1074,9 +1081,17 @@ func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]jso
 	return nil, false
 }
 
-func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+func extractJSONItemsArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	var items []json.RawMessage
 	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+		return nil, false
+	}
+	return items, true
+}
+
+func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+	items, ok := extractJSONItemsArray(raw)
+	if !ok {
 		return nil, false
 	}
 	var obj map[string]json.RawMessage
@@ -1704,6 +1719,76 @@ func syncResourcePath(resource string) (string, error) {
 		return p, nil
 	}
 	return "", fmt.Errorf("unknown sync resource %q", resource)
+}
+
+type itemHydrationConfig struct {
+	path    string
+	idParam string
+}
+
+var itemHydrationPaths = map[string]itemHydrationConfig{}
+
+func hydrateScalarItems(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+}, resource string, items []json.RawMessage) ([]json.RawMessage, int) {
+	config, ok := itemHydrationPaths[resource]
+	if !ok {
+		return items, 0
+	}
+	hydrated := make([]json.RawMessage, 0, len(items))
+	failures := 0
+	for _, item := range items {
+		id := scalarItemID(item)
+		if id == "" {
+			hydrated = append(hydrated, item)
+			continue
+		}
+		obj, err := c.Get(ctx, hydratedItemPath(config, id), nil)
+		if err != nil || isNullOrEmptyJSON(obj) {
+			failures++
+			continue
+		}
+		hydrated = append(hydrated, obj)
+	}
+	return hydrated, failures
+}
+
+func hydratedItemPath(config itemHydrationConfig, id string) string {
+	param := config.idParam
+	if param == "" {
+		param = "id"
+	}
+	return strings.ReplaceAll(config.path, "{"+param+"}", url.PathEscape(id))
+}
+
+func scalarItemID(item json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(item))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	switch trimmed[0] {
+	case '{', '[':
+		return ""
+	case '"':
+		var s string
+		if err := json.Unmarshal(item, &s); err == nil {
+			return s
+		}
+		return ""
+	default:
+		dec := json.NewDecoder(strings.NewReader(trimmed))
+		dec.UseNumber()
+		var n json.Number
+		if err := dec.Decode(&n); err == nil {
+			return n.String()
+		}
+		return ""
+	}
+}
+
+func isNullOrEmptyJSON(data json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(data))
+	return trimmed == "" || trimmed == "null"
 }
 
 func flatSyncResources(resources []string) []string {

@@ -206,6 +206,88 @@ func TestProfileSiblingListEndpoints(t *testing.T) {
 	assert.Equal(t, "/portfolio/settlements", syncPaths["portfolio-settlements"])
 }
 
+func TestProfileScalarIDListsUseHydrationTarget(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "hydrate",
+		Types: map[string]spec.TypeDef{
+			"Item": {Fields: []spec.TypeField{
+				{Name: "id", Type: "integer"},
+				{Name: "title", Type: "string"},
+			}},
+			"Updates": {Fields: []spec.TypeField{
+				{Name: "items", Type: "array"},
+				{Name: "profiles", Type: "array"},
+			}},
+		},
+		Resources: map[string]spec.Resource{
+			"stories": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/jobstories.json",
+						Response: spec.ResponseDef{Type: "array", Item: "int"},
+					},
+				},
+			},
+			"updates": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/updates.json",
+						Response: spec.ResponseDef{Type: "object", Item: "Updates"},
+					},
+				},
+			},
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/item/{id}.json",
+						Response: spec.ResponseDef{Type: "object", Item: "Item"},
+						IDField:  "id",
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "stories")
+	assert.Equal(t, "/item/{id}.json", byName["stories"].HydratePath)
+	assert.Equal(t, "id", byName["stories"].HydrateIDParam)
+	require.Contains(t, byName, "updates")
+	assert.Equal(t, "/item/{id}.json", byName["updates"].HydratePath)
+	assert.Equal(t, "id", byName["updates"].HydrateIDParam)
+}
+
+func TestProfileScalarIDListsWithoutHydrationTargetStayUnsyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "scalar-list",
+		Resources: map[string]spec.Resource{
+			"ids": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/ids",
+						Response: spec.ResponseDef{Type: "array", Item: "int"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	for _, resource := range profile.SyncableResources {
+		assert.NotEqual(t, "ids", resource.Name)
+	}
+}
+
 func TestProfileParentScopedPathTemplateCollectionRegistersSyncResource(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "ads",

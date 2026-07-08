@@ -117,6 +117,134 @@ func TestExtractPageItemsHonorsResponsePath(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestExtractPageItemsHonorsResponsePath", "-count=1")
 }
 
+func TestGeneratedSyncHydratesScalarIDListItems(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("scalar-id-hydration")
+	apiSpec.Types = map[string]spec.TypeDef{
+		"Item": {Fields: []spec.TypeField{
+			{Name: "id", Type: "integer"},
+			{Name: "title", Type: "string"},
+		}},
+		"Updates": {Fields: []spec.TypeField{
+			{Name: "items", Type: "array"},
+			{Name: "profiles", Type: "array"},
+		}},
+	}
+	apiSpec.Resources = map[string]spec.Resource{
+		"stories": {
+			Description: "Stories",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/jobstories.json",
+					Description: "List story IDs",
+					Response:    spec.ResponseDef{Type: "array", Item: "int"},
+				},
+			},
+		},
+		"updates": {
+			Description: "Updates",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/updates.json",
+					Description: "List update IDs",
+					Response:    spec.ResponseDef{Type: "object", Item: "Updates"},
+				},
+			},
+		},
+		"items": {
+			Description: "Items",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/item/{id}.json",
+					Description: "Get item",
+					Response:    spec.ResponseDef{Type: "object", Item: "Item"},
+					IDField:     "id",
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, Search: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	require.Contains(t, syncSrc, `"stories": {path: "/item/{id}.json", idParam: "id"}`)
+	require.Contains(t, syncSrc, `"updates": {path: "/item/{id}.json", idParam: "id"}`)
+	require.Contains(t, syncSrc, `fetchedThisPage := len(items)`)
+	require.Contains(t, syncSrc, `consumedTotal += fetchedThisPage`)
+
+	testPath := filepath.Join(outputDir, "internal", "cli", "sync_hydration_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(`package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+type fakeHydrateClient struct {
+	responses map[string]json.RawMessage
+	errs      map[string]error
+	calls     []string
+}
+
+func (f *fakeHydrateClient) Get(_ context.Context, path string, _ map[string]string) (json.RawMessage, error) {
+	f.calls = append(f.calls, path)
+	if err, ok := f.errs[path]; ok {
+		return nil, err
+	}
+	if response, ok := f.responses[path]; ok {
+		return response, nil
+	}
+	return json.RawMessage(`+"`"+`null`+"`"+`), nil
+}
+
+func TestHydrateScalarItemsHydratesDirectAndWrapperIDs(t *testing.T) {
+	body := json.RawMessage(`+"`"+`{"items":[1,"two words"],"profiles":[99]}`+"`"+`)
+	items, _, _ := extractPageItems(body, "")
+	if len(items) != 2 {
+		t.Fatalf("wrapper scalar item extraction got %d items, want 2", len(items))
+	}
+	client := &fakeHydrateClient{responses: map[string]json.RawMessage{
+		"/item/1.json": json.RawMessage(`+"`"+`{"id":1,"title":"one"}`+"`"+`),
+		"/item/two%20words.json": json.RawMessage(`+"`"+`{"id":"two words","title":"two"}`+"`"+`),
+	}}
+
+	out, failures := hydrateScalarItems(context.Background(), client, "updates", items)
+	if failures != 0 || len(out) != 2 {
+		t.Fatalf("hydrateScalarItems failures=%d len=%d, want 0/2", failures, len(out))
+	}
+	if client.calls[1] != "/item/two%20words.json" {
+		t.Fatalf("escaped hydrate path = %q, want /item/two%%20words.json", client.calls[1])
+	}
+}
+
+func TestHydrateScalarItemsCountsFailedHydration(t *testing.T) {
+	client := &fakeHydrateClient{
+		responses: map[string]json.RawMessage{"/item/2.json": json.RawMessage(`+"`"+`null`+"`"+`)},
+		errs:      map[string]error{"/item/1.json": errors.New("boom")},
+	}
+
+	out, failures := hydrateScalarItems(context.Background(), client, "stories", []json.RawMessage{
+		json.RawMessage(`+"`"+`1`+"`"+`),
+		json.RawMessage(`+"`"+`2`+"`"+`),
+	})
+	if failures != 2 || len(out) != 0 {
+		t.Fatalf("hydrateScalarItems failures=%d len=%d, want 2/0", failures, len(out))
+	}
+}
+`), 0o644))
+
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestHydrateScalarItems", "-count=1")
+}
+
 func TestGeneratedSearchExtractionHonorsResponsePaths(t *testing.T) {
 	t.Parallel()
 
