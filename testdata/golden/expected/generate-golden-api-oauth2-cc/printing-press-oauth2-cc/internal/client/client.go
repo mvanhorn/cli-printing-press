@@ -618,7 +618,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// in a tight loop. ctx cancellation breaks out of the wait at once.
 			if attempt < maxRetries {
 				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
-				fmt.Fprintf(os.Stderr, "network error, retrying in %s (attempt %d/%d)\n", wait, attempt+1, maxRetries)
+				fmt.Fprintf(os.Stderr, "network error (%v), retrying in %s (attempt %d/%d)\n", c.maskError(err, authHeader), wait, attempt+1, maxRetries)
 				if serr := sleepContext(ctx, wait); serr != nil {
 					return nil, 0, serr
 				}
