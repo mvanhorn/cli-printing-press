@@ -197,9 +197,9 @@ Examples:
 
 | Original (anti-pattern) | Redacted (correct) |
 |---|---|
-| `lin_api_a1b2c3d4e5f6789abcdef0123456789abcdef0123456` | `<REDACTED:linear-api-key:lin_a...0456:48ch>` |
-| `22eb323ac258d2e04c3bf9ade77b9c78-us6` | `<REDACTED:mailchimp-api-key:22eb...-us6:36ch>` |
-| `ghp_abc123def456ghi789jkl012mno345pqr678stu90` | `<REDACTED:github-pat:ghp_a...tu90:40ch>` |
+| `lin_api_a1b2c3d4e5f6...bcdef0123456` | `<REDACTED:linear-api-key:lin_a...0456:48ch>` |
+| `22eb323ac258...ade77b9c78-us6` | `<REDACTED:mailchimp-api-key:22eb...-us6:36ch>` |
+| `ghp_abc123def456...pqr678stu90` | `<REDACTED:github-pat:ghp_a...tu90:40ch>` |
 | `sk_live_51AbCdEf123456...XyZ` | `<REDACTED:stripe-live-key:sk_li...XyZ:N-ch>` |
 
 The first4 + last4 + length fragment preserves enough shape information for a
