@@ -462,6 +462,7 @@ func syncResource(ctx context.Context, c interface {
 	// all_items_failed_id_extraction event when 100% of a single page
 	// failed extraction.
 	var extractFailureTotal int
+	var hydrateFailureTotal int
 	var consumedTotal int
 	anomalyEmitted := false
 
@@ -578,6 +579,7 @@ func syncResource(ctx context.Context, c interface {
 		}
 
 		fetchedThisPage := len(items)
+		_, hydrationEnabled := itemHydrationPaths[resource]
 		items, hydrateFailures := hydrateScalarItems(ctx, c, resource, items)
 
 		// Batch upsert all items from this page. UpsertBatch returns
@@ -601,28 +603,33 @@ func syncResource(ctx context.Context, c interface {
 
 		consumedTotal += fetchedThisPage
 		extractFailureTotal += extractFailures + hydrateFailures
+		hydrateFailureTotal += hydrateFailures
+		pageFailureCount := extractFailures + hydrateFailures
 
-		// When a non-empty page yielded zero stored rows, the API
-		// returned items in a shape we couldn't extract IDs from —
-		// likely scalar IDs (Firebase /topstories.json, GitHub user-
-		// repo lists) where the spec author should declare a hydration
-		// pattern, or an unrecognized primary-key field name.
 		if fetchedThisPage > 0 && stored == 0 {
+			reason := "all_items_failed_id_extraction"
+			cause := "scalar item shape rather than objects with extractable IDs"
+			if hydrationEnabled && hydrateFailures > 0 {
+				reason = "all_items_failed_hydration"
+				cause = "scalar item hydration failed for every ID"
+			}
 			if humanFriendly {
-				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: scalar item shape rather than objects with extractable IDs.\n", resource, fetchedThisPage)
+				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: %s.\n", resource, fetchedThisPage, cause)
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", resource, fetchedThisPage)
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"%s"}`+"\n", resource, fetchedThisPage, reason)
 			}
 			anomalyEmitted = true
-		} else if extractFailures > 0 && !anomalyEmitted {
-			// Per-item primary-key resolution failure but at least one
-			// item landed — emit one structured warning per resource per
-			// sync run so users see the first occurrence of silent drops
-			// instead of waiting for total failure.
+		} else if pageFailureCount > 0 && !anomalyEmitted {
+			reason := "primary_key_unresolved"
+			message := fmt.Sprintf("%s had %d item(s) on this page with no extractable primary key — those rows were not stored. Annotate the spec with x-resource-id to fix.", resource, extractFailures)
+			if hydrationEnabled && hydrateFailures > 0 {
+				reason = "scalar_item_hydration_failed"
+				message = fmt.Sprintf("%s failed to hydrate %d scalar item(s) on this page — those rows were not stored. Check the item endpoint path and ID parameter.", resource, hydrateFailures)
+			}
 			if humanFriendly {
-				fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) on this page with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", resource, extractFailures)
+				fmt.Fprintf(os.Stderr, "\nwarning: %s\n", message)
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`+"\n", resource, len(items), stored, extractFailures)
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"%s"}`+"\n", resource, fetchedThisPage, stored, pageFailureCount, reason)
 			}
 			anomalyEmitted = true
 		}
@@ -671,7 +678,7 @@ func syncResource(ctx context.Context, c interface {
 		// sync_error output in the same stream.
 		if maxPages > 0 && pagesFetched >= maxPages {
 			truncatedByCap := resourceSupportsPagination(resource) && hasMore
-			truncatedByCap = truncatedByCap && len(items) >= pageSize.limit
+			truncatedByCap = truncatedByCap && fetchedThisPage >= pageSize.limit
 			if truncatedByCap {
 				capExitCursor = nextCursor
 			}
@@ -724,7 +731,7 @@ func syncResource(ctx context.Context, c interface {
 			outcome.complete = true // resource declares no pagination: one page is the whole set
 			break
 		}
-		if !hasMore || len(items) < pageSize.limit {
+		if !hasMore || fetchedThisPage < pageSize.limit {
 			outcome.complete = true
 			break
 		}
@@ -807,10 +814,14 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal >= consumedTotal {
+		warn := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)
+		if hydrateFailureTotal > 0 {
+			warn = fmt.Errorf("%s consumed %d items but stored 0 because scalar item hydration failed", resource, consumedTotal)
+		}
 		return syncResult{
 			Resource: resource,
 			Count:    0,
-			Warn:     fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal),
+			Warn:     warn,
 			Duration: time.Since(started),
 		}
 	}

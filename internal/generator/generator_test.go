@@ -13595,7 +13595,7 @@ func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
 
 	assert.NotContains(t, syncContent, `if !hasMore || len(items) < pageSize.limit || nextCursor == ""`,
 		"sync loops must not require an API-returned next cursor for offset pagination")
-	assert.Contains(t, syncContent, `if !hasMore || len(items) < pageSize.limit {`,
+	assert.Contains(t, syncContent, `if !hasMore || fetchedThisPage < pageSize.limit {`,
 		"sync loops must break only on real done signals before handling cursor advancement")
 	assert.Contains(t, syncContent, `if pageSize.cursorType == "offset" {`,
 		"offset pagination must advance the cursor client-side when has_more is true")
@@ -14896,8 +14896,8 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		"sync.go must rate-limit primary_key_unresolved emission via anomalyEmitted flag")
 	// Pin the literal "%s" interpolation pattern (AGENTS.md).
 	assert.Contains(t, syncContent,
-		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`,
-		"primary_key_unresolved must use the literal %s interpolation pattern")
+		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"%s"}`,
+		"item-resolution anomalies must use the literal %s interpolation pattern")
 
 	// Existing roll-up sync_anomaly preserved — fires when 100% of items
 	// fail extraction (entire page yields stored=0).
@@ -14905,8 +14905,11 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 		`"reason":"all_items_failed_id_extraction"`,
 		"sync.go must preserve the all_items_failed_id_extraction roll-up event")
 	assert.Contains(t, syncContent,
-		`Warn:     fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
+		`warn := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)`,
 		"sync.go must surface all-items-failed ID extraction as a warning result, not a success")
+	assert.Contains(t, syncContent,
+		`Warn:     warn`,
+		"sync.go must return the all-items-failed warning result, not a success")
 	assert.Contains(t, syncContent,
 		`completed with warnings but no successful syncs`,
 		"sync.go all-warned summary must not claim the warning was only access-related")

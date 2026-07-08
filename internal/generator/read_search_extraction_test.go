@@ -140,6 +140,8 @@ func TestGeneratedSyncHydratesScalarIDListItems(t *testing.T) {
 					Path:        "/jobstories.json",
 					Description: "List story IDs",
 					Response:    spec.ResponseDef{Type: "array", Item: "int"},
+					Params:      []spec.Param{{Name: "limit", Type: "integer", Default: 2}, {Name: "offset", Type: "integer"}},
+					Pagination:  &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit"},
 				},
 			},
 		},
@@ -178,15 +180,21 @@ func TestGeneratedSyncHydratesScalarIDListItems(t *testing.T) {
 	require.Contains(t, syncSrc, `"updates": {path: "/item/{id}.json", idParam: "id"}`)
 	require.Contains(t, syncSrc, `fetchedThisPage := len(items)`)
 	require.Contains(t, syncSrc, `consumedTotal += fetchedThisPage`)
+	require.Contains(t, syncSrc, `truncatedByCap = truncatedByCap && fetchedThisPage >= pageSize.limit`)
 
 	testPath := filepath.Join(outputDir, "internal", "cli", "sync_hydration_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(`package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"`+naming.CLI(apiSpec.Name)+`/internal/store"
 )
 
 type fakeHydrateClient struct {
@@ -204,6 +212,24 @@ func (f *fakeHydrateClient) Get(_ context.Context, path string, _ map[string]str
 		return response, nil
 	}
 	return json.RawMessage(`+"`"+`null`+"`"+`), nil
+}
+
+func (f *fakeHydrateClient) RateLimit() float64 {
+	return 0
+}
+
+func openHydrationTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+	return db
 }
 
 func TestHydrateScalarItemsHydratesDirectAndWrapperIDs(t *testing.T) {
@@ -240,9 +266,63 @@ func TestHydrateScalarItemsCountsFailedHydration(t *testing.T) {
 		t.Fatalf("hydrateScalarItems failures=%d len=%d, want 2/0", failures, len(out))
 	}
 }
+
+func TestSyncResourceWarnsOnPartialHydrationFailure(t *testing.T) {
+	db := openHydrationTestStore(t)
+	client := &fakeHydrateClient{
+		responses: map[string]json.RawMessage{
+			"/jobstories.json": json.RawMessage(`+"`"+`{"items":[1,2],"has_more":false}`+"`"+`),
+			"/item/1.json":    json.RawMessage(`+"`"+`{"id":1,"title":"one"}`+"`"+`),
+		},
+		errs: map[string]error{"/item/2.json": errors.New("boom")},
+	}
+	var events bytes.Buffer
+
+	res := syncResource(context.Background(), client, db, "stories", "", true, 0, false, false, nil, &events)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if res.Count != 1 {
+		t.Fatalf("syncResource count = %d, want 1", res.Count)
+	}
+	got := events.String()
+	for _, want := range []string{`+"`"+`"reason":"scalar_item_hydration_failed"`+"`"+`, `+"`"+`"consumed":2`+"`"+`, `+"`"+`"stored":1`+"`"+`, `+"`"+`"count":1`+"`"+`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("sync events missing %s:\n%s", want, got)
+		}
+	}
+}
+
+func TestSyncResourceUsesFetchedPageForHydrationCapWarning(t *testing.T) {
+	db := openHydrationTestStore(t)
+	client := &fakeHydrateClient{
+		responses: map[string]json.RawMessage{
+			"/jobstories.json": json.RawMessage(`+"`"+`{"items":[1,2],"has_more":true}`+"`"+`),
+		},
+		errs: map[string]error{
+			"/item/1.json": errors.New("boom"),
+			"/item/2.json": errors.New("boom"),
+		},
+	}
+	var events bytes.Buffer
+
+	res := syncResource(context.Background(), client, db, "stories", "", true, 1, false, false, nil, &events)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if res.Warn == nil || !strings.Contains(res.Warn.Error(), "scalar item hydration failed") {
+		t.Fatalf("syncResource warning = %v, want hydration failure", res.Warn)
+	}
+	got := events.String()
+	for _, want := range []string{`+"`"+`"reason":"all_items_failed_hydration"`+"`"+`, `+"`"+`"reason":"max_pages_cap_hit"`+"`"+`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("sync events missing %s:\n%s", want, got)
+		}
+	}
+}
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestHydrateScalarItems", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "Test(HydrateScalarItems|SyncResource)", "-count=1")
 }
 
 func TestGeneratedSearchExtractionHonorsResponsePaths(t *testing.T) {
