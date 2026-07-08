@@ -263,7 +263,7 @@ resources:
 
 	const modulePath = "github.com/mvanhorn/printing-press-library/library/sales-and-crm/tenderned"
 	require.NoError(t, os.MkdirAll(outputDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.26.4\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.26.5\n"), 0o644))
 
 	cmd := newGenerateCmd()
 	cmd.SetArgs([]string{

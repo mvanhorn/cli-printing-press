@@ -55,7 +55,7 @@ if ! command -v go >/dev/null 2>&1; then
   echo "[setup-error] Go toolchain not found."
   echo ""
   echo "This Printing Press flow runs Go-based build or validation commands."
-  echo "Install Go 1.26.4 or newer from https://go.dev/dl/, then verify with:"
+  echo "Install Go 1.26.5 or newer from https://go.dev/dl/, then verify with:"
   echo "  go version"
   echo "Then re-run this skill."
   echo ""
