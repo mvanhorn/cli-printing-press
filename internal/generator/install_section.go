@@ -38,7 +38,7 @@ const canonicalSkillInstallSectionStartFormat = "## Prerequisites: Install the C
 // canonicalSkillInstallSectionGoFallbackFormat is appended only once the
 // public-library category is known. Before publish, the category-agnostic installer is
 // the only canonical path; emitting library/other/<slug> creates drift.
-const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.4 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:\n" +
+const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.5 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:\n" +
 	"\n" +
 	"```bash\n" +
 	"go install github.com/mvanhorn/printing-press-library/library/%[2]s/%[1]s/cmd/%[1]s-pp-cli@latest\n" +
