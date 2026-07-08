@@ -750,6 +750,17 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return nil, 0, ctxErr
 			}
 			lastErr = fmt.Errorf("%s %s: %w", method, c.displayURL(path, authHeader), c.maskError(err, authHeader))
+			// Transient network failure (connection reset, DNS blip, request
+			// timeout). Back off before retrying — same exponential schedule as
+			// the 5xx path below — so a brief outage does not burn every attempt
+			// in a tight loop. ctx cancellation breaks out of the wait at once.
+			if attempt < maxRetries {
+				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+				fmt.Fprintf(os.Stderr, "network error (%v), retrying in %s (attempt %d/%d)\n", c.maskError(err, authHeader), wait, attempt+1, maxRetries)
+				if serr := sleepContext(ctx, wait); serr != nil {
+					return nil, 0, serr
+				}
+			}
 			continue
 		}
 
