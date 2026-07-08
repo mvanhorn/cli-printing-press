@@ -175,25 +175,29 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
        neuters that for CLIs with many novel features, which are exactly
        the CLIs that benefit most from the work.
 
-       Size is bounded two ways:
-         • per-line: headline truncated to 120 runes, each description to 200.
-           The 200-rune cap fits typical novel-feature descriptions
+       Short carries a length cap (it renders on one line); Long never does —
+       long help is meant to be complete.
+         • Short: capped at a word boundary via truncateWords, preserving
+           the legacy 200-rune CLIDescription budget and 120-rune headline budget.
+         • Long header: the full CLIDescription / narrative headline, no cap.
+         • Long per-feature: each description clipped to 200 runes — that is
+           the wall-of-text bound, fitting typical novel-feature blurbs
            (~100-150 chars) so most lines render in full; Cobra wrap still
            handles narrow terminals.
-         • total: overflow beyond 15 features becomes a "…and N more" line
-           (NovelOverflowCount set in Go); stops runaway absorb outputs
-           from producing a wall of text in --help
+         • Long total: overflow beyond 15 features becomes a "…and N more"
+           line (NovelOverflowCount set in Go); stops runaway absorb outputs
+           from producing a wall of text in --help.
        Full novel-feature details with examples live in README/SKILL; Long
        names the capabilities so an agent can pick the right subcommand. */}}
 {{- if .CLIDescription}}
-		Short: {{backtick}}{{goRawSafe (truncate 200 .CLIDescription)}}{{backtick}},
+		Short: {{backtick}}{{goRawSafe (truncateWords 200 .CLIDescription)}}{{backtick}},
 {{- else if and .Narrative .Narrative.Headline}}
-		Short: {{backtick}}{{humanName .Name}} CLI — {{goRawSafe (truncate 120 .Narrative.Headline)}}{{backtick}},
+		Short: {{backtick}}{{humanName .Name}} CLI — {{goRawSafe (truncateWords 120 .Narrative.Headline)}}{{backtick}},
 {{- else}}
 		Short: "Manage {{.Name}} resources via the {{.Name}} API",
 {{- end}}
 {{- if .TopNovelFeatures}}
-		Long: {{backtick}}{{if .CLIDescription}}{{goRawSafe (truncate 200 .CLIDescription)}}{{else}}{{humanName .Name}} CLI{{if and .Narrative .Narrative.Headline}} — {{goRawSafe (truncate 120 .Narrative.Headline)}}{{end}}{{end}}
+		Long: {{backtick}}{{if .CLIDescription}}{{goRawSafe .CLIDescription}}{{else}}{{humanName .Name}} CLI{{if and .Narrative .Narrative.Headline}} — {{goRawSafe .Narrative.Headline}}{{end}}{{end}}
 
 Highlights (not in the official API docs):
 {{- range .TopNovelFeatures}}
@@ -207,7 +211,12 @@ Agent mode: add --agent to any command for JSON output + non-interactive mode.
 Health check: run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.
 See README.md or the bundled SKILL.md for recipes.{{backtick}},
 {{- else if .CLIDescription}}
-		Long: {{backtick}}{{goRawSafe (truncate 200 .CLIDescription)}}
+		Long: {{backtick}}{{goRawSafe .CLIDescription}}
+
+Add --agent to any command for JSON output + non-interactive mode.
+Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
+{{- else if and .Narrative .Narrative.Headline}}
+		Long: {{backtick}}{{humanName .Name}} CLI — {{goRawSafe .Narrative.Headline}}
 
 Add --agent to any command for JSON output + non-interactive mode.
 Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
