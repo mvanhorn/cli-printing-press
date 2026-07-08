@@ -17,3 +17,13 @@ printing-press-oauth2-authcode/internal/cli/auth.go
 # client.go carries refreshAccessToken, which must keep the public-client
 # refresh shape (client_id always sent, client_secret only when present).
 printing-press-oauth2-authcode/internal/client/client.go
+
+# config.go's AuthHeader must emit the direct-bearer env fallback for
+# authorization-code flows (minted AccessToken wins; a directly-held bearer
+# in the canonical env var authenticates when no token has been minted).
+printing-press-oauth2-authcode/internal/config/config.go
+
+# The emitted env-credential test must stay consistent with the AuthHeader
+# emission above — the pre-fix contradiction shipped a CLI that failed its
+# own credential test out of the box.
+printing-press-oauth2-authcode/internal/cliutil/credentials_test.go

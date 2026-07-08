@@ -274,6 +274,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authCommandShort":                    authCommandShort,
 		"authHarvestedEnvHint":                authHarvestedEnvHint,
 		"oauth2AccessTokenAuth":               oauth2AccessTokenAuth,
+		"oauth2DirectBearerEnvFallback":       oauth2DirectBearerEnvFallback,
 		"oauth2AuthSource":                    oauth2AuthSource,
 		"basicAuthEnvVars":                    basicAuthEnvVars,
 		"basicAuthAppendsColonForSingleToken": basicAuthAppendsColonForSingleToken,
@@ -1213,6 +1214,33 @@ func authHarvestedEnvHint(auth spec.AuthConfig) string {
 	default:
 		return "set with auth set-token"
 	}
+}
+
+// oauth2DirectBearerEnvFallback reports whether the generated AuthHeader
+// should honor a directly-held bearer from the canonical env var when no
+// minted AccessToken exists. Only authorization-code-style flows qualify:
+// under client_credentials and device_code the configured env vars are flow
+// inputs that mint tokens, never wire-ready bearers.
+func oauth2DirectBearerEnvFallback(auth spec.AuthConfig) bool {
+	if !oauth2AccessTokenAuth(auth) {
+		return false
+	}
+	switch auth.EffectiveOAuth2Grant() {
+	case spec.OAuth2GrantClientCredentials, spec.OAuth2GrantDeviceCode:
+		return false
+	}
+	v := auth.CanonicalEnvVar()
+	if v == nil {
+		return false
+	}
+	// Only a required request credential qualifies. An optional per-call
+	// token is a stale-able extra: a value persisted to config long ago
+	// must not be sent on the wire when the refreshed-AccessToken flow is
+	// the real credential path.
+	if !v.Required {
+		return false
+	}
+	return v.Kind == "" || v.Kind == spec.AuthEnvVarKindPerCall
 }
 
 func oauth2AccessTokenAuth(auth spec.AuthConfig) bool {
