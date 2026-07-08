@@ -575,6 +575,27 @@ func (c *Config) AuthHeader() string {
 		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
 		{{- end}}
 	}
+{{- if oauth2DirectBearerEnvFallback .Auth}}
+{{- with $canonicalEnvVar}}
+	// A directly-held bearer in {{.Name}} (a pasted access token, or a
+	// service-account key with the same wire shape) authenticates when no
+	// minted token exists. Auth-flow inputs (client ID/secret) never reach
+	// this fallback: their env-var kind excludes them from emission here.
+	if c.{{resolveEnvVarField .Name}} != "" {
+		{{- if $.Auth.Format}}
+		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+			"access_token": c.{{resolveEnvVarField .Name}},
+			"token":        c.{{resolveEnvVarField .Name}},
+			{{- if and (ne (envVarPlaceholder .Name) "token") (ne (envVarPlaceholder .Name) "access_token")}}
+			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+			{{- end}}
+		})
+		{{- else}}
+		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
+		{{- end}}
+	}
+{{- end}}
+{{- end}}
 	return ""
 {{- else}}
 {{- if .BearerRefresh.Enabled}}
