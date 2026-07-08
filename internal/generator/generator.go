@@ -1082,6 +1082,13 @@ func oauth2AccessTokenAuth(auth spec.AuthConfig) bool {
 	switch auth.EffectiveOAuth2Grant() {
 	case spec.OAuth2GrantClientCredentials, spec.OAuth2GrantDeviceCode:
 		return true
+	case spec.OAuth2GrantAuthorizationCode:
+		// Authorization-code specs (Intuit/QuickBooks) surface as bearer_token
+		// with client_id/client_secret env vars. Those are flow inputs, not
+		// bearers — but only when a real authorize+token endpoint pair exists;
+		// plain PAT specs default to this grant with no URLs and must keep the
+		// env-var-wins path.
+		return auth.AuthorizationURL != "" && auth.TokenURL != ""
 	default:
 		return false
 	}
