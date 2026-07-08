@@ -62,11 +62,11 @@ func TestAdaptiveLimiterFloor_AllowsBackoffToHalfRPS(t *testing.T) {
 	src := string(srcBytes)
 
 	require.Contains(t, src, "floor := 0.5")
-	require.Contains(t, src, "if ratePerSec < floor {")
+	require.Contains(t, src, "if startRate < floor {")
 	require.Contains(t, src, "floor:     floor,")
 	require.Contains(t, src, "if l.rate < l.floor {")
 	require.Contains(t, src, "if newRate < l.floor {")
-	require.NotContains(t, src, "floor:     ratePerSec,")
+	require.NotContains(t, src, "floor:     startRate,")
 
 	requireGeneratedTestsPass(
 		t,

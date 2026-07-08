@@ -256,8 +256,19 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- end}}
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see '{{.Name}}-pp-cli profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
-{{- /* "sniffed" is the legacy provenance name for browser-captured specs. Migration to "browser-sniffed" deferred — see docs/plans/2026-04-18-002. */}}
-{{- if eq .SpecSource "sniffed"}}
+{{- /* --rate-limit default precedence: an explicit spec default_rate_limit
+       ("auto" or a number) wins; else the legacy provenance rule ("sniffed"
+       browser-captured specs pace at 2/s, everything else disabled). "auto"
+       selects the header-driven adaptive limiter (client.RateLimitAuto) and
+       relabels the flag's default to "auto" so --help doesn't show "-1". */}}
+{{- if eq .DefaultRateLimit "auto"}}
+	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", client.RateLimitAuto, "Max requests per second (0 to disable; default auto — pace to server rate-limit headers)")
+	if f := rootCmd.PersistentFlags().Lookup("rate-limit"); f != nil {
+		f.DefValue = "auto"
+	}
+{{- else if .DefaultRateLimit}}
+	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", {{.DefaultRateLimit}}, "Max requests per second (0 to disable)")
+{{- else if eq .SpecSource "sniffed"}}
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 2, "Max requests per second (0 to disable, default 2 for sniffed APIs)")
 {{- else}}
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")

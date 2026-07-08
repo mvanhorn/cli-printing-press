@@ -649,7 +649,7 @@ func TestAdaptiveLimiter_NilSafeMethods(t *testing.T) {
 }
 
 func TestAdaptiveLimiter_RampsUpAfterSuccesses(t *testing.T) {
-	l := NewAdaptiveLimiter(2.0)
+	l := NewAdaptiveLimiterAuto(2.0)
 	startRate := l.Rate()
 	for i := 0; i < l.rampAfter; i++ {
 		l.OnSuccess()
@@ -708,6 +708,42 @@ func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 	elapsed := time.Since(start)
 	if elapsed < 80*time.Millisecond {
 		t.Errorf("second Wait() took %v, want >= 80ms", elapsed)
+	}
+}
+
+func TestAdaptiveLimiter_ObserveHeadersPacesToBudgetAndSuppressesRamp(t *testing.T) {
+	l := NewAdaptiveLimiterAuto(2.0)
+	// Full bucket: 100 requests left over a 20s window => ~5 rps sustainable.
+	l.ObserveHeaders(100, time.Now().Add(20*time.Second))
+	if got := l.Rate(); got < 4.9 || got > 5.1 {
+		t.Errorf("Rate() after ObserveHeaders = %v, want ~5", got)
+	}
+	// Once header-driven, the blind success ramp is suppressed: headers govern.
+	rateBefore := l.Rate()
+	for i := 0; i < l.rampAfter; i++ {
+		l.OnSuccess()
+	}
+	if got := l.Rate(); got != rateBefore {
+		t.Errorf("Rate() ramped while header-driven = %v, want unchanged %v", got, rateBefore)
+	}
+}
+
+// A header-carrying 429 must not double-brake: ObserveHeaders (called first on
+// the same response, with remaining exhausted) already paces the rate down, so
+// OnRateLimit must leave the high-water budgetRate intact for header-driven
+// limiters. See OnRateLimit's !headerDriven guard.
+func TestAdaptiveLimiter_OnRateLimitPreservesHeaderBudgetRate(t *testing.T) {
+	l := NewAdaptiveLimiterAuto(2.0)
+	l.ObserveHeaders(100, time.Now().Add(20*time.Second)) // full bucket sets budgetRate
+	budget := l.budgetRate
+	if budget <= 0 {
+		t.Fatalf("ObserveHeaders did not set budgetRate: %v", budget)
+	}
+	// Header-carrying 429: ObserveHeaders sees the drained bucket, then OnRateLimit fires.
+	l.ObserveHeaders(0, time.Now().Add(20*time.Second))
+	l.OnRateLimit()
+	if got := l.budgetRate; got != budget {
+		t.Errorf("OnRateLimit decayed header-driven budgetRate = %v, want unchanged %v", got, budget)
 	}
 }
 

@@ -86,7 +86,7 @@ func TestTierRoutingEmitsTierAwareClientAndCommands(t *testing.T) {
 	require.Regexp(t, `\brequestTier\s+string\b`, clientSrc)
 	require.Regexp(t, `\blimiters\s+map\[string\]\*cliutil\.AdaptiveLimiter\b`, clientSrc)
 	require.Contains(t, clientSrc, "next.limiter = c.limiterForTier(tier)")
-	require.Regexp(t, `"paid":\s+cliutil\.NewAdaptiveLimiter\(rateLimit\)`, clientSrc)
+	require.Regexp(t, `"paid":\s+newRateLimiter\(rateLimit\)`, clientSrc)
 	require.Contains(t, clientSrc, `case "free":`)
 	require.Contains(t, clientSrc, `case "paid":`)
 	require.Contains(t, clientSrc, `return strings.TrimRight("https://paid.api.example.com", "/")`)

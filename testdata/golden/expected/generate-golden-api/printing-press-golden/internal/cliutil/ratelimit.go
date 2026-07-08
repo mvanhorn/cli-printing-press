@@ -18,30 +18,113 @@ import (
 // and records a ceiling. Per-session only — not persisted. Methods are safe
 // to call on a nil receiver.
 type AdaptiveLimiter struct {
-	mu          sync.Mutex
-	rate        float64
-	floor       float64
-	ceiling     float64
-	successes   int
-	rampAfter   int
-	lastRequest time.Time // zero-value: first Wait() returns immediately
+	mu           sync.Mutex
+	rate         float64
+	floor        float64
+	ceiling      float64
+	maxRate      float64 // user's --rate-limit: hard ceiling on both header-derived pacing AND the blind success-ramp (0 = no ceiling / auto)
+	budgetRate   float64 // inferred refill rate: high-water-mark of remaining/secondsUntilReset
+	successes    int
+	rampAfter    int
+	headerDriven bool      // true once ObserveHeaders has set the rate; suppresses blind ramp
+	lastRequest  time.Time // zero-value: first Wait() returns immediately
 }
 
-// NewAdaptiveLimiter returns a limiter starting at ratePerSec, or nil when
-// rate-limiting should be disabled. Methods on the nil limiter no-op.
+// NewAdaptiveLimiter returns a limiter whose pacing starts at ratePerSec AND is
+// hard-capped there: ratePerSec doubles as the user's explicit --rate-limit
+// politeness ceiling, so even a higher server-advertised (header-derived) rate
+// is clamped down to it. Returns nil when rate-limiting should be disabled
+// (ratePerSec <= 0). For the default "let the server's headers decide" behavior,
+// use NewAdaptiveLimiterAuto instead. Methods on the nil limiter no-op.
 func NewAdaptiveLimiter(ratePerSec float64) *AdaptiveLimiter {
-	if ratePerSec <= 0 {
+	return newAdaptiveLimiter(ratePerSec, ratePerSec)
+}
+
+// NewAdaptiveLimiterAuto returns a limiter that starts at startRate but imposes
+// NO user ceiling (maxRate=0), so the server-advertised budget read from the
+// X-Ratelimit-* headers — or, on header-less servers, the adaptive 429-probe —
+// governs the rate in full. startRate is only the conservative pace used until
+// the first response's headers arrive. Returns nil when startRate <= 0.
+func NewAdaptiveLimiterAuto(startRate float64) *AdaptiveLimiter {
+	return newAdaptiveLimiter(startRate, 0)
+}
+
+// newAdaptiveLimiter builds a limiter starting at startRate with maxRate as the
+// header-derived-rate ceiling (0 = no ceiling; the header/adaptive rate wins).
+func newAdaptiveLimiter(startRate, maxRate float64) *AdaptiveLimiter {
+	if startRate <= 0 {
 		return nil
 	}
 	floor := 0.5
-	if ratePerSec < floor {
-		floor = ratePerSec
+	if startRate < floor {
+		floor = startRate
 	}
 	return &AdaptiveLimiter{
-		rate:      ratePerSec,
+		rate:      startRate,
 		floor:     floor,
+		maxRate:   maxRate,
 		rampAfter: 10,
 	}
+}
+
+// brakeSafetySeconds is the burst buffer the limiter keeps in reserve: when the
+// remaining allowance can no longer cover this many seconds at the refill rate,
+// the limiter spends the remainder down gently instead, letting the bucket
+// recover before it hits zero (and a 429).
+const brakeSafetySeconds = 2.0
+
+// ObserveHeaders paces to the server-advertised budget read from the
+// X-Ratelimit-Remaining / X-Ratelimit-Reset headers, taking priority over the
+// blind adaptive ramp (which is suppressed once headers are seen).
+//
+// The naive even-spread rate, remaining/secondsUntilReset, is correct only for
+// a FIXED window — where Reset is a real wall-clock boundary and Remaining snaps
+// back to full at it. Plane (and most token-bucket limiters) use a SLIDING
+// window: Reset perpetually recedes (~constant seconds out) while Remaining
+// falls as we consume. Pacing at the instantaneous even-spread there
+// death-spirals the rate toward zero, because the denominator never shrinks
+// while the numerator does. So instead we infer the refill rate as the
+// high-water-mark of remaining/secondsUntilReset — its value when the bucket is
+// fullest is ≈ limit/window, the sustainable steady rate — and pace at that.
+//
+// A low-remaining brake spends the tail of the budget down gently
+// (see brakeSafetySeconds). The result is clamped to [floor, maxRate]; maxRate
+// is the user's --rate-limit, an explicit politeness ceiling. A zero/expired
+// reset or absent header info leaves the adaptive fallback untouched. Safe on a
+// nil receiver.
+func (l *AdaptiveLimiter) ObserveHeaders(remaining int, resetAt time.Time) {
+	if l == nil || resetAt.IsZero() {
+		return
+	}
+	secs := time.Until(resetAt).Seconds()
+	if secs <= 0 || remaining < 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	evenSpread := float64(remaining) / secs
+	if evenSpread > l.budgetRate {
+		l.budgetRate = evenSpread // high-water mark ≈ refill rate (limit/window)
+	}
+	target := l.budgetRate
+
+	// Low-remaining brake: if the tokens left can't cover a short burst at the
+	// refill rate, drain the remainder over the safety window so the bucket can
+	// catch up rather than slamming into 0.
+	if float64(remaining) < target*brakeSafetySeconds {
+		target = float64(remaining) / brakeSafetySeconds
+	}
+
+	if l.maxRate > 0 && target > l.maxRate {
+		target = l.maxRate
+	}
+	if target < l.floor {
+		target = l.floor
+	}
+	l.rate = target
+	l.headerDriven = true
+	l.successes = 0
 }
 
 func (l *AdaptiveLimiter) Wait() {
@@ -68,11 +151,25 @@ func (l *AdaptiveLimiter) OnSuccess() {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Headers, when present, govern the rate exactly (see ObserveHeaders);
+	// the blind success-ramp is a fallback only for header-less servers.
+	if l.headerDriven {
+		l.successes = 0
+		return
+	}
 	l.successes++
 	if l.successes >= l.rampAfter {
 		newRate := l.rate * 1.25
 		if l.ceiling > 0 && newRate > l.ceiling*0.9 {
 			newRate = l.ceiling * 0.9
+		}
+		// An explicit --rate-limit (maxRate>0) is a hard politeness ceiling: the
+		// blind ramp must honor it just as ObserveHeaders does, otherwise on a
+		// header-less server the rate would climb past the user's stated cap
+		// (auto mode leaves maxRate==0, so the ramp stays free to discover the
+		// server's true ceiling via 429s).
+		if l.maxRate > 0 && newRate > l.maxRate {
+			newRate = l.maxRate
 		}
 		if newRate < l.floor {
 			newRate = l.floor
@@ -92,6 +189,17 @@ func (l *AdaptiveLimiter) OnRateLimit() {
 	l.rate = l.rate / 2
 	if l.rate < l.floor {
 		l.rate = l.floor
+	}
+	// Decay the inferred refill rate ONLY on the blind, header-less path. When
+	// the limiter is header-driven, ObserveHeaders has already paced down from
+	// this same 429's Remaining/Reset headers (its low-remaining brake), so
+	// halving budgetRate here as well would double-brake — and budgetRate is a
+	// high-water mark that self-corrects up to limit/window once the bucket
+	// refills, so the decay wouldn't stick anyway. (On the header-less path
+	// budgetRate is always 0, since ObserveHeaders never ran; the guard just
+	// makes the invariant explicit.)
+	if !l.headerDriven {
+		l.budgetRate = l.budgetRate / 2
 	}
 	l.successes = 0
 }
@@ -124,6 +232,33 @@ func (e *RateLimitError) Error() string {
 		msg += ": " + body
 	}
 	return msg
+}
+
+// ParseRateLimitHeaders reads the X-Ratelimit-Remaining and X-Ratelimit-Reset
+// headers many APIs (Plane among them) emit on every response. Remaining is the
+// request allowance left in the current window; Reset is interpreted as a Unix
+// epoch-seconds timestamp when large (>= unixEpochSecondsThreshold) or as
+// delta-seconds from now otherwise — matching the dual convention RetryAfter
+// already tolerates. Returns ok=false when either header is missing or
+// unparseable, so the caller leaves the adaptive fallback in charge.
+func ParseRateLimitHeaders(h http.Header) (remaining int, resetAt time.Time, ok bool) {
+	remStr := strings.TrimSpace(h.Get("X-Ratelimit-Remaining"))
+	resetStr := strings.TrimSpace(h.Get("X-Ratelimit-Reset"))
+	if remStr == "" || resetStr == "" {
+		return 0, time.Time{}, false
+	}
+	rem, err := strconv.Atoi(remStr)
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	reset, err := strconv.ParseInt(resetStr, 10, 64)
+	if err != nil {
+		return 0, time.Time{}, false
+	}
+	if reset >= unixEpochSecondsThreshold {
+		return rem, time.Unix(reset, 0), true
+	}
+	return rem, time.Now().Add(time.Duration(reset) * time.Second), true
 }
 
 // MaxRetryWait caps the wait derived from a Retry-After header so a buggy

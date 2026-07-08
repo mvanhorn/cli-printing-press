@@ -95,8 +95,48 @@ func isPathPlaceholderName(name string) bool {
 	return true
 }
 
+// maxIdleConnsPerHost sizes the keep-alive pool so concurrent sync workers
+// reuse warm connections instead of re-paying the TLS handshake (~0.5s) per
+// request. The rate limiter caps throughput, so simultaneous in-flight
+// connections stay ≈ budget×latency (a handful) regardless of --concurrency;
+// 32 covers any sane worker count with margin.
+const maxIdleConnsPerHost = 32
+
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
-	return &http.Client{Timeout: timeout, Jar: jar}
+	// Clone (do NOT build a bare &http.Transport{}) so Proxy=ProxyFromEnvironment,
+	// IdleConnTimeout, and dialer keep-alive survive — a bare struct would break
+	// corporate-proxy users (a public-build regression).
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	if tr.MaxIdleConns < maxIdleConnsPerHost {
+		tr.MaxIdleConns = maxIdleConnsPerHost
+	}
+	return &http.Client{Timeout: timeout, Jar: jar, Transport: tr}
+}
+
+// RateLimitAuto is the default --rate-limit value: a negative sentinel meaning
+// "auto" — pace by the server's advertised budget (X-Ratelimit-* headers), with
+// an adaptive 429-probe fallback for header-less servers, and NO manual ceiling.
+// A positive value imposes that value as an explicit politeness ceiling; 0
+// disables pacing entirely.
+const RateLimitAuto = -1.0
+
+// defaultAutoStartRate is the conservative pace an auto-mode limiter uses until
+// the first response's rate-limit headers arrive (after which the server's
+// advertised budget governs). Modest so the very first request to an unknown
+// server is polite; headers raise it within one round-trip.
+const defaultAutoStartRate = 2.0
+
+// newRateLimiter maps the user-facing --rate-limit value to a limiter:
+//
+//	< 0 (RateLimitAuto): headers/adaptive govern, no ceiling (the default)
+//	== 0:                pacing disabled (nil limiter)
+//	> 0:                 explicit hard ceiling at that rate
+func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
+	if rateLimit < 0 {
+		return cliutil.NewAdaptiveLimiterAuto(defaultAutoStartRate)
+	}
+	return cliutil.NewAdaptiveLimiter(rateLimit) // 0 -> nil (disabled); >0 -> explicit ceiling
 }
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
@@ -110,7 +150,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
-		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+		limiter:    newRateLimiter(rateLimit),
 	}
 	// CheckRedirect re-derives auth on each hop. Go's default replays the
 	// original Authorization header verbatim, which breaks nonce-bound
@@ -708,6 +748,14 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		_ = resp.Body.Close()
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
+		}
+
+		// Pace to the server-advertised budget when it ships rate-limit
+		// headers (every response, success or 429). This takes priority over
+		// the blind adaptive ramp/halve, which only governs header-less
+		// servers and the very first request of a session.
+		if remaining, resetAt, ok := cliutil.ParseRateLimitHeaders(resp.Header); ok {
+			c.limiter.ObserveHeaders(remaining, resetAt)
 		}
 
 		// Success

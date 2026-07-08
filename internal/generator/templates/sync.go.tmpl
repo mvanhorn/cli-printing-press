@@ -433,7 +433,7 @@ Resource scoping:
 
 {{- if .DependentSyncResources}}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(cmd.Context(), c, db, sinceTS, full, maxPages, effectiveLatestOnly, prune, parentFilter{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams, syncEventWriter)
+			depResults := syncDependentResources(cmd.Context(), c, db, sinceTS, full, maxPages, effectiveLatestOnly, prune, parentFilter{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams, syncEventWriter, concurrency)
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
@@ -2653,20 +2653,509 @@ func syncDependentResources(ctx context.Context, c {{if .HasTierRouting}}*client
 	LastContentType() string
 {{- end}}
 	RateLimit() float64
-}{{end}}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool, parentFilter []string{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams, syncEvents io.Writer) []syncResult {
+}{{end}}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool, parentFilter []string{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams, syncEvents io.Writer, concurrency int) []syncResult {
 	allow := make(map[string]bool, len(parentFilter))
 	for _, r := range parentFilter {
 		allow[r] = true
 	}
+{{- if .MembershipScopedParents}}
+	// Resolve, once per membership-scoped parent table, the parents the user is
+	// not a member of. Their dependents skip these parents (see
+	// syncDependentResource) so the fan-out doesn't 403-storm them; reported in
+	// one clear line below. A query error is non-fatal: the skip set stays nil
+	// and the old attempt-and-warn behavior applies.
+	skipParents := map[string]map[string]string{}
+	for parent, field := range membershipScopedParents {
+		if m, err := db.NonMemberParents(parent, field); err == nil && len(m) > 0 {
+			skipParents[parent] = m
+		}
+	}
+	syncedParentTables := map[string]bool{}
+{{- end}}
 	var results []syncResult
 	for _, dep := range dependentResourceDefs() {
 		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
 			continue
 		}
-		res := syncDependentResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, dep.Name){{else}}c{{end}}, db, dep, sinceTS, full, maxPages, latestOnly, prune{{if .Pagination.DateRangeParam}}, dates{{end}}, userParams, syncEvents)
+{{- if .MembershipScopedParents}}
+		syncedParentTables[dep.ParentTable] = true
+{{- end}}
+		res := syncDependentResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, dep.Name){{else}}c{{end}}, db, dep, sinceTS, full, maxPages, latestOnly, prune{{if .Pagination.DateRangeParam}}, dates{{end}}, userParams, syncEvents, concurrency{{if .MembershipScopedParents}}, skipParents[dep.ParentTable]{{end}})
 		results = append(results, res)
 	}
+{{- if .MembershipScopedParents}}
+	reportSkippedParents(syncEvents, skipParents, syncedParentTables)
+{{- end}}
 	return results
+}
+{{- if .MembershipScopedParents}}
+
+// parentSkippedJSON renders a parent_skipped event: the dependent fan-out
+// skipped this parent's sub-resources because the API key's user is not a
+// member of it (its declared membership field is false). Surfacing it as a
+// structured, named event (rather than a raw 403 per sub-resource) makes the
+// cause obvious to operators and scripts.
+func parentSkippedJSON(parentTable, parentID, parentName string) string {
+	payload := struct {
+		Event       string `json:"event"`
+		ParentTable string `json:"parent_table"`
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Reason      string `json:"reason"`
+	}{
+		Event:       "parent_skipped",
+		ParentTable: parentTable,
+		ID:          parentID,
+		Name:        parentName,
+		Reason:      "not_a_member",
+	}
+	out, _ := json.Marshal(payload)
+	return string(out)
+}
+
+// reportSkippedParents emits a single, clear account of the parents skipped
+// because the API key's user is not a member of them — one human stderr line per
+// parent table listing the names, or in JSON mode one parent_skipped event per
+// parent plus a sync_skipped_parents rollup. Deterministic order (by name, then
+// id) so output is stable and testable.
+func reportSkippedParents(syncEvents io.Writer, skipParents map[string]map[string]string, synced map[string]bool) {
+	tables := make([]string, 0, len(skipParents))
+	for table := range skipParents {
+		if synced[table] && len(skipParents[table]) > 0 {
+			tables = append(tables, table)
+		}
+	}
+	sort.Strings(tables)
+	for _, table := range tables {
+		skip := skipParents[table]
+		type parent struct{ id, name string }
+		list := make([]parent, 0, len(skip))
+		for id, name := range skip {
+			list = append(list, parent{id: id, name: name})
+		}
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].name != list[j].name {
+				return list[i].name < list[j].name
+			}
+			return list[i].id < list[j].id
+		})
+		if humanFriendly {
+			names := make([]string, 0, len(list))
+			for _, p := range list {
+				label := p.name
+				if label == "" {
+					label = p.id
+				}
+				names = append(names, label)
+			}
+			fmt.Fprintf(os.Stderr, "  skipped %d %s you are not a member of (their dependent resources were not synced): %s\n", len(list), table, strings.Join(names, ", "))
+			continue
+		}
+		for _, p := range list {
+			fmt.Fprintln(syncEvents, parentSkippedJSON(table, p.id, p.name))
+		}
+		tableJSON, _ := json.Marshal(table)
+		fmt.Fprintf(syncEvents, `{"event":"sync_skipped_parents","parent_table":%s,"count":%d,"reason":"not_a_member"}`+"\n", tableJSON, len(list))
+	}
+}
+{{- end}}
+
+// parentReport is one parent's contribution to a dependent resource sync.
+// syncOneParent does the per-parent fetch + upsert + (its own) partition
+// reconcile and returns this; the aggregator sums the counters AFTER a full
+// barrier and resolves the one-shot anomaly / first-denial deterministically.
+type parentReport struct {
+	stored          int
+	consumed        int
+	extractFailures int
+	denied          bool
+	firstDenial     *accessWarning
+	anomaly         *parentAnomaly // nil unless this parent hit an extraction anomaly
+	dryRun          bool           // true if a dry-run sentinel was seen — caller short-circuits
+}
+
+// parentAnomaly carries the fields the two sync_anomaly event shapes need so
+// the aggregator (not the worker) emits the first one, preserving the
+// "first wins, with its shape" semantics without a shared bool.
+type parentAnomaly struct {
+	parent   string
+	consumed int
+	stored   int
+	count    int
+	reason   string // "all_items_failed_id_extraction" | "primary_key_unresolved"
+}
+
+// emitParentAnomaly reproduces the two sync_anomaly event shapes (and their
+// humanFriendly stderr forms) that the per-parent loop used to emit inline. The
+// aggregator calls this once, gated on the first-wins bool, so the sequential
+// output is byte-identical to the pre-parallel code.
+func emitParentAnomaly(syncEvents io.Writer, humanFriendly bool, resource string, a *parentAnomaly) {
+	if a.reason == "all_items_failed_id_extraction" {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "\nwarning: %s returned %d items for parent %s but stored 0 — likely scalar item shape or unrecognized primary-key field name.\n", resource, a.consumed, a.parent)
+		} else {
+			fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", resource, a.parent, a.consumed)
+		}
+		return
+	}
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", resource, a.count)
+	} else {
+		fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`+"\n", resource, a.parent, a.consumed, a.stored, a.count)
+	}
+}
+
+// syncOneParent performs one parent's fetch + upsert + (its own) partition
+// reconcile, returning a parentReport. Shared counters become report fields and
+// the dry-run sentinel / extraction anomaly are returned (not emitted) so the
+// aggregator reproduces the events in order after a full drain barrier.
+func syncOneParent(
+	ctx context.Context,
+	c interface {
+		Get(context.Context, string, map[string]string) (json.RawMessage, error)
+{{- if $hasPostSync}}
+		PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
+		PostQueryWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
+{{- end}}
+{{- if $hasHTMLSync}}
+		RequestBaseURL() string
+		LastContentType() string
+{{- end}}
+		RateLimit() float64
+	},
+	db *store.Store,
+	dep dependentResourceDef,
+	parentRow map[string]string,
+	pathParams []dependentPathParamDef,
+	pageSize paginationDefaults,
+	depSinceParam, depSinceTS string,
+	maxPages int,
+	latestOnly, prune bool,
+	userParams *syncUserParams,
+	syncEvents io.Writer,
+{{- if .Pagination.DateRangeParam}}
+	dates string,
+{{- end}}
+) parentReport {
+	var rep parentReport
+	parentID := parentRow["id"]
+	if parentID == "" {
+		parentID = parentRow[pathParams[0].Field]
+	}
+	parentIDJSON, _ := json.Marshal(parentID)
+	parentFKKey := dep.ParentTable + "_id"
+	path := dep.PathTemplate
+	for _, pathParam := range pathParams {
+		// Strip the NUL-composite parent suffix that resourceStorageID builds
+		// for parent-keyed parents: the path needs the BARE entity id. Leaving
+		// the composite in routes a "%00" through replacePathParam's
+		// url.PathEscape into the URL, which nginx rejects with HTTP 400.
+		// BareResourceID is a no-op on non-composite ids, so this is safe for
+		// every path param (plain parents are unaffected).
+		path = replacePathParam(path, pathParam.Param, store.BareResourceID(parentRow[pathParam.Field]))
+	}
+{{- if $hasIDWalk}}
+	idWalk, usesIDWalk := syncResourceIDWalkConfig(dep.Name)
+	pageLimit := pageSize.limit
+	if usesIDWalk {
+		pageLimit = idWalk.limit
+	}
+{{- end}}
+
+	cursor := ""
+	pagesFetched := 0
+	lastNextCursor := ""
+
+	outcome := partitionOutcome{scopeVal: parentID}
+	var seenIDs []string
+
+	for {
+		params := map[string]string{}
+{{- if $hasIDWalk}}
+		if usesIDWalk {
+			params[idWalk.limitParam] = strconv.Itoa(idWalk.limit)
+		} else if resourceSupportsPagination(dep.Name) {
+{{- else}}
+		if resourceSupportsPagination(dep.Name) {
+{{- end}}
+			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+			if cursor != "" {
+				params[pageSize.cursorParam] = cursor
+			}
+		}
+		if depSinceTS != "" {
+			params[depSinceParam] = depSinceTS
+		}
+{{- if .Pagination.DateRangeParam}}
+		if dates != "" {
+			params[determineDateRangeParam()] = dates
+		}
+{{- end}}
+		// Apply user flags last so they win over spec-derived cursor/since/limit.
+		// Dependent path: --param is skipped (already scoped by the parent path
+		// segment); --global-param and --resource-param still apply.
+		userParams.applyTo(dep.Name, params, true)
+{{- if $hasIDWalk}}
+		activePageLimit := pageLimit
+		if usesIDWalk {
+			if parsedLimit, err := strconv.Atoi(params[idWalk.limitParam]); err == nil && parsedLimit > 0 {
+				activePageLimit = parsedLimit
+			}
+		}
+{{- end}}
+
+{{ if and $hasPostSync $hasIDWalk -}}
+		data, err := syncFetch(ctx, c, dep.Name, path, params, idWalk, cursor)
+{{ else if $hasPostSync -}}
+		data, err := syncFetch(ctx, c, dep.Name, path, params)
+{{ else -}}
+		data, err := c.Get(ctx, path, params)
+{{ end -}}
+		if err != nil {
+			// Non-fatal per parent: log and continue to next parent.
+			// Track access-denial separately so an all-denied dependent
+			// resource can surface as a Warn rather than silent success.
+			if w, ok := isSyncAccessWarning(err); ok {
+				outcome.reason = "access_denied"
+				rep.denied = true
+				rep.firstDenial = w
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: access denied for parent %s: %s\n", dep.Name, parentID, w.Reason)
+				} else {
+					fmt.Fprintln(syncEvents, syncWarningJSON(dep.Name, parentID, w.Status, w.Reason, w.Message))
+				}
+			} else if humanFriendly {
+				outcome.reason = "fetch_error"
+				fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
+			} else {
+				outcome.reason = "fetch_error"
+				// Non-warning failures were previously silent in JSON mode —
+				// operators only saw the missing rows. Emit a structured
+				// sync_error so the API body and status are inspectable.
+				fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
+			}
+			break
+		}
+
+		// Dry-run sentinel: client.dryRun returns `{"dry_run": true}` instead
+		// of a real response when --dry-run is set. A preview must not mutate
+		// sync-state, so return before any reconcile; the aggregator emits the
+		// single sync_dryrun event. (issue #2935)
+		if isDryRunResponse(data) {
+			rep.dryRun = true
+			return rep
+		}
+
+{{ if $hasHTMLSync}}
+		if opts, ok := syncHTMLExtractionOptions(dep.Name, dep.ParentTable, c.RequestBaseURL(), c.LastContentType(), path, params); ok {
+			data, err = extractHTMLResponse(data, opts)
+			if err != nil {
+				outcome.reason = "html_extract_error"
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: HTML extraction error for parent %s: %v\n", dep.Name, parentID, err)
+				} else {
+					fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
+				}
+				break
+			}
+		}
+
+{{ end}}
+		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(dep.Name, path)...)
+
+		// Page-int paginator fallback: mirrors syncResource so dependent
+		// resources on integer ?page=N APIs also advance past page 1.
+		// Guard on cursorType to cover every canonical spelling.
+		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+			currentPage, _ := strconv.Atoi(cursor)
+			if currentPage < 1 {
+				currentPage = 1
+			}
+			nextCursor = strconv.Itoa(currentPage + 1)
+			hasMore = true
+		}
+		if pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
+			currentOffset, _ := strconv.Atoi(cursor)
+			nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
+			hasMore = true
+		}
+{{- if $hasIDWalk}}
+		if usesIDWalk {
+			nextCursor, hasMore = nextIDWalkPage(dep.Name, parentID, items, activePageLimit, idWalk, humanFriendly, syncEvents)
+		}
+{{- end}}
+
+		if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
+			outcome.reason = "non_json_200_body"
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\nwarning: %s returned a 200 response with a non-JSON body for parent %s; no rows were stored.\n", dep.Name, parentID)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","parent":"%s","reason":"non_json_200_body"}`+"\n", dep.Name, parentID)
+			}
+			break
+		}
+
+		if len(items) == 0 {
+			if isEmptyPageResponse(data, responsePathForResource(dep.Name, path)...) {
+				outcome.complete = true // parent legitimately has zero children
+			} else {
+				outcome.reason = "empty_non_list_response"
+			}
+			break
+		}
+
+		for i, item := range items {
+			var obj map[string]json.RawMessage
+			if err := json.Unmarshal(item, &obj); err == nil {
+				obj["parent_id"] = parentIDJSON
+				if _, ok := obj[parentFKKey]; !ok {
+					obj[parentFKKey] = parentIDJSON
+				}
+				for _, pathParam := range pathParams {
+					if pathParam.Field == "id" {
+						continue
+					}
+					if _, ok := obj[pathParam.Field]; ok {
+						continue
+					}
+					valueJSON, _ := json.Marshal(parentRow[pathParam.Field])
+					obj[pathParam.Field] = valueJSON
+				}
+				if modified, err := json.Marshal(obj); err == nil {
+					items[i] = modified
+				}
+			}
+		}
+
+		stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)
+		if err != nil {
+			outcome.reason = "upsert_error"
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\n  %s: upsert error for parent %s: %v\n", dep.Name, parentID, err)
+			}
+			break
+		}
+
+		rep.consumed += len(items)
+		rep.extractFailures += extractFailures
+		// Order matches the flat path (syncResource): all-fail first, then
+		// partial-fail. The all-fail case dominates. Record (first wins within
+		// this parent) and let the aggregator emit.
+		if len(items) > 0 && stored == 0 && rep.anomaly == nil {
+			rep.anomaly = &parentAnomaly{parent: parentID, consumed: len(items), stored: 0, count: len(items), reason: "all_items_failed_id_extraction"}
+		} else if extractFailures > 0 && stored > 0 && rep.anomaly == nil {
+			rep.anomaly = &parentAnomaly{parent: parentID, consumed: len(items), stored: stored, count: extractFailures, reason: "primary_key_unresolved"}
+		}
+
+		rep.stored += stored
+		// seenIDs carries BARE entity ids; extractID resolves the PK the same
+		// way UpsertBatch does. ReconcilePartition compares these against the
+		// stored keys via BareResourceID, so parent-keyed (NUL-composite)
+		// dependents reconcile correctly without composite seen ids here.
+		for _, it := range items {
+			if o, derr := store.DecodeJSONObject(it); derr == nil {
+				if id := extractID(dep.Name, o); id != "" {
+					seenIDs = append(seenIDs, id)
+				}
+			}
+		}
+{{- if $hasIDWalk}}
+		if resourceSupportsPagination(dep.Name) && !usesIDWalk && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(dep.Name, path)...) {
+			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, dep.Name, parentID)
+		}
+{{- else}}
+		if resourceSupportsPagination(dep.Name) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(dep.Name, path)...) {
+			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, dep.Name, parentID)
+		}
+{{- end}}
+		pagesFetched++
+
+		if maxPages > 0 && pagesFetched >= maxPages {
+			outcome.reason = "max_pages_cap"
+			if !latestOnly {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items) for parent %s\n", dep.Name, maxPages, rep.stored, parentID)
+				} else {
+					fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", dep.Name, parentID, maxPages)
+				}
+			}
+			break
+		}
+		// Sticky-cursor detector: see syncResource for rationale. Same shape
+		// here so dependent-resource page loops cannot burn the budget on a
+		// non-advancing next cursor.
+		if nextCursor != "" && nextCursor == lastNextCursor {
+			outcome.reason = "stuck_cursor"
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages for parent %s; aborting to prevent budget waste.\n", dep.Name, parentID)
+			} else {
+				fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"stuck_pagination","message":"API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste."}`+"\n", dep.Name, parentID, dep.Name)
+			}
+			break
+		}
+		lastNextCursor = nextCursor
+		if !resourceSupportsPagination(dep.Name) {
+			outcome.complete = true
+			break
+		}
+{{- if $hasIDWalk}}
+		if !hasMore || len(items) < activePageLimit {
+			outcome.complete = true
+{{- else}}
+		if !hasMore || len(items) < pageSize.limit {
+			outcome.complete = true
+{{- end}}
+			break
+		}
+		if nextCursor == "" {
+			if pageSize.cursorType == "offset" {
+				// Cursor-based APIs return the next cursor in the envelope.
+				// Offset-based APIs carry their pagination position client-side.
+				currentOffset, _ := strconv.Atoi(cursor)
+				nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
+			} else {
+				// A cursor-based API reporting has_more without a next cursor
+				// cannot advance safely; stop instead of looping silently.
+				outcome.reason = "cursor_unavailable"
+				break
+			}
+		}
+		cursor = nextCursor
+	}
+
+	if prune && outcome.complete && dep.ReconcileMode == "per_parent" {
+		deleted, rerr := db.ReconcilePartition(
+			dep.Name, dep.GenericScopeJSONPath, outcome.scopeVal,
+			seenIDs, dep.Name, store.CascadeJunctionsFor(dep.Name),
+		)
+		if rerr != nil {
+			fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", dep.Name, outcome.scopeVal, rerr.Error())
+		} else {
+			// Always emit on a proven-complete sweep, even when deleted==0, so a
+			// clean run is observable (distinguishable from "reconcile never ran").
+			fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", dep.Name, outcome.scopeVal, deleted)
+		}
+	} else if prune && dep.ReconcileMode == "per_parent" {
+		fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", dep.Name, outcome.scopeVal, outcome.reason)
+	}
+
+	return rep
+}
+
+// lockedWriter serializes concurrent Write calls to an underlying io.Writer.
+// The dependent-resource worker pool fans out across parents, and each worker's
+// syncOneParent emits events directly to the shared syncEvents writer; without
+// this guard those writes race. One Fprintf is one Write, so per-event lines
+// stay atomic relative to one another.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // syncDependentResource syncs a single child resource by iterating all parent IDs.
@@ -2681,10 +3170,13 @@ func syncDependentResource(ctx context.Context, c interface {
 	LastContentType() string
 {{- end}}
 	RateLimit() float64
-}, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams, syncEvents io.Writer) syncResult {
+}, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool, prune bool{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams, syncEvents io.Writer, concurrency int{{if .MembershipScopedParents}}, skipParents map[string]string{{end}}) syncResult {
 	started := time.Now()
 	if syncEvents == nil {
 		syncEvents = io.Discard
+	}
+	if concurrency < 1 {
+		concurrency = 1
 	}
 
 	pathParams := dep.PathParams
@@ -2717,6 +3209,23 @@ func syncDependentResource(ctx context.Context, c interface {
 		}
 	}
 
+{{- if .MembershipScopedParents}}
+	// Drop parents the user is not a member of: their dependent sub-resources
+	// would 403 on every request. Skipping them up front turns a flood of opaque
+	// per-resource 403 warnings into one clear "not a member" line (emitted once
+	// by the orchestrator) and spares the wasted requests.
+	if len(skipParents) > 0 {
+		kept := make([]map[string]string, 0, len(parentRows))
+		for _, row := range parentRows {
+			if _, skip := skipParents[row["id"]]; skip {
+				continue
+			}
+			kept = append(kept, row)
+		}
+		parentRows = kept
+	}
+{{- end}}
+
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "  %s: syncing for %d %s parents\n", dep.Name, len(parentRows), dep.ParentTable)
 	}
@@ -2726,13 +3235,6 @@ func syncDependentResource(ctx context.Context, c interface {
 	var firstDenial *accessWarning
 	pageSize := determinePaginationDefaults(dep.ParentTable + "/" + dep.Name)
 	depSinceParam := syncResourceSinceParam(dep.Name)
-{{- if $hasIDWalk}}
-	idWalk, usesIDWalk := syncResourceIDWalkConfig(dep.Name)
-	pageLimit := pageSize.limit
-	if usesIDWalk {
-		pageLimit = idWalk.limit
-	}
-{{- end}}
 	depSinceTS := sinceTS
 	if depSinceTS != "" && depSinceParam == "" {
 		if humanFriendly {
@@ -2746,322 +3248,95 @@ func syncDependentResource(ctx context.Context, c interface {
 		depSinceTS = formatSyncSinceValue(depSinceTS, syncResourceSinceParamFormat(dep.Name))
 	}
 	// Per-resource extract-failure tracking for the F4b symptom probe and
-	// per-item primary_key_unresolved warning. See syncResource for the
-	// concurrency rationale (one goroutine per resource → no race).
+	// per-item primary_key_unresolved warning. These are aggregated ONLY in the
+	// single-goroutine drain loop below (never written by a worker), so the
+	// per-parent worker pool cannot race them.
 	var depExtractFailureTotal int
 	var depConsumedTotal int
 	depAnomalyEmitted := false
-	parentFKKey := dep.ParentTable + "_id"
 
-	for idx, parentRow := range parentRows {
-		parentID := parentRow["id"]
-		if parentID == "" {
-			parentID = parentRow[pathParams[0].Field]
-		}
-		parentIDJSON, _ := json.Marshal(parentID)
-		path := dep.PathTemplate
-		for _, pathParam := range pathParams {
-			path = replacePathParam(path, pathParam.Param, parentRow[pathParam.Field])
-		}
+	// syncOneParent writes per-parent events (reconcile, warnings, fetch errors)
+	// directly to syncEvents. Under the worker pool below, N workers would call
+	// Write concurrently on the same io.Writer — a data race (a bytes.Buffer
+	// corrupts; even an *os.File interleaves bytes). Serialize all event writes
+	// for this resource through a mutex-guarded wrapper so the pool's output is
+	// race-free and each event line stays intact.
+	syncEvents = &lockedWriter{w: syncEvents}
 
-		if humanFriendly {
-			fmt.Fprintf(os.Stderr, "\r  %s: syncing for %s (%d/%d parents)", dep.Name, dep.ParentTable, idx+1, len(parentRows))
-		}
+	// Bounded worker pool over parents — mirrors the top-level flat-resource
+	// pool. Cloud safety holds because the shared rate limiter (applied inside
+	// every c.Get) caps req/s regardless of worker count; SQLite writes are
+	// serialized by store.writeMu; per-parent reconcile partitions are disjoint.
+	// So no cross-parent barrier is needed for correctness — only an aggregation
+	// barrier before the post-loop summary reads the counters.
+	type parentJob struct {
+		row map[string]string
+	}
+	jobs := make(chan parentJob, len(parentRows))
+	reports := make(chan parentReport, len(parentRows))
 
-		cursor := ""
-		pagesFetched := 0
-		lastNextCursor := ""
-
-		outcome := partitionOutcome{scopeVal: parentID}
-		var seenIDs []string
-
-		for {
-			params := map[string]string{}
-{{- if $hasIDWalk}}
-			if usesIDWalk {
-				params[idWalk.limitParam] = strconv.Itoa(idWalk.limit)
-			} else if resourceSupportsPagination(dep.Name) {
-{{- else}}
-			if resourceSupportsPagination(dep.Name) {
-{{- end}}
-				params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
-				if cursor != "" {
-					params[pageSize.cursorParam] = cursor
+	var wg sync.WaitGroup
+	workers := concurrency
+	if workers > len(parentRows) {
+		workers = len(parentRows)
+	}
+	// Monotonic display counter: workers consume parents out of order, so the
+	// original job index would make the human-mode "(n/N parents)" progress
+	// jump around. An atomic tick keeps it increasing 1..N regardless of which
+	// worker picks up which parent.
+	var startedParents int64
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				if ctx.Err() != nil {
+					return
 				}
-			}
-			if depSinceTS != "" {
-				params[depSinceParam] = depSinceTS
-			}
-{{- if .Pagination.DateRangeParam}}
-			if dates != "" {
-				params[determineDateRangeParam()] = dates
-			}
-{{- end}}
-			// Apply user flags last so they win over spec-derived cursor/since/limit.
-			// Dependent path: --param is skipped (already scoped by the parent path
-			// segment); --global-param and --resource-param still apply.
-			userParams.applyTo(dep.Name, params, true)
-{{- if $hasIDWalk}}
-			activePageLimit := pageLimit
-			if usesIDWalk {
-				if parsedLimit, err := strconv.Atoi(params[idWalk.limitParam]); err == nil && parsedLimit > 0 {
-					activePageLimit = parsedLimit
-				}
-			}
-{{- end}}
-
-{{ if and $hasPostSync $hasIDWalk -}}
-			data, err := syncFetch(ctx, c, dep.Name, path, params, idWalk, cursor)
-{{ else if $hasPostSync -}}
-			data, err := syncFetch(ctx, c, dep.Name, path, params)
-{{ else -}}
-			data, err := c.Get(ctx, path, params)
-{{ end -}}
-			if err != nil {
-				// Non-fatal per parent: log and continue to next parent.
-				// Track access-denial separately so an all-denied dependent
-				// resource can surface as a Warn rather than silent success.
-				if w, ok := isSyncAccessWarning(err); ok {
-					outcome.reason = "access_denied"
-					deniedParents++
-					if firstDenial == nil {
-						firstDenial = w
-					}
-					if humanFriendly {
-						fmt.Fprintf(os.Stderr, "\n  %s: access denied for parent %s: %s\n", dep.Name, parentID, w.Reason)
-					} else {
-						fmt.Fprintln(syncEvents, syncWarningJSON(dep.Name, parentID, w.Status, w.Reason, w.Message))
-					}
-				} else if humanFriendly {
-					outcome.reason = "fetch_error"
-					fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
-				} else {
-					outcome.reason = "fetch_error"
-					// Non-warning failures were previously silent in JSON mode —
-					// operators only saw the missing rows. Emit a structured
-					// sync_error so the API body and status are inspectable.
-					fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
-				}
-				break
-			}
-
-			// Dry-run sentinel: client.dryRun returns `{"dry_run": true}` instead
-			// of a real response when --dry-run is set. A preview must not mutate
-			// sync-state, so return before the SaveSyncState at the end of this
-			// function — mirroring syncResource's guard above. (issue #2935)
-			if isDryRunResponse(data) {
-				if !humanFriendly {
-					fmt.Fprintf(syncEvents, `{"event":"sync_dryrun","resource":"%s"}`+"\n", dep.Name)
-				}
-				return syncResult{Resource: dep.Name, Count: 0, Duration: time.Since(started)}
-			}
-
-{{ if $hasHTMLSync}}
-			if opts, ok := syncHTMLExtractionOptions(dep.Name, dep.ParentTable, c.RequestBaseURL(), c.LastContentType(), path, params); ok {
-				data, err = extractHTMLResponse(data, opts)
-				if err != nil {
-					outcome.reason = "html_extract_error"
-					if humanFriendly {
-						fmt.Fprintf(os.Stderr, "\n  %s: HTML extraction error for parent %s: %v\n", dep.Name, parentID, err)
-					} else {
-						fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, err))
-					}
-					break
-				}
-			}
-
-{{ end}}
-			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam, responsePathForResource(dep.Name, path)...)
-
-			// Page-int paginator fallback: mirrors syncResource so dependent
-			// resources on integer ?page=N APIs also advance past page 1.
-			// Guard on cursorType to cover every canonical spelling.
-			if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
-				currentPage, _ := strconv.Atoi(cursor)
-				if currentPage < 1 {
-					currentPage = 1
-				}
-				nextCursor = strconv.Itoa(currentPage + 1)
-				hasMore = true
-			}
-			if pageSize.cursorType == "offset" && nextCursor == "" && len(items) >= pageSize.limit && pageAllowsPageIntFallback(data) {
-				currentOffset, _ := strconv.Atoi(cursor)
-				nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
-				hasMore = true
-			}
-{{- if $hasIDWalk}}
-			if usesIDWalk {
-				nextCursor, hasMore = nextIDWalkPage(dep.Name, parentID, items, activePageLimit, idWalk, humanFriendly, syncEvents)
-			}
-{{- end}}
-
-			if len(items) == 0 && len(data) > 0 && !isJSONResponse(data) {
-				outcome.reason = "non_json_200_body"
 				if humanFriendly {
-					fmt.Fprintf(os.Stderr, "\nwarning: %s returned a 200 response with a non-JSON body for parent %s; no rows were stored.\n", dep.Name, parentID)
-				} else {
-					fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","parent":"%s","reason":"non_json_200_body"}`+"\n", dep.Name, parentID)
+					fmt.Fprintf(os.Stderr, "\r  %s: syncing for %s (%d/%d parents)", dep.Name, dep.ParentTable, atomic.AddInt64(&startedParents, 1), len(parentRows))
 				}
-				break
+				reports <- syncOneParent(ctx, c, db, dep, job.row, pathParams, pageSize, depSinceParam, depSinceTS, maxPages, latestOnly, prune, userParams, syncEvents{{if .Pagination.DateRangeParam}}, dates{{end}})
 			}
+		}()
+	}
+	for _, parentRow := range parentRows {
+		jobs <- parentJob{row: parentRow}
+	}
+	close(jobs)
+	go func() { wg.Wait(); close(reports) }()
 
-			if len(items) == 0 {
-				if isEmptyPageResponse(data, responsePathForResource(dep.Name, path)...) {
-					outcome.complete = true // parent legitimately has zero children
-				} else {
-					outcome.reason = "empty_non_list_response"
-				}
-				break
-			}
-
-			for i, item := range items {
-				var obj map[string]json.RawMessage
-				if err := json.Unmarshal(item, &obj); err == nil {
-					obj["parent_id"] = parentIDJSON
-					if _, ok := obj[parentFKKey]; !ok {
-						obj[parentFKKey] = parentIDJSON
-					}
-					for _, pathParam := range pathParams {
-						if pathParam.Field == "id" {
-							continue
-						}
-						if _, ok := obj[pathParam.Field]; ok {
-							continue
-						}
-						valueJSON, _ := json.Marshal(parentRow[pathParam.Field])
-						obj[pathParam.Field] = valueJSON
-					}
-					if modified, err := json.Marshal(obj); err == nil {
-						items[i] = modified
-					}
-				}
-			}
-
-			stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)
-			if err != nil {
-				outcome.reason = "upsert_error"
-				if humanFriendly {
-					fmt.Fprintf(os.Stderr, "\n  %s: upsert error for parent %s: %v\n", dep.Name, parentID, err)
-				}
-				break
-			}
-
-			depConsumedTotal += len(items)
-			depExtractFailureTotal += extractFailures
-			// Order matches the flat path (syncResource): all-fail first,
-			// then partial-fail. The all-fail case dominates — if stored==0
-			// with at least one item, the resource is broken regardless of
-			// how many extractions failed individually.
-			if len(items) > 0 && stored == 0 && !depAnomalyEmitted {
-				if humanFriendly {
-					fmt.Fprintf(os.Stderr, "\nwarning: %s returned %d items for parent %s but stored 0 — likely scalar item shape or unrecognized primary-key field name.\n", dep.Name, len(items), parentID)
-				} else {
-					fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", dep.Name, parentID, len(items))
-				}
-				depAnomalyEmitted = true
-			} else if extractFailures > 0 && stored > 0 && !depAnomalyEmitted {
-				if humanFriendly {
-					fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", dep.Name, extractFailures)
-				} else {
-					fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`+"\n", dep.Name, parentID, len(items), stored, extractFailures)
-				}
-				depAnomalyEmitted = true
-			}
-
-			totalCount += stored
-			// seenIDs carries BARE entity ids; extractID resolves the PK the same
-			// way UpsertBatch does. ReconcilePartition compares these against the
-			// stored keys via BareResourceID, so parent-keyed (NUL-composite)
-			// dependents reconcile correctly without composite seen ids here.
-			for _, it := range items {
-				if o, derr := store.DecodeJSONObject(it); derr == nil {
-					if id := extractID(dep.Name, o); id != "" {
-						seenIDs = append(seenIDs, id)
-					}
-				}
-			}
-{{- if $hasIDWalk}}
-			if resourceSupportsPagination(dep.Name) && !usesIDWalk && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(dep.Name, path)...) {
-				emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, dep.Name, parentID)
-			}
-{{- else}}
-			if resourceSupportsPagination(dep.Name) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(dep.Name, path)...) {
-				emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, dep.Name, parentID)
-			}
-{{- end}}
-			pagesFetched++
-
-			if maxPages > 0 && pagesFetched >= maxPages {
-				outcome.reason = "max_pages_cap"
-				if !latestOnly {
-					if humanFriendly {
-						fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items) for parent %s\n", dep.Name, maxPages, totalCount, parentID)
-					} else {
-						fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", dep.Name, parentID, maxPages)
-					}
-				}
-				break
-			}
-			// Sticky-cursor detector: see syncResource for rationale. Same shape
-			// here so dependent-resource page loops cannot burn the budget on a
-			// non-advancing next cursor.
-			if nextCursor != "" && nextCursor == lastNextCursor {
-				outcome.reason = "stuck_cursor"
-				if humanFriendly {
-					fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages for parent %s; aborting to prevent budget waste.\n", dep.Name, parentID)
-				} else {
-					fmt.Fprintf(syncEvents, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"stuck_pagination","message":"API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste."}`+"\n", dep.Name, parentID, dep.Name)
-				}
-				break
-			}
-			lastNextCursor = nextCursor
-			if !resourceSupportsPagination(dep.Name) {
-				outcome.complete = true
-				break
-			}
-{{- if $hasIDWalk}}
-			if !hasMore || len(items) < activePageLimit {
-				outcome.complete = true
-{{- else}}
-			if !hasMore || len(items) < pageSize.limit {
-				outcome.complete = true
-{{- end}}
-				break
-			}
-			if nextCursor == "" {
-				if pageSize.cursorType == "offset" {
-					// Cursor-based APIs return the next cursor in the envelope.
-					// Offset-based APIs carry their pagination position client-side.
-					currentOffset, _ := strconv.Atoi(cursor)
-					nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
-				} else {
-					// A cursor-based API reporting has_more without a next cursor
-					// cannot advance safely; stop instead of looping silently.
-					outcome.reason = "cursor_unavailable"
-					break
-				}
-			}
-			cursor = nextCursor
+	// Barrier: drain ALL reports before the post-loop summary reads the
+	// counters. firstDenial / anomaly resolution is order-insensitive across
+	// workers (first drained wins) — acceptable, both are diagnostic-only and
+	// "first parent" is inherently nondeterministic under concurrency.
+	dryRunHit := false
+	for rep := range reports {
+		if rep.dryRun {
+			dryRunHit = true
+			continue // keep draining so workers/goroutines don't leak
 		}
-
-		if prune && outcome.complete && dep.ReconcileMode == "per_parent" {
-			deleted, rerr := db.ReconcilePartition(
-				dep.Name, dep.GenericScopeJSONPath, outcome.scopeVal,
-				seenIDs, dep.Name, store.CascadeJunctionsFor(dep.Name),
-			)
-			if rerr != nil {
-				fmt.Fprintf(syncEvents, `{"event":"reconcile_error","resource":"%s","scope":"%s","error":%q}`+"\n", dep.Name, outcome.scopeVal, rerr.Error())
-			} else {
-				// Always emit on a proven-complete sweep, even when deleted==0, so a
-				// clean run is observable (distinguishable from "reconcile never ran").
-				fmt.Fprintf(syncEvents, `{"event":"reconcile","resource":"%s","scope":"%s","deleted":%d}`+"\n", dep.Name, outcome.scopeVal, deleted)
+		totalCount += rep.stored
+		depConsumedTotal += rep.consumed
+		depExtractFailureTotal += rep.extractFailures
+		if rep.denied {
+			deniedParents++
+			if firstDenial == nil {
+				firstDenial = rep.firstDenial
 			}
-		} else if prune && dep.ReconcileMode == "per_parent" {
-			fmt.Fprintf(syncEvents, `{"event":"reconcile_skipped","resource":"%s","scope":"%s","reason":%q}`+"\n", dep.Name, outcome.scopeVal, outcome.reason)
 		}
-
-		// Brief rate-limit pause between parents to avoid hammering the API
-		time.Sleep(100 * time.Millisecond)
+		if rep.anomaly != nil && !depAnomalyEmitted {
+			emitParentAnomaly(syncEvents, humanFriendly, dep.Name, rep.anomaly)
+			depAnomalyEmitted = true
+		}
+	}
+	if dryRunHit {
+		// A dry-run preview must not mutate sync-state, so short-circuit before
+		// the SaveSyncState below — mirroring syncResource's guard. (issue #2935)
+		if !humanFriendly {
+			fmt.Fprintf(syncEvents, `{"event":"sync_dryrun","resource":"%s"}`+"\n", dep.Name)
+		}
+		return syncResult{Resource: dep.Name, Count: 0, Duration: time.Since(started)}
 	}
 
 	if humanFriendly {
@@ -3234,6 +3509,18 @@ var parentTenantScopeColumns = map[string]string{
 	{{printf "%q" .Parent}}: {{printf "%q" .Column}},
 {{- end}}
 }
+{{- if .MembershipScopedParents}}
+
+// membershipScopedParents maps a dependent-parent table to the boolean
+// membership field in its own row payload (from x-pp-membership-field). The
+// dependent fan-out skips parents whose field is false — their sub-resources
+// would 403 — reporting one clear "not a member" summary instead.
+var membershipScopedParents = map[string]string{
+{{- range .MembershipScopedParents}}
+	{{printf "%q" .Parent}}: {{printf "%q" .Field}},
+{{- end}}
+}
+{{- end}}
 
 {{- if $hasHTMLPageModeSync}}
 
