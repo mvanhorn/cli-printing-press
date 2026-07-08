@@ -500,6 +500,7 @@ func syncResource(ctx context.Context, c interface {
 	// all_items_failed_id_extraction event when 100% of a single page
 	// failed extraction.
 	var extractFailureTotal int
+	var hydrateFailureTotal int
 	var consumedTotal int
 	anomalyEmitted := false
 
@@ -615,6 +616,10 @@ func syncResource(ctx context.Context, c interface {
 			break
 		}
 
+		fetchedThisPage := len(items)
+		_, hydrationEnabled := itemHydrationPaths[resource]
+		items, hydrateFailures := hydrateScalarItems(ctx, c, resource, items)
+
 		// Batch upsert all items from this page. UpsertBatch returns
 		// (stored, extractFailures, err): stored counts rows actually
 		// landed; extractFailures counts items that survived JSON
@@ -634,30 +639,35 @@ func syncResource(ctx context.Context, c interface {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("upserting batch for %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
-		consumedTotal += len(items)
-		extractFailureTotal += extractFailures
+		consumedTotal += fetchedThisPage
+		extractFailureTotal += extractFailures + hydrateFailures
+		hydrateFailureTotal += hydrateFailures
+		pageFailureCount := extractFailures + hydrateFailures
 
-		// When a non-empty page yielded zero stored rows, the API
-		// returned items in a shape we couldn't extract IDs from —
-		// likely scalar IDs (Firebase /topstories.json, GitHub user-
-		// repo lists) where the spec author should declare a hydration
-		// pattern, or an unrecognized primary-key field name.
-		if len(items) > 0 && stored == 0 {
+		if fetchedThisPage > 0 && stored == 0 {
+			reason := "all_items_failed_id_extraction"
+			cause := "scalar item shape rather than objects with extractable IDs"
+			if hydrationEnabled && hydrateFailures > 0 {
+				reason = "all_items_failed_hydration"
+				cause = "scalar item hydration failed for every ID"
+			}
 			if humanFriendly {
-				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: scalar item shape rather than objects with extractable IDs.\n", resource, len(items))
+				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: %s.\n", resource, fetchedThisPage, cause)
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", resource, len(items))
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"%s"}`+"\n", resource, fetchedThisPage, reason)
 			}
 			anomalyEmitted = true
-		} else if extractFailures > 0 && !anomalyEmitted {
-			// Per-item primary-key resolution failure but at least one
-			// item landed — emit one structured warning per resource per
-			// sync run so users see the first occurrence of silent drops
-			// instead of waiting for total failure.
+		} else if pageFailureCount > 0 && !anomalyEmitted {
+			reason := "primary_key_unresolved"
+			message := fmt.Sprintf("%s had %d item(s) on this page with no extractable primary key — those rows were not stored. Annotate the spec with x-resource-id to fix.", resource, extractFailures)
+			if hydrationEnabled && hydrateFailures > 0 {
+				reason = "scalar_item_hydration_failed"
+				message = fmt.Sprintf("%s failed to hydrate %d scalar item(s) on this page — those rows were not stored. Check the item endpoint path and ID parameter.", resource, hydrateFailures)
+			}
 			if humanFriendly {
-				fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) on this page with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", resource, extractFailures)
+				fmt.Fprintf(os.Stderr, "\nwarning: %s\n", message)
 			} else {
-				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`+"\n", resource, len(items), stored, extractFailures)
+				fmt.Fprintf(syncEvents, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"%s"}`+"\n", resource, fetchedThisPage, stored, pageFailureCount, reason)
 			}
 			anomalyEmitted = true
 		}
@@ -677,7 +687,7 @@ func syncResource(ctx context.Context, c interface {
 				}
 			}
 		}
-		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && len(items) >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
+		if resourceSupportsPagination(resource) && nextCursor == "" && pageSize.cursorParam != "offset" && fetchedThisPage >= pageSize.limit && pageMayHaveMore(data, responsePathForResource(resource, path)...) {
 			emitSyncMissingPaginationCursorWarning(syncEvents, humanFriendly, resource, "")
 		}
 
@@ -706,7 +716,7 @@ func syncResource(ctx context.Context, c interface {
 		// sync_error output in the same stream.
 		if maxPages > 0 && pagesFetched >= maxPages {
 			truncatedByCap := resourceSupportsPagination(resource) && hasMore
-			truncatedByCap = truncatedByCap && len(items) >= pageSize.limit
+			truncatedByCap = truncatedByCap && fetchedThisPage >= pageSize.limit
 			if truncatedByCap {
 				capExitCursor = nextCursor
 			}
@@ -759,7 +769,7 @@ func syncResource(ctx context.Context, c interface {
 			outcome.complete = true // resource declares no pagination: one page is the whole set
 			break
 		}
-		if !hasMore || len(items) < pageSize.limit {
+		if !hasMore || fetchedThisPage < pageSize.limit {
 			outcome.complete = true
 			break
 		}
@@ -842,10 +852,14 @@ func syncResource(ctx context.Context, c interface {
 	}
 
 	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal >= consumedTotal {
+		warn := fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal)
+		if hydrateFailureTotal > 0 {
+			warn = fmt.Errorf("%s consumed %d items but stored 0 because scalar item hydration failed", resource, consumedTotal)
+		}
 		return syncResult{
 			Resource: resource,
 			Count:    0,
-			Warn:     fmt.Errorf("%s consumed %d items but stored 0 because no item had an extractable primary key", resource, consumedTotal),
+			Warn:     warn,
 			Duration: time.Since(started),
 		}
 	}
@@ -960,7 +974,7 @@ func extractPageItems(data json.RawMessage, cursorParam string, responsePaths ..
 		if !ok {
 			continue
 		}
-		if items, ok := extractObjectArray(pathData); ok {
+		if items, ok := extractJSONItemsArray(pathData); ok {
 			nextCursor, hasMore := "", false
 			if parentEnvelope, ok := responsePayloadParentAtPath(data, responsePath); ok {
 				nextCursor, hasMore = extractPaginationFromEnvelope(parentEnvelope, cursorParam)
@@ -1039,7 +1053,11 @@ func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMe
 func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
-			if items, ok := extractObjectArray(raw); ok {
+			extract := extractObjectArray
+			if key == "items" || key == "Items" {
+				extract = extractJSONItemsArray
+			}
+			if items, ok := extract(raw); ok {
 				return items, true
 			}
 		}
@@ -1074,9 +1092,17 @@ func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]jso
 	return nil, false
 }
 
-func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+func extractJSONItemsArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	var items []json.RawMessage
 	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+		return nil, false
+	}
+	return items, true
+}
+
+func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
+	items, ok := extractJSONItemsArray(raw)
+	if !ok {
 		return nil, false
 	}
 	var obj map[string]json.RawMessage
@@ -1704,6 +1730,76 @@ func syncResourcePath(resource string) (string, error) {
 		return p, nil
 	}
 	return "", fmt.Errorf("unknown sync resource %q", resource)
+}
+
+type itemHydrationConfig struct {
+	path    string
+	idParam string
+}
+
+var itemHydrationPaths = map[string]itemHydrationConfig{}
+
+func hydrateScalarItems(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+}, resource string, items []json.RawMessage) ([]json.RawMessage, int) {
+	config, ok := itemHydrationPaths[resource]
+	if !ok {
+		return items, 0
+	}
+	hydrated := make([]json.RawMessage, 0, len(items))
+	failures := 0
+	for _, item := range items {
+		id := scalarItemID(item)
+		if id == "" {
+			hydrated = append(hydrated, item)
+			continue
+		}
+		obj, err := c.Get(ctx, hydratedItemPath(config, id), nil)
+		if err != nil || isNullOrEmptyJSON(obj) {
+			failures++
+			continue
+		}
+		hydrated = append(hydrated, obj)
+	}
+	return hydrated, failures
+}
+
+func hydratedItemPath(config itemHydrationConfig, id string) string {
+	param := config.idParam
+	if param == "" {
+		param = "id"
+	}
+	return strings.ReplaceAll(config.path, "{"+param+"}", url.PathEscape(id))
+}
+
+func scalarItemID(item json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(item))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	switch trimmed[0] {
+	case '{', '[':
+		return ""
+	case '"':
+		var s string
+		if err := json.Unmarshal(item, &s); err == nil {
+			return s
+		}
+		return ""
+	default:
+		dec := json.NewDecoder(strings.NewReader(trimmed))
+		dec.UseNumber()
+		var n json.Number
+		if err := dec.Decode(&n); err == nil {
+			return n.String()
+		}
+		return ""
+	}
+}
+
+func isNullOrEmptyJSON(data json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(data))
+	return trimmed == "" || trimmed == "null"
 }
 
 func flatSyncResources(resources []string) []string {

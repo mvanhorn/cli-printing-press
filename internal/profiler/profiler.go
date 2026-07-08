@@ -183,6 +183,11 @@ type SyncableResource struct {
 	// parent tables, tenant-scoped fan-out. Empty when unannotated.
 	TenantScopeColumn string
 
+	// HydratePath is set when this list endpoint returns scalar IDs that must
+	// be fetched through an item endpoint before store upsert.
+	HydratePath    string
+	HydrateIDParam string
+
 	// MembershipField is the boolean membership flag in this resource's own row
 	// payload (from x-pp-membership-field, e.g. "is_member"). For parent tables
 	// it drives membership-aware dependent fan-out (skip non-member parents).
@@ -481,7 +486,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				p.HasChronological = true
 			}
 
-			if isListEndpoint(endpointName, endpoint, s.Types) {
+			if isListEndpoint(endpointName, endpoint, s.Types) || hasScalarIDHydrationTarget(s, resourceName, endpoint, s.Types) {
 				listCapableEndpoints++
 				listResources[resourceName] = struct{}{}
 
@@ -2196,6 +2201,8 @@ type syncableMeta struct {
 	ResponseItem          string
 	QueryEntity           string
 	TenantScopeColumn     string
+	HydratePath           string
+	HydrateIDParam        string
 	MembershipField       string
 }
 
@@ -2221,6 +2228,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 	idWalkFilterParam, idWalkLimitParam, idWalkPageSize := detectIDWalkParams(e)
 	sinceParam, sinceParamFormat := detectEndpointSinceParamAndFormat(e, types)
 	paginationCursorParam, paginationCursorType, paginationLimitParam, paginationPageSize := syncPaginationDefaultsFromEndpoint(e)
+	hydratePath, hydrateIDParam := scalarIDHydrationTarget(s, resourceName, e, types)
 	return syncableMeta{
 		Path:                  e.Path,
 		Method:                strings.ToUpper(e.Method),
@@ -2246,8 +2254,108 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		ResponseItem:          e.Response.Item,
 		QueryEntity:           queryEntityForEndpoint(s, e),
 		TenantScopeColumn:     e.TenantScopeColumn,
+		HydratePath:           hydratePath,
+		HydrateIDParam:        hydrateIDParam,
 		MembershipField:       e.MembershipField,
 	}
+}
+
+func hasScalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
+	path, _ := scalarIDHydrationTarget(s, resourceName, endpoint, types)
+	return path != ""
+}
+
+func scalarIDHydrationTarget(s *spec.APISpec, resourceName string, endpoint spec.Endpoint, types map[string]spec.TypeDef) (string, string) {
+	if s == nil || !isScalarIDListShape(endpoint, types) {
+		return "", ""
+	}
+	type candidate struct {
+		path    string
+		param   string
+		score   int
+		pathLen int
+	}
+	var candidates []candidate
+	walkResources(s.Resources, func(name string, resource spec.Resource) {
+		for _, epName := range sortedKeys(resource.Endpoints) {
+			ep := resource.Endpoints[epName]
+			if strings.EqualFold(ep.Path, endpoint.Path) || !strings.EqualFold(ep.Method, "GET") {
+				continue
+			}
+			placeholders := orderedPathPlaceholders(ep.Path)
+			if len(placeholders) != 1 || ep.Response.Type != "object" {
+				continue
+			}
+			score := hydrationTargetScore(resourceName, name, epName, ep)
+			if score == 0 {
+				continue
+			}
+			candidates = append(candidates, candidate{
+				path:    ep.Path,
+				param:   placeholders[0],
+				score:   score,
+				pathLen: len(ep.Path),
+			})
+		}
+	})
+	if len(candidates) == 0 {
+		return "", ""
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		if candidates[i].pathLen != candidates[j].pathLen {
+			return candidates[i].pathLen < candidates[j].pathLen
+		}
+		return candidates[i].path < candidates[j].path
+	})
+	return candidates[0].path, candidates[0].param
+}
+
+func isScalarIDListShape(endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
+	if !strings.EqualFold(endpoint.Method, "GET") {
+		return false
+	}
+	if isScalarItemArray(endpoint.Response) {
+		return true
+	}
+	if endpoint.Response.Type != "object" || endpoint.Response.Item == "" || endpoint.IDField != "" {
+		return false
+	}
+	typeDef, ok := lookupTypeDef(endpoint.Response.Item, types)
+	if !ok {
+		return false
+	}
+	for _, field := range typeDef.Fields {
+		if strings.EqualFold(field.Name, "items") && strings.EqualFold(field.Type, "array") {
+			return true
+		}
+	}
+	return false
+}
+
+func hydrationTargetScore(listResourceName, targetResourceName, endpointName string, endpoint spec.Endpoint) int {
+	score := 0
+	targetNames := append(nameVariants(listResourceName), "item")
+	for _, segment := range staticPathSegments(endpoint.Path) {
+		if slices.Contains(targetNames, normalizeSyncResourceSegment(segment)) || segment == "item" {
+			score += 4
+			break
+		}
+	}
+	for _, value := range []string{targetResourceName, endpointName} {
+		for _, variant := range nameVariants(value) {
+			if slices.Contains(targetNames, variant) || variant == "item" {
+				score += 2
+				break
+			}
+		}
+	}
+	if endpoint.IDField != "" {
+		score++
+	}
+	return score
 }
 
 // queryEntityForEndpoint returns the SQL-query entity name for a list endpoint
@@ -3013,6 +3121,8 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			Discriminator:         meta.Discriminator,
 			QueryEntity:           meta.QueryEntity,
 			TenantScopeColumn:     meta.TenantScopeColumn,
+			HydratePath:           meta.HydratePath,
+			HydrateIDParam:        meta.HydrateIDParam,
 			MembershipField:       meta.MembershipField,
 		}
 	}
