@@ -298,7 +298,7 @@ func loadBackend(opts probeOptions) (ble.EvidenceInput, ble.Adapter, error) {
 		if isVerifyEnv() {
 			return ble.EvidenceInput{}, nil, fmt.Errorf("live BLE is disabled under PRINTING_PRESS_VERIFY; pass --input replay evidence instead")
 		}
-		adapter, err := ble.NewLiveAdapter()
+		adapter, err := newLiveAdapter()
 		if err != nil {
 			return ble.EvidenceInput{}, nil, err
 		}
@@ -316,6 +316,10 @@ func loadBackend(opts probeOptions) (ble.EvidenceInput, ble.Adapter, error) {
 		return ble.EvidenceInput{}, nil, err
 	}
 	return input, ble.NewReplayAdapter(input), nil
+}
+
+func newLiveAdapter() (ble.Adapter, error) {
+	return ble.NewLiveAdapter()
 }
 
 func evidenceWithEvents(input ble.EvidenceInput, events []ble.Event) ble.EvidenceInput {

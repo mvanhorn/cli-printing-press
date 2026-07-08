@@ -191,6 +191,7 @@ func TestNovelFeatureDepthMismatch(t *testing.T) {
 			}
 			if got == nil {
 				t.Fatal("novelFeatureDepthMismatch() = nil, want mismatch")
+				return
 			}
 			if *got != *tc.want {
 				t.Fatalf("novelFeatureDepthMismatch() = %#v, want %#v", *got, *tc.want)
