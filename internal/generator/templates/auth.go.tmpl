@@ -138,8 +138,37 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
+// validateRedirectOverride rejects unsafe --redirect-uri values before any
+// auth code can be routed through them: the URI must be absolute, carry no
+// fragment or userinfo, and use https unless the host is loopback. A typo or
+// poisoned <NAME>_REDIRECT_URI env var could otherwise send the authorization
+// code through an unintended endpoint or downgrade it to cleartext.
+func validateRedirectOverride(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid --redirect-uri %q: %w", raw, err)
+	}
+	if !u.IsAbs() || u.Host == "" {
+		return fmt.Errorf("invalid --redirect-uri %q: must be an absolute URL with a host", raw)
+	}
+	if u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("invalid --redirect-uri %q: fragments and userinfo are not allowed", raw)
+	}
+	host := u.Hostname()
+	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
+		return fmt.Errorf("invalid --redirect-uri %q: must use https (http is only allowed for localhost)", raw)
+	}
+	return nil
+}
+
 func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret string, port int, redirectOverride string) error {
 	w := cmd.OutOrStdout()
+	if redirectOverride != "" {
+		if err := validateRedirectOverride(redirectOverride); err != nil {
+			return err
+		}
+	}
 	cfg, err := config.Load(flags.configPath)
 	if err != nil {
 		return err

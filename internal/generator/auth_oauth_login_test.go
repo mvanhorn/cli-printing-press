@@ -41,6 +41,8 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	require.Contains(t, auth, "func runOAuthLogin(")
 	require.Contains(t, auth, "return runOAuthLogin(cmd, flags, clientID, clientSecret, port, redirectOverride)")
 	require.Contains(t, auth, `"redirect-uri"`)
+	require.Contains(t, auth, "func validateRedirectOverride(")
+	require.Contains(t, auth, "if err := validateRedirectOverride(redirectOverride); err != nil {")
 	require.Contains(t, auth, "clientID = cfg.ClientID")
 	require.Contains(t, auth, "clientSecret = cfg.ClientSecret")
 	require.Contains(t, auth, "promptOAuthCredential(cmd, reader, \"OAuth2 Client ID\")")
