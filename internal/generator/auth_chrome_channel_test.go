@@ -51,9 +51,9 @@ func TestCookieAuthEmitsChannelAwareDiscovery(t *testing.T) {
 	requireGeneratedCompiles(t, outputDir)
 }
 
-// The refresh path's cookie-DB fallback must resolve the profile across channels
-// like login, otherwise `auth refresh` clobbers a Beta session with stable
-// cookies (or none, for a Beta-only user).
+// A browser-session cookie CLI must persist the channel/profile chosen at login
+// and have `auth refresh`'s cookie-DB fallback re-read it, otherwise refresh
+// clobbers a Beta session with stable cookies (or none, for a Beta-only user).
 func TestCookieAuthRefreshResolvesChannel(t *testing.T) {
 	t.Parallel()
 
@@ -66,10 +66,33 @@ func TestCookieAuthRefreshResolvesChannel(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	// Login persists the resolved profile location.
+	assert.Contains(t, authGo, "loginProfileLocation = profile.profileLocation()")
+	assert.Contains(t, authGo, "cfg.ChromeProfile = loginProfileLocation")
+	// Refresh re-reads it (no more blind empty-profile extraction).
 	_, refresh, found := strings.Cut(authGo, "func refreshStoredBrowserCookies")
 	require.True(t, found, "expected refreshStoredBrowserCookies in generated auth.go")
-	assert.Contains(t, refresh, "resolveChromeProfile(w, strings.NewReader(\"\")")
+	assert.Contains(t, refresh, "savedProfile = cfg.ChromeProfile")
 	assert.NotContains(t, refresh, "extractCookies(tool, domain, chromeProfile{})")
+
+	// The persisted field exists in config with an omitempty tag.
+	configGo := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
+	assert.Contains(t, configGo, "ChromeProfile string")
+	assert.Contains(t, configGo, "chrome_profile,omitempty")
+
+	requireGeneratedCompiles(t, outputDir)
+}
+
+// A cookie CLI without a browser-session refresh must NOT carry the
+// chrome_profile field — it is scoped to the refresh feature that uses it.
+func TestCookieAuthWithoutRefreshOmitsChromeProfileField(t *testing.T) {
+	t.Parallel()
+
+	outputDir := filepath.Join(t.TempDir(), "chromechannoref-pp-cli")
+	require.NoError(t, New(chromeChannelSpec("chromechannoref"), outputDir).Generate())
+
+	configGo := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
+	assert.NotContains(t, configGo, "ChromeProfile")
 }
 
 // Compile a runtime test into the generated CLI proving chromeChannelDirs picks

@@ -205,6 +205,11 @@ profile by name when the installed backend supports it.`,
 			var cookies string
 			fromPressAuth := false
 			fromCookiesFile := false
+{{- if .Auth.RequiresBrowserSession}}
+			// Channel-qualified profile this session came from; persisted below so
+			// `auth refresh`'s cookie-DB fallback re-reads the same channel.
+			var loginProfileLocation string
+{{- end}}
 			if cookiesFile != "" {
 				imported, err := loadCookiesFromFile(cookiesFile, domain)
 				if err != nil {
@@ -273,6 +278,9 @@ profile by name when the installed backend supports it.`,
 
 			if profile.Dir != "" {
 				fmt.Fprintf(w, "Reading cookies from Chrome profile %q for %s...\n", profile.profileLocation(), domain)
+{{- if .Auth.RequiresBrowserSession}}
+				loginProfileLocation = profile.profileLocation()
+{{- end}}
 			} else {
 				fmt.Fprintf(w, "Reading cookies for %s...\n", domain)
 			}
@@ -371,6 +379,9 @@ profile by name when the installed backend supports it.`,
 			if err != nil {
 				return configErr(err)
 			}
+{{- if .Auth.RequiresBrowserSession}}
+			cfg.ChromeProfile = loginProfileLocation
+{{- end}}
 
 			if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving auth: %w", err))
@@ -436,6 +447,9 @@ profile by name when the installed backend supports it.`,
 			if err != nil {
 				return configErr(err)
 			}
+{{- if .Auth.RequiresBrowserSession}}
+			cfg.ChromeProfile = loginProfileLocation
+{{- end}}
 
 			if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving cookies: %w", err))
@@ -948,15 +962,22 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 			}
 			return toolErr
 		}
-		// Resolve the profile across all installed channels, mirroring login, so
-		// refresh reads (and re-saves) the channel the user logged in with rather
-		// than silently clobbering the stored session with stable/Default cookies
-		// — or, for a Beta-only user, with nothing. The empty reader keeps this
-		// unattended: discovery auto-selects the best-ranked profile and never
-		// blocks on a prompt.
+		// Re-read the channel the user logged in with rather than clobbering the
+		// stored session with another channel's cookies. Prefer the profile saved
+		// at login; if it is gone, or none was saved, fall back to cross-channel
+		// discovery. The empty reader keeps this unattended: discovery
+		// auto-selects the best-ranked profile and never blocks on a prompt.
 		var profile chromeProfile
 		if cookieToolSupportsProfiles(tool.name) {
-			if p, perr := resolveChromeProfile(w, strings.NewReader(""), domain, "", requiredAuthCookies()); perr == nil {
+			savedProfile := ""
+{{- if .Auth.RequiresBrowserSession}}
+			savedProfile = cfg.ChromeProfile
+{{- end}}
+			p, perr := resolveChromeProfile(w, strings.NewReader(""), domain, savedProfile, requiredAuthCookies())
+			if perr != nil && savedProfile != "" {
+				p, perr = resolveChromeProfile(w, strings.NewReader(""), domain, "", requiredAuthCookies())
+			}
+			if perr == nil {
 				profile = p
 			}
 		}
