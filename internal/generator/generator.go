@@ -413,6 +413,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointNeedsClientLimit":  endpointNeedsClientLimit,
 		"endpointClientSideFilters": endpointClientSideFilters,
 		"globalScopeParams":         globalScopeParams,
+		"responsePathCases":         responsePathCases,
 		"envName":                   naming.EnvPrefix,
 		// endpointTemplateEnvName resolves the env-var name for a
 		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
@@ -5189,6 +5190,55 @@ func globalScopeEnvName(apiName string, p spec.Param) string {
 		placeholder = "SCOPE"
 	}
 	return naming.EnvPrefix(apiName) + "_" + placeholder
+}
+
+// responsePathCase is one deduplicated entry for the sync template's
+// responsePathForResource switch: the switch key (resource + NUL + path) and
+// the response envelope path to return for it.
+type responsePathCase struct {
+	Key          string
+	ResponsePath string
+}
+
+// responsePathCases returns a deterministic, deduplicated list of switch cases
+// for responsePathForResource. The switch keys on resource+path, but a single
+// resource can hold multiple endpoints that share one templated path (Google's
+// Admin Directory, for example, exposes /customer/{customer}/roles for both the
+// roles list and the role-privileges read, each with a different response
+// envelope key). Ranging over every endpoint therefore emits duplicate `case`
+// labels, which is a compile error. Dedupe by key here — first endpoint in
+// sorted (resource, endpoint) order wins — so the generated switch always
+// compiles. Sorted iteration keeps output stable across runs.
+func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
+	resourceNames := make([]string, 0, len(resources))
+	for name := range resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	seen := map[string]struct{}{}
+	var out []responsePathCase
+	for _, resourceName := range resourceNames {
+		resource := resources[resourceName]
+		endpointNames := make([]string, 0, len(resource.Endpoints))
+		for endpointName := range resource.Endpoints {
+			endpointNames = append(endpointNames, endpointName)
+		}
+		sort.Strings(endpointNames)
+		for _, endpointName := range endpointNames {
+			endpoint := resource.Endpoints[endpointName]
+			if endpoint.ResponsePath == "" {
+				continue
+			}
+			key := resourceName + "\x00" + endpoint.Path
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, responsePathCase{Key: key, ResponsePath: endpoint.ResponsePath})
+		}
+	}
+	return out
 }
 
 func globalScopeParams(resources map[string]spec.Resource) []spec.Param {
