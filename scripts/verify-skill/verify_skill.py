@@ -712,7 +712,16 @@ def _cli_invocation_from_tokens(
                 if use_str:
                     _, _, optional, variadic = parse_use(use_str)
                     if optional > 0 or variadic:
-                        break
+                        # The parent takes positionals, so this token is
+                        # probably an argument — but Cobra resolves
+                        # subcommand names BEFORE positionals, so descend
+                        # when the token maps to a real child in the
+                        # AddCommand graph (graph-only: the legacy
+                        # any-file leaf scan would false-positive on
+                        # unrelated commands sharing the token's name).
+                        trial_file, _, _ = resolve_command_path(cli_dir, cmd_path + [t])
+                        if trial_file is None:
+                            break
             # Verify adding this token still maps to a valid command. If the
             # extended path has no source match, this token is an argument.
             if cli_dir is not None:
