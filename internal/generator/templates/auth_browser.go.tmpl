@@ -974,10 +974,16 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 			savedProfile = cfg.ChromeProfile
 {{- end}}
 			p, perr := resolveChromeProfile(w, strings.NewReader(""), domain, savedProfile, requiredAuthCookies())
-			if perr != nil && savedProfile != "" {
-				p, perr = resolveChromeProfile(w, strings.NewReader(""), domain, "", requiredAuthCookies())
-			}
-			if perr == nil {
+			if perr != nil {
+				// A profile recorded at login that no longer resolves must fail
+				// loudly: silently rediscovering could pick a different channel and
+				// re-save its cookies over the stored session. With no saved
+				// profile, discovery just found nothing usable — fall through to
+				// the tool's default, matching pre-channel behavior.
+				if savedProfile != "" {
+					return fmt.Errorf("saved Chrome profile %q for %s could not be resolved; re-run auth login --chrome: %w", savedProfile, domain, perr)
+				}
+			} else {
 				profile = p
 			}
 		}

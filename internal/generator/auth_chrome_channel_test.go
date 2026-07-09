@@ -74,6 +74,9 @@ func TestCookieAuthRefreshResolvesChannel(t *testing.T) {
 	require.True(t, found, "expected refreshStoredBrowserCookies in generated auth.go")
 	assert.Contains(t, refresh, "savedProfile = cfg.ChromeProfile")
 	assert.NotContains(t, refresh, "extractCookies(tool, domain, chromeProfile{})")
+	// A saved-but-unresolvable profile fails loudly instead of silently
+	// switching channels.
+	assert.Contains(t, refresh, "could not be resolved; re-run auth login --chrome")
 
 	// The persisted field exists in config with an omitempty tag.
 	configGo := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
