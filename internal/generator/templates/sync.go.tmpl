@@ -3575,13 +3575,9 @@ var dataEnvelopeKeys = []string{"data", "Data", "result", "Result"}
 
 func responsePathForResource(resource, path string) []string {
 	switch resource + "\x00" + path {
-{{- range $resourceName, $resource := .Resources}}
-{{- range $endpointName, $endpoint := $resource.Endpoints}}
-{{- if $endpoint.ResponsePath}}
-	case {{printf "%q" (printf "%s\x00%s" $resourceName $endpoint.Path)}}:
-		return []string{ {{printf "%q" $endpoint.ResponsePath}} }
-{{- end}}
-{{- end}}
+{{- range $c := responsePathCases .Resources}}
+	case {{printf "%q" $c.Key}}:
+		return []string{ {{printf "%q" $c.ResponsePath}} }
 {{- end}}
 	}
 {{- if and .QuerySync .QuerySync.EnvelopeKey}}

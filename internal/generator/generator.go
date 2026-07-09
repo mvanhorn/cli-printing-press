@@ -306,6 +306,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"add":                                 func(a, b int) int { return a + b },
 		"chomp":                               func(s string) string { return strings.TrimRight(s, "\r\n") },
 		"staleAfterExpr":                      staleAfterExpr,
+		"responsePathCases":                   responsePathCases,
 		"oneline":                             naming.OneLine,
 		"composeMCPDesc":                      composeMCPDesc,
 		"composeMCPSubDesc":                   composeMCPSubDesc,
@@ -7681,6 +7682,45 @@ func staleAfterExpr(lit string) string {
 		return cacheDurationDefault
 	}
 	return goDurationExpr(d)
+}
+
+// respPathCase is one deduplicated switch case for sync.go.tmpl's
+// responsePathForResource: a unique (resource, path) key and the
+// ResponsePath of the first endpoint declaring it.
+type respPathCase struct {
+	Key          string
+	ResponsePath string
+}
+
+// responsePathCases returns one switch case per unique (resource, path)
+// pair that declares a ResponsePath. Ranging endpoints directly emits one
+// case per operation, so specs with multiple methods on the same path
+// (GET+PUT+DELETE /groups/{id}, as in Wrike's official OpenAPI) produced
+// duplicate switch cases that fail to compile. First endpoint wins when
+// operations on the same path disagree; output is sorted for deterministic
+// generation.
+func responsePathCases(resources map[string]spec.Resource) []respPathCase {
+	seen := map[string]string{}
+	var keys []string
+	for resourceName, resource := range resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.ResponsePath == "" {
+				continue
+			}
+			k := resourceName + "\x00" + endpoint.Path
+			if _, ok := seen[k]; ok {
+				continue
+			}
+			seen[k] = endpoint.ResponsePath
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	out := make([]respPathCase, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, respPathCase{Key: k, ResponsePath: seen[k]})
+	}
+	return out
 }
 
 // goDurationExpr renders a time.Duration as a readable Go expression, preferring
