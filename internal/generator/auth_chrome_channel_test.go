@@ -126,7 +126,29 @@ func TestProfileLocationChannelQualified(t *testing.T) {
 		t.Fatalf("profileLocation() bare = %q, want Default", got)
 	}
 }
+
+// With a "Default" profile in both Stable and Beta, bare "Default" resolves to
+// stable, and the channel-qualified form selects Beta's cookie DB.
+func TestResolveProfileByNameDisambiguatesChannel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	base, dirs := chromeChannelBase(t, home)
+	for _, ch := range []string{"Chrome", "Chrome Beta"} {
+		if err := os.MkdirAll(filepath.Join(base, dirs[ch], "Default"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stable, err := resolveProfileByName("Default")
+	if err != nil || stable.Channel != "Chrome" {
+		t.Fatalf(` + "`" + `resolveProfileByName("Default") = %#v, err=%v; want stable channel` + "`" + `, stable, err)
+	}
+	beta, err := resolveProfileByName("Chrome Beta/Default")
+	if err != nil || beta.Channel != "Chrome Beta" || beta.DataDir != filepath.Join(base, dirs["Chrome Beta"]) {
+		t.Fatalf(` + "`" + `resolveProfileByName("Chrome Beta/Default") = %#v, err=%v; want Beta channel` + "`" + `, beta, err)
+	}
+}
 `
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "chrome_channel_test.go"), []byte(runtimeTest), 0o600))
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestChromeChannelDirs|TestProfileLocation")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestChromeChannelDirs|TestProfileLocation|TestResolveProfileByNameDisambiguatesChannel")
 }

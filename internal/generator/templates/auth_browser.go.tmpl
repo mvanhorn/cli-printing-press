@@ -476,7 +476,7 @@ profile by name when the installed backend supports it.`,
 
 	cmd.Flags().BoolVar(&browserFlag, "chrome", false, "Read cookies from Chrome")
 	cmd.Flags().BoolVar(&browserFlag, "browser", false, "Alias for --chrome")
-	cmd.Flags().StringVar(&profileFlag, "profile", "", "Chrome profile name (e.g. \"Work\", \"Personal\")")
+	cmd.Flags().StringVar(&profileFlag, "profile", "", "Chrome profile name, or channel-qualified (e.g. \"Work\", \"Chrome Beta/Default\")")
 	cmd.Flags().StringVar(&cookiesFile, "cookies-file", "", "Import cookies from a Playwright storage-state JSON file or raw Cookie header file")
 	return cmd
 }
@@ -1794,11 +1794,16 @@ func resolveProfileByName(name string) (chromeProfile, error) {
 	for _, ch := range channelDirs {
 		for _, dirName := range chromeProfileDirNames(ch.DataDir) {
 			displayName := readProfileDisplayName(filepath.Join(ch.DataDir, dirName, "Preferences"))
-			if strings.ToLower(displayName) == lowerName || strings.ToLower(dirName) == lowerName {
-				if displayName == "" {
-					displayName = dirName
+			candidate := chromeProfile{Channel: ch.Channel, DataDir: ch.DataDir, Dir: dirName, DisplayName: displayName}
+			// Accept the channel-qualified form ("Chrome Beta/Default") too, so
+			// the identifier printed in prompts is a valid --profile value and a
+			// user with a Default profile in several channels can pick a
+			// non-stable one (bare "Default" matches stable first).
+			if strings.ToLower(displayName) == lowerName || strings.ToLower(dirName) == lowerName || strings.ToLower(candidate.profileLocation()) == lowerName {
+				if candidate.DisplayName == "" {
+					candidate.DisplayName = dirName
 				}
-				return chromeProfile{Channel: ch.Channel, DataDir: ch.DataDir, Dir: dirName, DisplayName: displayName}, nil
+				return candidate, nil
 			}
 		}
 	}
