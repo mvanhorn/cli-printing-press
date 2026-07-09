@@ -45,7 +45,8 @@ func newThingsPromotedCmd(flags *rootFlags) *cobra.Command {
 			// rather than through resolveRead (GET-only internally); a
 			// body-aware cached read helper is filed as #425 for when a
 			// second store-backed POST-search consumer ships.
-			body := map[string]any{}
+			bodyMap := map[string]any{}
+			var body any = bodyMap
 			data, _, err := c.PostQueryWithParams(cmd.Context(), path, params, body)
 
 			if err != nil {

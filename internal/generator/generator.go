@@ -118,6 +118,7 @@ type ResourceSummary struct {
 	Endpoints   []string `json:"endpoints"`
 	Syncable    bool     `json:"syncable,omitempty"`
 	Searchable  bool     `json:"searchable,omitempty"`
+	Writable    bool     `json:"writable,omitempty"`
 }
 
 // PlaybookEntry is a domain-specific insight for agents.
@@ -369,6 +370,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"jsonEnumSuggestion":           jsonEnumSuggestion,
 		"bodyMap":                      bodyMap,
 		"bodyMapForEndpoint":           bodyMapForEndpoint,
+		"bodyMapForEndpointVars":       bodyMapForEndpointVars,
 		"bodyVarDecls":                 bodyVarDecls,
 		"bodyFlagRegs":                 bodyFlagRegs,
 		"bodyRequiredChecks":           bodyRequiredChecks,
@@ -565,6 +567,32 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 				return string(runes[:max])
 			}
 			return string(runes[:max-1]) + "…"
+		},
+		// truncateWords keeps root Short within budget without ending on a
+		// partial word. A single long token still hard-clips to honor the cap.
+		"truncateWords": func(max int, s string) string {
+			if max <= 0 {
+				return s
+			}
+			runes := []rune(s)
+			if len(runes) <= max {
+				return s
+			}
+			if max <= 1 {
+				return string(runes[:max])
+			}
+			cut := runes[:max-1]
+			boundary := -1
+			for i := len(cut) - 1; i >= 0; i-- {
+				if unicode.IsSpace(cut[i]) {
+					boundary = i
+					break
+				}
+			}
+			if boundary > 0 {
+				cut = cut[:boundary]
+			}
+			return strings.TrimRightFunc(string(cut), unicode.IsSpace) + "…"
 		},
 		"yamlDoubleQuoted": yamlDoubleQuoted,
 		// groupNovelFeatures clusters features by their Group field, preserving
@@ -2055,6 +2083,21 @@ func safeDisplayURL(value string) string {
 	return parsed.String()
 }
 
+// resourceHasMutation reports whether the resource has any mutating endpoint
+// (POST/PUT/PATCH/DELETE) directly on itself. Each sub-resource is surfaced as
+// its own taxonomy entry and evaluated independently, so this deliberately does
+// NOT recurse into r.SubResources — a read-only parent must not inherit a
+// child's writability, and vice versa.
+func resourceHasMutation(r spec.Resource) bool {
+	for _, e := range r.Endpoints {
+		switch strings.ToUpper(e.Method) {
+		case "POST", "PUT", "PATCH", "DELETE":
+			return true
+		}
+	}
+	return false
+}
+
 // buildDomainContext constructs structured domain knowledge for MCP agents
 // from the spec and profiler output. This is front-loaded context that prevents
 // agents from wasting tokens discovering what the API is about.
@@ -2074,18 +2117,39 @@ func (g *Generator) buildDomainContext() DomainContext {
 			syncSet[sr.Name] = true
 		}
 
-		for rName, r := range g.Spec.Resources {
+		// addResourceSummaries emits one ResourceSummary for the resource named
+		// `name` (dotted path for sub-resources, e.g. "projects.issues") and
+		// then recurses into its sub-resources. syncable/searchable are looked
+		// up by the qualified name: the profiler keys those maps by bare
+		// top-level name, so a dotted name is never a key and correctly resolves
+		// to false (omit-over-guess) for sub-entries.
+		var addResourceSummaries func(name string, r spec.Resource)
+		addResourceSummaries = func(name string, r spec.Resource) {
 			rs := ResourceSummary{
-				Name:        rName,
+				Name:        name,
 				Description: naming.OneLine(r.Description),
-				Syncable:    syncSet[rName],
-				Searchable:  len(g.profile.SearchableFields[rName]) > 0,
+				Syncable:    syncSet[name],
+				Searchable:  len(g.profile.SearchableFields[name]) > 0,
+				Writable:    resourceHasMutation(r),
 			}
 			for eName := range r.Endpoints {
 				rs.Endpoints = append(rs.Endpoints, eName)
 			}
 			sort.Strings(rs.Endpoints)
 			ctx.Resources = append(ctx.Resources, rs)
+
+			subNames := make([]string, 0, len(r.SubResources))
+			for subName := range r.SubResources {
+				subNames = append(subNames, subName)
+			}
+			sort.Strings(subNames)
+			for _, subName := range subNames {
+				addResourceSummaries(name+"."+subName, r.SubResources[subName])
+			}
+		}
+
+		for rName, r := range g.Spec.Resources {
+			addResourceSummaries(rName, r)
 		}
 		sort.Slice(ctx.Resources, func(i, j int) bool {
 			return ctx.Resources[i].Name < ctx.Resources[j].Name
@@ -3662,6 +3726,7 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 			SearchableFields        map[string][]string
 			Tables                  []TableDef
 			ChildScopeColumnSources []profiler.ChildScopeSource
+			MembershipScopedParents []profiler.MembershipScopedParent
 		}{
 			APISpec:                 g.Spec,
 			SyncableResources:       g.profile.SyncableResources,
@@ -3669,6 +3734,7 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 			SearchableFields:        g.profile.SearchableFields,
 			Tables:                  schema,
 			ChildScopeColumnSources: g.profile.ChildScopeColumnSources(),
+			MembershipScopedParents: g.profile.MembershipScopedParents(),
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
@@ -3693,6 +3759,7 @@ type visionRenderData struct {
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
 	TenantScopedParents          []profiler.TenantScopedParent
+	MembershipScopedParents      []profiler.MembershipScopedParent
 	PaginationSupportedResources []string
 	PaginationDefaultResources   []paginationDefaultEntry
 	SpecTimestampFields          []string
@@ -4002,6 +4069,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
 		TenantScopedParents:          g.profile.TenantScopedParents(),
+		MembershipScopedParents:      g.profile.MembershipScopedParents(),
 		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		PaginationDefaultResources:   paginationDefaultEntries(g.profile.SyncableResources, g.profile.DependentSyncResources),
 		SpecTimestampFields:          specDateTimeFieldNames(g.Spec),
@@ -5987,8 +6055,12 @@ const maxBodyFlagDepth = 3
 // map[string]any rather than a single JSON-string flag. Recursion stops
 // at maxBodyFlagDepth; deeper subtrees are only reachable via `--stdin`.
 func bodyMap(body []spec.Param, indent string) string {
+	return bodyMapForVar(body, indent, "body")
+}
+
+func bodyMapForVar(body []spec.Param, indent, mapVar string) string {
 	var b strings.Builder
-	renderBodyMap(&b, flattenCollidingBodyFields(body), 0, indent, "body", "", "")
+	renderBodyMap(&b, flattenCollidingBodyFields(body), 0, indent, mapVar, "", "")
 	return b.String()
 }
 
@@ -5996,35 +6068,47 @@ func bodyMap(body []spec.Param, indent string) string {
 // and the --body-json fallback renderer. Templates call this in place of
 // bodyMap so the BodyJSONFallback decision lives in one place.
 func bodyMapForEndpoint(endpoint spec.Endpoint, indent string) string {
+	return bodyMapForEndpointVars(endpoint, indent, "body", "body")
+}
+
+func bodyMapForEndpointVars(endpoint spec.Endpoint, indent, mapVar, bodyVar string) string {
 	if endpoint.BodyJSONFallback {
-		return bodyJSONFallbackMap(indent)
+		return bodyJSONFallbackMap(endpoint, indent, bodyVar)
 	}
-	return bodyMap(endpoint.Body, indent)
+	return bodyMapForVar(endpoint.Body, indent, mapVar)
 }
 
 // bodyJSONFallbackMap renders the body-population block used when an
 // endpoint's request body schema is a oneOf/anyOf (or otherwise opaque)
 // and we expose a single `--body-json` string flag. The caller has
-// already emitted `body = map[string]any{}`; this block conditionally
-// overwrites body with a parsed JSON object when the user passed a value.
+// already initialized the body value; this block conditionally overwrites it
+// with a parsed JSON value when the user passed a value.
 //
-// The fallback intentionally accepts only JSON objects. Top-level
-// discriminated unions in real-world specs (Cloudflare DNS records,
-// Stripe PaymentMethod, Notion blocks, Linear filters) are object-shaped;
-// rare array-typed bodies are out of scope for the minimum-viable
-// fallback and surface as a clear error message.
-func bodyJSONFallbackMap(indent string) string {
+// The fallback defaults to JSON objects because top-level discriminated
+// unions in real-world specs (Cloudflare DNS records, Stripe PaymentMethod,
+// Notion blocks, Linear filters) are object-shaped; array-root bodies are
+// accepted only when the parser marked the endpoint BodyIsArray.
+func bodyJSONFallbackMap(endpoint spec.Endpoint, indent, bodyVar string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%sif flagBodyJSON != \"\" {\n", indent)
 	fmt.Fprintf(&b, "%s\tvar parsedBodyJSON any\n", indent)
 	fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(flagBodyJSON), &parsedBodyJSON); err != nil {\n", indent)
 	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --body-json: %%w\", err)\n", indent)
 	fmt.Fprintf(&b, "%s\t}\n", indent)
+	if endpoint.BodyIsArray {
+		fmt.Fprintf(&b, "%s\tasArray, ok := parsedBodyJSON.([]any)\n", indent)
+		fmt.Fprintf(&b, "%s\tif !ok {\n", indent)
+		fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON array, got JSON %%T\", parsedBodyJSON)\n", indent)
+		fmt.Fprintf(&b, "%s\t}\n", indent)
+		fmt.Fprintf(&b, "%s\t%s = asArray\n", indent, bodyVar)
+		fmt.Fprintf(&b, "%s}\n", indent)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "%s\tasMap, ok := parsedBodyJSON.(map[string]any)\n", indent)
 	fmt.Fprintf(&b, "%s\tif !ok {\n", indent)
 	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON object, got JSON %%T\", parsedBodyJSON)\n", indent)
 	fmt.Fprintf(&b, "%s\t}\n", indent)
-	fmt.Fprintf(&b, "%s\tbody = asMap\n", indent)
+	fmt.Fprintf(&b, "%s\t%s = asMap\n", indent, bodyVar)
 	fmt.Fprintf(&b, "%s}\n", indent)
 	return b.String()
 }
@@ -6212,7 +6296,11 @@ func renderBodyVarDecls(b *strings.Builder, body []spec.Param, depth int, identP
 func bodyFlagRegs(endpoint spec.Endpoint) string {
 	var b strings.Builder
 	if endpoint.BodyJSONFallback {
-		b.WriteString("\n\tcmd.Flags().StringVar(&flagBodyJSON, \"body-json\", \"\", \"Provide the full request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)\")")
+		bodyShape := "object"
+		if endpoint.BodyIsArray {
+			bodyShape = "array"
+		}
+		fmt.Fprintf(&b, "\n\tcmd.Flags().StringVar(&flagBodyJSON, \"body-json\", \"\", \"Provide the full request body as a JSON %s string (this endpoint accepts a polymorphic schema: oneOf/anyOf)\")", bodyShape)
 		return b.String()
 	}
 	if bodyUsesFlatEmission(endpoint) {

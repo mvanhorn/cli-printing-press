@@ -182,6 +182,12 @@ type SyncableResource struct {
 	// (from x-pp-tenant-scope-column). Drives flat tenant reconcile and, for
 	// parent tables, tenant-scoped fan-out. Empty when unannotated.
 	TenantScopeColumn string
+
+	// MembershipField is the boolean membership flag in this resource's own row
+	// payload (from x-pp-membership-field, e.g. "is_member"). For parent tables
+	// it drives membership-aware dependent fan-out (skip non-member parents).
+	// Empty when unannotated.
+	MembershipField string
 }
 
 // DependentResource describes a child resource that requires iterating a parent
@@ -834,6 +840,36 @@ func (p *APIProfile) TenantScopedParents() []TenantScopedParent {
 	out := make([]TenantScopedParent, 0, len(seen))
 	for parent, col := range seen {
 		out = append(out, TenantScopedParent{Parent: parent, Column: col})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Parent < out[j].Parent })
+	return out
+}
+
+// MembershipScopedParent names a parent table and its boolean membership field.
+type MembershipScopedParent struct {
+	Parent string
+	Field  string
+}
+
+// MembershipScopedParents lists dependent-parent tables that declare a
+// membership field (x-pp-membership-field), for the generated
+// membershipScopedParents map. Only parents that actually have dependents are
+// included. Sorted by parent for deterministic output.
+func (p *APIProfile) MembershipScopedParents() []MembershipScopedParent {
+	seen := map[string]string{}
+	for _, sr := range p.SyncableResources {
+		if sr.MembershipField == "" {
+			continue
+		}
+		for _, dep := range p.DependentSyncResources {
+			if dep.ParentResource == sr.Name {
+				seen[sr.Name] = sr.MembershipField
+			}
+		}
+	}
+	out := make([]MembershipScopedParent, 0, len(seen))
+	for parent, field := range seen {
+		out = append(out, MembershipScopedParent{Parent: parent, Field: field})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Parent < out[j].Parent })
 	return out
@@ -2160,6 +2196,7 @@ type syncableMeta struct {
 	ResponseItem          string
 	QueryEntity           string
 	TenantScopeColumn     string
+	MembershipField       string
 }
 
 type syncableCandidate struct {
@@ -2209,6 +2246,7 @@ func metaFromEndpoint(s *spec.APISpec, resourceName string, resource spec.Resour
 		ResponseItem:          e.Response.Item,
 		QueryEntity:           queryEntityForEndpoint(s, e),
 		TenantScopeColumn:     e.TenantScopeColumn,
+		MembershipField:       e.MembershipField,
 	}
 }
 
@@ -2975,6 +3013,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			Discriminator:         meta.Discriminator,
 			QueryEntity:           meta.QueryEntity,
 			TenantScopeColumn:     meta.TenantScopeColumn,
+			MembershipField:       meta.MembershipField,
 		}
 	}
 	return resources

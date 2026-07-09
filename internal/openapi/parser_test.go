@@ -1366,8 +1366,8 @@ paths:
 	require.NoError(t, err)
 	commandSrc := string(commandData)
 	assert.Contains(t, commandSrc, `if looksLikeJSONComposite(bodyResponseEngine) {`)
-	assert.Contains(t, commandSrc, `body["response_engine"] = parsedResponseEngine`)
-	assert.Contains(t, commandSrc, `body["response_engine"] = bodyResponseEngine`)
+	assert.Contains(t, commandSrc, `bodyMap["response_engine"] = parsedResponseEngine`)
+	assert.Contains(t, commandSrc, `bodyMap["response_engine"] = bodyResponseEngine`)
 	assert.Contains(t, commandSrc, `if looksLikeJSONComposite(bodyLanguage) {`)
 
 	mcpData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))

@@ -423,6 +423,30 @@ func TestToolOptionsHideBlockedRootFlagsButKeepLocalCollisions(t *testing.T) {
 	}
 }
 
+func TestPositionalVariadicNestedAngleBracketsSanitizesKey(t *testing.T) {
+	// "[<slug>...]" is a nested optional variadic. A naive end-trim leaves an
+	// inner ">" (schema key "slug>"), which the Anthropic API rejects with a
+	// 400 and wedges the whole session. The key must be plain "slug", and the
+	// repeated "<slug> [<slug>...]" must collapse to a single positional slot.
+	cmd := &cobra.Command{Use: "add <slug> [<slug>...]"}
+	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
+	if len(positionals) != 1 {
+		t.Fatalf("expected 1 collapsed positional, got %d: %#v", len(positionals), positionals)
+	}
+	if positionals[0].InputName != "slug" {
+		t.Fatalf("expected InputName %q, got %q", "slug", positionals[0].InputName)
+	}
+
+	tool := mcplib.NewTool("add", toolOptionsForFlags(cmd, blockedStructuredArgsForCommand(cmd), positionals)...)
+	props := tool.InputSchema.Properties
+	if _, ok := props["slug"]; !ok {
+		t.Fatalf("clean positional key %q missing from schema: %#v", "slug", props)
+	}
+	if _, ok := props["slug>"]; ok {
+		t.Fatalf("invalid schema key %q leaked into schema: %#v", "slug>", props)
+	}
+}
+
 func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEquivalent(t *testing.T) {
 	root := &cobra.Command{Use: "root"}
 	root.AddCommand(

@@ -176,8 +176,8 @@ func TestJSONStringBodyParamEmitsLocalValidation(t *testing.T) {
 	code := string(src)
 
 	require.Contains(t, code, `json.Unmarshal([]byte(bodyMetadata), &parsedMetadata)`)
-	require.Contains(t, code, `body["metadata"] = bodyMetadata`)
-	require.NotContains(t, code, `body["metadata"] = parsedMetadata`)
+	require.Contains(t, code, `bodyMap["metadata"] = bodyMetadata`)
+	require.NotContains(t, code, `bodyMap["metadata"] = parsedMetadata`)
 }
 
 func TestHTMLStringBodyParamDoesNotEmitJSONValidation(t *testing.T) {

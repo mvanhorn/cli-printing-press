@@ -418,20 +418,33 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- end}}
 {{- else}}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
+{{- if .Endpoint.BodyIsArray}}
+				var jsonBody []any
+{{- else}}
 				var jsonBody map[string]any
+{{- end}}
 				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
 					return fmt.Errorf("parsing stdin JSON: %w", err)
 				}
+{{- if .Endpoint.BodyIsArray}}
+				if jsonBody == nil {
+					return fmt.Errorf("parsing stdin JSON: expected JSON array, got null")
+				}
+{{- end}}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if and .Endpoint.BodyJSONFallback .Endpoint.BodyIsArray}}
+				body = []any{}
+{{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
+				bodyMap := map[string]any{}
+				body = bodyMap
+{{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 {{- if .IsReadOnly}}
 			data, statusCode, err := c.PostQueryWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
@@ -461,20 +474,33 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 {{- end}}
 {{- end}}
 {{- if $hasJSONBody}}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
+{{- if .Endpoint.BodyIsArray}}
+				var jsonBody []any
+{{- else}}
 				var jsonBody map[string]any
+{{- end}}
 				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
 					return fmt.Errorf("parsing stdin JSON: %w", err)
 				}
+{{- if .Endpoint.BodyIsArray}}
+				if jsonBody == nil {
+					return fmt.Errorf("parsing stdin JSON: expected JSON array, got null")
+				}
+{{- end}}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if and .Endpoint.BodyJSONFallback .Endpoint.BodyIsArray}}
+				body = []any{}
+{{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
+				bodyMap := map[string]any{}
+				body = bodyMap
+{{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 {{- if endpointHasRequestParams .Endpoint}}
 			data, statusCode, err := c.DeleteWithParamsAndBodyAndHeaders(cmd.Context(), path, params, body, headerOverrides)
@@ -525,20 +551,33 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			data, statusCode, err := c.PutFormWithParams(cmd.Context(), path, params, fields)
 {{- end}}
 {{- else}}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
+{{- if .Endpoint.BodyIsArray}}
+				var jsonBody []any
+{{- else}}
 				var jsonBody map[string]any
+{{- end}}
 				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
 					return fmt.Errorf("parsing stdin JSON: %w", err)
 				}
+{{- if .Endpoint.BodyIsArray}}
+				if jsonBody == nil {
+					return fmt.Errorf("parsing stdin JSON: expected JSON array, got null")
+				}
+{{- end}}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if and .Endpoint.BodyJSONFallback .Endpoint.BodyIsArray}}
+				body = []any{}
+{{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
+				bodyMap := map[string]any{}
+				body = bodyMap
+{{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, statusCode, err := c.PutWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{- else}}
@@ -575,20 +614,33 @@ func new{{cmdIdent .FuncPrefix .EndpointName}}Cmd(flags *rootFlags) *cobra.Comma
 			data, statusCode, err := c.PatchFormWithParams(cmd.Context(), path, params, fields)
 {{- end}}
 {{- else}}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("reading stdin: %w", err)
 				}
+{{- if .Endpoint.BodyIsArray}}
+				var jsonBody []any
+{{- else}}
 				var jsonBody map[string]any
+{{- end}}
 				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
 					return fmt.Errorf("parsing stdin JSON: %w", err)
 				}
+{{- if .Endpoint.BodyIsArray}}
+				if jsonBody == nil {
+					return fmt.Errorf("parsing stdin JSON: expected JSON array, got null")
+				}
+{{- end}}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if and .Endpoint.BodyJSONFallback .Endpoint.BodyIsArray}}
+				body = []any{}
+{{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- else}}
+				bodyMap := map[string]any{}
+				body = bodyMap
+{{bodyMapForEndpointVars .Endpoint "\t\t\t\t" "bodyMap" "body"}}{{- end}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, statusCode, err := c.PatchWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{- else}}
