@@ -948,7 +948,19 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 			}
 			return toolErr
 		}
-		cookies, err = extractCookies(tool, domain, chromeProfile{})
+		// Resolve the profile across all installed channels, mirroring login, so
+		// refresh reads (and re-saves) the channel the user logged in with rather
+		// than silently clobbering the stored session with stable/Default cookies
+		// — or, for a Beta-only user, with nothing. The empty reader keeps this
+		// unattended: discovery auto-selects the best-ranked profile and never
+		// blocks on a prompt.
+		var profile chromeProfile
+		if cookieToolSupportsProfiles(tool.name) {
+			if p, perr := resolveChromeProfile(w, strings.NewReader(""), domain, "", requiredAuthCookies()); perr == nil {
+				profile = p
+			}
+		}
+		cookies, err = extractCookies(tool, domain, profile)
 		if err != nil {
 			return fmt.Errorf("extracting cookies: %w", err)
 		}

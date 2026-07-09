@@ -5,6 +5,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -48,6 +49,27 @@ func TestCookieAuthEmitsChannelAwareDiscovery(t *testing.T) {
 	assert.NotContains(t, authGo, "func chromeDataDir()")
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+// The refresh path's cookie-DB fallback must resolve the profile across channels
+// like login, otherwise `auth refresh` clobbers a Beta session with stable
+// cookies (or none, for a Beta-only user).
+func TestCookieAuthRefreshResolvesChannel(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := chromeChannelSpec("chromechanrefresh")
+	apiSpec.Auth.RequiresBrowserSession = true
+	apiSpec.Auth.BrowserSessionValidationPath = "/api/me"
+	apiSpec.Auth.BrowserSessionValidationMethod = "GET"
+
+	outputDir := filepath.Join(t.TempDir(), "chromechanrefresh-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	_, refresh, found := strings.Cut(authGo, "func refreshStoredBrowserCookies")
+	require.True(t, found, "expected refreshStoredBrowserCookies in generated auth.go")
+	assert.Contains(t, refresh, "resolveChromeProfile(w, strings.NewReader(\"\")")
+	assert.NotContains(t, refresh, "extractCookies(tool, domain, chromeProfile{})")
 }
 
 // Compile a runtime test into the generated CLI proving chromeChannelDirs picks
