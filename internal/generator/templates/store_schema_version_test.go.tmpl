@@ -947,6 +947,268 @@ func TestMigrate_V6ToV7IsIdempotent(t *testing.T) {
 		t.Fatalf("playbook row count after re-open = %d, want 1", count)
 	}
 }
+
+// requireTableExists fails unless name is a real table in the open store.
+func requireTableExists(t *testing.T, s *Store, name string) {
+	t.Helper()
+	var got string
+	if err := s.DB().QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name,
+	).Scan(&got); err != nil {
+		t.Fatalf("table %s should exist: %v", name, err)
+	}
+}
+
+// TestSchemaVersion_FreshDBHasCandidateAndEventTables verifies a fresh
+// learn-enabled database opens at the current (v9) version with both new
+// tables queryable and their CHECK constraints enforced. Candidates are the
+// structural quarantine for CLI-derived observations; events are the
+// measurement substrate — neither may silently regress to a missing table
+// or an unchecked enum column.
+func TestSchemaVersion_FreshDBHasCandidateAndEventTables(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open fresh db: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("fresh learn db version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	requireTableExists(t, s, "learn_candidates")
+	requireTableExists(t, s, "learn_events")
+
+	if _, err := s.DB().Exec(
+		`INSERT INTO learn_candidates (class, payload, derivation_signature, query_family, command_path, created_at, updated_at, last_seen_at)
+		 VALUES ('flag_alias', '{"from":"--fmt","to":"--format"}', 'sig-1', 'family_X', 'items list', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert valid candidate: %v", err)
+	}
+	if _, err := s.DB().Exec(
+		`INSERT INTO learn_candidates (class, payload, derivation_signature, created_at, updated_at, last_seen_at)
+		 VALUES ('bogus_class', '{}', 'sig-2', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err == nil {
+		t.Fatalf("candidate class CHECK should reject an unknown class")
+	}
+
+	if _, err := s.DB().Exec(
+		`INSERT INTO learn_events (ts, event, query_family_hash, matched_row_id, entity_match, surface)
+		 VALUES ('2026-01-01T00:00:00Z', 'recall_hit', 'hash-1', 1, 1, 'cli')`,
+	); err != nil {
+		t.Fatalf("insert valid event: %v", err)
+	}
+	if _, err := s.DB().Exec(
+		`INSERT INTO learn_events (ts, event) VALUES ('2026-01-01T00:00:00Z', 'bogus_event')`,
+	); err == nil {
+		t.Fatalf("event CHECK should reject an unknown event name")
+	}
+}
+
+// TestMigrate_V4ToV9AdditiveNoFTSContentRewrite verifies the FTS decouple:
+// a v4-stamped store opened by the v9 binary takes the additive-only path.
+// The learn tables are created, the version advances, and the FTS content
+// rewrite does NOT run — resourcesFTSContentSchemaVersion is pinned at 4,
+// so a store stamped at 4 already carries extracted-leaf content and a
+// sentinel FTS row must survive the open byte-for-byte at its rowid.
+func TestMigrate_V4ToV9AdditiveNoFTSContentRewrite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE resources (
+		id TEXT NOT NULL,
+		resource_type TEXT NOT NULL,
+		data JSON NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (resource_type, id)
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create v4 resources: %v", err)
+	}
+	if _, err := raw.Exec(resourcesFTSCreateSQL); err != nil {
+		raw.Close()
+		t.Fatalf("create v4 resources_fts: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('user-1', 'user', '{"id":"user-1","name":"alice"}')`); err != nil {
+		raw.Close()
+		t.Fatalf("seed v4 resource: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, 'user-1', 'user', 'sentinel fts')`, ftsRowID("user", "user-1")); err != nil {
+		raw.Close()
+		t.Fatalf("seed v4 resources_fts row: %v", err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 4`); err != nil {
+		raw.Close()
+		t.Fatalf("stamp v4: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open v4 db with v9 binary: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("upgraded version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	requireTableExists(t, s, "learn_candidates")
+	requireTableExists(t, s, "learn_events")
+
+	// The rewrite gate must not have fired: the sentinel content is still
+	// exactly what the v4 binary wrote, at the same content-addressed rowid.
+	var content string
+	var rowid int64
+	if err := s.DB().QueryRow(`SELECT rowid, content FROM resources_fts WHERE id = 'user-1' AND resource_type = 'user'`).Scan(&rowid, &content); err != nil {
+		t.Fatalf("read resources_fts after v4 open: %v", err)
+	}
+	if content != "sentinel fts" {
+		t.Fatalf("resources_fts content = %q; the v4->v9 open must not rewrite FTS content", content)
+	}
+	if want := ftsRowID("user", "user-1"); rowid != want {
+		t.Fatalf("resources_fts rowid = %d, want preserved %d", rowid, want)
+	}
+
+	data, err := s.Get("user", "user-1")
+	if err != nil {
+		t.Fatalf("get preserved v4 row: %v", err)
+	}
+	if string(data) != `{"id":"user-1","name":"alice"}` {
+		t.Fatalf("preserved v4 row payload = %s, want original", data)
+	}
+}
+
+// TestMigrate_V8ToV9AddsCandidatesAndEvents verifies the v8->v9 upgrade is
+// purely additive: a v8-stamped store (learn tables through
+// learning_playbooks) gains learn_candidates and learn_events, keeps every
+// learn row intact, and never touches FTS content.
+func TestMigrate_V8ToV9AddsCandidatesAndEvents(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	stmts := []string{
+		`CREATE TABLE resources (
+			id TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			data JSON NOT NULL,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)`,
+		`INSERT INTO resources (id, resource_type, data) VALUES ('user-1', 'user', '{"id":"user-1","name":"alice"}')`,
+		resourcesFTSCreateSQL,
+		`CREATE TABLE search_learnings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_pattern TEXT NOT NULL,
+			query_entities TEXT,
+			venue TEXT,
+			resource_type TEXT,
+			resource_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			alias_target TEXT,
+			source TEXT NOT NULL,
+			confidence INTEGER DEFAULT 1,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_observed_at DATETIME,
+			notes TEXT
+		)`,
+		`INSERT INTO search_learnings (query_pattern, resource_id, action, source) VALUES ('alice', 'user-1', 'boost', 'taught')`,
+		`CREATE TABLE learning_playbooks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_family TEXT NOT NULL UNIQUE,
+			playbook_json TEXT,
+			notes_text TEXT,
+			source TEXT NOT NULL DEFAULT 'taught',
+			confidence INTEGER NOT NULL DEFAULT 2,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			last_observed_at TIMESTAMP
+		)`,
+		`INSERT INTO learning_playbooks (query_family, notes_text) VALUES ('family_X', 'hand-authored notes')`,
+		`PRAGMA user_version = 8`,
+	}
+	for _, stmt := range stmts {
+		if _, err := raw.Exec(stmt); err != nil {
+			raw.Close()
+			t.Fatalf("seed v8 db (%s): %v", stmt, err)
+		}
+	}
+	if _, err := raw.Exec(`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, 'user-1', 'user', 'sentinel fts')`, ftsRowID("user", "user-1")); err != nil {
+		raw.Close()
+		t.Fatalf("seed v8 resources_fts row: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open upgraded db: %v", err)
+	}
+	defer s.Close()
+
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if v != StoreSchemaVersion {
+		t.Fatalf("upgraded version = %d, want %d", v, StoreSchemaVersion)
+	}
+
+	// New tables exist and accept rows post-upgrade.
+	requireTableExists(t, s, "learn_candidates")
+	requireTableExists(t, s, "learn_events")
+	if _, err := s.DB().Exec(
+		`INSERT INTO learn_candidates (class, payload, derivation_signature, created_at, updated_at, last_seen_at)
+		 VALUES ('playbook_candidate', '{}', 'sig-up', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert into upgraded learn_candidates: %v", err)
+	}
+	if _, err := s.DB().Exec(
+		`INSERT INTO learn_events (ts, event, surface) VALUES ('2026-01-01T00:00:00Z', 'teach', 'mcp')`,
+	); err != nil {
+		t.Fatalf("insert into upgraded learn_events: %v", err)
+	}
+
+	// Pre-existing learn data preserved.
+	var learnedCount int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM search_learnings WHERE resource_id = 'user-1'`).Scan(&learnedCount); err != nil {
+		t.Fatalf("count preserved search_learnings: %v", err)
+	}
+	if learnedCount != 1 {
+		t.Fatalf("preserved search_learnings count = %d, want 1", learnedCount)
+	}
+	var notes string
+	if err := s.DB().QueryRow(`SELECT notes_text FROM learning_playbooks WHERE query_family = 'family_X'`).Scan(&notes); err != nil {
+		t.Fatalf("read preserved playbook: %v", err)
+	}
+	if notes != "hand-authored notes" {
+		t.Fatalf("preserved playbook notes = %q, want original", notes)
+	}
+
+	// v8 is past the FTS content pin (4), so the rewrite must not run.
+	var content string
+	if err := s.DB().QueryRow(`SELECT content FROM resources_fts WHERE id = 'user-1' AND resource_type = 'user'`).Scan(&content); err != nil {
+		t.Fatalf("read resources_fts after v8 open: %v", err)
+	}
+	if content != "sentinel fts" {
+		t.Fatalf("resources_fts content = %q; the v8->v9 open must not rewrite FTS content", content)
+	}
+}
 {{- end}}
 
 // TestOpenReadOnly_RejectsWrites pins the contract: direct and CTE-wrapped

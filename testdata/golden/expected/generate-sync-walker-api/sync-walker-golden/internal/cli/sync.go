@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"sync"
 	"sync-walker-golden-pp-cli/internal/client"
 	"sync-walker-golden-pp-cli/internal/cliutil"
+	"sync-walker-golden-pp-cli/internal/learn"
+	"sync-walker-golden-pp-cli/internal/learn/lookups"
 	"sync-walker-golden-pp-cli/internal/store"
 	"sync/atomic"
 	"time"
@@ -333,6 +336,17 @@ Resource scoping:
 			} else {
 				fmt.Fprintf(syncEventWriter, `{"event":"sync_summary","total_records":%d,"resources":%d,"success":%d,"warned":%d,"errored":%d,"duration_ms":%d}`+"\n",
 					totalSynced, totalResources, successCount, warnCount, errCount, elapsed.Milliseconds())
+			}
+
+			// Lookup refresh (learn loop): derive entity_lookups rows under
+			// source='synced' from the freshly synced resources, filtered to
+			// entities recorded as recall lookup misses. Local data only —
+			// it reads the store this run just populated, never the network.
+			// The PersistentPreRunE learn hook skips `sync` via
+			// shouldSkipLearnHook, so this explicit post-sync call is the
+			// one wiring point for the staleness-heal loop.
+			if successCount > 0 && !c.DryRun && !noLearnActive(flags) && !cliutil.IsVerifyEnv() && !cliutil.IsDogfoodEnv() {
+				refreshLookupsFromSyncedStore(cmd.Context(), db.DB(), syncEventWriter)
 			}
 
 			// Exit-code policy:
@@ -2698,5 +2712,39 @@ func scalarIDString(value any) string {
 		return store.ResourceIDString(value)
 	default:
 		return ""
+	}
+}
+
+// lookupRefreshEntityFields names the generic identity-bearing JSON
+// fields the lookup-refresh scanner reads from synced resource rows.
+// Deliberately spec-independent: identity fields converge on these
+// names across APIs, and the recorded-miss filter plus per-kind caps
+// keep any over-extraction from mattering.
+var lookupRefreshEntityFields = []string{"name", "title", "display_name", "full_name", "short_name", "label"}
+
+// refreshLookupsFromSyncedStore runs the post-sync lookup-refresh
+// scanner: entities that recall recorded as lookup misses and that now
+// appear in synced resources become entity_lookups rows under
+// source='synced', resolvable on the next recall without a reprint.
+// Failures degrade to a warning — a refresh problem must never turn a
+// successful sync into a failed command.
+func refreshLookupsFromSyncedStore(ctx context.Context, db *sql.DB, syncEvents io.Writer) {
+	learnCfg := newLearnConfig()
+	res, err := lookups.RefreshFromSynced(ctx, db, lookups.RefreshOpts{
+		Extract: func(_ string, data []byte) []string {
+			return learn.ResourceEntitiesFromJSON(data, lookupRefreshEntityFields, learnCfg)
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: lookup refresh skipped: %v\n", err)
+		return
+	}
+	if res.Inserted == 0 {
+		return
+	}
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "Lookup refresh: %d entity lookup(s) derived from synced data\n", res.Inserted)
+	} else {
+		fmt.Fprintf(syncEvents, `{"event":"lookup_refresh","inserted":%d,"scanned":%d}`+"\n", res.Inserted, res.Scanned)
 	}
 }

@@ -1,2 +1,3 @@
+info: learn: defaulting self-learning loop on (opt out with learn.disabled: true)
 warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
 Generated printing-press-oauth2 at <ARTIFACT_DIR>/generate-golden-api-oauth2-device-code/printing-press-oauth2-device-code

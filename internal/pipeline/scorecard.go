@@ -1485,9 +1485,23 @@ func scoreVision(dir string) int {
 	if fileExists(filepath.Join(cliDir, "import.go")) {
 		tier1 += 0.5
 	}
-	// internal/learn/doc.go is the presence sentinel for the recall/teach loop (+0.5).
-	if fileExists(filepath.Join(dir, "internal", "learn", "doc.go")) {
-		tier1 += 0.5
+	// Learn-loop credit is static-behavioral, never presence-only. The old
+	// internal/learn/doc.go sentinel is retired: with the learn loop
+	// default-on, every printed CLI ships that file, so its presence proves
+	// nothing. Instead the half point splits into two quarter-point signals:
+	//   +0.25 when the learn command surface (teach + recall + learnings) is
+	//         actually registered on the root command, read via the same
+	//         reachable-command parse the rest of the scorer uses;
+	//   +0.25 when the emitted seed artifact carries non-empty entity lookup
+	//         seeds (the per-CLI lookups.SeedConfig map the generator stamps).
+	// Both are pure static content scans. Execution proof (verify matrix,
+	// learn stats runs) belongs to verify and the acceptance print — the
+	// scorecard never executes binaries.
+	if learnCommandSurfaceRegistered(cliDir) {
+		tier1 += 0.25
+	}
+	if learnEntitySeedsNonEmpty(dir) {
+		tier1 += 0.25
 	}
 	// Workflow or compound command files
 	hasWorkflowShape := false
@@ -1596,6 +1610,52 @@ func registeredCommandContent(cliDir string, registeredFiles map[string]bool) ma
 func hasCommandContentMatching(commandContent map[string]string, match func(string) bool) bool {
 	for _, content := range commandContent {
 		if match(content) {
+			return true
+		}
+	}
+	return false
+}
+
+// learnCommandSurfaceRegistered reports whether the learn loop's command
+// surface is reachable from the emitted root command: teach, recall, and
+// learnings must all appear as registered constructor calls in root.go
+// (rootCmd.AddCommand(newTeachCmd(...)) and friends). This reuses the same
+// AST-based registered-call parse the reachable-command scorer uses, so an
+// orphan teach.go that nothing registers earns no credit.
+func learnCommandSurfaceRegistered(cliDir string) bool {
+	rootContent := readFileContent(filepath.Join(cliDir, "root.go"))
+	if rootContent == "" {
+		return false
+	}
+	ctors := addCommandConstructorCalls(rootContent)
+	return ctors["newTeachCmd"] && ctors["newRecallCmd"] && ctors["newLearningsCmd"]
+}
+
+// learnSeedMapRe matches the emitted shape that can actually carry seed rows.
+var learnSeedMapRe = regexp.MustCompile(`map\s*\[\s*string\s*\]\s*\[\s*\](?:lookups\.)?SeedConfig`)
+
+// learnSeedDataRe matches a stamped entity-lookup seed row: a Canonical
+// field assigned a string literal ({Canonical: "SEA", ...}). The generic
+// lookups library only ever writes variable references (Canonical:
+// s.Canonical), so this shape is unique to per-CLI seed data.
+var learnSeedDataRe = regexp.MustCompile(`Canonical:\s*"`)
+
+// learnEntitySeedsNonEmpty reports whether the emitted tree carries
+// non-empty entity lookup seeds. The generator stamps the per-CLI seed map
+// into internal/cli/learn_init.go as a lookups.SeedConfig literal with at
+// least one Canonical entry; an empty learn block emits no such literal.
+// A hand-authored seed table under internal/learn/lookups counts the same
+// way. Pure static content scan — no binary ever runs.
+func learnEntitySeedsNonEmpty(dir string) bool {
+	for _, p := range []string{
+		filepath.Join(dir, "internal", "cli", "learn_init.go"),
+		filepath.Join(dir, "internal", "learn", "lookups", "seeds.go"),
+	} {
+		content := readFileContent(p)
+		if content == "" {
+			continue
+		}
+		if learnSeedMapRe.MatchString(content) && learnSeedDataRe.MatchString(content) {
 			return true
 		}
 	}

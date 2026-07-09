@@ -2836,6 +2836,95 @@ three. If polish later reports these dims weak, that's a sign this enrichment
 step was skipped — re-run generation with the enriched spec rather than
 trying to fix it in polish.
 
+### Pre-Generation Learn Enrichment
+
+Before generating, author the spec's `learn:` block. The learn loop (the
+`teach`, `recall`, `learnings`, and `playbook` command families plus their
+local store tables) is emitted by default for every print. The emitted
+`internal/learn` package stays domain-neutral (enforced by
+`scripts/verify-learn-purity.sh`), so the spec's `learn:` block is the only
+place per-CLI domain vocabulary can enter the loop. Vocabulary the block does
+not carry never reaches the printed CLI, and a seedless loop can only
+exact-match taught phrasings.
+
+**This decision is REQUIRED.** Every run leaves this step with exactly one of
+three recorded outcomes: an authored `learn:` block, the no-entities escape,
+or the `learn.disabled: true` opt-out. Do not proceed to Lock and Generate
+without one. Seeds are baked into the generated `learn_init.go` at
+generate-time; polish cannot add them later (polish does not re-run
+generation).
+
+**Author from Phase 1 research vocabulary.** The research brief already names
+the domain's entities; translate them, do not re-research:
+
+- `entity_lookup_seeds`: keyed by entity kind, one entry per canonical
+  entity. `canonical` must match upstream API responses exactly; `aliases`
+  capture how agents actually type the entity (nicknames, abbreviations,
+  short forms). This is where most authoring time goes. Seed the full set for
+  finite stable domains; seed only the high-frequency cases for open-ended
+  ones.
+- `ticker_patterns`: only when the domain has ticker-like identifiers, i.e.
+  stable regex-matchable IDs, slugs, or codes an agent would paste into a
+  free-text query. Anchor every regex with `^...$`.
+- `synonyms`: only for same-referent phrasing variants users will actually
+  say (spelling variants, equivalent time phrasings). Never pairs that change
+  meaning; keys and values are lowercase, single-hop.
+- `stopwords`: rarely. Only domain filler words beyond the built-in English
+  default set.
+
+```yaml
+learn:
+  entity_lookup_seeds:
+    widget_series:
+      - canonical: Example Widget Series Alpha
+        aliases: [alpha, series a, ews-alpha]
+      - canonical: Example Widget Series Beta
+        aliases: [beta, series b]
+  ticker_patterns:
+    - "^ew-[a-z0-9]+$"        # only when the domain has ID-shaped tokens
+  synonyms:
+    "most recent": "latest"
+  stopwords:
+    - widget
+```
+
+**No-entities escape.** For domains with no entity vocabulary (nothing agents
+would refer to by multiple names), leave `entity_lookup_seeds` empty or omit
+the block and record why in one line at the spec root:
+
+```yaml
+# learn no-entities escape: <one-line reason there is no aliasable entity vocabulary>
+```
+
+The loop still ships and still pays off for exact-recall and playbooks;
+degraded generalization is the expected and accepted trade.
+
+**Opt-out.** Set `learn.disabled: true` only for CLIs where local learning is
+genuinely wrong, such as pure stdin/stdout transforms with no query
+vocabulary and no discovery walk to compress:
+
+```yaml
+learn:
+  disabled: true
+```
+
+`disabled: true` is the authoritative off switch. `enabled: false` is a
+documented no-op once the loop is default-on (it cannot distinguish
+"explicitly off" from "absent"), and the parser rejects `disabled: true`
+combined with an explicit `enabled: true`.
+
+**For OpenAPI input specs**, carry the block as a top-level `x-learn`
+extension on the editable overlay or derived spec artifact before the final
+`generate` invocation, the same carry-over convention Pre-Generation
+Category Enrichment uses. The shape is identical to the internal-YAML
+`learn:` block, nested under the vendor-extension key; see
+[`docs/SPEC-EXTENSIONS.md`](../../docs/SPEC-EXTENSIONS.md).
+
+For field-by-field sourcing guidance, a worked example, the local validation
+workflow, and common pitfalls, see
+[`docs/SPEC-LEARN-AUTHORING.md`](../../docs/SPEC-LEARN-AUTHORING.md); point
+there instead of restating it in run artifacts.
+
 ### Lock and Generate
 
 Before running any generate command, acquire the build lock:

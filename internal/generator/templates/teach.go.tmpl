@@ -157,17 +157,26 @@ func newTeachCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
 	var dbPath string
 	var notes string
 	var noValidate bool
-	// Playbook side -- optional. When either is set, after the resource
+	// Playbook side -- optional. When any is set, after the resource
 	// learning lands, also upsert a learning_playbooks row keyed on the
 	// query family. Failures here log to teach.log but don't fail the
-	// resource learning (graceful degrade).
+	// resource learning (graceful degrade). --playbook-json is the
+	// inline alternative to --playbook-file (MCP-only agents have no
+	// filesystem to stage a file on); the two are mutually exclusive.
 	var playbookFile string
+	var playbookJSONInline string
 	var playbookNotesInline string
 	var playbookNotesFile string
 
 	cmd := &cobra.Command{
 		Use:   "teach",
 		Short: "Record a query -> resource mapping for future recall (LLM-fired, silent)",
+		// Bare invocation intentionally exits 2 (silent usage error to
+		// teach.log); declare it so `cli-printing-press verify` scores the
+		// Execute cell honestly instead of masking a FAIL. Writes land only
+		// in the CLI's own local store, so MCP hosts get non-destructive
+		// local-write hints instead of a "could mutate anything" prompt.
+		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
 		Long: `Record one or more "this query -> this resource" mappings so the next
 query that matches surfaces the right resources without re-running discovery.
 
@@ -199,6 +208,20 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 				writeTeachErrLog(fmt.Sprintf("teach: missing --resource-type for query=%q", query))
 				return silentCodeErr(2)
 			}
+			if strings.TrimSpace(playbookFile) != "" && strings.TrimSpace(playbookJSONInline) != "" {
+				writeTeachErrLog(fmt.Sprintf("teach: --playbook-file and --playbook-json are mutually exclusive (query=%q)", query))
+				return silentCodeErr(2)
+			}
+			// PII guard (R18): scan the freeform query for obvious
+			// email/phone shapes before it persists into the learn
+			// tables. Warn-only by contract — name the rule on stderr,
+			// never block the teach, never redact silently. The learn
+			// tables are local, but taught rows resurface in future
+			// recall envelopes and may be shared in diagnostics.
+			for _, rule := range learn.ScanPII(query) {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"warning: teach query matches the %s PII rule; teach structural queries with identifiers stripped (recorded anyway)\n", rule)
+			}
 			dbPath = learnDBPath(dbPath)
 			s, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
@@ -216,12 +239,13 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 			// derive a different family for the same query.
 			resolver := learn.NewCanonicalResolver(cmd.Context(), s.DB())
 			normalized = learn.PromoteEntities(normalized, resolver)
+			var taughtRowIDs []int64
 			for _, rid := range resources {
 				rid = strings.TrimSpace(rid)
 				if rid == "" {
 					continue
 				}
-				if _, _, uerr := s.UpsertLearning(store.UpsertLearningInput{
+				learningID, _, uerr := s.UpsertLearning(cmd.Context(), store.UpsertLearningInput{
 					Query:         query,
 					QueryEntities: normalized.Entities,
 					ResourceID:    rid,
@@ -229,10 +253,12 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 					Venue:         venueArg,
 					Source:        store.LearningSourceTaught,
 					Notes:         notes,
-				}); uerr != nil {
+				})
+				if uerr != nil {
 					writeTeachErrLog(fmt.Sprintf("teach: upsert %q for query=%q: %v", rid, query, uerr))
 					return silentCodeErr(1)
 				}
+				taughtRowIDs = append(taughtRowIDs, learningID)
 
 				if !noValidate {
 					for _, w := range learn.ValidateResourceShape(cmd.Context(), s.DB(), learnCfg, query, rid, resourceType, nil) {
@@ -240,6 +266,20 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 							writeTeachErrLog(fmt.Sprintf("teach: warn append: %v", logErr))
 						}
 					}
+				}
+			}
+
+			// Measurement: one teach event per taught row, keyed by the
+			// learning row id so a later recall_hit on the same row
+			// counts as reuse (row-id join; the family hash rides along
+			// as the legacy fallback key). Telemetry-class: failures go
+			// to teach.log and never fail the teach.
+			teachFamHash := learn.FamilyHash(learn.QueryFamily(normalized))
+			teachSurface := store.LearnEventSurface()
+			for _, learningID := range taughtRowIDs {
+				if evErr := s.InsertLearnEvent(store.LearnEventTeach, teachFamHash,
+					learningID, false, teachSurface); evErr != nil {
+					writeTeachErrLog(fmt.Sprintf("teach: event insert: %v", evErr))
 				}
 			}
 
@@ -256,10 +296,31 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 			// teach.log but don't fail the resource learning above --
 			// the agent's primary write (resource learning) already
 			// succeeded, so degraded playbook recording is acceptable.
-			if strings.TrimSpace(playbookFile) != "" || strings.TrimSpace(playbookNotesInline) != "" || strings.TrimSpace(playbookNotesFile) != "" {
-				if pbErr := upsertPlaybookFromTeach(cmd.Context(), s, learnCfg, query, playbookFile, playbookNotesInline, playbookNotesFile, normalized); pbErr != nil {
+			if strings.TrimSpace(playbookFile) != "" || strings.TrimSpace(playbookJSONInline) != "" || strings.TrimSpace(playbookNotesInline) != "" || strings.TrimSpace(playbookNotesFile) != "" {
+				if pbErr := upsertPlaybookFromTeach(cmd.Context(), s, learnCfg, query, playbookFile, playbookJSONInline, playbookNotesInline, playbookNotesFile, normalized); pbErr != nil {
 					writeTeachErrLog(fmt.Sprintf("teach: playbook upsert: %v", pbErr))
 				}
+			}
+
+			// Shared key space with auto-capture: a teach whose query
+			// family matches an open auto-captured playbook candidate
+			// promotes that candidate (materialize if needed + confirm)
+			// instead of leaving a duplicate artifact. Best-effort --
+			// failures log to teach.log and never fail the teach.
+			if promoErr := promoteCandidateOnTeach(s, learn.QueryFamily(normalized)); promoErr != nil {
+				writeTeachErrLog(fmt.Sprintf("teach: candidate promotion: %v", promoErr))
+			}
+
+			// Teach-time playbook synthesis, composed with the promotion
+			// hook above: promotion runs first, and a promoted candidate
+			// (or an agent-supplied --playbook-file) leaves a playbook row
+			// that makes synthesis a no-op. Only when the family still
+			// lacks a playbook does this session's recall-to-teach journal
+			// episode become a quarantined playbook_candidate awaiting an
+			// explicit `learnings confirm`. Best-effort — failures log to
+			// teach.log and never fail the teach.
+			if _, _, synthErr := learn.SynthesizePlaybookCandidate(s, learn.QueryFamily(normalized), learn.JournalSessionKey()); synthErr != nil {
+				writeTeachErrLog(fmt.Sprintf("teach: playbook synthesis: %v", synthErr))
 			}
 
 			if auditErr := appendLearningsAudit(map[string]any{
@@ -293,6 +354,7 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 	cmd.Flags().StringVar(&notes, "notes", "", "Optional free-form note recorded in the audit log")
 	cmd.Flags().BoolVar(&noValidate, "no-validate", false, "Suppress teach-time resource-shape validation (warnings to teach.log)")
 	cmd.Flags().StringVar(&playbookFile, "playbook-file", "", "Optional path to a JSON playbook recording the CLI choreography for this query family")
+	cmd.Flags().StringVar(&playbookJSONInline, "playbook-json", "", "Optional inline JSON playbook (mutually exclusive with --playbook-file; for agents without filesystem access)")
 	cmd.Flags().StringVar(&playbookNotesInline, "playbook-notes", "", "Optional inline gotchas/workarounds for this query family (stored alongside the playbook)")
 	cmd.Flags().StringVar(&playbookNotesFile, "playbook-notes-file", "", "Optional path to a markdown file with playbook notes")
 	return cmd
@@ -310,10 +372,25 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 // parameters reserved here means future refinements (e.g. a per-call
 // resolver reused for slot validation) don't have to ripple back into
 // the cobra surface.
-func upsertPlaybookFromTeach(ctx context.Context, s *store.Store, learnCfg *entities.Config, query, playbookFile, notesInline, notesFile string, normalized learn.NormalizedQuery) error {
+func upsertPlaybookFromTeach(ctx context.Context, s *store.Store, learnCfg *entities.Config, query, playbookFile, playbookJSONInline, notesInline, notesFile string, normalized learn.NormalizedQuery) error {
 	playbookJSON, notes, err := resolvePlaybookInputs(playbookFile, notesInline, notesFile)
 	if err != nil {
 		return err
+	}
+	// Inline playbook JSON mirrors the file path's validation: parse
+	// as a Playbook (rejecting garbage early), then re-marshal to the
+	// canonical stored form. The cobra surface enforces the mutual
+	// exclusion with --playbook-file before this helper runs.
+	if strings.TrimSpace(playbookJSONInline) != "" {
+		pb, perr := learn.ParsePlaybook([]byte(playbookJSONInline), "--playbook-json")
+		if perr != nil {
+			return perr
+		}
+		out, merr := learn.MarshalPlaybook(pb)
+		if merr != nil {
+			return fmt.Errorf("teach: re-marshal inline playbook: %w", merr)
+		}
+		playbookJSON = out
 	}
 	if playbookJSON == "" && notes == "" {
 		return nil
@@ -348,6 +425,7 @@ type recallEnvelope struct {
 	Warnings      []string                `json:"warnings,omitempty"`
 	Playbook      *learn.ResolvedPlaybook `json:"playbook,omitempty"`
 	Notes         string                  `json:"notes,omitempty"`
+	Candidates    []learn.Candidate       `json:"candidates,omitempty"`
 }
 
 type recallEnvelopeResult struct {
@@ -441,6 +519,17 @@ when learnings exist.`,
 			envelope.Warnings = result.Warnings
 			envelope.Playbook = result.Playbook
 			envelope.Notes = result.Notes
+			envelope.Candidates = result.Candidates
+			// Stage the recall's family + unresolved entities for the
+			// post-run journal entry: flag derivation anchors candidates
+			// on this family, and teach-time synthesis locates the
+			// recall->teach episode by it.
+			learn.SetJournalLearnContext(result.Family, result.UnresolvedEntities)
+			// Measurement: record hit/miss (+ playbook hit) AFTER the
+			// match completed, so the event write never holds the store
+			// lock across the recall scan. Telemetry-class: failures go
+			// to teach.log and never fail the recall.
+			recordRecallEvents(s, result)
 			return emitRecall(cmd, flags, envelope)
 		},
 	}
@@ -490,6 +579,38 @@ func emitRecall(cmd *cobra.Command, flags *rootFlags, env recallEnvelope) error 
 	return nil
 }
 
+// recordRecallEvents writes the recall measurement rows: recall_hit
+// with the top hit's backing row id (so teach-to-reuse joins by row
+// id) or recall_miss, plus recall_playbook_hit when the family
+// resolved a playbook. Called strictly after learn.Recall returns —
+// the event insert must never overlap the match. Best-effort by
+// contract: every failure lands in teach.log, none reaches the caller.
+func recordRecallEvents(s *store.Store, result learn.Result) {
+	if s == nil {
+		return
+	}
+	surface := store.LearnEventSurface()
+	famHash := learn.FamilyHash(result.Family)
+	if result.Found && len(result.Results) > 0 {
+		top := result.Results[0]
+		if err := s.InsertLearnEvent(store.LearnEventRecallHit, famHash,
+			top.LearningID, top.EntityMatch == learn.EntityMatchExact, surface); err != nil {
+			writeTeachErrLog(fmt.Sprintf("recall: event insert (hit): %v", err))
+		}
+	} else {
+		if err := s.InsertLearnEvent(store.LearnEventRecallMiss, famHash,
+			0, false, surface); err != nil {
+			writeTeachErrLog(fmt.Sprintf("recall: event insert (miss): %v", err))
+		}
+	}
+	if result.Playbook != nil {
+		if err := s.InsertLearnEvent(store.LearnEventRecallPlaybookHit, famHash,
+			0, false, surface); err != nil {
+			writeTeachErrLog(fmt.Sprintf("recall: event insert (playbook hit): %v", err))
+		}
+	}
+}
+
 // newLearningsCmd is the human-inspection parent. `learnings list` lists
 // rows; `learnings forget` removes them.
 func newLearningsCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
@@ -502,7 +623,13 @@ search_learnings table that the LLM populates via the 'teach' command.`,
 		RunE:        parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newLearningsListCmd(flags))
-	cmd.AddCommand(newLearningsForgetCmd(flags))
+	cmd.AddCommand(newLearningsForgetCmd(flags, learnCfg))
+	// Candidate lifecycle control surface (candidates | confirm |
+	// reject | purge) -- defined in learnings_candidates.go.
+	registerLearningsCandidateCommands(cmd, flags)
+	// Measurement surface (`learnings stats`) -- defined in
+	// learnings_stats.go.
+	cmd.AddCommand(newLearningsStatsCmd(flags))
 	return cmd
 }
 
@@ -527,8 +654,8 @@ type learningRow struct {
 
 // listLearningsRows queries the store via the canonical ListLearnings
 // API and translates each row into the CLI envelope shape.
-func listLearningsRows(s *store.Store, f store.ListLearningsFilter) ([]learningRow, error) {
-	stored, err := s.ListLearnings(f)
+func listLearningsRows(ctx context.Context, s *store.Store, f store.ListLearningsFilter) ([]learningRow, error) {
+	stored, err := s.ListLearnings(ctx, f)
 	if err != nil {
 		return nil, err
 	}
@@ -608,7 +735,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 			}
 			defer s.Close()
 
-			rows, err := listLearningsRows(s, store.ListLearningsFilter{
+			rows, err := listLearningsRows(cmd.Context(), s, store.ListLearningsFilter{
 				Query:         queryFilter,
 				Source:        sourceFilter,
 				ResourceID:    resourceFilter,
@@ -649,7 +776,7 @@ func newLearningsListCmd(flags *rootFlags) *cobra.Command {
 // canonical store.ForgetLearningsFilter and returns the count
 // removed. Requires at least one of ResourceID, Action, or All on the
 // filter (enforced by the store side).
-func forgetLearningsRows(s *store.Store, query string, f store.ForgetLearningsFilter) (int64, error) {
+func forgetLearningsRows(ctx context.Context, s *store.Store, query string, f store.ForgetLearningsFilter) (int64, error) {
 	if s == nil {
 		return 0, errors.New("forgetLearningsRows: store is nil")
 	}
@@ -657,10 +784,10 @@ func forgetLearningsRows(s *store.Store, query string, f store.ForgetLearningsFi
 		return 0, errors.New("forgetLearningsRows: query is required")
 	}
 	f.Query = query
-	return s.ForgetLearnings(f)
+	return s.ForgetLearnings(ctx, f)
 }
 
-func newLearningsForgetCmd(flags *rootFlags) *cobra.Command {
+func newLearningsForgetCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
 	var resourceArg string
 	var actionArg string
 	var all bool
@@ -690,13 +817,34 @@ Requires at least one of --resource, --action, or --all.`,
 			}
 			defer s.Close()
 
-			n, err := forgetLearningsRows(s, query, store.ForgetLearningsFilter{
+			n, err := forgetLearningsRows(cmd.Context(), s, query, store.ForgetLearningsFilter{
 				ResourceID: resourceArg,
 				Action:     actionArg,
 				All:        all,
 			})
 			if err != nil {
 				return usageErr(fmt.Errorf("learnings forget: %w", err))
+			}
+			// Forget completes the loop's undo (R18): the forgotten
+			// family's measurement trail cascades away with the
+			// learning, then a single forget event records that the
+			// family was wiped (inserted after the cascade so it
+			// survives). Family derivation mirrors teach: normalize +
+			// entity promotion, so the same query text keys the same
+			// family on both paths. Telemetry-class: failures log to
+			// teach.log and never fail the forget.
+			if n > 0 {
+				normalized := learn.PromoteEntities(
+					learn.Normalize(query, learnCfg),
+					learn.NewCanonicalResolver(cmd.Context(), s.DB()))
+				famHash := learn.FamilyHash(learn.QueryFamily(normalized))
+				if _, cascErr := s.DeleteLearnEventsByFamilyHash(famHash); cascErr != nil {
+					writeTeachErrLog(fmt.Sprintf("learnings forget: event cascade: %v", cascErr))
+				}
+				if evErr := s.InsertLearnEvent(store.LearnEventForget, famHash,
+					0, false, store.LearnEventSurface()); evErr != nil {
+					writeTeachErrLog(fmt.Sprintf("learnings forget: event insert: %v", evErr))
+				}
 			}
 			_ = appendLearningsAudit(map[string]any{
 				"action":       "forget",

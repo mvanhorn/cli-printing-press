@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"printing-press-rich-pp-cli/internal/cliutil"
+	"printing-press-rich-pp-cli/internal/learn"
 )
 
 // agentContextSchemaVersion is bumped on any breaking change to the JSON
@@ -31,6 +32,10 @@ type agentContext struct {
 	Commands                   []agentContextCommand  `json:"commands"`
 	AvailableProfiles          []string               `json:"available_profiles"`
 	FeedbackEndpointConfigured bool                   `json:"feedback_endpoint_configured"`
+	// LearnProtocol carries the recall-first protocol from the single
+	// shared source (internal/learn.RecallFirstProtocol) also consumed by
+	// the MCP context tool, so the two agent surfaces cannot drift.
+	LearnProtocol string `json:"learn_protocol"`
 }
 
 type agentContextCLI struct {
@@ -180,6 +185,7 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 		Commands:                   collectAgentCommands(rootCmd),
 		AvailableProfiles:          profiles,
 		FeedbackEndpointConfigured: FeedbackEndpointConfigured(),
+		LearnProtocol:              learn.RecallFirstProtocol,
 	}
 }
 

@@ -35,9 +35,11 @@ import (
 
 // newLearnConfig returns the per-CLI entity extractor Config the
 // teach / recall / normalize call sites pass into the learn package.
-// Reads the printed-CLI's spec.Learn.TickerPatterns and Stopwords;
-// patterns that fail to compile at runtime (defense in depth — spec
-// parse already validated them) log a warning and are skipped.
+// Reads the printed-CLI's spec.Learn.TickerPatterns, Stopwords, and
+// Synonyms; patterns that fail to compile at runtime (defense in
+// depth — spec parse already validated them) log a warning and are
+// skipped. Declared synonyms register on both the returned Config and
+// the store package's write-side normalizer.
 func newLearnConfig() *entities.Config {
 	cfg := entities.NewConfig()
 {{- range .Learn.TickerPatterns}}
@@ -53,6 +55,20 @@ func newLearnConfig() *entities.Config {
 		{{printf "%q" $sw}},
 {{- end}}
 	)
+{{- end}}
+{{- if .Learn.Synonyms}}
+	// Spec-declared same-referent synonym folds, registered on BOTH
+	// normalizers: the entities.Config drives the read side (recall
+	// family keys) and store.RegisterQuerySynonyms the write side
+	// (teach query patterns). One map, two registrations — the
+	// two-normalizer symmetry the learn loop's key space depends on.
+	learnSynonyms := map[string]string{
+{{- range $variant, $canonical := .Learn.Synonyms}}
+		{{printf "%q" $variant}}: {{printf "%q" $canonical}},
+{{- end}}
+	}
+	cfg.RegisterSynonyms(learnSynonyms)
+	store.RegisterQuerySynonyms(learnSynonyms)
 {{- end}}
 	return cfg
 }

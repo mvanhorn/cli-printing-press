@@ -210,6 +210,23 @@ Manage items
 - **`printing-press-oauth2-pp-cli items`** - List items
 
 
+### Self-learning loop
+
+This CLI caches per-question discovery so repeat queries skip the walk and structurally similar queries get answered via entity substitution. The loop also self-captures: every invocation is journaled locally, and failed-flag corrections plus fresh teaches surface as candidates on the next `recall` for confirm/reject judgment. Agents call `recall` before discovery and fire `teach &` after answering. See the `## Automatic learning` section in `SKILL.md` for the full protocol.
+
+- **`printing-press-oauth2-pp-cli recall <query>`** - Look up cached resources for a query before running discovery
+- **`printing-press-oauth2-pp-cli teach`** - Record a query -> resource mapping (silent on success, safe to background with `&`)
+- **`printing-press-oauth2-pp-cli learnings list`** - Inspect taught rows
+- **`printing-press-oauth2-pp-cli learnings forget <query>`** - Undo a teach
+- **`printing-press-oauth2-pp-cli learnings candidates`** - List auto-captured candidates awaiting confirm/reject
+- **`printing-press-oauth2-pp-cli learnings stats`** - Local loop metrics: recall hit rate, teach-to-reuse, playbook resolution, candidate counts
+- **`printing-press-oauth2-pp-cli teach-pattern`** - Install a query/resource template up front
+- **`printing-press-oauth2-pp-cli teach-lookup`** - Add an entity mapping (e.g. country code, team alias) for pattern substitution
+
+Pass `--no-learn` or set `PRINTING_PRESS_OAUTH2_NO_LEARN=true` to disable the loop for deterministic flows.
+
+The local store's schema version stamp is one-way: once this version of `printing-press-oauth2-pp-cli` opens the database, older binaries refuse it with a version error — upgrade the binary rather than downgrading.
+
 ## Output Formats
 
 ```bash

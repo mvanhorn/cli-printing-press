@@ -20,6 +20,15 @@ const (
 	// Without it, hosts like Claude Desktop default to "could write or
 	// delete" and demand permission per call.
 	ReadOnlyAnnotation = "mcp:read-only"
+	// LocalWriteAnnotation, when set on a Cobra command to "true"/"1"/"yes",
+	// marks a command whose only writes land in the CLI's own local store
+	// (teach-style learn writes, playbook notes) - never external state and
+	// never user-visible files. The walker registers the resulting MCP tool
+	// with destructiveHint=false and openWorldHint=false; readOnlyHint stays
+	// unset because the command genuinely writes locally. Commands that
+	// delete user-visible data keep honest destructive semantics and must
+	// not carry this annotation.
+	LocalWriteAnnotation = "mcp:local-write"
 	// PositionalWriteSinksAnnotation lists zero-based positional argument
 	// indexes that write to user-visible files when populated. It is enforced
 	// only on commands that also carry ReadOnlyAnnotation.
@@ -107,6 +116,10 @@ func isMCPHidden(cmd *cobra.Command) bool {
 
 func isMCPReadOnly(cmd *cobra.Command) bool {
 	return annotationIsTrue(cmd, ReadOnlyAnnotation)
+}
+
+func isMCPLocalWrite(cmd *cobra.Command) bool {
+	return annotationIsTrue(cmd, LocalWriteAnnotation)
 }
 
 func positionalWriteSinkIndexes(cmd *cobra.Command) map[int]bool {

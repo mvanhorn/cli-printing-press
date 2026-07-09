@@ -9727,6 +9727,84 @@ x-cache:
 	assert.Contains(t, err.Error(), `cache.stale_after "yesterday" is not a valid Go duration`)
 }
 
+func TestParseLearnExtensionFromRoot(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Learn API", `
+x-learn:
+  enabled: true
+  ticker_patterns:
+    - "[A-Z]{2,6}-[0-9]+"
+  stopwords: [the, of]
+  synonyms:
+    last night: yesterday
+  entity_lookup_seeds:
+    country:
+      - canonical: USA
+        aliases: [united states, america]
+`, "", false)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.True(t, parsed.Learn.Enabled)
+	assert.Equal(t, []string{"[A-Z]{2,6}-[0-9]+"}, parsed.Learn.TickerPatterns)
+	assert.Equal(t, []string{"the", "of"}, parsed.Learn.Stopwords)
+	assert.Equal(t, map[string]string{"last night": "yesterday"}, parsed.Learn.Synonyms)
+	require.Contains(t, parsed.Learn.EntityLookupSeeds, "country")
+	require.Len(t, parsed.Learn.EntityLookupSeeds["country"], 1)
+	assert.Equal(t, "USA", parsed.Learn.EntityLookupSeeds["country"][0].Canonical)
+	assert.Equal(t, []string{"united states", "america"}, parsed.Learn.EntityLookupSeeds["country"][0].Aliases)
+}
+
+func TestParseLearnExtensionFromInfo(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Info Learn API", "", `
+x-learn:
+  disabled: true
+`, false)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.True(t, parsed.Learn.Disabled)
+	assert.False(t, parsed.Learn.Enabled)
+}
+
+func TestParseLearnExtensionEnabledFalsePreservesLegacyOptOut(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Legacy Learn API", `
+x-learn:
+  enabled: false
+`, "", false)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.False(t, parsed.Learn.Enabled)
+	assert.True(t, parsed.Learn.EnabledSet)
+}
+
+func TestParseLearnExtensionAbsentLeavesZeroValue(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("No Learn API", "", "", false)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.Equal(t, spec.LearnConfig{}, parsed.Learn)
+}
+
+func TestParseLearnExtensionRejectsInvalidTickerRegex(t *testing.T) {
+	t.Parallel()
+	data := cacheExtensionSpec("Bad Learn API", `
+x-learn:
+  enabled: true
+  ticker_patterns:
+    - "[unclosed"
+`, "", false)
+
+	_, err := Parse(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ticker_patterns[0]")
+	assert.Contains(t, err.Error(), "not a valid Go regexp")
+}
+
 func cacheExtensionSpec(title, rootExtension, infoExtension string, typedItems bool) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, `openapi: 3.0.3

@@ -156,6 +156,9 @@ func TestGenerateReadOnlyFormHTMLTableEndpoint(t *testing.T) {
 		},
 	}
 
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
+
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 

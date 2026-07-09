@@ -583,8 +583,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			cut := runes[:max-1]
 			boundary := -1
-			for i := range slices.Backward(cut) {
-				if unicode.IsSpace(cut[i]) {
+			for i, r := range slices.Backward(cut) {
+				if unicode.IsSpace(r) {
 					boundary = i
 					break
 				}
@@ -2275,9 +2275,14 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
 	}
-	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet, g.profile)
+	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet, g.profile, os.Stderr)
 	if g.Spec.Learn.Enabled && !g.VisionSet.Store {
-		return fmt.Errorf("learn.enabled requires VisionSet.Store=true; the learn package depends on internal/store")
+		// Defensive: constrainVisionTemplates already promotes Store for
+		// learn-enabled specs, so this branch is unreachable through the
+		// normal path. Promote rather than error so callers that force-set
+		// VisionSet around constrain keep working (soft-validation posture).
+		g.VisionSet.Store = true
+		fmt.Fprint(os.Stderr, learnStorePromotionInfo)
 	}
 	if g.renameActiveFrameworkResourceCollisions() {
 		g.profile = profiler.Profile(g.Spec)
@@ -2586,6 +2591,32 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("store_playbooks_test.go.tmpl", filepath.Join("internal", "store", "playbooks_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering store playbooks test: %w", err)
 		}
+		// store/candidates.go ships the quarantined learn_candidates
+		// lifecycle (DeriveCandidate signature upsert plus the
+		// confirm/reject/expire/purge state machine) beside
+		// learnings.go and playbooks.go. The backing table is created
+		// by store.go.tmpl at schema v9 under the same Learn gate;
+		// candidates never touch the verified learning tables until an
+		// explicit confirm materializes them through the playbook
+		// machinery.
+		if err := g.renderTemplate("store_candidates.go.tmpl", filepath.Join("internal", "store", "candidates.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store candidates lifecycle: %w", err)
+		}
+		if err := g.renderTemplate("store_candidates_test.go.tmpl", filepath.Join("internal", "store", "candidates_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store candidates lifecycle test: %w", err)
+		}
+		// store/events.go ships the learn_events measurement layer:
+		// best-effort telemetry inserts (callers swallow errors to
+		// teach.log), retention pruning, the forget cascade, the
+		// surface-detection seam, and the stats aggregation `learnings
+		// stats` reads. The backing table is created by store.go.tmpl
+		// at schema v9 under the same Learn gate.
+		if err := g.renderTemplate("store_events.go.tmpl", filepath.Join("internal", "store", "events.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store events measurement layer: %w", err)
+		}
+		if err := g.renderTemplate("store_events_test.go.tmpl", filepath.Join("internal", "store", "events_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering store events measurement layer test: %w", err)
+		}
 		// teach.go and teach_test.go are emitted into internal/cli/
 		// (not the learn package) because they wire cobra commands;
 		// the learn package itself stays cobra-free per the boundary
@@ -2608,6 +2639,28 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 		if err := g.renderTemplate("teach_playbook_test.go.tmpl", filepath.Join("internal", "cli", "teach_playbook_test.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering teach-playbook commands test: %w", err)
+		}
+		// learnings_candidates.go ships the candidate control surface
+		// (`learnings candidates|confirm|reject|purge`) plus the
+		// teach-promotion helper teach.go calls after a successful
+		// teach. The commands register on the existing learnings group
+		// inside teach.go's newLearningsCmd.
+		if err := g.renderTemplate("learnings_candidates.go.tmpl", filepath.Join("internal", "cli", "learnings_candidates.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings candidates commands: %w", err)
+		}
+		if err := g.renderTemplate("learnings_candidates_test.go.tmpl", filepath.Join("internal", "cli", "learnings_candidates_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings candidates commands test: %w", err)
+		}
+		// learnings_stats.go ships the measurement readout (`learnings
+		// stats`): the four headline metrics aggregated from the local
+		// learn_events table, plus the opportunistic retention prune.
+		// Registers on the learnings group inside teach.go's
+		// newLearningsCmd.
+		if err := g.renderTemplate("learnings_stats.go.tmpl", filepath.Join("internal", "cli", "learnings_stats.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings stats command: %w", err)
+		}
+		if err := g.renderTemplate("learnings_stats_test.go.tmpl", filepath.Join("internal", "cli", "learnings_stats_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering learnings stats command test: %w", err)
 		}
 		// internal/cli/playbooks/ ships the embed.FS scaffold for hand-
 		// authored playbook content (JSON + notes files). U9 emits the
@@ -2748,6 +2801,13 @@ func (g *Generator) renderLearnFiles() error {
 		"learn/teach_test.go.tmpl":            filepath.Join("internal", "learn", "teach_test.go"),
 		"learn/teach_log.go.tmpl":             filepath.Join("internal", "learn", "teach_log.go"),
 		"learn/teach_log_test.go.tmpl":        filepath.Join("internal", "learn", "teach_log_test.go"),
+		"learn/journal.go.tmpl":               filepath.Join("internal", "learn", "journal.go"),
+		"learn/journal_test.go.tmpl":          filepath.Join("internal", "learn", "journal_test.go"),
+		"learn/derive.go.tmpl":                filepath.Join("internal", "learn", "derive.go"),
+		"learn/derive_test.go.tmpl":           filepath.Join("internal", "learn", "derive_test.go"),
+		"learn/synthesize.go.tmpl":            filepath.Join("internal", "learn", "synthesize.go"),
+		"learn/synthesize_test.go.tmpl":       filepath.Join("internal", "learn", "synthesize_test.go"),
+		"learn/protocol.go.tmpl":              filepath.Join("internal", "learn", "protocol.go"),
 		"learn/preseed.go.tmpl":               filepath.Join("internal", "learn", "preseed.go"),
 		"learn/preseed_test.go.tmpl":          filepath.Join("internal", "learn", "preseed_test.go"),
 		"learn/playbooks.go.tmpl":             filepath.Join("internal", "learn", "playbooks.go"),
@@ -2778,6 +2838,11 @@ func (g *Generator) renderLearnFiles() error {
 
 func (g *Generator) Generate() error {
 	applyLargeMCPSurfaceDefault(g.Spec, os.Stderr)
+	// Fresh prints default the self-learning loop on (opt out with
+	// learn.disabled: true). Deliberately absent from GenerateMCPSurface:
+	// mcp-sync regenerates the MCP surface of published CLIs whose trees
+	// may lack the learn package, and the default must never flip there.
+	g.Spec.ApplyLearnLoopDefault(os.Stderr)
 	if g.Spec.OwnerName == "" {
 		// OwnerName flows into Hermes `author:` and other prose
 		// surfaces. We don't hard-fail on an empty value because the

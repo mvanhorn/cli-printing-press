@@ -4,11 +4,16 @@
 package learn
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+
+	"{{modulePath}}/internal/learn/entities"
 )
 
 // EntityResolver looks up a token in entity_lookups to find its
@@ -108,6 +113,153 @@ func MarshalPlaybook(p Playbook) (string, error) {
 // and recall in lockstep.
 func QueryFamily(normalized NormalizedQuery) string {
 	return normalized.NonEntityNormalized
+}
+
+// QueryFamilyPreFold derives the family key a pre-synonym-fold build
+// would have produced. Only meaningful on a NormalizedQuery built by
+// NormalizeUnfolded; used exclusively as the raw-key fallback in
+// LookupPlaybookByFamily so rows stored before folding shipped stay
+// reachable.
+func QueryFamilyPreFold(normalized NormalizedQuery) string {
+	return normalized.NonEntityNormalized
+}
+
+// FoldFamilyKey applies cfg's synonym folds to a stored query-family
+// key. Family keys are alphabetically sorted token bags, so a
+// multiword variant's tokens may be non-adjacent — folding uses bag
+// semantics (all variant tokens present, any order) and re-sorts.
+// Returns the key unchanged when nothing folds.
+func FoldFamilyKey(family string, cfg *entities.Config) string {
+	if cfg == nil || family == "" {
+		return family
+	}
+	tokens := strings.Fields(family)
+	folded := cfg.FoldTokenBag(tokens)
+	sort.Strings(folded)
+	return strings.Join(folded, " ")
+}
+
+// PlaybookFamilyRow is the raw learning_playbooks row shape the
+// dual-key lookup returns; the caller parses PlaybookJSON and resolves
+// slots as it would after a direct query.
+type PlaybookFamilyRow struct {
+	ID           int64
+	QueryFamily  string
+	PlaybookJSON string
+	NotesText    string
+	Confidence   int
+}
+
+// LookupPlaybookByFamily finds the learning_playbooks row for a query
+// family with synonym-fold awareness, so no stored row is ever
+// stranded under a pre-fold key:
+//
+//  1. Exact hit on the folded family key (the common case).
+//  2. Exact hit on rawFamily — the key a pre-fold build would have
+//     derived from THIS query's phrasing (pass "" when unavailable).
+//  3. Lazy-rekey scan: fold every stored family key and compare; a
+//     match means the row was stored under a different pre-fold
+//     phrasing of the same family.
+//
+// A hit via 2 or 3 rekeys the row in place to the folded key, so the
+// next lookup resolves at step 1. Rekeying is idempotent and one-time
+// per row: once a row's key equals its folded form, steps 2 and 3 can
+// never select it again. The rekey UPDATE is best-effort — a write
+// failure (e.g. read-only store) still returns the row.
+func LookupPlaybookByFamily(ctx context.Context, db *sql.DB, cfg *entities.Config, family, rawFamily string) (PlaybookFamilyRow, bool, error) {
+	if family == "" {
+		return PlaybookFamilyRow{}, false, nil
+	}
+
+	row, ok, err := getPlaybookFamilyExact(ctx, db, family)
+	if err != nil || ok {
+		return row, ok, err
+	}
+
+	if rawFamily != "" && rawFamily != family {
+		row, ok, err = getPlaybookFamilyExact(ctx, db, rawFamily)
+		if err != nil {
+			return PlaybookFamilyRow{}, false, err
+		}
+		if ok {
+			return rekeyPlaybookFamily(ctx, db, row, family), true, nil
+		}
+	}
+
+	row, ok, err = scanPlaybookFamiliesByFold(ctx, db, cfg, family)
+	if err != nil || !ok {
+		return PlaybookFamilyRow{}, false, err
+	}
+	return rekeyPlaybookFamily(ctx, db, row, family), true, nil
+}
+
+// getPlaybookFamilyExact fetches a learning_playbooks row by exact
+// query_family key. sql.ErrNoRows maps to (zero, false, nil).
+func getPlaybookFamilyExact(ctx context.Context, db *sql.DB, family string) (PlaybookFamilyRow, bool, error) {
+	var (
+		row          PlaybookFamilyRow
+		playbookJSON sql.NullString
+		notesText    sql.NullString
+	)
+	err := db.QueryRowContext(ctx,
+		`SELECT id, query_family, COALESCE(playbook_json, ''), COALESCE(notes_text, ''), confidence
+		 FROM learning_playbooks WHERE query_family = ?`,
+		family,
+	).Scan(&row.ID, &row.QueryFamily, &playbookJSON, &notesText, &row.Confidence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PlaybookFamilyRow{}, false, nil
+	}
+	if err != nil {
+		return PlaybookFamilyRow{}, false, err
+	}
+	row.PlaybookJSON = playbookJSON.String
+	row.NotesText = notesText.String
+	return row, true, nil
+}
+
+// scanPlaybookFamiliesByFold walks every stored family key, folds it,
+// and returns the first row whose folded form equals family. Linear in
+// the playbook count, which stays small (tens of rows) and is only
+// reached on a double exact-key miss.
+func scanPlaybookFamiliesByFold(ctx context.Context, db *sql.DB, cfg *entities.Config, family string) (PlaybookFamilyRow, bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT query_family FROM learning_playbooks ORDER BY id`)
+	if err != nil {
+		return PlaybookFamilyRow{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var stored string
+		if err := rows.Scan(&stored); err != nil {
+			return PlaybookFamilyRow{}, false, err
+		}
+		if stored == family || FoldFamilyKey(stored, cfg) != family {
+			continue
+		}
+		if err := rows.Close(); err != nil {
+			return PlaybookFamilyRow{}, false, err
+		}
+		return getPlaybookFamilyExact(ctx, db, stored)
+	}
+	return PlaybookFamilyRow{}, false, rows.Err()
+}
+
+// rekeyPlaybookFamily rewrites a row's query_family to the folded key
+// so subsequent lookups hit exactly. Best-effort: on UPDATE failure
+// the row is returned under its old key and the next lookup retries.
+// Safe against the UNIQUE constraint because the caller only rekeys
+// after an exact miss on the target key.
+func rekeyPlaybookFamily(ctx context.Context, db *sql.DB, row PlaybookFamilyRow, family string) PlaybookFamilyRow {
+	if row.QueryFamily == family {
+		return row
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE learning_playbooks SET query_family = ? WHERE id = ?`,
+		family, row.ID,
+	); err != nil {
+		return row
+	}
+	row.QueryFamily = family
+	return row
 }
 
 // ResolveSlots walks the entity_slots declared on a Playbook and

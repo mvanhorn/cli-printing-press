@@ -33,6 +33,7 @@ import (
 func newTeachPlaybookCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Command {
 	var query string
 	var playbookFile string
+	var playbookJSONInline string
 	var notesText string
 	var notesFile string
 	var dbPath string
@@ -40,13 +41,24 @@ func newTeachPlaybookCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Com
 	cmd := &cobra.Command{
 		Use:   "teach-playbook",
 		Short: "Record a CLI playbook + free-text notes for a query family",
+		// Bare invocation intentionally exits 2 (usage error: --query and a
+		// playbook/notes input are required); declare it so
+		// `cli-printing-press verify` scores the Execute cell honestly.
+		// mcp:local-write: the only writes land in the CLI's own local
+		// learn store, so MCP hosts see destructive=false + openWorld=false.
+		Annotations: map[string]string{
+			"pp:typed-exit-codes": "0,2",
+			"mcp:local-write":     "true",
+		},
 		Long: `Stores a structured CLI command sequence (with entity slots) and/or
 free-form gotchas/workarounds, keyed on the structural query family.
 The recall path surfaces this whenever a future query of the same
 family fires, so the agent can replay the choreography and read the
 notes verbatim.
 
-At least one of --playbook-file and --notes/--notes-file must be set.`,
+At least one of --playbook-json/--playbook-file and --notes/--notes-file
+must be set. --playbook-json takes the playbook body inline so MCP-only
+agents can record playbooks without a file on disk.`,
 		Example: `  {{.Name}}-pp-cli teach-playbook \
     --query "<question that anchors the family>" \
     --playbook-file ~/playbooks/recipe.json \
@@ -63,13 +75,22 @@ At least one of --playbook-file and --notes/--notes-file must be set.`,
 			if strings.TrimSpace(query) == "" {
 				return usageErr(fmt.Errorf("--query is required"))
 			}
-			if strings.TrimSpace(playbookFile) == "" && strings.TrimSpace(notesText) == "" && strings.TrimSpace(notesFile) == "" {
-				return usageErr(fmt.Errorf("at least one of --playbook-file, --notes, --notes-file is required"))
+			if strings.TrimSpace(playbookFile) != "" && strings.TrimSpace(playbookJSONInline) != "" {
+				return usageErr(fmt.Errorf("--playbook-json and --playbook-file are mutually exclusive"))
+			}
+			if strings.TrimSpace(playbookFile) == "" && strings.TrimSpace(playbookJSONInline) == "" && strings.TrimSpace(notesText) == "" && strings.TrimSpace(notesFile) == "" {
+				return usageErr(fmt.Errorf("at least one of --playbook-json, --playbook-file, --notes, --notes-file is required"))
 			}
 
 			playbookJSON, notes, err := resolvePlaybookInputs(playbookFile, notesText, notesFile)
 			if err != nil {
 				return err
+			}
+			if strings.TrimSpace(playbookJSONInline) != "" {
+				playbookJSON, err = resolveInlinePlaybook(playbookJSONInline)
+				if err != nil {
+					return err
+				}
 			}
 
 			normalized := learn.Normalize(query, learnCfg)
@@ -95,6 +116,13 @@ At least one of --playbook-file and --notes/--notes-file must be set.`,
 				return fmt.Errorf("teach-playbook: %w", err)
 			}
 
+			// Usage-event insert is best-effort telemetry: failures go to
+			// teach.log and never fail the teach-playbook.
+			if evErr := s.InsertLearnEvent(store.LearnEventTeachPlaybook,
+				learn.FamilyHash(family), 0, false, store.LearnEventSurface()); evErr != nil {
+				writeTeachErrLog(fmt.Sprintf("teach-playbook: event insert: %v", evErr))
+			}
+
 			_ = appendLearningsAudit(map[string]any{
 				"action":         "teach-playbook",
 				"query":          query,
@@ -115,6 +143,7 @@ At least one of --playbook-file and --notes/--notes-file must be set.`,
 	}
 	cmd.Flags().StringVar(&query, "query", "", "Example query that anchors the family (required)")
 	cmd.Flags().StringVar(&playbookFile, "playbook-file", "", "Path to a JSON file with the playbook (steps, entity_slots, expected_tool_calls)")
+	cmd.Flags().StringVar(&playbookJSONInline, "playbook-json", "", "Inline playbook JSON (steps, entity_slots, expected_tool_calls) -- mutually exclusive with --playbook-file")
 	cmd.Flags().StringVar(&notesText, "notes", "", "Free-text notes (gotchas, workarounds) -- mutually exclusive with --notes-file")
 	cmd.Flags().StringVar(&notesFile, "notes-file", "", "Path to a markdown file with the notes")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
@@ -151,6 +180,15 @@ func newPlaybookAmendCmd(flags *rootFlags, learnCfg *entities.Config) *cobra.Com
 	cmd := &cobra.Command{
 		Use:   "amend",
 		Short: "Append a note to an existing playbook (LLM-fired self-correction, silent)",
+		// Bare invocation intentionally exits 2 (silent usage error to
+		// teach.log); declare it so `cli-printing-press verify` scores the
+		// Execute cell honestly instead of masking a FAIL.
+		// mcp:local-write: appends only touch the CLI's own local learn
+		// store, so MCP hosts see destructive=false + openWorld=false.
+		Annotations: map[string]string{
+			"pp:typed-exit-codes": "0,2",
+			"mcp:local-write":     "true",
+		},
 		Long: `Appends a timestamped note to the matching family's playbook notes_text.
 If no playbook exists for the family yet, creates a notes-only one.
 
@@ -209,6 +247,13 @@ Disabling: pass --no-learn or set ` + noLearnEnvVar + `=true.`,
 			if _, _, err := s.AppendPlaybookNotes(family, marker); err != nil {
 				writeTeachErrLog(fmt.Sprintf("playbook amend: append family=%q: %v", family, err))
 				return silentCodeErr(1)
+			}
+
+			// Amend events feed the playbook-resolution metric (hits later
+			// amended count against resolution success). Best-effort only.
+			if evErr := s.InsertLearnEvent(store.LearnEventAmend,
+				learn.FamilyHash(family), 0, false, store.LearnEventSurface()); evErr != nil {
+				writeTeachErrLog(fmt.Sprintf("playbook amend: event insert: %v", evErr))
 			}
 
 			if auditErr := appendLearningsAudit(map[string]any{
@@ -287,6 +332,23 @@ func newPlaybookListCmd(flags *rootFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: standard cache location)")
 	return cmd
+}
+
+// resolveInlinePlaybook validates and canonicalizes an inline
+// --playbook-json value, the file-free write path for MCP-only agents.
+// Kept separate from resolvePlaybookInputs so the file-based signature
+// shared with `teach --playbook-file` stays untouched.
+func resolveInlinePlaybook(playbookInline string) (string, error) {
+	// Validate that it parses as a Playbook; reject garbage early.
+	pb, err := learn.ParsePlaybook([]byte(playbookInline), "--playbook-json")
+	if err != nil {
+		return "", fmt.Errorf("teach-playbook: %w", err)
+	}
+	out, err := learn.MarshalPlaybook(pb)
+	if err != nil {
+		return "", fmt.Errorf("teach-playbook: re-marshal: %w", err)
+	}
+	return out, nil
 }
 
 // resolvePlaybookInputs loads the playbook JSON (if a file path was

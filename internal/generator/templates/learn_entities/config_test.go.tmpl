@@ -5,6 +5,8 @@ package entities
 
 import (
 	"regexp"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -53,4 +55,100 @@ func TestConfigsAreIsolated(t *testing.T) {
 	if b.isStopword("alpha") {
 		t.Errorf("config b should not see a's registered stopword")
 	}
+}
+
+func TestNewConfig_HasDefaultSynonyms(t *testing.T) {
+	t.Parallel()
+	cfg := NewConfig()
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// Multiword variant folds to a single canonical token.
+		{"last night", "yesterday"},
+		// Single-token spelling variants.
+		{"tonite", "tonight"},
+		{"to-day", "today"},
+		{"to-morrow", "tomorrow"},
+		// Embedded mid-sentence in a larger query.
+		{"why win last night then", "why win yesterday then"},
+		// Sentence-initial multiword variant with capitalization.
+		{"Last night something happened", "yesterday something happened"},
+	}
+	for _, tc := range cases {
+		if got := cfg.FoldSynonyms(tc.in); got != tc.want {
+			t.Errorf("FoldSynonyms(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFoldSynonyms_NeverCrossesDayBoundary(t *testing.T) {
+	t.Parallel()
+	cfg := NewConfig()
+	// Same-referent only: "tonight" and "yesterday" name different days,
+	// so the default map must never fold one into the other.
+	for _, in := range []string{"tonight", "who plays tonight", "today"} {
+		got := cfg.FoldSynonyms(in)
+		if strings.Contains(got, "yesterday") {
+			t.Errorf("FoldSynonyms(%q) = %q crossed a day boundary", in, got)
+		}
+	}
+}
+
+func TestRegisterSynonyms_DeclaredFoldsUndeclaredDoesNot(t *testing.T) {
+	t.Parallel()
+	cfg := NewConfig()
+	cfg.RegisterSynonyms(map[string]string{"foo bar": "baz"})
+	if got := cfg.FoldSynonyms("check foo bar now"); got != "check baz now" {
+		t.Errorf("declared pair should fold: got %q", got)
+	}
+	if got := cfg.FoldSynonyms("check foo qux now"); got != "check foo qux now" {
+		t.Errorf("undeclared pair must not fold: got %q", got)
+	}
+}
+
+func TestRegisterSynonyms_IgnoresEmptyEntries(t *testing.T) {
+	t.Parallel()
+	cfg := NewConfig()
+	cfg.RegisterSynonyms(map[string]string{"": "canonical", "variant": "", "  ": "  "})
+	if got := cfg.FoldSynonyms("variant"); got != "variant" {
+		t.Errorf("empty-canonical registration must be a no-op: got %q", got)
+	}
+}
+
+func TestSynonymsAreIsolatedAcrossConfigs(t *testing.T) {
+	t.Parallel()
+	a := NewConfig()
+	b := NewConfig()
+	a.RegisterSynonyms(map[string]string{"foo bar": "baz"})
+	if got := b.FoldSynonyms("foo bar"); got != "foo bar" {
+		t.Errorf("config b should not see a's registered synonym; got %q", got)
+	}
+}
+
+func TestFoldTokenBag_NonAdjacentMultiwordVariant(t *testing.T) {
+	t.Parallel()
+	cfg := NewConfig()
+	// Family keys are alphabetically sorted token bags, so the tokens of
+	// a multiword variant may not be adjacent. Bag folding must still
+	// collapse them.
+	got := cfg.FoldTokenBag([]string{"last", "mood", "night"})
+	if joined := strings.Join(sortedCopy(got), " "); joined != "mood yesterday" {
+		t.Errorf("FoldTokenBag = %q, want %q", joined, "mood yesterday")
+	}
+}
+
+func TestFoldTokenBag_NoMatchNoChange(t *testing.T) {
+	t.Parallel()
+	cfg := NewConfig()
+	got := cfg.FoldTokenBag([]string{"tonight", "score"})
+	if joined := strings.Join(sortedCopy(got), " "); joined != "score tonight" {
+		t.Errorf("FoldTokenBag = %q, want %q (tonight must not fold)", joined, "score tonight")
+	}
+}
+
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }

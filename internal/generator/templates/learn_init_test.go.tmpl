@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"{{modulePath}}/internal/learn"
 	"{{modulePath}}/internal/store"
 )
 
@@ -77,3 +78,66 @@ func countLookupRows(t *testing.T, s *store.Store) int {
 	}
 	return n
 }
+
+// TestLearnNormalizers_SynonymFoldSymmetry pins the two-normalizer
+// contract: the learn package's family normalization (read side) and
+// the store package's query-pattern normalization (write side) must
+// both fold same-referent phrasings to one key, so a learning taught
+// with phrasing A is always reachable from phrasing B.
+func TestLearnNormalizers_SynonymFoldSymmetry(t *testing.T) {
+	cfg := newLearnConfig()
+	pairs := [][2]string{
+		{"why did Alpha win yesterday", "why did Alpha win last night"},
+		{"report for today", "report for to-day"},
+		{"plans for tonight", "plans for tonite"},
+	}
+	for _, p := range pairs {
+		famA := learn.QueryFamily(learn.Normalize(p[0], cfg))
+		famB := learn.QueryFamily(learn.Normalize(p[1], cfg))
+		if famA == "" || famA != famB {
+			t.Errorf("read-side family mismatch for %q vs %q: %q vs %q", p[0], p[1], famA, famB)
+		}
+		patA := store.NormalizeQuery(p[0])
+		patB := store.NormalizeQuery(p[1])
+		if patA == "" || patA != patB {
+			t.Errorf("write-side pattern mismatch for %q vs %q: %q vs %q", p[0], p[1], patA, patB)
+		}
+	}
+
+	// Negative control: different referents must stay distinct on BOTH
+	// sides ("tonight" is not "yesterday").
+	if learn.QueryFamily(learn.Normalize("who wins tonight", cfg)) ==
+		learn.QueryFamily(learn.Normalize("who wins yesterday", cfg)) {
+		t.Error("read side folded tonight into yesterday")
+	}
+	if store.NormalizeQuery("who wins tonight") == store.NormalizeQuery("who wins yesterday") {
+		t.Error("write side folded tonight into yesterday")
+	}
+}
+{{- if .Learn.Synonyms}}
+
+// TestLearnConfig_SpecSynonymsRegisteredBothSides pins that every
+// spec-declared synonym pair is stamped through both normalizers: the
+// entities.Config fold (read side) and the store query-pattern fold
+// (write side).
+func TestLearnConfig_SpecSynonymsRegisteredBothSides(t *testing.T) {
+	cfg := newLearnConfig()
+	pairs := map[string]string{
+{{- range $variant, $canonical := .Learn.Synonyms}}
+		{{printf "%q" $variant}}: {{printf "%q" $canonical}},
+{{- end}}
+	}
+	for variant, canonical := range pairs {
+		famV := learn.QueryFamily(learn.Normalize(variant, cfg))
+		famC := learn.QueryFamily(learn.Normalize(canonical, cfg))
+		if famV != famC {
+			t.Errorf("read side: spec synonym %q -> %q not folded (%q vs %q)", variant, canonical, famV, famC)
+		}
+		patV := store.NormalizeQuery(variant)
+		patC := store.NormalizeQuery(canonical)
+		if patV != patC {
+			t.Errorf("write side: spec synonym %q -> %q not folded (%q vs %q)", variant, canonical, patV, patC)
+		}
+	}
+}
+{{- end}}

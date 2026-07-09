@@ -1,6 +1,8 @@
 package generator
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -38,6 +40,8 @@ func TestGeneratePostOnlyAPIStillSkipsLocalDataLayer(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := postOnlyOutputSpec("post-only-output")
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
@@ -87,10 +91,70 @@ func TestConstrainVisionTemplatesKeepsStreamingSyncWhenProfileHasNoBulkResources
 		apiSpec,
 		VisionTemplateSet{Store: true, Search: true, Sync: true, MCP: true},
 		&profiler.APIProfile{},
+		io.Discard,
 	)
 
 	require.True(t, visionSet.Store)
 	require.True(t, visionSet.Sync)
+}
+
+// TestConstrainVisionTemplatesLearnPromotesStoreAndSyncForSyncable pins the
+// learn store promotion inside constrain: a learn-enabled spec whose
+// VisionSet skipped Store gets Store promoted, and because the profile has
+// non-vestigial syncable resources the Store-forces-Sync invariant is
+// re-derived (SelectVisionTemplates already ran, so constrain must reapply
+// it). The info line tells operators why a thin CLI grew a store.
+func TestConstrainVisionTemplatesLearnPromotesStoreAndSyncForSyncable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := smallReadWriteSyncableOutputSpec("learn-syncable-promote")
+	apiSpec.Learn.Enabled = true
+	profile := profiler.Profile(apiSpec)
+	require.True(t, hasSyncCommandResources(profile), "fixture must have non-vestigial syncable resources")
+
+	var buf bytes.Buffer
+	visionSet := constrainVisionTemplates(apiSpec, VisionTemplateSet{MCP: true}, profile, &buf)
+
+	require.True(t, visionSet.Store)
+	require.True(t, visionSet.Sync)
+	require.Contains(t, buf.String(), "learn.enabled promotes VisionSet.Store=true")
+}
+
+// TestConstrainVisionTemplatesLearnZeroSyncableKeepsStoreDropsSync pins the
+// zero-syncable half of the promotion: learn forces Store, but with no
+// syncable resources the existing strip still drops sync/search/analytics,
+// leaving the compile-pinned forced-store shape.
+func TestConstrainVisionTemplatesLearnZeroSyncableKeepsStoreDropsSync(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := zeroSyncableQuerySpec("learn-zero-syncable")
+	apiSpec.Learn.Enabled = true
+
+	var buf bytes.Buffer
+	visionSet := constrainVisionTemplates(apiSpec, VisionTemplateSet{MCP: true}, profiler.Profile(apiSpec), &buf)
+
+	require.True(t, visionSet.Store)
+	require.False(t, visionSet.Sync)
+	require.False(t, visionSet.Search)
+	require.False(t, visionSet.Analytics)
+	require.Contains(t, buf.String(), "learn.enabled promotes VisionSet.Store=true")
+}
+
+// TestConstrainVisionTemplatesLearnDisabledDoesNotPromote pins that a spec
+// without learn enabled keeps today's behavior byte-for-byte: no promotion,
+// no info line.
+func TestConstrainVisionTemplatesLearnDisabledDoesNotPromote(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := postOnlyOutputSpec("learn-off-no-promote")
+	apiSpec.Learn.Disabled = true
+
+	var buf bytes.Buffer
+	visionSet := constrainVisionTemplates(apiSpec, VisionTemplateSet{MCP: true}, profiler.Profile(apiSpec), &buf)
+
+	require.False(t, visionSet.Store)
+	require.False(t, visionSet.Sync)
+	require.Empty(t, buf.String())
 }
 
 func TestGenerateReadOnlyAPIWithoutCreateOmitsImportAndIdempotent(t *testing.T) {

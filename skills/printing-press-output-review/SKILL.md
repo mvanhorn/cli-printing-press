@@ -77,6 +77,8 @@ Use the Agent tool (general-purpose) with this prompt contract:
 > 3. **Aggregation commands show all requested sources.** For commands with a `--source`/`--site`/`--region` CSV flag: if the user requested N sources, does output show N, or does stderr explain the missing ones? Silent drops of failed sources are a top failure mode for fan-out commands.
 > 4. **Result ordering/ranking makes sense.** For commands that claim to rank or sort, does the top result look plausibly best given the query? Watch for broken score weights, off-by-one sort bugs, and silent fallback to recency when relevance computation fails.
 >
+> Calibration for learn-loop command samples (`recall`, `learnings`, `playbook`): on a fresh print the local learning store starts empty, so empty candidate lists, zero-count `learnings stats`, and "no learnings recorded" outputs are plausible-correct. Do not flag them as silent failures or missing data.
+>
 > Return a list of findings. For each: check name, severity (`warning` in Wave B; `error` reserved for Wave C), one-line description, one-sentence fix suggestion. If the CLI passes all four checks, return "PASS — no findings."
 
 ### Step 3: Emit the structured result block

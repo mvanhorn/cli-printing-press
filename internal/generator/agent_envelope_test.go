@@ -267,6 +267,8 @@ func TestGeneratedNoStoreEndpointAgentWrapsFallthroughOutput(t *testing.T) {
 			"list": {Method: "GET", Path: "/gadgets", Description: "List gadgets"},
 		},
 	}
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
 	outputDir := filepath.Join(t.TempDir(), "agent-endpoint-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: false, Export: true}

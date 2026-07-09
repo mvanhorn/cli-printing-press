@@ -162,3 +162,26 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// TestEnvelopeWarningCodesStable pins the top-level envelope warning
+// vocabulary. These codes are a published contract agents parse and
+// store guidance against; renaming one silently orphans that guidance.
+func TestEnvelopeWarningCodesStable(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"no_learnings_for_query_family", TopWarningNoLearningsForQueryFamily, "no_learnings_for_query_family"},
+		{"similar_shape_different_entity", WarningSimilarShapeDifferentEntity, "similar_shape_different_entity"},
+		{"ambiguous_alias", WarningAmbiguousAlias, "ambiguous_alias"},
+		{"lookup_refresh_available", TopWarningLookupRefreshAvailable, "lookup_refresh_available"},
+		{"candidates_present", TopWarningCandidatesPresent, "candidates_present"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}

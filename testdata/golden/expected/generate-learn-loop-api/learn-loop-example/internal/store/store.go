@@ -48,18 +48,22 @@ func IsUUID(s string) bool {
 
 // StoreSchemaVersion is the on-disk schema version this binary understands.
 // It is stamped into SQLite's PRAGMA user_version on fresh databases and
-// checked on every open. Learn-enabled CLIs advance to v8 for the
-// learning_playbooks table for hand-authored choreography keyed by query
-// family, on top of the v6 canonical learn-loop tables ported from
-// prediction-goat (including the v3 resources_fts rowid rehash and v4
-// resources_fts content extraction).
-const StoreSchemaVersion = 8
+// checked on every open. Learn-enabled CLIs advance to v9 for the
+// learn_candidates and learn_events tables (CLI-side capture and
+// measurement), on top of the v8 learning_playbooks table for
+// hand-authored choreography keyed by query family and the v6 canonical
+// learn-loop tables ported from prediction-goat (including the v3
+// resources_fts rowid rehash and v4 resources_fts content extraction).
+const StoreSchemaVersion = 9
 
 // resourcesFTSContentSchemaVersion pins the schema bump that rewrote
 // resources_fts content from raw JSON to searchable leaf values. Keep this
-// separate from StoreSchemaVersion so future unrelated migrations do not
-// trigger an expensive full FTS rebuild.
-const resourcesFTSContentSchemaVersion = 8
+// separate from StoreSchemaVersion — and pinned at 4 regardless of the
+// learn shape — so schema bumps that only add tables (the learn
+// migrations) never trigger an expensive full FTS content rewrite. A
+// store stamped at v4 or later already carries the extracted-leaf FTS
+// content; opening it with a newer binary must stay additive-only.
+const resourcesFTSContentSchemaVersion = 4
 
 const resourcesFTSCreateSQL = `CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
 	id, resource_type, content, tokenize='porter unicode61'
@@ -484,6 +488,47 @@ func (s *Store) migrate(ctx context.Context) error {
 		// would just double the write cost on every upsert.
 		`CREATE INDEX IF NOT EXISTS idx_playbooks_source ON learning_playbooks(source)`,
 		`CREATE INDEX IF NOT EXISTS idx_playbooks_last_observed_at ON learning_playbooks(last_observed_at)`,
+		// learn_candidates (v9): CLI-derived improvement candidates
+		// awaiting explicit agent judgment. Rows are written by the
+		// post-run derivation pass (flag corrections, repeated
+		// discovery shapes) and surfaced read-only in the recall
+		// envelope. Candidates are structurally quarantined: they
+		// never become search_learnings rows and sightings never
+		// grant skip authority — only an explicit confirm promotes
+		// the payload. derivation_signature dedupes re-derivations of
+		// the same observation into a sightings bump instead of a
+		// duplicate row.
+		`CREATE TABLE IF NOT EXISTS learn_candidates (
+			id INTEGER PRIMARY KEY,
+			class TEXT NOT NULL CHECK(class IN ('flag_alias','playbook_candidate')),
+			payload TEXT NOT NULL,
+			derivation_signature TEXT NOT NULL UNIQUE,
+			sightings INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','confirmed','rejected','expired')),
+			query_family TEXT,
+			command_path TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_learn_candidates_status ON learn_candidates(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_learn_candidates_family ON learn_candidates(query_family)`,
+		// learn_events (v9): capped, best-effort telemetry for the
+		// learn loop's measurement layer. recall logs hit/miss with
+		// the matched row id so teach-to-reuse joins by row id (family
+		// hash as fallback); `learnings stats` aggregates over it.
+		// Inserts are telemetry-class — they never fail the command
+		// and never hold writeMu across a recall match.
+		`CREATE TABLE IF NOT EXISTS learn_events (
+			id INTEGER PRIMARY KEY,
+			ts TEXT NOT NULL,
+			event TEXT NOT NULL CHECK(event IN ('recall_hit','recall_miss','recall_playbook_hit','teach','teach_playbook','amend','forget','candidate_confirmed','candidate_rejected')),
+			query_family_hash TEXT,
+			matched_row_id INTEGER,
+			entity_match INTEGER,
+			surface TEXT CHECK(surface IN ('cli','mcp'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_learn_events_event_ts ON learn_events(event, ts)`,
 		`CREATE TABLE IF NOT EXISTS "leagues" (
 			"id" TEXT PRIMARY KEY,
 			"data" JSON NOT NULL,

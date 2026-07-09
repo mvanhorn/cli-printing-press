@@ -79,6 +79,91 @@ func TestTeachPlaybook_HappyPath(t *testing.T) {
 	}
 }
 
+func TestTeachPlaybook_InlineJSON(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+
+	// No file on disk anywhere: the playbook body rides the flag itself,
+	// the MCP-only agent path.
+	stdout, stderr, err := runRootArgs(t,
+		"teach-playbook",
+		"--query", "list all widgets in inventory and their top stats",
+		"--playbook-json", `{"steps":[{"cmd":"items list {category.id}"}],"entity_slots":["$CATEGORY"]}`,
+		"--db", dbPath,
+		"--agent",
+	)
+	if err != nil {
+		t.Fatalf("teach-playbook --playbook-json: %v (stderr=%q)", err, stderr)
+	}
+	var resp map[string]any
+	unmarshalAgentResults(t, stdout, &resp)
+	if v, _ := resp["recorded"].(bool); !v {
+		t.Errorf("recorded should be true, got %v", resp)
+	}
+	if v, _ := resp["has_playbook"].(bool); !v {
+		t.Errorf("has_playbook should be true, got %v", resp)
+	}
+
+	s, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	rows, err := s.ListPlaybooks()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 playbook row, got %d", len(rows))
+	}
+	if !strings.Contains(rows[0].PlaybookJSON, "items list") {
+		t.Errorf("playbook_json not stored from inline flag: %q", rows[0].PlaybookJSON)
+	}
+}
+
+func TestTeachPlaybook_InlineJSONMalformed(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+
+	_, _, err := runRootArgs(t,
+		"teach-playbook",
+		"--query", "any",
+		"--playbook-json", "{not valid json",
+		"--db", dbPath,
+	)
+	if err == nil {
+		t.Fatal("expected error for malformed inline playbook JSON")
+	}
+}
+
+func TestTeachPlaybook_InlineAndFileMutuallyExclusive(t *testing.T) {
+	home := withTempLearnHome(t)
+	dbPath := filepath.Join(home, "data.db")
+	pbPath := writePlaybookFile(t, home, "p.json", `{"steps":[{"cmd":"x"}]}`)
+
+	_, _, err := runRootArgs(t,
+		"teach-playbook",
+		"--query", "any",
+		"--playbook-file", pbPath,
+		"--playbook-json", `{"steps":[{"cmd":"y"}]}`,
+		"--db", dbPath,
+	)
+	if err == nil {
+		t.Fatal("expected error when both --playbook-file and --playbook-json are provided")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should name the mutual exclusion; got %v", err)
+	}
+
+	s, statErr := store.OpenWithContext(context.Background(), dbPath)
+	if statErr == nil {
+		defer s.Close()
+		if rows, _ := s.ListPlaybooks(); len(rows) != 0 {
+			t.Errorf("mutually-exclusive usage error must not write; got %d rows", len(rows))
+		}
+	}
+}
+
 func TestTeachPlaybook_NotesOnly(t *testing.T) {
 	home := withTempLearnHome(t)
 	dbPath := filepath.Join(home, "data.db")

@@ -18,6 +18,8 @@ import (
 	"learn-loop-example-pp-cli/internal/client"
 	"learn-loop-example-pp-cli/internal/cliutil"
 	"learn-loop-example-pp-cli/internal/config"
+	"learn-loop-example-pp-cli/internal/learn"
+	"learn-loop-example-pp-cli/internal/store"
 )
 
 type rootFlags struct {
@@ -59,11 +61,21 @@ func RootCmd() *cobra.Command {
 }
 
 // Execute runs the CLI in non-interactive mode: never prompts, all values via flags or stdin.
-func Execute() error {
+// The named return feeds the deferred journal write: one site after
+// ExecuteC returns covers every outcome, including RunE errors (a
+// Cobra PostRun hook would be skipped on RunE error, so none is used).
+func Execute() (retErr error) {
 	var flags rootFlags
 	rootCmd := newRootCmd(&flags)
 
-	err := rootCmd.Execute()
+	executedCmd, err := rootCmd.ExecuteC()
+	var journalFailedFlag, journalSuggestedFlag string
+	defer func() {
+		journalInvocation(&flags, rootCmd, executedCmd, retErr, journalFailedFlag, journalSuggestedFlag)
+		// Derivation runs after the journal write so the entry this
+		// invocation just recorded is visible to the tail scan.
+		deriveFlagCorrections(&flags, rootCmd, executedCmd)
+	}()
 	if errors.Is(err, pflag.ErrHelp) {
 		return nil
 	}
@@ -72,6 +84,12 @@ func Execute() error {
 		// Extract the flag name from the error message (e.g., "unknown flag: --foob")
 		if idx := strings.Index(msg, "unknown flag: "); idx >= 0 {
 			flagStr := strings.TrimSpace(msg[idx+len("unknown flag: "):])
+			// Parse-failure journal enrichment: PersistentPreRunE never
+			// runs for flag-parse failures, so this is the only place the
+			// failed flag (and its did-you-mean suggestion, when one
+			// exists) is observable. The deferred journal write picks
+			// these up.
+			journalFailedFlag = flagStr
 			if suggestion := suggestFlag(flagStr, rootCmd); suggestion != "" {
 				// Cobra already printed `Error: unknown flag: --foob` before
 				// returning; the wrap below attaches the hint to err.Error()
@@ -81,6 +99,7 @@ func Execute() error {
 				// shows up under Cobra's error line.
 				fmt.Fprintf(os.Stderr, "hint: did you mean --%s?\n", suggestion)
 				err = fmt.Errorf("%w\nhint: did you mean --%s?", err, suggestion)
+				journalSuggestedFlag = "--" + suggestion
 			}
 		}
 	}
@@ -303,6 +322,187 @@ var learnHookSkipList = map[string]struct{}{
 func shouldSkipLearnHook(commandPath string) bool {
 	for _, segment := range strings.Fields(commandPath) {
 		if _, skip := learnHookSkipList[segment]; skip {
+			return true
+		}
+	}
+	return false
+}
+
+// journalInvocation records the invocation in the learn journal from
+// Execute()'s single post-ExecuteC site. Fail-open by construction:
+// learn.JournalInvocation never returns an error and warns to stderr
+// at most once, so journaling can never fail or slow the command.
+//
+// Known accepted gap: for a flag-parse failure PersistentPreRunE never
+// runs, so a --home/--profile relocation was never applied and the
+// parse-failure entry lands in the default state dir rather than the
+// relocated one. Successful runs journal post-run, after the override
+// took effect, so their entries land in the relocated dir.
+func journalInvocation(flags *rootFlags, rootCmd, executed *cobra.Command, err error, failedFlag, suggestedFlag string) {
+	// The master --no-learn switch kills journaling too. On the
+	// parse-failure path the flag was never parsed into rootFlags, so
+	// the raw args are consulted as well.
+	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) {
+		return
+	}
+	exitCode := 0
+	errorClass := ""
+	if err != nil {
+		exitCode = ExitCode(err)
+		if isCobraUsageError(err) {
+			errorClass = "usage"
+		} else {
+			errorClass = "runtime"
+		}
+	}
+	// Resolve bool-ness of flags against the executed command's
+	// registry so the argv shape doesn't misread "--json list" as a
+	// valued flag. On parse failures executed may be nil or root.
+	target := executed
+	if target == nil {
+		target = rootCmd
+	}
+	isBoolFlag := func(name string) bool {
+		f := target.Flags().Lookup(name)
+		if f == nil {
+			f = target.InheritedFlags().Lookup(name)
+		}
+		if f == nil && len(name) == 1 {
+			f = target.Flags().ShorthandLookup(name)
+		}
+		return f != nil && f.Value.Type() == "bool"
+	}
+	learn.JournalInvocation(learn.JournalEntry{
+		Cmd:           journalVerbChain(rootCmd, executed),
+		ArgvShape:     learn.JournalArgvShape(os.Args[1:], isBoolFlag),
+		ExitCode:      exitCode,
+		ErrorClass:    errorClass,
+		FailedFlag:    failedFlag,
+		SuggestedFlag: suggestedFlag,
+	})
+}
+
+// journalVerbChain resolves the subcommand verb chain for the journal
+// entry. When ExecuteC resolved a command, its CommandPath is
+// authoritative. On the parse-failure path where no command resolved,
+// the chain is derived by matching os.Args tokens against registered
+// command names only — an unmatched token may be a positional value
+// and is never recorded (matching stops there, conservatively).
+func journalVerbChain(rootCmd, executed *cobra.Command) []string {
+	if executed != nil && executed != rootCmd {
+		parts := strings.Fields(executed.CommandPath())
+		if len(parts) > 1 {
+			return parts[1:]
+		}
+	}
+	var chain []string
+	current := rootCmd
+	for _, tok := range os.Args[1:] {
+		if strings.HasPrefix(tok, "-") {
+			// Flag token; a separated flag value that follows is an
+			// unmatched token and stops the walk below.
+			continue
+		}
+		next := findSubcommand(current, tok)
+		if next == nil {
+			break
+		}
+		// Record the canonical registered name (resolving aliases),
+		// never the raw token.
+		chain = append(chain, next.Name())
+		current = next
+	}
+	return chain
+}
+
+func findSubcommand(cmd *cobra.Command, name string) *cobra.Command {
+	for _, c := range cmd.Commands() {
+		if c.Name() == name || c.HasAlias(name) {
+			return c
+		}
+	}
+	return nil
+}
+
+// argsDisableLearn reports whether the raw args carry the master
+// --no-learn switch. Needed on the parse-failure journal path where
+// pflag never populated rootFlags; an explicit --no-learn=false does
+// not disable.
+func argsDisableLearn(args []string) bool {
+	for _, tok := range args {
+		if tok == "--no-learn" {
+			return true
+		}
+		if v, ok := strings.CutPrefix(tok, "--no-learn="); ok {
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "false", "0", "no":
+			default:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// learnFamilyCommands are the commands whose own invocations must
+// never trigger a derivation pass — deriving off the learn surface's
+// own journal traffic would compound into derive-on-derive noise.
+// Their entries still land in the journal; only the pass is skipped.
+var learnFamilyCommands = map[string]struct{}{
+	"teach":          {},
+	"recall":         {},
+	"learnings":      {},
+	"playbook":       {},
+	"teach-pattern":  {},
+	"teach-lookup":   {},
+	"teach-playbook": {},
+}
+
+// deriveFlagCorrections runs the post-run flag-correction derivation
+// pass from Execute()'s single post-ExecuteC site, right after the
+// invocation's own journal entry lands. Best-effort and silent: it is
+// skipped under every switch the journal honors, and any failure is
+// swallowed — derivation may never fail, slow, or add output to the
+// command that triggered it.
+func deriveFlagCorrections(flags *rootFlags, rootCmd, executed *cobra.Command) {
+	if noLearnActive(flags) || argsDisableLearn(os.Args[1:]) || learn.JournalCaptureDisabled() {
+		return
+	}
+	chain := journalVerbChain(rootCmd, executed)
+	if len(chain) > 0 {
+		if _, isLearn := learnFamilyCommands[chain[0]]; isLearn {
+			return
+		}
+	}
+	flagExists := func(name string) bool {
+		return commandTreeHasFlag(rootCmd, strings.TrimLeft(name, "-"))
+	}
+	// The opener is lazy: the pass touches SQLite only when it paired
+	// a correction, so framework-only invocations never create the
+	// learn database from this path.
+	openStore := func() (learn.CandidateStore, error) {
+		return store.Open(learnDBPath(""))
+	}
+	_ = learn.DeriveFlagCorrections(openStore, flagExists)
+}
+
+// commandTreeHasFlag reports whether any command in the tree registers
+// a flag with the given name (long name or single-letter shorthand).
+// The derivation pairing rule only heals flags that resolve nowhere —
+// a name that exists on any command, even a sibling of the failed one,
+// is a usage error rather than an alias candidate.
+func commandTreeHasFlag(cmd *cobra.Command, name string) bool {
+	if name == "" {
+		return false
+	}
+	if cmd.Flags().Lookup(name) != nil || cmd.PersistentFlags().Lookup(name) != nil {
+		return true
+	}
+	if len(name) == 1 && cmd.Flags().ShorthandLookup(name) != nil {
+		return true
+	}
+	for _, child := range cmd.Commands() {
+		if commandTreeHasFlag(child, name) {
 			return true
 		}
 	}

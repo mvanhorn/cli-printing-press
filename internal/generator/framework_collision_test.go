@@ -79,6 +79,9 @@ func TestActiveFrameworkCobraUseNamesMatchesGeneratedRoot(t *testing.T) {
 		Pattern:   `accessToken:"([^"]+)"`,
 	}
 	apiSpec.Share = spec.ShareConfig{Enabled: true, SnapshotTables: []string{"items"}}
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	// (The root-parsing regex below cannot see how learn commands register.)
+	apiSpec.Learn.Disabled = true
 
 	outputDir := filepath.Join(t.TempDir(), "activecmds-pp-cli")
 	gen := New(apiSpec, outputDir)

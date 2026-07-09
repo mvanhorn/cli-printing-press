@@ -31,9 +31,11 @@ import (
 
 // newLearnConfig returns the per-CLI entity extractor Config the
 // teach / recall / normalize call sites pass into the learn package.
-// Reads the printed-CLI's spec.Learn.TickerPatterns and Stopwords;
-// patterns that fail to compile at runtime (defense in depth — spec
-// parse already validated them) log a warning and are skipped.
+// Reads the printed-CLI's spec.Learn.TickerPatterns, Stopwords, and
+// Synonyms; patterns that fail to compile at runtime (defense in
+// depth — spec parse already validated them) log a warning and are
+// skipped. Declared synonyms register on both the returned Config and
+// the store package's write-side normalizer.
 func newLearnConfig() *entities.Config {
 	cfg := entities.NewConfig()
 	if re, err := regexp.Compile(`^EXAMPLE-[A-Z0-9]+(-[A-Z0-9]+)*$`); err != nil {

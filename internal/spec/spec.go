@@ -1791,10 +1791,38 @@ type ShareConfig struct {
 // outer map key (e.g., "country", "team"); each value is an ordered list
 // of canonical entities and their aliases.
 type LearnConfig struct {
-	Enabled           bool                    `yaml:"enabled,omitempty" json:"enabled,omitempty"`                         // master switch; when false, the loop's commands and pre-seeding hook are not emitted
+	Enabled           bool                    `yaml:"enabled" json:"enabled,omitempty"`                                   // master switch; when false, the loop's commands and pre-seeding hook are not emitted
+	Disabled          bool                    `yaml:"disabled,omitempty" json:"disabled,omitempty"`                       // generation-time opt-out. A plain Enabled bool cannot distinguish "explicitly off" from "absent" once the generator defaults the loop on, so this is the authoritative off switch. Contradicts an explicit enabled: true and is rejected at parse time.
+	EnabledSet        bool                    `yaml:"-" json:"-"`                                                         // internal presence bit: legacy specs with learn.enabled: false remain opted out when the default-on pass runs.
 	TickerPatterns    []string                `yaml:"ticker_patterns,omitempty" json:"ticker_patterns,omitempty"`         // Go regexp patterns the recall path uses to recognize resource identifiers in free-text. Each value must compile via regexp.Compile.
 	Stopwords         []string                `yaml:"stopwords,omitempty" json:"stopwords,omitempty"`                     // domain-specific stopwords stripped from queries before recall match; merged with a built-in default set. Whitespace-only entries are dropped at parse time.
+	Synonyms          map[string]string       `yaml:"synonyms,omitempty" json:"synonyms,omitempty"`                       // per-CLI variant -> canonical query-phrasing folds (e.g., "last night" -> "yesterday") applied symmetrically at write and read so same-referent phrasings share one query family. Keys and values must be lowercase; chains are rejected so folding is a single hop.
 	EntityLookupSeeds map[string][]LookupSeed `yaml:"entity_lookup_seeds,omitempty" json:"entity_lookup_seeds,omitempty"` // canonical-name + aliases table keyed by seed kind (e.g., "country"). Used by the recall path to substitute one entity for another and generalize learned templates.
+}
+
+func (c *LearnConfig) UnmarshalYAML(value *yaml.Node) error {
+	type learnConfigAlias LearnConfig
+	var out learnConfigAlias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*c = LearnConfig(out)
+	c.EnabledSet = yamlMappingHasKey(value, "enabled")
+	return nil
+}
+
+func (c *LearnConfig) UnmarshalJSON(data []byte) error {
+	type learnConfigAlias LearnConfig
+	var out learnConfigAlias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*c = LearnConfig(out)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		_, c.EnabledSet = raw["enabled"]
+	}
+	return nil
 }
 
 // LookupSeed is one canonical entity plus optional aliases inside a
@@ -4904,15 +4932,26 @@ func validateCacheShare(cache CacheConfig, share ShareConfig, resources map[stri
 // time rather than as a silent lookup miss at recall time.
 var learnSeedKindRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// validateLearn enforces the LearnConfig shape contract: ticker patterns
-// must compile as Go regexps, seed kinds must be SQLite-safe identifiers,
-// each seed must carry a non-empty Canonical, and canonical values must be
-// unique within a kind. Stopword sanitization (dropping whitespace-only
-// entries) happens here too so the spec's parsed view matches what the
-// generated CLI will actually load at runtime.
+// validateLearn enforces the LearnConfig shape contract: the enabled and
+// disabled switches must not contradict, synonym pairs must be single-hop
+// lowercase folds, ticker patterns must compile as Go regexps, seed kinds
+// must be SQLite-safe identifiers, each seed must carry a non-empty
+// Canonical, and canonical values must be unique within a kind. Stopword
+// sanitization (dropping whitespace-only entries) happens here too so the
+// spec's parsed view matches what the generated CLI will actually load at
+// runtime.
 func validateLearn(learn *LearnConfig) error {
 	if learn == nil {
 		return nil
+	}
+	// Both switches set at once is a contradiction, not a precedence
+	// question: silently picking a winner would make the losing field a
+	// lie in the published spec, so the author must resolve it.
+	if learn.Disabled && learn.Enabled {
+		return fmt.Errorf("learn.disabled: true contradicts learn.enabled: true; remove one (disabled is the generation-time opt-out)")
+	}
+	if err := validateLearnSynonyms(learn.Synonyms); err != nil {
+		return err
 	}
 	for i, pattern := range learn.TickerPatterns {
 		if _, err := regexp.Compile(pattern); err != nil {
@@ -4932,7 +4971,40 @@ func validateLearn(learn *LearnConfig) error {
 		}
 		learn.Stopwords = filtered
 	}
-	for kind, seeds := range learn.EntityLookupSeeds {
+	if err := validateLearnSeeds(learn.EntityLookupSeeds); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateLearnSynonyms enforces the same-referent fold contract on
+// LearnConfig.Synonyms: pairs of non-empty lowercase strings, no
+// self-references, and no chains. Folding must be a single hop applied
+// symmetrically at write and read; a value that is itself a key would make
+// the fold result depend on application order, so chains are rejected
+// outright rather than flattened.
+func validateLearnSynonyms(synonyms map[string]string) error {
+	for variant, canonical := range synonyms {
+		if strings.TrimSpace(variant) == "" || strings.TrimSpace(canonical) == "" {
+			return fmt.Errorf("learn.synonyms: both variant and canonical must be non-empty (got %q -> %q)", variant, canonical)
+		}
+		if variant != strings.ToLower(variant) || canonical != strings.ToLower(canonical) {
+			return fmt.Errorf("learn.synonyms: %q -> %q must be lowercase; query normalization lowercases before folding", variant, canonical)
+		}
+		if variant == canonical {
+			return fmt.Errorf("learn.synonyms: %q maps to itself; a fold must change the phrasing", variant)
+		}
+		if _, isKey := synonyms[canonical]; isKey {
+			return fmt.Errorf("learn.synonyms: %q -> %q forms a chain (%q is also a variant key); map every variant directly to its canonical form", variant, canonical, canonical)
+		}
+	}
+	return nil
+}
+
+// validateLearnSeeds enforces the EntityLookupSeeds contract: SQLite-safe
+// kind names, non-empty canonicals, and canonical uniqueness within a kind.
+func validateLearnSeeds(seedsByKind map[string][]LookupSeed) error {
+	for kind, seeds := range seedsByKind {
 		if !learnSeedKindRe.MatchString(kind) {
 			return fmt.Errorf("learn.entity_lookup_seeds: kind %q must be lowercase letters, digits, and underscore only (no whitespace or punctuation other than _)", kind)
 		}
@@ -5065,6 +5137,19 @@ func (s *APISpec) ApplyLargeMCPSurfaceDefault() LargeMCPSurfaceDefaultResult {
 	s.MCP.Orchestration = "code"
 	s.MCP.EndpointTools = "hidden"
 	return result
+}
+
+// ApplyLearnLoopDefault applies the learn-loop default in place: a spec that
+// neither opts out nor already opts in gets
+// learn.enabled=true, with one info line to w naming the opt-out. Explicit
+// states short-circuit silently: learn.disabled and legacy learn.enabled=false
+// are off switches, and an already-enabled spec keeps its config untouched.
+func (s *APISpec) ApplyLearnLoopDefault(w io.Writer) {
+	if s == nil || s.Learn.Disabled || s.Learn.Enabled || s.Learn.EnabledSet {
+		return
+	}
+	s.Learn.Enabled = true
+	fmt.Fprintf(w, "info: learn: defaulting self-learning loop on (opt out with learn.disabled: true)\n")
 }
 
 // IsCodeOrchestration reports whether this MCP config opts into the

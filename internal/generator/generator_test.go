@@ -102,9 +102,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 80},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 84},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 82},
+		// Counts include the default-on learn loop tree + forced store.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 142},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 146},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 144},
 	}
 
 	for _, tt := range tests {
@@ -368,6 +369,10 @@ func TestGenerateNoUnscopedStoreOpen(t *testing.T) {
 	apiSpec.Cache.Enabled = true
 	apiSpec.Share.Enabled = true
 	apiSpec.Share.SnapshotTables = []string{"items"}
+	// Post-flip: opt out so this guard keeps covering the non-learn emission
+	// points; the learn path's lazy store.Open opener in root.go is a
+	// deliberate ctx-less telemetry opener, not a regression of this guard.
+	apiSpec.Learn.Disabled = true
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
@@ -8101,6 +8106,9 @@ func TestGeneratedHelpers_ConditionalDataLayerFunctions(t *testing.T) {
 			},
 		},
 	}
+
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
 
 	outputDir := filepath.Join(t.TempDir(), "testdatalayer-pp-cli")
 	gen := New(apiSpec, outputDir)
@@ -19075,6 +19083,9 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 			},
 		},
 	}
+
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)

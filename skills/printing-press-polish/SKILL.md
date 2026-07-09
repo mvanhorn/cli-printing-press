@@ -499,6 +499,7 @@ Parse findings into categories:
 
 - `scorecard --live-check` reporting `SQLITE_BUSY`, network timeouts, `401` from a mock or expired token, or HTTP errors that depend on the test workspace's permissions/state — these are test-environment issues, not CLI defects.
 - `verify` mock-harness flakes on commands with binary output (e.g., `qr` returning a PNG that the substring matcher can't validate) or commands with optional positional args where dry-run output legitimately doesn't contain the verify probe string.
+- Learn-loop commands: the dogfood/verify matrix now covers the default-on learn surface (`teach`, `recall`, `learnings`, `playbook`). `teach` and `teach-playbook` intentionally exit 2 when invoked bare, declared via `pp:typed-exit-codes`, so verify scores that as pass; do not "fix" the exit code. `learnings stats` on a fresh print legitimately reports zeros and empty sections; that is an empty local store, not a defect.
 
 Classify these as environmental in `skipped_findings` with the specific reason; do not spend Phase 2 cycles trying to "fix" them. The polish skill's ship logic already excludes live-check failures from gating, but the agent should still annotate them so reviewers can see they were considered and dismissed deliberately.
 

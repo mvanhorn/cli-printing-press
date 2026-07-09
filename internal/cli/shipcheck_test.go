@@ -721,6 +721,7 @@ func TestShipcheck_JSONEnvelope_OneFailure(t *testing.T) {
 	}
 	if failingLeg == nil {
 		t.Fatal("envelope missing verify-skill leg")
+		return
 	}
 	if failingLeg.Passed {
 		t.Errorf("verify-skill leg should be passed=false")

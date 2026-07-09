@@ -3304,6 +3304,32 @@ learn: {}
 		assert.Empty(t, s.Learn.EntityLookupSeeds)
 	})
 
+	t.Run("enabled false records explicit legacy opt-out", func(t *testing.T) {
+		input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+learn:
+  enabled: false
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+	})
+
 	t.Run("absent block: omitting learn yields zero-value LearnConfig", func(t *testing.T) {
 		input := `
 name: demo
@@ -3427,6 +3453,185 @@ resources:
 		}
 		require.NoError(t, s.Validate())
 		assert.Equal(t, []string{"valid", "also-valid"}, s.Learn.Stopwords)
+	})
+}
+
+func TestLearnConfigDisabledAndSynonyms(t *testing.T) {
+	learnSpecYAML := func(learnBlock string) []byte {
+		return []byte(`
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+` + learnBlock)
+	}
+
+	t.Run("disabled round-trips through parse and marshal", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  disabled: true\n"))
+		require.NoError(t, err)
+		assert.True(t, s.Learn.Disabled)
+		assert.False(t, s.Learn.Enabled)
+
+		out, err := yaml.Marshal(s.Learn)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "disabled: true")
+
+		var back LearnConfig
+		require.NoError(t, yaml.Unmarshal(out, &back))
+		assert.True(t, back.Disabled)
+	})
+
+	t.Run("disabled true with enabled true rejected as contradictory, naming both fields", func(t *testing.T) {
+		_, err := ParseBytes(learnSpecYAML("learn:\n  disabled: true\n  enabled: true\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "learn.disabled")
+		assert.Contains(t, err.Error(), "learn.enabled")
+	})
+
+	t.Run("enabled false alone parses cleanly as a legacy opt-out", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: false\n"))
+		require.NoError(t, err)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+		assert.False(t, s.Learn.Disabled)
+
+		out, err := yaml.Marshal(s.Learn)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "enabled: false")
+
+		var back LearnConfig
+		require.NoError(t, yaml.Unmarshal(out, &back))
+		assert.False(t, back.Enabled)
+		assert.True(t, back.EnabledSet)
+	})
+
+	t.Run("synonyms round-trip through parse", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: true\n  synonyms:\n    last night: yesterday\n"))
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"last night": "yesterday"}, s.Learn.Synonyms)
+	})
+
+	synonymCases := []struct {
+		name     string
+		synonyms map[string]string
+		wantErr  string
+	}{
+		{
+			name:     "valid lowercase pair accepted",
+			synonyms: map[string]string{"last night": "yesterday"},
+		},
+		{
+			name:     "empty key rejected",
+			synonyms: map[string]string{"": "yesterday"},
+			wantErr:  "learn.synonyms",
+		},
+		{
+			name:     "empty value rejected",
+			synonyms: map[string]string{"last night": ""},
+			wantErr:  "learn.synonyms",
+		},
+		{
+			name:     "uppercase key rejected",
+			synonyms: map[string]string{"Last Night": "yesterday"},
+			wantErr:  "lowercase",
+		},
+		{
+			name:     "uppercase value rejected",
+			synonyms: map[string]string{"last night": "Yesterday"},
+			wantErr:  "lowercase",
+		},
+		{
+			name:     "self-referential pair rejected",
+			synonyms: map[string]string{"yesterday": "yesterday"},
+			wantErr:  "itself",
+		},
+		{
+			name:     "chained pair rejected: a value must not itself be a key",
+			synonyms: map[string]string{"last night": "yesterday", "yesterday": "prior day"},
+			wantErr:  "chain",
+		},
+	}
+	for _, tc := range synonymCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := APISpec{
+				Name:      "demo",
+				BaseURL:   "http://x",
+				Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+				Learn: LearnConfig{
+					Enabled:  true,
+					Synonyms: tc.synonyms,
+				},
+			}
+			err := s.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestApplyLearnLoopDefault(t *testing.T) {
+	base := func() *APISpec {
+		return &APISpec{Name: "demo"}
+	}
+
+	t.Run("learn-less spec defaults Enabled on and writes the info line", func(t *testing.T) {
+		s := base()
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.True(t, s.Learn.Enabled)
+		assert.Contains(t, buf.String(), "defaulting self-learning loop on (opt out with learn.disabled: true)")
+	})
+
+	t.Run("disabled spec short-circuits with no change and no output", func(t *testing.T) {
+		s := base()
+		s.Learn.Disabled = true
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.Disabled)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("explicit enabled false short-circuits with no change and no output", func(t *testing.T) {
+		s := base()
+		s.Learn.EnabledSet = true
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("explicitly enabled spec is a no-op with no output", func(t *testing.T) {
+		s := base()
+		s.Learn.Enabled = true
+		s.Learn.Stopwords = []string{"the"}
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.True(t, s.Learn.Enabled)
+		assert.Equal(t, []string{"the"}, s.Learn.Stopwords)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("nil receiver is safe", func(t *testing.T) {
+		var s *APISpec
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.Empty(t, buf.String())
 	})
 }
 

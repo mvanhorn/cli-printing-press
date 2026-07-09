@@ -78,6 +78,9 @@ func TestGenerateDigitLeadingPathSegmentsUseConsistentCommandIdentifiers(t *test
 		},
 	}
 
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
+
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Export: true}
