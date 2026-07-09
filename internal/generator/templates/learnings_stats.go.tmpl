@@ -71,6 +71,11 @@ local-only: events never leave this machine.`,
 			}
 			defer s.Close()
 
+			eventsPruned, pruneErr := s.PruneLearnEvents(0, 0)
+			if pruneErr != nil {
+				eventsPruned = 0
+			}
+
 			stats, err := s.LearnEventStats(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("learnings stats: %w", err)
@@ -88,7 +93,7 @@ local-only: events never leave this machine.`,
 				CandidatesConfirmed:    stats.CandidatesConfirmed,
 				CandidatesRejected:     stats.CandidatesRejected,
 				EventCounts:            stats.EventCounts,
-				EventsPruned:           0,
+				EventsPruned:           eventsPruned,
 			}
 
 			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {

@@ -169,7 +169,7 @@ func TestGenerateLearnMCPParity_LocalWriteAnnotations(t *testing.T) {
 		"learnings reject must not carry local-write hints")
 }
 
-func TestGenerateLearnMCPParity_StatsReadOnlyDoesNotPrune(t *testing.T) {
+func TestGenerateLearnMCPParity_StatsReadOnlyAllowsTelemetryPrune(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("parity-stats")
@@ -182,8 +182,8 @@ func TestGenerateLearnMCPParity_StatsReadOnlyDoesNotPrune(t *testing.T) {
 	statsSrc := readEmitted(t, outputDir, "internal", "cli", "learnings_stats.go")
 	statsBlock := commandBlock(t, statsSrc, `Use:   "stats"`)
 	require.Contains(t, statsBlock, `"mcp:read-only": "true"`)
-	require.NotContains(t, statsBlock, "PruneLearnEvents",
-		"read-only MCP stats must not mutate the local events table")
+	require.Contains(t, statsBlock, "PruneLearnEvents(0, 0)",
+		"read-only MCP stats may prune telemetry-class local events")
 }
 
 // TestGenerateTeachPlaybookInlineJSON verifies the R16 inline playbook
