@@ -53,7 +53,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 				"priority": formatCLIParamValue(flagPriority),
 				"limit":    formatCLIParamValue(flagLimit),
 				"cursor":   formatCLIParamValue(flagCursor),
-			}, nil, flagAll, "cursor", "cursor", "limit", "", "", cmd.ErrOrStderr())
+			}, nil, flagAll, "cursor", "cursor", "limit", 50, "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

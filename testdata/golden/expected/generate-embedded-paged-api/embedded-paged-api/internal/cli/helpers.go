@@ -537,7 +537,7 @@ func replacePathParam(path, name, value string) string {
 // endpoint has no per-endpoint header overrides.
 func paginatedGet(ctx context.Context, c interface {
 	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
-}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
+}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, paginationType, limitParam string, defaultPageSize int, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
 	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
 	// APIs send offset=0 on the first page.
 	clean := map[string]string{}
@@ -549,7 +549,6 @@ func paginatedGet(ctx context.Context, c interface {
 			clean[k] = v
 		}
 	}
-
 	if !fetchAll {
 		data, err := c.GetWithHeaders(ctx, path, clean, headers)
 		if err != nil {
@@ -557,6 +556,24 @@ func paginatedGet(ctx context.Context, c interface {
 		}
 		emitTruncationWarning(data, nextCursorPath, hasMoreField, paginationType)
 		return data, nil
+	}
+
+	pageSize := 0
+	if paginationType == "offset" || paginationType == "page" {
+		pageSize = defaultPageSize
+		hasPositiveLimit := false
+		if limitParam != "" {
+			if limit, err := strconv.Atoi(clean[limitParam]); err == nil && limit > 0 {
+				pageSize = limit
+				hasPositiveLimit = true
+			}
+		}
+		if pageSize <= 0 {
+			pageSize = 100
+		}
+		if limitParam != "" && !hasPositiveLimit {
+			clean[limitParam] = strconv.Itoa(pageSize)
+		}
 	}
 
 	// Fetch all pages
@@ -579,7 +596,7 @@ func paginatedGet(ctx context.Context, c interface {
 		var items []json.RawMessage
 		if json.Unmarshal(data, &items) == nil {
 			allItems = append(allItems, items...)
-			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, limitParam, len(items)); ok {
+			if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, len(items)); ok {
 				if page >= paginatedGetMaxPages {
 					emitPaginatedGetMaxPagesWarning()
 					break
@@ -619,7 +636,7 @@ func paginatedGet(ctx context.Context, c interface {
 						var more bool
 						if json.Unmarshal(moreRaw, &more) == nil {
 							if more {
-								if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, limitParam); ok {
+								if next, ok := nextClientSidePaginationCursor(clean, cursorParam, paginationType, pageSize); ok {
 									if page >= paginatedGetMaxPages {
 										emitPaginatedGetMaxPagesWarning()
 										break
@@ -635,7 +652,7 @@ func paginatedGet(ctx context.Context, c interface {
 					}
 				}
 				if !hasExplicitNoMore && nextCursorPath == "" && hasMoreField == "" {
-					if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, limitParam, itemCount); ok {
+					if next, ok := nextFullPageOffsetCursor(clean, cursorParam, paginationType, pageSize, itemCount); ok {
 						if page >= paginatedGetMaxPages {
 							emitPaginatedGetMaxPagesWarning()
 							break
@@ -665,18 +682,17 @@ func paginatedGet(ctx context.Context, c interface {
 	return json.RawMessage(result), nil
 }
 
-func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType, limitParam string, itemCount int) (string, bool) {
+func nextFullPageOffsetCursor(params map[string]string, cursorParam, paginationType string, pageSize, itemCount int) (string, bool) {
 	if (paginationType != "offset" && paginationType != "page") || itemCount == 0 {
 		return "", false
 	}
-	limit, err := strconv.Atoi(params[limitParam])
-	if err != nil || limit <= 0 || itemCount < limit {
+	if pageSize <= 0 || itemCount < pageSize {
 		return "", false
 	}
-	return nextClientSidePaginationCursor(params, cursorParam, paginationType, limitParam)
+	return nextClientSidePaginationCursor(params, cursorParam, paginationType, pageSize)
 }
 
-func nextClientSidePaginationCursor(params map[string]string, cursorParam, paginationType, limitParam string) (string, bool) {
+func nextClientSidePaginationCursor(params map[string]string, cursorParam, paginationType string, pageSize int) (string, bool) {
 	if cursorParam == "" {
 		return "", false
 	}
@@ -700,11 +716,10 @@ func nextClientSidePaginationCursor(params map[string]string, cursorParam, pagin
 		if err != nil {
 			return "", false
 		}
-		limit, err := strconv.Atoi(params[limitParam])
-		if err != nil || limit <= 0 {
+		if pageSize <= 0 {
 			return "", false
 		}
-		return strconv.Itoa(n + limit), true
+		return strconv.Itoa(n + pageSize), true
 	default:
 		return "", false
 	}

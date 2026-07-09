@@ -984,6 +984,7 @@ type endpointTemplateData struct {
 	HasStore      bool
 	IsAsync       bool
 	Async         AsyncJobInfo
+	PageSize      int
 	// IsReadOnly mirrors !endpointIsWriteCommand(endpoint, name). The
 	// emitted command sets Annotations["mcp:read-only"] = "true" when
 	// it's true so the cobratree MCP walker marks the tool with
@@ -3440,6 +3441,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				HasStore:      g.VisionSet.Store,
 				IsAsync:       isAsync,
 				Async:         asyncInfo,
+				PageSize:      g.paginationPageSizeForEndpoint(endpoint),
 				IsReadOnly:    endpointIsReadCommand(endpoint, eName),
 				APISpec:       g.Spec,
 			}
@@ -3499,6 +3501,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					HasStore:      g.VisionSet.Store,
 					IsAsync:       isAsync,
 					Async:         asyncInfo,
+					PageSize:      g.paginationPageSizeForEndpoint(endpoint),
 					IsReadOnly:    endpointIsReadCommand(endpoint, eName),
 					APISpec:       g.Spec,
 				}
@@ -4645,6 +4648,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			EffectiveTier     string
 			HasStore          bool
 			HasResponseUnwrap bool
+			PageSize          int
 			Resource          spec.Resource
 			FuncPrefix        string
 			IsReadOnly        bool
@@ -4665,6 +4669,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			// when ANY promoted command qualifies), so call ⊆ emit — no call to
 			// an unemitted helper.
 			HasResponseUnwrap: g.VisionSet.Store && !pc.Endpoint.UsesBinaryResponse() && endpointHasStatusDataEnvelope(pc.Endpoint, g.Spec.Types),
+			PageSize:          g.paginationPageSizeForEndpoint(pc.Endpoint),
 			Resource:          resource,
 			FuncPrefix:        pc.ResourceName,
 			IsReadOnly:        endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
@@ -4678,6 +4683,87 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	}
 
 	return nil
+}
+
+func (g *Generator) paginationDefaultPageSize() int {
+	if g != nil && g.profile != nil && g.profile.Pagination.DefaultPageSize > 0 {
+		return g.profile.Pagination.DefaultPageSize
+	}
+	return 100
+}
+
+func (g *Generator) paginationPageSizeForEndpoint(endpoint spec.Endpoint) int {
+	pageSize := g.paginationDefaultPageSize()
+	if endpoint.Pagination == nil || endpoint.Pagination.LimitParam == "" {
+		return pageSize
+	}
+	limitParam, ok := endpointParamByName(endpoint, endpoint.Pagination.LimitParam)
+	if !ok {
+		return pageSize
+	}
+	if defaultPageSize, ok := positiveIntValue(limitParam.Default); ok {
+		pageSize = defaultPageSize
+	}
+	if maxPageSize, ok := paramMaxInt(limitParam); ok && maxPageSize < pageSize {
+		pageSize = maxPageSize
+	}
+	if pageSize <= 0 {
+		return g.paginationDefaultPageSize()
+	}
+	return pageSize
+}
+
+func endpointParamByName(endpoint spec.Endpoint, name string) (spec.Param, bool) {
+	for _, param := range endpoint.Params {
+		if param.Name == name || param.URLName == name {
+			return param, true
+		}
+	}
+	return spec.Param{}, false
+}
+
+func positiveIntValue(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		if v > 0 {
+			return v, true
+		}
+	case int64:
+		if v > 0 && int64(int(v)) == v {
+			return int(v), true
+		}
+	case float64:
+		asInt := int(v)
+		if v > 0 && float64(asInt) == v {
+			return asInt, true
+		}
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil && n > 0 {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func paramMaxInt(param spec.Param) (int, bool) {
+	var max int
+	hasMax := false
+	if param.Maximum != nil && *param.Maximum > 0 {
+		max = int(*param.Maximum)
+		hasMax = true
+	}
+	if param.ExclusiveMaximum != nil && *param.ExclusiveMaximum > 0 {
+		exclusiveMax := int(*param.ExclusiveMaximum)
+		if float64(exclusiveMax) == *param.ExclusiveMaximum {
+			exclusiveMax--
+		}
+		if exclusiveMax > 0 && (!hasMax || exclusiveMax < max) {
+			max = exclusiveMax
+			hasMax = true
+		}
+	}
+	return max, hasMax
 }
 
 func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool, renderedWorkflowConstructors, renderedInsightConstructors []string, novelCommandStubs []novelFeatureCommandRender) error {
