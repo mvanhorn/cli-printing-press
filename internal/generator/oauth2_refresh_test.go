@@ -171,6 +171,7 @@ import (
 	"testing"
 	"time"
 
+	"__MODULE_PATH__/internal/cliutil"
 	"__MODULE_PATH__/internal/config"
 )
 
@@ -312,6 +313,16 @@ func TestOAuth2RefreshAfterUnauthorizedPersistsRotatedTokens(t *testing.T) {
 		if !strings.Contains(credentialsText, want) {
 			t.Fatalf("credentials.toml missing %q after 401 refresh:\n%s", want, credentialsText)
 		}
+	}
+	reloadedCreds, _, err := cliutil.LoadCredentials()
+	if err != nil {
+		t.Fatalf("LoadCredentials() after 401 refresh error = %v", err)
+	}
+	if reloadedCreds == nil || reloadedCreds.TokenExpiry.IsZero() {
+		t.Fatalf("reloaded TokenExpiry is zero after 401 refresh")
+	}
+	if want := time.Now().Add(50 * time.Minute); reloadedCreds.TokenExpiry.Before(want) {
+		t.Fatalf("reloaded TokenExpiry = %s is earlier than expected minimum %s", reloadedCreds.TokenExpiry, want)
 	}
 }
 `, "__MODULE_PATH__", modulePath)
