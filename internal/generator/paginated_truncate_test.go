@@ -573,49 +573,66 @@ func containsAll(s string, needles ...string) bool {
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestPaginatedGet")
 }
 
-func TestIssue3497BareAllOffsetUsesDefaultPageSize(t *testing.T) {
+func TestIssue3497BareAllOffsetUsesEndpointPageSize(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := minimalSpec("issue3497-offset")
-	apiSpec.Resources = map[string]spec.Resource{
-		"records": {
-			Description: "Manage records",
-			Endpoints: map[string]spec.Endpoint{
-				"list": {
-					Method:      "GET",
-					Path:        "/records",
-					Description: "List records",
-					Params: []spec.Param{
-						{Name: "limit", Type: "integer"},
-						{Name: "offset", Type: "integer"},
+	capped := 2.0
+	for _, tc := range []struct {
+		name       string
+		limitParam spec.Param
+	}{
+		{
+			name:       "default",
+			limitParam: spec.Param{Name: "limit", Type: "integer", Default: 2},
+		},
+		{
+			name:       "maximum",
+			limitParam: spec.Param{Name: "limit", Type: "integer", Maximum: &capped},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("issue3497-offset-" + tc.name)
+			apiSpec.Resources = map[string]spec.Resource{
+				"records": {
+					Description: "Manage records",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:      "GET",
+							Path:        "/records",
+							Description: "List records",
+							Params: []spec.Param{
+								tc.limitParam,
+								{Name: "offset", Type: "integer"},
+							},
+							Pagination: &spec.Pagination{
+								Type:        "offset",
+								CursorParam: "offset",
+								LimitParam:  "limit",
+							},
+							Response: spec.ResponseDef{Type: "array", Item: "Record"},
+						},
 					},
-					Pagination: &spec.Pagination{
-						Type:        "offset",
-						CursorParam: "offset",
-						LimitParam:  "limit",
-					},
-					Response: spec.ResponseDef{Type: "array", Item: "Record"},
 				},
-			},
-		},
-	}
+			}
 
-	outputDir := filepath.Join(t.TempDir(), "issue3497-offset-pp-cli")
-	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Export: true}
-	gen.profile = &profiler.APIProfile{
-		Pagination: profiler.PaginationProfile{
-			CursorParam:     "offset",
-			CursorType:      "offset",
-			PageSizeParam:   "limit",
-			DefaultPageSize: 2,
-		},
-	}
-	require.NoError(t, gen.Generate())
+			outputDir := filepath.Join(t.TempDir(), "issue3497-offset-"+tc.name+"-pp-cli")
+			gen := New(apiSpec, outputDir)
+			gen.VisionSet = VisionTemplateSet{Export: true}
+			gen.profile = &profiler.APIProfile{
+				Pagination: profiler.PaginationProfile{
+					CursorParam:     "offset",
+					CursorType:      "offset",
+					PageSizeParam:   "limit",
+					DefaultPageSize: 100,
+				},
+			}
+			require.NoError(t, gen.Generate())
 
-	generatedCLISourceContaining(t, outputDir, `flagAll, "offset", "offset", "limit", 2, "", ""`)
+			generatedCLISourceContaining(t, outputDir, `flagAll, "offset", "offset", "limit", 2, "", ""`)
 
-	behaviorTest := `package cli
+			behaviorTest := `package cli
 
 import (
 	"context"
@@ -676,9 +693,11 @@ func TestIssue3497BareAllOffsetUsesDefaultPageSize(t *testing.T) {
 	}
 }
 `
-	cliDir := filepath.Join(outputDir, "internal", "cli")
-	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "paginated_get_issue3497_test.go"), []byte(behaviorTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestIssue3497BareAllOffsetUsesDefaultPageSize$", "-count=1")
+			cliDir := filepath.Join(outputDir, "internal", "cli")
+			require.NoError(t, os.WriteFile(filepath.Join(cliDir, "paginated_get_issue3497_test.go"), []byte(behaviorTest), 0o644))
+			runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestIssue3497BareAllOffsetUsesDefaultPageSize$", "-count=1")
+		})
+	}
 }
 
 func TestOpenAPINestedNextPageGeneratesPaginatedCommandSignal(t *testing.T) {
