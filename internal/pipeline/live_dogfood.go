@@ -63,6 +63,7 @@ const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
 const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner credentials"
+const reasonResolvedFixtureNotViable = "blocked-fixture: runner-resolved id not viable for endpoint"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 const reasonInteractiveCommand = "interactive command requires human input"
 
@@ -503,6 +504,11 @@ var crossAPIListVerbs = map[string]bool{
 	"list": true, "all": true, "index": true,
 	"query": true, "find": true, "search": true,
 	"discover": true, "browse": true, "recent": true, "feed": true,
+	// The generator's own canonical name for GET-collection endpoints
+	// (emitted for specs whose list operations live at the resource root,
+	// e.g. Wrike's `tasks get-empty`). Without it the runner cannot
+	// recognize its own generator's list commands as companions.
+	"get-empty": true,
 }
 
 // cinemaListVerbs are domain-specific list verbs for media/cinema-class APIs
@@ -1022,6 +1028,111 @@ func companionSupportsLimit(companion liveDogfoodCommand, ctx resolveCtx) bool {
 // in order; see inline `// Path N:` comments for the priority list.
 // UseNumber() preserves large numeric ids (e.g., snowflake > 2^53) through
 // fmt.Sprint without scientific notation.
+// extractAlternateIDsFromJSON returns up to limit id-shaped strings in
+// stdout's object trees that differ from exclude, in document order. Used by
+// the happy-path fixture retry below.
+func extractAlternateIDsFromJSON(stdout, exclude string, limit int) []string {
+	dec := json.NewDecoder(strings.NewReader(stdout))
+	dec.UseNumber()
+	var root any
+	if err := dec.Decode(&root); err != nil {
+		return nil
+	}
+	var found []string
+	seen := map[string]bool{exclude: true}
+	var walk func(node any)
+	walk = func(node any) {
+		if len(found) >= limit {
+			return
+		}
+		switch v := node.(type) {
+		case []any:
+			for _, item := range v {
+				walk(item)
+			}
+		case map[string]any:
+			if id, ok := v["id"].(string); ok && id != "" && !seen[id] {
+				seen[id] = true
+				found = append(found, id)
+			}
+			for _, val := range v {
+				walk(val)
+			}
+		}
+	}
+	walk(root)
+	return found
+}
+
+// firstPositionalAfterPath returns the first non-flag token following the
+// command path — for a single-placeholder command, the resolved id.
+func firstPositionalAfterPath(args []string, pathLen int) string {
+	if pathLen > len(args) {
+		return ""
+	}
+	for _, a := range args[pathLen:] {
+		if !strings.HasPrefix(a, "-") {
+			return a
+		}
+	}
+	return ""
+}
+
+// retryHappyPathWithAlternateFixture re-runs a failed happy-path once with
+// the next candidate id from the list companion. Companions surface account
+// containers first (e.g. Wrike's space-root folder), which some
+// sub-endpoints reject with 4xx/5xx even though sibling entities work; one
+// bounded retry with a different id separates "this id is not a viable
+// subject" from "the command is broken". Only fires for runner-resolved,
+// single-placeholder commands.
+func retryHappyPathWithAlternateFixture(command liveDogfoodCommand, runArgs []string, ctx resolveCtx) ([]string, liveDogfoodRun, bool) {
+	placeholders := extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))
+	if len(placeholders) != 1 {
+		return nil, liveDogfoodRun{}, false
+	}
+	// Prefer the immediate parent's list companion; sub-resource verbs
+	// ("folders rollups get-folders-single") often have none, so fall back
+	// to the root resource's list ("folders" → get-empty) — the id-shaped
+	// positional refers to the root resource there.
+	var listCmd *liveDogfoodCommand
+	parentPath := command.Path[:len(command.Path)-1]
+	for _, candidate := range [][]string{parentPath, command.Path[:1]} {
+		if listCmd = findListCompanion(ctx.siblings[strings.Join(candidate, " ")]); listCmd != nil {
+			break
+		}
+	}
+	if listCmd == nil {
+		return nil, liveDogfoodRun{}, false
+	}
+	failedID := firstPositionalAfterPath(runArgs, len(command.Path))
+	if failedID == "" {
+		return nil, liveDogfoodRun{}, false
+	}
+	listArgs := append([]string{}, listCmd.Path...)
+	listArgs = append(listArgs, "--json")
+	listRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, listArgs, ctx.timeout)
+	if listRun.exitCode != 0 {
+		return nil, liveDogfoodRun{}, false
+	}
+	// Try up to 3 alternates: list companions can surface several
+	// non-viable system containers before a real entity (Wrike returns the
+	// account root AND the recycle-bin root ahead of user folders).
+	for _, altID := range extractAlternateIDsFromJSON(listRun.stdout, failedID, 3) {
+		retryArgs := make([]string, len(runArgs))
+		for i, a := range runArgs {
+			if a == failedID {
+				a = altID
+			}
+			retryArgs[i] = a
+		}
+		retryRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, retryArgs, ctx.timeout)
+		if retryRun.exitCode == 0 {
+			return retryArgs, retryRun, true
+		}
+	}
+	return nil, liveDogfoodRun{}, false
+}
+
 func extractFirstIDFromJSON(stdout string) (string, bool) {
 	dec := json.NewDecoder(strings.NewReader(stdout))
 	dec.UseNumber()
@@ -1306,6 +1417,10 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 
 	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
 	resolvedArgs, resolveSkipped, resolveReason, fixtureSource := resolveCommandPositionals(command, happyArgs, len(parsedHappyArgs.positionals), ctx)
+	// True when the command's positional IDs were filled by the runner's own
+	// resolver (companion/store) rather than pp:happy-args annotations.
+	runnerResolvedFixture := len(parsedHappyArgs.positionals) == 0 &&
+		len(extractPositionalPlaceholders(liveDogfoodUsageSuffix(command.Help))) > 0
 	syntheticParamSkip := ""
 	if fixtureSkip == "" && !resolveSkipped {
 		syntheticParamSkip = happyPathSyntheticParamFixtureSkip(command, resolvedArgs)
@@ -1335,6 +1450,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		}
 
 		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout)
+		if happyRun.exitCode != 0 && runnerResolvedFixture {
+			if altArgs, altRun, ok := retryHappyPathWithAlternateFixture(command, runArgs, ctx); ok {
+				runArgs = altArgs
+				happyRun = altRun
+				fixtureSource = "companion-alternate"
+			}
+		}
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun)
 		happyResult.FixtureSource = fixtureSource
 		if happyRun.exitCode == 0 {
@@ -1349,13 +1471,17 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(happyRun); featureAbsentReason != "" {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = featureAbsentReason
+		} else if notViableReason := liveDogfoodResolvedFixtureNotViableReason(happyRun, runnerResolvedFixture); notViableReason != "" {
+			happyResult.Status = LiveDogfoodStatusSkip
+			happyResult.Reason = notViableReason
 		}
 		results = append(results, happyResult)
 
 		if happyResult.Status == LiveDogfoodStatusSkip &&
 			(happyResult.Reason == reasonUnavailableRunnerCredentials ||
 				happyResult.Reason == reasonRequiredParamFixture ||
-				happyResult.Reason == reasonFeatureAbsentFixture) {
+				happyResult.Reason == reasonFeatureAbsentFixture ||
+				happyResult.Reason == reasonResolvedFixtureNotViable) {
 			jsonResult := skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason)
 			jsonResult.FixtureSource = fixtureSource
 			results = append(results, jsonResult)
@@ -1381,6 +1507,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(jsonRun); featureAbsentReason != "" {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = featureAbsentReason
+			} else if notViableReason := liveDogfoodResolvedFixtureNotViableReason(jsonRun, runnerResolvedFixture); notViableReason != "" {
+				jsonResult.Status = LiveDogfoodStatusSkip
+				jsonResult.Reason = notViableReason
 			}
 			results = append(results, jsonResult)
 		} else {
@@ -1978,6 +2107,37 @@ func liveDogfoodFeatureAbsentFixtureReason(run liveDogfoodRun) string {
 	}
 	if containsAnyOf(output, featureAbsentPhrases) {
 		return reasonFeatureAbsentFixture
+	}
+	return ""
+}
+
+// liveDogfoodResolvedFixtureNotViableReason classifies happy-path failures
+// where the runner substituted positional IDs it resolved itself (list
+// companion or local store — never user-annotated pp:happy-args) and the
+// live API rejected them with a not-found/invalid-request shape. The
+// resolved entity exists but is not a valid subject for this endpoint
+// (e.g. Wrike rejects its space-root folder on /folders/{id}/timelogs), a
+// fixture-viability gap rather than a CLI defect. Annotated or literal
+// args keep failing loudly; path validity is separately covered by mock
+// verify's path-param probes.
+func liveDogfoodResolvedFixtureNotViableReason(run liveDogfoodRun, runnerResolvedFixture bool) string {
+	if !runnerResolvedFixture || run.exitCode == 0 {
+		return ""
+	}
+	// 404 is always an id-viability shape. 400 qualifies only when the body
+	// names an id/not-found problem (Wrike's space-root rejection is
+	// `HTTP 400 "Invalid Folder ID"`). Plain 400s and every 403 stay visible
+	// failures — tier, permission, and validation problems must surface
+	// (see TestRunLiveDogfoodRequiresTierAbsentDoesNotSkip).
+	output := strings.ToLower(run.stdout + " " + run.stderr)
+	if strings.Contains(output, "http 404") {
+		return reasonResolvedFixtureNotViable
+	}
+	if strings.Contains(output, "http 400") {
+		if strings.Contains(output, "not found") ||
+			(strings.Contains(output, "invalid") && strings.Contains(output, "id")) {
+			return reasonResolvedFixtureNotViable
+		}
 	}
 	return ""
 }
