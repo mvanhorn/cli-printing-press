@@ -229,6 +229,76 @@ class GoEnvOverrideSignalTest(unittest.TestCase):
         self.assertEqual(findings, [])
 
 
+class SetupGoVersionSignalTest(unittest.TestCase):
+    def test_new_hardcoded_setup_go_version_blocks(self) -> None:
+        base = "jobs:\n  x:\n    steps:\n      - uses: actions/checkout@v6\n"
+        head = textwrap.dedent(
+            """
+            jobs:
+              x:
+                steps:
+                  - uses: actions/setup-go@v6
+                    with:
+                      go-version: '1.26.5'
+            """
+        )
+        findings = signals.signal_setup_go_uses_go_version_file(
+            _fc(".github/workflows/build.yml", base=base, head=head)
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].is_block())
+        self.assertEqual(findings[0].signal_id, "setup_go_hardcoded_version")
+
+    def test_unquoted_two_segment_setup_go_version_blocks(self) -> None:
+        head = textwrap.dedent(
+            """
+            jobs:
+              x:
+                steps:
+                  - uses: actions/setup-go@v6
+                    with:
+                      go-version: 1.22
+            """
+        )
+        findings = signals.signal_setup_go_uses_go_version_file(
+            _fc(".github/workflows/build.yml", head=head)
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].is_block())
+
+    def test_go_version_file_does_not_block(self) -> None:
+        head = textwrap.dedent(
+            """
+            jobs:
+              x:
+                steps:
+                  - uses: actions/setup-go@v6
+                    with:
+                      go-version-file: go.mod
+            """
+        )
+        findings = signals.signal_setup_go_uses_go_version_file(
+            _fc(".github/workflows/build.yml", head=head)
+        )
+        self.assertEqual(findings, [])
+
+    def test_preexisting_literal_unchanged_does_not_re_fire(self) -> None:
+        wf = textwrap.dedent(
+            """
+            jobs:
+              x:
+                steps:
+                  - uses: actions/setup-go@v6
+                    with:
+                      go-version: '1.26.5'
+            """
+        )
+        findings = signals.signal_setup_go_uses_go_version_file(
+            _fc(".github/workflows/legacy.yml", base=wf, head=wf)
+        )
+        self.assertEqual(findings, [])
+
+
 # ---------------------------------------------------------------------------
 # Integration test
 # ---------------------------------------------------------------------------
@@ -311,6 +381,28 @@ class ScanIntegrationTest(unittest.TestCase):
         )
         self._commit("redirect GOPROXY")
         self.assertEqual(self._run_scan(), 1)
+
+    def test_hardcoded_setup_go_version_fails(self) -> None:
+        self._write(".github/workflows/baseline.yml", "on: push\n")
+        self._commit("baseline")
+        self._git("checkout", "-q", "-b", "feat/x")
+        self._write(
+            ".github/workflows/baseline.yml",
+            "on: push\njobs:\n  x:\n    steps:\n      - uses: actions/setup-go@v6\n        with:\n          go-version: '1.26.5'\n",
+        )
+        self._commit("hardcode setup-go version")
+        self.assertEqual(self._run_scan(), 1)
+
+    def test_go_version_file_setup_go_passes(self) -> None:
+        self._write(".github/workflows/baseline.yml", "on: push\n")
+        self._commit("baseline")
+        self._git("checkout", "-q", "-b", "feat/x")
+        self._write(
+            ".github/workflows/baseline.yml",
+            "on: push\njobs:\n  x:\n    steps:\n      - uses: actions/setup-go@v6\n        with:\n          go-version-file: go.mod\n",
+        )
+        self._commit("use shared setup-go version")
+        self.assertEqual(self._run_scan(), 0)
 
     def test_unrelated_changes_pass(self) -> None:
         """Touching Go source under internal/ but not any workflow → no findings."""
