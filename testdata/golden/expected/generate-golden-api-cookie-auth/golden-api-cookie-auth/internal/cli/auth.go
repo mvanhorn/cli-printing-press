@@ -39,13 +39,48 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 	return cmd
 }
 
+// Chrome release-channel display labels. All Google Chrome channels share one
+// macOS "Chrome Safe Storage" Keychain key, so these only select the data-dir
+// path and label prompts — they carry no decryption identity.
+const (
+	chromeChannelStable = "Chrome"
+	chromeChannelBeta   = "Chrome Beta"
+	chromeChannelDev    = "Chrome Dev"
+	chromeChannelCanary = "Chrome Canary"
+)
+
+// chromeChannelOrder is the channel preference order (most stable first); it
+// breaks ties when two channels' profiles are otherwise ranked equal.
+var chromeChannelOrder = []string{chromeChannelStable, chromeChannelBeta, chromeChannelDev, chromeChannelCanary}
+
+func channelRank(channel string) int {
+	for i, c := range chromeChannelOrder {
+		if c == channel {
+			return i
+		}
+	}
+	return len(chromeChannelOrder)
+}
+
 // chromeProfile holds info about a discovered Chrome profile.
 type chromeProfile struct {
+	Channel             string   // channel display name (e.g. "Chrome", "Chrome Beta")
+	DataDir             string   // channel user-data dir the profile lives under
 	Dir                 string   // directory name (e.g. "Default", "Profile 1")
 	DisplayName         string   // human-readable name from Preferences
 	CookieCount         int      // number of cookies matching the target domain
 	RequiredCookieCount int      // number of required credential cookies present
 	MissingCookies      []string // required credential cookies not present
+}
+
+// profileLocation is a channel-qualified profile identifier ("Chrome Beta/Default")
+// so same-named profiles from different Chrome channels stay distinguishable in
+// prompts and logs.
+func (p chromeProfile) profileLocation() string {
+	if p.Channel == "" {
+		return p.Dir
+	}
+	return p.Channel + "/" + p.Dir
 }
 
 func requiredAuthCookies() []string {
@@ -163,9 +198,9 @@ profile by name when the installed backend supports it.`,
 				}
 
 				// Step 2: Resolve which Chrome profile to use when the backend can honor it
-				profileDir := ""
+				var profile chromeProfile
 				if cookieToolSupportsProfiles(tool.name) {
-					profileDir, err = resolveChromeProfile(w, cmd.InOrStdin(), domain, profileFlag, requiredAuthCookies())
+					profile, err = resolveChromeProfile(w, cmd.InOrStdin(), domain, profileFlag, requiredAuthCookies())
 					if err != nil {
 						loginURL := "https://" + strings.TrimPrefix(domain, ".")
 						fmt.Fprintln(w, "")
@@ -179,14 +214,14 @@ profile by name when the installed backend supports it.`,
 					}
 				}
 
-				if profileDir != "" {
-					fmt.Fprintf(w, "Reading cookies from Chrome profile %q for %s...\n", profileDir, domain)
+				if profile.Dir != "" {
+					fmt.Fprintf(w, "Reading cookies from Chrome profile %q for %s...\n", profile.profileLocation(), domain)
 				} else {
 					fmt.Fprintf(w, "Reading cookies for %s...\n", domain)
 				}
 
 				// Step 3: Extract cookies from the resolved profile
-				cookies, err = extractCookies(tool, domain, profileDir)
+				cookies, err = extractCookies(tool, domain, profile)
 				if err != nil {
 					return authErr(fmt.Errorf("extracting cookies: %w", err))
 				}
@@ -250,7 +285,7 @@ profile by name when the installed backend supports it.`,
 
 	cmd.Flags().BoolVar(&browserFlag, "chrome", false, "Read cookies from Chrome")
 	cmd.Flags().BoolVar(&browserFlag, "browser", false, "Alias for --chrome")
-	cmd.Flags().StringVar(&profileFlag, "profile", "", "Chrome profile name (e.g. \"Work\", \"Personal\")")
+	cmd.Flags().StringVar(&profileFlag, "profile", "", "Chrome profile name, or channel-qualified (e.g. \"Work\", \"Chrome Beta/Default\")")
 	cmd.Flags().StringVar(&cookiesFile, "cookies-file", "", "Import cookies from a Playwright storage-state JSON file or raw Cookie header file")
 	return cmd
 }
@@ -408,34 +443,95 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 }
 
 // --- Chrome profile discovery ---
-// chromeDataDir returns the Chrome user data directory for the current OS.
-func chromeDataDir() (string, error) {
+// chromeChannelDir pairs a Chrome release channel's display name with its
+// on-disk user-data directory.
+type chromeChannelDir struct {
+	Channel string
+	DataDir string
+}
+
+// chromeChannelDirs returns the user-data directories of every installed Google
+// Chrome release channel (stable, Beta, Dev, Canary), stable-first. Only
+// directories that exist on disk are returned, so a user who runs only Chrome
+// Beta still authenticates without a flag. All Google Chrome channels share one
+// macOS "Chrome Safe Storage" Keychain key, so only the data-dir path differs
+// per channel — cookie decryption needs no per-channel handling.
+func chromeChannelDirs() ([]chromeChannelDir, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
+	var candidates []chromeChannelDir
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Google", "Chrome"), nil
+		base := filepath.Join(home, "Library", "Application Support", "Google")
+		candidates = []chromeChannelDir{
+			{chromeChannelStable, filepath.Join(base, "Chrome")},
+			{chromeChannelBeta, filepath.Join(base, "Chrome Beta")},
+			{chromeChannelDev, filepath.Join(base, "Chrome Dev")},
+			{chromeChannelCanary, filepath.Join(base, "Chrome Canary")},
+		}
 	case "linux":
-		return filepath.Join(home, ".config", "google-chrome"), nil
+		base := filepath.Join(home, ".config")
+		candidates = []chromeChannelDir{
+			{chromeChannelStable, filepath.Join(base, "google-chrome")},
+			{chromeChannelBeta, filepath.Join(base, "google-chrome-beta")},
+			{chromeChannelDev, filepath.Join(base, "google-chrome-unstable")},
+		}
 	case "windows":
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData == "" {
 			localAppData = filepath.Join(home, "AppData", "Local")
 		}
-		return filepath.Join(localAppData, "Google", "Chrome", "User Data"), nil
+		base := filepath.Join(localAppData, "Google")
+		candidates = []chromeChannelDir{
+			{chromeChannelStable, filepath.Join(base, "Chrome", "User Data")},
+			{chromeChannelBeta, filepath.Join(base, "Chrome Beta", "User Data")},
+			{chromeChannelDev, filepath.Join(base, "Chrome Dev", "User Data")},
+			{chromeChannelCanary, filepath.Join(base, "Chrome SxS", "User Data")},
+		}
 	default:
-		return "", fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
+
+	existing := make([]chromeChannelDir, 0, len(candidates))
+	for _, c := range candidates {
+		if info, err := os.Stat(c.DataDir); err == nil && info.IsDir() {
+			existing = append(existing, c)
+		}
+	}
+	if len(existing) == 0 {
+		return nil, fmt.Errorf("no Chrome user data directory found")
+	}
+	return existing, nil
+}
+
+// chromeProfileDirNames returns the profile subdirectory names ("Default",
+// "Profile 1", ...) under a channel's data dir. A read error yields no names so
+// one unreadable channel never sinks discovery across the others.
+func chromeProfileDirNames(dataDir string) []string {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if name := entry.Name(); name == "Default" || strings.HasPrefix(name, "Profile ") {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // discoverChromeProfiles finds Chrome profiles and counts cookies matching the domain.
 // When requiredCookies is non-empty, profiles with those credential cookies rank
 // ahead of profiles that only have guest, analytics, or challenge cookies.
 func discoverChromeProfiles(domain string, requiredCookies []string) ([]chromeProfile, error) {
-	dataDir, err := chromeDataDir()
+	channelDirs, err := chromeChannelDirs()
 	if err != nil {
 		return nil, err
 	}
@@ -443,54 +539,48 @@ func discoverChromeProfiles(domain string, requiredCookies []string) ([]chromePr
 		return nil, fmt.Errorf("sqlite3 not found")
 	}
 
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read Chrome data directory: %w", err)
-	}
-
 	// Match domain for SQLite query — host_key uses leading dot (e.g. ".notion.so")
 	domainPattern := "%" + strings.TrimPrefix(domain, ".") + "%"
 
 	var profiles []chromeProfile
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if name != "Default" && !strings.HasPrefix(name, "Profile ") {
-			continue
-		}
+	for _, ch := range channelDirs {
+		for _, name := range chromeProfileDirNames(ch.DataDir) {
+			profilePath := filepath.Join(ch.DataDir, name)
+			cookiesDB := filepath.Join(profilePath, "Cookies")
+			if _, err := os.Stat(cookiesDB); err != nil {
+				continue
+			}
 
-		profilePath := filepath.Join(dataDir, name)
-		cookiesDB := filepath.Join(profilePath, "Cookies")
-		if _, err := os.Stat(cookiesDB); err != nil {
-			continue
+			displayName := readProfileDisplayName(filepath.Join(profilePath, "Preferences"))
+			if displayName == "" {
+				displayName = name
+			}
+
+			count, requiredCount, missing := inspectCookiesForDomain(cookiesDB, domainPattern, requiredCookies)
+
+			profiles = append(profiles, chromeProfile{
+				Channel:             ch.Channel,
+				DataDir:             ch.DataDir,
+				Dir:                 name,
+				DisplayName:         displayName,
+				CookieCount:         count,
+				RequiredCookieCount: requiredCount,
+				MissingCookies:      missing,
+			})
 		}
-
-		displayName := readProfileDisplayName(filepath.Join(profilePath, "Preferences"))
-		if displayName == "" {
-			displayName = name
-		}
-
-		count, requiredCount, missing := inspectCookiesForDomain(cookiesDB, domainPattern, requiredCookies)
-
-		profiles = append(profiles, chromeProfile{
-			Dir:                 name,
-			DisplayName:         displayName,
-			CookieCount:         count,
-			RequiredCookieCount: requiredCount,
-			MissingCookies:      missing,
-		})
 	}
 
 	// Sort: profiles with credential cookies first, then by total cookie count,
-	// then by directory name for deterministic prompts.
+	// then by channel preference and directory name for deterministic prompts.
 	sort.Slice(profiles, func(i, j int) bool {
 		if profiles[i].RequiredCookieCount != profiles[j].RequiredCookieCount {
 			return profiles[i].RequiredCookieCount > profiles[j].RequiredCookieCount
 		}
 		if profiles[i].CookieCount != profiles[j].CookieCount {
 			return profiles[i].CookieCount > profiles[j].CookieCount
+		}
+		if ri, rj := channelRank(profiles[i].Channel), channelRank(profiles[j].Channel); ri != rj {
+			return ri < rj
 		}
 		return profiles[i].Dir < profiles[j].Dir
 	})
@@ -612,7 +702,7 @@ func copyFileIfExists(src, dst string) error {
 
 // resolveChromeProfile determines which Chrome profile to read cookies from.
 // Priority: --profile flag > auto-detect (single match) > interactive prompt.
-func resolveChromeProfile(w io.Writer, r io.Reader, domain, profileFlag string, requiredCookies []string) (string, error) {
+func resolveChromeProfile(w io.Writer, r io.Reader, domain, profileFlag string, requiredCookies []string) (chromeProfile, error) {
 	if profileFlag != "" {
 		return resolveProfileByName(profileFlag)
 	}
@@ -621,7 +711,7 @@ func resolveChromeProfile(w io.Writer, r io.Reader, domain, profileFlag string, 
 	if err != nil {
 		// Profile probing is optional; cookie extraction can still succeed without it.
 		fmt.Fprintf(w, "Could not inspect Chrome profiles (%v); continuing without auto-detection.\n", err)
-		return "", nil
+		return chromeProfile{}, nil
 	}
 
 	// Prefer profiles that have all required credential cookies. A profile with
@@ -650,7 +740,7 @@ func resolveChromeProfile(w io.Writer, r io.Reader, domain, profileFlag string, 
 	}
 
 	if len(withCookies) == 0 {
-		return "", fmt.Errorf("no Chrome profile has cookies for %s", domain)
+		return chromeProfile{}, fmt.Errorf("no Chrome profile has cookies for %s", domain)
 	}
 	return chooseChromeProfile(w, r, domain, withCookies, false)
 }
@@ -663,20 +753,20 @@ func printMissingCookieHint(w io.Writer, profiles []chromeProfile, requiredCooki
 		if p.CookieCount == 0 || len(p.MissingCookies) == 0 {
 			continue
 		}
-		fmt.Fprintf(w, "Chrome profile %s (%s) is missing required cookies: %s\n", p.DisplayName, p.Dir, strings.Join(p.MissingCookies, ", "))
+		fmt.Fprintf(w, "Chrome profile %s (%s) is missing required cookies: %s\n", p.DisplayName, p.profileLocation(), strings.Join(p.MissingCookies, ", "))
 		return
 	}
 }
 
-func chooseChromeProfile(w io.Writer, r io.Reader, domain string, profiles []chromeProfile, matchedRequired bool) (string, error) {
+func chooseChromeProfile(w io.Writer, r io.Reader, domain string, profiles []chromeProfile, matchedRequired bool) (chromeProfile, error) {
 	switch len(profiles) {
 	case 1:
 		if matchedRequired {
-			fmt.Fprintf(w, "Auto-detected Chrome profile: %s (%s, required cookies present)\n", profiles[0].DisplayName, profiles[0].Dir)
+			fmt.Fprintf(w, "Auto-detected Chrome profile: %s (%s, required cookies present)\n", profiles[0].DisplayName, profiles[0].profileLocation())
 		} else {
-			fmt.Fprintf(w, "Auto-detected Chrome profile: %s (%s)\n", profiles[0].DisplayName, profiles[0].Dir)
+			fmt.Fprintf(w, "Auto-detected Chrome profile: %s (%s)\n", profiles[0].DisplayName, profiles[0].profileLocation())
 		}
-		return profiles[0].Dir, nil
+		return profiles[0], nil
 	default:
 		// Multiple profiles have cookies.
 		// Non-interactive: pick the profile with the most cookies (already sorted).
@@ -685,20 +775,20 @@ func chooseChromeProfile(w io.Writer, r io.Reader, domain string, profiles []chr
 			// Non-interactive — auto-select the best profile (most cookies, first in sorted list)
 			selected := profiles[0]
 			if matchedRequired {
-				fmt.Fprintf(w, "Auto-selected Chrome profile: %s (%s, required cookies present, %d cookies)\n", selected.DisplayName, selected.Dir, selected.CookieCount)
+				fmt.Fprintf(w, "Auto-selected Chrome profile: %s (%s, required cookies present, %d cookies)\n", selected.DisplayName, selected.profileLocation(), selected.CookieCount)
 			} else {
-				fmt.Fprintf(w, "Auto-selected Chrome profile: %s (%s, %d cookies)\n", selected.DisplayName, selected.Dir, selected.CookieCount)
+				fmt.Fprintf(w, "Auto-selected Chrome profile: %s (%s, %d cookies)\n", selected.DisplayName, selected.profileLocation(), selected.CookieCount)
 			}
 			fmt.Fprintf(w, "Use --profile to select a different profile.\n")
-			return selected.Dir, nil
+			return selected, nil
 		}
 
 		fmt.Fprintf(w, "Multiple Chrome profiles have cookies for %s:\n", domain)
 		for i, p := range profiles {
 			if matchedRequired {
-				fmt.Fprintf(w, "  %d. %s (%s, required cookies present, %d cookies)\n", i+1, p.DisplayName, p.Dir, p.CookieCount)
+				fmt.Fprintf(w, "  %d. %s (%s, required cookies present, %d cookies)\n", i+1, p.DisplayName, p.profileLocation(), p.CookieCount)
 			} else {
-				fmt.Fprintf(w, "  %d. %s (%s, %d cookies)\n", i+1, p.DisplayName, p.Dir, p.CookieCount)
+				fmt.Fprintf(w, "  %d. %s (%s, %d cookies)\n", i+1, p.DisplayName, p.profileLocation(), p.CookieCount)
 			}
 		}
 		fmt.Fprintf(w, "Which profile? [1]: ")
@@ -715,39 +805,39 @@ func chooseChromeProfile(w io.Writer, r io.Reader, domain string, profiles []chr
 			choice = 1
 		}
 		selected := profiles[choice-1]
-		fmt.Fprintf(w, "Using profile: %s (%s)\n", selected.DisplayName, selected.Dir)
-		return selected.Dir, nil
+		fmt.Fprintf(w, "Using profile: %s (%s)\n", selected.DisplayName, selected.profileLocation())
+		return selected, nil
 	}
 }
 
-// resolveProfileByName finds a Chrome profile directory by its display name.
-func resolveProfileByName(name string) (string, error) {
-	dataDir, err := chromeDataDir()
+// resolveProfileByName finds a Chrome profile by its display or directory name,
+// searching every installed channel (stable first). The first match wins, so a
+// name present in multiple channels resolves to the stable one.
+func resolveProfileByName(name string) (chromeProfile, error) {
+	channelDirs, err := chromeChannelDirs()
 	if err != nil {
-		return "", err
-	}
-
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		return "", err
+		return chromeProfile{}, err
 	}
 
 	lowerName := strings.ToLower(name)
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		dirName := entry.Name()
-		if dirName != "Default" && !strings.HasPrefix(dirName, "Profile ") {
-			continue
-		}
-		displayName := readProfileDisplayName(filepath.Join(dataDir, dirName, "Preferences"))
-		if strings.ToLower(displayName) == lowerName || strings.ToLower(dirName) == lowerName {
-			return dirName, nil
+	for _, ch := range channelDirs {
+		for _, dirName := range chromeProfileDirNames(ch.DataDir) {
+			displayName := readProfileDisplayName(filepath.Join(ch.DataDir, dirName, "Preferences"))
+			candidate := chromeProfile{Channel: ch.Channel, DataDir: ch.DataDir, Dir: dirName, DisplayName: displayName}
+			// Accept the channel-qualified form ("Chrome Beta/Default") too, so
+			// the identifier printed in prompts is a valid --profile value and a
+			// user with a Default profile in several channels can pick a
+			// non-stable one (bare "Default" matches stable first).
+			if strings.ToLower(displayName) == lowerName || strings.ToLower(dirName) == lowerName || strings.ToLower(candidate.profileLocation()) == lowerName {
+				if candidate.DisplayName == "" {
+					candidate.DisplayName = dirName
+				}
+				return candidate, nil
+			}
 		}
 	}
 
-	return "", fmt.Errorf("Chrome profile %q not found", name)
+	return chromeProfile{}, fmt.Errorf("Chrome profile %q not found", name)
 }
 
 // --- Cookie extraction tools ---
@@ -832,30 +922,34 @@ func detectCookieTool() (cookieTool, error) {
 }
 
 // extractCookies shells out to the detected tool and returns a Cookie header value string.
-// profileDir selects which Chrome profile to read from (e.g. "Default", "Profile 1").
-func extractCookies(tool cookieTool, domain, profileDir string) (string, error) {
+// profile selects which Chrome profile (and channel) to read from; a zero profile
+// lets the tool fall back to the stable channel's default cookie file.
+func extractCookies(tool cookieTool, domain string, profile chromeProfile) (string, error) {
 	switch tool.name {
 	case "pycookiecheat":
-		return extractViaPycookiecheat(tool, domain, profileDir)
+		return extractViaPycookiecheat(tool, domain, profile)
 	case "pycookiecheat-cli":
-		return extractViaPycookiecheatCLI(tool, domain, profileDir)
+		return extractViaPycookiecheatCLI(tool, domain, profile)
 	case "cookies":
 		return extractViaCookiesCLI(domain)
 	case "cookie-scoop":
-		return extractViaCookieScoop(domain, profileDir)
+		// cookie-scoop resolves the data dir itself and only knows the stable
+		// channel, so it cannot read a Beta/Dev/Canary profile. Fail loudly
+		// instead of silently reading the same-named stable profile.
+		if profile.Channel != "" && profile.Channel != chromeChannelStable {
+			return "", fmt.Errorf("cookie-scoop can only read the stable Chrome channel; install pycookiecheat to read the %s profile", profile.Channel)
+		}
+		return extractViaCookieScoop(domain, profile.Dir)
 	default:
 		return "", fmt.Errorf("unknown cookie tool: %s", tool.name)
 	}
 }
 
-func extractViaPycookiecheat(tool cookieTool, domain, profileDir string) (string, error) {
+func extractViaPycookiecheat(tool cookieTool, domain string, profile chromeProfile) (string, error) {
 	cleanDomain := strings.TrimPrefix(domain, ".")
 	cookiePath := ""
-	if profileDir != "" {
-		dataDir, err := chromeDataDir()
-		if err == nil {
-			cookiePath = filepath.Join(dataDir, profileDir, "Cookies")
-		}
+	if profile.Dir != "" && profile.DataDir != "" {
+		cookiePath = filepath.Join(profile.DataDir, profile.Dir, "Cookies")
 	}
 
 	var script string
@@ -893,15 +987,11 @@ func extractViaPycookiecheat(tool cookieTool, domain, profileDir string) (string
 	return strings.Join(parts, "; "), nil
 }
 
-func extractViaPycookiecheatCLI(tool cookieTool, domain, profileDir string) (string, error) {
+func extractViaPycookiecheatCLI(tool cookieTool, domain string, profile chromeProfile) (string, error) {
 	cleanDomain := strings.TrimPrefix(domain, ".")
 	var args []string
-	if profileDir != "" {
-		dataDir, err := chromeDataDir()
-		if err != nil {
-			return "", err
-		}
-		args = append(args, "-c", filepath.Join(dataDir, profileDir, "Cookies"))
+	if profile.Dir != "" && profile.DataDir != "" {
+		args = append(args, "-c", filepath.Join(profile.DataDir, profile.Dir, "Cookies"))
 	}
 	args = append(args, "https://"+cleanDomain)
 

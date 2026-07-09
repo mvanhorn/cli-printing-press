@@ -32,6 +32,13 @@ type Config struct {
 	AuthHeaderVal  string `{{configTag .Config.Format}}:"auth_header"`
 	Headers        map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 	AuthSource     string `{{configTag .Config.Format}}:"-"`
+{{- if .Auth.RequiresBrowserSession}}
+	// ChromeProfile records the channel-qualified Chrome profile
+	// ("Chrome Beta/Default") chosen at login so `auth refresh`'s cookie-DB
+	// fallback re-reads that channel instead of rediscovering and possibly
+	// re-saving another channel's cookies.
+	ChromeProfile  string `{{configTag .Config.Format}}:"chrome_profile,omitempty"`
+{{- end}}
 {{- if .HasAuthCommand}}
 	CredentialSource string `{{configTag .Config.Format}}:"-"`
 	AgentcookieManaged bool `{{configTag .Config.Format}}:"-"`
@@ -1352,6 +1359,9 @@ type persistedConfig struct {
 	BasePath string `{{configTag .Config.Format}}:"base_path"`
 {{- end}}
 	Headers map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
+{{- if .Auth.RequiresBrowserSession}}
+	ChromeProfile string `{{configTag .Config.Format}}:"chrome_profile,omitempty"`
+{{- end}}
 {{- if .HasRequiredRoles}}
 	AuthRole string `{{configTag .Config.Format}}:"auth_role,omitempty"`
 {{- end}}
@@ -1376,6 +1386,9 @@ func (c *Config) persisted() persistedConfig {
 		BasePath: c.BasePath,
 {{- end}}
 		Headers: c.Headers,
+{{- if .Auth.RequiresBrowserSession}}
+		ChromeProfile: c.ChromeProfile,
+{{- end}}
 {{- if .HasRequiredRoles}}
 		AuthRole: c.AuthRole,
 {{- end}}
