@@ -37,7 +37,7 @@ func TestGeneratedInfraSecuritySuppressionsAreExplicit(t *testing.T) {
 
 	credentialsGo := readGenerated(t, outputDir, "internal", "cliutil", "credentials.go")
 	assert.Contains(t, credentialsGo, `os.ReadFile(filepath.Clean(path)) // #nosec G304 -- app-owned credentials path from cliutil.DataDir.`)
-	assert.Contains(t, credentialsGo, `toml.Marshal(creds) // #nosec G117 -- credentials are intentionally persisted to a 0600 private file.`)
+	assert.Contains(t, credentialsGo, `toml.Marshal(credentialsFileFrom(creds)) // #nosec G117 -- credentials are intentionally persisted to a 0600 private file.`)
 
 	pathsGo := readGenerated(t, outputDir, "internal", "cliutil", "paths.go")
 	assert.Contains(t, pathsGo, `os.ReadFile(filepath.Clean(primary)) // #nosec G304 -- app-derived config/data path.`)
