@@ -583,8 +583,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			cut := runes[:max-1]
 			boundary := -1
-			for i := len(cut) - 1; i >= 0; i-- {
-				if unicode.IsSpace(cut[i]) {
+			for i, r := range slices.Backward(cut) {
+				if unicode.IsSpace(r) {
 					boundary = i
 					break
 				}
