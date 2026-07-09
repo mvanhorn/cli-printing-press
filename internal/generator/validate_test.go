@@ -113,7 +113,7 @@ exit 0
 	require.NoError(t, err)
 	assert.Contains(t, string(calls), "mod tidy\n")
 	assert.Contains(t, string(calls), "run "+govulncheck.ToolModule+" ./...\n")
-	assert.Contains(t, string(calls), "toolchain=go1.26.5\n")
+	assert.Contains(t, string(calls), "toolchain="+currentGoToolchainVersion()+"\n")
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
 }
