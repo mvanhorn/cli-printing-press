@@ -22,6 +22,8 @@ func TestVersionCommandUsesRootNameInGeneratedRoot(t *testing.T) {
 	content, err := os.ReadFile(versionPath)
 	require.NoError(t, err)
 	src := string(content)
+	require.Contains(t, src, `var version = "0.0.0-dev"`,
+		"fresh generated source must not claim a release version before the library ledger stamps it")
 
 	re := regexp.MustCompile(`(?s)func newVersionCmd\(\) \*cobra.Command \{.*?\n\}`)
 	fn := re.FindString(src)
