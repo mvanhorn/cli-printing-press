@@ -263,6 +263,10 @@ type openAPISpec struct {
 
 type nestedDataEnvelopeFixture struct {
 	ArrayKey string
+	// DataIsArray marks single-level envelopes where `data` is itself the
+	// array ({"kind": ..., "data": [...]}, e.g. Wrike) rather than an
+	// object containing one (GitLab-style {"data": {"items": [...]}}).
+	DataIsArray bool
 }
 
 func (s *openAPISpec) IsSynthetic() bool {

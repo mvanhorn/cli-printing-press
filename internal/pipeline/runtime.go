@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -811,7 +812,34 @@ func isAuxiliaryPipelineTable(table string, totalTables int) bool {
 }
 
 // parseSQLOutput extracts non-empty, non-header lines from sql command output.
+// parseSQLJSONRows decodes `sql` output shaped as a JSON array of row
+// objects ([{"name":"tasks"},...]). Hand-written sql commands built on the
+// printed CLI's printJSON helper emit this shape instead of plain lines.
+func parseSQLJSONRows(out []byte) ([]map[string]any, bool) {
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, false
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(trimmed, &rows); err != nil {
+		return nil, false
+	}
+	return rows, true
+}
+
 func parseSQLOutput(out []byte) []string {
+	if rows, ok := parseSQLJSONRows(out); ok {
+		var tables []string
+		for _, row := range rows {
+			for _, v := range row {
+				if s, ok := v.(string); ok && s != "" {
+					tables = append(tables, s)
+					break
+				}
+			}
+		}
+		return tables
+	}
 	var tables []string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
@@ -840,6 +868,16 @@ func parseSQLOutput(out []byte) []string {
 
 // parseCountOutput extracts a numeric count from sql command output.
 func parseCountOutput(out []byte) int {
+	if rows, ok := parseSQLJSONRows(out); ok {
+		for _, row := range rows {
+			for _, v := range row {
+				if n, ok := v.(float64); ok {
+					return int(n)
+				}
+			}
+		}
+		return 0
+	}
 	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || line == "count(*)" || strings.HasPrefix(line, "---") {
@@ -965,6 +1003,21 @@ func nestedDataEnvelopeForPath(spec *openAPISpec, path string) (nestedDataEnvelo
 }
 
 func renderNestedDataEnvelopeFixture(fixture nestedDataEnvelopeFixture) string {
+	if fixture.DataIsArray {
+		// Single-level envelope: data IS the array (Wrike-style {kind, data}).
+		body := map[string]any{
+			"kind": "mock",
+			"data": []map[string]any{
+				{"id": "MOCK0001", "name": "mock-item-1", "title": "Mock Item", "state": "open", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
+				{"id": "MOCK0002", "name": "mock-item-2", "title": "Mock Item 2", "state": "open", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
+			},
+		}
+		data, err := json.Marshal(body)
+		if err != nil {
+			return `{"kind":"mock","data":[{"id":"MOCK0001","name":"mock-item-1"},{"id":"MOCK0002","name":"mock-item-2"}]}`
+		}
+		return string(data)
+	}
 	arrayKey := fixture.ArrayKey
 	if arrayKey == "" {
 		arrayKey = "items"

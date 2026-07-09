@@ -72,8 +72,8 @@ func detectNestedDataEnvelopeFixturesFromRaw(raw map[string]any) map[string]nest
 				continue
 			}
 			schema := selectedResponseSchemaFromRaw(operation, raw)
-			if key := nestedDataArrayKey(schema, raw); key != "" {
-				fixtures[path] = nestedDataEnvelopeFixture{ArrayKey: key}
+			if fixture, ok := dataEnvelopeFixture(schema, raw); ok {
+				fixtures[path] = fixture
 				break
 			}
 		}
@@ -145,6 +145,25 @@ func sortedSuccessStatuses(responses map[string]any) []string {
 	}
 	slices.Sort(statuses)
 	return statuses
+}
+
+// dataEnvelopeFixture classifies a success-response schema as a data
+// envelope. Two shapes qualify: single-level ({"data": [...]}, e.g. Wrike's
+// {kind, data} pairs) and nested ({"data": {"items": [...]}}). Without this,
+// the mock server serves bare arrays to CLIs whose sync extracts rows from
+// the declared envelope, and the data-pipeline check reports 0 rows.
+func dataEnvelopeFixture(schema map[string]any, root map[string]any) (nestedDataEnvelopeFixture, bool) {
+	resolved := resolveRawSchemaRef(schema, root)
+	if schemaType(resolved) == "object" {
+		dataSchema := resolveRawSchemaRef(schemaProperty(resolved, "data"), root)
+		if isRawArraySchema(dataSchema, root) {
+			return nestedDataEnvelopeFixture{DataIsArray: true}, true
+		}
+	}
+	if key := nestedDataArrayKey(schema, root); key != "" {
+		return nestedDataEnvelopeFixture{ArrayKey: key}, true
+	}
+	return nestedDataEnvelopeFixture{}, false
 }
 
 func nestedDataArrayKey(schema map[string]any, root map[string]any) string {
