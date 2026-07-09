@@ -468,7 +468,7 @@ def signal_setup_go_uses_go_version_file(change: FileChange) -> list[Finding]:
     return [
         Finding(
             path=change.path,
-            line=_find_line_in(change.head_content, "go-version"),
+            line=_find_line_in(change.head_content, "go-version:"),
             severity="block",
             signal_id="setup_go_hardcoded_version",
             message=(
