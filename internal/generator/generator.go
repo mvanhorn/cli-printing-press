@@ -2476,6 +2476,13 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("cliutil_creds_perms_windows.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_windows.go"), authData); err != nil {
 			return fmt.Errorf("rendering cliutil creds perms windows: %w", err)
 		}
+		// Behavioral test proving the read-time guard is wired into config.Load:
+		// owner-locked = hit, group/world-readable = silent miss, env re-seed
+		// after refusal, symlink-to-loose-target refused, dangling = miss, and
+		// the parse-error path never leaks the token (S3).
+		if err := g.renderTemplate("config_perms_test.go.tmpl", filepath.Join("internal", "config", "config_perms_test.go"), authData); err != nil {
+			return fmt.Errorf("rendering config perms test: %w", err)
+		}
 	}
 
 	if g.Spec.HasHTMLExtraction() {

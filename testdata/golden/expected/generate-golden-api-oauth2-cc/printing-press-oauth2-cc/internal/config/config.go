@@ -58,8 +58,20 @@ func Load(configPath string) (*Config, error) {
 	cfg.Path = path
 
 	if explicitConfigFile {
-		if err := readConfigFile(path, cfg, "config-kind path"); err != nil && !os.IsNotExist(err) {
-			return nil, err
+		// Read-time credentials-perms guard (S1): a persisted token file written
+		// 0600 can drift to group/world-readable (a stray chmod, a broad-umask
+		// copy, a loose-perms backup restore). Canonicalize first with
+		// filepath.EvalSymlinks so a symlink pointing at a loose-perms target is
+		// caught (and a dangling symlink resolves to an error), then refuse an
+		// over-permissive file by NOT reading it — a silent miss with the same
+		// disposition as a missing file: cfg's token fields stay empty, env
+		// bootstrap re-seeds below, and the next save() rewrites 0600. A perms
+		// failure is deliberately NOT a hard error; this relaxes the prior
+		// non-ENOENT hard-error behavior for the over-permissive case only.
+		if real, evalErr := filepath.EvalSymlinks(path); evalErr == nil && cliutil.VerifyCredsPerms(real) == nil {
+			if err := readConfigFile(path, cfg, "config-kind path"); err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
 		}
 	} else {
 		legacyPath, err := LegacyConfigPath()
@@ -71,7 +83,15 @@ func Load(configPath string) (*Config, error) {
 			if !os.IsNotExist(err) {
 				return nil, err
 			}
-		} else {
+		} else if real, evalErr := filepath.EvalSymlinks(sourcePath); evalErr == nil && cliutil.VerifyCredsPerms(real) == nil {
+			// Read-time credentials-perms guard (S1) for the default (non-explicit)
+			// path. ReadFileWithLegacyFallback already returned the file it actually
+			// read as sourcePath, so verify THAT file: canonicalize it with
+			// filepath.EvalSymlinks then check cliutil.VerifyCredsPerms. A perms or
+			// resolve failure falls through to the enclosing block WITHOUT parsing —
+			// a silent miss identical to the missing-file disposition. The bytes
+			// were read into memory but are never consumed into cfg, so no exposed
+			// token reaches the config.
 			owner := "config-kind path"
 			if sourcePath == legacyPath {
 				owner = "legacy config path"

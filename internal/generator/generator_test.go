@@ -106,9 +106,12 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +4 vs prior baseline: the read-time creds-perms guard emits 4 auth-gated
 		// files (creds_perms_eval.go, _eval_test.go, _unix.go, _windows.go) for every
 		// token-bearing spec. All three of these fixtures persist a token.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 146},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 150},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 148},
+		// +1 more (A3): config_perms_test.go, the behavioral test proving the
+		// read-time guard is wired into config.Load — also auth-gated, so it lands
+		// for every token-bearing spec.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 147},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 151},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 149},
 	}
 
 	for _, tt := range tests {

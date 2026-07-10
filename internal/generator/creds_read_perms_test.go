@@ -41,6 +41,18 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "creds_perms_eval_test.go"))
 	require.NoError(t, err, "pure evaluator unit test must be emitted")
+
+	// A3: the read-time guard must be wired into config.Load's read path. The
+	// persisted token file is canonicalized (EvalSymlinks) then perms-checked
+	// (cliutil.VerifyCredsPerms) before it is consumed, so an over-permissive
+	// token config is refused on READ (a silent miss), not only enforced 0600
+	// on write.
+	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
+	require.Contains(t, configSrc, "filepath.EvalSymlinks(", "config.Load must canonicalize the config path before the perms check")
+	require.Contains(t, configSrc, "cliutil.VerifyCredsPerms(", "config.Load must guard the persisted-token read with the perms check")
+
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "config", "config_perms_test.go"))
+	require.NoError(t, err, "config.Load read-time perms behavioral test must be emitted")
 }
 
 // TestGenerate_NoCredsPermsForNonAuthSpec proves the guard is gated on

@@ -1017,8 +1017,13 @@ func TestAuthLoginTrimsClientCredentialEnvVars(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// 0o600: a token-bearing CLI's config must be owner-only. The read-time
+	// creds-perms guard in config.Load refuses an over-permissive config (the
+	// same file that holds access/refresh tokens after auth login), so a 0o644
+	// config would be a silent miss — token_url would drop and auth login would
+	// fall back to the spec-baked default endpoint instead of this mock server.
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(configPath, []byte("token_url = \""+server.URL+"\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte("token_url = \""+server.URL+"\"\n"), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
 	t.Setenv("TRIM_CC_CLIENT_ID", " cid.test123 ")
