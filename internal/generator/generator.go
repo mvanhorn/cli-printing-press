@@ -2459,6 +2459,23 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("cliutil_credentials_test.go.tmpl", filepath.Join("internal", "cliutil", "credentials_test.go"), authData); err != nil {
 			return fmt.Errorf("rendering cliutil credentials test: %w", err)
 		}
+		// Read-time credentials permission check (S1): a persisted token file
+		// written 0600 can later drift to loose perms, so guard it at load time.
+		// Emitted alongside credentials because it only matters when a token is
+		// persisted. Pure evaluator is build-tag-free (unit-testable anywhere);
+		// the POSIX and Windows guards are platform-gated.
+		if err := g.renderTemplate("cliutil_creds_perms_eval.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_eval.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil creds perms evaluator: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_creds_perms_eval_test.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_eval_test.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil creds perms evaluator test: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_creds_perms_unix.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_unix.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil creds perms unix: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_creds_perms_windows.go.tmpl", filepath.Join("internal", "cliutil", "creds_perms_windows.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil creds perms windows: %w", err)
+		}
 	}
 
 	if g.Spec.HasHTMLExtraction() {
