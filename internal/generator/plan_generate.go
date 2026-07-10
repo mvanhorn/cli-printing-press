@@ -57,6 +57,14 @@ func (planGoModData) UsesBrowserHTTPTransport() bool {
 	return false
 }
 
+// HasAuthCommand mirrors the rootData field the go.mod template gates the
+// direct golang.org/x/sys require on. Plan scaffolds emit no auth surface (no
+// creds_perms_windows.go, which is what imports golang.org/x/sys/windows), so
+// x/sys stays a transitive-only // indirect floor for the plan path.
+func (planGoModData) HasAuthCommand() bool {
+	return false
+}
+
 func (planGoModData) HasHTMLExtraction() bool {
 	return false
 }

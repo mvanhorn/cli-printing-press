@@ -2459,6 +2459,14 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("cliutil_credentials_test.go.tmpl", filepath.Join("internal", "cliutil", "credentials_test.go"), authData); err != nil {
 			return fmt.Errorf("rendering cliutil credentials test: %w", err)
 		}
+		// Behavioral test proving the read-time guard is wired into
+		// LoadCredentials (A4): owner-locked = hit, group/world-readable = soft
+		// miss (the not-found sentinel, no credential surfaced), over-permissive
+		// is not an error. In-package (package cliutil) so it drives
+		// credentialsPath() + VerifyCredsPerms directly.
+		if err := g.renderTemplate("cliutil_credentials_perms_test.go.tmpl", filepath.Join("internal", "cliutil", "credentials_perms_test.go"), authData); err != nil {
+			return fmt.Errorf("rendering cliutil credentials perms test: %w", err)
+		}
 		// Read-time credentials permission check (S1): a persisted token file
 		// written 0600 can later drift to loose perms, so guard it at load time.
 		// Emitted alongside credentials because it only matters when a token is

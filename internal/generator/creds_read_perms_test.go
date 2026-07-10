@@ -5,6 +5,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -53,6 +54,36 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(outputDir, "internal", "config", "config_perms_test.go"))
 	require.NoError(t, err, "config.Load read-time perms behavioral test must be emitted")
+
+	// A4: cliutil.LoadCredentials reads a SEPARATE credentials file that also
+	// holds a live token, so it must apply the same read-time guard. Because
+	// credentials.go lives in package cliutil, the guard calls VerifyCredsPerms
+	// in-package (not cliutil.VerifyCredsPerms).
+	credsSrc := readGeneratedFile(t, outputDir, "internal", "cliutil", "credentials.go")
+	require.Contains(t, credsSrc, "VerifyCredsPerms(", "LoadCredentials must guard the credentials-file read with the perms check")
+
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cliutil", "credentials_perms_test.go"))
+	require.NoError(t, err, "cliutil credentials read-time perms behavioral test must be emitted")
+
+	// A5: creds_perms_windows.go imports golang.org/x/sys/windows, which makes
+	// golang.org/x/sys a DIRECT dependency of a token-bearing bundle. The
+	// freshly generated go.mod (BEFORE any manual `go mod tidy`) must list it as
+	// a direct require: a require line that is NOT marked "// indirect".
+	goMod := readGeneratedFile(t, outputDir, "go.mod")
+	var sysLine string
+	for _, line := range strings.Split(goMod, "\n") {
+		// Match the require DIRECTIVE for x/sys, not comment lines that merely
+		// mention the module. Handles both standalone (`require golang.org/x/sys
+		// v...`) and require-block (`\tgolang.org/x/sys v...`) forms.
+		dep := strings.TrimPrefix(strings.TrimSpace(line), "require ")
+		if strings.HasPrefix(dep, "golang.org/x/sys ") || strings.HasPrefix(dep, "golang.org/x/sys\t") {
+			sysLine = line
+			break
+		}
+	}
+	require.NotEmpty(t, sysLine, "go.mod must require golang.org/x/sys for a token-bearing spec")
+	require.NotContains(t, sysLine, "// indirect",
+		"golang.org/x/sys must be a DIRECT require for a token-bearing spec (creds_perms_windows.go imports golang.org/x/sys/windows)")
 }
 
 // TestGenerate_NoCredsPermsForNonAuthSpec proves the guard is gated on

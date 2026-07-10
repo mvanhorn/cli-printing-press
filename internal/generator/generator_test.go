@@ -109,9 +109,12 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1 more (A3): config_perms_test.go, the behavioral test proving the
 		// read-time guard is wired into config.Load — also auth-gated, so it lands
 		// for every token-bearing spec.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 147},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 151},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 149},
+		// +1 more (A4): credentials_perms_test.go, the behavioral test proving the
+		// read-time guard is wired into cliutil.LoadCredentials — also auth-gated,
+		// so it lands for every token-bearing spec.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 148},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 152},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 150},
 	}
 
 	for _, tt := range tests {
