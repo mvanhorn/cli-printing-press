@@ -5475,6 +5475,21 @@ func TestLiveDogfoodSuccessExitCodes(t *testing.T) {
 		codes := liveDogfoodSuccessExitCodes(liveDogfoodCommand{})
 		assert.Equal(t, map[int]bool{0: true}, codes)
 	})
+
+	t.Run("exit 0 is always included even when the annotation omits it", func(t *testing.T) {
+		codes := liveDogfoodSuccessExitCodes(liveDogfoodCommand{
+			Annotations: map[string]string{typedExitCodesAnnotation: "2"},
+		})
+		assert.True(t, codes[0], "a normal exit-0 run must still count as success")
+		assert.True(t, codes[2])
+	})
+
+	t.Run("exit 0 is always included even when the help block omits it", func(t *testing.T) {
+		help := "Do a thing.\n\nExit codes:\n  3  not found\n\nFlags:\n      --json\n"
+		codes := liveDogfoodSuccessExitCodes(liveDogfoodCommand{Help: help})
+		assert.True(t, codes[0], "a normal exit-0 run must still count as success")
+		assert.True(t, codes[3])
+	})
 }
 
 // TestRunLiveDogfoodHonorsTypedExitCodes is WU-1's integration check: a command

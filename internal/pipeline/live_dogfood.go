@@ -2317,11 +2317,13 @@ func liveDogfoodSuccessExitCodes(command liveDogfoodCommand) map[int]bool {
 	if command.Annotations != nil {
 		if raw := strings.TrimSpace(command.Annotations[typedExitCodesAnnotation]); raw != "" {
 			if codes, ok := parseTypedExitCodesAnnotation(raw); ok {
+				codes[0] = true
 				return codes
 			}
 		}
 	}
 	if codes, ok := parseExitCodesFromHelp(command.Help); ok {
+		codes[0] = true
 		return codes
 	}
 	return map[int]bool{0: true}
