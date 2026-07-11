@@ -885,6 +885,11 @@ func newTeachPatternCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "teach-pattern",
 		Short: "Install a manual generalization pattern (query_template, resource_template, entity_kind)",
+		// Missing required flags intentionally exit 2 via usageErr, matching the
+		// sibling teach/teach-playbook commands; declare it so both `verify` and
+		// the live-dogfood matrix score the Execute cell honestly instead of
+		// masking a FAIL. Writes land only in the CLI's own local store.
+		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
 		Long: `Adds one row to search_patterns. The recall path uses patterns to
 substitute live query entities into a resource template, so a pattern
 with query_template="items in {entity}" and
@@ -970,6 +975,11 @@ func newTeachLookupCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "teach-lookup",
 		Short: "Install a manual entity-lookup row (kind, canonical, value)",
+		// Missing required flags intentionally exit 2 via usageErr, matching the
+		// sibling teach/teach-playbook commands; declare it so both `verify` and
+		// the live-dogfood matrix score the Execute cell honestly instead of
+		// masking a FAIL. Writes land only in the CLI's own local store.
+		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
 		Long: `Adds one row to entity_lookups. Used by the recall path's pattern
 engine to substitute values for canonical names at substitution time.
 Computed kinds (lowercase, uppercase, kebab-case, capitalize-first, slug)
