@@ -148,6 +148,7 @@ func RootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{Use: "demo-pp-cli"}
 	rootCmd.AddCommand(newDigestCmd())
 	rootCmd.AddCommand(newTrendsCmd())
+	rootCmd.AddCommand(newItemsCmd())
 	rootCmd.AddCommand(newEndpointCmd())
 	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newHiddenCmd())
@@ -167,6 +168,23 @@ func newTrendsCmd() *cobra.Command {
 		Use:   "trends",
 		Long:  "Compare trending entities across synced data and explain what changed.",
 		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newItemsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "items",
+		Short: "Work with items.",
+	}
+	cmd.AddCommand(newItemsSearchCmd())
+	return cmd
+}
+
+func newItemsSearchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "search",
+		Short: "Search within items.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
 	}
 }
 
@@ -198,7 +216,7 @@ func newHiddenCmd() *cobra.Command {
 `)
 
 	est := estimateMCPTokens(dir)
-	require.Equal(t, 3, est.ToolCount, "typed tool plus two cobratree runtime tools should all count")
+	require.Equal(t, 4, est.ToolCount, "typed tool plus top-level and nested cobratree runtime tools should all count")
 	names := make([]string, 0, len(est.PerTool))
 	for _, tool := range est.PerTool {
 		names = append(names, tool.Name)
@@ -206,6 +224,84 @@ func newHiddenCmd() *cobra.Command {
 	assert.Contains(t, names, "typed_get")
 	assert.Contains(t, names, "cobratree:digest")
 	assert.Contains(t, names, "cobratree:trends")
+	assert.Contains(t, names, "cobratree:items_search")
+	assert.NotContains(t, names, "cobratree:auth")
+}
+
+func TestEstimateMCPTokens_CountsSharedConstructorsAtDistinctPaths(t *testing.T) {
+	dir := writeMCPTools(t, `
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+`)
+	writeMCPCLISource(t, dir, "root.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func RootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+	rootCmd.AddCommand(newAlphaCmd(), newBetaCmd())
+	return rootCmd
+}
+
+func newAlphaCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "alpha"}
+	cmd.AddCommand(newSearchCmd())
+	return cmd
+}
+
+func newBetaCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "beta"}
+	cmd.AddCommand(newSearchCmd())
+	return cmd
+}
+
+func newSearchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "search",
+		Short: "Search within the parent resource.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+`)
+
+	est := estimateMCPTokens(dir)
+	require.Equal(t, 2, est.ToolCount)
+	names := make([]string, 0, len(est.PerTool))
+	for _, tool := range est.PerTool {
+		names = append(names, tool.Name)
+	}
+	assert.Contains(t, names, "cobratree:alpha_search")
+	assert.Contains(t, names, "cobratree:beta_search")
+}
+
+func TestEstimateMCPTokens_BoundsCyclicConstructorGraphs(t *testing.T) {
+	dir := writeMCPTools(t, `
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+`)
+	writeMCPCLISource(t, dir, "root.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func RootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+	rootCmd.AddCommand(newAlphaCmd())
+	return rootCmd
+}
+
+func newAlphaCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "alpha"}
+	cmd.AddCommand(newBetaCmd())
+	return cmd
+}
+
+func newBetaCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "beta"}
+	cmd.AddCommand(newAlphaCmd())
+	return cmd
+}
+`)
+
+	est := estimateMCPTokens(dir)
+	require.Equal(t, 0, est.ToolCount)
 }
 
 func TestScoreMCPTokenEfficiency_FullMarksForLeanSurface(t *testing.T) {
@@ -250,20 +346,20 @@ func TestScoreMCPTokenEfficiency_UnscoredForLargeCodeOrchCatalog(t *testing.T) {
 	dir := writeCodeOrchSurface(t, 200)
 
 	score, scored := scoreMCPTokenEfficiency(dir)
-	assert.False(t, scored, "large code-orchestrated catalogs should be unscored instead of zero-scored")
+	assert.False(t, scored, "code-orchestrated catalogs should always be unscored instead of zero-scored")
 	assert.Equal(t, 0, score)
 
 	sc := &Scorecard{}
-	scoreInfrastructureDimensions(sc, dir)
+	scoreInfrastructureDimensions(sc, dir, false)
 	assert.Contains(t, sc.UnscoredDimensions, DimMCPTokenEfficiency)
 }
 
-func TestScoreMCPTokenEfficiency_ScoresSmallCodeOrchCatalog(t *testing.T) {
+func TestScoreMCPTokenEfficiency_UnscoredForSmallCodeOrchCatalog(t *testing.T) {
 	dir := writeCodeOrchSurface(t, 20)
 
 	score, scored := scoreMCPTokenEfficiency(dir)
-	assert.True(t, scored, "small code-orchestrated catalogs should still use the scoring bands")
-	assert.Greater(t, score, 0)
+	assert.False(t, scored, "code-orchestrated catalogs should be unscored regardless of endpoint count")
+	assert.Equal(t, 0, score)
 }
 
 func TestScoreMCPTokenEfficiency_EndpointMirrorBehaviorUnchanged(t *testing.T) {

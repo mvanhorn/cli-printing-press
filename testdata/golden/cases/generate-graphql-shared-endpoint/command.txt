@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/graphql-shared-endpoint.yaml --output "$CASE_ACTUAL_DIR/graphql-shared-golden" --force --validate=false

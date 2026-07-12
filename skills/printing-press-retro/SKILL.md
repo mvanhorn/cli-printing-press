@@ -2,7 +2,7 @@
 name: printing-press-retro
 description: >
   Run a retrospective after generating a CLI. Identifies systemic improvements
-  to the Printing Press — templates, Go binary, skill instructions, catalog —
+  to the Printing Press — templates, Go binary, skill instructions, and workflow docs —
   so the next CLI comes out better. Creates a GitHub issue with actionable
   findings when there are Printing Press fixes to make.
   Use after any /printing-press run.
@@ -24,7 +24,7 @@ created_by: user
 # /printing-press-retro
 
 Analyze a Printing Press session to find ways to improve the system that produces
-CLIs — the Go binary, templates, skills, and catalog. Not fixes to the specific CLI
+CLIs — the Go binary, templates, skills, and workflow docs. Not fixes to the specific CLI
 that was just printed, but improvements so the *next* CLI comes out stronger.
 
 **It is a non-goal for the Printing Press to produce flawless CLIs without manual
@@ -58,7 +58,7 @@ that survive triage and the adversarial check, plus artifacts, so maintainers
   - **Generator** — templates that emit Go code (`internal/generator/`)
   - **Scorer** — tools that grade the output: verify, dogfood, scorecard
   - **Skills** — SKILL.md instructions that guide Claude during generation
-  - **Binary** — the Go CLI itself: commands, flags, parsers (`cmd/printing-press/`)
+  - **Binary** — the Go CLI itself: commands, flags, parsers (`cmd/cli-printing-press/`)
 - **Printed CLI**: A CLI produced by the Printing Press for a specific API (e.g.,
   `notion-pp-cli`). Printed-CLI fixes only help that one CLI.
 
@@ -68,6 +68,7 @@ different PRs.
 
 ## Cardinal rules
 
+- **Issue bodies and retro docs are public surfaces. Redact every real secret and PII before quoting.** Manuscripts contain credentials, account identifiers, real emails, and live API response data — that's why `references/secret-scrubbing.md` scrubs them before artifact upload. **Issue body text goes straight to a public GitHub issue, and the retro doc itself is preserved in manuscript proofs and may be uploaded as a zip.** When you quote scanner output, dogfood payloads, Greptile review comments, or API response bodies as "evidence," replace the sensitive substring with `<REDACTED:<kind>>` BEFORE pasting. This applies hardest to findings *about* secret/PII leaks: the natural impulse is to quote the actual leaked value to prove the leak exists — that re-leaks it in a public issue. Phase 5 (retro doc write) and Phase 6 (pre-post scrub) enforce this mechanically; this rule is the human-readable charter behind the mechanical enforcement. See [`references/secret-scrubbing.md`](references/secret-scrubbing.md) "Layer 0" for the redaction patterns and substitution shapes.
 - **Default is "don't change the machine."** The Printing Press is mature — 30+ CLIs printed, most templates exercised across many shapes. The burden of proof is on the finding, not on the Skip path. Most things you encountered while printing one CLI are that CLI's quirks, iteration noise, or upstream API behavior — not generator gaps. Propose a machine change only when cross-CLI evidence is concrete and the finding survives the Phase 3 adversarial check (Step G).
 - **A retro of three sharp findings is more valuable than ten mixed-quality findings.** Each filed finding spends maintainer attention. If you find yourself writing "every finding warrants action" or producing zero drops and zero skips, stop and re-triage — that outcome is the failure mode this skill exists to prevent.
 - The retro proposes Printing Press changes that help multiple printed CLIs. Don't propose direct edits to the one CLI that just shipped, and don't propose machine changes whose value is unique to this CLI's quirks — those are printed-CLI fixes wearing a generator costume.
@@ -82,13 +83,13 @@ different PRs.
 ```bash
 # Path-only setup — no binary detection required.
 # The retro skill reads manuscripts and runs gh/curl. It does not invoke the
-# printing-press binary. This avoids aborting for users who installed the
+# cli-printing-press binary. This avoids aborting for users who installed the
 # plugin but not the Go binary.
 
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
-PRESS_HOME="$HOME/printing-press"
+PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
 PRESS_LIBRARY="$PRESS_HOME/library"
 RETRO_SCRATCH_DIR="/tmp/printing-press/retro"
@@ -97,7 +98,7 @@ mkdir -p "$PRESS_MANUSCRIPTS" "$PRESS_LIBRARY" "$RETRO_SCRATCH_DIR"
 
 # Detect whether we're inside the printing-press repo
 IN_REPO=false
-if [ -f "$_scope_dir/cmd/printing-press/main.go" ]; then
+if [ -f "$_scope_dir/cmd/cli-printing-press/main.go" ]; then
   IN_REPO=true
   REPO_ROOT="$_scope_dir"
   echo "Running from printing-press repo: $REPO_ROOT"
@@ -356,7 +357,7 @@ For each candidate, ask in order:
 
 1. **Was this iteration noise?** Normal trial-and-error during generation —
    one-off retry, typo recovery, agent forgetting a flag, transient network blip. Drop.
-2. **Is this a printed-CLI fix?** The fix lives in `~/printing-press/library/<api>/`
+2. **Is this a printed-CLI fix?** The fix lives in `$PRESS_LIBRARY/<api>/`
    and helps only this one CLI. If the proposed change is "edit this command in
    this CLI" or "regenerate after fixing the spec," it's not a retro finding — it's
    a polish pass on that CLI. Drop.
@@ -373,7 +374,7 @@ For each candidate, ask in order:
    Don't re-raise at the same priority. Either drop it (the cost-benefit math has
    been "no" twice and the retro is becoming a wishlist), or reframe as a smaller
    incremental fix that addresses part of the friction. Search:
-   `grep -l "<finding keywords>" ~/printing-press/manuscripts/*/proofs/*-retro-*.md`
+   `grep -l "<finding keywords>" "$PRESS_MANUSCRIPTS"/*/proofs/*-retro-*.md`
 
 Survivors of these five questions go to Phase 3. Dropped candidates are recorded
 as one-line entries in the retro's "Dropped at triage" section — they exist for
@@ -425,7 +426,6 @@ work across retros (`gh issue list --label comp:<slug>`).
 | Generator templates | `generator` | `internal/generator/` |
 | Spec parser | `spec-parser` | `internal/spec/` |
 | OpenAPI parser | `openapi-parser` | `internal/openapi/` |
-| Catalog | `catalog` | `catalog/` |
 | Main skill | `skill` | `skills/printing-press/SKILL.md` |
 | Verify/dogfood/scorecard | `scorer` | CLI commands |
 
@@ -437,9 +437,9 @@ fix lands. Don't multi-label.
 **Step A: Cross-API stress test.** Test across API shapes (standard REST, proxy-envelope,
 RPC-style) and input methods (OpenAPI, crowd-sniffed, HAR-sniffed, no spec).
 
-**Step B: Name three concrete APIs from the catalog with direct evidence.** Not "every
+**Step B: Name three concrete APIs from the library with direct evidence.** Not "every
 API with multi-word resources" or "any browser-sniffed CLI." Name three specific APIs
-already in `~/printing-press/library/` (or the embedded `catalog/` directory) where you
+already in `$PRESS_LIBRARY/` or the public Printing Press Library where you
 can point to evidence the pattern exists: a path in their spec, a known endpoint shape,
 a header the vendor documents, an output you can reproduce. "Stripe, Notion, GitHub
 probably have this" is hand-waving; "Stripe (Stripe-Version header in spec line N),
@@ -455,7 +455,7 @@ correctness; it stays P2 only because it's gated on profiler-detected absence of
 paginator. Without that guard the same finding is unsafe to land.
 
 **Step D: Recurrence-cost check.** Search prior retros under
-`~/printing-press/manuscripts/*/proofs/*-retro-*.md` for the same finding. If the same
+`$PRESS_MANUSCRIPTS/*/proofs/*-retro-*.md` for the same finding. If the same
 finding has been raised in 2+ prior retros without being implemented, the prior cost-
 benefit math has been "no" twice. Don't re-raise it at the same priority — either move
 to P3 with a "raised N times, still not justified" annotation, or reframe the finding
@@ -583,7 +583,7 @@ Write the full retro document using this template:
 
 ## Session Stats
 - API: <name>
-- Spec source: <catalog/browser-sniffed/docs/HAR>
+- Spec source: <public-library/browser-sniffed/docs/HAR>
 - Scorecard: <score>/100 (<grade>)
 - Verify pass rate: <X>%
 - Fix loops: <N>
@@ -668,6 +668,38 @@ Write the full retro document to `$RETRO_PROOF_PATH`, then copy that file to
 `$RETRO_SCRATCH_PATH`. This must complete before Phase 6 Step 1 copies the
 manuscripts directory to staging.
 
+### Scrub the retro doc immediately after writing
+
+The retro doc is preserved in `manuscripts/<api>/<run>/proofs/` (durable),
+copied to `/tmp/printing-press/retro/` (scratch), and read by future runs'
+Phase 3 Step D dedup scan. If a finding's "What we observed" block pasted
+unredacted scanner output, dogfood payloads, or Greptile review comments, the
+secret/PII propagates into all three locations. Run the Layer 0 body scrub
+from `references/secret-scrubbing.md` immediately after writing the doc, so
+the scrubbed version becomes canonical:
+
+```bash
+# Define scrub_body once at the top of the Phase 5/6 bash blocks (full source
+# in references/secret-scrubbing.md Layer 0). Then:
+RETRO_PROOF_PATH_SCRUBBED="${RETRO_PROOF_PATH}.scrubbed.md"
+if ! scrub_body "$RETRO_PROOF_PATH" "$RETRO_PROOF_PATH_SCRUBBED"; then
+  echo "" >&2
+  echo "ERROR: retro doc contains an unredacted vendor-prefix secret." >&2
+  echo "Open $RETRO_PROOF_PATH, redact each match reported above using" >&2
+  echo "  <REDACTED:<vendor>-<kind>:<first4>...<last4>:<len>ch>" >&2
+  echo "per references/secret-scrubbing.md Layer 0, then re-run /printing-press-retro." >&2
+  exit 1
+fi
+mv "$RETRO_PROOF_PATH_SCRUBBED" "$RETRO_PROOF_PATH"
+cp "$RETRO_PROOF_PATH" "$RETRO_SCRATCH_PATH"
+```
+
+Hard-fail behavior is intentional: vendor-prefix secrets are unrecoverable
+leaks once a retro doc gets archived or uploaded. The agent must hand-redact
+and re-run rather than silently shipping the leak. PII patterns (real emails,
+phones, account inboxes) auto-redact in place because the substitution is
+lossless for the retro's purpose.
+
 ## Phase 5.5: Plannable work units
 
 Group related findings into coherent work units a planner could pick up directly.
@@ -678,8 +710,8 @@ For each "Do" finding or group of related findings:
 ### WU-1: <Title> (from F1, F3, ...)
 - **Priority:** P1 / P2 / P3 *(max priority among absorbed findings — P1 if any
   absorbed finding is P1, else P2 if any is P2, else P3)*
-- **Component:** generator / openapi-parser / spec-parser / scorer / skill / catalog
-  *(must match one of the six fixed component slugs; drives the `comp:*` label
+- **Component:** generator / openapi-parser / spec-parser / scorer / skill
+  *(must match one of the five fixed component slugs; drives the `comp:*` label
   applied to the issue when filed)*
 - **Goal:** One sentence describing the outcome
 - **Target:** <component and area, e.g., "Generator templates in internal/generator/">
@@ -691,10 +723,10 @@ For each "Do" finding or group of related findings:
 - **Complexity:** small / medium / large
 ```
 
-The six fixed component slugs are: `generator` (`internal/generator/`),
+The five fixed component slugs are: `generator` (`internal/generator/`),
 `openapi-parser` (`internal/openapi/`), `spec-parser` (`internal/spec/`),
-`scorer` (verify / dogfood / scorecard), `skill` (`skills/printing-press/SKILL.md`),
-`catalog` (`catalog/`). If a WU genuinely spans two, pick the **primary** one — the
+`scorer` (verify / dogfood / scorecard), and `skill` (`skills/printing-press/SKILL.md`).
+If a WU genuinely spans two, pick the **primary** one — the
 component where the durable fix will land. Pick exactly one; don't multi-label.
 
 **If running from inside the printing-press repo (`IN_REPO=true`):**
@@ -920,7 +952,7 @@ Run artifact-packaging.md Step 7 to delete `$STAGING_DIR`.
 - Be honest about what went well. Protecting good patterns matters.
 - **Default is don't-file.** Bias toward filing only when Phase 3 Step B gave you
   three concrete cross-API examples *with evidence* (not speculation), and the
-  Step G case-against was clearly weaker than the case-for. "20% of catalog"
+  Step G case-against was clearly weaker than the case-for. "20% of the library"
   without named APIs is optimism. "Every API has multi-word resources" is
   hand-waving. The retro is a filter, not a wishlist; an issue overloaded
   with weak findings wastes maintainer attention.
@@ -936,3 +968,12 @@ Run artifact-packaging.md Step 7 to delete `$STAGING_DIR`.
   fix without the original conversation.
 - Do not add more phases, documents, or gates to the main printing-press skill.
   Propose making existing phases smarter or the Printing Press emit better defaults.
+- **Never quote a leaked secret as "evidence" of a secret-leak finding.** The
+  finding's whole point is that the value should not be public; quoting it in
+  a public GitHub issue re-leaks it. Use the redacted form from
+  [`references/secret-scrubbing.md`](references/secret-scrubbing.md) Layer 0
+  (`<REDACTED:<vendor>-<kind>:<first4>...<last4>:<len>ch>`) — the maintainer
+  can fix the scanner without seeing the value. Phase 5 (retro doc write) and
+  Phase 6 Step 3 (pre-post scrub) hard-fail when an unredacted vendor-prefix
+  token is detected; that's the floor, not a substitute for redacting at
+  write time.

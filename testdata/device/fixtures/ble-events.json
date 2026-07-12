@@ -1,0 +1,69 @@
+{
+  "name": "ble-session-appliance",
+  "display_name": "BLE Session Appliance",
+  "redaction_terms": ["Trevin"],
+  "identity": {
+    "advertised_names": ["Trevin SessionThing"],
+    "address_policy": "stable",
+    "match_strength": "strong"
+  },
+  "events": [
+    {
+      "id": "adv-primary",
+      "type": "advertisement",
+      "at": "2026-06-01T12:00:00Z",
+      "device_address": "AA:BB:CC:DD:EE:01",
+      "device_name": "Trevin SessionThing",
+      "rssi": -42,
+      "service_uuids": ["fd00"]
+    },
+    {
+      "id": "svc-control",
+      "type": "service_discovery",
+      "at": "2026-06-01T12:00:01Z",
+      "service_uuid": "fd00",
+      "characteristic_uuid": "fd01",
+      "properties": ["write"]
+    },
+    {
+      "id": "svc-status",
+      "type": "service_discovery",
+      "at": "2026-06-01T12:00:01Z",
+      "service_uuid": "fd00",
+      "characteristic_uuid": "fd02",
+      "properties": ["notify"]
+    },
+    {
+      "id": "write-start",
+      "type": "write",
+      "at": "2026-06-01T12:00:05Z",
+      "service_uuid": "fd00",
+      "characteristic_uuid": "fd01",
+      "value_hex": "a001"
+    },
+    {
+      "id": "notify-running",
+      "type": "notification",
+      "at": "2026-06-01T12:00:06Z",
+      "service_uuid": "fd00",
+      "characteristic_uuid": "fd02",
+      "value_hex": "01"
+    },
+    {
+      "id": "notify-running-2",
+      "type": "notification",
+      "at": "2026-06-01T12:00:07Z",
+      "service_uuid": "fd00",
+      "characteristic_uuid": "fd02",
+      "value_hex": "02"
+    }
+  ],
+  "actions": [
+    {
+      "id": "action-start",
+      "label": "start",
+      "at": "2026-06-01T12:00:04Z",
+      "safety": "physical-effect"
+    }
+  ]
+}

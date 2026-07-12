@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -54,16 +55,18 @@ func TestClaimOutputDir_MaxRetries(t *testing.T) {
 }
 
 func TestClaimOutputDir_PermissionError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-denial via unrooted path is not portable on Windows")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("test requires non-root")
 	}
-	// Parent dir that doesn't exist and can't be created — on macOS /proc doesn't exist,
+	// Parent dir that doesn't exist and can't be created - on macOS /proc doesn't exist,
 	// so use a path that will fail os.MkdirAll
 	base := "/nonexistent-root-dir/fakedir/notion-pp-cli"
-
 	_, err := ClaimOutputDir(base)
 	assert.Error(t, err)
-	// Should NOT contain "could not claim" — should be the underlying OS error
+	// Should NOT contain "could not claim" - should be the underlying OS error
 	assert.NotContains(t, err.Error(), "could not claim")
 }
 

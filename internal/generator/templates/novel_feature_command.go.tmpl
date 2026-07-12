@@ -1,0 +1,64 @@
+// Copyright {{currentYear}} {{copyrightHolder}}. Licensed under Apache-2.0. See LICENSE.
+// Novel command scaffold. Implement the RunE body before shipping.
+// generate --force preserves implemented bodies; untouched TODO scaffolds may refresh.
+
+package cli
+
+import (
+{{- if .Feature}}
+	"fmt"
+{{- end}}
+
+	"github.com/spf13/cobra"
+)
+
+func newNovel{{.Ident}}Cmd(flags *rootFlags) *cobra.Command {
+{{- range .Flags}}
+{{- if eq .Kind "stringSlice"}}
+	var {{.VarName}} []string
+{{- else if eq .Kind "bool"}}
+	var {{.VarName}} bool
+{{- else}}
+	var {{.VarName}} string
+{{- end}}
+{{- end}}
+
+	cmd := &cobra.Command{
+		Use:   {{printf "%q" .Use}},
+		Short: {{printf "%q" .Short}},
+{{- if .Example}}
+		Example: {{printf "%q" .Example}},
+{{- end}}
+		Annotations: map[string]string{"mcp:read-only": {{printf "%q" .ReadOnlyString}}},
+{{- if .Feature}}
+		RunE: func(cmd *cobra.Command, args []string) error {
+{{- if .HasPositional}}
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+{{- else}}
+			// validate required flags here
+{{- end}}
+			if dryRunOK(flags) {
+				return nil
+			}
+			return fmt.Errorf("TODO: implement novel feature %q", {{printf "%q" .CommandPath}})
+		},
+{{- else}}
+		RunE: parentNoSubcommandRunE(flags),
+{{- end}}
+	}
+{{- range .Flags}}
+{{- if eq .Kind "stringSlice"}}
+	cmd.Flags().StringSliceVar(&{{.VarName}}, {{printf "%q" .Name}}, nil, {{printf "%q" .Description}})
+{{- else if eq .Kind "bool"}}
+	cmd.Flags().BoolVar(&{{.VarName}}, {{printf "%q" .Name}}, false, {{printf "%q" .Description}})
+{{- else}}
+	cmd.Flags().StringVar(&{{.VarName}}, {{printf "%q" .Name}}, "", {{printf "%q" .Description}})
+{{- end}}
+{{- end}}
+{{- range .Children}}
+	cmd.AddCommand(newNovel{{.Ident}}Cmd(flags))
+{{- end}}
+	return cmd
+}

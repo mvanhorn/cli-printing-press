@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -38,18 +39,19 @@ func TestToSnakeCase(t *testing.T) {
 	}
 }
 
-func TestSafeSQLNameQuotesUnsafeIdentifiers(t *testing.T) {
+func TestSafeSQLNameAlwaysQuotes(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
 		want string
 	}{
-		{name: "bare identifier", in: "messages", want: "messages"},
-		{name: "reserved word", in: "references", want: `"references"`},
+		{name: "plain identifier", in: "messages", want: `"messages"`},
+		{name: "non-strict reserved word", in: "references", want: `"references"`},
+		{name: "strict reserved word", in: "add", want: `"add"`},
 		{name: "starts with digit", in: "0", want: `"0"`},
 		{name: "derived starts with digit", in: "0_fts", want: `"0_fts"`},
 		{name: "contains punctuation", in: "foo/bar", want: `"foo/bar"`},
-		{name: "escapes quote", in: `foo"bar`, want: `"foo""bar"`},
+		{name: "escapes embedded quote", in: `foo"bar`, want: `"foo""bar"`},
 	}
 
 	for _, tt := range tests {
@@ -290,6 +292,44 @@ func TestBuildSchema_NoResponseTypeFallback(t *testing.T) {
 				"unresolved response type must yield only the base columns; got %v", names)
 		})
 	}
+}
+
+func TestBuildSchema_WideResponseFallsBackToJSONOnlyTable(t *testing.T) {
+	fields := []spec.TypeField{{Name: "id", Type: "string"}}
+	for i := range maxStoreDomainTableColumns {
+		fields = append(fields, spec.TypeField{Name: "setting_" + strconv.Itoa(i), Type: "string"})
+	}
+
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"control": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/Control",
+						Response: spec.ResponseDef{Type: "object", Item: "Control"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Control": {Fields: fields},
+		},
+	}
+
+	control := findTable(BuildSchema(s), "control")
+	require.NotNil(t, control, "control table should be emitted")
+
+	names := make([]string, 0, len(control.Columns))
+	for _, c := range control.Columns {
+		names = append(names, c.Name)
+	}
+	assert.ElementsMatch(t, []string{"id", "data", "synced_at"}, names,
+		"wide resources must fall back to JSON-only columns to stay under SQLite's column cap")
+	assert.True(t, control.JSONOnlyFallback, "wide fallback should still emit a per-resource JSON-only table")
+	assert.Greater(t, control.OriginalColumnCount, maxStoreDomainTableColumns)
+	assert.Empty(t, control.Indexes, "wide fallback must not retain typed-column indexes")
+	assert.False(t, control.FTS5, "wide fallback must not emit typed-table FTS triggers")
 }
 
 // TestBuildSchema_SubResourceCollisionShardsByParent pins the fix for issue

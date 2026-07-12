@@ -11,12 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
 )
 
 // shipcheck is the canonical Phase 4 verification umbrella. It runs each
-// of the six legs as a subprocess of the same printing-press binary,
+// leg as a subprocess of the same printing-press binary,
 // aggregates exit codes, and prints a per-leg summary. Legs remain
 // callable standalone — this command is purely additive orchestration.
 //
@@ -39,9 +40,10 @@ import (
 // opt-outs exist so an operator can ask for a quick read-only sweep
 // without verify auto-repairing source or scorecard sampling live calls.
 type shipcheckOpts struct {
-	dir         string
-	spec        string
-	researchDir string
+	dir          string
+	spec         string
+	researchDir  string
+	verifyNoSpec bool
 
 	// JSON envelope output. When set, suppresses the human summary table
 	// and emits a structured envelope at end-of-run instead. Each leg's
@@ -65,29 +67,18 @@ type shipcheckLeg struct {
 	args func(*shipcheckOpts) []string
 }
 
-// shipcheckLegs enumerates the six legs in canonical execution order.
-// Order matters: dogfood writes research.json updates that scorecard
-// later consumes, verify builds the CLI binary validate-narrative uses,
-// and scorecard should see all earlier validation failures first.
+// shipcheckLegs enumerates the legs in canonical execution order.
+// Order matters: verify builds the binary; validate-narrative checks
+// research.json command paths against the binary BEFORE dogfood synthesizes
+// README/SKILL from those commands.
 var shipcheckLegs = []shipcheckLeg{
-	{
-		name: "dogfood",
-		args: func(o *shipcheckOpts) []string {
-			a := []string{"dogfood", "--dir", o.dir}
-			if o.spec != "" {
-				a = append(a, "--spec", o.spec)
-			}
-			if o.researchDir != "" {
-				a = append(a, "--research-dir", o.researchDir)
-			}
-			return a
-		},
-	},
 	{
 		name: "verify",
 		args: func(o *shipcheckOpts) []string {
-			a := []string{"verify", "--dir", o.dir}
-			if o.spec != "" {
+			a := []string{"verify", "--dir", o.dir, "--write-manifest", shipcheckManifestPath(o)}
+			if o.verifyNoSpec && o.spec != "" {
+				a = append(a, "--no-spec")
+			} else if o.spec != "" {
 				a = append(a, "--spec", o.spec)
 			}
 			if !o.noFix {
@@ -98,22 +89,6 @@ var shipcheckLegs = []shipcheckLeg{
 			}
 			if o.envVar != "" {
 				a = append(a, "--env-var", o.envVar)
-			}
-			return a
-		},
-	},
-	{
-		name: "workflow-verify",
-		args: func(o *shipcheckOpts) []string {
-			return []string{"workflow-verify", "--dir", o.dir}
-		},
-	},
-	{
-		name: "verify-skill",
-		args: func(o *shipcheckOpts) []string {
-			a := []string{"verify-skill", "--dir", o.dir}
-			if o.strict {
-				a = append(a, "--strict")
 			}
 			return a
 		},
@@ -131,9 +106,48 @@ var shipcheckLegs = []shipcheckLeg{
 		},
 	},
 	{
+		name: "dogfood",
+		args: func(o *shipcheckOpts) []string {
+			a := []string{"dogfood", "--dir", o.dir}
+			if o.spec != "" {
+				a = append(a, "--spec", o.spec)
+			}
+			if o.researchDir != "" {
+				a = append(a, "--research-dir", o.researchDir)
+			}
+			return a
+		},
+	},
+	{
+		name: "workflow-verify",
+		args: func(o *shipcheckOpts) []string {
+			return []string{"workflow-verify", "--dir", o.dir}
+		},
+	},
+	{
+		name: "apify-audit",
+		args: func(o *shipcheckOpts) []string {
+			a := []string{"apify-audit", "--dir", o.dir}
+			if o.researchDir != "" {
+				a = append(a, "--research-dir", o.researchDir)
+			}
+			return a
+		},
+	},
+	{
+		name: "verify-skill",
+		args: func(o *shipcheckOpts) []string {
+			a := []string{"verify-skill", "--dir", o.dir}
+			if o.strict {
+				a = append(a, "--strict")
+			}
+			return a
+		},
+	},
+	{
 		name: "scorecard",
 		args: func(o *shipcheckOpts) []string {
-			a := []string{"scorecard", "--dir", o.dir}
+			a := []string{"scorecard", "--dir", o.dir, "--write-manifest", shipcheckManifestPath(o)}
 			if o.researchDir != "" {
 				a = append(a, "--research-dir", o.researchDir)
 			}
@@ -148,6 +162,10 @@ var shipcheckLegs = []shipcheckLeg{
 	},
 }
 
+func shipcheckManifestPath(o *shipcheckOpts) string {
+	return filepath.Join(o.dir, pipeline.CLIManifestFilename)
+}
+
 func shipcheckResearchPath(o *shipcheckOpts) string {
 	dir := o.researchDir
 	if dir == "" {
@@ -156,12 +174,32 @@ func shipcheckResearchPath(o *shipcheckOpts) string {
 	return filepath.Join(dir, "research.json")
 }
 
+// shipcheckBinaryName resolves the CLI binary name for a generated CLI directory.
+// Prefers .printing-press.json's cli_name (the canonical "<api-slug>-pp-cli" form)
+// and falls back to the directory's basename for legacy/manifest-less dirs.
+func shipcheckBinaryName(dir string) string {
+	if name := pipeline.ReadCLIBinaryName(dir); name != "" {
+		return name
+	}
+	return filepath.Base(dir)
+}
+
 func shipcheckCLIPath(o *shipcheckOpts) string {
-	return platform.ExecutablePath(filepath.Join(o.dir, filepath.Base(o.dir)))
+	return platform.ExecutablePath(filepath.Join(o.dir, shipcheckBinaryName(o.dir)))
 }
 
 func shipcheckCLIPathForGOOS(o *shipcheckOpts, goos string) string {
-	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, filepath.Base(o.dir)), goos)
+	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, shipcheckBinaryName(o.dir)), goos)
+}
+
+const shipcheckHTMLSyncStubMarker = "generic spec-driven sync template does not fit predominantly HTML page-mode endpoints"
+
+func shipcheckShouldVerifyNoSpec(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "internal", "cli", "sync.go"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), shipcheckHTMLSyncStubMarker)
 }
 
 // shipcheckLegResult is the per-leg outcome of one umbrella run.
@@ -318,8 +356,7 @@ type shipcheckJSONEnvelope struct {
 }
 
 // renderShipcheckJSON marshals the envelope to w. Each leg's `command`
-// field shows the full argv as it would be invoked at the shell so an
-// operator can copy-paste-rerun a specific leg from the JSON output.
+// field shows the argv used for that leg with sensitive flag values redacted.
 func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResult, runStartedAt time.Time, runElapsed time.Duration) error {
 	env := shipcheckJSONEnvelope{
 		Passed:    shipcheckUmbrellaCode(results) == 0,
@@ -335,12 +372,30 @@ func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResul
 			Passed:    r.Passed(),
 			StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
 			ElapsedMS: r.Elapsed.Milliseconds(),
-			Command:   strings.Join(append([]string{binPath}, r.Argv...), " "),
+			Command:   renderShipcheckCommand(binPath, r.Argv),
 		})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(env)
+}
+
+func renderShipcheckCommand(binPath string, argv []string) string {
+	args := append([]string{binPath}, redactShipcheckCommandArgv(argv)...)
+	return strings.Join(args, " ")
+}
+
+func redactShipcheckCommandArgv(argv []string) []string {
+	redacted := make([]string, len(argv))
+	copy(redacted, argv)
+	for i, arg := range redacted {
+		if arg == "--api-key" {
+			if i+1 < len(redacted) {
+				redacted[i+1] = "<redacted>"
+			}
+		}
+	}
+	return redacted
 }
 
 // validateShipcheckDir confirms --dir points at something that looks
@@ -369,17 +424,18 @@ func newShipcheckCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "shipcheck",
-		Short: "Run all six verification legs (dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard) as one canonical Phase 4 sweep",
+		Short: "Run all verification legs as one canonical Phase 4 sweep",
 		Long: `shipcheck runs every Phase 4 verification leg in sequence and aggregates their
 exit codes into a single verdict. It is the canonical local invocation that
 matches what the public-library CI runs.
 
 Legs (in canonical order):
-  dogfood          — structural validation against the source spec
   verify           — runtime command testing (with --fix to auto-repair common breakage)
-  workflow-verify  — primary workflow end-to-end against the verification manifest
-  verify-skill     — SKILL.md flag/positional/command consistency with the shipped CLI
   validate-narrative — README/SKILL narrative commands against the built CLI
+  dogfood          — structural validation against the source spec
+  workflow-verify  — primary workflow end-to-end against the verification manifest
+  apify-audit      — Apify actor reachability checks for actor-backed CLIs
+  verify-skill     — SKILL.md flag/positional/command consistency with the shipped CLI
   scorecard        — Steinberger quality bar (with --live-check sampled output probes)
 
 In default mode, every leg streams its full output to the terminal as it runs
@@ -390,19 +446,25 @@ most serious leg failure.
 
 Each leg remains callable standalone — this command is additive orchestration.`,
 		Example: `  # Canonical Phase 4 invocation
-  printing-press shipcheck \
+  cli-printing-press shipcheck \
     --dir ~/printing-press/library/notion \
     --spec ./openapi.yaml \
     --research-dir ~/printing-press/.runstate/scope/runs/RUN_ID
 
   # Without a research dir (skips the dogfood/scorecard novel-feature checks)
-  printing-press shipcheck --dir ~/printing-press/library/notion --spec ./openapi.yaml`,
+  cli-printing-press shipcheck --dir ~/printing-press/library/notion --spec ./openapi.yaml`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateShipcheckDir(opts.dir); err != nil {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
+			absDir, err := filepath.Abs(opts.dir)
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving --dir: %w", err)}
+			}
+			opts.dir = absDir
+			opts.verifyNoSpec = shipcheckShouldVerifyNoSpec(opts.dir)
 
 			binPath, err := resolveSelfBinary()
 			if err != nil {

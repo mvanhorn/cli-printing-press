@@ -1,9 +1,9 @@
 version: 2
 
 builds:
-  - id: printing-press
-    main: ./cmd/printing-press
-    binary: printing-press
+  - id: cli-printing-press
+    main: ./cmd/cli-printing-press
+    binary: cli-printing-press
     env:
       - CGO_ENABLED=0
     goos:
@@ -20,9 +20,9 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
-  - id: printing-press
+  - id: cli-printing-press
     ids:
-      - printing-press
+      - cli-printing-press
     formats:
       - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"

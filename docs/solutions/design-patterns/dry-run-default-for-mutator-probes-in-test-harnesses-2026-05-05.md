@@ -1,7 +1,7 @@
 ---
 title: Default mutator probes to dry-run; carve real-API rejection into a separate test kind
 date: 2026-05-05
-category: docs/solutions/design-patterns
+category: design-patterns
 module: live_dogfood
 problem_type: design_pattern
 component: testing_framework

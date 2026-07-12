@@ -30,7 +30,8 @@
         "mode": {"type": "string", "enum": ["standard_http", "browser_http", "browser_clearance_http", "browser_required", "blocked", "unknown"]},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "reasons": {"type": "array", "items": {"type": "string"}},
-        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}}
+        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
+        "impersonation_safe": {"type": "boolean"}
       }
     },
     "protocols": {"type": "array", "items": {"$ref": "#/$defs/protocol_observation"}},
@@ -38,10 +39,12 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "candidates": {"type": "array", "items": {"$ref": "#/$defs/auth_candidate"}}
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/auth_candidate"}},
+        "captcha_preflight": {"type": "boolean"}
       }
     },
     "protections": {"type": "array", "items": {"$ref": "#/$defs/protection_observation"}},
+    "secondary_hosts": {"type": "array", "items": {"$ref": "#/$defs/secondary_host"}},
     "endpoint_clusters": {"type": "array", "items": {"$ref": "#/$defs/endpoint_cluster"}},
     "request_sequences": {"type": "array", "items": {"$ref": "#/$defs/request_sequence"}},
     "pagination": {"type": "array", "items": {"$ref": "#/$defs/pagination_signal"}},
@@ -98,6 +101,16 @@
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
         "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "secondary_host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "count", "reason"],
+      "properties": {
+        "host": {"type": "string"},
+        "count": {"type": "integer", "minimum": 0},
+        "reason": {"type": "string", "enum": ["non-primary host", "telemetry host"]}
       }
     },
     "endpoint_cluster": {

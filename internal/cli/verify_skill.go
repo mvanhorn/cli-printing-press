@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -24,6 +25,12 @@ import (
 var verifySkillScript string
 
 const canonicalSectionsCheckName = "canonical-sections"
+
+const (
+	pythonPython3 = "python3"
+	pythonPy      = "py"
+	pythonPython  = "python"
+)
 
 type verifySkillRunResult struct {
 	Stdout   string
@@ -71,8 +78,9 @@ func runVerifySkillScript(dir string, only []string, asJSON bool, strict bool) (
 		pyArgs = append(pyArgs, "--strict")
 	}
 
-	py := exec.Command("python3", pyArgs...)
+	py := exec.Command(resolvePython(), pyArgs...)
 	py.Stdin = os.Stdin
+	py.Env = pythonUTF8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
 	py.Stdout = &stdout
 	py.Stderr = &stderr
@@ -157,7 +165,7 @@ func runCanonicalSectionsCheck(dir string) (finding canonicalFinding, hasFinding
 			Evidence: fmt.Sprintf("expected canonical block:\n%s", expected),
 		}, true, false, nil
 	}
-	if got == expected {
+	if normalizeLineEndings(got) == normalizeLineEndings(expected) {
 		return canonicalFinding{}, false, false, nil
 	}
 	return canonicalFinding{
@@ -167,6 +175,11 @@ func runCanonicalSectionsCheck(dir string) (finding canonicalFinding, hasFinding
 		Detail:   "install section drift: hand-edit detected in a generator-owned section. Regenerate the printed CLI to restore the canonical text — do not edit this section by hand.",
 		Evidence: fmt.Sprintf("expected (from generator):\n%s\n\ngot (from SKILL.md):\n%s", expected, got),
 	}, true, false, nil
+}
+
+func normalizeLineEndings(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
 }
 
 // ExtractInstallSectionForTest re-exports the generator's extractor so
@@ -206,13 +219,14 @@ func newVerifySkillCmd() *cobra.Command {
 		Short:         "Verify SKILL.md matches the shipped CLI source",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Long: `Run five checks against a printed CLI's SKILL.md:
+		Long: `Run six checks against a printed CLI's SKILL.md:
 
   1. flag-names — every --flag used on a <cli> ... invocation in SKILL.md is declared in internal/cli/*.go
   2. flag-commands — every --flag used on a specific command is declared on that command (or persistent)
   3. positional-args — positional args in bash recipes match the command's Use: field
-  4. unknown-command — every referenced command path maps to a cobra Use: declaration
-  5. canonical-sections — the Prerequisites: Install the CLI section matches what the generator would emit (defends against post-publish edits to generator-owned text)
+  4. shell-var-quotes — every shell variable expanded in generated bash code blocks is double-quoted
+  5. unknown-command — every referenced command path maps to a cobra Use: declaration
+  6. canonical-sections — the Prerequisites: Install the CLI section matches what the generator would emit (defends against post-publish edits to generator-owned text)
 
 Fails when the SKILL advertises commands, flags, or arguments that the binary
 doesn't actually provide — which is how the recipe-goat "search --max-time"
@@ -221,18 +235,19 @@ has been hand-edited away from the canonical generator output, which is the
 failure mode that produced fabricated /ppl install slash commands and
 mangled fallback blocks during polish loops.
 
-Checks 1-4 run via the bundled scripts/verify-skill/verify_skill.py; check 5
+Checks 1-5 run via the bundled scripts/verify-skill/verify_skill.py; check 6
 runs in Go using the CLI manifest (.printing-press.json) and go.mod.
-Requires python3 on PATH for checks 1-4.`,
+Requires python3 on PATH for checks 1-5.`,
 		Example: `  # Run all checks against a generated CLI
-  printing-press verify-skill --dir ./my-api-pp-cli
+  cli-printing-press verify-skill --dir ./my-api-pp-cli
 
   # JSON output for programmatic consumption
-  printing-press verify-skill --dir ./my-api-pp-cli --json
+  cli-printing-press verify-skill --dir ./my-api-pp-cli --json
 
   # Only check a specific category
-  printing-press verify-skill --dir ./my-api-pp-cli --only flag-commands
-  printing-press verify-skill --dir ./my-api-pp-cli --only canonical-sections`,
+  cli-printing-press verify-skill --dir ./my-api-pp-cli --only flag-commands
+  cli-printing-press verify-skill --dir ./my-api-pp-cli --only shell-var-quotes
+  cli-printing-press verify-skill --dir ./my-api-pp-cli --only canonical-sections`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -303,7 +318,7 @@ Requires python3 on PATH for checks 1-4.`,
 	}
 
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to the printed CLI directory (contains SKILL.md + internal/cli/)")
-	cmd.Flags().StringSliceVar(&only, "only", nil, "Run only the named check(s): flag-names, flag-commands, positional-args, unknown-command, canonical-sections (repeatable)")
+	cmd.Flags().StringSliceVar(&only, "only", nil, "Run only the named check(s): flag-names, flag-commands, positional-args, shell-var-quotes, unknown-command, canonical-sections (repeatable)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Treat likely-false-positive findings as failures")
 
@@ -332,6 +347,55 @@ func emitMergedJSON(pyResult verifySkillRunResult, runCanonical, hasCanonicalFin
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+// resolvePython picks the interpreter name to pass to exec.Command for the
+// embedded verify-skill script. The Windows fallback chain exists because
+// exec.LookPath("python3") on Windows often resolves to the Microsoft Store
+// launcher stub, which is on PATH but exits with a "Python was not found"
+// Store-redirect message instead of running the script.
+func resolvePython() string {
+	if runtime.GOOS != "windows" {
+		return pythonPython3
+	}
+	if path, err := exec.LookPath(pythonPython3); err == nil && !isWindowsStorePython(path) {
+		return pythonPython3
+	}
+	if _, err := exec.LookPath(pythonPy); err == nil {
+		return pythonPy
+	}
+	if path, err := exec.LookPath(pythonPython); err == nil && !isWindowsStorePython(path) {
+		return pythonPython
+	}
+	return pythonPython3
+}
+
+// LookPath succeeds against the Microsoft Store Python launcher stub at
+// .../WindowsApps/python*.exe, so the only pre-exec signal is the path itself.
+func isWindowsStorePython(path string) bool {
+	if path == "" {
+		return false
+	}
+	lower := strings.ToLower(path)
+	return strings.Contains(lower, "windowsapps") && strings.Contains(lower, "python")
+}
+
+// pythonUTF8Env returns base with PYTHONIOENCODING and PYTHONUTF8 forced to
+// UTF-8. Windows consoles default to cp1252, which cannot encode the ✓/✘
+// glyphs the Python script prints; without these env vars the subprocess
+// crashes with UnicodeEncodeError even though the underlying checks passed.
+// The Python script also calls sys.stdout.reconfigure() as a self-contained
+// defense; this env propagation is the belt-and-suspenders half.
+func pythonUTF8Env(base []string) []string {
+	env := make([]string, 0, len(base)+2)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "PYTHONIOENCODING=") || strings.HasPrefix(kv, "PYTHONUTF8=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
+	return env
 }
 
 // indentLines prefixes every line of s with prefix. Used for human-readable

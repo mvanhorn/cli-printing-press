@@ -10,10 +10,18 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 )
 
 // RunWorkflowVerification builds the CLI and runs all workflows from the manifest.
 func RunWorkflowVerification(dir string) (*WorkflowVerifyReport, error) {
+	releaseHome, err := scopeSubprocessHome(findCLINames(dir)...)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
+
 	manifest, err := LoadWorkflowManifest(dir)
 	if err != nil {
 		return nil, fmt.Errorf("loading workflow manifest: %w", err)
@@ -144,6 +152,11 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = dir
+		applyDefaultSubprocessEnv(cmd)
+		// Strip verify-mode env from the subprocess so an inherited
+		// PRINTING_PRESS_VERIFY=1 cannot short-circuit the live workflow
+		// path. See internal/pipeline/verify_env_filter.go for rationale.
+		cmd.Env = filterVerifyEnv(cmd.Env)
 		out, err := cmd.CombinedOutput()
 		cancel()
 
@@ -392,7 +405,10 @@ func deriveOverallVerdict(manifest *WorkflowManifest, results []WorkflowResult) 
 
 // writeWorkflowVerifyReport writes the report as JSON to the given directory.
 func writeWorkflowVerifyReport(dir string, report *WorkflowVerifyReport) error {
-	data, err := json.MarshalIndent(report, "", "  ")
+	// Marshal a copy so callers keep the real path they passed in.
+	emitted := *report
+	emitted.Dir = artifacts.RedactCLIDirRoot(report.Dir)
+	data, err := json.MarshalIndent(&emitted, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling workflow verify report: %w", err)
 	}

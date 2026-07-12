@@ -19,10 +19,10 @@ func newWorkflowVerifyCmd() *cobra.Command {
 		Short: "Verify a generated CLI can complete its primary workflow",
 		Long:  "Run the workflow verification manifest against a built CLI binary, testing that multi-step flows (e.g., ordering a pizza, creating a project) actually work end-to-end.",
 		Example: `  # Verify a generated CLI's primary workflow
-  printing-press workflow-verify --dir ./generated/dominos-pp-cli
+  cli-printing-press workflow-verify --dir ./generated/dominos-pp-cli
 
   # Output as JSON for programmatic use
-  printing-press workflow-verify --dir ./generated/dominos-pp-cli --json`,
+  cli-printing-press workflow-verify --dir ./generated/dominos-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := pipeline.RunWorkflowVerification(dir)
 			if err != nil {

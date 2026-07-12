@@ -1,6 +1,9 @@
 package profiler
 
 import (
+	"bytes"
+	"os"
+	"slices"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -8,13 +11,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// captureStderr swaps os.Stderr for a pipe, runs fn, and returns whatever
+// fn wrote to stderr. The swap is single-threaded — safe for go test's
+// per-package sequential execution; do not use across parallel subtests
+// that both touch stderr.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = orig })
+	fn()
+	require.NoError(t, w.Close())
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	return buf.String()
+}
+
 func TestProfilePetstore(t *testing.T) {
 	profile := Profile(petstoreSpec())
 
 	assert.False(t, profile.HighVolume)
 	assert.False(t, profile.NeedsSearch)
 	assert.False(t, profile.HasRealtime)
-	assert.Equal(t, []string{"export", "import"}, profile.RecommendedFeatures())
+	assert.ElementsMatch(t, []string{"sync", "search", "store", "export", "import"}, profile.RecommendedFeatures())
 }
 
 func TestProfileDiscord(t *testing.T) {
@@ -55,6 +76,16 @@ func TestProfileMinimal(t *testing.T) {
 	assert.False(t, profile.HasChronological)
 	assert.False(t, profile.HasDependencies)
 	assert.Zero(t, profile.CRUDResources)
+	assert.True(t, profile.hasSyncableStoreResources())
+	assert.ElementsMatch(t, []string{"sync", "search", "store", "export", "import"}, profile.RecommendedFeatures())
+}
+
+func TestProfilePostOnlyHasNoLocalStoreFeatures(t *testing.T) {
+	profile := Profile(postOnlySpec())
+
+	assert.False(t, profile.HighVolume)
+	assert.False(t, profile.NeedsSearch)
+	assert.False(t, profile.hasSyncableStoreResources())
 	assert.Equal(t, []string{"export", "import"}, profile.RecommendedFeatures())
 }
 
@@ -175,6 +206,167 @@ func TestProfileSiblingListEndpoints(t *testing.T) {
 	assert.Equal(t, "/portfolio/settlements", syncPaths["portfolio-settlements"])
 }
 
+func TestProfileScalarIDListsUseHydrationTarget(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "hydrate",
+		Types: map[string]spec.TypeDef{
+			"Item": {Fields: []spec.TypeField{
+				{Name: "id", Type: "integer"},
+				{Name: "title", Type: "string"},
+			}},
+			"Updates": {Fields: []spec.TypeField{
+				{Name: "items", Type: "array"},
+				{Name: "profiles", Type: "array"},
+			}},
+		},
+		Resources: map[string]spec.Resource{
+			"stories": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/jobstories.json",
+						Response: spec.ResponseDef{Type: "array", Item: "int"},
+					},
+				},
+			},
+			"updates": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/updates.json",
+						Response: spec.ResponseDef{Type: "object", Item: "Updates"},
+					},
+				},
+			},
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/item/{id}.json",
+						Response: spec.ResponseDef{Type: "object", Item: "Item"},
+						IDField:  "id",
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "stories")
+	assert.Equal(t, "/item/{id}.json", byName["stories"].HydratePath)
+	assert.Equal(t, "id", byName["stories"].HydrateIDParam)
+	require.Contains(t, byName, "updates")
+	assert.Equal(t, "/item/{id}.json", byName["updates"].HydratePath)
+	assert.Equal(t, "id", byName["updates"].HydrateIDParam)
+}
+
+func TestProfileScalarIDListsWithoutHydrationTargetStayUnsyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "scalar-list",
+		Resources: map[string]spec.Resource{
+			"ids": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/ids",
+						Response: spec.ResponseDef{Type: "array", Item: "int"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	for _, resource := range profile.SyncableResources {
+		assert.NotEqual(t, "ids", resource.Name)
+	}
+}
+
+func TestProfileParentScopedPathTemplateCollectionRegistersSyncResource(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "ads",
+		Resources: map[string]spec.Resource{
+			"me": {
+				Endpoints: map[string]spec.Endpoint{
+					"adaccounts": {
+						Method:   "GET",
+						Path:     "/me/adaccounts",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"campaigns": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/{adAccountId}/campaigns",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncPaths := make(map[string]string)
+	skipDefault := make(map[string]bool)
+	for _, resource := range profile.SyncableResources {
+		syncPaths[resource.Name] = resource.Path
+		skipDefault[resource.Name] = resource.SkipDefaultSync
+	}
+
+	assert.Equal(t, "/{adAccountId}/campaigns", syncPaths["campaigns"])
+	assert.True(t, skipDefault["campaigns"], "parent-scoped path templates should be opt-in via --resources plus --path-context")
+	assert.Empty(t, profile.DependentSyncResources, "external parent path templates are syncable with explicit context, not dependent fan-out")
+}
+
+func TestProfileDependentResourcesPreferCollectionOverNestedDetailPaths(t *testing.T) {
+	paginated := func(path string) spec.Endpoint {
+		return spec.Endpoint{
+			Method:     "GET",
+			Path:       path,
+			Response:   spec.ResponseDef{Type: "array"},
+			Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+		}
+	}
+	s := &spec.APISpec{
+		Name: "plane",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": paginated("/projects/"),
+				},
+			},
+			"projects_issues": {
+				Endpoints: map[string]spec.Endpoint{
+					"list":       paginated("/projects/{project_id}/issues/"),
+					"link":       paginated("/projects/{project_id}/issues/{issue_id}/links/{pk}/"),
+					"activities": paginated("/projects/{project_id}/issues/{issue_id}/activities/{pk}/"),
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	pathsByName := make(map[string][]string)
+	for _, dep := range profile.DependentSyncResources {
+		pathsByName[dep.Name] = append(pathsByName[dep.Name], dep.Path)
+	}
+
+	assert.Equal(t, []string{"/projects/{project_id}/issues/"}, pathsByName["projects_issues"])
+	assert.NotContains(t, pathsByName["projects_issues"], "/projects/{project_id}/issues/{issue_id}/links/{pk}/")
+	assert.NotContains(t, pathsByName["projects_issues"], "/projects/{project_id}/issues/{issue_id}/activities/{pk}/")
+}
+
 func TestProfileDiscriminatorDispatchFromResponseTypeEnum(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "mixed-network",
@@ -266,6 +458,30 @@ func TestToVisionaryPlan(t *testing.T) {
 	assert.Equal(t, []string{"analytics.go.tmpl"}, featureTemplates["analytics"])
 }
 
+func TestToVisionaryPlanSyncableResourceDrivesLocalDataLayer(t *testing.T) {
+	profile := Profile(smallReadWriteSyncableSpec())
+	require.False(t, profile.HighVolume)
+	require.False(t, profile.OfflineValuable)
+	require.False(t, profile.NeedsSearch)
+	require.True(t, profile.hasSyncableStoreResources())
+
+	plan := profile.ToVisionaryPlan("parcel")
+	areas := make(map[string]string)
+	for _, decision := range plan.Architecture {
+		areas[decision.Area] = decision.NeedLevel
+	}
+	assert.Equal(t, "high", areas["persistence"])
+	assert.Equal(t, "high", areas["search"])
+
+	featureTemplates := make(map[string][]string)
+	for _, feature := range plan.Features {
+		featureTemplates[feature.Name] = feature.TemplateNames
+	}
+	assert.Equal(t, []string{"sync.go.tmpl"}, featureTemplates["sync"])
+	assert.Equal(t, []string{"search.go.tmpl"}, featureTemplates["search"])
+	assert.Equal(t, []string{"store.go.tmpl"}, featureTemplates["store"])
+}
+
 func petstoreSpec() *spec.APISpec {
 	return &spec.APISpec{
 		Name: "petstore",
@@ -346,6 +562,75 @@ func petstoreSpec() *spec.APISpec {
 							{Name: "username", Type: "string"},
 						},
 					},
+				},
+			},
+		},
+	}
+}
+
+func postOnlySpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name: "post-only",
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/widgets",
+						Body: []spec.Param{
+							{Name: "name", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func smallReadWriteSyncableSpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name: "parcel",
+		Resources: map[string]spec.Resource{
+			"deliveries": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/deliveries",
+						Response: spec.ResponseDef{Type: "object", Item: "DeliveriesResponse"},
+					},
+					"add": {
+						Method: "POST",
+						Path:   "/add-delivery",
+						Body: []spec.Param{
+							{Name: "tracking_number", Type: "string"},
+							{Name: "carrier_code", Type: "string"},
+							{Name: "description", Type: "string"},
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "SuccessResponse"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Delivery": {
+				Fields: []spec.TypeField{
+					{Name: "carrier_code", Type: "string"},
+					{Name: "description", Type: "string"},
+					{Name: "status_code", Type: "integer"},
+					{Name: "tracking_number", Type: "string"},
+				},
+			},
+			"DeliveriesResponse": {
+				Fields: []spec.TypeField{
+					{Name: "success", Type: "boolean"},
+					{Name: "error_message", Type: "string"},
+					{Name: "deliveries", Type: "array"},
+				},
+			},
+			"SuccessResponse": {
+				Fields: []spec.TypeField{
+					{Name: "success", Type: "boolean"},
+					{Name: "error_message", Type: "string"},
 				},
 			},
 		},
@@ -582,7 +867,7 @@ func TestProfileDateRangeParam(t *testing.T) {
 		Types: map[string]spec.TypeDef{
 			"ScoreboardResponse": {
 				Fields: []spec.TypeField{
-					{Name: "events", Type: "string"},
+					{Name: "events", Type: "array"},
 					{Name: "leagues", Type: "string"},
 				},
 			},
@@ -631,7 +916,7 @@ func TestProfileWrapperObjectDetection(t *testing.T) {
 		Types: map[string]spec.TypeDef{
 			"ScoreboardResponse": {
 				Fields: []spec.TypeField{
-					{Name: "events", Type: "string"},
+					{Name: "events", Type: "array"},
 					{Name: "leagues", Type: "string"},
 				},
 			},
@@ -676,6 +961,198 @@ func TestProfileWrapperObjectDetection_NoFalsePositive(t *testing.T) {
 		syncNames[i] = sr.Name
 	}
 	assert.NotContains(t, syncNames, "settings", "non-wrapper object should not be syncable")
+}
+
+func TestProfilePluralWrapperArrayFieldsAreSyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "saas-crm",
+		Resources: map[string]spec.Resource{
+			"opportunities": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/opportunities",
+						Response: spec.ResponseDef{Type: "object", Item: "OpportunityEnvelope"},
+					},
+				},
+			},
+			"contacts": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/contacts/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "ContactEnvelope"},
+					},
+				},
+			},
+			"companies": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/companies/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "CompanyEnvelope"},
+					},
+				},
+			},
+			"tickets": {
+				Endpoints: map[string]spec.Endpoint{
+					"searchTickets": {
+						Method: "POST",
+						Path:   "/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "cursor",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "TicketEnvelope"},
+					},
+				},
+			},
+			"open-opportunities": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/opportunities/open",
+						Response: spec.ResponseDef{Type: "object", Item: "OpenOpportunityEnvelope"},
+					},
+				},
+			},
+			"settings": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/settings",
+						Response: spec.ResponseDef{Type: "object", Item: "SettingsResponse"},
+					},
+				},
+			},
+			"empty-settings": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/settings/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "EmptySettingsResponse"},
+					},
+				},
+			},
+			"audits": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "POST",
+						Path:   "/audits/search",
+						Pagination: &spec.Pagination{
+							CursorParam: "startAfter",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "AuditSearchResponse"},
+					},
+				},
+			},
+			"profile": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/profile",
+						Response: spec.ResponseDef{Type: "object", Item: "ProfileResponse"},
+					},
+				},
+			},
+			"places": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:   "GET",
+						Path:     "/places",
+						Response: spec.ResponseDef{Type: "object", Item: "GeoFeatureCollection"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"OpportunityEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "opportunities", Type: "array"},
+					{Name: "meta", Type: "object"},
+				},
+			},
+			"ContactEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "contacts", Type: "array"},
+					{Name: "meta", Type: "object"},
+				},
+			},
+			"CompanyEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "companies", Type: "array"},
+					{Name: "errors", Type: "array"},
+					{Name: "meta", Type: "object"},
+				},
+			},
+			"TicketEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "tickets", Type: "array"},
+				},
+			},
+			"OpenOpportunityEnvelope": {
+				Fields: []spec.TypeField{
+					{Name: "openOpportunities", Type: "array"},
+				},
+			},
+			"SettingsResponse": {
+				Fields: []spec.TypeField{
+					{Name: "featureFlags", Type: "object"},
+					{Name: "timezone", Type: "string"},
+				},
+			},
+			"EmptySettingsResponse": {},
+			"AuditSearchResponse": {
+				Fields: []spec.TypeField{
+					{Name: "errors", Type: "array"},
+				},
+			},
+			"ProfileResponse": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "roles", Type: "array"},
+				},
+			},
+			"GeoFeatureCollection": {
+				Fields: []spec.TypeField{
+					{Name: "features", Type: "array"},
+					{Name: "bbox", Type: "array"},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	syncByName := make(map[string]SyncableResource)
+	for _, sr := range profile.SyncableResources {
+		syncByName[sr.Name] = sr
+	}
+	syncNames := profile.SyncableResourceNames()
+
+	assert.Contains(t, syncNames, "opportunities", "GET list endpoint with plural wrapper array should be syncable")
+	assert.Contains(t, syncNames, "contacts", "paginated POST search endpoint with plural wrapper array should be syncable")
+	assert.Contains(t, syncNames, "companies", "ancillary errors arrays should not hide one resource-shaped wrapper array")
+	assert.Contains(t, syncNames, "tickets", "single array fields can match the endpoint name when the path is generic")
+	assert.Contains(t, syncNames, "open-opportunities", "compound array field names can match simple path segments")
+	assert.Contains(t, syncNames, "places", "multi-array GeoJSON-style envelope with known features wrapper should be syncable")
+	assert.NotContains(t, syncNames, "settings", "object envelopes without array fields should not be syncable")
+	assert.NotContains(t, syncNames, "empty-settings", "parsed zero-field response types should not fall back to type-name matching")
+	assert.NotContains(t, syncNames, "audits", "collection-named endpoints should not make unrelated array fields syncable")
+	assert.NotContains(t, syncNames, "profile", "singleton object with one relationship array should not be syncable")
+	assert.Equal(t, "POST", syncByName["contacts"].Method)
 }
 
 func TestProfileSimpleListEndpointSyncable(t *testing.T) {
@@ -766,6 +1243,297 @@ func TestProfileSimpleListEndpointSyncable(t *testing.T) {
 	assert.NotContains(t, syncNames, "query", "POST-only resource should not be syncable")
 }
 
+func TestProfileRequiredParamResourcesStayExplicitOnlyByDefault(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "param-sync",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"batch_prices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/prices",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "ids", Type: "array", Required: true}},
+					},
+				},
+			},
+			"paged": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/paged",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "limit", Type: "integer", Required: true}},
+					},
+				},
+			},
+			"tenant_items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tenant/{tenant_id}/items",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "tenant_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+			"forced": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/forced",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{{Name: "ids", Type: "array", Required: true}},
+						Syncable: true,
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "items")
+	require.Contains(t, byName, "batch_prices")
+	require.Contains(t, byName, "paged")
+	require.Contains(t, byName, "forced")
+	assert.False(t, byName["items"].SkipDefaultSync)
+	assert.True(t, byName["batch_prices"].SkipDefaultSync, "required non-paginator params need --resource-param, so default sync/archive must skip them")
+	assert.False(t, byName["paged"].SkipDefaultSync, "required paginator params are supplied by sync itself")
+	assert.False(t, byName["forced"].SkipDefaultSync, "explicit syncable true overrides the default-exclusion heuristic")
+	assert.NotContains(t, byName, "tenant_items", "unresolved path params still cannot run as flat resources")
+}
+
+func TestProfileDependentResourceUsesParentResolvedIDField(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "dependent-parent-key",
+		Resources: map[string]spec.Resource{
+			"designs": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/design", Response: spec.ResponseDef{Type: "array"}, Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"}, IDField: "key"},
+				},
+			},
+			"related": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/design/{design_id}/relate",
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							CursorParam: "after",
+							LimitParam:  "limit",
+						},
+						Params: []spec.Param{{Name: "design_id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "designs", dep.ParentResource)
+	require.Len(t, dep.PathParams, 1)
+	assert.Equal(t, "design_id", dep.PathParams[0].Param)
+	assert.Equal(t, "key", dep.PathParams[0].Field)
+	assert.NotEqual(t, "design_id", dep.PathParams[0].Field)
+}
+
+func TestProfileRPCStylePostListEndpointSyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "rpc-post-api",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"getList": {
+						Method: "POST",
+						Path:   "/api/items/getList",
+						Body: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "cursor", Type: "string"},
+							{Name: "view", Type: "string", Default: "summary"},
+						},
+						Pagination: &spec.Pagination{
+							CursorParam:    "cursor",
+							LimitParam:     "limit",
+							NextCursorPath: "next_cursor",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "ItemsResponse"},
+					},
+					"create": {
+						Method:   "POST",
+						Path:     "/api/items/create",
+						Response: spec.ResponseDef{Type: "object", Item: "Item"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"send": {
+						Method:   "POST",
+						Path:     "/api/messages/send",
+						Response: spec.ResponseDef{Type: "object", Item: "SendMessageResponse"},
+					},
+				},
+			},
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method:   "POST",
+						Path:     "/api/widgets/create",
+						Response: spec.ResponseDef{Type: "object", Item: "Widget"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"ItemsResponse": {
+				Fields: []spec.TypeField{
+					{Name: "items", Type: "array"},
+					{Name: "next_cursor", Type: "string"},
+				},
+			},
+			"Item": {
+				Fields: []spec.TypeField{{Name: "id", Type: "string"}},
+			},
+			"SendMessageResponse": {
+				Fields: []spec.TypeField{
+					{Name: "ok", Type: "boolean"},
+					{Name: "ts", Type: "string"},
+				},
+			},
+			"Widget": {
+				Fields: []spec.TypeField{{Name: "id", Type: "string"}},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncNames := make([]string, len(profile.SyncableResources))
+	syncPaths := make(map[string]string)
+	syncByName := make(map[string]SyncableResource)
+	for i, sr := range profile.SyncableResources {
+		syncNames[i] = sr.Name
+		syncPaths[sr.Name] = sr.Path
+		syncByName[sr.Name] = sr
+	}
+
+	assert.Contains(t, syncNames, "items", "paginated RPC-style POST list endpoint should be syncable")
+	assert.Equal(t, "/api/items/getList", syncPaths["items"])
+	assert.Equal(t, "POST", syncByName["items"].Method)
+	require.Len(t, syncByName["items"].BodyFields, 3)
+	assert.Equal(t, "limit", syncByName["items"].BodyFields[0].Name)
+	assert.Equal(t, "integer", syncByName["items"].BodyFields[0].Type)
+	assert.False(t, syncByName["items"].BodyFields[0].HasDefault)
+	assert.Equal(t, "cursor", syncByName["items"].BodyFields[1].Name)
+	assert.Equal(t, "string", syncByName["items"].BodyFields[1].Type)
+	assert.Equal(t, "view", syncByName["items"].BodyFields[2].Name)
+	assert.Equal(t, "string", syncByName["items"].BodyFields[2].Type)
+	assert.True(t, syncByName["items"].BodyFields[2].HasDefault)
+	assert.Equal(t, "summary", syncByName["items"].BodyFields[2].Default)
+	assert.NotContains(t, syncNames, "messages", "POST write endpoints without pagination and wrapper arrays must not be syncable")
+	assert.NotContains(t, syncNames, "widgets", "POST create endpoints without pagination must not be syncable")
+}
+
+func TestProfileIDWalkPostQueryMetadata(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "id-walk-post-api",
+		Resources: map[string]spec.Resource{
+			"tickets": {
+				Endpoints: map[string]spec.Endpoint{
+					"query": {
+						Method:  "POST",
+						Path:    "/api/tickets/query",
+						IDField: "id",
+						Body: []spec.Param{
+							{Name: "MaxRecords", Type: "integer", Default: 500},
+							{Name: "filter", Type: "array"},
+						},
+						Pagination: &spec.Pagination{
+							Type:       spec.PaginationTypeIDWalk,
+							LimitParam: "MaxRecords",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "TicketsResponse"},
+					},
+				},
+			},
+			"notes": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/api/notes",
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer", Default: 25},
+							{Name: "cursor", Type: "string"},
+						},
+						Pagination: &spec.Pagination{
+							Type:        "cursor",
+							CursorParam: "cursor",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Note"},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/api/users",
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer", Default: 25},
+							{Name: "cursor", Type: "string"},
+						},
+						Pagination: &spec.Pagination{
+							Type:        "cursor",
+							CursorParam: "cursor",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "User"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"TicketsResponse": {
+				Fields: []spec.TypeField{
+					{Name: "items", Type: "array"},
+					{Name: "pageDetails", Type: "object"},
+				},
+			},
+			"Note": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+			"User": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncByName := make(map[string]SyncableResource)
+	for _, resource := range profile.SyncableResources {
+		syncByName[resource.Name] = resource
+	}
+	tickets := syncByName["tickets"]
+	assert.Equal(t, "tickets", tickets.Name)
+	assert.Equal(t, "POST", tickets.Method)
+	assert.True(t, tickets.SupportsPagination)
+	assert.Equal(t, "filter", tickets.IDWalkFilterParam)
+	assert.Equal(t, "MaxRecords", tickets.IDWalkLimitParam)
+	assert.Equal(t, 500, tickets.IDWalkPageSize)
+	assert.Equal(t, "cursor", profile.Pagination.CursorType)
+	assert.Equal(t, "limit", profile.Pagination.PageSizeParam)
+	assert.Equal(t, 100, profile.Pagination.DefaultPageSize)
+}
+
 func TestProfileDependentResources(t *testing.T) {
 	// A spec with /channels (flat) and /channels/{channelId}/messages (parameterized)
 	// should produce a DependentResource linking messages to channels.
@@ -812,6 +1580,29 @@ func TestProfileDependentResources(t *testing.T) {
 	assert.Equal(t, "channels", dep.ParentResource)
 	assert.Equal(t, "channelId", dep.ParentIDParam)
 	assert.Equal(t, "/channels/{channelId}/messages", dep.Path)
+}
+
+func TestProfileSyncableResourceSupportsCursorOnlyPagination(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "cursor-only",
+		Resources: map[string]spec.Resource{
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/events",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "starting_after"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "events", profile.SyncableResources[0].Name)
+	assert.True(t, profile.SyncableResources[0].SupportsPagination, "cursor-only pagination must keep sync from stopping after the first page")
 }
 
 // TestProfileDependentResources_SharedSubResourceShardsByParent pins the
@@ -956,6 +1747,173 @@ func TestProfileDependentResources_MultiParamParentPath(t *testing.T) {
 
 	require.Contains(t, depsByName, "repos_commits", "walk-context parent wins over /repos/{owner}/...'s leading param")
 	assert.Equal(t, "repos", depsByName["repos_commits"].ParentResource)
+	assert.Equal(t, []DependentPathParam{
+		{Param: "owner", Field: "owner"},
+		{Param: "repo", Field: "repo"},
+	}, depsByName["repos_commits"].PathParams)
+}
+
+func TestProfileDependentResources_ChainedParentPathParams(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "nested",
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"messages": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/channels/{channelId}/messages",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+						SubResources: map[string]spec.Resource{
+							"reactions": {
+								Endpoints: map[string]spec.Endpoint{
+									"list": {
+										Method:     "GET",
+										Path:       "/channels/{channelId}/messages/{messageId}/reactions",
+										Response:   spec.ResponseDef{Type: "array"},
+										Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "messages_reactions")
+	assert.Equal(t, "messages", depsByName["messages_reactions"].ParentResource)
+	assert.Equal(t, []DependentPathParam{
+		{Param: "channelId", Field: "channels_id"},
+		{Param: "messageId", Field: "id"},
+	}, depsByName["messages_reactions"].PathParams)
+}
+
+func TestProfileDependentResources_FlatMultiPlaceholderPathDerivesLeaf(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "runcloud",
+		Resources: map[string]spec.Resource{
+			"servers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/servers",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"webapps": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/servers/{serverId}/webapps",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+							},
+							"domains": {
+								Method:     "GET",
+								Path:       "/servers/{serverId}/webapps/{webAppId}/domains",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "webapps")
+	require.Contains(t, depsByName, "webapps_domains")
+	assert.Equal(t, "servers", depsByName["webapps"].ParentResource)
+	assert.Equal(t, "webapps", depsByName["webapps_domains"].ParentResource)
+	assert.Equal(t, "/servers/{serverId}/webapps/{webAppId}/domains", depsByName["webapps_domains"].Path)
+	assert.Equal(t, []DependentPathParam{
+		{Param: "serverId", Field: "servers_id"},
+		{Param: "webAppId", Field: "id"},
+	}, depsByName["webapps_domains"].PathParams)
+}
+
+func TestProfileDependentResources_SlugParentIdentityAndTopoOrder(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "github",
+		Resources: map[string]spec.Resource{
+			"orgs": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/orgs",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"teams": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/orgs/{org}/teams",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+							},
+							"members": {
+								Method:     "GET",
+								Path:       "/orgs/{org}/teams/{team_slug}/members",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "page", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	var names []string
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		names = append(names, dep.Name)
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "teams")
+	require.Contains(t, depsByName, "teams_members")
+	assert.Less(t, slices.Index(names, "teams"), slices.Index(names, "teams_members"))
+	assert.Equal(t, "teams", depsByName["teams_members"].ParentResource)
+	assert.Equal(t, []DependentPathParam{
+		{Param: "org", Field: "orgs_id"},
+		{Param: "team_slug", Field: "slug"},
+	}, depsByName["teams_members"].PathParams)
 }
 
 // TestProfileDependentResources_TopLevelCollisionShards mirrors the schema
@@ -1099,6 +2057,101 @@ func TestProfileDependentResources_NoParentNoDependent(t *testing.T) {
 	assert.Empty(t, profile.DependentSyncResources, "no parent resource means no dependent detection")
 }
 
+func TestProfileDependentResources_SkipsRequiredQueryParamDependents(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "widgets",
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/widgets",
+						Response:   spec.ResponseDef{Type: "array", Item: "Widget"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"comments": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/widgets/{widget_id}/comments",
+								Response:   spec.ResponseDef{Type: "array", Item: "Comment"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+					"availableSlots": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:   "GET",
+								Path:     "/widgets/{widget_id}/availableSlots",
+								Response: spec.ResponseDef{Type: "array", Item: "AvailableSlot"},
+								Params: []spec.Param{{
+									Name:     "size",
+									Type:     "string",
+									Required: true,
+								}},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+					"typedViews": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:   "GET",
+								Path:     "/widgets/{widget_id}/typedViews",
+								Response: spec.ResponseDef{Type: "array", Item: "TypedView"},
+								Params: []spec.Param{{
+									Name:     "viewType",
+									Type:     "string",
+									Required: true,
+									Enum:     []string{"compact", "full"},
+								}},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+					"pagedLogs": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:   "GET",
+								Path:     "/widgets/{widget_id}/pagedLogs",
+								Response: spec.ResponseDef{Type: "array", Item: "PagedLog"},
+								Params: []spec.Param{{
+									Name:     "limit",
+									Type:     "integer",
+									Required: true,
+								}},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncNames := make(map[string]bool)
+	for _, resource := range profile.SyncableResources {
+		syncNames[resource.Name] = true
+	}
+	names := make(map[string]bool)
+	for _, dep := range profile.DependentSyncResources {
+		names[dep.Name] = true
+	}
+	assert.False(t, syncNames["available_slots"], "filter-required child collection must not flatten into SyncableResources")
+	assert.False(t, syncNames["typedviews"], "required enum child collection must not flatten into SyncableResources")
+	assert.False(t, syncNames["compact"], "dependent sync has no per-parent enum expansion")
+	assert.False(t, syncNames["full"], "dependent sync has no per-parent enum expansion")
+	assert.True(t, names["comments"], "ordinary parent-scoped collections stay syncable")
+	assert.True(t, names["paged_logs"], "required pagination params are supplied by sync and stay syncable")
+	assert.False(t, names["available_slots"], "filter-required child collection must not auto-sync without that filter")
+	assert.False(t, names["typed_views"], "dependent sync cannot enum-expand required filters per parent")
+}
+
 // TestProfileSyncableResourcePropagatesIDFieldAndCritical asserts that the new
 // per-endpoint metadata flows into SyncableResource. The OpenAPI parser is
 // responsible for resolving IDField (x-resource-id → id → name → required
@@ -1148,6 +2201,110 @@ func TestProfileSyncableResourcePropagatesIDFieldAndCritical(t *testing.T) {
 	assert.False(t, byName["events"].Critical)
 }
 
+func TestProfileSyncableResourceUsesMemberPathIDFieldHint(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "idps",
+		Types: map[string]spec.TypeDef{
+			"IDP": {
+				Fields: []spec.TypeField{{Name: "idpId", Type: "string"}, {Name: "name", Type: "string"}},
+			},
+			"StableIDP": {
+				Fields: []spec.TypeField{{Name: "uuid", Type: "string"}, {Name: "stableIdpId", Type: "string"}},
+			},
+			"Target": {
+				Fields: []spec.TypeField{{Name: "siteId", Type: "string"}, {Name: "name", Type: "string"}},
+			},
+			"DetailOnlyIDP": {
+				Fields: []spec.TypeField{{Name: "name", Type: "string"}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"idps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/idps",
+						Response: spec.ResponseDef{Type: "array", Item: "IDP"},
+						IDField:  "name",
+					},
+					"get": {
+						Method:               "GET",
+						Path:                 "/idps/{idpId}",
+						Response:             spec.ResponseDef{Type: "object", Item: "IDP"},
+						IDField:              "idpId",
+						IDFieldFromPathParam: true,
+					},
+				},
+			},
+			"stable-idps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/stable-idps",
+						Response: spec.ResponseDef{Type: "array", Item: "StableIDP"},
+						IDField:  "uuid",
+					},
+					"get": {
+						Method:               "GET",
+						Path:                 "/stable-idps/{stableIdpId}",
+						Response:             spec.ResponseDef{Type: "object", Item: "StableIDP"},
+						IDField:              "stableIdpId",
+						IDFieldFromPathParam: true,
+					},
+				},
+			},
+			"targets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/targets",
+						Response: spec.ResponseDef{Type: "array", Item: "Target"},
+						IDField:  "name",
+					},
+					"scoped-list": {
+						Method:   "GET",
+						Path:     "/sites/{siteId}/targets",
+						Response: spec.ResponseDef{Type: "array", Item: "Target"},
+						IDField:  "siteId",
+					},
+				},
+			},
+			"detail-only-idps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/detail-only-idps",
+						Response: spec.ResponseDef{Type: "array", Item: "DetailOnlyIDP"},
+						IDField:  "name",
+					},
+					"get": {
+						Method:               "GET",
+						Path:                 "/detail-only-idps/{detailOnlyIdpId}",
+						Response:             spec.ResponseDef{Type: "object"},
+						IDField:              "detailOnlyIdpId",
+						IDFieldFromPathParam: true,
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "idps")
+	assert.Equal(t, "idpId", byName["idps"].IDField)
+	require.Contains(t, byName, "stable-idps")
+	assert.Equal(t, "uuid", byName["stable-idps"].IDField, "path-derived ID must not replace a stronger list endpoint ID")
+	require.Contains(t, byName, "targets")
+	assert.Equal(t, "name", byName["targets"].IDField, "parent siteId must not become the child target ID")
+	require.Contains(t, byName, "detail-only-idps")
+	assert.Equal(t, "name", byName["detail-only-idps"].IDField, "detail-only path ID must not replace a list response that lacks the field")
+}
+
 // TestProfileSyncableResourceUnsetMetadata pins the negative case — a spec with
 // no IDField/Critical on its endpoints emits a SyncableResource with both
 // fields zero-valued. Lets templates fall through to the runtime fallback list.
@@ -1172,6 +2329,34 @@ func TestProfileSyncableResourceUnsetMetadata(t *testing.T) {
 	assert.Equal(t, "widgets", profile.SyncableResources[0].Name)
 	assert.Empty(t, profile.SyncableResources[0].IDField)
 	assert.False(t, profile.SyncableResources[0].Critical)
+}
+
+func TestProfileQueryEntityRequiresEntitySuffixWhenResponseItemMissing(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "query-entity-ambiguous",
+		QuerySync: &spec.QuerySyncConfig{
+			Path:          "/query",
+			QueryTemplate: "select * from {entity} startposition {start} maxresults {limit}",
+			EnvelopeKey:   "QueryResponse",
+		},
+		Resources: map[string]spec.Resource{
+			"reports": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/query",
+						Response:     spec.ResponseDef{Type: "array"},
+						ResponsePath: "QueryResponse",
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Empty(t, profile.SyncableResources[0].QueryEntity,
+		"response_path without an entity suffix must not become select * from QueryResponse")
 }
 
 // TestProfileDependentResourcePropagatesIDFieldAndCritical asserts that the
@@ -1253,6 +2438,350 @@ func TestProfileDependentResourceUnsetMetadata(t *testing.T) {
 	assert.False(t, profile.DependentSyncResources[0].Critical)
 }
 
+// TestProfileSyncableResourceSinceParamPropagation asserts that per-endpoint
+// since-like query parameter declarations flow into SyncableResource.SinceParam.
+// The sync template uses that field to skip incremental-cursor emission for
+// resources whose endpoint does not declare such a parameter, avoiding the
+// Notion-style 400 the blind-append behavior used to produce.
+func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "mixed",
+		Resources: map[string]spec.Resource{
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/events",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "since", Type: "string", Format: "date-time"},
+						},
+					},
+				},
+			},
+			"audit": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/audit",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updated_after", Type: "string", Format: "date"},
+						},
+					},
+				},
+			},
+			"documents": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/documents",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updatedAfter", Type: "string", Format: "date-time"},
+						},
+					},
+				},
+			},
+			"books": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/books",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updated__gt", Type: "string", Format: "date-time"},
+						},
+					},
+				},
+			},
+			"highlights": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/highlights",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "num_highlights__gt", Type: "integer"},
+						},
+					},
+				},
+			},
+			"posts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/posts",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "modified_since", Type: "string"},
+						},
+					},
+				},
+			},
+			"changelog": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/changelog",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updated_at", Type: "string"},
+						},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/users",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "events")
+	assert.Equal(t, "since", byName["events"].SinceParam, "literal since param should propagate verbatim")
+	assert.Equal(t, "date-time", byName["events"].SinceParamFormat, "date-time format should propagate for RFC3339 temporal filters")
+
+	require.Contains(t, byName, "audit")
+	assert.Equal(t, "updated_after", byName["audit"].SinceParam, "spec-declared name (not the profile-wide guess) wins")
+	assert.Equal(t, "date", byName["audit"].SinceParamFormat, "date format should propagate so sync can send YYYY-MM-DD")
+
+	require.Contains(t, byName, "documents")
+	assert.Equal(t, "updatedAfter", byName["documents"].SinceParam, "camelCase updatedAfter should be recognized as an incremental filter")
+
+	require.Contains(t, byName, "books")
+	assert.Equal(t, "updated__gt", byName["books"].SinceParam, "temporal DRF comparison filters should be recognized")
+
+	require.Contains(t, byName, "highlights")
+	assert.Empty(t, byName["highlights"].SinceParam, "numeric DRF comparison filters must not be mistaken for temporal cursors")
+
+	require.Contains(t, byName, "posts")
+	assert.Equal(t, "modified_since", byName["posts"].SinceParam, "modified_since heuristic branch")
+
+	require.Contains(t, byName, "changelog")
+	assert.Equal(t, "updated_at", byName["changelog"].SinceParam, "updated_at heuristic branch")
+
+	require.Contains(t, byName, "users")
+	assert.Empty(t, byName["users"].SinceParam, "endpoints without a since-like param yield empty SinceParam — the sync template treats this as 'do not send'")
+}
+
+func TestProfileODataConditionsSinceParamPropagation(t *testing.T) {
+	t.Parallel()
+
+	s := &spec.APISpec{
+		Name: "odata",
+		Resources: map[string]spec.Resource{
+			"tickets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/service/tickets",
+						Response: spec.ResponseDef{Type: "array", Item: "Ticket"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+							{Name: "page", Type: "integer"},
+							{Name: "pageSize", Type: "integer"},
+						},
+					},
+				},
+			},
+			"companies": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/company/companies",
+						Response: spec.ResponseDef{Type: "array", Item: "Company"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+							{Name: "page", Type: "integer"},
+							{Name: "pageSize", Type: "integer"},
+						},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/system/users",
+						Response: spec.ResponseDef{Type: "array", Item: "User"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+						},
+					},
+				},
+			},
+			"badinfo": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v4/system/badinfo",
+						Response: spec.ResponseDef{Type: "array", Item: "BadInfo"},
+						Params: []spec.Param{
+							{Name: "conditions", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Ticket": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "_info", Type: "object"},
+				},
+			},
+			"Company": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "lastUpdated", Type: "string", Format: "date-time"},
+				},
+			},
+			"User": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "name", Type: "string"},
+				},
+			},
+			"BadInfo": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "integer"},
+					{Name: "_info", Type: "string"},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "tickets")
+	assert.Equal(t, "conditions", byName["tickets"].SinceParam)
+	assert.Equal(t, "odata-conditions:_info/lastUpdated", byName["tickets"].SinceParamFormat)
+
+	require.Contains(t, byName, "companies")
+	assert.Equal(t, "conditions", byName["companies"].SinceParam)
+	assert.Equal(t, "odata-conditions:lastUpdated", byName["companies"].SinceParamFormat)
+
+	require.Contains(t, byName, "users")
+	assert.Empty(t, byName["users"].SinceParam, "conditions without a documented updated field must not hardcode a filter")
+	assert.Empty(t, byName["users"].SinceParamFormat)
+
+	require.Contains(t, byName, "badinfo")
+	assert.Empty(t, byName["badinfo"].SinceParam, "non-object _info fields must not synthesize nested OData filters")
+	assert.Empty(t, byName["badinfo"].SinceParamFormat)
+
+	assert.Equal(t, "conditions", profile.Pagination.SinceParam)
+}
+
+func TestProfileSyncableResourceFieldSelectorPropagation(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "selectors",
+		Types: map[string]spec.TypeDef{
+			"Task": {Fields: []spec.TypeField{
+				{Name: "gid", Type: "string"},
+				{Name: "completed", Type: "bool"},
+				{Name: "assignee", Type: "object"},
+				{Name: "custom_fields", Type: "array"},
+			}},
+		},
+		Resources: map[string]spec.Resource{
+			"tasks": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tasks",
+						Response: spec.ResponseDef{Type: "array", Item: "Task"},
+						Params: []spec.Param{{
+							Name:                 "opt_fields",
+							Type:                 "string",
+							Purpose:              spec.ParamPurposeFieldSelector,
+							FieldSelectorDefault: "gid,completed,assignee.gid,custom_fields.gid",
+						}},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/users",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "tasks")
+	assert.Equal(t, "opt_fields", byName["tasks"].FieldSelector.Name)
+	assert.Equal(t, "gid,completed,assignee.gid,custom_fields.gid", byName["tasks"].FieldSelector.Default)
+
+	require.Contains(t, byName, "users")
+	assert.Empty(t, byName["users"].FieldSelector.Name)
+	assert.Empty(t, byName["users"].FieldSelector.Default)
+}
+
+// TestProfileDependentResourceSinceParamPropagation mirrors
+// TestProfileSyncableResourceSinceParamPropagation for parameterized child
+// paths so dependent-resource sync gets the same per-endpoint gating as flat
+// resources.
+func TestProfileDependentResourceSinceParamPropagation(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "chat",
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/channels",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels/{channel_id}/messages",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params: []spec.Param{
+							{Name: "channel_id", Type: "string", PathParam: true},
+							{Name: "modified_since", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	assert.Equal(t, "modified_since", profile.DependentSyncResources[0].SinceParam)
+}
+
 // TestProfileSyncableResourceShorterPathWinsMetadata asserts that when two
 // candidate endpoints can populate the same syncable resource, the shorter-path
 // rule that already governs the Path field also picks the IDField/Critical
@@ -1288,4 +2817,1243 @@ func TestProfileSyncableResourceShorterPathWinsMetadata(t *testing.T) {
 	assert.Equal(t, "/v1/things", profile.SyncableResources[0].Path)
 	assert.Equal(t, "winner", profile.SyncableResources[0].IDField)
 	assert.True(t, profile.SyncableResources[0].Critical)
+}
+
+// TestProfileSpecWalker_AugmentsAutoDetected verifies that a spec-declared
+// walker on an already-auto-detected dependent endpoint overrides
+// ParentResource, ParentIDParam, and KeyField in place rather than creating
+// a duplicate entry. /orders/{account_id} would auto-detect "account_id" →
+// "accounts" (after _id stripping) — the walker redirects to "customers"
+// and pins a non-PK key.
+func TestProfileSpecWalker_AugmentsAutoDetected(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "shop",
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/accounts", Response: spec.ResponseDef{Type: "array"}},
+				},
+			},
+			"customers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/customers", Response: spec.ResponseDef{Type: "array"}, IDField: "customer_key"},
+				},
+			},
+			"orders": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/accounts/{account_id}/orders",
+						Response: spec.ResponseDef{Type: "array"},
+						Walker: &spec.WalkerConfig{
+							Parent:   "customers",
+							KeyField: "customer_key",
+							KeyParam: "account_id",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1, "augment must not duplicate the entry")
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "customers", dep.ParentResource, "walker must redirect parent away from auto-detect")
+	assert.Equal(t, "account_id", dep.ParentIDParam)
+	assert.Equal(t, "customer_key", dep.KeyField)
+	assert.Equal(t, "/accounts/{account_id}/orders", dep.Path)
+}
+
+// TestProfileSpecWalker_SynthesizesMissingDependent verifies that a spec-
+// declared walker creates a new DependentResource entry when auto-detection
+// would not have linked the endpoint, and that the synthesized Name comes
+// from the containing resource (matching detectDependentResources's naming
+// convention) rather than the endpoint map key.
+func TestProfileSpecWalker_SynthesizesMissingDependent(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "fantasy",
+		Resources: map[string]spec.Resource{
+			"games": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/games", Response: spec.ResponseDef{Type: "array"}, IDField: "game_key"},
+				},
+			},
+			"leagues": {
+				Endpoints: map[string]spec.Endpoint{
+					"fetch_for_game": {
+						Method:   "GET",
+						Path:     "/games/{game_key}/leagues",
+						Response: spec.ResponseDef{Type: "array"},
+						Walker: &spec.WalkerConfig{
+							Parent:   "games",
+							KeyField: "game_key",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	// Exactly one dependent for the leagues endpoint, named from the
+	// containing resource ("leagues"), not the endpoint key
+	// ("fetch_for_game" → "fetch_for_game" via ToSnakeCase).
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "leagues", dep.Name, "Name must come from resource, not endpoint key")
+	assert.Equal(t, "games", dep.ParentResource)
+	assert.Equal(t, "game_key", dep.KeyField)
+	assert.Equal(t, "game_key", dep.ParentIDParam, "single-placeholder path: KeyParam defaults to firstPathParam")
+	assert.Equal(t, "/games/{game_key}/leagues", dep.Path)
+}
+
+// TestProfileSpecWalker_SynthesizePropagatesSinceParam verifies that a
+// walker-synthesized DependentResource carries through endpoint-level
+// SinceParam — incremental sync stays available for walker-declared
+// hierarchical children, matching the auto-detect path's behavior.
+// Greptile flagged a P1 regression on the initial draft where the
+// synthesize branch dropped SinceParam (and Discriminator); this test
+// pins the fix.
+func TestProfileSpecWalker_SynthesizePropagatesSinceParam(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "fantasy",
+		Resources: map[string]spec.Resource{
+			"games": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/games", Response: spec.ResponseDef{Type: "array"}, IDField: "game_key"},
+				},
+			},
+			"leagues": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/games/{game_key}/leagues",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "game_key", PathParam: true},
+							{Name: "since"},
+						},
+						Walker: &spec.WalkerConfig{
+							Parent:   "games",
+							KeyField: "game_key",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "leagues", dep.Name)
+	assert.Equal(t, "since", dep.SinceParam,
+		"synthesize branch must propagate SinceParam via metaFromEndpoint — incremental sync depends on it")
+}
+
+// TestProfileSpecWalker_NonSyncableParentWarns verifies that a walker
+// pointing at a non-syncable parent emits a stderr warning and is dropped.
+// Explicit walker:: declarations carry author intent; silently dropping a
+// typo'd parent would produce passing builds with missing data.
+func TestProfileSpecWalker_NonSyncableParentWarns(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "fantasy",
+		Resources: map[string]spec.Resource{
+			// "sports" is not syncable (GET-by-id only, no list).
+			"sports": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Method: "GET", Path: "/sports/{sport_id}", Response: spec.ResponseDef{Type: "object"}},
+				},
+			},
+			"leagues": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/leagues",
+						Response: spec.ResponseDef{Type: "array"},
+						Walker: &spec.WalkerConfig{
+							Parent:   "sports",
+							KeyField: "sport_key",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var profile *APIProfile
+	stderr := captureStderr(t, func() {
+		profile = Profile(s)
+	})
+
+	assert.Contains(t, stderr, "warning: walker on leagues.list")
+	assert.Contains(t, stderr, `parent "sports" is not a syncable resource`)
+	for _, dep := range profile.DependentSyncResources {
+		assert.NotEqual(t, "leagues", dep.Name,
+			"walker with non-syncable parent must be dropped, not produce a DependentResource")
+	}
+}
+
+// TestProfileSpecWalker_MultiPlaceholderPathWarns verifies that a walker on
+// a path with 2+ {...} placeholders requires an explicit key_param. Without
+// it, firstPathParam's "first wins" default would silently pick the parent
+// slot on a 2-deep path — almost always the wrong slot for the child.
+// With explicit key_param, the walker is accepted.
+func TestProfileSpecWalker_MultiPlaceholderPathWarns(t *testing.T) {
+	t.Run("ambiguous: warn and drop", func(t *testing.T) {
+		s := &spec.APISpec{
+			Name: "fantasy",
+			Resources: map[string]spec.Resource{
+				"games": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/games", Response: spec.ResponseDef{Type: "array"}, IDField: "game_key"},
+					},
+				},
+				"rosters": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/games/{game_key}/leagues/{league_id}/roster",
+							Response: spec.ResponseDef{Type: "array"},
+							Walker: &spec.WalkerConfig{
+								Parent: "games",
+								// no key_param — ambiguous on 2-placeholder path
+							},
+						},
+					},
+				},
+			},
+		}
+		var profile *APIProfile
+		stderr := captureStderr(t, func() {
+			profile = Profile(s)
+		})
+		assert.Contains(t, stderr, "warning: walker on rosters.list")
+		assert.Contains(t, stderr, "2 placeholders")
+		assert.Contains(t, stderr, "declare key_param explicitly")
+		for _, dep := range profile.DependentSyncResources {
+			assert.NotEqual(t, "rosters", dep.Name, "ambiguous walker must be dropped")
+		}
+	})
+
+	t.Run("explicit key_param: accepted", func(t *testing.T) {
+		s := &spec.APISpec{
+			Name: "fantasy",
+			Resources: map[string]spec.Resource{
+				"games": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/games", Response: spec.ResponseDef{Type: "array"}, IDField: "game_key"},
+					},
+				},
+				"rosters": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/games/{game_key}/leagues/{league_id}/roster",
+							Response: spec.ResponseDef{Type: "array"},
+							Walker: &spec.WalkerConfig{
+								Parent:   "games",
+								KeyField: "game_key",
+								KeyParam: "league_id",
+							},
+						},
+					},
+				},
+			},
+		}
+		profile := Profile(s)
+		var found bool
+		for _, dep := range profile.DependentSyncResources {
+			if dep.Name == "rosters" {
+				found = true
+				assert.Equal(t, "league_id", dep.ParentIDParam, "explicit key_param must be used verbatim")
+				assert.Equal(t, "game_key", dep.KeyField)
+			}
+		}
+		assert.True(t, found, "walker with explicit key_param must produce a dependent entry")
+	})
+}
+
+// Specs that declare pagination via plain offset+count query params (no
+// explicit pagination: block) must infer the cursor and limit names from
+// those params instead of falling back to "after"/"limit".
+func TestProfilePagination_InfersFromPlainParamsWhenNoExplicitBlock(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "plain-param-pagination",
+		Resources: map[string]spec.Resource{
+			"agents": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/agents",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "count", Type: "int", Default: 25}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"builds": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/builds",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "count", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	assert.Equal(t, "offset", profile.Pagination.CursorParam, "plain offset param must be picked up")
+	assert.Equal(t, "count", profile.Pagination.PageSizeParam, "plain count param must be picked up as limit")
+	require.Contains(t, byName, "agents")
+	assert.Equal(t, 25, byName["agents"].PaginationPageSize,
+		"inferred limit param must still read the spec-declared default")
+}
+
+// A limit param's declared `maximum` must cap the sync page size: the 100
+// fallback (and any larger default) would otherwise trip an API validation
+// error. Regression guard for the Granola public API, which caps page_size
+// at 30 with no default. See mvanhorn/cli-printing-press#3440.
+func TestProfilePagination_ClampsToParamMaximum(t *testing.T) {
+	max30 := 30.0
+	excl30 := 30.0
+	excl100 := 100.0
+	s := &spec.APISpec{
+		Name: "capped-pagination",
+		Resources: map[string]spec.Resource{
+			// maximum only, no default: must clamp the 100 fallback to 30.
+			"notes": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/notes",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", Maximum: &max30}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			// default above the maximum: the API-declared cap must win.
+			"folders": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/folders",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", Default: 50, Maximum: &max30}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			// default under the maximum: no clamp, the default stands.
+			"tags": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tags",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", Default: 20, Maximum: &max30}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			// exclusive maximum: the largest legal value is 29, not 30.
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/events",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", ExclusiveMaximum: &excl30}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			// both bounds present (OpenAPI 3.1): the stricter inclusive maximum
+			// (30) wins over the looser exclusive bound (100 -> 99).
+			"webhooks": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/webhooks",
+						Params:   []spec.Param{{Name: "cursor", Type: "string"}, {Name: "page_size", Type: "int", Maximum: &max30, ExclusiveMaximum: &excl100}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "notes")
+	require.Contains(t, byName, "folders")
+	require.Contains(t, byName, "tags")
+	require.Contains(t, byName, "events")
+	require.Contains(t, byName, "webhooks")
+	assert.Equal(t, 30, byName["notes"].PaginationPageSize,
+		"maximum must clamp the 100 fallback when no default is declared")
+	assert.Equal(t, 30, byName["folders"].PaginationPageSize,
+		"maximum must win over a larger declared default")
+	assert.Equal(t, 20, byName["tags"].PaginationPageSize,
+		"a default under the maximum must stand unchanged")
+	assert.Equal(t, 29, byName["events"].PaginationPageSize,
+		"an exclusive maximum must clamp to the largest value strictly below it")
+	assert.Equal(t, 30, byName["webhooks"].PaginationPageSize,
+		"the most restrictive of a co-declared inclusive and exclusive bound must win")
+}
+
+// The ID-walk sync path (pagination.type: id_walk over a POST search endpoint)
+// resolves its page size independently via detectIDWalkParams, so the maximum
+// clamp must apply there too. Regression guard for #3440.
+func TestProfilePagination_IDWalkClampsToBodyParamMaximum(t *testing.T) {
+	max25 := 25.0
+	s := &spec.APISpec{
+		Name: "id-walk-capped",
+		Resources: map[string]spec.Resource{
+			"records": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method:  "POST",
+						Path:    "/records/search",
+						IDField: "id",
+						Pagination: &spec.Pagination{
+							Type:       spec.PaginationTypeIDWalk,
+							LimitParam: "limit",
+						},
+						Body: []spec.Param{
+							{Name: "filter", Type: "array"},
+							{Name: "limit", Type: "int", Maximum: &max25},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+	require.Contains(t, byName, "records")
+	assert.Equal(t, 25, byName["records"].IDWalkPageSize,
+		"ID-walk page size must clamp to the body limit param's maximum")
+}
+
+// Explicit pagination: blocks must continue to win over plain-param inference.
+// Mixing the two on the same endpoint would otherwise double-count or let
+// inference shadow the author's deliberate choice.
+func TestProfilePagination_ExplicitBlockWinsOverInference(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "explicit",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/items",
+						Params: []spec.Param{
+							{Name: "offset", Type: "int"},
+							{Name: "count", Type: "int"},
+						},
+						Pagination: &spec.Pagination{
+							Type:        "cursor",
+							CursorParam: "foo",
+							LimitParam:  "bar",
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "foo", profile.Pagination.CursorParam, "explicit cursor_param must win")
+	assert.Equal(t, "bar", profile.Pagination.PageSizeParam, "explicit limit_param must win")
+}
+
+func TestProfileSyncableResourcePaginationDefaultsPreserveEndpointParams(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "mixed-pagination",
+		Resources: map[string]spec.Resource{
+			"assets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/assets",
+						Params:   []spec.Param{{Name: "limit", Type: "integer", Default: 50}, {Name: "skip", Type: "integer"}},
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							Type:        "offset",
+							CursorParam: "skip",
+							LimitParam:  "limit",
+						},
+					},
+				},
+			},
+			"photos": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/photos",
+						Params:   []spec.Param{{Name: "page", Type: "integer"}, {Name: "per_page", Type: "integer", Default: 25}},
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							Type:        "page",
+							CursorParam: "page",
+							LimitParam:  "per_page",
+						},
+					},
+				},
+			},
+			"ip_addresses": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/ip_addresses",
+						Params:   []spec.Param{{Name: "page_size", Type: "integer"}, {Name: "page", Type: "integer"}},
+						Response: spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{
+							Type: "none",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "assets")
+	assert.Equal(t, "offset", byName["assets"].PaginationCursorType)
+	assert.Equal(t, "skip", byName["assets"].PaginationCursorParam)
+	assert.Equal(t, "limit", byName["assets"].PaginationLimitParam)
+	assert.Equal(t, 50, byName["assets"].PaginationPageSize)
+
+	require.Contains(t, byName, "photos")
+	assert.Equal(t, "page", byName["photos"].PaginationCursorType)
+	assert.Equal(t, "page", byName["photos"].PaginationCursorParam)
+	assert.Equal(t, "per_page", byName["photos"].PaginationLimitParam)
+	assert.Equal(t, 25, byName["photos"].PaginationPageSize)
+
+	require.Contains(t, byName, "ip_addresses")
+	assert.False(t, byName["ip_addresses"].SupportsPagination, "pagination.type none must suppress inferred pagination params")
+	assert.Empty(t, byName["ip_addresses"].PaginationCursorParam)
+	assert.Empty(t, byName["ip_addresses"].PaginationLimitParam)
+	assert.Equal(t, 0, byName["ip_addresses"].PaginationPageSize, "pagination.type none must not imply a page-size default")
+}
+
+func TestProfileSyncableResourcesExcludeActionGetEndpoints(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "actions",
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/customers.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"subscriptions_lookup": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/subscriptions/lookup.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"invoices_events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/invoices/events.json",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"products_search": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/products/search",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"orders_find": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/orders/find",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := map[string]SyncableResource{}
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "customers")
+	assert.NotContains(t, byName, "subscriptions_lookup")
+	assert.NotContains(t, byName, "invoices_events")
+	assert.NotContains(t, byName, "products_search")
+	assert.NotContains(t, byName, "orders_find")
+}
+
+// Specs with no recognizable pagination shape must keep the historical
+// after/limit defaults so existing golden output doesn't churn.
+func TestProfilePagination_NoPaginationParamsKeepsDefaults(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "no-pagination",
+		Resources: map[string]spec.Resource{
+			"things": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/things",
+						Params:   []spec.Param{{Name: "filter", Type: "string"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "after", profile.Pagination.CursorParam)
+	assert.Equal(t, "limit", profile.Pagination.PageSizeParam)
+}
+
+// Inference must skip path params and positional args even when their names
+// match candidate sets (e.g. an /items/{page} path segment named "page").
+func TestProfilePagination_SkipsPathAndPositionalParams(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "scoped",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/items/{page}",
+						Params: []spec.Param{
+							{Name: "page", Type: "string", PathParam: true},
+							{Name: "offset", Type: "int", Positional: true},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "after", profile.Pagination.CursorParam, "path-param 'page' must not be treated as a cursor")
+	assert.Equal(t, "limit", profile.Pagination.PageSizeParam)
+}
+
+// TestProfileTemplateVarPathBecomesFlatSyncable: paths whose only
+// {placeholder} is an EndpointTemplateVar (e.g. /tenant/{tenant}/<resource>
+// when the spec declares x-tenant-env-var) are runtime-resolvable through
+// buildURL — they should become flat SyncableResources rather than landing
+// in DependentSyncResources (which would require iterating a non-existent
+// parent table).
+func TestProfileTemplateVarPathBecomesFlatSyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name:                 "servicetitan",
+		EndpointTemplateVars: []string{"tenant"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"tenant": "ST_TENANT_ID",
+		},
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/tenant/{tenant}/customers",
+						Pagination: &spec.Pagination{CursorParam: "pageToken", LimitParam: "pageSize"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.SyncableResources, 1, "tenant-scoped resource must surface as a flat SyncableResource")
+	assert.Equal(t, "customers", profile.SyncableResources[0].Name)
+	assert.Equal(t, "/tenant/{tenant}/customers", profile.SyncableResources[0].Path,
+		"path must preserve the {tenant} placeholder for buildURL to substitute")
+	assert.Empty(t, profile.DependentSyncResources, "tenant placeholder is not a parent context — must not become a DependentResource")
+}
+
+// TestProfileMixedPlaceholdersNotPromoted guards against over-eager
+// promotion: paths mixing a template-var placeholder with a real parent-
+// context placeholder must NOT be promoted to flat sync. The dependent-
+// resource matching is governed elsewhere; here we only pin the negative
+// (no false promotion) since that's what regression on this change would
+// look like.
+func TestProfileMixedPlaceholdersNotPromoted(t *testing.T) {
+	s := &spec.APISpec{
+		Name:                 "servicetitan",
+		EndpointTemplateVars: []string{"tenant"},
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/tenant/{tenant}/channels",
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/tenant/{tenant}/channels/{channel_id}/messages",
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	flatNames := make([]string, 0, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		flatNames = append(flatNames, r.Name)
+	}
+	assert.Contains(t, flatNames, "channels", "tenant-only path is flat")
+	assert.NotContains(t, flatNames, "messages",
+		"a path containing {channel_id} alongside the template var must not flatten into SyncableResources")
+}
+
+// TestProfileExcludesScalarArrayAndSamplerEndpoints covers two profiler
+// selection bugs: a scalar-element array (no extractable ID -> empty store) and
+// a non-deterministic sampler (paginating it loops forever) must not become
+// syncable resources, while a sibling object-array list on the same resource
+// still syncs.
+func TestProfileExcludesScalarArrayAndSamplerEndpoints(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "media",
+		Resources: map[string]spec.Resource{
+			"assets": {
+				Endpoints: map[string]spec.Endpoint{
+					// Valid object-array list — must remain syncable.
+					"list": {
+						Method:   "GET",
+						Path:     "/assets",
+						Response: spec.ResponseDef{Type: "array", Item: "Asset"},
+					},
+					// Non-deterministic sampler — must be excluded even though
+					// the response is a valid object array.
+					"random": {
+						Method:   "GET",
+						Path:     "/assets/random",
+						Response: spec.ResponseDef{Type: "array", Item: "Asset"},
+					},
+				},
+			},
+			"view": {
+				Endpoints: map[string]spec.Endpoint{
+					// Array of scalar strings — no extractable ID, must be excluded.
+					"unique-paths": {
+						Method:   "GET",
+						Path:     "/view/folder/unique-paths",
+						Response: spec.ResponseDef{Type: "array", Item: "string"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	var names []string
+	for _, r := range profile.SyncableResources {
+		names = append(names, r.Name)
+	}
+
+	assert.Contains(t, names, "assets",
+		"a valid object-array list endpoint must stay syncable")
+	assert.NotContains(t, names, "assets-random",
+		"a /random sampler endpoint must not be selected as a syncable list (it never terminates under pagination)")
+	assert.NotContains(t, names, "view",
+		"an array-of-scalars endpoint must not be selected as a syncable list (no extractable primary key)")
+}
+
+func TestProfileSkipsTypedIDlessListsFromDefaultSync(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "docs",
+		Types: map[string]spec.TypeDef{
+			"Technology": {
+				Fields: []spec.TypeField{
+					{Name: "title", Type: "string"},
+					{Name: "url", Type: "string"},
+				},
+			},
+			"Sample": {
+				Fields: []spec.TypeField{
+					{Name: "sample_id", Type: "string"},
+					{Name: "title", Type: "string"},
+				},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"technologies": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/technologies",
+						Response: spec.ResponseDef{Type: "array", Item: "Technology"},
+					},
+				},
+			},
+			"samples": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/samples",
+						Response: spec.ResponseDef{Type: "array", Item: "Sample"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, resource := range profile.SyncableResources {
+		byName[resource.Name] = resource
+	}
+
+	require.Contains(t, byName, "technologies",
+		"idless list endpoints stay explicit sync targets")
+	assert.True(t, byName["technologies"].SkipDefaultSync,
+		"typed list endpoints with no runtime-extractable ID must not run in empty-args sync")
+	require.Contains(t, byName, "samples")
+	assert.False(t, byName["samples"].SkipDefaultSync,
+		"resource-suffixed ID fields are runtime-extractable and remain in the default sync set")
+}
+
+func TestIsScalarItemArray(t *testing.T) {
+	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "string"}))
+	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "int"}))
+	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "bool"}))
+	assert.True(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "float"}))
+	// Empty Item means an unregistered object array, which still syncs.
+	assert.False(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: ""}))
+	assert.False(t, isScalarItemArray(spec.ResponseDef{Type: "array", Item: "Asset"}))
+	assert.False(t, isScalarItemArray(spec.ResponseDef{Type: "object", Item: "string"}))
+}
+
+func TestIsSamplerEndpoint(t *testing.T) {
+	assert.True(t, isSamplerEndpoint(spec.Endpoint{Path: "/assets/random"}))
+	assert.True(t, isSamplerEndpoint(spec.Endpoint{Path: "/photos/shuffle"}))
+	assert.True(t, isSamplerEndpoint(spec.Endpoint{Path: "/tracks/sample"}))
+	assert.False(t, isSamplerEndpoint(spec.Endpoint{Path: "/assets"}))
+	// "random" must match as a whole path segment, not a substring of another word.
+	assert.False(t, isSamplerEndpoint(spec.Endpoint{Path: "/randomizer-configs"}))
+}
+
+func TestProfiler_DependentReconcileMetadata(t *testing.T) {
+	// A single-path-param dependent resource with a PK must yield per_parent,
+	// scoped by the singular parent field in its body.
+	s := &spec.APISpec{
+		Name: "project-mgmt",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/projects",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"modules": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/projects/{projectId}/modules",
+						Response:   spec.ResponseDef{Type: "array"},
+						IDField:    "id",
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "modules", dep.Name)
+	assert.Equal(t, "projects", dep.ParentResource)
+	assert.Equal(t, "per_parent", dep.ReconcileMode)
+	assert.Equal(t, "projects_id", dep.ParentScopeColumn)
+	assert.Equal(t, "$.project", dep.GenericScopeJSONPath)
+	assert.Empty(t, dep.CascadeJunctions, "profiler must leave CascadeJunctions empty (filled by Task 4 seam)")
+
+	t.Run("negative_two_path_params_yields_none", func(t *testing.T) {
+		// A dependent with 2 path params cannot be safely reconciled per-parent.
+		// Both parent segments are declared as flat resources so the child path
+		// is detected as a dependent (and the negative guard is genuinely exercised).
+		s2 := &spec.APISpec{
+			Name: "deep-nesting",
+			Resources: map[string]spec.Resource{
+				"workspaces": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/workspaces",
+							Response: spec.ResponseDef{Type: "array"},
+						},
+					},
+				},
+				"projects": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/projects",
+							Response: spec.ResponseDef{Type: "array"},
+						},
+					},
+				},
+				"issues": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/workspaces/{workspaceId}/projects/{projectId}/issues",
+							Response:   spec.ResponseDef{Type: "array"},
+							IDField:    "id",
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						},
+					},
+				},
+			},
+		}
+		profile2 := Profile(s2)
+		// The 2-placeholder child shards to "projects_issues"; match by Path so the
+		// lookup is robust to the sharded Name.
+		var issues *DependentResource
+		for i := range profile2.DependentSyncResources {
+			if profile2.DependentSyncResources[i].Path == "/workspaces/{workspaceId}/projects/{projectId}/issues" {
+				issues = &profile2.DependentSyncResources[i]
+				break
+			}
+		}
+		require.NotNil(t, issues, "2-path-param child must be detected as a dependent resource")
+		require.Len(t, issues.PathParams, 2, "expected 2 path params so the negative guard is exercised")
+		assert.Equal(t, "none", issues.ReconcileMode, "2-path-param dependent must have ReconcileMode=none")
+	})
+
+	t.Run("negative_no_pk_yields_none", func(t *testing.T) {
+		// A dependent with no IDField cannot be reconciled per-parent.
+		s3 := &spec.APISpec{
+			Name: "no-pk",
+			Resources: map[string]spec.Resource{
+				"channels": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:   "GET",
+							Path:     "/channels",
+							Response: spec.ResponseDef{Type: "array"},
+						},
+					},
+				},
+				"messages": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:     "GET",
+							Path:       "/channels/{channelId}/messages",
+							Response:   spec.ResponseDef{Type: "array"},
+							Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							// No IDField — should yield ReconcileMode "none"
+						},
+					},
+				},
+			},
+		}
+		profile3 := Profile(s3)
+		require.Len(t, profile3.DependentSyncResources, 1)
+		assert.Equal(t, "none", profile3.DependentSyncResources[0].ReconcileMode,
+			"dependent with no IDField must have ReconcileMode=none")
+	})
+
+	t.Run("flat_syncables_get_none", func(t *testing.T) {
+		// Every flat SyncableResource carries ReconcileMode "none" this round.
+		require.NotEmpty(t, profile.SyncableResources)
+		for _, sr := range profile.SyncableResources {
+			assert.Equal(t, "none", sr.ReconcileMode,
+				"flat SyncableResource %q must have ReconcileMode=none", sr.Name)
+		}
+	})
+}
+
+func TestSingularParentField(t *testing.T) {
+	cases := map[string]string{
+		// Regular "-s".
+		"projects": "project",
+		"modules":  "module",
+		"cycles":   "cycle",
+		// "-ies → -y" rule. A bare TrimSuffix("s") would yield "categorie",
+		// whose JSON path matches no row and silently sweeps nothing.
+		"categories": "category",
+		"activities": "activity",
+		"companies":  "company",
+		// Residual irregulars from the table.
+		"statuses":  "status",
+		"addresses": "address",
+		"people":    "person",
+		// Already singular / no trailing "s": returned unchanged.
+		"project": "project",
+	}
+	for plural, want := range cases {
+		assert.Equalf(t, want, singularParentField(plural),
+			"singularParentField(%q)", plural)
+	}
+}
+
+// profileFixtureWithTenant builds a minimal *APIProfile used by
+// TestProfiler_TenantScopeColumnAndViews (Task 2) and Task 3's negative
+// assertion tests. It contains:
+//
+//   - "projects": a flat /projects/ resource with TenantScopeColumn="workspace"
+//     and IDField="id". This is the tenant-scoped parent.
+//   - "modules": a dependent /projects/{project_id}/modules/ resource with no
+//     TenantScopeColumn of its own. Its ParentResource is "projects", making
+//     "projects" appear in TenantScopedParents() and "projects_id" appear in
+//     ChildScopeColumnSources().
+//   - "widgets": a second flat resource WITHOUT a TenantScopeColumn, for Task 3's
+//     negative assertion ("widgets" must NOT appear in TenantScopedParents()).
+//
+// Task 3 implementers: rely on these exact resource names and the absence of
+// TenantScopeColumn on "widgets" and "modules".
+func profileFixtureWithTenant(t *testing.T) *APIProfile {
+	t.Helper()
+	s := &spec.APISpec{
+		Name: "tenant-fixture",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/projects",
+						Response:          spec.ResponseDef{Type: "array"},
+						IDField:           "id",
+						TenantScopeColumn: "workspace",
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/projects/{project_id}",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			"modules": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/projects/{project_id}/modules",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/widgets",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+					"get": {
+						Method:   "GET",
+						Path:     "/widgets/{widget_id}",
+						Response: spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+			// "invoices" is tenant-annotated but has no IDField, so it must
+			// NOT be classified as "flat" — it stays "none". This is the
+			// Task 3 negative case for the PK-less branch.
+			"invoices": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/invoices",
+						Response:          spec.ResponseDef{Type: "array"},
+						TenantScopeColumn: "workspace",
+						// IDField intentionally omitted — no stable PK.
+					},
+				},
+			},
+			// "mixed_items" is tenant-annotated AND has a PK IDField but its
+			// list response is discriminator-dispatched (its item type carries
+			// a "type" enum routing items to projects/widgets). It must stay
+			// "none" — this is the Task 3 negative case for the discriminator
+			// branch (guards against a Discriminator.Field sign-flip).
+			"mixed_items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:            "GET",
+						Path:              "/mixed-items",
+						Response:          spec.ResponseDef{Type: "array", Item: "MixedItem"},
+						IDField:           "id",
+						TenantScopeColumn: "workspace",
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"MixedItem": {
+				Fields: []spec.TypeField{
+					{Name: "type", Type: "string", Enum: []string{"projects", "widgets"}},
+					{Name: "id", Type: "string"},
+				},
+			},
+		},
+	}
+	return Profile(s)
+}
+
+func TestProfiler_TenantScopeColumnAndViews(t *testing.T) {
+	// Reuse the existing profiler test harness that builds an APISpec with a
+	// flat /projects/ resource plus a dependent /projects/{id}/modules/.
+	// Annotate projects' endpoint with TenantScopeColumn="workspace".
+	prof := profileFixtureWithTenant(t) // helper: see note below
+
+	var projects *SyncableResource
+	for i := range prof.SyncableResources {
+		if prof.SyncableResources[i].Name == "projects" {
+			projects = &prof.SyncableResources[i]
+		}
+	}
+	if projects == nil || projects.TenantScopeColumn != "workspace" {
+		t.Fatalf("projects.TenantScopeColumn = %v, want workspace", projects)
+	}
+
+	parents := prof.TenantScopedParents()
+	if len(parents) != 1 || parents[0].Parent != "projects" || parents[0].Column != "workspace" {
+		t.Fatalf("TenantScopedParents() = %+v", parents)
+	}
+
+	sources := prof.ChildScopeColumnSources()
+	found := false
+	for _, s := range sources {
+		if s.Column == "projects_id" && s.Source == "project" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ChildScopeColumnSources() missing projects_id->project: %+v", sources)
+	}
+}
+
+// TestProfiler_ChildScopeColumnSources_ExactPair asserts the exact (Column,
+// Source) pair emitted for profileFixtureWithTenant. Guards singularParentField
+// derivation: a wrong singularization (e.g. "projects" → "project_s" or "") would
+// silently break deriveScopeColumns in the generated store.
+func TestProfiler_ChildScopeColumnSources_ExactPair(t *testing.T) {
+	prof := profileFixtureWithTenant(t)
+	sources := prof.ChildScopeColumnSources()
+	want := []ChildScopeSource{{Column: "projects_id", Source: "project"}}
+	if len(sources) != len(want) {
+		t.Fatalf("ChildScopeColumnSources() = %+v, want exactly %+v", sources, want)
+	}
+	for i, got := range sources {
+		if got != want[i] {
+			t.Fatalf("ChildScopeColumnSources()[%d] = %+v, want %+v", i, got, want[i])
+		}
+	}
+}
+
+func TestProfiler_FlatReconcileClassification(t *testing.T) {
+	prof := profileFixtureWithTenant(t) // projects annotated, has a PK IDField
+
+	// Positive case: a tenant-scoped flat resource with a PK must be "flat".
+	var mode string
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "projects" {
+			mode = sr.ReconcileMode
+		}
+	}
+	if mode != "flat" {
+		t.Fatalf("projects.ReconcileMode = %q, want flat", mode)
+	}
+
+	// Negative case 1: a flat resource WITHOUT a tenant column must stay "none".
+	for _, sr := range prof.SyncableResources {
+		if sr.TenantScopeColumn == "" && sr.ReconcileMode == "flat" {
+			t.Fatalf("%s classified flat without a tenant column", sr.Name)
+		}
+	}
+
+	// Negative case 2: "invoices" has TenantScopeColumn but no IDField, so it
+	// must stay "none" (missing stable PK disqualifies flat reconcile).
+	var invoicesMode string
+	found := false
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "invoices" {
+			found = true
+			invoicesMode = sr.ReconcileMode
+		}
+	}
+	if !found {
+		t.Fatal("invoices resource not found in SyncableResources")
+	}
+	if invoicesMode != "none" {
+		t.Fatalf("invoices.ReconcileMode = %q, want none (tenant-annotated but no IDField)", invoicesMode)
+	}
+
+	// Negative case 3: "mixed_items" is tenant-annotated AND has an IDField but
+	// is discriminator-dispatched (Discriminator.Field != ""), so it must stay
+	// "none". This guards the third condition against a sign-flip that would
+	// misclassify every discriminator-dispatched resource as "flat".
+	var mixed SyncableResource
+	found = false
+	for _, sr := range prof.SyncableResources {
+		if sr.Name == "mixed_items" {
+			mixed = sr
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("mixed_items resource not found in SyncableResources")
+	}
+	if mixed.Discriminator.Field == "" {
+		t.Fatalf("mixed_items fixture is not discriminator-dispatched (Discriminator.Field empty); negative case is ineffective")
+	}
+	if mixed.TenantScopeColumn == "" || mixed.IDField == "" {
+		t.Fatalf("mixed_items fixture lost its tenant column / IDField (col=%q id=%q); negative case is ineffective", mixed.TenantScopeColumn, mixed.IDField)
+	}
+	if mixed.ReconcileMode != "none" {
+		t.Fatalf("mixed_items.ReconcileMode = %q, want none (discriminator-dispatched)", mixed.ReconcileMode)
+	}
 }

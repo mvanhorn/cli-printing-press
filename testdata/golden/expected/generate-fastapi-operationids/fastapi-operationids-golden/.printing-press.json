@@ -1,0 +1,27 @@
+{
+  "api_name": "fastapi-operationids-golden",
+  "api_version": "1.0",
+  "auth_type": "none",
+  "cli_name": "fastapi-operationids-golden-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
+  "description": "Fixture for FastAPI default operationId normalization.",
+  "display_name": "Fastapi Operationids Golden",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "fastapi-operationids-golden-pp-mcp",
+  "mcp_public_tool_count": 8,
+  "mcp_ready": "full",
+  "mcp_tool_count": 8,
+  "owner": "printing-press-golden",
+  "printer": "printing-press-golden",
+  "printer_name": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "run_id": "<RUN_ID>",
+  "schema_version": 2,
+  "spec_checksum": "sha256:6f0db63789d04842247de3b969d2d78ca99cd7ad85637f799f9f95e917f5568a",
+  "spec_format": "openapi3",
+  "spec_path": "fastapi-operationids.yaml",
+  "spec_url": "file://testdata/golden/fixtures/fastapi-operationids.yaml"
+}

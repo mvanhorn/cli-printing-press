@@ -21,14 +21,16 @@ type Verifier struct {
 }
 
 type PathProofResult struct {
-	File         string `json:"file"`
-	Command      string `json:"command"`
-	Path         string `json:"path"`
-	ExtractedURL string `json:"extracted_url"`
-	Method       string `json:"method"`
-	Valid        bool   `json:"valid"`
-	InSpec       bool   `json:"in_spec"`
-	SpecPath     string `json:"spec_path,omitempty"`
+	File                   string   `json:"file"`
+	Line                   int      `json:"line,omitempty"`
+	Command                string   `json:"command"`
+	Path                   string   `json:"path"`
+	ExtractedURL           string   `json:"extracted_url"`
+	Method                 string   `json:"method"`
+	Valid                  bool     `json:"valid"`
+	InSpec                 bool     `json:"in_spec"`
+	SpecPath               string   `json:"spec_path,omitempty"`
+	UnresolvedPlaceholders []string `json:"unresolved_placeholders,omitempty"`
 }
 
 type FlagProofResult struct {
@@ -73,7 +75,7 @@ func NewVerifier(dir, specPath string) (*Verifier, error) {
 		SpecPath: specPath,
 	}
 	if specPath != "" {
-		loaded, err := loadDogfoodOpenAPISpec(specPath)
+		loaded, err := loadDogfoodOpenAPISpec(specPath, "")
 		if err != nil {
 			return nil, fmt.Errorf("loading spec: %w", err)
 		}
@@ -116,6 +118,7 @@ func (v *Verifier) CompileGate() error {
 var (
 	verifyPathAssignRe = regexp.MustCompile(`(?m)\bpath\s*(?::=|=|:)\s*"([^"]+)"`)
 	verifyClientCallRe = regexp.MustCompile(`c\.(Get|Post|Patch|Delete|Put)\s*\(\s*"([^"]+)"`)
+	verifyPathParamRe  = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_-]*)\}`)
 )
 
 var verifyInfraFiles = map[string]struct{}{
@@ -166,21 +169,23 @@ func (v *Verifier) PathProof() []PathProofResult {
 		src := string(content)
 		command := strings.TrimSuffix(base, ".go")
 
-		pathMatches := verifyPathAssignRe.FindAllStringSubmatch(src, -1)
-		clientMatches := verifyClientCallRe.FindAllStringSubmatch(src, -1)
+		pathMatches := verifyPathAssignRe.FindAllStringSubmatchIndex(src, -1)
+		clientMatches := verifyClientCallRe.FindAllStringSubmatchIndex(src, -1)
 
 		if len(pathMatches) == 0 && len(clientMatches) == 0 {
 			continue
 		}
 
 		for _, m := range pathMatches {
-			url := m[1]
+			url := src[m[2]:m[3]]
 			r := PathProofResult{
 				File:         base,
+				Line:         lineNumberAtOffset(src, m[0]),
 				Command:      command,
 				Path:         url,
 				ExtractedURL: url,
 			}
+			r.UnresolvedPlaceholders = unresolvedPathPlaceholders(src, url)
 			if len(specPatterns) > 0 {
 				r.InSpec = pathMatchesSpec(url, specPatterns)
 				r.Valid = r.InSpec
@@ -189,20 +194,25 @@ func (v *Verifier) PathProof() []PathProofResult {
 				}
 			} else {
 				r.Valid = true
+			}
+			if len(r.UnresolvedPlaceholders) > 0 {
+				r.Valid = false
 			}
 			results = append(results, r)
 		}
 
 		for _, m := range clientMatches {
-			method := strings.ToUpper(m[1])
-			url := m[2]
+			method := strings.ToUpper(src[m[2]:m[3]])
+			url := src[m[4]:m[5]]
 			r := PathProofResult{
 				File:         base,
+				Line:         lineNumberAtOffset(src, m[0]),
 				Command:      command,
 				Path:         url,
 				ExtractedURL: url,
 				Method:       method,
 			}
+			r.UnresolvedPlaceholders = unresolvedPathPlaceholders(src, url)
 			if len(specPatterns) > 0 {
 				r.InSpec = pathMatchesSpec(url, specPatterns)
 				r.Valid = r.InSpec
@@ -211,12 +221,61 @@ func (v *Verifier) PathProof() []PathProofResult {
 				}
 			} else {
 				r.Valid = true
+			}
+			if len(r.UnresolvedPlaceholders) > 0 {
+				r.Valid = false
 			}
 			results = append(results, r)
 		}
 	}
 
 	return results
+}
+
+func unresolvedPathPlaceholders(src, url string) []string {
+	matches := verifyPathParamRe.FindAllStringSubmatch(url, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	seen := map[string]struct{}{}
+	var unresolved []string
+	for _, match := range matches {
+		name := match[1]
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		if pathPlaceholderSubstituted(src, name) {
+			continue
+		}
+		unresolved = append(unresolved, name)
+	}
+	return unresolved
+}
+
+func pathPlaceholderSubstituted(src, name string) bool {
+	quoted := regexp.QuoteMeta(name)
+	checks := []*regexp.Regexp{
+		regexp.MustCompile(`replacePathParam\s*\(\s*[^,\n]+,\s*"` + quoted + `"`),
+		regexp.MustCompile(`strings\.Replace(All)?\s*\(\s*[^,\n]+,\s*"\{` + quoted + `\}"`),
+	}
+	for _, check := range checks {
+		if check.MatchString(src) {
+			return true
+		}
+	}
+	return false
+}
+
+func lineNumberAtOffset(src string, offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	if offset > len(src) {
+		offset = len(src)
+	}
+	return strings.Count(src[:offset], "\n") + 1
 }
 
 func (v *Verifier) FlagProof() []FlagProofResult {
@@ -438,18 +497,12 @@ func (v *Verifier) AuthProof() AuthProofResult {
 		return result
 	}
 
-	clientSource := string(clientData)
-	switch {
-	case strings.Contains(clientSource, `"Bot "`):
-		result.GeneratedFormat = "Bot "
-		result.GeneratedScheme = "Bot "
-	case strings.Contains(clientSource, `"Bearer "`):
-		result.GeneratedFormat = "Bearer "
-		result.GeneratedScheme = "Bearer "
-	default:
-		result.GeneratedFormat = "unknown"
-		result.GeneratedScheme = "unknown"
-	}
+	configData, _ := os.ReadFile(filepath.Join(v.Dir, "internal", "config", "config.go"))
+	clientSource := string(clientData) + string(configData)
+	var tokenPreserving bool
+	var invalidDetail string
+	result.GeneratedFormat, tokenPreserving, invalidDetail = detectGeneratedAuthFormat(clientSource, expectedPrefix)
+	result.GeneratedScheme = result.GeneratedFormat
 
 	envVarRe := regexp.MustCompile(`os\.Getenv\("([^"]+)"\)`)
 	envMatches := envVarRe.FindAllStringSubmatch(clientSource, -1)
@@ -471,7 +524,13 @@ func (v *Verifier) AuthProof() AuthProofResult {
 	result.Match = result.GeneratedFormat == expectedPrefix
 	result.Mismatch = !result.Match
 	if result.Match {
-		result.Detail = fmt.Sprintf("spec and generated client both use %q", strings.TrimSpace(expectedPrefix))
+		if tokenPreserving {
+			result.Detail = fmt.Sprintf("spec and generated client both use %q", strings.TrimSpace(expectedPrefix))
+		} else {
+			result.Match = false
+			result.Mismatch = true
+			result.Detail = invalidDetail
+		}
 	} else {
 		result.Detail = fmt.Sprintf("spec expects %q but generated client uses %q", strings.TrimSpace(expectedPrefix), strings.TrimSpace(result.GeneratedFormat))
 	}

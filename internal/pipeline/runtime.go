@@ -28,22 +28,23 @@ type VerifyConfig struct {
 
 // VerifyReport is the output of a runtime verification run.
 type VerifyReport struct {
-	Mode                   string             `json:"mode"` // "live" or "mock"
-	Total                  int                `json:"total"`
-	Passed                 int                `json:"passed"`
-	Failed                 int                `json:"failed"`
-	Critical               int                `json:"critical"`
-	PassRate               float64            `json:"pass_rate"`
-	DataPipeline           bool               `json:"data_pipeline"`
-	DataPipelineDetail     string             `json:"data_pipeline_detail,omitempty"` // PASS, WARN, SKIP, FAIL with context
-	Freshness              FreshnessResult    `json:"freshness"`
-	BrowserSessionRequired bool               `json:"browser_session_required,omitempty"`
-	BrowserSessionProof    string             `json:"browser_session_proof,omitempty"`
-	BrowserSessionDetail   string             `json:"browser_session_detail,omitempty"`
-	AuthEnvVars            []AuthEnvVarStatus `json:"auth_env_vars,omitempty"`
-	Verdict                string             `json:"verdict"` // PASS, WARN, FAIL
-	Results                []CommandResult    `json:"results"`
-	Binary                 string             `json:"binary"`
+	Mode                   string                 `json:"mode"` // "live" or "mock"
+	Total                  int                    `json:"total"`
+	Passed                 int                    `json:"passed"`
+	Failed                 int                    `json:"failed"`
+	Critical               int                    `json:"critical"`
+	PassRate               float64                `json:"pass_rate"`
+	DataPipeline           bool                   `json:"data_pipeline"`
+	DataPipelineDetail     string                 `json:"data_pipeline_detail,omitempty"` // PASS, WARN, SKIP, FAIL with context
+	Freshness              FreshnessResult        `json:"freshness"`
+	BrowserSessionRequired bool                   `json:"browser_session_required,omitempty"`
+	BrowserSessionProof    string                 `json:"browser_session_proof,omitempty"`
+	BrowserSessionDetail   string                 `json:"browser_session_detail,omitempty"`
+	AuthEnvVars            []AuthEnvVarStatus     `json:"auth_env_vars,omitempty"`
+	Verdict                string                 `json:"verdict"` // PASS, WARN, FAIL
+	Results                []CommandResult        `json:"results"`
+	PathParamProbes        []PathParamProbeResult `json:"path_param_probes,omitempty"`
+	Binary                 string                 `json:"binary"`
 }
 
 type AuthEnvVarStatus struct {
@@ -85,6 +86,18 @@ type FreshnessResult struct {
 
 // RunVerify executes the runtime verification pipeline.
 func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
+	// Keep this boundary safe for programmatic callers; CLI commands also
+	// normalize earlier when they need the stable path for follow-on argv.
+	absDir, err := filepath.Abs(cfg.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving CLI directory: %w", err)
+	}
+	cfg.Dir = absDir
+	releaseHome, err := scopeSubprocessHome(findCLINames(cfg.Dir)...)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
 	if cfg.NoSpec {
 		return runStructuralVerify(cfg)
 	}
@@ -105,7 +118,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// 1. Load spec for command classification
 	var spec *openAPISpec
 	if cfg.SpecPath != "" {
-		loaded, err := loadDogfoodOpenAPISpec(cfg.SpecPath)
+		loaded, err := loadDogfoodOpenAPISpec(cfg.SpecPath, "")
 		if err != nil {
 			return nil, fmt.Errorf("loading spec: %w", err)
 		}
@@ -225,7 +238,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// buildEnv constructs the environment for test subprocesses, passing
 	// all auth-related env vars so auth-requiring commands can complete.
 	buildEnv := func() []string {
-		env := os.Environ()
+		env := subprocessEnv()
 		if report.Mode == "live" {
 			for _, ev := range authEnvVars {
 				if val := os.Getenv(ev); val != "" {
@@ -263,6 +276,15 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			// verify. Documented in skills/printing-press/SKILL.md and
 			// AGENTS.md.
 			env = append(env, "PRINTING_PRESS_VERIFY=1")
+			// Verify owns its httptest mock-server and needs the real
+			// wire path to assert against, so it opts back in to the
+			// transport-layer mutating-verb gate that every other
+			// consumer leaves engaged. Without this var, the gate in
+			// generated Client.do() returns a synthetic envelope for
+			// DELETE/POST/PUT/PATCH and the mock server never sees the
+			// request — collapsing verify's pass-rate signal to zero
+			// for those verbs.
+			env = append(env, "PRINTING_PRESS_VERIFY_LIVE_HTTP=1")
 		}
 		return env
 	}
@@ -286,8 +308,21 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		report.Results = append(report.Results, result)
 	}
 
-	report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, report.Mode, buildEnv)
+	expectedMockRows := 0
+	if report.Mode == "mock" && spec != nil && len(spec.NestedDataEnvelopes) > 0 {
+		expectedMockRows = 2
+	}
+	if isDeviceCLIDir(cfg.Dir) {
+		// Device CLIs (BLE) have no sync->sql->search data pipeline; running the
+		// HTTP-shaped pipeline test invokes a non-existent `sync` command and
+		// reports a false "sync crashed". Mark the dimension satisfied instead.
+		report.DataPipeline = true
+		report.DataPipelineDetail = "SKIP (device CLI: no sync data pipeline)"
+	} else {
+		report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, cfg.Dir, report.Mode, buildEnv, expectedMockRows)
+	}
 	report.Freshness = runFreshnessContractTest(cfg.Dir)
+	report.PathParamProbes = runPathParamProbes(binaryPath, buildEnv(), paramDefaults)
 
 	if spec != nil && spec.Auth.RequiresBrowserSession {
 		report.BrowserSessionRequired = true
@@ -419,7 +454,10 @@ func runSideEffectSafeCommandTests(binary string, cmd discoveredCommand, env []s
 
 	result.Help = runCLI(binary, []string{cmd.Name, "--help"}, env, 10*time.Second) == nil
 
-	dryArgs := append([]string{cmd.Name}, cmd.Args...)
+	positionals, flags := sideEffectSafeInvocationInputs(cmd)
+
+	dryArgs := append([]string{cmd.Name}, positionals...)
+	dryArgs = append(dryArgs, flags...)
 	dryArgs = append(dryArgs, "--dry-run")
 	if err := runCLI(binary, dryArgs, env, 10*time.Second); err == nil || isIntentionalStubExit(err) {
 		result.DryRun = true
@@ -462,10 +500,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Get any required flags/args for this command.
 	// First, probe the binary for cobra-declared required flags (generic, spec-agnostic).
 	// Then fall back to the positional-arg map for commands that take bare positionals.
-	extraFlags := inferRequiredFlags(binary, cmd.Name)
-	if extraFlags == nil {
-		extraFlags = workflowTestFlags(cmd.Name)
-	}
+	positionals, extraFlags := commandInvocationInputs(binary, cmd)
 
 	// Build positional args + flags for test invocations
 	buildTestArgs := func(cmdName string, positionalArgs, flags []string, extra ...string) []string {
@@ -478,7 +513,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 
 	// Test 2: --dry-run (skip for local/data-layer commands that don't make API calls)
 	if cmd.Kind != "local" && cmd.Kind != "data-layer" {
-		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--dry-run")
+		args := buildTestArgs(cmd.Name, positionals, extraFlags, "--dry-run")
 		err := runCLI(binary, args, env, 10*time.Second)
 		result.DryRun = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	} else {
@@ -491,7 +526,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	} else if mode == "live" && cmd.Kind == "write" {
 		result.Execute = true // skip writes on live = pass (tested via dry-run)
 	} else {
-		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--json")
+		args := buildTestArgs(cmd.Name, positionals, extraFlags, "--json")
 		err := runCLI(binary, args, env, 15*time.Second)
 		result.Execute = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	}
@@ -535,7 +570,15 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 		return result
 	}
 
-	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, os.Environ(), 20*time.Second)
+	// cliutil.IsVerifyEnv() drives doctor's synthetic browser-session
+	// proof short-circuit. Without PRINTING_PRESS_VERIFY=1 the probe
+	// asks the CLI to validate against a real session, which a clean
+	// shipcheck environment doesn't have — every cookie-auth CLI then
+	// scores 0 even when the synthetic proof would have passed. Match
+	// the env-augmentation buildEnv() uses for the other mock-mode
+	// probes so this probe is self-contained.
+	env := append(subprocessEnv(), "PRINTING_PRESS_VERIFY=1")
+	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, env, 20*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("doctor --json failed: %v", err)
 		result.Score = 0
@@ -567,7 +610,22 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 
 // runDataPipelineTest tests the sync -> sql -> search -> health chain.
 // Returns (pass bool, detail string) where detail gives PASS/WARN/SKIP/FAIL context.
-func runDataPipelineTest(binary, mode string, envFn func() []string) (bool, string) {
+func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, expectedRows int) (bool, string) {
+	if strings.TrimSpace(cliDir) != "" {
+		if manifest, err := ReadCLIManifest(cliDir); err == nil && manifest.IsLocalDatastore() {
+			return true, "SKIP (local-datastore CLI: no network sync to verify)"
+		}
+		if !cliHasSyncCommand(cliDir) {
+			return true, "SKIP (CLI has no sync command)"
+		}
+		if !cliHasLocalStore(cliDir) {
+			return true, "SKIP (CLI has no local store)"
+		}
+		if mode == "mock" && cliIsGraphQLCLIDir(cliDir) {
+			return true, "SKIP (GraphQL CLI: mock server cannot synthesize sync data)"
+		}
+	}
+
 	env := envFn()
 
 	// Create a temp dir for the test database
@@ -581,24 +639,46 @@ func runDataPipelineTest(binary, mode string, envFn func() []string) (bool, stri
 	env = append(env, "HOME="+tmpDir) // so sync uses temp location
 
 	// Test sync (if it exists)
+	var syncErrors []error
 	syncErr := runCLI(binary, []string{"sync", "--db", dbPath, "--resources", "repos", "--full"}, env, 30*time.Second)
 	if syncErr != nil {
-		// Sync might not accept --db flag - try without
+		syncErrors = append(syncErrors, syncErr)
+		syncErr = runCLI(binary, []string{"sync", "--db", dbPath, "--full"}, env, 30*time.Second)
+	}
+	if syncErr != nil {
+		syncErrors = append(syncErrors, syncErr)
+		// Sync might not accept --resources or --full; keep --db when
+		// possible so downstream sql probes read the same temporary store.
+		syncErr = runCLI(binary, []string{"sync", "--db", dbPath}, env, 30*time.Second)
+	}
+	if syncErr != nil {
+		syncErrors = append(syncErrors, syncErr)
+		// Sync might not accept --db either; try the bare command before
+		// deciding the pipeline crashed.
 		syncErr = runCLI(binary, []string{"sync", "--full"}, env, 30*time.Second)
 	}
 	if syncErr != nil {
+		syncErrors = append(syncErrors, syncErr)
+		syncErr = runCLI(binary, []string{"sync"}, env, 30*time.Second)
+	}
+	if syncErr != nil {
+		syncErrors = append(syncErrors, syncErr)
+		if allSyncAttemptsWereUnknownCommand(syncErrors) {
+			return true, "WARN: no sync command — data-pipeline check skipped"
+		}
+		if flag, ok := firstUnknownSyncFlag(syncErrors); ok {
+			return false, fmt.Sprintf("FAIL: sync rejected flag %s", flag)
+		}
 		return false, "FAIL: sync crashed"
 	}
 
 	// Test health (if available)
 	_ = runCLI(binary, []string{"health", "--db", dbPath}, env, 10*time.Second)
 
-	// Discover domain tables via sql command
 	tableQuery := `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite%' AND name NOT LIKE '%_fts%' AND name != 'sync_state'`
-	tablesOut, sqlErr := runCLIWithOutput(binary, []string{"sql", tableQuery}, env, 10*time.Second)
+	tablesOut, sqlErr := runCLIWithOutput(binary, []string{"sql", "--db", dbPath, tableQuery}, env, 10*time.Second)
 	if sqlErr != nil {
-		// sql command may not exist or may not accept positional args — fall back to basic check
-		return true, "PASS: sync completed (table validation skipped — sql command unavailable)"
+		return true, "PASS: sync completed (sql unavailable, table validation skipped)"
 	}
 
 	// Parse table names from output (one per line, skip empty lines and header noise)
@@ -608,25 +688,126 @@ func runDataPipelineTest(binary, mode string, envFn func() []string) (bool, stri
 		// Don't fail the pipeline gate; report for human review.
 		return true, "WARN: sync completed but no domain tables found in sqlite_master"
 	}
-
-	// In live mode, check that at least one table has rows
-	if mode == "live" {
-		for _, table := range tables {
-			countQuery := fmt.Sprintf("SELECT count(*) FROM \"%s\"", table)
-			countOut, countErr := runCLIWithOutput(binary, []string{"sql", countQuery}, env, 10*time.Second)
-			if countErr != nil {
-				continue
-			}
-			count := parseCountOutput(countOut)
-			if count > 0 {
-				return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
-			}
-		}
-		return false, fmt.Sprintf("WARN: %d domain tables created but 0 rows after sync (live mode)", len(tables))
+	if mode == "mock" && strings.TrimSpace(cliDir) != "" && !cliHasSyncableResources(cliDir) {
+		return true, fmt.Sprintf("PASS: %d domain tables created (mock mode; no syncable resources declared)", len(tables))
 	}
 
-	// Mock mode: tables created is sufficient (mock data is minimal)
-	return true, fmt.Sprintf("PASS: %d domain tables created", len(tables))
+	var bestShortTable string
+	var bestShortCount int
+	var bestPassTable string
+	var bestPassCount int
+	var zeroDataTable string
+	for _, table := range tables {
+		countQuery := fmt.Sprintf("SELECT count(*) FROM \"%s\"", table)
+		countOut, countErr := runCLIWithOutput(binary, []string{"sql", "--db", dbPath, countQuery}, env, 10*time.Second)
+		if countErr != nil {
+			continue
+		}
+		count := parseCountOutput(countOut)
+		if count > 0 {
+			if expectedRows > 0 {
+				if count >= expectedRows {
+					if !isAuxiliaryPipelineTable(table, len(tables)) && count > bestPassCount {
+						bestPassTable = table
+						bestPassCount = count
+					}
+					continue
+				}
+				if count > bestShortCount {
+					bestShortTable = table
+					bestShortCount = count
+				}
+				continue
+			}
+			return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), table, count)
+		}
+		if expectedRows > 0 && zeroDataTable == "" && !isAuxiliaryPipelineTable(table, len(tables)) {
+			zeroDataTable = table
+		}
+	}
+	if bestPassTable != "" {
+		return true, fmt.Sprintf("PASS: %d domain tables, %s has %d rows", len(tables), bestPassTable, bestPassCount)
+	}
+	if bestShortTable != "" {
+		return false, fmt.Sprintf("FAIL: %s has %d rows after sync, expected at least %d (%s mode)", bestShortTable, bestShortCount, expectedRows, mode)
+	}
+	if zeroDataTable != "" && len(tables) > 1 {
+		return false, fmt.Sprintf("FAIL: %s has 0 rows after sync, expected at least %d (%s mode)", zeroDataTable, expectedRows, mode)
+	}
+	return false, fmt.Sprintf("FAIL: %d domain tables created but 0 rows after sync (%s mode)", len(tables), mode)
+}
+
+func allSyncAttemptsWereUnknownCommand(errs []error) bool {
+	if len(errs) == 0 {
+		return false
+	}
+	for _, err := range errs {
+		if err == nil || !isUnknownSyncCommandError(err) {
+			return false
+		}
+	}
+	return true
+}
+
+func cliIsGraphQLCLIDir(dir string) bool {
+	return fileExists(filepath.Join(dir, "internal", "client", "graphql.go"))
+}
+
+func isUnknownSyncCommandError(err error) bool {
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "unknown command \"sync\"")
+}
+
+func firstUnknownSyncFlag(errs []error) (string, bool) {
+	for _, err := range errs {
+		if flag, ok := unknownSyncFlag(err); ok {
+			return flag, true
+		}
+	}
+	return "", false
+}
+
+func unknownSyncFlag(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{"unknown flag: ", "unknown shorthand flag: "} {
+		if _, after, ok := strings.Cut(text, marker); ok {
+			flag := strings.Fields(after)
+			if len(flag) > 0 {
+				return flag[0], true
+			}
+			return "", false
+		}
+	}
+	return "", false
+}
+
+func cliHasSyncCommand(cliDir string) bool {
+	return hasRegisteredCommandFileWithPrefix(filepath.Join(cliDir, "internal", "cli"), "sync")
+}
+
+func cliHasLocalStore(cliDir string) bool {
+	return fileExists(filepath.Join(cliDir, "internal", "store", "store.go"))
+}
+
+func cliHasSyncableResources(cliDir string) bool {
+	content := readAllGoFiles(filepath.Join(cliDir, "internal", "cli"))
+	content += readAllGoFiles(filepath.Join(cliDir, "internal", "store"))
+	return hasNonEmptySyncResources(content)
+}
+
+func isAuxiliaryPipelineTable(table string, totalTables int) bool {
+	if totalTables <= 1 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(table)) {
+	case "config", "configs", "metadata", "schema_migrations", "settings":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseSQLOutput extracts non-empty, non-header lines from sql command output.
@@ -747,7 +928,9 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 
 		// Check if the path looks like a list endpoint
 		path := r.URL.Path
-		if strings.HasSuffix(path, "s") || strings.Contains(path, "/search") {
+		if fixture, ok := nestedDataEnvelopeForPath(spec, path); ok {
+			fmt.Fprint(w, renderNestedDataEnvelopeFixture(fixture))
+		} else if strings.HasSuffix(path, "s") || strings.Contains(path, "/search") {
 			// Return array
 			fmt.Fprint(w, `[{"id": 1, "name": "mock-item-1", "state": "open", "title": "Mock Item", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"}]`)
 		} else if strings.Contains(path, "/rate_limit") {
@@ -764,6 +947,43 @@ func startMockServer(spec *openAPISpec) (*httptest.Server, string) {
 
 	server := httptest.NewServer(mux)
 	return server, server.URL
+}
+
+func nestedDataEnvelopeForPath(spec *openAPISpec, path string) (nestedDataEnvelopeFixture, bool) {
+	if spec == nil || len(spec.NestedDataEnvelopes) == 0 {
+		return nestedDataEnvelopeFixture{}, false
+	}
+	if fixture, ok := spec.NestedDataEnvelopes[path]; ok {
+		return fixture, true
+	}
+	for specPath, fixture := range spec.NestedDataEnvelopes {
+		if pathMatchesSpec(path, compileSpecPathPatterns([]string{specPath})) {
+			return fixture, true
+		}
+	}
+	return nestedDataEnvelopeFixture{}, false
+}
+
+func renderNestedDataEnvelopeFixture(fixture nestedDataEnvelopeFixture) string {
+	arrayKey := fixture.ArrayKey
+	if arrayKey == "" {
+		arrayKey = "items"
+	}
+	body := map[string]any{
+		"success": true,
+		"data": map[string]any{
+			arrayKey: []map[string]any{
+				{"id": 1, "name": "mock-item-1", "state": "open", "title": "Mock Item", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
+				{"id": 2, "name": "mock-item-2", "state": "open", "title": "Mock Item 2", "created_at": "2026-03-27T00:00:00Z", "updated_at": "2026-03-27T00:00:00Z"},
+			},
+			"pagination": map[string]any{"total": 2},
+		},
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return `{"success":true,"data":{"items":[{"id":1,"name":"mock-item-1"},{"id":2,"name":"mock-item-2"}],"pagination":{"total":2}}}`
+	}
+	return string(data)
 }
 
 // templateVarReadRe matches the shape config.go.tmpl emits for each

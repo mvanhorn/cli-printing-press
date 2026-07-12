@@ -10,36 +10,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Symbols that exist solely to support an `auth` subcommand. They must
-// disappear from generated config.go / client.go for `auth.type: "none"`
+// Config-side symbols that exist solely to support an `auth` subcommand.
+// They must disappear from generated config.go for `auth.type: "none"`
 // CLIs (no caller can populate them) and stay for any non-none auth flow.
-var (
-	configTokenScaffolding = []string{
-		"AccessToken",
-		"RefreshToken",
-		"TokenExpiry",
-		"ClientID",
-		"ClientSecret",
-		"SaveTokens",
-		"ClearTokens",
-	}
-	clientTokenScaffolding = []string{
-		"refreshAccessToken",
-		"c.Config.AccessToken",
-		"c.Config.RefreshToken",
-		"c.Config.TokenExpiry",
-	}
-)
+//
+// Client-side refresh plumbing (refreshAccessToken et al.) follows a
+// tighter gate (shouldEmitAuth + Auth.TokenURL != "") and is covered by
+// TestRefreshAccessToken_GatedByTokenURL in client_refresh_token_gate_test.go.
+var configTokenScaffolding = []string{
+	"AccessToken",
+	"RefreshToken",
+	"TokenExpiry",
+	"ClientID",
+	"ClientSecret",
+	"SaveTokens",
+	"ClearTokens",
+}
 
 // TestTokenScaffoldingFollowsAuthSurface pins all three branches of
 // shouldEmitAuth(): Auth.Type != "none", Auth.AuthorizationURL != "", and a
 // graphql_persisted_query traffic-analysis hint each independently keep the
-// OAuth-shape token scaffolding emitting; only when all three are absent do
-// the symbols disappear (otherwise they would be dead code with no caller on
-// the CLI surface). The cases also verify that the generated CLI still
-// compiles with the gating in place — gated imports falling out of sync with
-// gated function bodies would otherwise pass the symbol-absence assertions
-// but ship a non-buildable CLI.
+// OAuth-shape token scaffolding emitting in config.go; only when all three
+// are absent do the symbols disappear (otherwise they would be dead code
+// with no caller on the CLI surface). The cases also verify that the
+// generated CLI still compiles with the gating in place — gated imports
+// falling out of sync with gated function bodies would otherwise pass the
+// symbol-absence assertions but ship a non-buildable CLI.
 func TestTokenScaffoldingFollowsAuthSurface(t *testing.T) {
 	t.Parallel()
 
@@ -97,11 +93,6 @@ func TestTokenScaffoldingFollowsAuthSurface(t *testing.T) {
 			configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
 			for _, sym := range configTokenScaffolding {
 				tt.expect(t, configSrc, sym)
-			}
-
-			clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
-			for _, sym := range clientTokenScaffolding {
-				tt.expect(t, clientSrc, sym)
 			}
 
 			// Catch import-gating mistakes: an orphan reference to a gated

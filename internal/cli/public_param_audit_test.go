@@ -18,7 +18,7 @@ func TestPublicParamAuditJSONInventoriesDecisionRequiredParams(t *testing.T) {
 name: public-param-test
 description: Public param test
 version: "0.1.0"
-base_url: https://example.test
+base_url: https://api.example.com
 auth:
   type: none
 resources:
@@ -67,7 +67,7 @@ func TestPublicParamAuditStrictFailsOnlyForUnreviewedCandidates(t *testing.T) {
 name: public-param-test
 description: Public param test
 version: "0.1.0"
-base_url: https://example.test
+base_url: https://api.example.com
 auth:
   type: none
 resources:
@@ -124,7 +124,7 @@ func TestPublicParamAuditStrictPassesWhenFlagNameIsInSpec(t *testing.T) {
 name: public-param-test
 description: Public param test
 version: "0.1.0"
-base_url: https://example.test
+base_url: https://api.example.com
 auth:
   type: none
 resources:
@@ -156,6 +156,87 @@ types:
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetArgs([]string{"--spec", specPath, "--strict"})
 	require.NoError(t, cmd.Execute())
+}
+
+func TestPublicParamAuditOpenAPIURLNameOverrideInventoriesWireName(t *testing.T) {
+	specPath := writePublicParamAuditSpec(t, `
+openapi: 3.0.3
+info:
+  title: Public Param URL Name API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /records:
+    get:
+      operationId: queryRecords
+      x-param-url-names:
+        limit: "$limit"
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: ok
+`)
+
+	var out bytes.Buffer
+	cmd := newPublicParamAuditCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--spec", specPath, "--json"})
+	require.NoError(t, cmd.Execute())
+
+	var ledger pipeline.PublicParamAuditLedger
+	require.NoError(t, json.Unmarshal(out.Bytes(), &ledger))
+	require.Len(t, ledger.Findings, 1)
+	assert.Equal(t, pipeline.PublicParamAuditSummary{Total: 1, Resolved: 1}, ledger.Summary)
+	assert.Equal(t, "records.query.params.$limit", ledger.Findings[0].ID)
+	assert.Equal(t, "$limit", ledger.Findings[0].WireName)
+	assert.Equal(t, "limit", ledger.Findings[0].CurrentPublicName)
+	assert.Equal(t, []string{"operator-like-wire-name"}, ledger.Findings[0].Reasons)
+}
+
+func TestPublicParamAuditStrictRefsDisablesLenientLocalSchemaStubs(t *testing.T) {
+	specPath := writePublicParamAuditSpec(t, `
+openapi: 3.0.3
+info:
+  title: Public Param Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /stores:
+    get:
+      operationId: findStores
+      parameters:
+        - name: s
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingStore"
+components:
+  schemas: {}
+`)
+
+	cmd := newPublicParamAuditCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--spec", specPath, "--lenient"})
+	require.NoError(t, cmd.Execute())
+
+	cmd = newPublicParamAuditCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--spec", specPath, "--lenient", "--strict-refs"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing local schema refs: MissingStore")
 }
 
 func writePublicParamAuditSpec(t *testing.T, contents string) string {

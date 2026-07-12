@@ -173,7 +173,7 @@ func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
 	// handshake itself uses vanilla net/http and the bot wall returns 429
 	// on the very call that would have established the session, even when
 	// the data client could have cleared it.
-	if !strings.Contains(string(sessionContent), "client: newHTTPClient(timeout, jar)") {
+	if !strings.Contains(string(sessionContent), "client:     newHTTPClient(timeout, jar)") {
 		t.Error("session.go's newSessionManager must use newHTTPClient so the handshake inherits the browser-impersonated transport, not a vanilla &http.Client{}")
 	}
 	if strings.Contains(string(sessionContent), "&http.Client{Timeout: timeout, Jar: jar}") {

@@ -1,0 +1,61 @@
+version: 1
+name: ble-session-appliance
+display_name: BLE Session Appliance
+protocol: ble
+identity:
+    advertised_names:
+        - redacted SessionThing
+    address_policy: stable
+    match_strength: strong
+ble:
+    services:
+        - uuid: fd00
+          characteristics:
+            - uuid: fd01
+              properties:
+                - write
+            - uuid: fd02
+              properties:
+                - notify
+capabilities:
+    commands:
+        - name: start
+          characteristic_uuid: fd01
+          safety: physical-effect
+          validation_status: observed
+          evidence_refs:
+            - action-start
+            - write-start
+            - notify-running
+          payload:
+            encoding: hex
+            bytes: a001
+    telemetry:
+        - name: fd02_notification
+          source_characteristic_uuid: fd02
+          sample_cadence: notification
+          store: true
+session:
+    mode: one-shot
+evidence:
+    - id: action-start
+      source: action-journal
+      summary: start
+    - id: adv-primary
+      source: ble-event
+      summary: advertisement
+    - id: svc-control
+      source: ble-event
+      summary: service_discovery
+    - id: svc-status
+      source: ble-event
+      summary: service_discovery
+    - id: write-start
+      source: ble-event
+      summary: write
+    - id: notify-running
+      source: ble-event
+      summary: notification
+    - id: notify-running-2
+      source: ble-event
+      summary: notification

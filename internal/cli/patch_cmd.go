@@ -27,19 +27,19 @@ commands are preserved.
 
 See docs/plans/2026-04-18-001-feat-patch-library-clis-v2-plan.md.`,
 		Example: `  # Dry-run against a library CLI
-  printing-press patch ~/Code/printing-press-library/library/productivity/cal-com --dry-run
+  cli-printing-press patch ~/Code/printing-press-library/library/productivity/cal-com --dry-run
 
   # Apply (writes root.go + creates profile.go/deliver.go/feedback.go)
-  printing-press patch ~/Code/printing-press-library/library/productivity/cal-com
+  cli-printing-press patch ~/Code/printing-press-library/library/productivity/cal-com
 
   # Refuse to run if Pagliacci has a feedback resource collision
-  printing-press patch ~/Code/printing-press-library/library/food-and-dining/pagliacci-pizza
+  cli-printing-press patch ~/Code/printing-press-library/library/food-and-dining/pagliacci-pizza
 
   # Force past a resource-level collision (skips the colliding drop-in)
-  printing-press patch .../pagliacci-pizza --force
+  cli-printing-press patch .../pagliacci-pizza --force
 
   # JSON output for batch scripting
-  printing-press patch . --dry-run --json`,
+  cli-printing-press patch . --dry-run --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := patch.Patch(patch.Options{

@@ -4,7 +4,7 @@ date: 2026-05-05
 category: design-patterns
 module: cli-printing-press-generator
 problem_type: design_pattern
-component: auth
+component: authentication
 severity: medium
 applies_when:
   - "One legacy list is driving multiple auth surfaces with different filtering rules"
@@ -39,10 +39,10 @@ Normalize before merging generated artifacts. `NormalizeEnvVarSpecs` must run at
 
 ## Code Patterns
 
-- `internal/spec/spec.go:467` defines `AuthEnvVar`; `internal/spec/spec.go:484` defines `CanonicalEnvVar()` and is the selector template for human-prose surfaces.
-- `internal/openapi/parser.go:583` shows `applyAuthVarsRichOverride`, the conservative parser gate: malformed rich overrides warn and fall back to generated defaults.
-- `internal/authdoctor/classify.go:100` shows the mixed-version safety pattern: prefer rich manifest specs, warn on disagreement, and fall back to legacy env vars.
-- `internal/pipeline/climanifest.go:336` shows pre-merge normalization and name dedup across global and tier auth blocks.
+- `internal/spec/spec.go:567` defines `AuthEnvVar`; `internal/spec/spec.go:631` defines `CanonicalEnvVar()` and is the selector template for human-prose surfaces.
+- `internal/openapi/parser.go:805` shows `applyAuthVarsRichOverride`, the conservative parser gate: malformed rich overrides warn and fall back to generated defaults.
+- `internal/authdoctor/classify.go:70` shows the mixed-version safety pattern: prefer rich manifest specs, warn on disagreement, and fall back to legacy env vars.
+- `internal/pipeline/climanifest.go:466` shows pre-merge normalization and name dedup across global and tier auth blocks.
 
 ## Related
 

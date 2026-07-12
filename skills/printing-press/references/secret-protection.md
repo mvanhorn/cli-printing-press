@@ -107,6 +107,12 @@ proofs for organization names, email addresses, and full names. The exact-value 
 for API keys (above) catches secrets; this step catches PII that the user's live
 workspace naturally produces.
 
+**When persisting live-check samples:** `scorecard --live-check` and live-dogfood
+sample captures scrub `output_sample` text before it is stored in JSON/proof
+artifacts. Treat archive-time and publish-time scans as defense in depth, not as
+permission to write raw customer names, emails, addresses, invoice numbers, or
+card tails into the run directory.
+
 **Before creating publish PRs:** The publish skill constructs PR descriptions from
 manuscripts and test results. Any live test data quoted in the PR body must be
 scrubbed of workspace PII. The library repo is public.
@@ -139,15 +145,19 @@ recovery prompt. Pattern set:
 
 ```bash
 PII_AUTO_REDACT=(
+  'openrouter-api-key|sk-or-v1-[A-Za-z0-9_-]{24,}|<REDACTED:openrouter-api-key>'
   'bearer-stripe-live|Bearer sk_live_[A-Za-z0-9]{20,}|Bearer <REDACTED:stripe-live-token>'
   'bearer-stripe-test|Bearer sk_test_[A-Za-z0-9]{20,}|Bearer <REDACTED:stripe-test-token>'
   'bearer-cal-live|Bearer cal_live_[A-Za-z0-9]{20,}|Bearer <REDACTED:cal-live-token>'
   'bearer-cal-test|Bearer cal_test_[A-Za-z0-9]{20,}|Bearer <REDACTED:cal-test-token>'
   'bearer-github-pat|Bearer ghp_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-pat>'
   'bearer-github-oauth|Bearer gho_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-oauth>'
+  'bearer-github-server|Bearer ghs_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-server-token>'
   'bearer-github-fine|Bearer github_pat_[A-Za-z0-9_]{60,}|Bearer <REDACTED:github-fine-grained-pat>'
   'slack-user-token|xoxp-[A-Za-z0-9-]{40,}|<REDACTED:slack-user-token>'
   'slack-bot-token|xoxb-[A-Za-z0-9-]{40,}|<REDACTED:slack-bot-token>'
+  'slack-app-token|xapp-[A-Za-z0-9-]{32,}|<REDACTED:slack-app-token>'
+  'google-api-key|AIza[A-Za-z0-9_-]{20,}|<REDACTED:google-api-key>'
 )
 
 for entry in "${PII_AUTO_REDACT[@]}"; do
@@ -161,6 +171,10 @@ for entry in "${PII_AUTO_REDACT[@]}"; do
   done
 done
 ```
+
+Do not add a simple `AKIA[0-9A-Z]{16}` shell auto-redaction rule here. AWS
+access keys have the same shape as AWS's canonical documentation placeholder,
+so the binary publish scan handles them with a placeholder allowlist instead.
 
 These patterns are vendor-anchored and the prefix character class is restrictive
 enough that the false-positive rate is effectively zero. Adding a new vendor
@@ -277,7 +291,16 @@ proceeds.
 
 ## Session state cleanup
 
-Session state files (`session-state.json`) contain browser cookies and auth tokens.
-The Phase 5.5 archive block removes them with `rm -f "$DISCOVERY_DIR/session-state.json"`.
-This removal is mandatory and must happen BEFORE the `cp -r "$DISCOVERY_DIR"` command.
-If the order is reversed, cookies leak into manuscripts.
+Session state files (`session-state.json`) contain live browser cookies and auth
+tokens captured during an authenticated browser-sniff run. The containment model
+is **by location**, not by archive-time cleanup: `SESSION_STATE_FILE` (set in
+SKILL.md's "Run Initialization") points at
+`${TMPDIR:-/tmp}/printing-press-$(id -u)/session/$RUN_ID/session-state.json`, outside
+`$DISCOVERY_DIR`. The Phase 5.5 archive `cp -r "$DISCOVERY_DIR"` therefore cannot
+pick it up, regardless of operator action. After the archive completes, the
+Phase 5.5 block also wipes `$SESSION_DIR` so back-to-back runs do not accumulate
+session state.
+
+A no-op `rm -f "$DISCOVERY_DIR/session-state.json"` remains in the archive
+block as a safety net for in-flight runs carried over from a pre-isolation
+skill version; it is not load-bearing for new runs.

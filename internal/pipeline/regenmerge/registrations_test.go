@@ -120,6 +120,61 @@ func newHomesCmd() *cobra.Command { return &cobra.Command{Use: "listings"} }
 	assert.Empty(t, regs, "same parent + same Cobra Use should not produce a lost registration even when constructor names differ")
 }
 
+// TestExtractLostRegistrationsRecordsEnclosingFunc covers a host file with two
+// command-registration functions where fresh dropped the call from the second
+// one. The resulting LostRegistration must carry that function's name so
+// re-injection targets it rather than the first registration function.
+func TestExtractLostRegistrationsRecordsEnclosingFunc(t *testing.T) {
+	t.Parallel()
+
+	pubCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newAlphaCmd())
+	registerExtras(rootCmd)
+	_ = rootCmd.Execute()
+}
+
+func registerExtras(rootCmd *cobra.Command) {
+	rootCmd.AddCommand(newBetaCmd())
+}
+
+func newAlphaCmd() *cobra.Command { return &cobra.Command{Use: "alpha"} }
+func newBetaCmd() *cobra.Command { return &cobra.Command{Use: "beta"} }
+`
+	freshCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newAlphaCmd())
+	registerExtras(rootCmd)
+	_ = rootCmd.Execute()
+}
+
+func registerExtras(rootCmd *cobra.Command) {
+}
+
+func newAlphaCmd() *cobra.Command { return &cobra.Command{Use: "alpha"} }
+func newBetaCmd() *cobra.Command { return &cobra.Command{Use: "beta"} }
+`
+	pubDir, freshDir := buildSyntheticFixture(t,
+		map[string]string{"internal/cli/root.go": pubCLI},
+		map[string]string{"internal/cli/root.go": freshCLI})
+
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
+	require.NoError(t, err)
+	require.Len(t, regs, 1)
+	assert.Equal(t, "registerExtras", regs[0].EnclosingFunc,
+		"a lost call from the second registration function must record that function")
+	require.Len(t, regs[0].Calls, 1)
+	assert.True(t, containsConstructor(regs[0].Calls[0], "newBetaCmd"))
+}
+
 func containsConstructor(callSrc, ctorName string) bool {
 	// Hacky but adequate for tests — calls look like
 	// "rootCmd.AddCommand(newCanonicalCmd(flags))"; check the constructor

@@ -44,6 +44,7 @@ func configure(flags *rootFlags) {
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "helpers.go"), `package cli
 func usedHelper() {}
 func deadHelper() {}
+func boundCtx() {}
 `)
 	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_list.go"), `package cli
 func usersList() {
@@ -197,6 +198,578 @@ security:
 	assert.True(t, report.AuthCheck.Match)
 }
 
+func TestRunDogfoodOAuthScopeCoveragePassesCoveredEndpoint(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      security:
+        - OAuth2: [youtube]
+      responses:
+        "200":
+          description: ok
+  /analytics:
+    get:
+      operationId: listAnalytics
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+}
+
+func TestRunDogfoodOAuthScopeCoverageFailsUncoveredEndpoint(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      responses:
+        "200":
+          description: ok
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+            yt-analytics.readonly: Analytics read access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "GET /analytics", report.OAuthScopeCoverage.Violations[0].Endpoint)
+	assert.Equal(t, "listAnalytics", report.OAuthScopeCoverage.Violations[0].OperationID)
+	assert.Equal(t, []string{"yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
+	assert.Contains(t, report.Issues, "OAuth scope coverage missing for 1 endpoint(s)")
+}
+
+func TestRunDogfoodOAuthScopeCoverageRequiresAllScopesInAlternative(t *testing.T) {
+	specYAML := `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [youtube, yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+            yt-analytics.readonly: Analytics read access
+`
+
+	t.Run("partial coverage fails", func(t *testing.T) {
+		dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, specYAML)
+
+		report, err := RunDogfood(dir, specPath)
+		require.NoError(t, err)
+
+		assert.Equal(t, "FAIL", report.Verdict)
+		assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+		assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+		require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+		assert.Equal(t, []string{"youtube", "yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
+		assert.Equal(t, [][]string{{"youtube", "yt-analytics.readonly"}}, report.OAuthScopeCoverage.Violations[0].RequiredScopeAlternatives)
+	})
+
+	t.Run("full coverage passes", func(t *testing.T) {
+		dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube", "yt-analytics.readonly"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, specYAML)
+
+		report, err := RunDogfood(dir, specPath)
+		require.NoError(t, err)
+
+		assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+		assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+		assert.Empty(t, report.OAuthScopeCoverage.Violations)
+	})
+}
+
+func TestRunDogfoodOAuthScopeCoverageReadsAppendedGeneratedScope(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	scopes = append(scopes, "offline")
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /refresh:
+    get:
+      operationId: refreshAccess
+      security:
+        - OAuth2: [offline]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+            offline: Refresh access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+}
+
+func TestRunDogfoodOAuthScopeCoverageReadsClientCredentialsScopeHelper(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+import (
+	"net/url"
+	"os"
+)
+
+func resolveClientCredentialsScope() string {
+	if scope := os.Getenv("VIDEOS_OAUTH_SCOPE"); scope != "" {
+		return scope
+	}
+	return "all"
+}
+
+func mintClientCredentialsToken() {
+	form := url.Values{}
+	if scope := resolveClientCredentialsScope(); scope != "" {
+		form.Set("scope", scope)
+	}
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [all]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.com/token
+          scopes:
+            all: Full access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+}
+
+func TestRunDogfoodOAuthScopeCoverageIgnoresUnwiredClientCredentialsScopeHelper(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func resolveClientCredentialsScope() string {
+	return "all"
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [all]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.com/token
+          scopes:
+            all: Full access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
+}
+
+func TestRunDogfoodOAuthScopeCoverageIgnoresUnjoinedScopesVariable(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func helper() {
+	scopes := []string{"yt-analytics.readonly"}
+	_ = scopes
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            yt-analytics.readonly: Analytics read access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
+}
+
+func TestRunDogfoodOAuthScopeCoverageSurvivesUndefinedNonOAuthScheme(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+          MissingAPIKey: []
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+            yt-analytics.readonly: Analytics read access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "GET /analytics", report.OAuthScopeCoverage.Violations[0].Endpoint)
+	assert.Equal(t, []string{"yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
+}
+
+func TestRunDogfoodOAuthScopeCoverageSkipsResolvedAPIKeyAuth(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      responses:
+        "200":
+          description: ok
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            yt-analytics.readonly: Analytics read access
+`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion:  CurrentCLIManifestSchemaVersion,
+		APIName:        "videos",
+		CLIName:        "videos-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "ApiKeyAuth",
+	}))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func addAuth(req interface{ HeaderSet(string, string) }, authHeader string) {
+	req.HeaderSet("X-API-Key", authHeader)
+}
+func wire(req *request, authHeader string) {
+	req.Header.Set("X-API-Key", authHeader)
+}
+type request struct{ Header header }
+type header struct{}
+func (header) Set(string, string) {}
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, "FAIL", report.Verdict, report.Issues)
+	assert.True(t, report.OAuthScopeCoverage.Skipped)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+	assert.Contains(t, report.OAuthScopeCoverage.Detail, "resolved auth type api_key")
+	assert.NotContains(t, report.Issues, "OAuth scope coverage missing for 1 endpoint(s)")
+}
+
+func TestLoadOpenAPISpecCollectsRootOAuthScopeRequirements(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Root Scoped API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            items.read: Read items
+security:
+  - OAuth2: [items.read]
+`)
+
+	info, err := loadOpenAPISpec(specPath)
+	require.NoError(t, err)
+	require.Len(t, info.OAuthScopeRequirements, 1)
+	assert.Equal(t, "GET /items", info.OAuthScopeRequirements[0].Endpoint)
+	assert.Equal(t, "listItems", info.OAuthScopeRequirements[0].OperationID)
+	assert.Equal(t, []string{"items.read"}, info.OAuthScopeRequirements[0].Alternatives[0].Scopes)
+}
+
+func TestLoadOpenAPISpecCombinesOAuthSchemesWithinRequirement(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Combined Scoped API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      operationId: listItems
+      security:
+        - OAuthA: [a.read]
+          OAuthB: [b.read]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuthA:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth-a
+          tokenUrl: https://example.com/token-a
+          scopes:
+            a.read: Read A
+    OAuthB:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth-b
+          tokenUrl: https://example.com/token-b
+          scopes:
+            b.read: Read B
+`)
+
+	info, err := loadOpenAPISpec(specPath)
+	require.NoError(t, err)
+	require.Len(t, info.OAuthScopeRequirements, 1)
+	require.Len(t, info.OAuthScopeRequirements[0].Alternatives, 1)
+	assert.Equal(t, []string{"a.read", "b.read"}, info.OAuthScopeRequirements[0].Alternatives[0].Scopes)
+}
+
+func writeOAuthScopeCoverageFixture(t *testing.T, authGo, specYAML string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+type rootFlags struct{}
+func initFlags(flags *rootFlags) { _ = flags }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "videos_get.go"), `package cli
+func videosGet() {
+	path := "/videos"
+}
+func analyticsGet() {
+	path := "/analytics"
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "auth.go"), authGo)
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader(token string) string {
+	return "Bearer " + token
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, specPath, specYAML)
+	return dir, specPath
+}
+
 func TestCountDomainTables(t *testing.T) {
 	storeSource := `
 CREATE TABLE IF NOT EXISTS users (
@@ -215,13 +788,126 @@ CREATE TABLE IF NOT EXISTS sync_state (
 	assert.Equal(t, 1, countDomainTables(storeSource))
 }
 
+// TestCheckPipelineIntegritySyncResourcesEmpty asserts that when the generator
+// emits sync.go with an empty defaultSyncResources() body (the structural
+// signature of an API with no bulk-list endpoint, e.g., Allrecipes), dogfood's
+// pipeline check records SyncFileEmitted=true and SyncResourcesPresent=false
+// and surfaces the detail string. Issue #1156.
+func TestCheckPipelineIntegritySyncResourcesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "sync.go"), `package cli
+
+func runSync(s interface{ UpsertItems() error }) error {
+	return s.UpsertItems()
+}
+
+func defaultSyncResources() []string {
+	return []string{}
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	result := checkPipelineIntegrity(dir)
+	assert.True(t, result.SyncFileEmitted, "sync.go was written")
+	assert.False(t, result.SyncResourcesPresent, "defaultSyncResources is empty")
+	assert.Contains(t, result.Detail, "defaultSyncResources empty")
+}
+
+// TestCheckPipelineIntegritySyncResourcesPopulated covers the normal case where
+// the generator emits sync.go with one or more resources. Both new fields
+// should be set; the empty-list detail string should not appear.
+func TestCheckPipelineIntegritySyncResourcesPopulated(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "sync.go"), `package cli
+
+func runSync(s interface{ UpsertUsers() error }) error {
+	return s.UpsertUsers()
+}
+
+func defaultSyncResources() []string {
+	return []string{
+		"users",
+	}
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	result := checkPipelineIntegrity(dir)
+	assert.True(t, result.SyncFileEmitted)
+	assert.True(t, result.SyncResourcesPresent)
+	assert.NotContains(t, result.Detail, "defaultSyncResources empty")
+}
+
+func TestHasPopulatedSyncResources(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{
+			name: "empty source",
+			src:  "",
+			want: false,
+		},
+		{
+			name: "helper absent (hand-rolled or fixture)",
+			src:  "package cli\nfunc runSync() {}\n",
+			want: true,
+		},
+		{
+			name: "helper present with empty list",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{}
+}
+`,
+			want: false,
+		},
+		{
+			name: "helper present with one entry",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{
+		"users",
+	}
+}
+`,
+			want: true,
+		},
+		{
+			name: "helper present with several entries",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{
+		"commissions",
+		"customers",
+		"domains",
+	}
+}
+`,
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hasPopulatedSyncResources(tc.src))
+		})
+	}
+}
+
 func TestDeriveDogfoodVerdict(t *testing.T) {
 	report := &DogfoodReport{
 		PathCheck:     PathCheckResult{Tested: 10, Valid: 10, Pct: 100},
 		AuthCheck:     AuthCheckResult{Match: true},
 		DeadFlags:     DeadCodeResult{Dead: 1},
 		DeadFuncs:     DeadCodeResult{Dead: 0},
-		PipelineCheck: PipelineResult{SyncCallsDomain: true},
+		PipelineCheck: PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
 	}
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
 
@@ -234,6 +920,15 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
 
 	report.PipelineCheck.SyncCallsDomain = true
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+
+	// Issue #1156: when sync.go is emitted but defaultSyncResources is empty,
+	// the sync command is a runtime no-op. Dogfood must flag this as WARN so
+	// the gap surfaces at shipcheck time.
+	report.PipelineCheck.SyncFileEmitted = true
+	report.PipelineCheck.SyncResourcesPresent = false
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	report.PipelineCheck.SyncResourcesPresent = true
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 4}
@@ -250,6 +945,58 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 10, ValidExamples: 10}
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+}
+
+func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
+	report := passingDogfoodReport()
+	report.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 1, Found: 1, Stubbed: []string{"id-hunt"}}
+	report.ReimplementationCheck = ReimplementationCheckResult{
+		Checked: 1,
+		MissingDataSourceStrategy: []ReimplementationFinding{{
+			Command: "id-hunt",
+			File:    "id_hunt.go",
+			Reason:  "missing // pp:data-source <auto|local|live|computed> annotation",
+		}},
+	}
+
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+}
+
+func TestCheckDescriptionDriftFlagsManifestAndRootShort(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "description": "Old stale headline"
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func newRootCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "example",
+		Short: "Old stale headline",
+	}
+}
+`), 0o644))
+
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		Narrative: &ReadmeNarrative{
+			Headline: "Fresh headline from research",
+		},
+	}, researchDir))
+
+	got := checkDescriptionDrift(dir, researchDir)
+	require.Len(t, got.Findings, 2)
+	assert.Equal(t, "Fresh headline from research", got.Expected)
+	assert.Contains(t, got.Findings[0].Actual, "Old stale headline")
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(&DogfoodReport{
+		PipelineCheck:         PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
+		DescriptionDriftCheck: &got,
+	}, false))
 }
 
 func TestExtractExamplesSection(t *testing.T) {
@@ -386,6 +1133,33 @@ func newOrphanCmd() { cmd := &cobra.Command{Use: "orphan"} }
 	assert.Equal(t, 3, result.Defined) // foo, bar, orphan (root excluded)
 	assert.Equal(t, 2, result.Registered)
 	assert.Equal(t, []string{"orphan"}, result.Unregistered)
+}
+
+// TestCheckCommandTree_BacktickUse pins that the constructor walker reads
+// the Use: leaf name from a backtick raw-string literal, which authors reach
+// for when the command name contains a literal double-quote. Without
+// backtick support, useName silently falls back to the constructor name
+// and the command surfaces with the wrong identity in CommandTreeResult.
+func TestCheckCommandTree_BacktickUse(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	writeTestFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newQueryCmd())
+}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "query.go"),
+		"package cli\n"+
+			"func newQueryCmd() *cobra.Command {\n"+
+			"\treturn &cobra.Command{Use: `query <project> \"<sql>\"`}\n"+
+			"}\n")
+
+	result := checkCommandTree(dir)
+	assert.Equal(t, 1, result.Defined)
+	assert.Equal(t, 1, result.Registered)
+	assert.Empty(t, result.Unregistered)
 }
 
 func TestCheckCommandTree_DeeplyNested(t *testing.T) {
@@ -610,6 +1384,384 @@ func (c *Config) AuthHeader() string {
 	assert.Equal(t, "Basic ", result.GeneratedFmt)
 }
 
+func TestCheckAuthRecognizesBearerApplyAuthFormatWithTokenPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+}
+
+func TestCheckAuthRecognizesBearerTokenPrefixOverride(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Token " + c.Token
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Token ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `"Token " prefix`)
+}
+
+func TestCheckAuthMakesFormatOverPrefixPrecedenceExplicit(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `auth.format`)
+	assert.Contains(t, result.SpecScheme, `auth.prefix "Token" ignored`)
+	assert.Contains(t, result.Detail, `auth.format "Bearer" overrides auth.prefix "Token"`)
+}
+
+func TestCheckAuthRejectsBearerTokenPrefixMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Token " + c.Token
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Bearer"})
+	assert.False(t, result.Match)
+	assert.Equal(t, "Token ", result.GeneratedFmt)
+	assert.Contains(t, result.Detail, `spec expects "Bearer" but generated client uses "Token"`)
+}
+
+func TestCheckAuthRecognizesHeaderAPIKey(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func (c *Client) do() {
+	authHeader := c.Config.AuthHeader()
+	req.Header.Set("x-api-key", authHeader)
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string { return c.APIKey }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", In: "header", Header: "x-api-key", Scheme: "ApiKeyAuth"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "x-api-key", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, "x-api-key")
+}
+
+func TestCheckAuthRecognizesHeaderAPIKeyFromChainedAuthHeaderCall(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func (c *Client) do() {
+	req.Header.Set("x-api-key", c.GetConfig().AuthHeader())
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string { return c.APIKey }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", In: "header", Header: "x-api-key", Scheme: "ApiKeyAuth"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "x-api-key", result.GeneratedFmt)
+}
+
+func TestCheckAuthRejectsBearerApplyAuthFormatWithoutTokenPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer ", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer "})
+	assert.False(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.Detail, `format literal "Bearer " does not include a token placeholder`)
+}
+
+func TestCheckAuthRejectsBearerApplyAuthFormatWithMissingPlaceholderReplacement(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {access_token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer {access_token}"})
+	assert.False(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.Detail, `includes placeholder "access_token" but generated replacements do not provide it`)
+}
+
+func TestCheckAuthPrefersTokenPreservingApplyAuthFormat(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func previewAuthHeader(c *Config) string {
+	return applyAuthFormat("Bearer ", map[string]string{"token": c.Token})
+}
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+}
+
+func TestCheckAuthComposedLiteralFormat(t *testing.T) {
+	// Composed/cookie auth stores the literal Authorization header value in
+	// Config.AuthHeaderVal — no "<Scheme> " + token concat exists in generated
+	// source, so the concat detector returns "unknown". The literal-format
+	// branch classifies by the spec-declared auth.format prefix and confirms
+	// the wiring by checking that generated source still references
+	// Config.AuthHeaderVal.
+	composedAuthHeaderValConfig := `package config
+type Config struct {
+	AuthHeaderVal string
+}
+func (c *Config) AuthHeader() string {
+	if c.AuthHeaderVal != "" {
+		return c.AuthHeaderVal
+	}
+	return ""
+}
+`
+	composedClient := `package client
+func authHeader() string { return configAuthHeader() }
+`
+
+	tests := []struct {
+		name           string
+		auth           apispec.AuthConfig
+		clientGo       string
+		configGo       string
+		wantMatch      bool
+		wantGenerated  string
+		wantDetailLike string
+	}{
+		{
+			name:          "basic literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Basic MkFKYjlPeUlBMFZaNUpWNmlkb05vT1VGVWEyOg=="},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "basic auth",
+		},
+		{
+			name:          "bearer literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Bearer XYZ"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "bearer auth",
+		},
+		{
+			name:          "bot literal in composed format matches",
+			auth:          apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Bot DISCORD_TOKEN"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "bot auth",
+		},
+		{
+			name:           "unknown scheme classifies as custom-composed",
+			auth:           apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "FooScheme XYZ"},
+			clientGo:       composedClient,
+			configGo:       composedAuthHeaderValConfig,
+			wantMatch:      false,
+			wantGenerated:  "custom-composed",
+			wantDetailLike: "does not start with a recognized scheme prefix",
+		},
+		{
+			name:          "cookie type with cookie-prefixed format matches",
+			auth:          apispec.AuthConfig{Type: "cookie", Header: "Authorization", Format: "Cookie sessionid=abc"},
+			clientGo:      composedClient,
+			configGo:      composedAuthHeaderValConfig,
+			wantMatch:     true,
+			wantGenerated: "cookie auth",
+		},
+		{
+			name:           "stripped client falls through to concat detector and surfaces unknown",
+			auth:           apispec.AuthConfig{Type: "composed", Header: "Authorization", Format: "Basic MkFKYjlPeUlBMFZaNUpWNmlkb05vT1VGVWEyOg=="},
+			clientGo:       `package client` + "\nfunc authHeader() string { return \"\" }\n",
+			configGo:       `package config` + "\ntype Config struct{}\nfunc (c *Config) AuthHeader() string { return \"\" }\n",
+			wantMatch:      false,
+			wantGenerated:  "unknown",
+			wantDetailLike: `spec expects "Basic"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+			writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), tc.clientGo)
+			writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), tc.configGo)
+
+			result := checkAuth(dir, tc.auth)
+			assert.Equal(t, tc.wantMatch, result.Match, "match")
+			assert.Equal(t, tc.wantGenerated, result.GeneratedFmt, "generated_format")
+			if tc.wantDetailLike != "" {
+				assert.Contains(t, result.Detail, tc.wantDetailLike, "detail")
+			}
+		})
+	}
+}
+
+func TestCheckAuthComposedEmptyFormatFallsThrough(t *testing.T) {
+	// auth.type: composed with an empty auth.format must NOT engage the
+	// literal-format branch — fall through to the concat detector so the
+	// existing behavior is preserved.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+type Config struct{ AuthHeaderVal string }
+func (c *Config) AuthHeader() string { return c.AuthHeaderVal }
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "composed", Format: ""})
+	// No expectedPrefix derived; detail should be the existing
+	// "no bot/bearer/basic scheme detected" path.
+	assert.True(t, result.Match)
+	assert.Equal(t, "unknown", result.GeneratedFmt)
+}
+
+func TestCheckAuthAPIKeyTypeUnaffected(t *testing.T) {
+	// Negative-criterion guard: api_key with a "Basic ..." format must keep
+	// the existing concat-detection behavior — the literal-format branch only
+	// fires for composed/cookie types.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+type Config struct{ AuthHeaderVal string }
+func (c *Config) AuthHeader() string {
+	return "Basic " + encode(c.Username+":"+c.Password)
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", Format: "Basic {username}:{password}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Basic ", result.GeneratedFmt)
+}
+
+func TestLoadDogfoodOpenAPISpecUsesAuthPreference(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "openapi.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Multi Auth
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+`)
+
+	defaultSpec, err := loadDogfoodOpenAPISpec(specPath, "")
+	require.NoError(t, err)
+	require.Equal(t, "bearer_token", defaultSpec.Auth.Type)
+
+	preferred, err := loadDogfoodOpenAPISpec(specPath, "ApiKeyAuth")
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", preferred.Auth.Type)
+	assert.Equal(t, "ApiKeyAuth", preferred.Auth.Scheme)
+	assert.Equal(t, "x-api-key", preferred.Auth.Header)
+}
+
 func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 	// Test that unregistered commands cause FAIL
 	report := &DogfoodReport{
@@ -800,6 +1952,174 @@ func newHealthCmd() *cobra.Command {
 		assert.Equal(t, "health", (*updated.NovelFeaturesBuilt)[0].Command)
 	})
 
+	t.Run("flags generated TODO stubs separately from missing commands", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"),
+			`package cli
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "test-pp-cli"}
+	rootCmd.AddCommand(newNovelHealthCmd())
+	return rootCmd
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newNovelHealthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "health",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "health")
+		},
+	}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+		assert.Equal(t, []string{"health"}, result.Stubbed)
+	})
+
+	t.Run("does not confuse stubs that share a leaf command", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"),
+			`package cli
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "test-pp-cli"}
+	rootCmd.AddCommand(newRunsCmd(), newAnalyticsCmd())
+	return rootCmd
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "runs.go"),
+			`package cli
+func newRunsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "runs"}
+	cmd.AddCommand(newRunsClassifyCmd())
+	return cmd
+}
+func newRunsClassifyCmd() *cobra.Command {
+	return &cobra.Command{Use: "classify"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "analytics.go"),
+			`package cli
+func newAnalyticsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "analytics"}
+	cmd.AddCommand(newAnalyticsClassifyCmd())
+	return cmd
+}
+func newAnalyticsClassifyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "classify",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "analytics classify")
+		},
+	}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Run classifier", Command: "runs classify"},
+				{Name: "Analytics classifier", Command: "analytics classify"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+		assert.Equal(t, []string{"analytics classify"}, result.Stubbed)
+	})
+
+	t.Run("warns when advertised command depth differs from registered path", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), `package cli
+func Execute() {
+	rootCmd.AddCommand(newAssetsCmd())
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets.go"), `package cli
+func newAssetsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "assets"}
+	cmd.AddCommand(newAssetsGrabCmd())
+	return cmd
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets_grab.go"), `package cli
+func newAssetsGrabCmd() *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Grab asset", Command: "grab", Example: `test-pp-cli grab "sunset"`},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Planned)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+		require.Len(t, result.DepthMismatches, 1)
+		assert.Equal(t, NovelFeatureDepthMismatch{
+			Command:    "grab",
+			Advertised: "grab",
+			Actual:     "assets grab",
+		}, result.DepthMismatches[0])
+	})
+
+	t.Run("does not warn when variable wiring resolves the advertised root command", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), `package cli
+func Execute() {
+	grabCmd := rootGrabSubcmd(nil)
+	rootCmd.AddCommand(grabCmd)
+	rootCmd.AddCommand(newAssetsCmd())
+}
+func rootGrabSubcmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "assets.go"), `package cli
+func newAssetsCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "assets"}
+	cmd.AddCommand(assetsGrabSubcmd(nil))
+	return cmd
+}
+func assetsGrabSubcmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "grab"}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Grab asset", Command: "grab", Example: `test-pp-cli grab "sunset"`},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+		assert.Empty(t, result.DepthMismatches)
+	})
+
 	t.Run("syncs README and SKILL to verified subset", func(t *testing.T) {
 		cliDir := t.TempDir()
 		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
@@ -922,6 +2242,230 @@ func newHealthCmd() *cobra.Command {
 		assert.Contains(t, stderr, "dogfood: synced internal/cli/root.go (Highlights) from novel_features_built")
 	})
 
+	t.Run("syncs narrative README and SKILL blocks from research", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+			"# Test CLI",
+			"",
+			"**Old headline**",
+			"",
+			"Old value proposition mentions old quickstart.",
+			"",
+			"Learn more at [Test CLI](https://example.com).",
+			"",
+			"Created by [@tester](https://github.com/tester).",
+			"",
+			"## Authentication",
+			"",
+			"Use the old auth command.",
+			"",
+			"## Quick Start",
+			"",
+			"```bash",
+			"test-pp-cli old quickstart",
+			"```",
+			"",
+			"## Unique Features",
+			"",
+			"These capabilities aren't available in any other tool for this API.",
+			"- **`health`** \u2014 planned health",
+			"",
+			"## Usage",
+			"",
+			"Run help.",
+			"",
+			"## Troubleshooting",
+			"",
+			"**Not found errors (exit code 3)**",
+			"- Check the resource ID is correct",
+			"",
+			"### API-specific",
+			"- **Old symptom** \u2014 Old fix",
+			"",
+			"## HTTP Transport",
+			"",
+			"Standard transport.",
+			"",
+		}, "\n"))
+		writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+			"# Test Skill",
+			"",
+			"## Prerequisites: Install the CLI",
+			"",
+			"This skill drives the `test-pp-cli` binary.",
+			"",
+			"If `--version` reports \"command not found\" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.",
+			"",
+			"Old skill value proposition.",
+			"",
+			"## Unique Capabilities",
+			"",
+			"These capabilities aren't available in any other tool for this API.",
+			"- **`health`** \u2014 planned health",
+			"",
+			"## Recipes",
+			"",
+			"### Old recipe",
+			"",
+			"```bash",
+			"test-pp-cli old recipe",
+			"```",
+			"",
+			"## Auth Setup",
+			"",
+			"Use the old auth command.",
+			"",
+			"Run `test-pp-cli doctor` to verify setup.",
+			"",
+			"## Agent Mode",
+			"",
+			"Use --agent.",
+			"",
+		}, "\n"))
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health", Description: "See scheduling health metrics at a glance"},
+			},
+			Narrative: &ReadmeNarrative{
+				Headline:      "Every Test feature plus verified health triage",
+				ValueProp:     "Health checks, OAuth setup, and agent-ready recipes stay in sync with research.json.",
+				AuthNarrative: "Use `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.",
+				QuickStart: []QuickStartStep{
+					{Comment: "Check credentials", Command: "test-pp-cli doctor"},
+					{Comment: "Inspect health", Command: "test-pp-cli health --agent"},
+				},
+				Troubleshoots: []TroubleshootTip{
+					{Symptom: "OAuth scope rejected", Fix: "Run `test-pp-cli oauth-token --grant-type client_credentials --scope view_collection`.\n```text\n### not a section\n```"},
+				},
+				Recipes: []Recipe{
+					{Title: "Inspect health", Command: "test-pp-cli health --agent", Explanation: "Returns the verified health summary."},
+				},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		var stderr string
+		result := captureStderr(t, &stderr, func() NovelFeaturesCheckResult {
+			return checkNovelFeatures(cliDir, researchDir)
+		})
+		assert.Equal(t, 1, result.Found)
+
+		readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		readme := string(readmeData)
+		assert.Contains(t, readme, "**Every Test feature plus verified health triage**")
+		assert.Contains(t, readme, "Health checks, OAuth setup, and agent-ready recipes stay in sync with research.json.")
+		assert.Contains(t, readme, "Learn more at [Test CLI](https://example.com).")
+		assert.Contains(t, readme, "Created by [@tester](https://github.com/tester).")
+		assert.NotContains(t, readme, "Old headline")
+		assert.NotContains(t, readme, "Old value proposition")
+		assert.Contains(t, readme, "## Authentication\n\nUse `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.")
+		assert.Contains(t, readme, "# Check credentials\ntest-pp-cli doctor")
+		assert.Contains(t, readme, "# Inspect health\ntest-pp-cli health --agent")
+		assert.Contains(t, readme, "- **OAuth scope rejected** \u2014 Run `test-pp-cli oauth-token --grant-type client_credentials --scope view_collection`.\n```text\n### not a section\n```")
+		assert.NotContains(t, readme, "old quickstart")
+		assert.NotContains(t, readme, "Old symptom")
+		requireBefore(t, readme, "## Quick Start", "## Unique Features")
+		requireBefore(t, readme, "### API-specific", "## HTTP Transport")
+
+		skillData, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+		require.NoError(t, err)
+		skill := string(skillData)
+		assert.Contains(t, skill, "## Prerequisites: Install the CLI")
+		assert.Contains(t, skill, "Do not proceed with skill commands until verification succeeds.")
+		assert.Contains(t, skill, "Health checks, OAuth setup, and agent-ready recipes stay in sync with research.json.")
+		assert.NotContains(t, skill, "Old skill value proposition")
+		assert.Contains(t, skill, "## Recipes")
+		assert.Contains(t, skill, "### Inspect health")
+		assert.Contains(t, skill, "test-pp-cli health --agent")
+		assert.Contains(t, skill, "Returns the verified health summary.")
+		assert.Contains(t, skill, "## Auth Setup\n\nUse `test-pp-cli oauth-token --grant-type client_credentials` before protected calls.")
+		assert.Contains(t, skill, "Run `test-pp-cli doctor` to verify setup.")
+		assert.NotContains(t, skill, "Old recipe")
+		requireBefore(t, skill, "## Recipes", "## Auth Setup")
+
+		assert.Contains(t, stderr, "dogfood: synced README.md (Value Proposition) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced SKILL.md (Value Proposition) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced README.md (Quick Start) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced README.md (Authentication) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced README.md (Troubleshooting) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced SKILL.md (Recipes) from research.json narrative")
+		assert.Contains(t, stderr, "dogfood: synced SKILL.md (Auth Setup) from research.json narrative")
+
+		beforeReadme := readme
+		beforeSkill := skill
+		result = checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		afterReadme, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		afterSkill, err := os.ReadFile(filepath.Join(cliDir, "SKILL.md"))
+		require.NoError(t, err)
+		assert.Equal(t, beforeReadme, string(afterReadme), "unchanged narrative should not rewrite README content")
+		assert.Equal(t, beforeSkill, string(afterSkill), "unchanged narrative should not rewrite SKILL content")
+	})
+
+	t.Run("value prop only preserves README lead paragraph", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+			"# Test CLI",
+			"",
+			"Generated fallback description from the spec.",
+			"",
+			"Old value proposition.",
+			"",
+			"## Quick Start",
+			"",
+			"Run it.",
+			"",
+			"## Usage",
+			"",
+			"Run help.",
+			"",
+		}, "\n"))
+		writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), "# Test Skill\n")
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health", Description: "See scheduling health metrics at a glance"},
+			},
+			Narrative: &ReadmeNarrative{
+				ValueProp: "Updated value proposition from research.json.",
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+
+		readmeData, err := os.ReadFile(filepath.Join(cliDir, "README.md"))
+		require.NoError(t, err)
+		readme := string(readmeData)
+		assert.Contains(t, readme, "Generated fallback description from the spec.")
+		assert.Contains(t, readme, "Updated value proposition from research.json.")
+		assert.NotContains(t, readme, "Old value proposition.")
+		requireBefore(t, readme, "Generated fallback description from the spec.", "Updated value proposition from research.json.")
+		requireBefore(t, readme, "Updated value proposition from research.json.", "## Quick Start")
+	})
+
 	t.Run("inserts README and SKILL sections when absent", func(t *testing.T) {
 		cliDir := t.TempDir()
 		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
@@ -1010,6 +2554,140 @@ func newHealthCmd() *cobra.Command {
 		manifest := readPublishedManifest(t, cliDir)
 		assert.Equal(t, existing, manifest.NovelFeatures)
 	})
+}
+
+func TestSyncCLITranscendenceDocsSyncsNovelFeatureGoSurfaces(t *testing.T) {
+	cliDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(cliDir, "internal", "mcp"), 0o755))
+	writeTestFile(t, filepath.Join(cliDir, "internal", "cli", "which.go"), `package cli
+
+type whichEntry struct {
+	Command      string
+	Description  string
+	Group        string
+	WhyItMatters string
+}
+
+var whichIndex = []whichEntry{
+	{Command: "old", Description: "old copy", Group: "", WhyItMatters: ""},
+}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "internal", "mcp", "tools.go"), `package mcp
+
+func context() map[string]any {
+	return map[string]any{
+		"command_mirror_capabilities": []map[string]string{
+			{"name": "Old", "command": "old", "description": "old copy", "rationale": "", "via": "mcp-command-mirror"},
+		},
+		"playbook": []map[string]string{
+			{"topic": "Old", "insight": "old why"},
+			{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."},
+		},
+	}
+}
+`)
+
+	artifacts, err := SyncCLITranscendenceDocs(cliDir, []NovelFeature{{
+		Name:         "Fresh insight",
+		Command:      "fresh scan",
+		Description:  "Fresh copy from research",
+		Rationale:    "Requires current research",
+		WhyItMatters: "Agents get the current path",
+		Group:        "Analysis",
+	}})
+	require.NoError(t, err)
+	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "cli", "which.go"), Detail: "whichIndex"})
+	assert.Contains(t, artifacts, syncedArtifact{Path: filepath.Join("internal", "mcp", "tools.go"), Detail: "command_mirror_capabilities"})
+
+	whichData, err := os.ReadFile(filepath.Join(cliDir, "internal", "cli", "which.go"))
+	require.NoError(t, err)
+	which := string(whichData)
+	assert.Contains(t, which, `Command: "fresh scan"`)
+	assert.Contains(t, which, `Description: "Fresh copy from research"`)
+	assert.NotContains(t, which, "old copy")
+
+	mcpData, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcp := string(mcpData)
+	assert.Contains(t, mcp, `"name": "Fresh insight"`)
+	assert.Contains(t, mcp, `"command": "fresh scan"`)
+	assert.Contains(t, mcp, `{"topic": "Resource discovery", "insight": "Use the target site's resource hierarchy before narrowing to records."}`)
+	assert.NotContains(t, mcp, `"topic": "Fresh insight"`)
+	assert.NotContains(t, mcp, "old copy")
+}
+
+func TestSyncCLITranscendenceDocsWarnsBeforeDroppingDocumentedCommands(t *testing.T) {
+	cliDir := t.TempDir()
+	writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
+		"# Test CLI",
+		"",
+		"## Unique Features",
+		"",
+		"These capabilities aren't available in any other tool for this API.",
+		"- **`health`** — current health",
+		"- **`reports sync`** — post-generation reports sync",
+		"",
+		"## Usage",
+		"",
+		"Run help.",
+		"",
+	}, "\n"))
+	writeTestFile(t, filepath.Join(cliDir, "SKILL.md"), strings.Join([]string{
+		"# Test Skill",
+		"",
+		"## Unique Capabilities",
+		"",
+		"These capabilities aren't available in any other tool for this API.",
+		"- **`health`** — current health",
+		"- **`stops sync`** — post-generation stops sync",
+		"",
+		"## Command Reference",
+		"",
+	}, "\n"))
+
+	var stderr string
+	_ = captureStderr(t, &stderr, func() []syncedArtifact {
+		artifacts, syncErr := SyncCLITranscendenceDocs(cliDir, []NovelFeature{{
+			Name:        "Health",
+			Command:     "health",
+			Description: "current health",
+		}})
+		require.NoError(t, syncErr)
+		return artifacts
+	})
+	assert.Contains(t, stderr, "dogfood_warning: README.md Unique Features will drop documented commands reports sync")
+	assert.Contains(t, stderr, "dogfood_warning: SKILL.md Unique Capabilities will drop documented commands stops sync")
+}
+
+// TestCheckNovelFeatures_BacktickUse pins that the walker matches commands
+// declared with Go's backtick raw-string Use: form. Authors reach for
+// backticks when the command name contains a literal double-quote (e.g.,
+// `query <project> "<sql>"`), and the walker must not silently report
+// those as missing.
+func TestCheckNovelFeatures_BacktickUse(t *testing.T) {
+	cliDir := t.TempDir()
+	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+	writeTestFile(t, filepath.Join(cliCodeDir, "query.go"),
+		"package cli\n"+
+			"func newQueryCmd() *cobra.Command {\n"+
+			"\treturn &cobra.Command{Use: `query <project> \"<sql>\"`}\n"+
+			"}\n")
+
+	researchDir := t.TempDir()
+	research := &ResearchResult{
+		APIName: "test",
+		NovelFeatures: []NovelFeature{
+			{Name: "SQL query", Command: "query"},
+		},
+	}
+	require.NoError(t, writeResearchJSON(research, researchDir))
+
+	result := checkNovelFeatures(cliDir, researchDir)
+	assert.Equal(t, 1, result.Planned)
+	assert.Equal(t, 1, result.Found)
+	assert.Empty(t, result.Missing)
 }
 
 func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
@@ -1107,6 +2785,188 @@ func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
 	assert.NotContains(t, string(rootData), "planned health")
 }
 
+// TestCheckNovelFeatures_CrossCutting pins the cross-cutting-feature
+// fallback added in #1197: planned features whose Command is a
+// parenthetical marker ("(any) --dry-run", "(internal client behavior)",
+// "(any read command, default behavior)") are detected against
+// rootFlags / agent-authored internal packages rather than reported as
+// missing. Flag-named features still report missing when the flag isn't
+// declared anywhere in CLI source.
+func TestCheckNovelFeatures_CrossCutting(t *testing.T) {
+	// Helper: minimal CLI fixture with a single command file plus a
+	// root.go that declares a few persistent flags as string literals.
+	// Optional agentPkg adds an agent-authored internal/<name>/<name>.go.
+	setupCLI := func(t *testing.T, agentPkg string) string {
+		t.Helper()
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), strings.Join([]string{
+			`package cli`,
+			``,
+			`func newRootCmd() *cobra.Command {`,
+			`	rootCmd := &cobra.Command{Use: "test-pp-cli"}`,
+			`	rootCmd.PersistentFlags().Bool("dry-run", false, "preview only")`,
+			`	rootCmd.PersistentFlags().String("tier", "", "service tier")`,
+			`	rootCmd.AddCommand(newHealthCmd())`,
+			`	return rootCmd`,
+			`}`,
+			``,
+		}, "\n"))
+		if agentPkg != "" {
+			agentDir := filepath.Join(cliDir, "internal", agentPkg)
+			require.NoError(t, os.MkdirAll(agentDir, 0o755))
+			writeTestFile(t, filepath.Join(agentDir, "request.go"),
+				"package "+agentPkg+"\n\nfunc DoRequest() {}\n")
+		}
+		return cliDir
+	}
+
+	t.Run("global flag declared on rootCmd resolves (any) marker", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Dry-run mode", Command: "(any) --dry-run"},
+				{Name: "Service tier", Command: "(any) --tier standard"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 2, result.Planned)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("undeclared flag reports missing", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Bogus flag", Command: "(any) --nonexistent-flag"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.Equal(t, []string{"(any) --nonexistent-flag"}, result.Missing)
+	})
+
+	t.Run("internal marker resolves when an agent-authored package exists", func(t *testing.T) {
+		cliDir := setupCLI(t, "dfs")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Adaptive client", Command: "(internal client behavior)"},
+				{Name: "Config resolution", Command: "(internal config resolution)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("internal marker reports missing when no agent package exists", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Adaptive client", Command: "(internal client behavior)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.Equal(t, []string{"(internal client behavior)"}, result.Missing)
+	})
+
+	t.Run("any-marker description without flag trusts the planner", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Default behavior", Command: "(any read command, default behavior)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("regular commands still reported missing when unbuilt", func(t *testing.T) {
+		// "sql" and "search" don't have command files and don't carry
+		// cross-cutting markers, so they must still appear as missing —
+		// the cross-cutting fallback must not mask genuinely-unbuilt
+		// commands. The "sql --dry-run" variant pins that a real command
+		// verb followed by a globally-declared flag is still reported
+		// missing: the fallback must defer to the regular matcher for
+		// these shapes, not absorb them just because the flag happens to
+		// be quoted in internal/cli/*.go.
+		cliDir := setupCLI(t, "dfs")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Local SQL", Command: "sql"},
+				{Name: "Local search", Command: "search"},
+				{Name: "SQL dry-run", Command: "sql --dry-run"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.ElementsMatch(t, []string{"sql", "search", "sql --dry-run"}, result.Missing)
+	})
+}
+
+// TestMatchCrossCuttingFeature covers the helper's edge cases directly:
+// non-cross-cutting inputs return applied=false so the regular path
+// matcher gets to decide; flag detection extracts =value suffixes and
+// surrounding punctuation; case-folding is consistent.
+func TestMatchCrossCuttingFeature(t *testing.T) {
+	cliDir := t.TempDir()
+	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+	writeTestFile(t, filepath.Join(cliCodeDir, "root.go"),
+		"package cli\n\nfunc init() {\n\t_ = \"dry-run\"\n\t_ = \"agent\"\n}\n")
+
+	cases := []struct {
+		name    string
+		cmd     string
+		matched bool
+		applied bool
+	}{
+		{"plain command name yields applied=false", "health", false, false},
+		{"space-separated path yields applied=false", "portfolio perf", false, false},
+		{"command followed by flag yields applied=false", "sql --dry-run", false, false},
+		{"bare flag matches declared name", "--dry-run", true, true},
+		{"flag with =value suffix matches", "--dry-run=true", true, true},
+		{"flag with trailing punctuation matches", "--dry-run,", true, true},
+		{"uppercase paren marker normalizes", "(ANY) --dry-run", true, true},
+		{"undeclared flag reports missing", "(any) --no-such-flag", false, true},
+		{"unknown paren marker yields applied=false", "(observation) something", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matched, applied := matchCrossCuttingFeature(tc.cmd, cliDir)
+			assert.Equal(t, tc.applied, applied, "applied")
+			assert.Equal(t, tc.matched, matched, "matched")
+		})
+	}
+}
+
 func captureStderr[T any](t *testing.T, captured *string, fn func() T) T {
 	t.Helper()
 
@@ -1126,6 +2986,16 @@ func captureStderr[T any](t *testing.T, captured *string, fn func() T) T {
 	return result
 }
 
+func requireBefore(t *testing.T, content, before, after string) {
+	t.Helper()
+
+	beforeIdx := strings.Index(content, before)
+	require.NotEqual(t, -1, beforeIdx, "missing expected content %q", before)
+	afterIdx := strings.Index(content, after)
+	require.NotEqual(t, -1, afterIdx, "missing expected content %q", after)
+	require.Less(t, beforeIdx, afterIdx, "%q should appear before %q", before, after)
+}
+
 func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
 	base := &DogfoodReport{
 		PathCheck:     PathCheckResult{Tested: 10, Valid: 10, Pct: 100},
@@ -1142,6 +3012,22 @@ func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
 
 	// Missing novel features → WARN
 	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 3, Found: 1, Missing: []string{"triage", "utilization"}}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+
+	// Depth mismatches → WARN
+	base.NovelFeaturesCheck = NovelFeaturesCheckResult{
+		Planned: 1,
+		Found:   1,
+		DepthMismatches: []NovelFeatureDepthMismatch{{
+			Command:    "grab",
+			Advertised: "grab",
+			Actual:     "assets grab",
+		}},
+	}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+
+	// TODO stubs → WARN
+	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 2, Found: 2, Stubbed: []string{"call"}}
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
 
 	// All found → PASS
@@ -1399,6 +3285,48 @@ func newCmd() *cobra.Command {
 	assert.Empty(t, result.Violations, "--yes is allowed; only --skip-confirmations variants are banned")
 }
 
+// TestCheckNamingConsistency_BacktickUse pins that the verb extractor reads
+// the leading identifier from a backtick raw-string Use: declaration. A
+// banned verb hidden in a backtick literal must still surface as a
+// violation; symmetrically, a permitted verb in the same form must not
+// produce a false positive.
+func TestCheckNamingConsistency_BacktickUse(t *testing.T) {
+	t.Run("permitted verb in backtick Use", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+		writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"),
+			"package cli\n"+
+				"\n"+
+				"import \"github.com/spf13/cobra\"\n"+
+				"\n"+
+				"func newQueryCmd() *cobra.Command {\n"+
+				"\treturn &cobra.Command{Use: `query <project> \"<sql>\"`}\n"+
+				"}\n")
+
+		result := checkNamingConsistency(dir)
+		assert.Equal(t, 1, result.Checked)
+		assert.Empty(t, result.Violations)
+	})
+
+	t.Run("banned verb in backtick Use", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+		writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"),
+			"package cli\n"+
+				"\n"+
+				"import \"github.com/spf13/cobra\"\n"+
+				"\n"+
+				"func newInfoCmd() *cobra.Command {\n"+
+				"\treturn &cobra.Command{Use: `info <project> \"<filter>\"`}\n"+
+				"}\n")
+
+		result := checkNamingConsistency(dir)
+		require.Len(t, result.Violations, 1)
+		assert.Equal(t, "info", result.Violations[0].Banned)
+		assert.Equal(t, "verb", result.Violations[0].Category)
+	})
+}
+
 func TestCheckNamingConsistency_NoFalsePositiveOnIdentifierWithBannedSubstring(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
@@ -1474,6 +3402,163 @@ func TestDeriveDogfoodVerdict_NamingViolationFails(t *testing.T) {
 func writeTestFile(t *testing.T, path string, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+// --- resolveDogfoodSpec ---
+
+func TestResolveDogfoodSpec_PrefersBundledOverCallerSpec(t *testing.T) {
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, bundled, "openapi: 3.0.0\n")
+
+	caller := filepath.Join(t.TempDir(), "upstream.yaml")
+	writeTestFile(t, caller, "openapi: 3.0.0\n")
+
+	resolved, source, overridden := resolveDogfoodSpec(dir, caller)
+	assert.Equal(t, bundled, resolved)
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
+	assert.Equal(t, caller, overridden)
+}
+
+func TestResolveDogfoodSpec_NoOverrideWhenCallerPointsAtBundled(t *testing.T) {
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, bundled, "openapi: 3.0.0\n")
+
+	resolved, source, overridden := resolveDogfoodSpec(dir, bundled)
+	assert.Equal(t, bundled, resolved)
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
+	assert.Empty(t, overridden, "caller path equal to bundled should not be reported as overridden")
+}
+
+func TestResolveDogfoodSpec_FallsThroughWhenNoBundled(t *testing.T) {
+	dir := t.TempDir() // empty, no spec.* archived
+	caller := filepath.Join(t.TempDir(), "upstream.yaml")
+	writeTestFile(t, caller, "openapi: 3.0.0\n")
+
+	resolved, source, overridden := resolveDogfoodSpec(dir, caller)
+	assert.Equal(t, caller, resolved)
+	assert.Equal(t, DogfoodSpecSourceCaller, source)
+	assert.Empty(t, overridden)
+}
+
+func TestResolveDogfoodSpec_EmptyWhenNeitherPresent(t *testing.T) {
+	resolved, source, overridden := resolveDogfoodSpec(t.TempDir(), "")
+	assert.Empty(t, resolved)
+	assert.Empty(t, source)
+	assert.Empty(t, overridden)
+}
+
+func TestResolveDogfoodSpec_PrefersSpecJSONOverSpecYAML(t *testing.T) {
+	dir := t.TempDir()
+	jsonSpec := filepath.Join(dir, "spec.json")
+	yamlSpec := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, jsonSpec, `{"openapi":"3.0.0"}`)
+	writeTestFile(t, yamlSpec, "openapi: 3.0.0\n")
+
+	resolved, source, _ := resolveDogfoodSpec(dir, "")
+	assert.Equal(t, jsonSpec, resolved, "spec.json should win when both archive formats are present (mirrors findArchivedSpec)")
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
+}
+
+// End-to-end: RunDogfood should score against the bundled spec when the caller
+// passes a different (smaller) spec.
+func TestRunDogfood_BundledSpecOverridesCallerSpec(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+type rootFlags struct{}
+func initFlags(flags *rootFlags) { _ = flags }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_get.go"), `package cli
+func usersGet() { path := "/users/{id}"; _ = path }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "projects_get.go"), `package cli
+func projectsGet() { path := "/projects/{id}"; _ = path }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader(token string) string { return "Bearer " + token }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	// Bundled spec: the CLI's own authoritative spec, two endpoints — matches
+	// what the CLI actually implements.
+	bundledSpec := filepath.Join(dir, "spec.json")
+	writeTestFile(t, bundledSpec, `{
+  "paths": {
+    "/users/{id}": {},
+    "/projects/{id}": {}
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer" }
+    }
+  }
+}`)
+
+	// Caller's --spec: the upstream / partial spec with only one of the two
+	// endpoints. Today (pre-fix) this drives Path Validity to 1/2.
+	callerSpec := filepath.Join(t.TempDir(), "upstream.json")
+	writeTestFile(t, callerSpec, `{
+  "paths": {
+    "/users/{id}": {}
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer" }
+    }
+  }
+}`)
+
+	report, err := RunDogfood(dir, callerSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, bundledSpec, report.SpecPath, "RunDogfood should record the bundled path it actually loaded")
+	assert.Equal(t, DogfoodSpecSourceBundled, report.SpecSource)
+	assert.Equal(t, 2, report.PathCheck.Tested, "should score against the bundled 2-endpoint spec, not the 1-endpoint caller spec")
+	assert.Equal(t, 2, report.PathCheck.Valid)
+}
+
+// When no spec is archived alongside the CLI, RunDogfood must still honor the
+// caller's --spec — no regression for legacy or orphan CLI directories that
+// pre-date publish package's spec-bundling.
+func TestRunDogfood_FallsBackToCallerSpecWhenNoBundle(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+type rootFlags struct{}
+func initFlags(flags *rootFlags) { _ = flags }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_get.go"), `package cli
+func usersGet() { path := "/users/{id}"; _ = path }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader(token string) string { return "Bearer " + token }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	callerSpec := filepath.Join(t.TempDir(), "upstream.json")
+	writeTestFile(t, callerSpec, `{
+  "paths": { "/users/{id}": {} },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer" }
+    }
+  }
+}`)
+
+	report, err := RunDogfood(dir, callerSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, callerSpec, report.SpecPath)
+	assert.Equal(t, DogfoodSpecSourceCaller, report.SpecSource)
+	assert.Equal(t, 1, report.PathCheck.Tested)
 }
 
 // --- checkTestPresence ---
@@ -1621,6 +3706,52 @@ func TestCollectDogfoodIssues_IncludesMissingTests(t *testing.T) {
 	}
 	issues := collectDogfoodIssues(report, false)
 	assert.Contains(t, issues, "pure-logic packages with no tests: recipes, goat")
+}
+
+func TestCollectDogfoodIssues_IncludesNovelFeatureDepthMismatch(t *testing.T) {
+	report := &DogfoodReport{
+		NovelFeaturesCheck: NovelFeaturesCheckResult{
+			Planned: 1,
+			Found:   1,
+			DepthMismatches: []NovelFeatureDepthMismatch{{
+				Command:    "grab",
+				Advertised: "grab",
+				Actual:     "assets grab",
+			}},
+		},
+	}
+
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "1 novel feature command-depth mismatches: grab advertised as grab but registered as assets grab")
+}
+
+func TestCollectDogfoodIssues_IncludesNovelFeatureStubs(t *testing.T) {
+	report := &DogfoodReport{
+		NovelFeaturesCheck: NovelFeaturesCheckResult{
+			Planned: 2,
+			Found:   2,
+			Stubbed: []string{"call"},
+		},
+	}
+
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "1/2 novel features are TODO stubs: call")
+}
+
+func TestCollectDogfoodIssues_IncludesMissingDataSourceStrategy(t *testing.T) {
+	report := &DogfoodReport{
+		ReimplementationCheck: ReimplementationCheckResult{
+			Checked: 2,
+			MissingDataSourceStrategy: []ReimplementationFinding{{
+				Command: "id-hunt",
+				File:    "id_hunt.go",
+				Reason:  "missing // pp:data-source <auto|local|live|computed> annotation",
+			}},
+		},
+	}
+
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "1/2 novel features missing data-source strategy: id-hunt (id_hunt.go) — missing // pp:data-source <auto|local|live|computed> annotation")
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {

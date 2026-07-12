@@ -1,0 +1,43 @@
+openapi: "3.0.3"
+info:
+  title: Printing Press OAuth2 Device Code API
+  version: "1.0.0"
+  description: Purpose-built fixture for the OAuth2 device-code auth shape.
+servers:
+  - url: https://api.device.example/v1
+security:
+  - OAuth2Device: []
+components:
+  securitySchemes:
+    OAuth2Device:
+      type: oauth2
+      x-auth-env-vars:
+        - DEVICE_CODE_CLIENT_ID
+      x-oauth-device-flow:
+        deviceAuthorizationUrl: https://login.device.example/oauth/device
+        tokenUrl: https://login.device.example/oauth/token
+        scopes:
+          - items.read
+  schemas:
+    Item:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+paths:
+  /items:
+    get:
+      tags: [items]
+      operationId: listItems
+      summary: List items
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"

@@ -46,13 +46,24 @@ issue is an action surface. Optimize the issue path for speed and signal:
   to fix it. No priority prefix (`[P1]`), no WU ordinal (`WU-1`) — both
   belong on labels and in the user-facing summary, not in the title that
   someone scans across retros.
-- **Generate bodies inline, never via the Write tool.** Use shell heredocs
-  into variables in a single `Bash` invocation. Writing each body to a file
-  and passing `--body-file` adds a tool round-trip per issue and is the
-  single largest source of perceived latency the skill historically had.
+- **Build bodies inline; never via the Write tool.** Use shell heredocs
+  into variables (or `printf` into bash-resident temp files inside a single
+  `Bash` invocation). Per-WU `Write` tool round-trips are the single largest
+  source of perceived latency the skill historically had. *Bash-resident
+  temp files passed to `gh ... --body-file` are fine* — they're written and
+  consumed inside one Bash call with no tool round-trip and unblock the
+  Phase 6 Step 3 scrub step (`scrub_body` needs a file input/output, and
+  `gh --body-file` is the natural consumer of the scrubbed output).
 - **Run issue creates and comments in parallel.** Each WU's filing is
   independent of every other WU. Background subshells writing to indexed
   temp files, then `wait`, then read in order — the pattern is in Step 3.
+  - **Anti-pattern:** Do not use `URL=$(gh issue create ... &)` or
+    `URL=$(gh issue comment ... &)`. The `&` runs inside the command
+    substitution subshell, the subshell exits before `gh` finishes, `URL`
+    is empty, and the still-running `gh` process can create or comment
+    successfully in the background. Retrying then produces duplicate work.
+    Use Step 3's `(gh ... > "$ISSUE_TMPDIR/issue-$wu_idx") &` capture-file
+    shape instead.
 
 ## Step 1: Ensure labels exist (idempotent, create-only)
 
@@ -72,7 +83,7 @@ EXISTING_LABELS=$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[]
 NEED_CREATE=false
 for required in \
   "comp:generator" "comp:openapi-parser" "comp:spec-parser" \
-  "comp:scorer" "comp:skill" "comp:catalog" \
+  "comp:scorer" "comp:skill" \
   "priority:P1" "priority:P2" "priority:P3" \
   "retro"; do
   if ! printf '%s\n' "$EXISTING_LABELS" | grep -qFx "$required"; then
@@ -87,13 +98,12 @@ if [ "$NEED_CREATE" = true ]; then
     gh label create "$name" --repo "$REPO" --color "$color" --description "$desc" 2>/dev/null || true
   }
 
-  # Component labels (6) — drive cross-retro discovery (`gh issue list --label comp:<slug>`)
+  # Component labels (5) — drive cross-retro discovery (`gh issue list --label comp:<slug>`)
   ensure_label "comp:generator"      "5319e7" "Generator templates (internal/generator/)"
   ensure_label "comp:openapi-parser" "5319e7" "OpenAPI parser (internal/openapi/)"
   ensure_label "comp:spec-parser"    "5319e7" "Internal spec parser (internal/spec/)"
   ensure_label "comp:scorer"         "5319e7" "verify / dogfood / scorecard"
   ensure_label "comp:skill"          "5319e7" "skills/printing-press/SKILL.md and related skill instructions"
-  ensure_label "comp:catalog"        "5319e7" "catalog/ entries"
 
   # Priority labels (3) — drive priority-based filtering. The label is the
   # primary carrier; titles do not duplicate the priority prefix.
@@ -187,6 +197,13 @@ user sees what will happen and can override before anything is filed.
 For each WU, build either an issue body or a comment body, then run `gh`
 in a background subshell. `wait`, then collect.
 
+**Layer 0 body scrub is mandatory.** Before posting any body to GitHub, the
+parallel loop runs `scrub_body` on the body file. Source the function from
+[`secret-scrubbing.md`](secret-scrubbing.md) "Layer 0" at the top of the
+bash block that contains the loop — paste the `scrub_body() { ... }`
+definition verbatim, or `source` an equivalent shell fragment. Without this,
+the loop will fail with `scrub_body: command not found` per-WU.
+
 ### Issue title (for new issues)
 
 Succinct, problem-stated. Examples:
@@ -226,6 +243,17 @@ attachments. This is the meat of the body — be specific.>
 - Command + output snippet showing the failure
 - Spec snippet showing the trigger condition
 - Error messages, stack traces, or scorer output verbatim where relevant
+
+> ⚠️ **Redact secrets and PII before pasting.** Issue bodies are public. When
+> the evidence comes from scanner output, dogfood payloads, Greptile review
+> comments, or live API responses, replace credentials with
+> `<REDACTED:<vendor>-<kind>:<first4>...<last4>:<len>ch>` and PII with
+> `<REDACTED:<kind>>` per [`secret-scrubbing.md`](secret-scrubbing.md)
+> "Layer 0". The Phase 6 Step 3 loop runs `scrub_body` on this file and will
+> hard-fail the WU's filing if it finds an unredacted vendor-prefix token —
+> that's the floor, not a substitute for redacting at write time.
+> **This applies most strictly to findings about secret/PII leaks**: quoting
+> the actual leaked value to prove the leak exists re-leaks it.
 
 ## Suspected root cause
 
@@ -347,6 +375,7 @@ declare -a OUTCOME_KIND OUTCOME_URL OUTCOME_TITLE OUTCOME_PRIORITY OUTCOME_COMP 
 declare -a FAILED_ISSUES
 
 ISSUE_TMPDIR=$(mktemp -d)
+ISSUE_RUN_START_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   (
@@ -360,11 +389,33 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     URL=""
     FAIL_MSG=""
 
+    # Layer 0 body scrub — runs once per WU on whichever body is about to be
+    # posted. scrub_body is defined in references/secret-scrubbing.md and must
+    # be sourced or pasted in the bash block enclosing this loop.
+    #
+    # Hard-fail behavior: if the body contains an unredacted vendor-prefix
+    # token (lin_api_, sk_live_, ghp_, etc.) we refuse to post that WU and
+    # surface it in $FAILED_ISSUES so the agent can hand-redact and retry.
+    # PII patterns auto-redact in place. The original $WU_BODY /
+    # $WU_COMMENT_BODY shell var is untouched; only the file passed to gh
+    # gets the scrubbed text.
+    BODY_TMP="$ISSUE_TMPDIR/body-$wu_idx.md"
+    BODY_TMP_SCRUBBED="$ISSUE_TMPDIR/body-$wu_idx.scrubbed.md"
     if [[ "$DEDUP" == comment:* ]]; then
+      printf '%s' "$WU_COMMENT_BODY" > "$BODY_TMP"
+    else
+      printf '%s' "$WU_BODY" > "$BODY_TMP"
+    fi
+    if ! scrub_body "$BODY_TMP" "$BODY_TMP_SCRUBBED" 2>"$ISSUE_TMPDIR/scrub-$wu_idx.err"; then
+      KIND="scrub-failed"
+      SCRUB_REASON=$(tr '\n' ' ' < "$ISSUE_TMPDIR/scrub-$wu_idx.err" | head -c 400)
+      FAIL_MSG="$WU_TITLE — body scrub hard-failed (vendor-prefix secret in body); not posted. Reason: $SCRUB_REASON. Body left at $BODY_TMP for hand-redaction."
+      URL=""
+    elif [[ "$DEDUP" == comment:* ]]; then
       ISSUE_NUM="${DEDUP#comment:}"
       if URL=$(gh issue comment "$ISSUE_NUM" \
             --repo "$REPO" \
-            --body "$WU_COMMENT_BODY" 2>&1) \
+            --body-file "$BODY_TMP_SCRUBBED" 2>&1) \
             && [[ "$URL" == https://* ]]; then
         KIND="commented"
       else
@@ -376,7 +427,7 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
       if URL=$(gh issue create \
             --repo "$REPO" \
             --title "$WU_TITLE" \
-            --body "$WU_BODY" \
+            --body-file "$BODY_TMP_SCRUBBED" \
             --label retro \
             --label "priority:P${WU_PRIORITY_NUM}" \
             --label "comp:${WU_COMP_SLUG}" 2>&1) \
@@ -403,6 +454,60 @@ done
 
 wait
 
+# Defensive duplicate detector. If an agent accidentally used the malformed
+# `URL=$(gh issue create ... &)` shortcut outside this reference, those
+# backgrounded issue creates may succeed even though the captured URL is empty.
+# Extra issues created by the current user since the run began, beyond the issue
+# numbers captured in per-WU temp files, signal that parallel filing leaked
+# creates. Use the live REST list endpoint instead of search, whose index can lag
+# immediately after creation.
+EXPECTED_ISSUE_NUMBERS=$(
+  for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
+    if [ -f "$ISSUE_TMPDIR/issue-$wu_idx" ]; then
+      {
+        IFS= read -r KIND_TMP
+        IFS= read -r URL_TMP
+      } < "$ISSUE_TMPDIR/issue-$wu_idx"
+      if [[ "$KIND_TMP" == created && "$URL_TMP" =~ /issues/([0-9]+)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+      fi
+    fi
+  done | sort -u
+)
+CURRENT_GH_USER=$(gh api user --jq .login 2>/dev/null || true)
+RECENT_CREATED_LINES=""
+if [ -n "$CURRENT_GH_USER" ]; then
+  RECENT_CREATED_LINES=$(gh api --method GET "repos/$REPO/issues" \
+    -f state=open \
+    -f since="$ISSUE_RUN_START_ISO" \
+    -f sort=created \
+    -f direction=desc \
+    -f per_page=100 \
+    --jq ".[] | select((.pull_request | not) and .user.login == \"$CURRENT_GH_USER\" and .created_at >= \"$ISSUE_RUN_START_ISO\") | \"#\(.number) \(.title)\"" 2>/dev/null || true)
+fi
+UNEXPECTED_CREATED_LINES=$(printf '%s\n' "$RECENT_CREATED_LINES" | sed '/^$/d')
+if [ -n "$EXPECTED_ISSUE_NUMBERS" ]; then
+  while IFS= read -r issue_num; do
+    [ -z "$issue_num" ] && continue
+    UNEXPECTED_CREATED_LINES=$(printf '%s\n' "$UNEXPECTED_CREATED_LINES" | grep -v "^#$issue_num " || true)
+  done <<EOF
+$EXPECTED_ISSUE_NUMBERS
+EOF
+fi
+EXPECTED_CREATES=0
+for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
+  if [[ "${WU_DEDUP[$wu_idx]}" != comment:* ]]; then
+    KIND_TMP=$(head -1 "$ISSUE_TMPDIR/issue-$wu_idx" 2>/dev/null)
+    [[ "$KIND_TMP" == scrub-failed ]] || EXPECTED_CREATES=$((EXPECTED_CREATES + 1))
+  fi
+done
+UNEXPECTED_CREATED_COUNT=$(printf '%s\n' "$UNEXPECTED_CREATED_LINES" | sed '/^$/d' | wc -l | tr -d ' ')
+if [ "$UNEXPECTED_CREATED_COUNT" -gt 0 ]; then
+  printf 'WARNING: %s unexpected issue(s) were created by the current user since %s, outside this retro'\''s %s expected new issue(s). Check for duplicate issues before presenting results.\n' \
+    "$UNEXPECTED_CREATED_COUNT" "$ISSUE_RUN_START_ISO" "$EXPECTED_CREATES" >&2
+  printf '%s\n' "$UNEXPECTED_CREATED_LINES" | sed 's/^/  /' >&2
+fi
+
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   {
     IFS= read -r KIND
@@ -425,14 +530,28 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     created|commented)
       echo "${KIND^}: $URL"
       ;;
-    create-failed|comment-failed)
+    create-failed|comment-failed|scrub-failed)
       echo "WARNING: $FAIL_MSG"
       FAILED_ISSUES+=("$FAIL_MSG")
       ;;
   esac
 done
 
-rm -rf "$ISSUE_TMPDIR"
+# Cleanup is conditional on scrub-failed WUs. Those WUs' body files are the
+# canonical hand-redaction source the failure message points at — wiping
+# $ISSUE_TMPDIR would destroy the recovery path. Keep the dir alive when any
+# WU scrub-failed; the agent (or user) can read the body file, hand-redact,
+# and re-run the affected WUs without re-deriving the body. The dir is in
+# $(mktemp -d) so it self-cleans on OS reboot / `tmpwatch` regardless.
+SCRUB_FAILED_COUNT=0
+for KIND in "${OUTCOME_KIND[@]}"; do
+  [ "$KIND" = "scrub-failed" ] && SCRUB_FAILED_COUNT=$((SCRUB_FAILED_COUNT + 1))
+done
+if [ "$SCRUB_FAILED_COUNT" -eq 0 ]; then
+  rm -rf "$ISSUE_TMPDIR"
+else
+  echo "NOTE: $SCRUB_FAILED_COUNT WU body file(s) preserved at $ISSUE_TMPDIR for hand-redaction. Delete manually after retrying the affected WU(s)." >&2
+fi
 ```
 
 Failure modes:
@@ -443,6 +562,7 @@ Failure modes:
 | `commented` | Comment added to existing issue | Listed as "commented on #N" |
 | `create-failed` | `gh issue create` returned no usable URL | `$FAILED_ISSUES` summary; manual filing instructions |
 | `comment-failed` | `gh issue comment` failed | `$FAILED_ISSUES` summary; manual comment instructions |
+| `scrub-failed` | Body contained an unredacted vendor-prefix secret; `scrub_body` refused to write the scrubbed copy. Body file left at `$BODY_TMP` for hand-redaction | `$FAILED_ISSUES` summary; agent must hand-redact per `secret-scrubbing.md` Layer 0 and retry the WU |
 
 ## Variables expected
 
@@ -465,7 +585,7 @@ Failure modes:
 
 | Variable | Contains |
 |---|---|
-| `$OUTCOME_KIND` | Array, one per WU: `created` / `commented` / `create-failed` / `comment-failed` |
+| `$OUTCOME_KIND` | Array, one per WU: `created` / `commented` / `create-failed` / `comment-failed` / `scrub-failed` |
 | `$OUTCOME_URL` | Array of issue/comment URLs (empty for failures) |
 | `$FAILED_ISSUES` | Array of human-readable failure descriptions; empty if every WU succeeded |
 

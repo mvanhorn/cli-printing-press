@@ -1,0 +1,38 @@
+name: Verify learn purity
+
+# Fails the build if generator templates under
+# internal/generator/templates/learn*.go.tmpl or learn_*/*.go.tmpl reference
+# domain-specific identifiers from the prediction-goat lineage. See
+# scripts/verify-learn-purity.sh for the watchlist and allowlist rules.
+#
+# The recall/teach loop generalized from prediction-goat-pp-cli (plan
+# 2026-05-23-002) must stay domain-neutral so every printed CLI inherits the
+# loop without inheriting prediction-market vocabulary.
+
+on:
+  pull_request:
+    paths:
+      - 'internal/generator/templates/learn**'
+      - 'scripts/verify-learn-purity.sh'
+      - '.github/workflows/verify-learn-purity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run learn-purity check
+        run: bash scripts/verify-learn-purity.sh

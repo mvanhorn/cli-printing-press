@@ -1,7 +1,7 @@
 ---
 title: Generated MCP sql tool opened read-write SQLite under a false readOnlyHint
 date: "2026-05-08"
-category: docs/solutions/security-issues/
+category: security-issues
 module: internal/generator/templates
 problem_type: security_issue
 component: tooling

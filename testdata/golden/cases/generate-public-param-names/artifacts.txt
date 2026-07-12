@@ -1,5 +1,6 @@
 public-param-golden/internal/cli/stores_find.go
 public-param-golden/internal/cli/stores_create.go
 public-param-golden/internal/mcp/tools.go
+public-param-golden/tools-manifest.json
 public-param-golden/README.md
 public-param-golden/SKILL.md

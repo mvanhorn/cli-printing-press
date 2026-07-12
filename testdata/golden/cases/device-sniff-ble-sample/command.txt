@@ -1,0 +1,1 @@
+$BINARY device-sniff ble --input "$REPO_ROOT/testdata/device/fixtures/ble-events.json" --output "$CASE_ACTUAL_DIR/device.yaml" --analysis-output "$CASE_ACTUAL_DIR/analysis.json" --evidence-output "$CASE_ACTUAL_DIR/evidence.json"

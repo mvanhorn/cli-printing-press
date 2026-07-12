@@ -86,6 +86,30 @@ func TestSafeResourceFileStem(t *testing.T) {
 			expected: "store_arm64_endpoint",
 			why:      "'endpoint' is not a GOARCH/GOOS; only triggers on the last token",
 		},
+		{
+			name:     "trailing 'test' triggers rename",
+			stem:     "webhook_test",
+			expected: "webhook_test_cmd",
+			why:      "Go treats *_test.go as a test file and excludes it from the normal package build",
+		},
+		{
+			name:     "trailing 'test' from multi-segment stem triggers rename",
+			stem:     "connector_verify_test",
+			expected: "connector_verify_test_cmd",
+			why:      "only the trailing token matters; nested operationIds ending in 'test' also collide",
+		},
+		{
+			name:     "embedded 'test' in middle position unchanged",
+			stem:     "test_helpers_endpoint",
+			expected: "test_helpers_endpoint",
+			why:      "'test' must be the trailing token for the *_test.go rule to apply",
+		},
+		{
+			name:     "stem with 'tester' suffix unchanged",
+			stem:     "load_tester",
+			expected: "load_tester",
+			why:      "'tester' is not 'test'; only exact-suffix tokens trigger",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

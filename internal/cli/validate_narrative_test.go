@@ -69,6 +69,66 @@ func TestValidateNarrativeCmd_StrictExitCode(t *testing.T) {
 	}
 }
 
+func TestValidateNarrativeCmd_StrictFullExamplesAllowsSideEffectUnsupported(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{
+		"quickstart":[{"command":"stub auth login --client-id abc --client-secret def"}],
+		"recipes":[{"command":"stub tickets age-out --status stale --apply"}]
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binary := buildShipcheckStub(t)
+
+	cmd := newValidateNarrativeCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetArgs([]string{"--strict", "--full-examples", "--research", research, "--binary", binary})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("side-effectful unsupported examples should not fail strict mode, got %v", err)
+	}
+	got := stdout.String() + stderr.String()
+	if count := strings.Count(got, "UNSUPPORTED"); count != 2 {
+		t.Fatalf("expected 2 unsupported warnings, got %d in %q", count, got)
+	}
+	if !strings.Contains(got, "2 unsupported") {
+		t.Fatalf("output = %q, want summary with 2 unsupported warnings", got)
+	}
+}
+
+func TestValidateNarrativeCmd_JSONReportsStrictFailureForUnsupported(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{
+		"quickstart":[{"command":"stub auth login --client-id abc --client-secret def"}],
+		"recipes":[{"command":"stub widgets list"}]
+	}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binary := buildShipcheckStub(t)
+
+	cmd := newValidateNarrativeCmd()
+	var stdout bytes.Buffer
+	cmd.SetArgs([]string{"--json", "--full-examples", "--research", research, "--binary", binary})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(new(bytes.Buffer))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected JSON report to succeed without --strict, got %v", err)
+	}
+	got := stdout.String()
+	if count := strings.Count(got, `"status":"unsupported"`); count != 2 {
+		t.Fatalf("expected 2 unsupported JSON results, got %d in %s", count, got)
+	}
+	if count := strings.Count(got, `"strict_failure":true`); count != 1 {
+		t.Fatalf("expected only the dry-run-unavailable unsupported result to be strict_failure, got %d in %s", count, got)
+	}
+}
+
 func TestValidateNarrativeCmd_MissingResearchIsNotApplicable(t *testing.T) {
 	t.Parallel()
 
@@ -88,5 +148,75 @@ func TestValidateNarrativeCmd_MissingResearchIsNotApplicable(t *testing.T) {
 	}
 	if got := stdout.String() + stderr.String(); !strings.Contains(got, "N/A: research.json not found") {
 		t.Fatalf("stderr = %q, want N/A skip message", got)
+	}
+}
+
+func TestValidateNarrativeCmd_FrameworkOnlyDoesNotRequireBinary(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{"quickstart":[{"command":"demo-pp-cli sync --resources users --since 7d"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newValidateNarrativeCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetArgs([]string{"--strict", "--framework-only", "--research", research})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected --framework-only without --binary to pass documented flags, got %v", err)
+	}
+	if got := stdout.String() + stderr.String(); !strings.Contains(got, "framework-command narrative examples passed static checks") {
+		t.Fatalf("output = %q, want framework-only OK output", got)
+	}
+}
+
+func TestValidateNarrativeCmd_FrameworkOnlyFailsInventedFlags(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{"quickstart":[{"command":"demo-pp-cli sync --entities users"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newValidateNarrativeCmd()
+	cmd.SetArgs([]string{"--strict", "--framework-only", "--research", research})
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected --framework-only --strict to fail on invented framework flags")
+	}
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != ExitInputError {
+		t.Errorf("Code = %d, want ExitInputError (%d)", exitErr.Code, ExitInputError)
+	}
+}
+
+func TestValidateNarrativeCmd_FrameworkOnlyReportsNoFrameworkCommands(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{"quickstart":[{"command":"demo-pp-cli customers list --limit 5"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newValidateNarrativeCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetArgs([]string{"--strict", "--framework-only", "--research", research})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected endpoint-only narrative to skip framework-only validation, got %v", err)
+	}
+	if got := stdout.String() + stderr.String(); !strings.Contains(got, "no framework-command narrative examples found") {
+		t.Fatalf("output = %q, want no-framework-command skip output", got)
 	}
 }

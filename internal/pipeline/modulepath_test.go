@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"go/format"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,4 +197,130 @@ brews:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "does not contain expected module path")
 	})
+}
+
+// TestRewriteModulePath_ProducesGofmtCleanImports guards the publish-time
+// invariant that drove the library-wide gofmt drift: rewriting the module path
+// via string replacement reorders the import block (the new path sorts
+// differently than the old one), so without a reformat pass every published
+// CLI's imports land out of gofmt order. The input here is gofmt-clean under
+// the old short module path; the rewrite must leave it gofmt-clean under the
+// new path too.
+func TestRewriteModulePath_ProducesGofmtCleanImports(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module acme-pp-cli\n\ngo 1.23\n"), 0o644))
+
+	// Sorted under "acme-pp-cli": the local imports lead the group because
+	// "acme" precedes the stdlib names. After the rewrite to a github.com
+	// path they must move below "fmt", which only happens if the rewrite
+	// reformats.
+	src := `package cli
+
+import (
+	"acme-pp-cli/internal/cliutil"
+	"acme-pp-cli/internal/config"
+	"context"
+	"fmt"
+)
+
+var _ = context.Background
+var _ = fmt.Sprint
+var _ = cliutil.X
+var _ = config.Y
+`
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	goPath := filepath.Join(dir, "internal", "cli", "root.go")
+	require.NoError(t, os.WriteFile(goPath, []byte(src), 0o644))
+
+	const newPath = "github.com/mvanhorn/printing-press-library/library/other/acme-pp-cli"
+	require.NoError(t, RewriteModulePath(dir, "acme-pp-cli", newPath))
+
+	out, err := os.ReadFile(goPath)
+	require.NoError(t, err)
+
+	formatted, err := format.Source(out)
+	require.NoError(t, err)
+	assert.Equal(t, string(formatted), string(out), "rewritten .go file must be gofmt-clean")
+	assert.Contains(t, string(out), newPath+"/internal/cliutil")
+}
+
+func TestRewriteModulePathReferences_RewritesBareRootSelfImports(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	src := `package cli
+
+import (
+	root "oldmod"
+	store "oldmod/internal/store"
+	extra "oldmod-extra/x"
+	other "oldmodother"
+)
+
+var _ = root.X
+var _ = store.X
+var _ = extra.X
+var _ = other.X
+`
+	goPath := filepath.Join(dir, "imports.go")
+	require.NoError(t, os.WriteFile(goPath, []byte(src), 0o644))
+
+	require.NoError(t, RewriteModulePathReferences(dir, "oldmod", "newmod"))
+	out, err := os.ReadFile(goPath)
+	require.NoError(t, err)
+	content := string(out)
+
+	assert.Contains(t, content, `root "newmod"`)
+	assert.Contains(t, content, `store "newmod/internal/store"`)
+	assert.Contains(t, content, `extra "oldmod-extra/x"`)
+	assert.Contains(t, content, `other "oldmodother"`)
+	assert.NotContains(t, content, `"oldmod"`)
+	assert.NotContains(t, content, `"oldmod/internal/store"`)
+
+	require.NoError(t, RewriteModulePathReferences(dir, "oldmod", "newmod"))
+	again, err := os.ReadFile(goPath)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(again), "module path rewrite must be idempotent")
+	assert.NotContains(t, string(again), "newmod/newmod")
+}
+
+func TestRewriteModulePathReferences_SkipsImportBlockCommentsAndSingleLineGroup(t *testing.T) {
+	t.Parallel()
+
+	// A comment inside an import block that quotes the old module path must
+	// NOT be rewritten, while a real import on the next line is.
+	dir := t.TempDir()
+	src := `package cli
+
+import (
+	// "oldmod" is the self-reference package; this comment must stay verbatim
+	root "oldmod"
+)
+
+var _ = root.X
+`
+	goPath := filepath.Join(dir, "imports.go")
+	require.NoError(t, os.WriteFile(goPath, []byte(src), 0o644))
+	require.NoError(t, RewriteModulePathReferences(dir, "oldmod", "newmod"))
+	out, err := os.ReadFile(goPath)
+	require.NoError(t, err)
+	content := string(out)
+	assert.Contains(t, content, `root "newmod"`, "real import must be rewritten")
+	assert.Contains(t, content, `// "oldmod" is the self-reference package`, "import-block comment text must be left untouched")
+
+	// A single-line grouped import carries the path on the import( line.
+	dir2 := t.TempDir()
+	src2 := "package cli\n\nimport(\"oldmod\")\n\nvar _ = X\n"
+	goPath2 := filepath.Join(dir2, "single.go")
+	require.NoError(t, os.WriteFile(goPath2, []byte(src2), 0o644))
+	require.NoError(t, RewriteModulePathReferences(dir2, "oldmod", "newmod"))
+	out2, err := os.ReadFile(goPath2)
+	require.NoError(t, err)
+	// The rewrite chain gofmts the file, so the single-line group is
+	// reformatted; assert on the path token rather than the exact form.
+	assert.Contains(t, string(out2), `"newmod"`, "single-line grouped import path must be rewritten")
+	assert.NotContains(t, string(out2), `"oldmod"`, "old module path must not survive the rewrite")
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,6 +83,9 @@ func TestWriteAndLoadResearch(t *testing.T) {
 		APIName:        "test-api",
 		NoveltyScore:   8,
 		Recommendation: "proceed",
+		Auth: &ResearchAuth{
+			CanonicalEnvVar: "TEST_API_TOKEN",
+		},
 		Alternatives: []Alternative{
 			{Name: "alt-1", URL: "https://example.com/alt-1"},
 		},
@@ -97,8 +101,58 @@ func TestWriteAndLoadResearch(t *testing.T) {
 	assert.Equal(t, "test-api", loaded.APIName)
 	assert.Equal(t, 8, loaded.NoveltyScore)
 	assert.Equal(t, "proceed", loaded.Recommendation)
+	require.NotNil(t, loaded.Auth)
+	assert.Equal(t, "TEST_API_TOKEN", loaded.CanonicalAuthEnvVar())
 	assert.Len(t, loaded.Alternatives, 1)
 	assert.Equal(t, "alt-1", loaded.Alternatives[0].Name)
+}
+
+func TestLoadResearchAcceptsStructuredGapsAndPatterns(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`{
+		"api_name": "test-api",
+		"gaps": [
+			{"name": "No JSON output", "reason": "Agents need structured responses"},
+			"limited auth support"
+		],
+		"patterns": [
+			{"name": "Workflow commands", "reason": "Competitors compose common tasks"},
+			"standard CRUD"
+		]
+	}`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), body, 0o644))
+
+	loaded, err := LoadResearch(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"No JSON output: Agents need structured responses",
+		"limited auth support",
+	}, loaded.Gaps)
+	assert.Equal(t, []string{
+		"Workflow commands: Competitors compose common tasks",
+		"standard CRUD",
+	}, loaded.Patterns)
+}
+
+func TestLoadResearchRejectsMalformedGapsAndPatterns(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty structured gap", body: `{"gaps":[{}]}`},
+		{name: "numeric pattern", body: `{"patterns":[42]}`},
+		{name: "null gap", body: `{"gaps":[null]}`},
+		{name: "non-array gaps", body: `{"gaps":{"name":"No JSON output"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), []byte(tt.body), 0o644))
+
+			_, err := LoadResearch(dir)
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestParseGitHubURL(t *testing.T) {
@@ -296,6 +350,7 @@ func TestWriteAndLoadResearchWithEnrichedNovelFeatures(t *testing.T) {
 				{Symptom: "HTTP 429 on every request", Fix: "Import a Chrome session via auth login-chrome"},
 			},
 			WhenToUse:      "Reach for this CLI when an agent needs quotes, fundamentals, or persistent portfolio state against Yahoo Finance.",
+			AntiTriggers:   []string{"Tasks that require placing trades or moving money", "Brokerage account management beyond read-only portfolio analysis"},
 			Recipes:        []Recipe{{Title: "Morning digest", Command: "yahoo-finance-pp-cli digest --watchlist tech", Explanation: "Biggest movers across a named watchlist."}},
 			TriggerPhrases: []string{"quote AAPL", "check my portfolio", "options for TSLA"},
 		},
@@ -320,6 +375,7 @@ func TestWriteAndLoadResearchWithEnrichedNovelFeatures(t *testing.T) {
 	assert.Len(t, loaded.Narrative.Troubleshoots, 1)
 	assert.Equal(t, "HTTP 429 on every request", loaded.Narrative.Troubleshoots[0].Symptom)
 	assert.Equal(t, "Reach for this CLI when an agent needs quotes, fundamentals, or persistent portfolio state against Yahoo Finance.", loaded.Narrative.WhenToUse)
+	assert.Equal(t, []string{"Tasks that require placing trades or moving money", "Brokerage account management beyond read-only portfolio analysis"}, loaded.Narrative.AntiTriggers)
 	require.Len(t, loaded.Narrative.Recipes, 1)
 	assert.Equal(t, "Morning digest", loaded.Narrative.Recipes[0].Title)
 	assert.Equal(t, []string{"quote AAPL", "check my portfolio", "options for TSLA"}, loaded.Narrative.TriggerPhrases)

@@ -34,17 +34,17 @@ func IsDiscovery(data []byte) bool {
 // discDoc is the minimal shape of a Google Discovery REST description we need
 // to convert. Only the fields the converter actually reads are declared.
 type discDoc struct {
-	Name        string                     `json:"name"`
-	Title       string                     `json:"title"`
-	Description string                     `json:"description"`
-	Version     string                     `json:"version"`
-	RootURL     string                     `json:"rootUrl"`
-	BasePath    string                     `json:"basePath"`
-	BaseURL     string                     `json:"baseUrl"`
-	Auth        discAuth                   `json:"auth"`
-	Parameters  map[string]discParam       `json:"parameters"`
-	Schemas     map[string]discSchema      `json:"schemas"`
-	Resources   map[string]discResource    `json:"resources"`
+	Name        string                  `json:"name"`
+	Title       string                  `json:"title"`
+	Description string                  `json:"description"`
+	Version     string                  `json:"version"`
+	RootURL     string                  `json:"rootUrl"`
+	BasePath    string                  `json:"basePath"`
+	BaseURL     string                  `json:"baseUrl"`
+	Auth        discAuth                `json:"auth"`
+	Parameters  map[string]discParam    `json:"parameters"`
+	Schemas     map[string]discSchema   `json:"schemas"`
+	Resources   map[string]discResource `json:"resources"`
 }
 
 type discAuth struct {
@@ -63,17 +63,17 @@ type discResource struct {
 }
 
 type discMethod struct {
-	ID           string               `json:"id"`
-	Path         string               `json:"path"`
-	FlatPath     string               `json:"flatPath"`
-	HTTPMethod   string               `json:"httpMethod"`
-	Description  string               `json:"description"`
-	Parameters   map[string]discParam `json:"parameters"`
-	ParameterOrder []string           `json:"parameterOrder"`
-	Request      *discRef             `json:"request"`
-	Response     *discRef             `json:"response"`
-	Scopes       []string             `json:"scopes"`
-	SupportsMediaUpload bool          `json:"supportsMediaUpload"`
+	ID                  string               `json:"id"`
+	Path                string               `json:"path"`
+	FlatPath            string               `json:"flatPath"`
+	HTTPMethod          string               `json:"httpMethod"`
+	Description         string               `json:"description"`
+	Parameters          map[string]discParam `json:"parameters"`
+	ParameterOrder      []string             `json:"parameterOrder"`
+	Request             *discRef             `json:"request"`
+	Response            *discRef             `json:"response"`
+	Scopes              []string             `json:"scopes"`
+	SupportsMediaUpload bool                 `json:"supportsMediaUpload"`
 }
 
 type discParam struct {
@@ -92,13 +92,13 @@ type discRef struct {
 }
 
 type discSchema struct {
-	Type        string                 `json:"type"`
-	Description string                 `json:"description"`
-	Properties  map[string]discSchema  `json:"properties"`
-	Items       *discSchema            `json:"items"`
-	Ref         string                 `json:"$ref"`
-	Format      string                 `json:"format"`
-	Enum        []string               `json:"enum"`
+	Type        string                `json:"type"`
+	Description string                `json:"description"`
+	Properties  map[string]discSchema `json:"properties"`
+	Items       *discSchema           `json:"items"`
+	Ref         string                `json:"$ref"`
+	Format      string                `json:"format"`
+	Enum        []string              `json:"enum"`
 }
 
 // Parse converts a Google Discovery JSON document into an APISpec.
@@ -116,9 +116,12 @@ func convert(source string, doc *discDoc) (*spec.APISpec, error) {
 		name = deriveName(source)
 	}
 
-	baseURL := doc.RootURL
+	baseURL := doc.BaseURL
 	if baseURL == "" {
-		baseURL = doc.BaseURL
+		baseURL = strings.TrimRight(doc.RootURL, "/")
+		if doc.BasePath != "" {
+			baseURL += "/" + strings.Trim(doc.BasePath, "/")
+		}
 	}
 	// Strip trailing slash; generator adds its own separators.
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -268,18 +271,31 @@ func (c *convCtx) convertMethod(method *discMethod) spec.Endpoint {
 	}
 
 	// Path parameters first (they become positional args), then query params.
-	// Go map iteration order is non-deterministic, so we sort to get a stable
-	// order that matches the generator's args[i] index assignment.
+	// Discovery's parameterOrder is authoritative for positional binding.
 	var pathParams, queryParams []spec.Param
+	pathParamsByName := make(map[string]spec.Param)
 	for paramName, param := range method.Parameters {
 		p := convertParam(paramName, &param)
 		if param.Location == "path" {
-			pathParams = append(pathParams, p)
+			pathParamsByName[paramName] = p
 		} else {
 			queryParams = append(queryParams, p)
 		}
 	}
-	sort.Slice(pathParams, func(i, j int) bool { return pathParams[i].Name < pathParams[j].Name })
+	for _, name := range method.ParameterOrder {
+		if p, ok := pathParamsByName[name]; ok {
+			pathParams = append(pathParams, p)
+			delete(pathParamsByName, name)
+		}
+	}
+	remainingPathNames := make([]string, 0, len(pathParamsByName))
+	for name := range pathParamsByName {
+		remainingPathNames = append(remainingPathNames, name)
+	}
+	sort.Strings(remainingPathNames)
+	for _, name := range remainingPathNames {
+		pathParams = append(pathParams, pathParamsByName[name])
+	}
 	sort.Slice(queryParams, func(i, j int) bool { return queryParams[i].Name < queryParams[j].Name })
 	ep.Params = append(pathParams, queryParams...)
 

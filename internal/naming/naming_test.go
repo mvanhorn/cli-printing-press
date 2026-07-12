@@ -40,14 +40,60 @@ func TestLibraryDirName(t *testing.T) {
 
 func TestMCP(t *testing.T) {
 	tests := map[string]string{
-		"stripe":  "stripe-pp-mcp",
-		"cal-com": "cal-com-pp-mcp",
-		"notion":  "notion-pp-mcp",
+		"stripe":        "stripe-pp-mcp",
+		"cal-com":       "cal-com-pp-mcp",
+		"notion":        "notion-pp-mcp",
+		"foo-pp":        "foo-pp-mcp",
+		"foo-pp-events": "foo-pp-events-pp-mcp",
 	}
 	for input, want := range tests {
 		if got := MCP(input); got != want {
 			t.Fatalf("MCP(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestCLI(t *testing.T) {
+	tests := map[string]string{
+		"foo":           "foo-pp-cli",
+		"foo-pp":        "foo-pp-cli",
+		"foo-pp-events": "foo-pp-events-pp-cli",
+	}
+
+	for input, want := range tests {
+		if got := CLI(input); got != want {
+			t.Fatalf("CLI(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestIsThinCommandShort(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "thin manage stub", in: "Manage cancel", want: true},
+		{name: "four words passes", in: "Manage avatar for projects", want: false},
+		{name: "long three word phrase passes", in: "Mechanically validated generation", want: false},
+		{name: "empty is thin", in: " ", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsThinCommandShort(tt.in); got != tt.want {
+				t.Fatalf("IsThinCommandShort(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthoredDescriptionPreservesAuthoredOneLiner(t *testing.T) {
+	in := "The first CLI for Scrape.do: requests, browsers, proxies, retries, and local SQLite analytics that keep agent workflows grounded without losing the brand dot or clause richness."
+
+	got := AuthoredDescription(in)
+
+	if got != in {
+		t.Fatalf("AuthoredDescription() = %q, want full authored one-liner %q", got, in)
 	}
 }
 
@@ -71,6 +117,29 @@ func TestEnvPrefix(t *testing.T) {
 	for input, want := range tests {
 		if got := EnvPrefix(input); got != want {
 			t.Fatalf("EnvPrefix(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestCamelIdentifier(t *testing.T) {
+	tests := map[string]string{
+		// ASCII inputs are unaffected by the fold (fast path), so existing
+		// generated identifiers are unchanged.
+		"user_name": "UserName",
+		"user-id":   "UserId",
+		"$ref":      "Ref",
+		"123abc":    "V123abc",
+		"":          "",
+		// Non-ASCII names fold to clean ASCII identifiers instead of being
+		// sliced mid-codepoint (the prior byte-indexed bug corrupted these).
+		"éclair":  "Eclair",
+		"café_id": "CafeId",
+		"東京":      "DongJing",
+		"русский": "Russkii",
+	}
+	for input, want := range tests {
+		if got := CamelIdentifier(input); got != want {
+			t.Fatalf("CamelIdentifier(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
@@ -160,8 +229,11 @@ func TestOneLine(t *testing.T) {
 		"too  many   spaces": "too many spaces",
 		`say "hello"`:        "say 'hello'",
 		"  spaces  ":         "spaces",
-		"# Introduction\nAeroAPI delivers flight data.": "AeroAPI delivers flight data.",
-		"## Overview": "Overview",
+		"# Introduction\nAeroAPI delivers flight data.":       "AeroAPI delivers flight data.",
+		"<p>Search for <strong>artists</strong> by name.</p>": "Search for artists by name.",
+		"latency < 10ms > 1ms":                                "latency < 10ms > 1ms",
+		"formula A<B>C":                                       "formula A<B>C",
+		"## Overview":                                         "Overview",
 	}
 
 	for input, want := range tests {
@@ -180,6 +252,60 @@ func TestCompactDescriptionPreservesHumanText(t *testing.T) {
 	want := `An "agent-native" CLI with C:\tmp paths.`
 	if got := CompactDescription(input); got != want {
 		t.Fatalf("CompactDescription(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestCompactDescriptionsStripHTMLTags(t *testing.T) {
+	input := "<p>Search for <strong>artists</strong> by name.</p>"
+	want := "Search for artists by name."
+	if got := CompactDescription(input); got != want {
+		t.Fatalf("CompactDescription(%q) = %q, want %q", input, got, want)
+	}
+	if got := ManifestDescription(input); got != want {
+		t.Fatalf("ManifestDescription(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestCompactDescriptionDoesNotEmitLiteralEllipsis(t *testing.T) {
+	input := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks). Includes offline FTS search and agent-friendly JSON output."
+	got := CompactDescription(input)
+	if strings.HasSuffix(got, "...") {
+		t.Fatalf("CompactDescription(%q) ended with literal ellipsis: %q", input, got)
+	}
+	if got != "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks)." {
+		t.Fatalf("CompactDescription(%q) = %q, want first complete sentence", input, got)
+	}
+	if len(got) > 120 {
+		t.Fatalf("CompactDescription(%q) = %q, want compact copy", input, got)
+	}
+}
+
+func TestCompactDescriptionAvoidsIncompleteFragments(t *testing.T) {
+	input := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
+	got := CompactDescription(input)
+	if got != "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks)" {
+		t.Fatalf("CompactDescription(%q) = %q, want complete clause", input, got)
+	}
+}
+
+func TestCompactDescriptionFallsBackToNonEmptyHardTruncation(t *testing.T) {
+	input := "Local first CLI for the Roam HQ API chat On Air events transcripts SCIM webhooks offline search agent friendly JSON output without punctuation until the end."
+	got := CompactDescription(input)
+	if got == "" {
+		t.Fatalf("CompactDescription(%q) returned empty string", input)
+	}
+	if strings.HasSuffix(got, "...") {
+		t.Fatalf("CompactDescription(%q) ended with literal ellipsis: %q", input, got)
+	}
+	if len([]rune(got)) > 120 {
+		t.Fatalf("CompactDescription(%q) = %q, want compact copy", input, got)
+	}
+}
+
+func TestManifestDescriptionPreservesCompleteLongCopy(t *testing.T) {
+	input := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
+	if got := ManifestDescription(input); got != input {
+		t.Fatalf("ManifestDescription(%q) = %q, want complete source sentence", input, got)
 	}
 }
 

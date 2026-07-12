@@ -1,7 +1,9 @@
 .PHONY: build test lint install clean
 
+BIN_EXT := $(if $(filter windows,$(shell go env GOOS)),.exe,)
+
 build:
-	go build -o bin/{{.Name}}-pp-cli ./cmd/{{.Name}}-pp-cli
+	go build -o bin/{{.Name}}-pp-cli$(BIN_EXT) ./cmd/{{.Name}}-pp-cli
 
 test:
 	go test ./...
@@ -17,7 +19,7 @@ clean:
 {{- if .VisionSet.MCP}}
 
 build-mcp:
-	go build -o bin/{{.Name}}-pp-mcp ./cmd/{{.Name}}-pp-mcp
+	go build -o bin/{{.Name}}-pp-mcp$(BIN_EXT) ./cmd/{{.Name}}-pp-mcp
 
 install-mcp:
 	go install ./cmd/{{.Name}}-pp-mcp

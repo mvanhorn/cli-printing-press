@@ -10,7 +10,7 @@
       "win32"
     ]
   },
-  "description": "Printing Press Studio API surface as MCP tools.",
+  "description": "Purpose-built fixture for golden generation coverage.",
   "display_name": "Printing Press Studio",
   "license": "Apache-2.0",
   "manifest_version": "0.3",

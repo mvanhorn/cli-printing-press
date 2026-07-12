@@ -2,6 +2,10 @@
 
 Conventions for the skills shipped from this repo (under `skills/`) and any internal skills under `.claude/skills/`. Loaded on-demand when working on skill content; not needed on every interaction.
 
+## Install Targets
+
+The shipped Printing Press skills are installed through the `skills` CLI. Claude Code is the default and tested target (`--agent claude-code`), but the installer can target other supported agents, including Codex (`--agent codex`). Keep install instructions agent-neutral unless the step truly depends on Claude Code behavior, and link Codex-specific setup notes to [CODEX.md](CODEX.md).
+
 ## Workflow Parity
 
 When a machine change alters what an agent should do, what a command now guarantees, or where source-of-truth data lives, update the relevant `SKILL.md` in the same change. Don't leave the skill as a stale manual workaround for behavior the machine now owns.
@@ -15,11 +19,11 @@ Decide responsibility explicitly:
 - **Both:** the machine should produce or verify the deterministic substrate, then SKILL.md should direct the agent to inspect the remaining semantic layer. Example pattern: dogfood syncs README/SKILL feature blocks from `novel_features_built`; the skill tells the agent to audit surrounding prose, recipes, trigger phrases, and examples for indirect claims.
 
 Public parameter names follow the "Both" pattern. The agent uses evidence to
-author semantic `flag_name` and compatibility `aliases`; the Printing Press CLI
-inventories suspicious wire names with `public-param-audit`, preserves
-evidence-backed skip decisions in a ledger, and propagates authored fields
-through generated CLI, docs, MCP, and manifest surfaces without inferring names
-itself.
+author semantic `flag_name`, compatibility `aliases`, and wire-only overrides
+such as `url_name` / `body_name`; the Printing Press CLI inventories suspicious
+wire names with `public-param-audit`, preserves evidence-backed skip decisions
+in a ledger, and propagates authored fields through generated CLI, docs, MCP,
+and manifest surfaces without inferring names itself.
 
 For any SKILL.md update, search for the old concept across the skill file, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
 

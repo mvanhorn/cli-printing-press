@@ -1,0 +1,8 @@
+{
+  "domain": "example.com",
+  "captured_at": "2026-05-12T17:54:00Z",
+  "cookies_encrypted": "bm9uY2UxMmJ5dGVzdWkOGVbodvJ+0ciUh7FSVSFYIaIGNDr7J0qfMOTMuDfUMftUGSGbSosiMV6Eucig9Ye/BmKowCuMEbPHGcUXcZvIKTK9v0Rve7Lms7jKErc7DfBWN4OnkexaPU1GhSaezAM1iaEgROn52d8EPg==",
+  "refresh_endpoint": "/account/token",
+  "jwt_carrier_cookie": "guestsession",
+  "jwt_expiry": "2026-05-12T18:24:00Z"
+}

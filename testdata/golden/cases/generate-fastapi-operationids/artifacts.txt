@@ -1,0 +1,12 @@
+fastapi-operationids-golden/.printing-press.json
+fastapi-operationids-golden/manifest.json
+fastapi-operationids-golden/internal/cli/root.go
+fastapi-operationids-golden/internal/cli/quotes_list.go
+fastapi-operationids-golden/internal/cli/quotes_create.go
+fastapi-operationids-golden/internal/cli/quotes_get.go
+fastapi-operationids-golden/internal/cli/quotes_update.go
+fastapi-operationids-golden/internal/cli/quotes_update-status.go
+fastapi-operationids-golden/internal/cli/quotes_delete.go
+fastapi-operationids-golden/internal/cli/promoted_health.go
+fastapi-operationids-golden/internal/cli/promoted_items.go
+fastapi-operationids-golden/internal/mcp/tools.go

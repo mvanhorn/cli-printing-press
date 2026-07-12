@@ -18,7 +18,16 @@ func TestSchemaTrafficAnalysisPrintsJSONSchema(t *testing.T) {
 	var schema map[string]any
 	require.NoError(t, json.Unmarshal([]byte(output), &schema))
 	assert.Equal(t, "CLI Printing Press traffic-analysis.json", schema["title"])
+	properties := schema["properties"].(map[string]any)
+	secondaryHosts := properties["secondary_hosts"].(map[string]any)
+	assert.Equal(t, "#/$defs/secondary_host", secondaryHosts["items"].(map[string]any)["$ref"])
+	auth := properties["auth"].(map[string]any)
+	authProperties := auth["properties"].(map[string]any)
+	captchaPreflight := authProperties["captcha_preflight"].(map[string]any)
+	defs := schema["$defs"].(map[string]any)
+	assert.Contains(t, defs, "secondary_host")
 	assert.Contains(t, output, `"confidence": {"type": "number"`)
+	assert.Equal(t, "boolean", captchaPreflight["type"])
 	assert.Contains(t, output, `"endpoint_clusters"`)
 }
 
@@ -63,6 +72,7 @@ func TestSchemaPhase5SkipPrintsJSONSchema(t *testing.T) {
 	for _, field := range []string{"schema_version", "run_id", "api_name", "cli_name", "status", "skip_reason", "auth_context"} {
 		assert.Contains(t, output, `"`+field+`"`)
 	}
+	assert.Contains(t, output, `"local_network_only"`)
 }
 
 func TestSchemaUnknownNameFails(t *testing.T) {

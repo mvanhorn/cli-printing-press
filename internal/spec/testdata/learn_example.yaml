@@ -1,0 +1,37 @@
+name: demo
+description: "Minimal spec exercising the self-learning loop config"
+base_url: "https://api.example.com"
+
+auth:
+  type: none
+
+config:
+  format: toml
+  path: "~/.config/demo/config.toml"
+
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+
+learn:
+  enabled: true
+  ticker_patterns:
+    - '^KX[A-Z]+-[A-Z0-9-]+$'
+    - '^[A-Z]{2,5}$'
+  stopwords:
+    - the
+    - of
+    - and
+  entity_lookup_seeds:
+    country:
+      - canonical: USA
+        aliases: [united states, america, us]
+      - canonical: Portugal
+        aliases: [portuguese]
+    team:
+      - canonical: Real Madrid
+        aliases: [madrid, real]

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
@@ -229,6 +231,9 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	if err := validatePhase5GateForPromote(workingDir, state); err != nil {
 		return err
 	}
+	if err := validatePIIGateForPromote(workingDir, state); err != nil {
+		return err
+	}
 
 	slug := naming.TrimCLISuffix(cliName)
 	libraryDir := filepath.Join(PublishedLibraryRoot(), slug)
@@ -261,6 +266,13 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 		return fmt.Errorf("copying to staging directory: %w", err)
 	}
 
+	// Phase 5 writes acceptance markers to the runstate, but the published
+	// copy is the path downstream consumers see — embed them before the swap.
+	if err := stageRunstateManuscripts(stagingDir, state); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return fmt.Errorf("staging runstate manuscripts: %w", err)
+	}
+
 	// Update state to reflect promotion.
 	state.PublishedDir = libraryDir
 
@@ -269,11 +281,21 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 		_ = os.RemoveAll(stagingDir)
 		return fmt.Errorf("writing CLI manifest: %w", err)
 	}
+	if err := restorePermanentCreatorForPromote(stagingDir, libraryDir, state.APIName); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return fmt.Errorf("restoring permanent creator: %w", err)
+	}
 
 	// Refresh the MCPB manifest.json in the staging dir so the lock-and-promote
-	// flow keeps it in sync with the post-publish CLIManifest fields.
+	// flow keeps it in sync with the post-publish CLIManifest fields. The
+	// writer also reconciles against env reads in internal/client/ so the
+	// staged bundle includes any user_config fields the spec did not surface.
+	// Errors abort the promote rather than warn-and-continue — a reconcile
+	// failure here means the published bundle would ship missing user_config
+	// fields, which is the exact bug class this writer chain exists to prevent.
 	if err := WriteMCPBManifest(stagingDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not write MCPB manifest.json: %v\n", err)
+		_ = os.RemoveAll(stagingDir)
+		return fmt.Errorf("writing MCPB manifest to staging: %w", err)
 	}
 
 	// Remove any stale backup from a prior successful swap before we create a
@@ -324,6 +346,65 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	}
 }
 
+// A pre-existing subtree in the staging copy wins so artifacts that generate
+// or polish wrote directly into the working dir are never overwritten by an
+// older runstate snapshot. No-op when state has no RunID — the
+// NewMinimalState path for plan-driven CLIs has no runstate to stage from.
+func stageRunstateManuscripts(stagingDir string, state *PipelineState) error {
+	if state == nil || state.RunID == "" {
+		return nil
+	}
+	// The leaf component of each source path becomes the subdir name in
+	// staging (proofs/research/discovery). This pairs with the directory
+	// shape established by paths.go's RunProofsDir, RunResearchDir, and
+	// RunDiscoveryDir helpers; if those rename their leaf names, the
+	// destination layout follows automatically.
+	sources := []string{
+		state.ProofsDir(),
+		state.ResearchDir(),
+		state.DiscoveryDir(),
+	}
+	dstRoot := filepath.Join(stagingDir, ".manuscripts", state.RunID)
+	researchJSON := filepath.Join(state.RunRoot(), "research.json")
+	if info, err := os.Stat(researchJSON); err == nil && !info.IsDir() {
+		target := filepath.Join(dstRoot, "research.json")
+		if _, statErr := os.Stat(target); statErr == nil {
+			// The working copy already has the publish-visible artifact.
+		} else if os.IsNotExist(statErr) {
+			if err := copyFile(researchJSON, target, info.Mode()); err != nil {
+				return fmt.Errorf("copying runstate research.json: %w", err)
+			}
+		} else {
+			return fmt.Errorf("checking %s in staging: %w", target, statErr)
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspecting runstate research.json: %w", err)
+	}
+	for _, src := range sources {
+		name := filepath.Base(src)
+		info, err := os.Stat(src)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("inspecting runstate %s: %w", name, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		target := filepath.Join(dstRoot, name)
+		if _, statErr := os.Stat(target); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("checking %s in staging: %w", target, statErr)
+		}
+		if err := CopyPublishableManuscriptDir(src, target); err != nil {
+			return fmt.Errorf("copying runstate %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func validatePhase5GateForPromote(workingDir string, state *PipelineState) error {
 	if state == nil || state.RunID == "" {
 		return nil
@@ -342,6 +423,7 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 			manifest.CLIName = existing.CLIName
 		}
 		manifest.AuthType = existing.AuthType
+		manifest.SpecKind = existing.SpecKind
 	}
 
 	result := ValidatePhase5Gate(state.ProofsDir(), manifest)
@@ -349,6 +431,67 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 		return nil
 	}
 	return fmt.Errorf("phase5 gate failed: %s", result.Detail)
+}
+
+// validatePIIGateForPromote runs the PII audit against the working
+// directory and refuses promote when pending findings or enforcement-
+// primitive failures remain. The audit's ledger is refreshed in place
+// (every call rewrites the ledger with the current timestamp and
+// FindingsCountBefore baseline) so agent-written accepts from a prior
+// polish run carry forward and new findings since polish surface as
+// pending. The error message points operators at the ledger file and
+// the pii-polish playbook.
+func validatePIIGateForPromote(workingDir string, state *PipelineState) error {
+	opts := piiAuditOptionsForPromote(state)
+	result, err := artifacts.RunPIIAuditWithOptions(workingDir, opts)
+	if err != nil {
+		return fmt.Errorf("PII gate failed (scan error): %w", err)
+	}
+	pending := artifacts.PIIPendingCount(result.Findings)
+	if pending == 0 && !result.Completion.HasGateFailure() {
+		return nil
+	}
+
+	var parts []string
+	if pending > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending PII finding(s)", pending))
+	}
+	if result.Completion.HasGateFailure() {
+		parts = append(parts, fmt.Sprintf("%d gate failure(s)", result.Completion.GateFailureCount()))
+	}
+	ledgerPath := filepath.Join(workingDir, artifacts.PIILedgerFilename)
+	msg := fmt.Sprintf("PII gate failed: %s\n", strings.Join(parts, ", "))
+	if pending > 0 {
+		msg += "pending findings:\n" + artifacts.FormatPIIFindings(result.Findings) + "\n"
+	}
+	if result.Completion.HasGateFailure() {
+		msg += "gate failures:\n" + artifacts.FormatPIIGateFailures(result.Completion) + "\n"
+	}
+	msg += fmt.Sprintf("ledger: %s\n", ledgerPath)
+	msg += "scope: phase-1 detectors (order-id, card-last-4, email, phone, ZIP+4, postal-address); ASINs and standalone names are a future detector class.\n"
+	command := "cli-printing-press pii-audit <dir>"
+	if opts.ManuscriptsDir != "" {
+		command += " --manuscripts-dir " + shellQuote(opts.ManuscriptsDir)
+	}
+	msg += fmt.Sprintf("run `%s`", command)
+	msg += " and follow skills/printing-press-polish/references/pii-polish.md"
+	return fmt.Errorf("%s", msg)
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func piiAuditOptionsForPromote(state *PipelineState) artifacts.PIIAuditOptions {
+	if state == nil || state.RunID == "" {
+		return artifacts.PIIAuditOptions{}
+	}
+	runRoot := state.RunRoot()
+	info, err := os.Stat(runRoot)
+	if err != nil || !info.IsDir() {
+		return artifacts.PIIAuditOptions{}
+	}
+	return artifacts.PIIAuditOptions{ManuscriptsDir: runRoot}
 }
 
 // IsStale returns true if the lock's heartbeat is too old or its owner

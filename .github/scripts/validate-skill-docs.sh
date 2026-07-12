@@ -44,4 +44,6 @@ for skill in skills/*/SKILL.md; do
   fi
 done
 
+node .github/scripts/validate-printing-press-skill-list.mjs || status=1
+
 exit "$status"

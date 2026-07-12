@@ -42,13 +42,13 @@ Supported on macOS and Linux. Windows is not supported (rename semantics
 differ when files are held by editors). --apply requires a clean git
 tree at <cli-dir> by default; --force overrides.`,
 		Example: `  # Dry-run classification report against a fresh-generated tree:
-  printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman
+  cli-printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman
 
   # Apply the safe changes:
-  printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman --apply
+  cli-printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman --apply
 
   # JSON output for piping into other tools:
-  printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman --json`,
+  cli-printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if freshDir == "" {
@@ -57,6 +57,9 @@ tree at <cli-dir> by default; --force overrides.`,
 			cliDir, err := filepath.Abs(args[0])
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolving cli dir: %w", err)}
+			}
+			if err := ensureNotOlderThanCLIManifest(cliDir, "regen-merge"); err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
 			}
 			freshAbs, err := filepath.Abs(freshDir)
 			if err != nil {
@@ -114,6 +117,7 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 		regenmerge.VerdictNovel,
 		regenmerge.VerdictTemplatedWithAdditions,
 		regenmerge.VerdictTemplatedBodyDrift,
+		regenmerge.VerdictTemplatedValueDrift,
 		regenmerge.VerdictNovelCollision,
 	} {
 		fmt.Fprintf(w, "  %-26s %d\n", v, counts[v])
@@ -126,6 +130,7 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 		switch fc.Verdict {
 		case regenmerge.VerdictTemplatedWithAdditions,
 			regenmerge.VerdictTemplatedBodyDrift,
+			regenmerge.VerdictTemplatedValueDrift,
 			regenmerge.VerdictNovelCollision:
 			needsReview = append(needsReview, fc)
 		}
@@ -145,6 +150,11 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 			if fc.BodyDrift != nil {
 				for fn, calls := range fc.BodyDrift.Functions {
 					fmt.Fprintf(w, "    body_drift in %s: %v\n", fn, calls)
+				}
+			}
+			if fc.ValueDrift != nil {
+				for declName := range fc.ValueDrift.Decls {
+					fmt.Fprintf(w, "    value_drift in %s\n", declName)
 				}
 			}
 		}

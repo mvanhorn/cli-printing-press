@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mozillazg/go-unidecode"
 	"golang.org/x/text/cases"
@@ -11,6 +12,7 @@ import (
 )
 
 var leadingMarkdownHeadingRE = regexp.MustCompile(`^#{1,6}\s+(.+)$`)
+var htmlTagRE = regexp.MustCompile(`</?\s*(?:a|abbr|address|article|aside|blockquote|br|button|code|dd|del|details|div|dl|dt|em|figcaption|figure|footer|h[1-6]|header|hr|img|li|main|mark|nav|ol|p|pre|samp|section|small|span|strong|sub|summary|sup|table|tbody|td|tfoot|th|thead|tr|u|ul)(?:\s+[^<>]*)?\s*/?>`)
 
 // ASCIIFold transliterates Unicode to ASCII via Unidecode tables (the
 // same ones Django's slugify and Rails use). Apply at every chokepoint
@@ -38,12 +40,32 @@ const (
 	MCPSuffix        = "-pp-mcp"
 )
 
+const (
+	ThinCommandShortMaxLen   = 30
+	ThinCommandShortMinWords = 4
+)
+
+func PathKindEnvSuffixes() []string {
+	return []string{"HOME", "CONFIG_DIR", "DATA_DIR", "STATE_DIR", "CACHE_DIR"}
+}
+
+// IsThinCommandShort mirrors the agent-facing Short quality floor used
+// by tools-audit and generator fallback emission.
+func IsThinCommandShort(s string) bool {
+	d := strings.TrimSpace(s)
+	return len(d) < ThinCommandShortMaxLen && len(strings.Fields(d)) < ThinCommandShortMinWords
+}
+
 func CLI(name string) string {
-	return name + CurrentCLISuffix
+	return trimPPSuffixToken(name) + CurrentCLISuffix
 }
 
 func MCP(name string) string {
-	return name + MCPSuffix
+	return trimPPSuffixToken(name) + MCPSuffix
+}
+
+func trimPPSuffixToken(name string) string {
+	return strings.TrimSuffix(name, "-pp")
 }
 
 func LegacyCLI(name string) string {
@@ -166,6 +188,68 @@ func Snake(s string) string {
 	return result.String()
 }
 
+// JoinFlag appends a nested flag segment to an existing public flag prefix.
+func JoinFlag(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "-" + name
+}
+
+// CamelIdentifier converts a public or wire name into the CamelCase identifier
+// suffix used by generated Go variables and structs.
+func CamelIdentifier(s string) string {
+	// ASCII-fold first, like the other identifier producers here
+	// (SnakeIdentifier, EnvPrefix, Snake): this keeps generated identifiers
+	// ASCII and makes the first-byte slicing below safe, so accented or
+	// non-Latin names ("éclair", "東京") fold to clean identifiers instead of
+	// being sliced mid-codepoint.
+	s = ASCIIFold(strings.TrimLeft(s, "$"))
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	for i, p := range parts {
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	result := strings.Join(parts, "")
+	if len(result) > 0 && !unicode.IsLetter(rune(result[0])) {
+		result = "V" + result
+	}
+	return result
+}
+
+// FlagName converts an identifier-ish input into the kebab-case public flag
+// shape used by generated CLIs and MCP tools.
+func FlagName(name string) string {
+	name = strings.TrimLeft(name, "$")
+	var b strings.Builder
+	runes := []rune(name)
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			if b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			continue
+		}
+		if i > 0 && unicode.IsUpper(r) {
+			prev := runes[i-1]
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				b.WriteByte('-')
+			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
+				b.WriteByte('-')
+			}
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	result := b.String()
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	return strings.Trim(result, "-")
+}
+
 // EnvVarPlaceholder derives the placeholder name from an environment variable.
 // DUB_TOKEN -> token, STYTCH_PROJECT_ID -> project_id.
 func EnvVarPlaceholder(envVar string) string {
@@ -195,7 +279,7 @@ func OneLine(s string) string {
 // that's already curated for length (MCP tool descriptions, agent-authored
 // overrides) where truncating would defeat the purpose.
 func OneLineNormalize(s string) string {
-	s = stripLeadingMarkdownHeading(s)
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
@@ -207,14 +291,37 @@ func OneLineNormalize(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// CompactDescription produces compact human-facing copy for catalog, skill,
-// Homebrew, and agent-context descriptions. Unlike OneLine, it preserves
+// CompactDescription produces compact human-facing copy for skill, Homebrew,
+// manifest, and agent-context descriptions. Unlike OneLine, it preserves
 // quotes and backslashes because callers are responsible for escaping in their
 // target format.
 func CompactDescription(s string) string {
-	s = stripLeadingMarkdownHeading(s)
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
 	s = collapseWhitespace(s)
 	return truncateOneLine(s)
+}
+
+// AuthoredDescription produces one-line human-facing copy for agent-authored
+// narrative and cli_description fields. It preserves the authored sentence
+// instead of truncating at punctuation, since brand dots, commas, and colons
+// are common in product headlines.
+func AuthoredDescription(s string) string {
+	return ManifestDescription(s)
+}
+
+// ManifestDescription is for durable generated metadata. It normalizes
+// markdown and whitespace, but leaves length policy to compact UI surfaces.
+func ManifestDescription(s string) string {
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
+	return collapseWhitespace(s)
+}
+
+func stripDescriptionMarkup(s string) string {
+	return htmlTagRE.ReplaceAllString(s, " ")
+}
+
+func HasLiteralEllipsisSuffix(s string) bool {
+	return strings.HasSuffix(strings.TrimSpace(s), "...")
 }
 
 func collapseWhitespace(s string) string {
@@ -228,15 +335,62 @@ func collapseWhitespace(s string) string {
 }
 
 func truncateOneLine(s string) string {
-	if len(s) > 120 {
-		cut := s[:117]
-		if idx := strings.LastIndex(cut, " "); idx > 60 {
-			s = cut[:idx] + "..."
-		} else {
-			s = cut + "..."
-		}
+	if utf8.RuneCountInString(s) <= 120 {
+		return s
 	}
-	return s
+	if sentence := lastSentenceBoundaryUnder(s, 120); sentence != "" {
+		return sentence
+	}
+	if clause := firstCompleteClauseUnder(s, 120); clause != "" {
+		return clause
+	}
+	return hardTruncateOneLine(s, 120)
+}
+
+func lastSentenceBoundaryUnder(s string, limit int) string {
+	best := ""
+	for idx, r := range s {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		candidate := strings.TrimSpace(s[:idx+len(string(r))])
+		if candidate == "" || utf8.RuneCountInString(candidate) > limit {
+			continue
+		}
+		best = candidate
+	}
+	return best
+}
+
+func hardTruncateOneLine(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	cut := string(runes[:limit])
+	if idx := strings.LastIndex(cut, " "); idx > 60 {
+		return strings.TrimRight(cut[:idx], " ,;:")
+	}
+	return strings.TrimRight(cut, " ,;:")
+}
+
+func firstCompleteClauseUnder(s string, limit int) string {
+	best := ""
+	for idx, r := range s {
+		if r != ';' && r != ':' && r != ',' && r != ')' {
+			continue
+		}
+		end := idx
+		if r == ')' {
+			end += len(string(r))
+		}
+		candidate := strings.TrimSpace(s[:end])
+		if candidate == "" || utf8.RuneCountInString(candidate) > limit {
+			continue
+		}
+		best = strings.TrimRight(candidate, " ,;:")
+	}
+	return best
 }
 
 func stripLeadingMarkdownHeading(s string) string {

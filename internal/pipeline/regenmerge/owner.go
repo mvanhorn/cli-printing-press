@@ -21,6 +21,12 @@ import (
 // the fresh tree's owner, so RewriteOwner can replace fresh's attribution
 // with the destination's across every file copied from fresh.
 
+// copyrightCreatorRe matches the current header
+// `// Copyright YYYY <display name> and contributors.` and captures the name;
+// copyrightOwnerRe matches the legacy `// Copyright YYYY <slug>.` form. These
+// mirror the patterns in generator/plan_generate.go and must stay aligned —
+// the duplication exists to avoid the build cycle documented above.
+var copyrightCreatorRe = regexp.MustCompile(`(?m)^//\s*Copyright\s+\d+\s+(.+?) and contributors\.`)
 var copyrightOwnerRe = regexp.MustCompile(`(?m)^//\s*Copyright\s+\d+\s+([A-Za-z0-9_-]+)\.`)
 
 // resolveOwnerForTree returns the owner attribution for a CLI tree at dir.
@@ -46,18 +52,32 @@ func readManifestOwner(dir string) string {
 		return ""
 	}
 	var m struct {
-		Owner string `json:"owner"`
+		Owner   string `json:"owner"`
+		Creator struct {
+			Handle string `json:"handle"`
+		} `json:"creator"`
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(m.Owner)
+	// Prefer the legacy owner slug (still dual-written today); fall back to the
+	// creator handle for new-model trees where owner may be absent post-sweep.
+	if o := strings.TrimSpace(m.Owner); o != "" {
+		return o
+	}
+	return strings.TrimSpace(m.Creator.Handle)
 }
 
 func parseCopyrightOwner(dir string) string {
 	data, err := os.ReadFile(filepath.Join(dir, "internal", "cli", "root.go"))
 	if err != nil {
 		return ""
+	}
+	// Try the current "<name> and contributors." form first so a regen against
+	// a current-format tree recovers the creator name; fall back to the legacy
+	// slug form for pre-transition trees.
+	if m := copyrightCreatorRe.FindSubmatch(data); m != nil {
+		return string(m[1])
 	}
 	if m := copyrightOwnerRe.FindSubmatch(data); m != nil {
 		return string(m[1])

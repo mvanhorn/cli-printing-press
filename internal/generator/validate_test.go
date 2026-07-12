@@ -5,11 +5,42 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHelpGateTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		goos string
+		want time.Duration
+	}{
+		{
+			name: "windows",
+			goos: "windows",
+			want: 30 * time.Second,
+		},
+		{
+			name: "linux",
+			goos: "linux",
+			want: 15 * time.Second,
+		},
+		{
+			name: "darwin",
+			goos: "darwin",
+			want: 15 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, helpGateTimeout(tt.goos))
+		})
+	}
+}
 
 func TestGoBuildCacheDirIsShared(t *testing.T) {
 	t.Setenv("GOCACHE", "")
@@ -64,6 +95,7 @@ func TestValidateRunsPinnedDefaultGovulncheckGate(t *testing.T) {
 	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
 if [ "$1" = "run" ]; then
+  printf 'toolchain=%s\n' "$GOTOOLCHAIN" >> "$FAKE_GO_CALLS"
   echo "fake govulncheck failure" >&2
   exit 42
 fi
@@ -71,6 +103,7 @@ exit 0
 `), 0o755))
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_GO_CALLS", callsPath)
+	t.Setenv("GOTOOLCHAIN", "auto")
 
 	err := gen.Validate()
 	require.Error(t, err)
@@ -80,6 +113,49 @@ exit 0
 	require.NoError(t, err)
 	assert.Contains(t, string(calls), "mod tidy\n")
 	assert.Contains(t, string(calls), "run "+govulncheck.ToolModule+" ./...\n")
+	assert.Contains(t, string(calls), "toolchain="+currentGoToolchainVersion()+"\n")
 	assert.NotContains(t, string(calls), "-show")
 	assert.NotContains(t, string(calls), "verbose")
+}
+
+func TestValidateBuildRunnableBinaryUsesReproducibleBuildFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell go binary is Unix-only")
+	}
+	outputDir := filepath.Join(t.TempDir(), "validate-pp-cli")
+	gen := New(minimalSpec("validate"), outputDir)
+	require.NoError(t, gen.Generate())
+
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+if [ -n "$out" ]; then
+  mkdir -p "$(dirname "$out")"
+  cat > "$out" <<'SCRIPT'
+#!/bin/sh
+echo ok
+exit 0
+SCRIPT
+  chmod 755 "$out"
+fi
+exit 0
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+
+	require.NoError(t, gen.Validate())
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(calls), "build -trimpath -ldflags=-buildid= -o ")
 }

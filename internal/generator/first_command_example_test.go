@@ -246,6 +246,133 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			want: "search list --search-query example-value",
 		},
 		{
+			name: "required dispatch type param keeps string default",
+			resources: map[string]spec.Resource{
+				"domain": {
+					Endpoints: map[string]spec.Endpoint{
+						"rank": {
+							Method: "GET",
+							Path:   "/",
+							Params: []spec.Param{
+								{Name: "type", Required: true, Type: "string", Default: "domain_rank"},
+								{Name: "domain", Required: true, Type: "string"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/domain/refresh"},
+					},
+				},
+			},
+			want: "domain rank --type domain_rank --domain example-value",
+		},
+		{
+			name: "explicit dispatch param keeps string default",
+			resources: map[string]spec.Resource{
+				"reports": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/reports",
+							Params: []spec.Param{
+								{Name: "mode", Required: true, Type: "string", Default: "summary", DispatchParam: true},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/reports/refresh"},
+					},
+				},
+			},
+			want: "reports list --mode summary",
+		},
+		{
+			name: "explicit dispatch false suppresses action heuristic",
+			resources: map[string]spec.Resource{
+				"jobs": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/jobs",
+							Params: []spec.Param{
+								{Name: "action", Required: true, Type: "string", Default: "create", DispatchParamSet: true},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/jobs/refresh"},
+					},
+				},
+			},
+			want: "jobs list --action example-value",
+		},
+		{
+			name: "path placeholder sharing query param name does not keep default",
+			resources: map[string]spec.Resource{
+				"reports": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/items/{mode}/reports",
+							Params: []spec.Param{
+								{Name: "mode", Required: true, Type: "string", Default: "summary"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/reports/refresh"},
+					},
+				},
+			},
+			want: "reports list --mode example-value",
+		},
+		{
+			name: "path query default keeps required param default",
+			resources: map[string]spec.Resource{
+				"reports": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/reports?mode=summary",
+							Params: []spec.Param{
+								{Name: "mode", Required: true, Type: "string", Default: "summary"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/reports/refresh"},
+					},
+				},
+			},
+			want: "reports list --mode summary",
+		},
+		{
+			name: "non-dispatch string default still uses synthetic value",
+			resources: map[string]spec.Resource{
+				"search": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/search",
+							Params: []spec.Param{
+								{Name: "query", Required: true, Type: "string", Default: "cats"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/search/refresh"},
+					},
+				},
+			},
+			want: "search list --query example-value",
+		},
+		{
+			name: "numeric default still uses synthetic value",
+			resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/items",
+							Params: []spec.Param{
+								{Name: "limit", Required: true, Type: "integer", Default: 100},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/items/refresh"},
+					},
+				},
+			},
+			want: "items list --limit 50",
+		},
+		{
 			name: "required body field uses public flag name",
 			resources: map[string]spec.Resource{
 				"stores": {
@@ -264,6 +391,45 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			want: "stores create --store-code example-value",
 		},
 		{
+			// A JSON-typed string body flag (the command emits a json.Valid
+			// guard) must not advertise the scalar "example-value" placeholder,
+			// which fails that guard on first run. It gets a minimal valid-JSON
+			// value instead, single-quoted for shell safety.
+			name: "json body field uses valid-json placeholder",
+			resources: map[string]spec.Resource{
+				"lists": {
+					Endpoints: map[string]spec.Endpoint{
+						"add": {
+							Method: "POST",
+							Path:   "/lists/add.php",
+							Body: []spec.Param{
+								{Name: "lists", Required: true, Type: "string", Description: "JSON array of list objects"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/lists/refresh"},
+					},
+				},
+			},
+			want: "lists add --lists '[]'",
+		},
+		{
+			name: "json body field with bracketed description uses array placeholder",
+			resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"bulk": {
+							Method: "POST",
+							Path:   "/items/bulk",
+							Body: []spec.Param{
+								{Name: "payload", Required: true, Type: "string", Description: `[{"id":1,"name":"foo"}]`},
+							},
+						},
+					},
+				},
+			},
+			want: "items --payload '[]'",
+		},
+		{
 			name: "promoted single-endpoint resource keeps positionals",
 			resources: map[string]spec.Resource{
 				"feed": {
@@ -279,6 +445,67 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 				},
 			},
 			want: "feed 2026-04-27",
+		},
+		{
+			// Issue #1270: snake_case endpoint keys must be kebab-cased so
+			// the example matches the actual cobra `Use:` string (which is
+			// already kebab) instead of advertising a phantom command path.
+			name: "multi-word snake_case endpoint key is kebab-cased",
+			resources: map[string]spec.Resource{
+				"dns": {
+					Endpoints: map[string]spec.Endpoint{
+						"get_hosts":            {Method: "GET", Path: "/dns/hosts"},
+						"set_email_forwarding": {Method: "POST", Path: "/dns/forwarding"},
+					},
+				},
+			},
+			want: "dns get-hosts",
+		},
+		{
+			// Same kebab pass for camelCase endpoint keys. Mirrors the
+			// command_endpoint.go.tmpl `Use: {{kebab .EndpointName}}` rule
+			// for cobra command names. The preferred-verb scan misses
+			// `createSpeech` and `cancelJob`, so the fallback alphabetical
+			// pick is `cancelJob` (c < other letters).
+			name: "multi-word camelCase endpoint key is kebab-cased",
+			resources: map[string]spec.Resource{
+				"audio": {
+					Endpoints: map[string]spec.Endpoint{
+						"createSpeech": {Method: "POST", Path: "/audio/speech"},
+						"cancelJob":    {Method: "POST", Path: "/audio/cancel"},
+					},
+				},
+			},
+			want: "audio cancel-job",
+		},
+		{
+			// Issue #1853: PascalCase resource keys (sniffed .NET/Java
+			// enterprise APIs) must be kebab-cased to match the actual cobra
+			// command name. Without this the example advertises a phantom
+			// `cli ChangeOrders` path that exits "unknown command".
+			name: "PascalCase resource key is kebab-cased (promoted)",
+			resources: map[string]spec.Resource{
+				"ChangeOrders": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/ChangeOrders/Grid"},
+					},
+				},
+			},
+			want: "change-orders",
+		},
+		{
+			// Same kebab pass when the resource is not promoted (multiple
+			// endpoints): both the resource and endpoint segments are kebab.
+			name: "PascalCase resource key is kebab-cased (non-promoted)",
+			resources: map[string]spec.Resource{
+				"PurchaseOrders": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/PurchaseOrders"},
+						"get":  {Method: "GET", Path: "/api/PurchaseOrders/{id}"},
+					},
+				},
+			},
+			want: "purchase-orders list",
 		},
 	}
 	for _, tc := range tests {

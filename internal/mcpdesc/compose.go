@@ -15,6 +15,8 @@ package mcpdesc
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -32,6 +34,13 @@ const optionalListMax = 3
 // than bloating the description; the agent can read the spec for full
 // detail.
 const defaultValueMaxLen = 30
+
+const (
+	SourceSpec      = "spec"
+	SourceGenerated = "generated"
+)
+
+var htmlTagRE = regexp.MustCompile(`<[^>]+>`)
 
 // HTTP method constants. Method strings are matched at multiple
 // composition sites; defining them once keeps spelling consistent and
@@ -51,6 +60,11 @@ type Input struct {
 	TotalCount  int
 }
 
+type Result struct {
+	Description string
+	Source      string
+}
+
 // Compose returns the composed description ready for storage in
 // tools-manifest.json or registration in tools.go. Auth annotation is
 // delegated to naming.MCPDescription so the (public)/(requires auth)
@@ -67,14 +81,23 @@ type Input struct {
 //     composing Required/Optional from spec, but skip the generated
 //     Returns clause to avoid "Returns X. Returns the X." doubling.
 func Compose(in Input) string {
+	return ComposeWithSource(in).Description
+}
+
+// ComposeWithSource returns Compose's description plus a coarse source marker
+// for manifest consumers. Rich spec/override descriptions stay source=spec;
+// parser fallbacks and recognized vendor boilerplate are source=generated.
+func ComposeWithSource(in Input) Result {
 	desc := in.Endpoint.Description
+	synthesizeAction := shouldSynthesizeAction(in.Endpoint)
+	structuralOverride := hasStructuralOverride(desc)
 
 	var composed string
-	if hasStructuralOverride(desc) {
+	if structuralOverride {
 		composed = composeAction(desc)
 	} else {
 		var parts []string
-		if action := composeAction(desc); action != "" {
+		if action := composeActionWithFallback(in.Endpoint, synthesizeAction); action != "" {
 			parts = append(parts, action)
 		}
 		if required := composeRequired(in.Endpoint); required != "" {
@@ -83,7 +106,7 @@ func Compose(in Input) string {
 		if optional := composeOptional(in.Endpoint); optional != "" {
 			parts = append(parts, optional)
 		}
-		if !mentionsReturn(desc) {
+		if synthesizeAction || !mentionsReturn(desc) {
 			if returns := composeReturns(in.Endpoint); returns != "" {
 				parts = append(parts, returns)
 			}
@@ -92,7 +115,14 @@ func Compose(in Input) string {
 	}
 
 	composed = appendMethodMarker(composed, in.Endpoint.Method)
-	return naming.MCPDescription(composed, in.NoAuth, in.AuthType, in.PublicCount, in.TotalCount)
+	source := SourceSpec
+	if synthesizeAction && !structuralOverride {
+		source = SourceGenerated
+	}
+	return Result{
+		Description: naming.MCPDescription(composed, in.NoAuth, in.AuthType, in.PublicCount, in.TotalCount),
+		Source:      source,
+	}
 }
 
 // hasStructuralOverride detects the colon-terminated markers an
@@ -123,6 +153,186 @@ func composeAction(desc string) string {
 		s += "."
 	}
 	return s
+}
+
+func composeActionWithFallback(ep spec.Endpoint, synthesizeAction bool) string {
+	if synthesizeAction {
+		if action := synthesizedResourceAction(ep); action != "" {
+			return action + "."
+		}
+	}
+	return composeAction(ep.Description)
+}
+
+func shouldSynthesizeAction(ep spec.Endpoint) bool {
+	return ep.DescriptionSynthesized || isThinSpecDescription(ep.Description)
+}
+
+func isThinSpecDescription(desc string) bool {
+	normalized := strings.ToLower(normalizeDescriptionText(desc))
+	if normalized == "" || normalized == "requires authentication." || normalized == "requires authentication" {
+		return true
+	}
+	normalized = strings.TrimSuffix(normalized, ".")
+	normalized = strings.TrimSpace(strings.TrimSuffix(normalized, "requires authentication"))
+	normalized = strings.TrimSpace(strings.TrimSuffix(normalized, "."))
+	for _, prefix := range []string{
+		"use this to return multiple ",
+		"use this to return a single instance of ",
+		"use this to return a single ",
+		"use this to create ",
+		"use this to update ",
+		"use this to delete ",
+	} {
+		if strings.HasPrefix(normalized, prefix) && isBareBoilerplateResource(strings.TrimSpace(strings.TrimPrefix(normalized, prefix))) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBareBoilerplateResource(remainder string) bool {
+	remainder = strings.TrimSpace(strings.TrimSuffix(remainder, "."))
+	if remainder == "" {
+		return false
+	}
+	return !strings.ContainsAny(remainder, ".;,:!?")
+}
+
+func normalizeDescriptionText(desc string) string {
+	desc = strings.NewReplacer("<br>", " ", "<br/>", " ", "<br />", " ").Replace(desc)
+	desc = htmlTagRE.ReplaceAllString(desc, " ")
+	return strings.Join(strings.Fields(desc), " ")
+}
+
+func synthesizedResourceAction(ep spec.Endpoint) string {
+	verb := strings.TrimSpace(ep.Description)
+	if !ep.DescriptionSynthesized || verb == "" || isThinSpecDescription(verb) {
+		verb = synthesizedVerb(ep)
+	}
+	switch verb {
+	case "Create":
+		if singular := singularResourceName(ep.Path); singular != "" {
+			return "Create a new " + singular
+		}
+	case "List":
+		if plural := pluralResourceName(ep.Path); plural != "" {
+			return "List " + plural
+		}
+	case "Get", "Update", "Delete":
+		if singular := singularResourceName(ep.Path); singular != "" {
+			return verb + " " + indefiniteArticle(singular) + " " + singular
+		}
+	}
+	return ""
+}
+
+func synthesizedVerb(ep spec.Endpoint) string {
+	switch strings.ToUpper(ep.Method) {
+	case methodPOST:
+		return "Create"
+	case methodPATCH, methodPUT:
+		return "Update"
+	case methodDELETE:
+		return "Delete"
+	default:
+		if pathHasTemplateParam(ep.Path) {
+			return "Get"
+		}
+		return "List"
+	}
+}
+
+func pathHasTemplateParam(path string) bool {
+	return strings.Contains(path, "{") && strings.Contains(path, "}")
+}
+
+func indefiniteArticle(phrase string) string {
+	phrase = strings.TrimSpace(phrase)
+	if phrase == "" {
+		return "a"
+	}
+	switch strings.ToLower(phrase[:1]) {
+	case "a", "e", "i", "o", "u":
+		return "an"
+	default:
+		return "a"
+	}
+}
+
+func pluralResourceName(path string) string {
+	segment := resourceSegmentFromPath(path)
+	if segment == "" {
+		return ""
+	}
+	return strings.ReplaceAll(segment, "_", " ")
+}
+
+func singularResourceName(path string) string {
+	plural := pluralResourceName(path)
+	if plural == "" {
+		return ""
+	}
+	return singularizePhrase(plural)
+}
+
+func resourceSegmentFromPath(path string) string {
+	parts := strings.Split(path, "/")
+	for _, part := range slices.Backward(parts) {
+		segment := strings.TrimSpace(part)
+		if segment == "" || strings.HasPrefix(segment, "{") {
+			continue
+		}
+		return strings.ToLower(strings.ReplaceAll(segment, "-", "_"))
+	}
+	return ""
+}
+
+func singularizePhrase(phrase string) string {
+	tokens := strings.Fields(phrase)
+	if len(tokens) == 0 {
+		return phrase
+	}
+	last := tokens[len(tokens)-1]
+	irregular := map[string]string{
+		"children": "child",
+		"people":   "person",
+		"men":      "man",
+		"women":    "woman",
+		"teeth":    "tooth",
+		"feet":     "foot",
+		"mice":     "mouse",
+		"geese":    "goose",
+	}
+	if singular, ok := irregular[last]; ok {
+		tokens[len(tokens)-1] = singular
+		return strings.Join(tokens, " ")
+	}
+	// Already-singular nouns that end in 's' — leave untouched.
+	uncountable := map[string]bool{"status": true, "series": true, "news": true, "analytics": true, "media": true}
+	if uncountable[last] {
+		return strings.Join(tokens, " ")
+	}
+	if strings.HasSuffix(last, "ies") && len(last) > 3 {
+		tokens[len(tokens)-1] = last[:len(last)-3] + "y"
+		return strings.Join(tokens, " ")
+	}
+	// -es plurals on sibilant stems (boxes→box, matches→match, dishes→dish,
+	// buzzes→buzz): strip the -es. "ses" is intentionally excluded — it is
+	// ambiguous with the far more common "-se"+s shape among API resources
+	// (releases, responses, databases, licenses), which the regular -s strip
+	// below handles correctly.
+	for _, suf := range []string{"xes", "zes", "ches", "shes"} {
+		if strings.HasSuffix(last, suf) && len(last) > 2 {
+			tokens[len(tokens)-1] = last[:len(last)-2]
+			return strings.Join(tokens, " ")
+		}
+	}
+	if strings.HasSuffix(last, "s") && len(last) > 1 && !strings.HasSuffix(last, "ss") {
+		tokens[len(tokens)-1] = last[:len(last)-1]
+		return strings.Join(tokens, " ")
+	}
+	return strings.Join(tokens, " ")
 }
 
 // composeRequired renders the "Required:" line. Path params count as

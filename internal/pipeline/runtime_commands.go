@@ -28,6 +28,7 @@ func discoverCommandsFromHelp(binaryPath string) []discoveredCommand {
 	defer cancel()
 
 	helpCmd := exec.CommandContext(ctx, binaryPath, "--help")
+	applyDefaultSubprocessEnv(helpCmd)
 	out, err := helpCmd.CombinedOutput()
 	if err != nil {
 		return nil
@@ -113,6 +114,105 @@ type discoveredCommand struct {
 	Annotations map[string]string
 }
 
+const happyArgsAnnotation = "pp:happy-args"
+
+type happyArgs struct {
+	positionals []string
+	flags       []string
+}
+
+func parseHappyArgsAnnotation(value string) happyArgs {
+	var parsed happyArgs
+	for rawToken := range strings.SplitSeq(value, ";") {
+		token := strings.TrimSpace(rawToken)
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "--") {
+			name, value, ok := strings.Cut(token, "=")
+			if !ok || strings.TrimSpace(name) == "--" {
+				continue
+			}
+			parsed.flags = append(parsed.flags, strings.TrimSpace(name), strings.TrimSpace(value))
+			continue
+		}
+		label, value, ok := strings.Cut(token, "=")
+		if !ok {
+			continue
+		}
+		label = strings.TrimSpace(label)
+		if !strings.HasPrefix(label, "<") || !strings.HasSuffix(label, ">") {
+			continue
+		}
+		parsed.positionals = append(parsed.positionals, strings.TrimSpace(value))
+	}
+	return parsed
+}
+
+func commandHappyArgs(cmd discoveredCommand) happyArgs {
+	if cmd.Annotations == nil {
+		return happyArgs{}
+	}
+	return parseHappyArgsAnnotation(cmd.Annotations[happyArgsAnnotation])
+}
+
+func commandInvocationInputs(binary string, cmd discoveredCommand) ([]string, []string) {
+	happy := commandHappyArgs(cmd)
+	positionals := mergeHappyPositionals(cmd.Args, happy.positionals)
+
+	flags := inferRequiredFlags(binary, cmd.Name)
+	if flags == nil {
+		flags = workflowTestFlags(cmd.Name)
+	}
+	flags = mergeHappyFlags(flags, happy.flags)
+
+	return positionals, flags
+}
+
+func sideEffectSafeInvocationInputs(cmd discoveredCommand) ([]string, []string) {
+	happy := commandHappyArgs(cmd)
+	positionals := mergeHappyPositionals(cmd.Args, happy.positionals)
+	return positionals, mergeHappyFlags(workflowTestFlags(cmd.Name), happy.flags)
+}
+
+func mergeHappyPositionals(inferred, annotated []string) []string {
+	if len(annotated) == 0 {
+		return inferred
+	}
+	merged := slices.Clone(inferred)
+	for i, value := range annotated {
+		if i < len(merged) {
+			merged[i] = value
+			continue
+		}
+		merged = append(merged, value)
+	}
+	return merged
+}
+
+func mergeHappyFlags(inferred, annotated []string) []string {
+	if len(annotated) == 0 {
+		return inferred
+	}
+	merged := slices.Clone(inferred)
+	for i := 0; i+1 < len(annotated); i += 2 {
+		flag := annotated[i]
+		value := annotated[i+1]
+		replaced := false
+		for j := 0; j+1 < len(merged); j += 2 {
+			if merged[j] == flag {
+				merged[j+1] = value
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			merged = append(merged, flag, value)
+		}
+	}
+	return merged
+}
+
 // inferPositionalArgs runs `<binary> <cmd> --help`, parses the Usage line for
 // positional arg placeholders like <region> or [price], and maps them to
 // synthetic values. On any failure, it falls back to no extra args.
@@ -127,6 +227,7 @@ func inferPositionalArgs(binary string, cmd *discoveredCommand, paramDefaults ma
 	defer cancel()
 
 	helpCmd := exec.CommandContext(ctx, binary, cmd.Name, "--help")
+	applyDefaultSubprocessEnv(helpCmd)
 	out, err := helpCmd.CombinedOutput()
 	if err != nil {
 		return // fall back to no extra args
@@ -183,8 +284,10 @@ func resolvePositionalValue(name string, paramDefaults map[string]string) string
 var flagDescriptorRe = regexp.MustCompile(`\[\s*-+[^\]]*\]|\[[^\]]*=[^\]]*\]`)
 
 // positionalPlaceholderRe extracts <name> and [name] placeholders from the
-// scrubbed Usage suffix. Runs after flagDescriptorRe.
-var positionalPlaceholderRe = regexp.MustCompile(`[<\[]([a-zA-Z][\w-]*)[>\]]`)
+// scrubbed Usage suffix. Pipe alternatives such as <id|uuid> are one Cobra
+// positional; they resolve to the first id-shaped alternative when present.
+// Runs after flagDescriptorRe.
+var positionalPlaceholderRe = regexp.MustCompile(`[<\[]([a-zA-Z][\w-]*(?:\|[a-zA-Z][\w-]*)*)[>\]]`)
 
 // extractPositionalPlaceholders returns the placeholder names found in a
 // cobra Usage suffix (the part after `Usage:\n  cli-name cmd-name`).
@@ -201,13 +304,28 @@ func extractPositionalPlaceholders(usageSuffix string) []string {
 	}
 	var names []string
 	for _, match := range matches {
-		name := strings.ToLower(match[1])
+		name := chooseUsagePlaceholderName(match[1])
 		if name == "flags" || name == "command" {
 			continue
 		}
 		names = append(names, name)
 	}
 	return names
+}
+
+func chooseUsagePlaceholderName(raw string) string {
+	parts := strings.Split(raw, "|")
+	for _, part := range parts {
+		name := strings.ToLower(strings.TrimSpace(part))
+		if isIDShapePlaceholderName(name) {
+			return name
+		}
+	}
+	return strings.ToLower(strings.TrimSpace(parts[0]))
+}
+
+func isIDShapePlaceholderName(name string) bool {
+	return name == "id" || (strings.HasSuffix(name, "id") && len(name) > 2)
 }
 
 func syntheticArgValue(name string) string {
@@ -308,6 +426,7 @@ func helpScanIndicatesSideEffect(binary string, cmd *discoveredCommand) bool {
 	defer cancel()
 
 	helpCmd := exec.CommandContext(ctx, binary, cmd.Name, "--help")
+	applyDefaultSubprocessEnv(helpCmd)
 	out, err := helpCmd.CombinedOutput()
 	if err != nil {
 		return false
@@ -431,6 +550,7 @@ func inferRequiredFlags(binary, cmdName string) []string {
 	defer cancel()
 
 	probe := exec.CommandContext(ctx, binary, cmdName)
+	applyDefaultSubprocessEnv(probe)
 	out, _ := probe.CombinedOutput() // error expected when flags are missing
 
 	m := requiredFlagsRe.FindSubmatch(out)

@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,7 +41,7 @@ func sourceCommandAnnotations(dir string) map[string]map[string]string {
 	out := map[string]map[string]string{}
 	for _, path := range files {
 		data, err := os.ReadFile(path)
-		if err != nil || !bytes.Contains(data, []byte(typedExitCodesAnnotation)) {
+		if err != nil || (!bytes.Contains(data, []byte(typedExitCodesAnnotation)) && !bytes.Contains(data, []byte(happyArgsAnnotation))) {
 			continue
 		}
 		file, err := parser.ParseFile(fset, path, data, parser.SkipObjectResolution)
@@ -54,12 +55,25 @@ func sourceCommandAnnotations(dir string) map[string]map[string]string {
 			}
 			name, annotations := commandLiteralMetadata(lit)
 			if name != "" && len(annotations) > 0 {
-				out[name] = annotations
+				mergeCommandAnnotations(out, name, annotations)
 			}
 			return true
 		})
+		for name, annotations := range commandAnnotationAssignments(file) {
+			mergeCommandAnnotations(out, name, annotations)
+		}
 	}
 	return out
+}
+
+func mergeCommandAnnotations(out map[string]map[string]string, name string, annotations map[string]string) {
+	if len(annotations) == 0 {
+		return
+	}
+	if out[name] == nil {
+		out[name] = map[string]string{}
+	}
+	maps.Copy(out[name], annotations)
 }
 
 func isCobraCommandLiteral(lit *ast.CompositeLit) bool {
@@ -132,4 +146,115 @@ func stringMapLiteral(expr ast.Expr) map[string]string {
 		}
 	}
 	return out
+}
+
+func commandAnnotationAssignments(file *ast.File) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		commandNames := map[string]string{}
+		annotationsByVar := map[string]map[string]string{}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for i, lhs := range assign.Lhs {
+				if i >= len(assign.Rhs) {
+					continue
+				}
+				if ident, ok := lhs.(*ast.Ident); ok {
+					if name, annotations := commandLiteralMetadataFromExpr(assign.Rhs[i]); name != "" {
+						if previousName := commandNames[ident.Name]; previousName != "" {
+							mergeCommandAnnotations(out, previousName, annotationsByVar[ident.Name])
+						}
+						commandNames[ident.Name] = name
+						if len(annotations) > 0 {
+							annotationsByVar[ident.Name] = maps.Clone(annotations)
+						} else {
+							delete(annotationsByVar, ident.Name)
+						}
+						continue
+					}
+				}
+				varName, key, ok := annotationIndex(lhs)
+				if !ok {
+					if varName, annotations, ok := annotationMapAssignment(lhs, assign.Rhs[i]); ok {
+						if annotationsByVar[varName] == nil {
+							annotationsByVar[varName] = map[string]string{}
+						}
+						maps.Copy(annotationsByVar[varName], annotations)
+					}
+					continue
+				}
+				value := stringLiteralValue(assign.Rhs[i])
+				if value == "" {
+					continue
+				}
+				if annotationsByVar[varName] == nil {
+					annotationsByVar[varName] = map[string]string{}
+				}
+				annotationsByVar[varName][key] = value
+			}
+			return true
+		})
+		for varName, annotations := range annotationsByVar {
+			name := commandNames[varName]
+			if name == "" {
+				continue
+			}
+			mergeCommandAnnotations(out, name, annotations)
+		}
+	}
+	return out
+}
+
+func commandLiteralMetadataFromExpr(expr ast.Expr) (string, map[string]string) {
+	switch v := expr.(type) {
+	case *ast.CompositeLit:
+		if isCobraCommandLiteral(v) {
+			return commandLiteralMetadata(v)
+		}
+	case *ast.UnaryExpr:
+		if lit, ok := v.X.(*ast.CompositeLit); ok && isCobraCommandLiteral(lit) {
+			return commandLiteralMetadata(lit)
+		}
+	}
+	return "", nil
+}
+
+func annotationIndex(expr ast.Expr) (string, string, bool) {
+	index, ok := expr.(*ast.IndexExpr)
+	if !ok {
+		return "", "", false
+	}
+	key := stringLiteralValue(index.Index)
+	if key == "" {
+		return "", "", false
+	}
+	selector, ok := index.X.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Annotations" {
+		return "", "", false
+	}
+	ident, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return "", "", false
+	}
+	return ident.Name, key, true
+}
+
+func annotationMapAssignment(lhs, rhs ast.Expr) (string, map[string]string, bool) {
+	selector, ok := lhs.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Annotations" {
+		return "", nil, false
+	}
+	ident, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return "", nil, false
+	}
+	annotations := stringMapLiteral(rhs)
+	return ident.Name, annotations, len(annotations) > 0
 }

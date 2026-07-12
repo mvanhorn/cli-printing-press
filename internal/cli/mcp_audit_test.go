@@ -3,11 +3,14 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -100,6 +103,34 @@ func TestRunMCPAuditCodeOrchSurface(t *testing.T) {
 	assert.Equal(t, "both", f.Transport)
 	assert.Equal(t, "code-orch", f.ToolDesign)
 	assert.Equal(t, "ok", f.Recommend, "fully-modernized CLI has nothing to recommend")
+}
+
+func TestRunMCPAuditGeneratedLargeDefaultSurface(t *testing.T) {
+	lib := t.TempDir()
+	cli := filepath.Join(lib, "auto-cli")
+	apiSpec := &spec.APISpec{
+		Name:      "auto",
+		BaseURL:   "https://api.example.com",
+		Auth:      spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{},
+	}
+	r := spec.Resource{Endpoints: map[string]spec.Endpoint{}}
+	for i := range spec.DefaultOrchestrationThreshold + 1 {
+		name := fmt.Sprintf("get_%d", i)
+		r.Endpoints[name] = spec.Endpoint{Method: "GET", Path: fmt.Sprintf("/items/%d", i)}
+	}
+	apiSpec.Resources["items"] = r
+
+	require.NoError(t, generator.New(apiSpec, cli).Generate())
+
+	findings, err := runMCPAudit(lib)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	f := findings[0]
+	assert.Equal(t, "auto-cli", f.API)
+	assert.Equal(t, "both", f.Transport)
+	assert.Equal(t, "code-orch", f.ToolDesign)
+	assert.Equal(t, "ok", f.Recommend)
 }
 
 func TestRunMCPAuditJSONRoundtrip(t *testing.T) {

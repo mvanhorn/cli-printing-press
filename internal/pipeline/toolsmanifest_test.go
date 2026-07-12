@@ -2,11 +2,15 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -121,6 +125,126 @@ func TestWriteToolsManifest_MultipleResources(t *testing.T) {
 	assert.Equal(t, "store_get_inventory", got.Tools[3].Name)
 	assert.Equal(t, "GET", got.Tools[3].Method)
 	assert.Equal(t, "/store/inventory", got.Tools[3].Path)
+}
+
+func TestWriteToolsManifest_OpenAPIDanglingOperationSecurityUsesRootAPIKey(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := openapi.Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Custom Key
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Custom-Key
+paths:
+  /v1/apps:
+    get:
+      operationId: listApps
+      security:
+        - Authorization: []
+      responses: {"200": {description: ok}}
+`))
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", got.Auth.Type)
+	assert.Equal(t, "X-Custom-Key", got.Auth.Header)
+	assert.Equal(t, "header", got.Auth.In)
+	assert.Equal(t, []string{"CUSTOM_KEY_API_KEY"}, got.Auth.EnvVars)
+}
+
+func TestWriteToolsManifestWithDescriptionUsesCanonicalManifestDescription(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:        "petstore",
+		Description: "Weak source-spec fallback copy.",
+		BaseURL:     "https://petstore.example.com/v3",
+		Auth:        spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Pets": {
+				Description: "Pet operations",
+				Endpoints: map[string]spec.Endpoint{
+					"List": {Method: "GET", Path: "/pets", Description: "List all pets"},
+				},
+			},
+		},
+	}
+	canonical := "Curated catalog description for the generated CLI."
+
+	require.NoError(t, WriteToolsManifestWithDescription(dir, parsed, canonical))
+
+	data, err := os.ReadFile(filepath.Join(dir, ToolsManifestFilename))
+	require.NoError(t, err)
+	var got ToolsManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, canonical, got.Description)
+}
+
+func TestWriteToolsManifestFallsBackToCLIDescriptionBeforeRawSpecBlob(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:           "petstore",
+		CLIDescription: "Manage pets from the terminal.",
+		Description:    strings.Repeat("Legal terms and API policy. ", 200),
+		BaseURL:        "https://petstore.example.com/v3",
+		Auth:           spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Pets": {
+				Description: "Pet operations",
+				Endpoints: map[string]spec.Endpoint{
+					"List": {Method: "GET", Path: "/pets", Description: "List all pets"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "Manage pets from the terminal.", got.Description)
+}
+
+func TestWriteToolsManifestMarksGeneratedThinToolDescriptions(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "halo",
+		BaseURL: "https://halo.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Actions": {
+				Description: "Action operations",
+				Endpoints: map[string]spec.Endpoint{
+					"List": {
+						Method:      "GET",
+						Path:        "/Actions",
+						Description: "Use this to return multiple Actions.<br>Requires authentication.",
+						Response:    spec.ResponseDef{Type: "array", Item: "Action"},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	require.Len(t, got.Tools, 1)
+	assert.Equal(t, "List actions. Returns array of Action.", got.Tools[0].Description)
+	assert.Equal(t, "generated", got.Tools[0].DescriptionSource)
 }
 
 func TestWriteToolsManifest_SubResources(t *testing.T) {
@@ -258,7 +382,7 @@ func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
 						Path:        "/stores",
 						Description: "Create store",
 						Body: []spec.Param{
-							{Name: "store_code", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true, Description: "Store code"},
+							{Name: "store_code", BodyName: "storeCode", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true, Description: "Store code"},
 						},
 					},
 				},
@@ -287,8 +411,107 @@ func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
 
 	require.Len(t, create.Params, 1)
 	assert.Equal(t, "store-code", create.Params[0].Name)
-	assert.Equal(t, "store_code", create.Params[0].WireName)
+	assert.Equal(t, "storeCode", create.Params[0].WireName)
 	assert.Equal(t, []string{"code"}, create.Params[0].Aliases)
+}
+
+func TestWriteToolsManifest_NestedBodyParamsMatchPublicSurface(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "rich-body",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"graphql": {
+				Endpoints: map[string]spec.Endpoint{
+					"execute": {
+						Method: "POST",
+						Path:   "/graphql",
+						Body: []spec.Param{
+							{Name: "query", Type: "string", Description: "GraphQL document", Required: true},
+							{Name: "variables", Type: "object", Description: "GraphQL variables"},
+							{
+								Name: "serializerSettings",
+								Type: "object",
+								Fields: []spec.Param{
+									{Name: "includeNulls", Type: "bool", Description: "Include null values"},
+								},
+							},
+							{
+								Name: "queries",
+								Type: "array",
+								Fields: []spec.Param{
+									{Name: "query", Type: "string"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 4)
+	assert.Equal(t, ManifestParam{
+		Name:        "query",
+		Type:        "string",
+		Location:    "body",
+		Description: "GraphQL document",
+		Required:    true,
+	}, got.Tools[0].Params[0])
+	assert.Equal(t, ManifestParam{
+		Name:        "variables",
+		Type:        "object",
+		Location:    "body",
+		Description: "GraphQL variables",
+	}, got.Tools[0].Params[1])
+	assert.Equal(t, ManifestParam{
+		Name:        "serializer-settings-include-nulls",
+		WireName:    "serializerSettings.includeNulls",
+		Type:        "bool",
+		Location:    "body",
+		Description: "Include null values",
+	}, got.Tools[0].Params[2])
+	assert.Equal(t, ManifestParam{
+		Name:     "queries",
+		Type:     "array",
+		Location: "body",
+	}, got.Tools[0].Params[3])
+}
+
+func TestWriteToolsManifest_ParamURLNameUsesWireName(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "param-url-name",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"opportunities": {
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method: "GET",
+						Path:   "/opportunities/search",
+						Params: []spec.Param{
+							{Name: "locationId", URLName: "location_id", Type: "string", Required: true, Description: "Location ID"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 1)
+	assert.Equal(t, "locationId", got.Tools[0].Params[0].Name)
+	assert.Equal(t, "location_id", got.Tools[0].Params[0].WireName)
 }
 
 func TestWriteToolsManifest_IdentNamePublicParamName(t *testing.T) {
@@ -325,6 +548,126 @@ func TestWriteToolsManifest_IdentNamePublicParamName(t *testing.T) {
 	assert.Empty(t, got.Tools[0].Params[0].WireName)
 	assert.Equal(t, "id-2", got.Tools[0].Params[1].Name)
 	assert.Equal(t, "id", got.Tools[0].Params[1].WireName)
+}
+
+func TestWriteToolsManifest_ReservesStdinBodyParamName(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "stdin-body",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"uploads": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/uploads",
+						Body: []spec.Param{
+							{Name: "stdin", Type: "string", Description: "Body field named stdin"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 1)
+	assert.Equal(t, "stdin-2", got.Tools[0].Params[0].Name)
+	assert.Equal(t, "stdin", got.Tools[0].Params[0].WireName)
+}
+
+func TestOpenAPIBodyFieldCollidingWithPathParamSurfacesInMCP(t *testing.T) {
+	t.Parallel()
+
+	const openAPIBodyPathCollision = `openapi: 3.0.0
+info:
+  title: Collision API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /tags/{id}/notes:
+    post:
+      summary: Add a tag to a note
+      operationId: tagNote
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Tag ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  description: Note ID to tag
+      responses:
+        '200':
+          description: ok
+`
+
+	manifestParsed, err := openapi.Parse([]byte(openAPIBodyPathCollision))
+	require.NoError(t, err)
+
+	manifestDir := filepath.Join(t.TempDir(), "direct-manifest")
+	require.NoError(t, os.MkdirAll(manifestDir, 0o755))
+	require.NoError(t, WriteToolsManifest(manifestDir, manifestParsed))
+	got, err := ReadToolsManifest(manifestDir)
+	require.NoError(t, err)
+	assertCollisionManifestParams(t, got)
+
+	parsed, err := openapi.Parse([]byte(openAPIBodyPathCollision))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), "collision-api-pp-cli")
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+
+	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpSource := string(mcpTools)
+	assert.Contains(t, mcpSource, `mcplib.WithString("id", mcplib.Required(), mcplib.Description("Tag ID"))`)
+	assert.Contains(t, mcpSource, `mcplib.WithString("id-2", mcplib.Required(), mcplib.Description("Note ID to tag"))`)
+	assert.Contains(t, mcpSource, `PublicName: "id", WireName: "id", Location: "path"`)
+	assert.Contains(t, mcpSource, `PublicName: "id-2", WireName: "id", Location: "body"`)
+
+	require.NoError(t, WriteToolsManifest(outputDir, parsed))
+	got, err = ReadToolsManifest(outputDir)
+	require.NoError(t, err)
+	assertCollisionManifestParams(t, got)
+}
+
+func assertCollisionManifestParams(t *testing.T, got *ToolsManifest) {
+	t.Helper()
+
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 2)
+	assert.Equal(t, ManifestParam{
+		Name:        "id",
+		Type:        "string",
+		Location:    "path",
+		Description: "Tag ID",
+		Required:    true,
+	}, got.Tools[0].Params[0])
+	assert.Equal(t, ManifestParam{
+		Name:        "id-2",
+		WireName:    "id",
+		Type:        "string",
+		Location:    "body",
+		Description: "Note ID to tag",
+		Required:    true,
+	}, got.Tools[0].Params[1])
 }
 
 // TestWriteToolsManifest_ReclassifiedPathParamKeepsPathLocation pins
@@ -559,7 +902,7 @@ func TestWriteToolsManifest_CookieAuthOnlyNoAuthEndpoints(t *testing.T) {
 	parsed := &spec.APISpec{
 		Name:    "cookie-api",
 		BaseURL: "https://api.example.com",
-		Auth:    spec.AuthConfig{Type: "cookie", EnvVars: []string{"COOKIE"}},
+		Auth:    spec.AuthConfig{Type: "cookie", EnvVars: []string{"COOKIE"}, Cookies: []string{"session-id", "x-main"}},
 		Resources: map[string]spec.Resource{
 			"Items": {
 				Endpoints: map[string]spec.Endpoint{
@@ -585,6 +928,7 @@ func TestWriteToolsManifest_CookieAuthOnlyNoAuthEndpoints(t *testing.T) {
 	assert.Equal(t, "items_public_count", got.Tools[0].Name)
 	assert.Equal(t, "items_public_list", got.Tools[1].Name)
 	assert.Equal(t, "partial", got.MCPReady)
+	assert.Equal(t, []string{"session-id", "x-main"}, got.Auth.Cookies)
 }
 
 func TestWriteToolsManifest_ComposedAuthOnlyNoAuthEndpoints(t *testing.T) {
@@ -592,7 +936,7 @@ func TestWriteToolsManifest_ComposedAuthOnlyNoAuthEndpoints(t *testing.T) {
 	parsed := &spec.APISpec{
 		Name:    "composed-api",
 		BaseURL: "https://api.example.com",
-		Auth:    spec.AuthConfig{Type: "composed", EnvVars: []string{"AUTH_TOKEN"}},
+		Auth:    spec.AuthConfig{Type: "composed", EnvVars: []string{"AUTH_TOKEN"}, Cookies: []string{"session-id"}},
 		Resources: map[string]spec.Resource{
 			"Items": {
 				Endpoints: map[string]spec.Endpoint{
@@ -614,6 +958,7 @@ func TestWriteToolsManifest_ComposedAuthOnlyNoAuthEndpoints(t *testing.T) {
 
 	require.Len(t, got.Tools, 1)
 	assert.Equal(t, "items_public_list", got.Tools[0].Name)
+	assert.Equal(t, []string{"session-id"}, got.Auth.Cookies)
 }
 
 func TestWriteToolsManifest_EmptyDescription(t *testing.T) {
@@ -642,7 +987,7 @@ func TestWriteToolsManifest_EmptyDescription(t *testing.T) {
 
 	assert.Equal(t, "", got.Description)
 	require.Len(t, got.Tools, 1)
-	assert.Equal(t, "", got.Tools[0].Description)
+	assert.Equal(t, "List items.", got.Tools[0].Description)
 }
 
 func TestWriteToolsManifest_RoundTrip(t *testing.T) {
@@ -952,6 +1297,58 @@ func TestWriteToolsManifest_MCPDescriptionAnnotations(t *testing.T) {
 			assert.Contains(t, tool.Description, "(public)", "public minority endpoints should be annotated")
 		}
 	}
+}
+
+func TestWriteToolsManifest_MCPSurfaceMetadata(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "surface-api",
+		BaseURL: "https://api.example.com",
+		MCP: spec.MCPConfig{
+			EndpointTools: "hidden",
+			Orchestration: "code",
+		},
+		Resources: map[string]spec.Resource{
+			"Items": {
+				Endpoints: map[string]spec.Endpoint{
+					"Get": {Method: "GET", Path: "/items/{id}", Description: "Get"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	require.NotNil(t, got.MCP)
+	assert.Equal(t, "hidden", got.MCP.EndpointTools)
+	assert.Equal(t, "code", got.MCP.Orchestration)
+	assert.False(t, got.EndpointMirrorsVisible())
+}
+
+func TestWriteToolsManifest_AppliesLargeMCPSurfaceDefault(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:      "surface-api",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+	}
+	r := spec.Resource{Endpoints: map[string]spec.Endpoint{}}
+	for i := range spec.DefaultOrchestrationThreshold + 1 {
+		name := fmt.Sprintf("get_%d", i)
+		r.Endpoints[name] = spec.Endpoint{Method: "GET", Path: fmt.Sprintf("/items/%d", i)}
+	}
+	parsed.Resources["Items"] = r
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	require.NotNil(t, got.MCP)
+	assert.Equal(t, "hidden", got.MCP.EndpointTools)
+	assert.Equal(t, "code", got.MCP.Orchestration)
+	assert.False(t, got.EndpointMirrorsVisible())
 }
 
 func TestWriteToolsManifest_EmptyParamType(t *testing.T) {

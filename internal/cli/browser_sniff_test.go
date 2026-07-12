@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,27 @@ func TestBrowserSniffCmdWritesSpecAndExplicitTrafficAnalysis(t *testing.T) {
 	assert.Contains(t, string(data), `"endpoint_clusters"`)
 }
 
+func TestBrowserSniffCmdEmptySamplesOutputDisablesSamples(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "spec.yaml")
+	analysisPath := filepath.Join(dir, "traffic-analysis.json")
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", filepath.Join("..", "..", "testdata", "sniff", "sample-enriched.json"),
+		"--output", outputPath,
+		"--analysis-output", analysisPath,
+		"--samples-output=",
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	require.FileExists(t, outputPath)
+	require.FileExists(t, analysisPath)
+	assert.NoDirExists(t, browsersniff.DefaultSamplesPath(outputPath))
+}
+
 func TestBrowserSniffCmdDerivesTrafficAnalysisPath(t *testing.T) {
 	t.Parallel()
 
@@ -66,6 +88,149 @@ func TestBrowserSniffCmdDerivesTrafficAnalysisPath(t *testing.T) {
 
 	require.FileExists(t, outputPath)
 	require.FileExists(t, filepath.Join(dir, "sample-spec-traffic-analysis.json"))
+}
+
+func TestBrowserSniffCmdRejectsEmptyCapture(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "empty.har")
+	require.NoError(t, os.WriteFile(capturePath, []byte(`{"log":{"pages":[],"entries":[]}}`), 0o600))
+
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", capturePath,
+		"--output", filepath.Join(dir, "spec.yaml"),
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "contains no entries")
+	assert.NoFileExists(t, filepath.Join(dir, "spec.yaml"))
+}
+
+func TestBrowserSniffCmdWritesLowConfidencePathHints(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "capture.json")
+	outputPath := filepath.Join(dir, "spec.yaml")
+	analysisPath := filepath.Join(dir, "traffic-analysis.json")
+	capture := browsersniff.EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []browsersniff.EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/predict/FR/STN/DUB/2026-08-16",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"price":123}`,
+			},
+		},
+	}
+	data, err := json.Marshal(capture)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(capturePath, data, 0o600))
+
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", capturePath,
+		"--output", outputPath,
+		"--analysis-output", analysisPath,
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	specData, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(specData), "/predict/{segment_0}/{segment_1}/{segment_2}/{date}")
+
+	analysisData, err := os.ReadFile(analysisPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(analysisData), `"low_confidence_parameters"`)
+	assert.Contains(t, string(analysisData), `"segment": "FR"`)
+	assert.Contains(t, string(analysisData), `"segment": "2026-08-16"`)
+}
+
+func TestBrowserSniffCmdPreserveHostsWritesBaseURLOverrides(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "capture.json")
+	outputPath := filepath.Join(dir, "spec.yaml")
+	capture := browsersniff.EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []browsersniff.EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"status":"ok"}`,
+			},
+			{Method: "GET", URL: "https://api.example.com/v1/items", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"items":[]}`},
+			{Method: "GET", URL: "https://api.example.com/v1/items/item_1", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"id":"item_1"}`},
+			{Method: "GET", URL: "https://partner.example.net/v1/profiles", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"profiles":[]}`},
+		},
+	}
+	data, err := json.Marshal(capture)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(capturePath, data, 0o600))
+
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", capturePath,
+		"--output", outputPath,
+		"--preserve-hosts",
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	specData, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	parsed, err := spec.ParseBytes(specData)
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.example.com", parsed.BaseURL)
+	require.Contains(t, parsed.Resources, "profiles")
+	profiles := parsed.Resources["profiles"].Endpoints["list_profiles"]
+	assert.Equal(t, "https://partner.example.net", profiles.BaseURL)
+}
+
+func TestPrintingPressSkillDocumentsPreserveHostsForComboHAR(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"),
+		filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"),
+	} {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		text := string(data)
+		assert.Contains(t, text, "source-priority.json")
+		assert.Contains(t, text, "two or more sources")
+		assert.Contains(t, text, "--preserve-hosts")
+	}
+}
+
+func TestPrintingPressSkillDocumentsHARQualityGates(t *testing.T) {
+	t.Parallel()
+
+	skillData, err := os.ReadFile(filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	require.NoError(t, err)
+	skillText := string(skillData)
+	assert.Contains(t, skillText, `.log.entries | length > 0`)
+	assert.Contains(t, skillText, "Capture again (Recommended)")
+	assert.Contains(t, skillText, "Proceed with docs-only")
+	assert.Contains(t, skillText, "empty_response_shapes")
+	assert.Contains(t, skillText, `size_class: "empty"`)
+	assert.Contains(t, skillText, `response_shape: {}`)
+
+	referenceData, err := os.ReadFile(filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"))
+	require.NoError(t, err)
+	referenceText := string(referenceData)
+	assert.Contains(t, referenceText, "Immediately inspect `$DISCOVERY_DIR/traffic-analysis.json` for response-body quality")
+	assert.Contains(t, referenceText, "direct-response-*.json")
+	assert.Contains(t, referenceText, "Do not invent type definitions from endpoint names alone")
 }
 
 func TestBrowserSniffCmdReportsTrafficAnalysisWriteFailure(t *testing.T) {
@@ -110,7 +275,7 @@ func TestWriteBrowserSniffOutputsRestoresExistingFilesWhenSpecPublishFails(t *te
 		Types:       map[string]spec.TypeDef{},
 	}
 
-	err := writeBrowserSniffOutputs(apiSpec, &browsersniff.TrafficAnalysis{Version: "1"}, blockingDir, analysisPath)
+	_, err := writeBrowserSniffOutputs(apiSpec, &browsersniff.TrafficAnalysis{Version: "1"}, nil, blockingDir, analysisPath, "", browsersniff.AnalyzeOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preparing spec publish:")
 
@@ -119,6 +284,102 @@ func TestWriteBrowserSniffOutputsRestoresExistingFilesWhenSpecPublishFails(t *te
 	assert.Equal(t, "old analysis", string(data))
 	assert.DirExists(t, blockingDir)
 	assert.FileExists(t, filepath.Join(blockingDir, "marker"))
+}
+
+func TestWriteBrowserSniffOutputsWritesSamplesDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "out-spec.yaml")
+	analysisPath := browsersniff.DefaultTrafficAnalysisPath(specPath)
+	samplesPath := browsersniff.DefaultSamplesPath(specPath)
+
+	capture := &browsersniff.EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []browsersniff.EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders: map[string]string{
+					"Authorization": "Bearer eyJ.t.x",
+					"Accept":        "application/json",
+				},
+			},
+		},
+	}
+
+	apiSpec, err := browsersniff.AnalyzeCapture(capture)
+	require.NoError(t, err)
+	trafficAnalysis, err := browsersniff.AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	written, err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, specPath, analysisPath, samplesPath, browsersniff.AnalyzeOptions{})
+	require.NoError(t, err)
+	assert.Positive(t, written, "at least one sample file should be written")
+
+	assert.FileExists(t, specPath)
+	assert.FileExists(t, analysisPath)
+	assert.DirExists(t, samplesPath)
+
+	entries, err := os.ReadDir(samplesPath)
+	require.NoError(t, err)
+	assert.NotEmpty(t, entries, "samples directory should have at least one file")
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(samplesPath, entry.Name()))
+		require.NoError(t, err)
+		assert.Contains(t, string(data), browsersniff.RedactedSentinel, "Authorization should be redacted")
+		assert.NotContains(t, string(data), "eyJ.t.x", "raw token must not leak")
+	}
+}
+
+func TestWriteBrowserSniffOutputsRestoresSamplesDirOnSpecFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "out-spec.yaml")
+	analysisPath := browsersniff.DefaultTrafficAnalysisPath(specPath)
+	samplesPath := browsersniff.DefaultSamplesPath(specPath)
+
+	// Pre-existing samples directory with a marker file. A subsequent failure
+	// during spec publish must restore the pre-existing samples directory
+	// intact (no half-overwritten state).
+	require.NoError(t, os.MkdirAll(samplesPath, 0o755))
+	markerPath := filepath.Join(samplesPath, "pre-existing.txt")
+	require.NoError(t, os.WriteFile(markerPath, []byte("keep me"), 0o600))
+
+	// Block spec publish by creating a non-empty directory at outputPath.
+	require.NoError(t, os.MkdirAll(specPath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(specPath, "blocker"), []byte("x"), 0o600))
+
+	capture := &browsersniff.EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []browsersniff.EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+	apiSpec, err := browsersniff.AnalyzeCapture(capture)
+	require.NoError(t, err)
+	trafficAnalysis, err := browsersniff.AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	_, err = writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, specPath, analysisPath, samplesPath, browsersniff.AnalyzeOptions{})
+	require.Error(t, err, "should fail because outputPath is a non-empty directory")
+
+	// Pre-existing samples directory must be restored intact.
+	assert.DirExists(t, samplesPath)
+	preserved, readErr := os.ReadFile(markerPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "keep me", string(preserved))
 }
 
 // newRootCmdForTest mirrors Execute()'s command tree construction for test-level

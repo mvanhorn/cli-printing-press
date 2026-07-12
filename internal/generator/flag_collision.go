@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/paramnames"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -70,20 +71,98 @@ func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJob
 	// Pass 1: query/path params populate the flag<Camel> namespace.
 	ep.Params = uniquifyIdentifiers(ep.Params, "flag", flagIdents, flagNames)
 
-	// Pass 2: body fields populate the body<Camel> namespace, but their cobra
-	// flag names share the namespace with everything we just registered.
+	// Pass 2: body fields populate the body<Camel> namespace, but their public
+	// input names share the namespace with every endpoint param. Positional path
+	// params do not register cobra flags, but they do register MCP inputs, so a
+	// body field named the same as a path param still needs a distinct public
+	// name while keeping its wire-side body key unchanged.
 	bodyFlagNames := make(map[string]struct{}, len(flagNames)+len(ep.Params))
 	for k := range flagNames {
 		bodyFlagNames[k] = struct{}{}
 	}
 	for _, p := range ep.Params {
-		if !p.Positional {
-			bodyFlagNames[publicFlagName(p)] = struct{}{}
-		}
+		bodyFlagNames[publicFlagName(p)] = struct{}{}
 	}
-	ep.Body = uniquifyIdentifiers(ep.Body, "body", nil, bodyFlagNames)
+	// renderBodyVarDecls and renderBodyFlagRegs recurse into nested object
+	// Fields on the JSON-body path, so the dedup pass must walk the same
+	// tree to see post-flatten identifiers like body<Parent><Child>; a
+	// flat top-level walk misses parent-prefixed leaves that collide with
+	// sibling scalars. Multipart/form bodies skip the recursion because
+	// their emission keeps one var/flag per top-level param.
+	if bodyUsesFlatEmission(ep) {
+		ep.Body = uniquifyIdentifiers(ep.Body, "body", nil, bodyFlagNames)
+	} else {
+		usedIdents := map[string]struct{}{}
+		usedFlags := map[string]struct{}{}
+		for k := range bodyFlagNames {
+			usedFlags[k] = struct{}{}
+		}
+		ep.Body = uniquifyBodyTree(ep.Body, "", "", usedIdents, usedFlags)
+	}
 
 	return ep, nil
+}
+
+// uniquifyBodyTree walks Body recursively in the same shape that
+// renderBodyVarDecls and renderBodyFlagRegs emit on the JSON-body path.
+// usedIdents and usedFlags carry the accumulated reservations across all
+// levels so a nested leaf whose post-flatten Go identifier collides with a
+// sibling scalar at any level gets its IdentName suffixed via the existing
+// _2, _3, ... convention.
+func uniquifyBodyTree(body []spec.Param, identPrefix, flagPrefix string, usedIdents, usedFlags map[string]struct{}) []spec.Param {
+	out := make([]spec.Param, len(body))
+	for i, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if flagPrefix == "" {
+				flag := publicFlagName(p)
+				if _, flagTaken := usedFlags[flag]; flagTaken {
+					for n := 2; ; n++ {
+						// Name is the stable wire-root for suffix variants; IdentName
+						// is only the public override selected by this dedupe pass.
+						candidate := fmt.Sprintf("%s_%d", p.Name, n)
+						candFlag := flagName(candidate)
+						if _, flagTaken := usedFlags[candFlag]; !flagTaken {
+							p.IdentName = candidate
+							usedFlags[candFlag] = struct{}{}
+							break
+						}
+					}
+				} else {
+					usedFlags[flag] = struct{}{}
+				}
+			}
+			childIdent := identPrefix + toCamel(paramIdent(p))
+			childFlag := joinFlag(flagPrefix, publicFlagName(p))
+			p.Fields = uniquifyBodyTree(p.Fields, childIdent, childFlag, usedIdents, usedFlags)
+			out[i] = p
+			continue
+		}
+		ident := "body" + identPrefix + toCamel(paramIdent(p))
+		flag := joinFlag(flagPrefix, publicFlagName(p))
+		_, identTaken := usedIdents[ident]
+		_, flagTaken := usedFlags[flag]
+		if !identTaken && !flagTaken {
+			usedIdents[ident] = struct{}{}
+			usedFlags[flag] = struct{}{}
+			out[i] = p
+			continue
+		}
+		for n := 2; ; n++ {
+			candidate := fmt.Sprintf("%s_%d", p.Name, n)
+			candIdent := "body" + identPrefix + toCamel(candidate)
+			candFlag := joinFlag(flagPrefix, flagName(candidate))
+			_, identTaken := usedIdents[candIdent]
+			_, flagTaken := usedFlags[candFlag]
+			if !identTaken && !flagTaken {
+				p.IdentName = candidate
+				usedIdents[candIdent] = struct{}{}
+				usedFlags[candFlag] = struct{}{}
+				out[i] = p
+				break
+			}
+		}
+	}
+	return out
 }
 
 // reservedFlagNamesForEndpoint returns identifiers and cobra flag names that
@@ -245,20 +324,22 @@ func validatePublicFlagEntry(resKey, epName string, entry publicFlagEntry, reser
 // identifiers (via camel) or cobra flag names (via flagName). It is
 // IdentName when populated by the dedup pass and Name otherwise. The
 // resulting string must never be used for wire-side serialization;
-// callers writing URL params, JSON keys, or path substitutions read
-// Name directly.
+// callers writing URL params read paramWireName, request bodies read
+// BodyWireName, and path substitutions read Name directly.
 func paramIdent(p spec.Param) string {
-	if p.IdentName != "" {
-		return p.IdentName
-	}
-	return p.Name
+	return paramnames.Ident(p)
+}
+
+// paramWireName returns the URL query-key for this param. URLName overrides
+// when set (e.g., "$limit" for Socrata APIs); otherwise Name. Used by
+// generator templates for URL emission only — not for JSON body keys or
+// path substitution.
+func paramWireName(p spec.Param) string {
+	return p.WireName()
 }
 
 func publicFlagName(p spec.Param) string {
-	if p.FlagName != "" {
-		return p.FlagName
-	}
-	return flagName(paramIdent(p))
+	return paramnames.PublicFlagName(p)
 }
 
 func publicFlagAliases(p spec.Param) []string {

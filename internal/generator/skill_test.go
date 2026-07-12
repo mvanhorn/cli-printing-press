@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -21,12 +22,15 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 
 	apiSpec := minimalSpec("finance")
 	apiSpec.Category = "commerce"
+	apiSpec.Regions = []string{"US", "*"}
+	apiSpec.APILanguage = "en-US"
 	outputDir := filepath.Join(t.TempDir(), "finance-pp-cli")
 	gen := New(apiSpec, outputDir)
 	gen.Narrative = &ReadmeNarrative{
 		Headline:       "Quotes, charts, and a local portfolio nothing else has",
 		ValueProp:      "Quotes, charts, fundamentals, options chains, and a SQLite-backed portfolio tracker.",
 		WhenToUse:      "Reach for this CLI when an agent needs quotes, fundamentals, or persistent portfolio state against Yahoo Finance.",
+		AntiTriggers:   []string{"Tasks that require placing trades or moving money", "Brokerage account management beyond read-only portfolio analysis"},
 		TriggerPhrases: []string{"quote AAPL", "check my portfolio", "options for TSLA"},
 		Recipes: []Recipe{
 			{Title: "Morning digest", Command: "finance-pp-cli digest --watchlist tech", Explanation: "Biggest movers across a named watchlist."},
@@ -56,10 +60,34 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		"frontmatter description should list domain-specific trigger phrases verbatim (backtick-delimited)")
 	assert.True(t, strings.Contains(content, "library/commerce/finance/cmd/finance-pp-cli"),
 		"openclaw install manifest should use the API's category and slug-only directory")
+	assert.True(t, strings.Contains(content, `regions: ["US", "*"]`),
+		"frontmatter should expose structured geographic scope")
+	assert.True(t, strings.Contains(content, `api_language: "en-US"`),
+		"frontmatter should expose the API's native language tag")
+	require.True(t, strings.HasPrefix(content, "---\n"), "frontmatter should open with ---")
+	end := strings.Index(content[4:], "\n---\n")
+	require.NotEqual(t, -1, end, "frontmatter should close with ---")
+	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
+	var parsed struct {
+		Regions     []string `yaml:"regions"`
+		APILanguage string   `yaml:"api_language"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+		"frontmatter with region/language metadata must be valid YAML; content was:\n%s", body)
+	assert.Equal(t, []string{"US", "*"}, parsed.Regions)
+	assert.Equal(t, "en-US", parsed.APILanguage)
 
 	// Body
 	assert.True(t, strings.Contains(content, "## When to Use This CLI"),
 		"WhenToUse narrative should render as its own section")
+	assert.True(t, strings.Contains(content, "## Anti-triggers"),
+		"AntiTriggers narrative should render as its own section")
+	assert.True(t, strings.Contains(content, "- Tasks that require placing trades or moving money"),
+		"anti-triggers should render as explicit bullets")
+	assert.True(t, strings.Contains(content, "- Brokerage account management beyond read-only portfolio analysis"),
+		"all anti-trigger bullets should render")
+	assert.False(t, strings.Contains(content, "## When Not to Use This CLI"),
+		"generic read-only boundary should be omitted when anti-triggers are present")
 	assert.True(t, strings.Contains(content, "## Unique Capabilities"),
 		"Novel features should appear as Unique Capabilities so agents don't need --help discovery")
 	assert.True(t, strings.Contains(content, "### Local state that compounds"),
@@ -121,6 +149,8 @@ func TestSkillFallsBackWhenNarrativeAbsent(t *testing.T) {
 		"description falls back to spec description")
 	assert.False(t, strings.Contains(content, "## When to Use This CLI"),
 		"WhenToUse section should be omitted when narrative is absent")
+	assert.False(t, strings.Contains(content, "## Anti-triggers"),
+		"Anti-triggers section should be omitted when narrative is absent")
 	assert.False(t, strings.Contains(content, "## Recipes"),
 		"Recipes section should be omitted when narrative is absent")
 	assert.True(t, strings.Contains(content, "## Auth Setup"),
@@ -319,6 +349,28 @@ func TestCompactDescriptionPrefersCLIShapedCopy(t *testing.T) {
 	assert.NotContains(t, string(goreleaser), "# Introduction")
 }
 
+func TestManifestDescriptionPreservesCompleteLongCopy(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("longcopy")
+	apiSpec.CLIDescription = "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
+	outputDir := filepath.Join(t.TempDir(), "longcopy-pp-cli")
+	gen := New(apiSpec, outputDir)
+
+	assert.Equal(t, apiSpec.CLIDescription, gen.ManifestDescription())
+}
+
+func TestManifestDescriptionSkipsLiteralEllipsisCandidates(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("longcopy")
+	apiSpec.CLIDescription = "Truncated CLI-shaped copy..."
+	apiSpec.Description = "Complete fallback sentence."
+	gen := New(apiSpec, filepath.Join(t.TempDir(), "longcopy-pp-cli"))
+
+	assert.Equal(t, "Complete fallback sentence.", gen.ManifestDescription())
+}
+
 // TestSkillRendersAuthBranchPerType asserts the deterministic Auth Setup
 // block branches correctly on .Auth.Type when no narrative auth is provided.
 func TestSkillRendersAuthBranchPerType(t *testing.T) {
@@ -357,12 +409,32 @@ func TestSkillRendersAuthBranchPerType(t *testing.T) {
 	}
 }
 
+func TestSkillAuthSetupPrefersNarrativeEvenWhenSpecAuthIsNone(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("tierfree")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	outputDir := filepath.Join(t.TempDir(), "tierfree-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		AuthNarrative: "Most commands are public, but premium download routes require `AA_API_KEY`.",
+	}
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	assert.Contains(t, content, "Most commands are public, but premium download routes require `AA_API_KEY`.")
+	assert.NotContains(t, content, "No authentication required.")
+}
+
 // TestSkillRendersExtraCommands asserts that hand-written commands declared
-// in spec.ExtraCommands appear in the generated SKILL.md Command Reference,
-// after the spec-driven resources, with binary prefix and optional args.
-// This closes the drift class where SKILL.md silently omitted hand-written
-// commands like `today`, `streak`, `rivals` because the template only iterated
-// .Resources.
+// in spec.ExtraCommands appear in their own `## Hand-written Extensions`
+// section (NOT inside `## Command Reference`), with binary prefix and optional
+// args. The separate section keeps verify-skill's unknown-command walker
+// (scoped to ## Command Reference) from treating extra_commands as canonical
+// Cobra paths — that drift was the root cause of #1451.
 func TestSkillRendersExtraCommands(t *testing.T) {
 	t.Parallel()
 
@@ -380,16 +452,55 @@ func TestSkillRendersExtraCommands(t *testing.T) {
 	require.NoError(t, err)
 	content := string(skill)
 
-	assert.Contains(t, content, "**Hand-written commands**",
-		"Command Reference should include a Hand-written commands subsection when ExtraCommands present")
+	assert.Contains(t, content, "## Hand-written Extensions",
+		"ExtraCommands should be surfaced in their own top-level section, not under ## Command Reference")
 	assert.Contains(t, content, "`sports-pp-cli trending`",
-		"extra command without args should render as just binary + name")
+		"extra command without args should render as binary + name in the Extensions section")
 	assert.Contains(t, content, "`sports-pp-cli boxscore <event_id>`",
 		"extra command with args should render args after the name")
 	assert.Contains(t, content, "Most-followed athletes and teams across all leagues",
 		"extra command description should appear in the rendered output")
 	assert.Contains(t, content, "`sports-pp-cli h2h <team1> <team2>`",
 		"extra command with multi-arg signature should render verbatim")
+
+	// Regression guard for #1451: the Extensions section must live OUTSIDE
+	// the Command Reference section so verify-skill's _extract_inline_commands
+	// walker (scoped to ## Command Reference) does not flag these as
+	// unknown-command findings. Asserted by locating each section's offset
+	// and confirming Extensions starts after Reference ends.
+	cmdRefIdx := strings.Index(content, "## Command Reference")
+	require.NotEqual(t, -1, cmdRefIdx, "Command Reference section is expected to exist")
+	extIdx := strings.Index(content, "## Hand-written Extensions")
+	require.NotEqual(t, -1, extIdx)
+	require.Greater(t, extIdx, cmdRefIdx,
+		"Hand-written Extensions must be a sibling section after Command Reference, not nested inside it")
+
+	// Belt-and-suspenders: confirm the Command Reference section body
+	// (everything between its heading and the next top-level heading)
+	// does NOT contain any extra_commands path. Mirrors the Python
+	// walker's scoping (regex in scripts/verify-skill/verify_skill.py:74)
+	// without lookahead, which Go's RE2 doesn't support.
+	cmdRefHeadingRE := regexp.MustCompile(`(?m)^##\s+Command\s+Reference\s*$`)
+	nextSectionRE := regexp.MustCompile(`(?m)^##\s+`)
+	loc := cmdRefHeadingRE.FindStringIndex(content)
+	require.NotNil(t, loc, "Command Reference section heading should match the walker's regex")
+	afterHeading := content[loc[1]:]
+	if next := nextSectionRE.FindStringIndex(afterHeading); next != nil {
+		afterHeading = afterHeading[:next[0]]
+	}
+	for _, name := range []string{"sports-pp-cli trending", "sports-pp-cli boxscore", "sports-pp-cli h2h"} {
+		assert.NotContains(t, afterHeading, name,
+			"extra command %q must not appear under Command Reference; the unknown-command walker would flag it", name)
+	}
+
+	// Markdown nests every `###` under the most recent `##`. Placing
+	// `## Hand-written Extensions` BEFORE `### Finding the right command`
+	// would silently reparent that subsection. Assert the ordering so a
+	// future template edit doesn't regress the structure.
+	findingIdx := strings.Index(content, "### Finding the right command")
+	require.NotEqual(t, -1, findingIdx, "Finding the right command subsection should exist")
+	require.Greater(t, extIdx, findingIdx,
+		"Hand-written Extensions must come after ### Finding the right command so it doesn't reparent that subsection")
 }
 
 // TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML asserts that the
@@ -457,7 +568,7 @@ func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
 		"kind: shell is invalid per ClawHub schema; must never appear")
 	assert.NotContains(t, content, `kind: "shell"`,
 		"kind: shell is invalid per ClawHub schema; must never appear")
-	assert.NotContains(t, content, `"command":`,
+	assert.NotContains(t, body, `"command":`,
 		"command field is not in ClawHub schema; must never appear in metadata")
 	assert.NotContains(t, content, `\"openclaw\":`,
 		"metadata must not be a JSON-string blob anymore")
@@ -617,8 +728,10 @@ func TestSkillFrontmatterMetadataOmitsUnknownCategoryInstall(t *testing.T) {
 
 	assert.NotContains(t, content, "library/other/uncategorized",
 		"empty Category should not bake a placeholder category into install metadata")
-	assert.Contains(t, content, "npx -y @mvanhorn/printing-press install uncategorized --cli-only",
+	assert.Contains(t, content, "npx -y @mvanhorn/printing-press-library install uncategorized --cli-only",
 		"empty Category should keep the category-agnostic installer path")
+	assert.NotContains(t, content, "--cli-only --bin-dir",
+		"empty Category should rely on the installer default bin directory")
 }
 
 // TestSkillNoExtraCommandsIsBackwardCompatible asserts the template emits

@@ -85,7 +85,6 @@ func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
 	want := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
 	paths := []string{
 		"../../skills/printing-press/SKILL.md",
-		"../../skills/printing-press-catalog/SKILL.md",
 		"../../skills/printing-press-polish/SKILL.md",
 		"../../skills/printing-press-publish/SKILL.md",
 		"../../skills/printing-press-score/SKILL.md",
@@ -173,6 +172,22 @@ func majorVersion(t *testing.T, v string) int {
 	major, err := strconv.Atoi(parts[0])
 	require.NoError(t, err, "Version major %q must be an integer", parts[0])
 	return major
+}
+
+func TestPlansDirectoryGitignored(t *testing.T) {
+	// The cli-printing-press repo is public. Plans in docs/plans/ frequently
+	// describe in-progress, unreleased, or third-party-collaborator work that
+	// should not be world-readable. The /docs/plans/ gitignore line enforces
+	// this; if someone removes it in a cleanup commit, plans silently start
+	// landing on GitHub again.
+	//
+	// See AGENTS.md "Plan documents stay local" for the rule.
+	data, err := os.ReadFile("../../.gitignore")
+	require.NoError(t, err)
+
+	gitignore := string(data)
+	assert.Contains(t, gitignore, "\n/docs/plans/",
+		".gitignore must ignore /docs/plans/ — see AGENTS.md 'Plan documents stay local'")
 }
 
 func TestPRTitleWorkflowAllowsReleasePleaseScope(t *testing.T) {

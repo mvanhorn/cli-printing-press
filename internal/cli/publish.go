@@ -3,7 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,11 +14,13 @@ import (
 	"strings"
 	"time"
 
-	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/categories"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/spf13/cobra"
 )
 
@@ -30,10 +35,10 @@ func newPublishCmd() *cobra.Command {
 		Use:   "publish",
 		Short: "Validate and package CLIs for publishing",
 		Example: `  # Validate a CLI before publishing
-  printing-press publish validate --dir ~/printing-press/library/notion --json
+  cli-printing-press publish validate --dir ~/printing-press/library/notion --json
 
   # Package a CLI for publishing
-  printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json`,
+  cli-printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json`,
 	}
 
 	cmd.AddCommand(newPublishValidateCmd())
@@ -81,6 +86,8 @@ type RenameResult struct {
 	Error         string `json:"error,omitempty"`
 }
 
+var runValidationForPublishPackage = runValidation
+
 func newPublishRenameCmd() *cobra.Command {
 	var dir string
 	var oldName string
@@ -91,7 +98,7 @@ func newPublishRenameCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rename",
 		Short:   "Rename a staged CLI (for name collision resolution)",
-		Example: `  printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-alt-pp-cli --json`,
+		Example: `  cli-printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-alt-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -153,8 +160,8 @@ func newPublishValidateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate a CLI is ready for publishing",
-		Example: `  printing-press publish validate --dir ~/printing-press/library/notion
-  printing-press publish validate --dir ~/printing-press/library/notion --json`,
+		Example: `  cli-printing-press publish validate --dir ~/printing-press/library/notion
+  cli-printing-press publish validate --dir ~/printing-press/library/notion --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -213,16 +220,18 @@ func newPublishPackageCmd() *cobra.Command {
 	var target string
 	var dest string
 	var modulePath string
+	var allowMirrorDeletions bool
+	var includeRawCaptures bool
 	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "package",
 		Short: "Package a CLI for publishing to the library repo",
 		Example: `  # Stage into a new directory (for inspection)
-  printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json
+  cli-printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json
 
   # Write directly into the publish repo (replaces old CLI, includes manuscripts)
-  printing-press publish package --dir ~/printing-press/library/notion --category productivity --dest ~/printing-press/.publish-repo --json`,
+  cli-printing-press publish package --dir ~/printing-press/library/notion --category productivity --dest ~/printing-press/.publish-repo --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -233,10 +242,10 @@ func newPublishPackageCmd() *cobra.Command {
 			if strings.Contains(category, "/") || strings.Contains(category, "\\") || strings.Contains(category, "..") {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--category must be a simple slug (no path separators or '..')")}
 			}
-			if !catalogpkg.IsPublicCategory(category) {
+			if !categories.IsPublic(category) {
 				return &ExitError{
 					Code: ExitInputError,
-					Err:  fmt.Errorf("--category must be one of: %s", strings.Join(catalogpkg.PublicCategories(), ", ")),
+					Err:  fmt.Errorf("--category must be one of: %s", strings.Join(categories.Public(), ", ")),
 				}
 			}
 			if target == "" && dest == "" {
@@ -244,6 +253,9 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 			if target != "" && dest != "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--target and --dest are mutually exclusive")}
+			}
+			if allowMirrorDeletions && dest == "" {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--allow-mirror-deletions requires --dest (the divergence guard runs only in --dest mode)")}
 			}
 
 			// Cheap existence checks before expensive validation
@@ -259,7 +271,7 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 
 			// Re-validate before packaging
-			vResult := runValidation(dir)
+			vResult := runValidationForPublishPackage(dir)
 			if !vResult.Passed {
 				if asJSON {
 					enc := json.NewEncoder(os.Stdout)
@@ -295,6 +307,15 @@ func newPublishPackageCmd() *cobra.Command {
 			if dest != "" {
 				rootDir = dest
 				outCLIDir = filepath.Join(dest, "library", category, dirName)
+
+				// Scoped to this CLI dir; other categories belong to
+				// category-migration intent, where the operator has
+				// already accepted that the old location goes away.
+				if !allowMirrorDeletions {
+					if err := checkMirrorDivergence(outCLIDir, dir); err != nil {
+						return err
+					}
+				}
 
 				// Move existing CLI dirs aside (don't delete yet — restore on failure)
 				var err error
@@ -334,6 +355,14 @@ func newPublishPackageCmd() *cobra.Command {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying CLI: %w", err)}
 			}
+			if err := backfillPackagedManifestAttribution(outCLIDir); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("backfilling printer attribution: %w", err)}
+			}
+			if err := normalizePackagedPublishMetadata(outCLIDir, category); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("normalizing publish metadata: %w", err)}
+			}
 
 			// Strip build/ from the staged tree. autoBundleForHost writes
 			// host-platform .mcpb bundles + staged binaries there as a
@@ -343,6 +372,44 @@ func newPublishPackageCmd() *cobra.Command {
 			if err := os.RemoveAll(filepath.Join(outCLIDir, "build")); err != nil {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping build dir: %w", err)}
+			}
+			// CopyDir preserves the source CLI tree, but publish package owns
+			// the bundled manuscript set. Strip any embedded copy first, then
+			// re-add manuscripts through the publishable filter below.
+			if err := os.RemoveAll(filepath.Join(outCLIDir, ".manuscripts")); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged manuscripts: %w", err)}
+			}
+
+			// Strip root-level binaries that local `go build ./cmd/...` (or
+			// `make build` / `make build-mcp` without `-o bin/...`) drops at
+			// the CLI dir root. The skill's downstream `cp -r ... PUBLISH_REPO_DIR`
+			// has a parallel `rm -f` line that historically missed
+			// `<api-slug>-pp-mcp`; doing the strip here on the staged copy
+			// makes the publish path binary-free regardless of which downstream
+			// step (skill or other tooling) the operator runs next.
+			for _, name := range stagedBinaryNames(cliName, dirName) {
+				if err := os.Remove(filepath.Join(outCLIDir, name)); err != nil && !os.IsNotExist(err) {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged binary %s: %w", name, err)}
+				}
+			}
+			testBinaries, err := filepath.Glob(filepath.Join(outCLIDir, "*.test"))
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("finding staged test binaries: %w", err)}
+			}
+			for _, path := range testBinaries {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged test binary %s: %w", filepath.Base(path), err)}
+				}
+			}
+			for _, name := range stagedShipcheckReportNames() {
+				if err := os.Remove(filepath.Join(outCLIDir, name)); err != nil && !os.IsNotExist(err) {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged shipcheck report %s: %w", name, err)}
+				}
 			}
 
 			// Rewrite go.mod module path if --module-path is set
@@ -364,11 +431,19 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 
 			msDir, runID := resolveManuscripts(cliName, vResult.APIName)
+			if runID == "" {
+				embeddedMsDir := filepath.Join(dir, ".manuscripts")
+				if embeddedRunID, err := findMostRecentRun(embeddedMsDir); err == nil && embeddedRunID != "" {
+					msDir = embeddedMsDir
+					runID = embeddedRunID
+				}
+			}
 			if runID != "" {
 				result.RunID = runID
 				srcMsDir := filepath.Join(msDir, runID)
 				dstMsDir := filepath.Join(outCLIDir, ".manuscripts", runID)
-				if err := pipeline.CopyDir(srcMsDir, dstMsDir); err != nil {
+				manuscriptCopyOptions := pipeline.PublishableManuscriptCopyOptions{IncludeRawCaptures: includeRawCaptures}
+				if err := pipeline.CopyPublishableManuscriptDirWithOptions(srcMsDir, dstMsDir, manuscriptCopyOptions); err != nil {
 					cleanupOnFailure()
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying manuscripts: %w", err)}
 				} else {
@@ -376,6 +451,32 @@ func newPublishPackageCmd() *cobra.Command {
 				}
 			} else {
 				fmt.Fprintln(os.Stderr, "warning: no manuscripts found, packaging without them")
+			}
+
+			cookieNames, err := stagedPackageCookieNames(outCLIDir)
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("reading staged package cookie auth metadata: %w", err)}
+			}
+			secretResult, err := artifacts.FindPackageSecretsWithSuppressions(outCLIDir, cookieNames)
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for secret tokens: %w", err)}
+			}
+
+			piiResult, piiErr := artifacts.RunPIIAudit(outCLIDir)
+			if piiErr != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for PII: %w", piiErr)}
+			}
+
+			if scanErr := formatCombinedScanError(secretResult.Findings, piiResult.Findings, piiResult.Completion); scanErr != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: scanErr}
+			}
+			if err := recordReviewedSecretSuppressions(outCLIDir, secretResult.Suppressions); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("recording reviewed secret suppressions: %w", err)}
 			}
 
 			// Success — remove stashed old CLI dirs
@@ -402,6 +503,8 @@ func newPublishPackageCmd() *cobra.Command {
 	cmd.Flags().StringVar(&target, "target", "", "Staging directory to create (mutually exclusive with --dest)")
 	cmd.Flags().StringVar(&dest, "dest", "", "Publish repo to write into directly (mutually exclusive with --target)")
 	cmd.Flags().StringVar(&modulePath, "module-path", "", "Go module path to set (e.g., github.com/org/repo/library/category/cli-name)")
+	cmd.Flags().BoolVar(&allowMirrorDeletions, "allow-mirror-deletions", false, "Allow the overlay to delete mirror files that have no source counterpart (use only after manual reconciliation)")
+	cmd.Flags().BoolVar(&includeRawCaptures, "include-raw-captures", false, "Include raw browser-sniff captures in bundled manuscripts (private use only)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
@@ -457,6 +560,87 @@ func removeStashedDirs(dirs []stashedDir) {
 	for _, d := range dirs {
 		_ = os.RemoveAll(d.stashed)
 	}
+}
+
+// mirrorDivergenceExampleLimit caps how many would-be-deleted paths the
+// divergence error names inline before falling back to a count.
+const mirrorDivergenceExampleLimit = 10
+
+// checkMirrorDivergence returns an ExitInputError naming the first
+// findings if any file under mirrorCLIDir is not present in sourceCLIDir.
+// A non-existent mirrorCLIDir is treated as no divergence.
+func checkMirrorDivergence(mirrorCLIDir, sourceCLIDir string) error {
+	mirrorOnly, err := listMirrorOnlyFiles(mirrorCLIDir, sourceCLIDir)
+	if err != nil {
+		return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning mirror for divergence: %w", err)}
+	}
+	if len(mirrorOnly) == 0 {
+		return nil
+	}
+
+	var msg strings.Builder
+	noun := "files"
+	if len(mirrorOnly) == 1 {
+		noun = "file"
+	}
+	fmt.Fprintf(&msg, "mirror has %d %s not present in source library (likely a direct community PR or independent edit). Publishing now would delete this content. Reconcile manually, then re-run with --allow-mirror-deletions to override.\n", len(mirrorOnly), noun)
+	limit := min(len(mirrorOnly), mirrorDivergenceExampleLimit)
+	for _, p := range mirrorOnly[:limit] {
+		fmt.Fprintf(&msg, "  %s\n", p)
+	}
+	if len(mirrorOnly) > limit {
+		fmt.Fprintf(&msg, "  ... and %d more\n", len(mirrorOnly)-limit)
+	}
+
+	return &ExitError{Code: ExitInputError, Err: errors.New(strings.TrimRight(msg.String(), "\n"))}
+}
+
+// listMirrorOnlyFiles returns slash-separated relative paths under
+// mirrorCLIDir whose corresponding files do not exist under sourceCLIDir.
+// The top-level .manuscripts/ and build/ directories are skipped because
+// the publish flow manages those outputs separately: .manuscripts/ is
+// repopulated per run, and build/ is stripped after the source copy. A
+// non-existent mirrorCLIDir is treated as no divergence.
+func listMirrorOnlyFiles(mirrorCLIDir, sourceCLIDir string) ([]string, error) {
+	var mirrorOnly []string
+	err := filepath.WalkDir(mirrorCLIDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if path == mirrorCLIDir && os.IsNotExist(walkErr) {
+				return fs.SkipAll
+			}
+			return fmt.Errorf("%s: %w", path, walkErr)
+		}
+		if path == mirrorCLIDir {
+			return nil
+		}
+
+		rel, err := filepath.Rel(mirrorCLIDir, path)
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			switch rel {
+			case ".manuscripts", "build":
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		if _, statErr := os.Lstat(filepath.Join(sourceCLIDir, rel)); statErr != nil {
+			if os.IsNotExist(statErr) {
+				mirrorOnly = append(mirrorOnly, filepath.ToSlash(rel))
+				return nil
+			}
+			return statErr
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return mirrorOnly, nil
 }
 
 // resolveManuscripts finds the manuscripts directory and most recent run ID
@@ -652,8 +836,15 @@ func runValidation(dir string) ValidateResult {
 
 func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) []string {
 	var issues []string
+	manifest = manifestWithPublishAttributionFallbacks(manifest)
 	if manifest.SchemaVersion != pipeline.CurrentCLIManifestSchemaVersion {
 		issues = append(issues, fmt.Sprintf("schema_version must be %d (found %d)", pipeline.CurrentCLIManifestSchemaVersion, manifest.SchemaVersion))
+	}
+
+	var creatorHandle, creatorName string
+	if manifest.Creator != nil {
+		creatorHandle = strings.TrimSpace(manifest.Creator.Handle)
+		creatorName = strings.TrimSpace(manifest.Creator.Name)
 	}
 
 	var missing []string
@@ -665,6 +856,8 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 		{name: "cli_name", value: manifest.CLIName},
 		{name: "run_id", value: manifest.RunID},
 		{name: "printing_press_version", value: manifest.PrintingPressVersion},
+		{name: "creator.handle", value: creatorHandle},
+		{name: "creator.name", value: creatorName},
 		{name: "printer", value: manifest.Printer},
 		{name: "printer_name", value: manifest.PrinterName},
 	}
@@ -676,8 +869,14 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 	if len(missing) > 0 {
 		issues = append(issues, "missing required manifest fields: "+strings.Join(missing, ", "))
 	}
+	if isPublishPrinterSentinel(creatorHandle) {
+		issues = append(issues, fmt.Sprintf("creator.handle must not be the literal sentinel %q", creatorHandle))
+	}
 	if isPublishPrinterSentinel(manifest.Printer) {
 		issues = append(issues, fmt.Sprintf("printer must not be the literal sentinel %q", manifest.Printer))
+	}
+	if issue := validateGitHubPrinterExists(manifest.Printer); issue != "" {
+		issues = append(issues, issue)
 	}
 
 	if manifestAdvertisesMCP(manifest) {
@@ -692,8 +891,273 @@ func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) 
 	return issues
 }
 
+func manifestWithPublishAttributionFallbacks(manifest pipeline.CLIManifest) pipeline.CLIManifest {
+	// Fill the legacy printer fields from a present creator first, so a
+	// creator-only manifest (manual edit or future creator-primary state)
+	// validates without needing a git identity (e.g. on CI).
+	if manifest.Creator != nil && !manifest.Creator.IsZero() {
+		if isMissingPublishPrinterField(manifest.Printer) {
+			manifest.Printer = manifest.Creator.Handle
+		}
+		if isMissingPublishPrinterNameField(manifest.PrinterName) {
+			manifest.PrinterName = manifest.Creator.Name
+		}
+	}
+	if isMissingPublishPrinterField(manifest.Printer) || isMissingPublishPrinterNameField(manifest.PrinterName) {
+		fallback := resolvePublishAttributionFallback(manifest)
+		if isMissingPublishPrinterField(manifest.Printer) && fallback.Printer != "" {
+			manifest.Printer = fallback.Printer
+		}
+		if isMissingPublishPrinterNameField(manifest.PrinterName) && fallback.PrinterName != "" {
+			manifest.PrinterName = fallback.PrinterName
+		}
+	}
+	// Backfill the creator from the (now-resolved) legacy fields so a manifest
+	// generated before the creator model — or one whose attribution was only
+	// resolved at publish time — still carries a creator for validation and the
+	// public registry.
+	if manifest.Creator == nil || manifest.Creator.IsZero() {
+		if h, n := strings.TrimSpace(manifest.Printer), strings.TrimSpace(manifest.PrinterName); h != "" || n != "" {
+			manifest.Creator = &spec.Person{Handle: h, Name: n}
+		}
+	}
+	return manifest
+}
+
+type publishAttributionFallback struct {
+	Printer     string
+	PrinterName string
+}
+
+func resolvePublishAttributionFallback(manifest pipeline.CLIManifest) publishAttributionFallback {
+	printer := strings.TrimSpace(manifest.Printer)
+	printerName := strings.TrimSpace(manifest.PrinterName)
+	printerMissing := isMissingPublishPrinterField(printer)
+	printerNameMissing := isMissingPublishPrinterNameField(printerName)
+	if !printerMissing && printerNameMissing {
+		return publishAttributionFallback{PrinterName: resolveGitHubUserName(printer)}
+	}
+	if printerMissing {
+		return resolveCurrentPublishAttributionFallback()
+	}
+	return publishAttributionFallback{}
+}
+
+func resolveCurrentPublishAttributionFallback() publishAttributionFallback {
+	if fallback := resolveGitPublishAttributionFallback(); fallback.complete() {
+		return fallback
+	}
+	if fallback := resolveGhPublishAttributionFallback(); fallback.complete() {
+		return fallback
+	}
+	return publishAttributionFallback{}
+}
+
+func (fallback publishAttributionFallback) complete() bool {
+	return strings.TrimSpace(fallback.Printer) != "" && strings.TrimSpace(fallback.PrinterName) != ""
+}
+
+func resolveGitPublishAttributionFallback() publishAttributionFallback {
+	return publishAttributionFallback{
+		Printer:     firstNonNullCommandOutput([]string{"git", "config", "github.user"}),
+		PrinterName: firstNonNullCommandOutput([]string{"git", "config", "user.name"}),
+	}
+}
+
+func resolveGhPublishAttributionFallback() publishAttributionFallback {
+	var user struct {
+		Login string `json:"login"`
+		Name  string `json:"name"`
+	}
+	if !readGhAPIJSON("user", &user) {
+		return publishAttributionFallback{}
+	}
+	return publishAttributionFallback{Printer: strings.TrimSpace(user.Login), PrinterName: strings.TrimSpace(user.Name)}
+}
+
+func resolveGitHubUserName(printer string) string {
+	var user struct {
+		Name string `json:"name"`
+	}
+	if !readGhAPIJSON("users/"+url.PathEscape(strings.TrimSpace(printer)), &user) {
+		return ""
+	}
+	return strings.TrimSpace(user.Name)
+}
+
+func readGhAPIJSON(path string, target any) bool {
+	out, err := exec.Command("gh", "api", path).Output()
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(out, target) == nil
+}
+
+func firstNonNullCommandOutput(commands ...[]string) string {
+	for _, args := range commands {
+		if len(args) == 0 {
+			continue
+		}
+		out, err := exec.Command(args[0], args[1:]...).Output()
+		if err != nil {
+			continue
+		}
+		value := strings.TrimSpace(string(out))
+		if value != "" && value != "null" {
+			return value
+		}
+	}
+	return ""
+}
+
+func validateGitHubPrinterExists(printer string) string {
+	printer = strings.TrimSpace(printer)
+	if printer == "" || isPublishPrinterSentinel(printer) {
+		return ""
+	}
+	out, err := exec.Command("gh", "api", "users/"+url.PathEscape(printer), "--jq", ".login").CombinedOutput()
+	if err == nil {
+		return ""
+	}
+	output := string(out)
+	if strings.Contains(output, "404") || strings.Contains(strings.ToLower(output), "not found") {
+		return fmt.Sprintf("printer %q does not resolve to a GitHub user", printer)
+	}
+	detail := strings.Join(strings.Fields(output), " ")
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Sprintf("could not verify printer %q with gh: %s", printer, detail)
+}
+
+func backfillPackagedManifestAttribution(dir string) error {
+	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var manifest pipeline.CLIManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return err
+	}
+	fallback := resolvePublishAttributionFallback(manifest)
+	needsPrinter := isMissingPublishPrinterField(manifest.Printer)
+	needsPrinterName := isMissingPublishPrinterNameField(manifest.PrinterName)
+	if needsPrinter && fallback.Printer == "" {
+		return fmt.Errorf("printer attribution is missing and no fallback could be resolved")
+	}
+	if needsPrinterName && fallback.PrinterName == "" {
+		return fmt.Errorf("printer_name attribution is missing and no fallback could be resolved")
+	}
+	changed := false
+	if needsPrinter && fallback.Printer != "" {
+		encoded, err := json.Marshal(fallback.Printer)
+		if err != nil {
+			return err
+		}
+		raw["printer"] = encoded
+		changed = true
+	}
+	if needsPrinterName && fallback.PrinterName != "" {
+		encoded, err := json.Marshal(fallback.PrinterName)
+		if err != nil {
+			return err
+		}
+		raw["printer_name"] = encoded
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	updated, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	updated = append(updated, '\n')
+	info, err := os.Stat(manifestPath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(manifestPath, updated, info.Mode())
+}
+
+func normalizePackagedPublishMetadata(dir, category string) error {
+	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var manifest pipeline.CLIManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(manifest.Category) != category {
+		encoded, err := json.Marshal(category)
+		if err != nil {
+			return err
+		}
+		raw["category"] = encoded
+		updated, err := json.MarshalIndent(raw, "", "  ")
+		if err != nil {
+			return err
+		}
+		updated = append(updated, '\n')
+		info, err := os.Stat(manifestPath)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(manifestPath, updated, info.Mode()); err != nil {
+			return err
+		}
+	}
+
+	if err := removeEmptyReleaseManifest(dir); err != nil {
+		return err
+	}
+	return pipeline.EnsurePatchesDir(dir)
+}
+
 func isPublishPrinterSentinel(printer string) bool {
 	return printer == "USER" || printer == "user"
+}
+
+func isMissingPublishPrinterField(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return trimmed == "" || isPublishPrinterSentinel(trimmed)
+}
+
+func isMissingPublishPrinterNameField(value string) bool {
+	return isMissingPublishPrinterField(value)
+}
+
+func removeEmptyReleaseManifest(dir string) error {
+	path := filepath.Join(dir, pipeline.CLIReleaseManifestFilename)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var release pipeline.CLIReleaseManifest
+	if err := json.Unmarshal(data, &release); err != nil {
+		return fmt.Errorf("parsing %s: %w", pipeline.CLIReleaseManifestFilename, err)
+	}
+	if strings.TrimSpace(release.Version) != "" ||
+		strings.TrimSpace(release.ReleasedAt) != "" ||
+		strings.TrimSpace(release.SourceCommit) != "" {
+		return nil
+	}
+	return os.Remove(path)
 }
 
 func manifestAdvertisesMCP(manifest pipeline.CLIManifest) bool {
@@ -763,10 +1227,17 @@ func runGoCheck(dir string, args ...string) CheckResult {
 }
 
 func runGoCommandCheck(dir, name string, timeout time.Duration, args ...string) CheckResult {
+	return runGoCommandCheckWithEnv(dir, name, timeout, nil, args...)
+}
+
+func runGoCommandCheckWithEnv(dir, name string, timeout time.Duration, env []string, args ...string) CheckResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = envWithOverrides(os.Environ(), env)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		errMsg := strings.TrimSpace(string(output))
@@ -780,11 +1251,34 @@ func runGoCommandCheck(dir, name string, timeout time.Duration, args ...string) 
 	return CheckResult{Name: name, Passed: true}
 }
 
+func envWithOverrides(base, overrides []string) []string {
+	overrideKeys := make(map[string]struct{}, len(overrides))
+	for _, entry := range overrides {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			overrideKeys[key] = struct{}{}
+		}
+	}
+
+	env := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, exists := overrideKeys[key]; exists {
+				continue
+			}
+		}
+		env = append(env, entry)
+	}
+	return append(env, overrides...)
+}
+
 func runGoVulnCheck(dir string) CheckResult {
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
 		return CheckResult{Name: govulncheck.Name, Passed: false, Error: "go.mod not found"}
 	}
-	return runGoCommandCheck(dir, govulncheck.Name, vulnCheckTimeout, govulncheck.GoRunArgs("./...")...)
+	env := govulncheck.ToolchainEnv(dir)
+	return runGoCommandCheckWithEnv(dir, govulncheck.Name, vulnCheckTimeout, env, govulncheck.GoRunArgs("./...")...)
 }
 
 func checkGoModTidy(dir string) CheckResult {
@@ -877,6 +1371,43 @@ func buildArtifactCandidates(dir, cliName string) []string {
 		filepath.Join(dir, cliName),
 		filepath.Join(dir, "cmd", cliName, cliName),
 	}
+}
+
+// stagedBinaryNames returns the root-level filenames that local builds
+// (`go build ./cmd/...`, `make build`, `make build-mcp` without `-o`)
+// drop alongside the source tree. The Makefile template emits
+// `<api-slug>-pp-cli` and `<api-slug>-pp-mcp` peers, and verifier paths
+// may also leave a bare `<api-slug>` artifact. The list is intentionally
+// a small, named superset rather than a glob so the strip step never
+// removes a tracked source file by accident.
+func stagedBinaryNames(cliName, apiSlug string) []string {
+	seen := map[string]struct{}{}
+	var names []string
+	add := func(n string) {
+		if n == "" {
+			return
+		}
+		if _, ok := seen[n]; ok {
+			return
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	add(apiSlug)
+	add(cliName)
+	if cliName != "" {
+		add(cliName + "-dogfood")
+	}
+	if apiSlug != "" {
+		add(apiSlug + "-pp-cli")
+		add(apiSlug + "-pp-cli-dogfood")
+		add(apiSlug + "-pp-mcp")
+	}
+	return names
+}
+
+func stagedShipcheckReportNames() []string {
+	return []string{"dogfood-results.json", "workflow-verify-report.json"}
 }
 
 type fileSnapshot struct {
@@ -1000,4 +1531,66 @@ func hasContent(dir string) bool {
 		}
 	}
 	return false
+}
+
+func stagedPackageCookieNames(dir string) ([]string, error) {
+	manifest, err := pipeline.ReadToolsManifest(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	switch strings.ToLower(strings.TrimSpace(manifest.Auth.Type)) {
+	case "cookie", "composed":
+		return manifest.Auth.Cookies, nil
+	default:
+		return nil, nil
+	}
+}
+
+func recordReviewedSecretSuppressions(dir string, suppressions []artifacts.ReviewedSecretSuppression) error {
+	manifestSuppressions := make([]pipeline.ReviewedSecretSuppression, 0, len(suppressions))
+	for _, suppression := range suppressions {
+		manifestSuppressions = append(manifestSuppressions, pipeline.ReviewedSecretSuppression{
+			Path:        suppression.Path,
+			Line:        suppression.Line,
+			Kind:        suppression.Kind,
+			Fingerprint: suppression.Fingerprint,
+			Reason:      suppression.Reason,
+		})
+	}
+	return pipeline.WriteReviewedSecretSuppressions(dir, manifestSuppressions)
+}
+
+// formatCombinedScanError composes the publish-time error message from
+// both scanners. Sections appear in fixed order: vendor-prefix tokens,
+// then PII pending findings, then PII gate failures. Returns nil when
+// nothing to report so callers can branch on the error directly.
+func formatCombinedScanError(
+	secretFindings []artifacts.VendorPrefixSecretFinding,
+	piiFindings []artifacts.PIIFinding,
+	piiCompletion artifacts.PIICompletionStatus,
+) error {
+	var sections []string
+
+	if len(secretFindings) > 0 {
+		sections = append(sections,
+			"vendor-prefix tokens detected in staged package:\n"+
+				artifacts.FormatVendorPrefixSecretFindings(secretFindings))
+	}
+	if artifacts.PIIPendingCount(piiFindings) > 0 {
+		sections = append(sections,
+			"customer PII detected in staged package:\n"+
+				artifacts.FormatPIIFindings(piiFindings))
+	}
+	if piiCompletion.HasGateFailure() {
+		sections = append(sections,
+			"PII gate failures:\n"+
+				artifacts.FormatPIIGateFailures(piiCompletion))
+	}
+	if len(sections) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.Join(sections, "\n\n"))
 }

@@ -5,10 +5,41 @@ catalog/specs/*.graphql
 .cache/
 .gotmp/
 .omx/
+.clawpatch/
 .claude/worktrees/
+.claude/local/
 /refactor/artifacts/
 /tests/artifacts/perf/
+/cli-printing-press
 /printing-press
+/press-auth
 library/
 dist/
 claude-upgrade-progress.json
+
+# Python bytecode (verify-supply-chain scripts)
+__pycache__/
+*.pyc
+
+# Local AI agent instructions (not for sharing)
+CLAUDE.local.md
+AGENTS.override.md
+.claude/settings.local.json
+
+# Local project-scoped agent skill installs. These let private or
+# experimental skills live next to this checkout without being published from
+# this public repo. Note: the repo's own tracked skills live in root `skills/`,
+# which is intentionally NOT ignored here.
+.claude/skills/
+.skills/
+.agents/skills/
+.codex/skills/
+.cursor/skills/
+.gemini/skills/
+/skills-lock.json
+
+# Planning documents stay local — this is a public repo and plans
+# frequently describe in-progress, unreleased, or third-party work.
+# See AGENTS.md "Plan documents stay local" for the rule and rationale.
+/docs/plans/
+/docs/brainstorms/

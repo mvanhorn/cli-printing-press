@@ -2,7 +2,11 @@ package spec
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,24 +14,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func captureStderr(t *testing.T, fn func()) string {
+// captureWarnings runs fn with the package warning sink redirected to a
+// buffer and returns everything written to it. This replaces an older
+// approach that reassigned the process-wide os.Stderr, which was racy and
+// coupled the assertion to a global file handle.
+func captureWarnings(t *testing.T, fn func()) string {
 	t.Helper()
 
-	old := os.Stderr
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stderr = w
-	defer func() {
-		os.Stderr = old
-	}()
+	old := warnWriter
+	var buf bytes.Buffer
+	warnWriter = &buf
+	t.Cleanup(func() { warnWriter = old })
 
 	fn()
-	require.NoError(t, w.Close())
-
-	var buf bytes.Buffer
-	_, err = buf.ReadFrom(r)
-	require.NoError(t, err)
-	require.NoError(t, r.Close())
 	return buf.String()
 }
 
@@ -89,8 +88,21 @@ resources:
           - name: s
             flag_name: address
             aliases: [s]
+            pp:dispatch-param: true
             type: string
             description: Street address
+          - name: action
+            dispatch_param: false
+            type: string
+            description: Search action
+      search:
+        method: POST
+        path: /stores/search
+        body:
+          - name: startAfter
+            body_name: searchAfter
+            type: array
+            description: Pagination cursor
 `)
 	s, err := ParseBytes(yamlSpec)
 	require.NoError(t, err)
@@ -98,6 +110,15 @@ resources:
 	assert.Equal(t, "s", param.Name)
 	assert.Equal(t, "address", param.FlagName)
 	assert.Equal(t, []string{"s"}, param.Aliases)
+	assert.True(t, param.DispatchParam)
+	assert.True(t, param.DispatchParamSet)
+	param = s.Resources["stores"].Endpoints["find"].Params[1]
+	assert.Equal(t, "action", param.Name)
+	assert.False(t, param.DispatchParam)
+	assert.True(t, param.DispatchParamSet)
+	bodyParam := s.Resources["stores"].Endpoints["search"].Body[0]
+	assert.Equal(t, "startAfter", bodyParam.Name)
+	assert.Equal(t, "searchAfter", bodyParam.BodyName)
 
 	jsonSpec := []byte(`{
   "name": "public-params-json",
@@ -110,7 +131,8 @@ resources:
           "method": "GET",
           "path": "/stores",
           "params": [
-            {"name": "c", "flag_name": "city", "aliases": ["c"], "type": "string"}
+            {"name": "c", "flag_name": "city", "aliases": ["c"], "pp:dispatch-param": true, "type": "string"},
+            {"name": "action", "pp:dispatch-param": false, "type": "string"}
           ]
         }
       }
@@ -123,6 +145,530 @@ resources:
 	assert.Equal(t, "c", param.Name)
 	assert.Equal(t, "city", param.FlagName)
 	assert.Equal(t, []string{"c"}, param.Aliases)
+	assert.True(t, param.DispatchParam)
+	assert.True(t, param.DispatchParamSet)
+	param = s.Resources["stores"].Endpoints["find"].Params[1]
+	assert.Equal(t, "action", param.Name)
+	assert.False(t, param.DispatchParam)
+	assert.True(t, param.DispatchParamSet)
+}
+
+func TestParsePagePagination(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: page-pagination
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  photos:
+    endpoints:
+      list:
+        method: GET
+        path: /photos
+        params:
+          - name: page
+            type: integer
+          - name: per_page
+            type: integer
+            default: 25
+        pagination:
+          type: page
+          cursor_param: page
+          limit_param: per_page
+        response:
+          type: array
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	list := s.Resources["photos"].Endpoints["list"]
+	require.NotNil(t, list.Pagination)
+	assert.Equal(t, "page", list.Pagination.Type)
+	assert.Equal(t, "page", list.Pagination.CursorParam)
+	assert.Equal(t, "per_page", list.Pagination.LimitParam)
+}
+
+func TestParseEndpointExampleAndHappyArgs(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: fixture-api
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  geography:
+    endpoints:
+      counties:
+        method: GET
+        path: /geography/counties
+        example: "fixture-api-pp-cli geography counties --zip 60614"
+        happy_args: "--zip=60614"
+        live_dogfood_requires_tier: enterprise
+        params:
+          - name: zip
+            type: string
+            required: true
+      states:
+        method: GET
+        path: /geography/states
+`)
+
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	counties := s.Resources["geography"].Endpoints["counties"]
+	assert.Equal(t, "fixture-api-pp-cli geography counties --zip 60614", counties.Example)
+	assert.Equal(t, "--zip=60614", counties.HappyArgs)
+	assert.Equal(t, "enterprise", counties.LiveDogfoodRequiresTier)
+
+	states := s.Resources["geography"].Endpoints["states"]
+	assert.Empty(t, states.Example)
+	assert.Empty(t, states.HappyArgs)
+	assert.Empty(t, states.LiveDogfoodRequiresTier)
+}
+
+func TestDispatchParamFalseSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := Param{
+		Name:             "action",
+		Type:             "string",
+		DispatchParam:    false,
+		DispatchParamSet: true,
+	}
+
+	yamlData, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(yamlData), "dispatch_param: false")
+	var yamlParam Param
+	require.NoError(t, yaml.Unmarshal(yamlData, &yamlParam))
+	assert.False(t, yamlParam.DispatchParam)
+	assert.True(t, yamlParam.DispatchParamSet)
+
+	jsonData, err := json.Marshal(original)
+	require.NoError(t, err)
+	assert.Contains(t, string(jsonData), `"dispatch_param":false`)
+	var jsonParam Param
+	require.NoError(t, json.Unmarshal(jsonData, &jsonParam))
+	assert.False(t, jsonParam.DispatchParam)
+	assert.True(t, jsonParam.DispatchParamSet)
+}
+
+func TestUnannotatedDispatchParamSurvivesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := Param{
+		Name:    "action",
+		Type:    "string",
+		Default: "create",
+	}
+
+	yamlData, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	assert.NotContains(t, string(yamlData), "dispatch_param")
+	var yamlParam Param
+	require.NoError(t, yaml.Unmarshal(yamlData, &yamlParam))
+	assert.False(t, yamlParam.DispatchParam)
+	assert.False(t, yamlParam.DispatchParamSet)
+
+	jsonData, err := json.Marshal(original)
+	require.NoError(t, err)
+	assert.NotContains(t, string(jsonData), "dispatch_param")
+	var jsonParam Param
+	require.NoError(t, json.Unmarshal(jsonData, &jsonParam))
+	assert.False(t, jsonParam.DispatchParam)
+	assert.False(t, jsonParam.DispatchParamSet)
+}
+
+func TestParseStreamingConfig(t *testing.T) {
+	yamlSpec := []byte(`
+name: streaming-api
+base_url: https://api.example.com
+auth:
+  type: none
+streaming:
+  transport: websocket
+  url: wss://api.example.com/v1/ws
+  subscribe_shape: '{"type":"subscribe","channels":["events"]}'
+  framing: newline_delimited_json
+  metadata:
+    endpoint: /v1/events
+    refresh_cadence: 45s
+    statuses: [live, pending]
+    primary_key: event_id
+resources:
+  events:
+    endpoints:
+      list:
+        method: GET
+        path: /v1/events
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	assert.True(t, s.Streaming.Enabled())
+	assert.Equal(t, StreamingTransportWebSocket, s.Streaming.Transport)
+	assert.Equal(t, StreamingFramingNDJSON, s.Streaming.EffectiveFraming())
+	assert.Equal(t, []string{"live", "pending"}, s.Streaming.EffectiveMetadataStatuses())
+	assert.Equal(t, "event_id", s.Streaming.Metadata.EffectivePrimaryKey())
+}
+
+func TestParseStreamingConfigRejectsBadFraming(t *testing.T) {
+	yamlSpec := []byte(`
+name: streaming-api
+base_url: https://api.example.com
+auth:
+  type: none
+streaming:
+  transport: websocket
+  url: wss://api.example.com/v1/ws
+  framing: chunks
+resources:
+  events:
+    endpoints:
+      list:
+        method: GET
+        path: /v1/events
+`)
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "streaming.framing")
+}
+
+func TestParseBodyObjectSchema(t *testing.T) {
+	yamlSpec := []byte(`
+name: rich-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      execute:
+        method: POST
+        path: /graphql
+        body:
+          type: object
+          required: [query]
+          properties:
+            query:
+              type: string
+              description: GraphQL document
+            variables:
+              type: object
+              description: GraphQL variables
+            options:
+              type: object
+              properties:
+                includeNulls:
+                  type: bool
+                  required: true
+            queries:
+              type: array
+              items:
+                type: object
+                required: [query]
+                properties:
+                  query:
+                    type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["queries"].Endpoints["execute"].Body
+	require.Len(t, body, 4)
+	assert.Equal(t, Param{Name: "query", Type: "string", Required: true, Description: "GraphQL document"}, body[0])
+	assert.Equal(t, "variables", body[1].Name)
+	assert.Equal(t, "object", body[1].Type)
+	assert.Equal(t, "GraphQL variables", body[1].Description)
+	require.Len(t, body[2].Fields, 1)
+	assert.Equal(t, "includeNulls", body[2].Fields[0].Name)
+	assert.Equal(t, "bool", body[2].Fields[0].Type)
+	assert.True(t, body[2].Fields[0].Required)
+	assert.Equal(t, "queries", body[3].Name)
+	assert.Equal(t, "array", body[3].Type)
+	require.Len(t, body[3].Fields, 1)
+	assert.Equal(t, "query", body[3].Fields[0].Name)
+	assert.True(t, body[3].Fields[0].Required)
+}
+
+func TestParseCSVArrayBodyParamMetadata(t *testing.T) {
+	yamlSpec := []byte(`
+name: csv-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          - name: attendees
+            type: string_csv_array
+            item_type: object
+            item_template:
+              emailAddress:
+                address: $value
+              type: required
+            description: Attendees
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	param := s.Resources["messages"].Endpoints["send"].Body[0]
+	assert.Equal(t, "string_csv_array", param.Type)
+	assert.Equal(t, "object", param.ItemType)
+	require.IsType(t, map[string]any{}, param.ItemTemplate)
+	template := param.ItemTemplate.(map[string]any)
+	assert.Equal(t, "required", template["type"])
+}
+
+func TestParseObjectSchemaArrayBodyItemTypes(t *testing.T) {
+	yamlSpec := []byte(`
+name: typed-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          schema:
+            type: object
+            properties:
+              tags:
+                type: array
+                items:
+                  type: string
+              recipients:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["messages"].Endpoints["send"].Body
+	byName := map[string]Param{}
+	for _, param := range body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "array", byName["tags"].Type)
+	assert.Equal(t, "string", byName["tags"].ItemType)
+	assert.Equal(t, "array", byName["recipients"].Type)
+	assert.Equal(t, "object", byName["recipients"].ItemType)
+	require.Len(t, byName["recipients"].Fields, 1)
+}
+
+func TestParseCSVArrayObjectTemplateMustBeObject(t *testing.T) {
+	yamlSpec := []byte(`
+name: csv-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          - name: attendees
+            type: string_csv_array
+            item_type: object
+            item_template:
+              - not
+              - an
+              - object
+`)
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "string_csv_array item_type object requires item_template to be an object")
+}
+
+func TestParseBodySchemaWrapper(t *testing.T) {
+	yamlSpec := []byte(`
+name: rich-body-wrapper
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  datasets:
+    endpoints:
+      execute:
+        method: POST
+        path: /datasets/{datasetId}/executeQueries
+        params:
+          - name: datasetId
+            type: string
+            positional: true
+        body:
+          schema:
+            type: object
+            properties:
+              queries:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    query:
+                      type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	endpoint := s.Resources["datasets"].Endpoints["execute"]
+	assert.True(t, endpoint.BodySet)
+	require.Len(t, endpoint.Body, 1)
+	assert.Equal(t, "queries", endpoint.Body[0].Name)
+	assert.Equal(t, "array", endpoint.Body[0].Type)
+	require.Len(t, endpoint.Body[0].Fields, 1)
+	assert.Equal(t, "query", endpoint.Body[0].Fields[0].Name)
+}
+
+func TestParseBodyObjectSchemaJSON(t *testing.T) {
+	jsonSpec := []byte(`{
+  "name": "rich-body-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "graphql": {
+      "endpoints": {
+        "execute": {
+          "method": "POST",
+          "path": "/graphql",
+          "body": {
+            "properties": {
+              "query": {"type": "string", "required": true},
+              "variables": {"type": "object"}
+            }
+          }
+        }
+      }
+    }
+  }
+}`)
+	s, err := ParseBytes(jsonSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["graphql"].Endpoints["execute"].Body
+	require.Len(t, body, 2)
+	assert.Equal(t, "query", body[0].Name)
+	assert.True(t, body[0].Required)
+	assert.Equal(t, "variables", body[1].Name)
+	assert.Equal(t, "object", body[1].Type)
+}
+
+func TestParseBodyNullIsEmpty(t *testing.T) {
+	yamlSpec := []byte(`
+name: null-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      yamlNull:
+        method: POST
+        path: /graphql
+        body: ~
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, s.Resources["queries"].Endpoints["yamlNull"].Body)
+
+	jsonSpec := []byte(`{
+  "name": "null-body-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "queries": {
+      "endpoints": {
+        "jsonNull": {
+          "method": "POST",
+          "path": "/graphql",
+          "body": null
+        }
+      }
+    }
+  }
+}`)
+	s, err = ParseBytes(jsonSpec)
+	require.NoError(t, err)
+	assert.Empty(t, s.Resources["queries"].Endpoints["jsonNull"].Body)
+}
+
+func TestParseBodyObjectSchemaMalformed(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "missing properties",
+			body: `
+          schema:
+            type: object`,
+			want: "must declare properties",
+		},
+		{
+			name: "non object root",
+			body: `
+          type: string
+          properties:
+            query:
+              type: string`,
+			want: `must be type object with properties, got "string"`,
+		},
+		{
+			name: "non mapping properties",
+			body: `
+          properties:
+            - query`,
+			want: "body properties at line",
+		},
+		{
+			name: "non mapping property schema",
+			body: `
+          properties:
+            tags:
+              - string`,
+			want: `body property "tags"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yamlSpec := []byte(`
+name: malformed-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  queries:
+    endpoints:
+      execute:
+        method: POST
+        path: /graphql
+        body:` + tt.body + `
+`)
+			_, err := ParseBytes(yamlSpec)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			assert.NotContains(t, err.Error(), "cannot unmarshal")
+		})
+	}
 }
 
 func TestValidateNameRequiresKebabSlug(t *testing.T) {
@@ -190,6 +736,11 @@ func TestParamPublicInputName(t *testing.T) {
 	assert.Equal(t, "store_code", Param{Name: "store_code"}.PublicInputName())
 	assert.Equal(t, "id-2", Param{Name: "id", IdentName: "id_2"}.PublicInputName())
 	assert.Equal(t, "start-time-2", Param{Name: "StartTime>", IdentName: "StartTime>_2"}.PublicInputName())
+}
+
+func TestParamBodyWireName(t *testing.T) {
+	assert.Equal(t, "startAfter", Param{Name: "startAfter"}.BodyWireName())
+	assert.Equal(t, "searchAfter", Param{Name: "startAfter", BodyName: "searchAfter"}.BodyWireName())
 }
 
 func TestValidatePublicParamNames(t *testing.T) {
@@ -309,6 +860,164 @@ func TestValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.spec.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestValidationAllowsLocalSQLiteSourceWithoutBaseURL(t *testing.T) {
+	s := APISpec{
+		Name:   "local-data",
+		Source: SourceLocalSQLite,
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	require.NoError(t, s.Validate())
+}
+
+func TestValidationRejectsUnknownSource(t *testing.T) {
+	s := APISpec{
+		Name:    "local-data",
+		Source:  "local-postgres",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	require.ErrorContains(t, s.Validate(), `source "local-postgres" is not supported; valid values: local-sqlite`)
+}
+
+// validateAdditionalAuthHeaders covers six distinct error paths; this table
+// hits each one and confirms the happy path still validates.
+func TestValidateAdditionalAuthHeadersErrors(t *testing.T) {
+	t.Parallel()
+
+	baseSpec := func(auth AuthConfig) APISpec {
+		return APISpec{
+			Name:    "auth-api",
+			BaseURL: "https://api.example.com",
+			Auth:    auth,
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+	}
+	perCall := func(name string) AuthEnvVar {
+		return AuthEnvVar{Name: name, Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true}
+	}
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{
+			name: "happy path: per_call sibling with header validates",
+			auth: AuthConfig{
+				Type:   "bearer_token",
+				Header: "Authorization",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "ST-App-Key", In: "header", EnvVar: perCall("ST_APP_KEY")},
+				},
+			},
+		},
+		{
+			name: "happy path: per_call sibling with query validates",
+			auth: AuthConfig{
+				Type:   "api_key",
+				Header: "key",
+				In:     "query",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "token", In: "query", EnvVar: perCall("TRELLO_TOKEN")},
+				},
+			},
+		},
+		{
+			name: "missing header",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "", EnvVar: perCall("ST_APP_KEY")},
+				},
+			},
+			wantErr: "auth.additional_headers[0].header is required",
+		},
+		{
+			name: "missing env_var name",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "ST-App-Key", EnvVar: AuthEnvVar{Kind: AuthEnvVarKindPerCall}},
+				},
+			},
+			wantErr: "auth.additional_headers[0].env_var.name is required",
+		},
+		{
+			name: "duplicate header",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "X-Same", EnvVar: perCall("FIRST_KEY")},
+					{Header: "X-Same", EnvVar: perCall("SECOND_KEY")},
+				},
+			},
+			wantErr: `auth.additional_headers contains duplicate header "X-Same"`,
+		},
+		{
+			name: "unsupported placement",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "X-Key", In: "cookie", EnvVar: perCall("COOKIE_KEY")},
+				},
+			},
+			wantErr: `auth.additional_headers[0].in must be "header" or "query" (got "cookie")`,
+		},
+		{
+			name: "duplicate env_var name",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "X-First", EnvVar: perCall("SAME_KEY")},
+					{Header: "X-Second", EnvVar: perCall("SAME_KEY")},
+				},
+			},
+			wantErr: `auth.additional_headers contains duplicate env_var.name "SAME_KEY"`,
+		},
+		{
+			name: "collision with primary EnvVarSpecs",
+			auth: AuthConfig{
+				Type:        "bearer_token",
+				EnvVarSpecs: []AuthEnvVar{{Name: "SHARED_KEY", Kind: AuthEnvVarKindPerCall, Required: true}},
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "ST-App-Key", EnvVar: perCall("SHARED_KEY")},
+				},
+			},
+			wantErr: `auth.additional_headers[0].env_var.name "SHARED_KEY" collides with env_var_specs`,
+		},
+		{
+			name: "non-per_call kind",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "ST-App-Key", EnvVar: AuthEnvVar{Name: "ST_APP_KEY", Kind: AuthEnvVarKindAuthFlowInput, Required: true}},
+				},
+			},
+			wantErr: `auth.additional_headers[0].env_var.kind must be "per_call" (got "auth_flow_input")`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			candidate := baseSpec(tt.auth)
+			err := candidate.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
@@ -439,7 +1148,7 @@ func TestAuthEnvVarSpecsNormalizeAndValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			candidate := baseSpec(tt.auth)
-			stderr := captureStderr(t, func() {
+			stderr := captureWarnings(t, func() {
 				require.NoError(t, candidate.Validate())
 			})
 
@@ -625,12 +1334,17 @@ func TestIsAuthEnvVarORCase(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "all required entries are not OR case",
+			name: "all required per-call entries are OR case",
 			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
 				{Name: "FIRST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
 				{Name: "SECOND_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
 			}},
-			want: false,
+			want: true,
+		},
+		{
+			name: "legacy env vars list is OR case",
+			auth: AuthConfig{EnvVars: []string{"FIRST_API_KEY", "SECOND_API_KEY"}},
+			want: true,
 		},
 		{
 			name: "all non-required per-call entries are OR case",
@@ -855,6 +1569,195 @@ func TestThrottlingValidate(t *testing.T) {
 	}
 }
 
+func TestQuerySyncValidate(t *testing.T) {
+	full := func() *QuerySyncConfig {
+		return &QuerySyncConfig{
+			Path:          "/query",
+			QueryTemplate: "select * from {entity} startposition {start} maxresults {limit}",
+			VersionParam:  "minorversion",
+			VersionValue:  "75",
+			EnvelopeKey:   "QueryResponse",
+			PageSize:      1000,
+		}
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*QuerySyncConfig)
+		nilCfg  bool
+		wantErr string
+	}{
+		{name: "absent hint is a no-op", nilCfg: true},
+		{name: "full config is valid", mutate: func(*QuerySyncConfig) {}},
+		{
+			name:    "missing path is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.Path = "" },
+			wantErr: "query_sync.path is required",
+		},
+		{
+			name:    "missing query_template is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.QueryTemplate = "" },
+			wantErr: "query_sync.query_template is required",
+		},
+		{
+			name:    "query_template missing {start} is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.QueryTemplate = "select * from {entity} maxresults {limit}" },
+			wantErr: "{start} placeholder",
+		},
+		{
+			name: "query_template missing {entity} is rejected",
+			mutate: func(q *QuerySyncConfig) {
+				q.QueryTemplate = "select * from Widget startposition {start} maxresults {limit}"
+			},
+			wantErr: "{entity} placeholder",
+		},
+		{
+			name:    "version_param without value is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.VersionValue = "" },
+			wantErr: "must be set together",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg *QuerySyncConfig
+			if !tt.nilCfg {
+				cfg = full()
+				tt.mutate(cfg)
+			}
+			err := validateQuerySync(cfg)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestAuthPrefixValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		prefix  string
+		wantErr string
+	}{
+		{name: "empty is valid (defaults to Bearer)", prefix: ""},
+		{name: "Bearer is valid", prefix: "Bearer"},
+		{name: "Token is valid", prefix: "Token"},
+		{name: "lowercase token is valid", prefix: "token"},
+		{name: "PRIVATE-TOKEN is valid (hyphen is a token char)", prefix: "PRIVATE-TOKEN"},
+		{name: "embedded quote is rejected", prefix: `Token"`, wantErr: "separator character"},
+		{name: "backslash is rejected", prefix: `Token\`, wantErr: "separator character"},
+		{name: "carriage return is rejected", prefix: "Token\r", wantErr: "non-printable"},
+		{name: "newline is rejected", prefix: "Token\n", wantErr: "non-printable"},
+		{name: "space is rejected", prefix: "Token Foo", wantErr: "non-printable"},
+		{name: "non-ASCII is rejected", prefix: "Tøken", wantErr: "non-ASCII"},
+		{name: "over-long prefix is rejected", prefix: strings.Repeat("A", 33), wantErr: "32-character cap"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthPrefix(AuthConfig{Prefix: tt.prefix})
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestAuthSubtypeValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{name: "empty subtype is valid", auth: AuthConfig{Type: "bearer_token"}},
+		{
+			name: "auth0_spa_in_memory with bearer_token is valid",
+			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeAuth0SPAInMemory},
+		},
+		{
+			name: "auth0_spa_in_memory with empty Type is valid",
+			auth: AuthConfig{Subtype: AuthSubtypeAuth0SPAInMemory},
+		},
+		{
+			name:    "auth0_spa_in_memory with api_key is rejected",
+			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeAuth0SPAInMemory},
+			wantErr: `requires auth.type "bearer_token"`,
+		},
+		{
+			name:    "unknown subtype is rejected",
+			auth:    AuthConfig{Type: "bearer_token", Subtype: "auth0_spa_localstorage"},
+			wantErr: "is not recognized",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthSubtype(tt.auth)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestAPISpecValidate_RejectsBadAuthPrefix(t *testing.T) {
+	build := func(prefix string) APISpec {
+		return APISpec{
+			Name:    "prefix-validate",
+			BaseURL: "https://api.example.com",
+			Auth: AuthConfig{
+				Type:    "bearer_token",
+				Header:  "Authorization",
+				Prefix:  prefix,
+				EnvVars: []string{"PREFIX_VALIDATE_TOKEN"},
+			},
+			Resources: map[string]Resource{
+				"items": {
+					Endpoints: map[string]Endpoint{
+						"list": {Method: "GET", Path: "/items"},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("valid prefix passes Validate()", func(t *testing.T) {
+		s := build("Token")
+		require.NoError(t, s.Validate())
+	})
+
+	t.Run("embedded quote is rejected at the APISpec level", func(t *testing.T) {
+		s := build(`Token"`)
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "auth.prefix")
+	})
+}
+
+func TestAuthConfigHeaderPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   string
+	}{
+		{name: "empty defaults to Bearer", prefix: "", want: "Bearer"},
+		{name: "whitespace-only defaults to Bearer", prefix: "   ", want: "Bearer"},
+		{name: "Token is preserved", prefix: "Token", want: "Token"},
+		{name: "surrounding whitespace is trimmed", prefix: "  Token  ", want: "Token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AuthConfig{Prefix: tt.prefix}.HeaderPrefix()
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestOAuth2GrantValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -863,7 +1766,46 @@ func TestOAuth2GrantValidate(t *testing.T) {
 	}{
 		{name: "empty is valid (defaults to authorization_code)", cfg: AuthConfig{}},
 		{name: "explicit authorization_code is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}},
+		{
+			name: "authorization_code rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant: OAuth2GrantAuthorizationCode,
+				TokenURL:    "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
+		{
+			name: "empty default grant rejects placeholder token URL host",
+			cfg: AuthConfig{
+				TokenURL: "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
 		{name: "client_credentials is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}},
+		{
+			name: "client_credentials rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant: OAuth2GrantClientCredentials,
+				TokenURL:    "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
+		{
+			name: "device_code is valid with required endpoints",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "https://login.example.com/token",
+			},
+		},
+		{
+			name: "device_code allows localhost http endpoints",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "http://localhost:8080/device",
+				TokenURL:               "http://127.0.0.1:8080/token",
+			},
+		},
 		{
 			// Cross-checking against AuthConfig.Type is intentionally skipped
 			// (the field is meaningless for non-oauth2 types but harmless to
@@ -872,9 +1814,41 @@ func TestOAuth2GrantValidate(t *testing.T) {
 			cfg:  AuthConfig{Type: "api_key", OAuth2Grant: OAuth2GrantClientCredentials},
 		},
 		{
-			name:    "unknown grant is rejected with valid set in error",
-			cfg:     AuthConfig{OAuth2Grant: "device_code"},
-			wantErr: `auth.oauth2_grant "device_code" is not recognized`,
+			name:    "device_code requires device endpoint",
+			cfg:     AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode, TokenURL: "https://login.example.com/token"},
+			wantErr: `auth.device_authorization_url is required`,
+		},
+		{
+			name:    "device_code requires token endpoint",
+			cfg:     AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode, DeviceAuthorizationURL: "https://login.example.com/device"},
+			wantErr: `auth.token_url is required`,
+		},
+		{
+			name: "device_code rejects plain http device endpoint",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "http://login.example.com/device",
+				TokenURL:               "https://login.example.com/token",
+			},
+			wantErr: `auth.device_authorization_url uses http://`,
+		},
+		{
+			name: "device_code rejects plain http token endpoint",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "http://login.example.com/token",
+			},
+			wantErr: `auth.token_url uses http://`,
+		},
+		{
+			name: "device_code rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "https://{tenant}.example.com/token",
+			},
+			wantErr: "unresolved placeholder",
 		},
 		{
 			name:    "typo (e.g. authorisation) is rejected",
@@ -998,10 +1972,43 @@ func TestEffectiveOAuth2Grant(t *testing.T) {
 		{name: "whitespace-only also defaults", cfg: AuthConfig{OAuth2Grant: "   "}, want: OAuth2GrantAuthorizationCode},
 		{name: "explicit authorization_code round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}, want: OAuth2GrantAuthorizationCode},
 		{name: "client_credentials round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}, want: OAuth2GrantClientCredentials},
+		{name: "device_code round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantDeviceCode}, want: OAuth2GrantDeviceCode},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, tt.cfg.EffectiveOAuth2Grant())
+		})
+	}
+}
+
+func TestParseRefreshTokenMechanism(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want ParsedRefreshTokenMechanism
+	}{
+		{name: "empty", raw: "", want: ParsedRefreshTokenMechanism{}},
+		{name: "whitespace only", raw: "   ", want: ParsedRefreshTokenMechanism{}},
+		{name: "scope offline", raw: "scope:offline", want: ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindScope, Scope: "offline"}},
+		{name: "scope offline.access", raw: "scope:offline.access", want: ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindScope, Scope: "offline.access"}},
+		{name: "scope offline_access", raw: "scope:offline_access", want: ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindScope, Scope: "offline_access"}},
+		{name: "query access_type", raw: "query:access_type=offline", want: ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindQuery, Key: "access_type", Value: "offline"}},
+		{name: "query empty key rejected", raw: "query:=offline", want: ParsedRefreshTokenMechanism{}},
+		{name: "query empty value rejected", raw: "query:access_type=", want: ParsedRefreshTokenMechanism{}},
+		{name: "query missing equals rejected", raw: "query:access_type", want: ParsedRefreshTokenMechanism{}},
+		{name: "unknown prefix rejected", raw: "header:Foo=bar", want: ParsedRefreshTokenMechanism{}},
+		{name: "missing colon rejected", raw: "scope offline", want: ParsedRefreshTokenMechanism{}},
+		{name: "case-sensitive prefix rejected", raw: "Scope:offline", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key state rejected", raw: "query:state=foo", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key client_id rejected", raw: "query:client_id=foo", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key redirect_uri rejected", raw: "query:redirect_uri=foo", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key response_type rejected", raw: "query:response_type=token", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key scope rejected", raw: "query:scope=offline", want: ParsedRefreshTokenMechanism{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := AuthConfig{RefreshTokenMechanism: tt.raw}
+			assert.Equal(t, tt.want, cfg.ParseRefreshTokenMechanism())
 		})
 	}
 }
@@ -1209,6 +2216,119 @@ resources:
 		require.NoError(t, err)
 		assert.NotContains(t, string(data), "no_auth")
 	})
+}
+
+func TestEndpointRequiresRole(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: role-api
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: api_key
+  header: Authorization
+  env_vars: [ROLE_API_TOKEN]
+roles: [parent, student, teacher, admin]
+config:
+  format: toml
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        requires_role: admin
+`)
+
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"parent", "student", "teacher", "admin"}, s.Roles)
+	assert.Equal(t, "admin", s.Resources["users"].Endpoints["list"].RequiresRole)
+}
+
+func TestEndpointRequiresRoleMustBeDeclared(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: role-api
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: api_key
+  header: Authorization
+  env_vars: [ROLE_API_TOKEN]
+roles: [parent]
+config:
+  format: toml
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        requires_role: admin
+`)
+
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `requires_role "admin" is not declared in roles`)
+}
+
+func TestEndpointRequiresRoleMustBeDeclaredInNestedSubResource(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: role-api
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+roles: [parent]
+config:
+  format: toml
+resources:
+  schools:
+    sub_resources:
+      classes:
+        sub_resources:
+          assignments:
+            endpoints:
+              list:
+                method: GET
+                path: /schools/{school_id}/classes/{class_id}/assignments
+                requires_role: admin
+`)
+
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `sub-resource "classes" sub-resource "assignments" endpoint "list" requires_role "admin" is not declared in roles`)
+}
+
+func TestEndpointRolePersonaConstantsMustBeUnique(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: role-api
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+roles: [site-admin, site_admin]
+config:
+  format: toml
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        requires_role: site-admin
+`)
+
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `duplicate PersonaSiteAdmin constants`)
 }
 
 func TestEndpointIDFieldAndCritical(t *testing.T) {
@@ -1472,6 +2592,57 @@ description: Missing base_url and resources
 		_, err := ParseBytes([]byte(input))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "base_url is required")
+	})
+
+	t.Run("duplicate top-level keys fail clearly", func(t *testing.T) {
+		t.Parallel()
+		input := `name: duplicateapi
+base_url: https://api.example.com
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+resources:
+  teams:
+    endpoints:
+      list:
+        method: GET
+        path: /teams
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate top-level key(s): resources")
+	})
+
+	t.Run("resource-shaped entries under types fail clearly", func(t *testing.T) {
+		t.Parallel()
+		input := `name: misroutedapi
+base_url: https://api.example.com
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+types:
+  Team:
+    fields:
+      id:
+        type: string
+  misplaced_widgets:
+    description: Appended at the wrong indentation level
+    endpoints:
+      list:
+        method: GET
+        path: /widgets
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resource-shaped entry under 'types:'")
+		assert.Contains(t, err.Error(), "misplaced_widgets")
+		assert.Contains(t, err.Error(), "wrong indentation")
 	})
 }
 
@@ -2084,6 +3255,386 @@ func TestCacheShareAcceptsValidShapes(t *testing.T) {
 	}
 }
 
+func TestParseLearnConfig(t *testing.T) {
+	t.Run("happy path: full learn block parses and validates", func(t *testing.T) {
+		s, err := Parse("testdata/learn_example.yaml")
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.True(t, s.Learn.Enabled)
+		require.Len(t, s.Learn.TickerPatterns, 2)
+		// Every declared pattern must compile as a Go regexp.
+		for i, pattern := range s.Learn.TickerPatterns {
+			_, compileErr := regexp.Compile(pattern)
+			require.NoErrorf(t, compileErr, "ticker_patterns[%d] = %q", i, pattern)
+		}
+		assert.Equal(t, []string{"the", "of", "and"}, s.Learn.Stopwords)
+		require.Contains(t, s.Learn.EntityLookupSeeds, "country")
+		require.Contains(t, s.Learn.EntityLookupSeeds, "team")
+		country := s.Learn.EntityLookupSeeds["country"]
+		require.Len(t, country, 2)
+		assert.Equal(t, "USA", country[0].Canonical)
+		assert.Equal(t, []string{"united states", "america", "us"}, country[0].Aliases)
+		assert.Equal(t, "Portugal", country[1].Canonical)
+	})
+
+	t.Run("empty block: learn: {} parses with Enabled false and validates", func(t *testing.T) {
+		input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+learn: {}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.False(t, s.Learn.Enabled)
+		assert.Empty(t, s.Learn.TickerPatterns)
+		assert.Empty(t, s.Learn.Stopwords)
+		assert.Empty(t, s.Learn.EntityLookupSeeds)
+	})
+
+	t.Run("enabled false records explicit legacy opt-out", func(t *testing.T) {
+		input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+learn:
+  enabled: false
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+	})
+
+	t.Run("absent block: omitting learn yields zero-value LearnConfig", func(t *testing.T) {
+		input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.Equal(t, LearnConfig{}, s.Learn)
+	})
+
+	t.Run("invalid ticker regex returns validation error naming pattern and regex error", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled:        true,
+				TickerPatterns: []string{"[unclosed"},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ticker_patterns[0]")
+		assert.Contains(t, err.Error(), "not a valid Go regexp")
+	})
+
+	t.Run("bad seed kind with whitespace rejected", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled: true,
+				EntityLookupSeeds: map[string][]LookupSeed{
+					"bad name with spaces": {{Canonical: "X"}},
+				},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "entity_lookup_seeds")
+		assert.Contains(t, err.Error(), "bad name with spaces")
+	})
+
+	t.Run("bad seed kind with hyphen rejected (only underscore allowed)", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled: true,
+				EntityLookupSeeds: map[string][]LookupSeed{
+					"bad-kind": {{Canonical: "X"}},
+				},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "bad-kind")
+	})
+
+	t.Run("empty canonical rejected", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled: true,
+				EntityLookupSeeds: map[string][]LookupSeed{
+					"country": {{Canonical: ""}},
+				},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "canonical must not be empty")
+	})
+
+	t.Run("duplicate canonical within same kind rejected", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled: true,
+				EntityLookupSeeds: map[string][]LookupSeed{
+					"country": {
+						{Canonical: "USA"},
+						{Canonical: "USA"},
+					},
+				},
+			},
+		}
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "appears more than once")
+	})
+
+	t.Run("whitespace stopwords filtered, only meaningful entries retained", func(t *testing.T) {
+		s := APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			Learn: LearnConfig{
+				Enabled:   true,
+				Stopwords: []string{" ", "  ", "valid", "\t", "also-valid"},
+			},
+		}
+		require.NoError(t, s.Validate())
+		assert.Equal(t, []string{"valid", "also-valid"}, s.Learn.Stopwords)
+	})
+}
+
+func TestLearnConfigDisabledAndSynonyms(t *testing.T) {
+	learnSpecYAML := func(learnBlock string) []byte {
+		return []byte(`
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+` + learnBlock)
+	}
+
+	t.Run("disabled round-trips through parse and marshal", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  disabled: true\n"))
+		require.NoError(t, err)
+		assert.True(t, s.Learn.Disabled)
+		assert.False(t, s.Learn.Enabled)
+
+		out, err := yaml.Marshal(s.Learn)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "disabled: true")
+
+		var back LearnConfig
+		require.NoError(t, yaml.Unmarshal(out, &back))
+		assert.True(t, back.Disabled)
+	})
+
+	t.Run("disabled true with enabled true rejected as contradictory, naming both fields", func(t *testing.T) {
+		_, err := ParseBytes(learnSpecYAML("learn:\n  disabled: true\n  enabled: true\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "learn.disabled")
+		assert.Contains(t, err.Error(), "learn.enabled")
+	})
+
+	t.Run("enabled false alone parses cleanly as a legacy opt-out", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: false\n"))
+		require.NoError(t, err)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+		assert.False(t, s.Learn.Disabled)
+
+		out, err := yaml.Marshal(s.Learn)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "enabled: false")
+
+		var back LearnConfig
+		require.NoError(t, yaml.Unmarshal(out, &back))
+		assert.False(t, back.Enabled)
+		assert.True(t, back.EnabledSet)
+	})
+
+	t.Run("synonyms round-trip through parse", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: true\n  synonyms:\n    last night: yesterday\n"))
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"last night": "yesterday"}, s.Learn.Synonyms)
+	})
+
+	synonymCases := []struct {
+		name     string
+		synonyms map[string]string
+		wantErr  string
+	}{
+		{
+			name:     "valid lowercase pair accepted",
+			synonyms: map[string]string{"last night": "yesterday"},
+		},
+		{
+			name:     "empty key rejected",
+			synonyms: map[string]string{"": "yesterday"},
+			wantErr:  "learn.synonyms",
+		},
+		{
+			name:     "empty value rejected",
+			synonyms: map[string]string{"last night": ""},
+			wantErr:  "learn.synonyms",
+		},
+		{
+			name:     "uppercase key rejected",
+			synonyms: map[string]string{"Last Night": "yesterday"},
+			wantErr:  "lowercase",
+		},
+		{
+			name:     "uppercase value rejected",
+			synonyms: map[string]string{"last night": "Yesterday"},
+			wantErr:  "lowercase",
+		},
+		{
+			name:     "self-referential pair rejected",
+			synonyms: map[string]string{"yesterday": "yesterday"},
+			wantErr:  "itself",
+		},
+		{
+			name:     "chained pair rejected: a value must not itself be a key",
+			synonyms: map[string]string{"last night": "yesterday", "yesterday": "prior day"},
+			wantErr:  "chain",
+		},
+	}
+	for _, tc := range synonymCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := APISpec{
+				Name:      "demo",
+				BaseURL:   "http://x",
+				Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+				Learn: LearnConfig{
+					Enabled:  true,
+					Synonyms: tc.synonyms,
+				},
+			}
+			err := s.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestApplyLearnLoopDefault(t *testing.T) {
+	base := func() *APISpec {
+		return &APISpec{Name: "demo"}
+	}
+
+	t.Run("learn-less spec defaults Enabled on and writes the info line", func(t *testing.T) {
+		s := base()
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.True(t, s.Learn.Enabled)
+		assert.Contains(t, buf.String(), "defaulting self-learning loop on (opt out with learn.disabled: true)")
+	})
+
+	t.Run("disabled spec short-circuits with no change and no output", func(t *testing.T) {
+		s := base()
+		s.Learn.Disabled = true
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.Disabled)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("explicit enabled false short-circuits with no change and no output", func(t *testing.T) {
+		s := base()
+		s.Learn.EnabledSet = true
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("explicitly enabled spec is a no-op with no output", func(t *testing.T) {
+		s := base()
+		s.Learn.Enabled = true
+		s.Learn.Stopwords = []string{"the"}
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.True(t, s.Learn.Enabled)
+		assert.Equal(t, []string{"the"}, s.Learn.Stopwords)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("nil receiver is safe", func(t *testing.T) {
+		var s *APISpec
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.Empty(t, buf.String())
+	})
+}
+
 func TestMCPConfigAbsentIsBackwardCompatible(t *testing.T) {
 	input := `
 name: demo
@@ -2407,6 +3958,10 @@ func TestMCPOrchestrationValidation(t *testing.T) {
 	assert.Equal(t, 100, MCPConfig{OrchestrationThreshold: 100}.EffectiveOrchestrationThreshold())
 	assert.True(t, MCPConfig{Orchestration: "code"}.IsCodeOrchestration())
 	assert.False(t, MCPConfig{Orchestration: "intent"}.IsCodeOrchestration())
+	assert.True(t, MCPConfig{}.EndpointMirrorsVisible())
+	assert.True(t, MCPConfig{EndpointTools: "visible"}.EndpointMirrorsVisible())
+	assert.False(t, MCPConfig{EndpointTools: "hidden"}.EndpointMirrorsVisible())
+	assert.False(t, MCPConfig{EndpointTools: "visible", Orchestration: "code"}.EndpointMirrorsVisible())
 }
 
 func TestMCPConfigAcceptsValidShapes(t *testing.T) {
@@ -2435,6 +3990,65 @@ func TestMCPConfigAcceptsValidShapes(t *testing.T) {
 	}
 }
 
+// TestEffectiveMCPTransportsSmallAPIDefault locks the issue #1603 contract:
+// when mcp.transport is unset and the typed-endpoint surface is small, the
+// resolved transport list adds http alongside stdio so the same binary can
+// reach cloud-hosted agents. Explicit transport lists (including ["stdio"])
+// bypass the default and are honored as-is.
+func TestEffectiveMCPTransportsSmallAPIDefault(t *testing.T) {
+	t.Parallel()
+
+	mkSpec := func(endpoints int, transport []string) *APISpec {
+		s := &APISpec{
+			Name:      "demo",
+			BaseURL:   "https://api.example.com",
+			Auth:      AuthConfig{Type: "none"},
+			Resources: map[string]Resource{},
+			MCP:       MCPConfig{Transport: transport},
+		}
+		r := Resource{Endpoints: map[string]Endpoint{}}
+		for i := range endpoints {
+			r.Endpoints[fmt.Sprintf("get_%d", i)] = Endpoint{Method: "GET", Path: fmt.Sprintf("/items/%d", i)}
+		}
+		s.Resources["items"] = r
+		return s
+	}
+
+	tests := []struct {
+		name      string
+		endpoints int
+		transport []string
+		want      []string
+		wantHTTP  bool
+	}{
+		{name: "small API empty transport gets stdio+http", endpoints: 6, transport: nil, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "boundary at threshold still gets http", endpoints: DefaultRemoteTransportEndpointThreshold, transport: nil, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "above threshold stays stdio-only", endpoints: DefaultRemoteTransportEndpointThreshold + 1, transport: nil, want: []string{"stdio"}, wantHTTP: false},
+		{name: "explicit stdio is honored even at small scale", endpoints: 6, transport: []string{"stdio"}, want: []string{"stdio"}, wantHTTP: false},
+		{name: "explicit stdio,http passes through", endpoints: 6, transport: []string{"stdio", "http"}, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "explicit http-only passes through", endpoints: 100, transport: []string{"http"}, want: []string{"http"}, wantHTTP: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := mkSpec(tt.endpoints, tt.transport)
+			assert.Equal(t, tt.want, s.EffectiveMCPTransports())
+			assert.Equal(t, tt.wantHTTP, s.HasMCPTransport("http"))
+			// Case-insensitive lookup mirrors MCPConfig.HasTransport.
+			assert.Equal(t, tt.wantHTTP, s.HasMCPTransport("HTTP"))
+		})
+	}
+
+	// Nil receiver is safe and returns the stdio fallback.
+	var nilSpec *APISpec
+	assert.Equal(t, []string{"stdio"}, nilSpec.EffectiveMCPTransports())
+	assert.False(t, nilSpec.HasMCPTransport("http"))
+
+	// MCPConfig.EffectiveTransports stays unconditioned on endpoint count;
+	// it's still the right helper for spec validation and mcp_audit.
+	assert.Equal(t, []string{"stdio"}, MCPConfig{}.EffectiveTransports())
+}
+
 func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -2451,7 +4065,7 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	sniffed := base
 	sniffed.SpecSource = "sniffed"
-	assert.Equal(t, HTTPTransportBrowserChrome, sniffed.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, sniffed.EffectiveHTTPTransport())
 	require.NoError(t, sniffed.Validate())
 
 	browserHTTP := base
@@ -2464,13 +4078,31 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	community := base
 	community.SpecSource = "community"
-	assert.Equal(t, HTTPTransportBrowserChrome, community.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, community.EffectiveHTTPTransport())
+
+	browserChrome := base
+	browserChrome.HTTPTransport = HTTPTransportBrowserChrome
+	assert.Equal(t, HTTPTransportBrowserChrome, browserChrome.EffectiveHTTPTransport())
+	assert.True(t, browserChrome.UsesBrowserHTTPTransport())
+	assert.False(t, browserChrome.UsesBrowserHTTP2Transport())
+	assert.False(t, browserChrome.UsesBrowserHTTP3Transport())
+	require.NoError(t, browserChrome.Validate())
+
+	h2 := base
+	h2.HTTPTransport = HTTPTransportBrowserChromeH2
+	assert.Equal(t, HTTPTransportBrowserChromeH2, h2.EffectiveHTTPTransport())
+	assert.True(t, h2.UsesBrowserHTTPTransport())
+	assert.True(t, h2.UsesBrowserHTTP2Transport())
+	assert.False(t, h2.UsesBrowserHTTP3Transport())
+	assert.True(t, h2.UsesBrowserManagedUserAgent())
+	require.NoError(t, h2.Validate())
 
 	h3 := base
 	h3.HTTPTransport = HTTPTransportBrowserChromeH3
 	assert.Equal(t, HTTPTransportBrowserChromeH3, h3.EffectiveHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTP3Transport())
+	assert.False(t, h3.UsesBrowserHTTP2Transport())
 	assert.True(t, h3.UsesBrowserManagedUserAgent())
 	require.NoError(t, h3.Validate())
 
@@ -2488,11 +4120,11 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, HTTPTransportBrowserChrome, cookieHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, cookieHTML.EffectiveHTTPTransport())
 
 	composedHTML := cookieHTML
 	composedHTML.Auth.Type = "composed"
-	assert.Equal(t, HTTPTransportBrowserChrome, composedHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, composedHTML.EffectiveHTTPTransport())
 
 	jsonCookie := cookieHTML
 	jsonCookie.Resources = map[string]Resource{
@@ -2518,6 +4150,126 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	invalid := base
 	invalid.HTTPTransport = "lynx"
 	require.ErrorContains(t, invalid.Validate(), "http_transport must be one of")
+}
+
+func TestRateClassValidationAndSyncConcurrencyDefaults(t *testing.T) {
+	t.Parallel()
+
+	base := APISpec{
+		Name:    "demo",
+		BaseURL: "http://x",
+		Auth:    AuthConfig{Type: "none"},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	cases := []struct {
+		name      string
+		rateClass string
+		want      int
+	}{
+		{name: "absent", want: 4},
+		{name: "per-second", rateClass: RateClassPerSecond, want: 4},
+		{name: "unlimited", rateClass: RateClassUnlimited, want: 4},
+		{name: "daily", rateClass: RateClassDaily, want: 1},
+		{name: "monthly", rateClass: RateClassMonthly, want: 1},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := base
+			s.RateClass = tc.rateClass
+			require.NoError(t, s.Validate())
+			assert.Equal(t, tc.want, s.SyncDefaultConcurrency())
+		})
+	}
+
+	invalid := base
+	invalid.RateClass = "weekly"
+	require.ErrorContains(t, invalid.Validate(), "rate_class must be one of")
+}
+
+func TestUsesBrowserLikeUserAgent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		spec *APISpec
+		want bool
+	}{
+		{
+			name: "documented JSON API stays script-shaped",
+			spec: &APISpec{
+				Name:    "stripe",
+				BaseURL: "https://api.stripe.com",
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: false,
+		},
+		{
+			name: "kind: synthetic flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "bbquality",
+				BaseURL: "https://bbquality.nl",
+				Kind:    KindSynthetic,
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: true,
+		},
+		{
+			name: "cookie auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "marktplaats",
+				BaseURL: "https://www.marktplaats.nl",
+				Auth:    AuthConfig{Type: "cookie"},
+			},
+			want: true,
+		},
+		{
+			name: "composed auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "picnic",
+				BaseURL: "https://storefront-prod.nl.picnicinternational.com",
+				Auth:    AuthConfig{Type: "composed"},
+			},
+			want: true,
+		},
+		{
+			name: "session_handshake auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "openart",
+				BaseURL: "https://openart.ai",
+				Auth:    AuthConfig{Type: "session_handshake"},
+			},
+			want: true,
+		},
+		{
+			name: "auth.type casing is normalized",
+			spec: &APISpec{
+				Name:    "cookieUpper",
+				BaseURL: "https://example.com",
+				Auth:    AuthConfig{Type: "  Cookie  "},
+			},
+			want: true,
+		},
+		{
+			// Nil spec must reach the nil-receiver guard; dispatching via
+			// a typed pointer (not a name-string comparison) ensures the
+			// guard stays under test even if the case name is renamed.
+			name: "nil spec is safe and returns false",
+			spec: nil,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.spec.UsesBrowserLikeUserAgent())
+		})
+	}
 }
 
 func TestHTMLResponseExtractionValidation(t *testing.T) {
@@ -2554,17 +4306,81 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	assert.True(t, base.HasHTMLExtraction())
 	assert.True(t, base.Resources["posts"].Endpoints["list"].UsesHTMLResponse())
 
+	csvSpec := validHTMLSpec()
+	ep := csvSpec.Resources["posts"].Endpoints["list"]
+	ep.ResponseFormat = ResponseFormatCSV
+	ep.HTMLExtract = nil
+	csvSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, csvSpec.Validate())
+	assert.True(t, csvSpec.Resources["posts"].Endpoints["list"].UsesCSVResponse())
+
 	badFormat := validHTMLSpec()
-	ep := badFormat.Resources["posts"].Endpoints["list"]
+	ep = badFormat.Resources["posts"].Endpoints["list"]
 	ep.ResponseFormat = "xml"
 	badFormat.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badFormat.Validate(), "response_format must be one of")
 
+	postSpec := validHTMLSpec()
+	ep = postSpec.Resources["posts"].Endpoints["list"]
+	ep.Method = "POST"
+	postSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, postSpec.Validate())
+
+	tableSpec := validHTMLSpec()
+	ep = tableSpec.Resources["posts"].Endpoints["list"]
+	ep.Method = "POST"
+	ep.HTMLExtract.Mode = HTMLExtractModeTable
+	ep.Response = ResponseDef{Type: "array", Item: "html_table_row"}
+	tableSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, tableSpec.Validate())
+
 	badMethod := validHTMLSpec()
 	ep = badMethod.Resources["posts"].Endpoints["list"]
-	ep.Method = "POST"
+	ep.Method = "PUT"
 	badMethod.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badMethod.Validate(), "html response_format is only supported")
+}
+
+func TestEffectiveDataSourceStrategy(t *testing.T) {
+	t.Parallel()
+
+	resource := Resource{DataSourceStrategy: DataSourceStrategyLocal}
+	endpoint := Endpoint{}
+	assert.Equal(t, DataSourceStrategyLocal, EffectiveDataSourceStrategy(resource, endpoint))
+
+	endpoint.DataSourceStrategy = DataSourceStrategyLive
+	assert.Equal(t, DataSourceStrategyLive, EffectiveDataSourceStrategy(resource, endpoint))
+
+	assert.Equal(t, DataSourceStrategyAuto, EffectiveDataSourceStrategy(Resource{}, Endpoint{}))
+}
+
+func TestValidateDataSourceStrategy(t *testing.T) {
+	t.Parallel()
+
+	base := APISpec{
+		Name:    "strategy",
+		Version: "1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    AuthConfig{Type: "none"},
+		Config:  ConfigSpec{Format: "toml", Path: "~/.config/strategy/config.toml"},
+		Resources: map[string]Resource{
+			"items": {
+				DataSourceStrategy: DataSourceStrategyAuto,
+				Endpoints: map[string]Endpoint{
+					"list": {Method: "GET", Path: "/items", DataSourceStrategy: DataSourceStrategyLocal},
+				},
+			},
+		},
+	}
+	require.NoError(t, base.Validate())
+
+	bad := base
+	items := bad.Resources["items"]
+	endpoint := items.Endpoints["list"]
+	endpoint.DataSourceStrategy = "remote"
+	items.Endpoints["list"] = endpoint
+	bad.Resources["items"] = items
+	require.ErrorContains(t, bad.Validate(), "data_source_strategy")
 }
 
 func TestHTMLExtract_EmbeddedJSONMode(t *testing.T) {
@@ -2823,6 +4639,237 @@ resources:
 	})
 }
 
+func TestPromoteGlobalPathTemplateVars(t *testing.T) {
+	t.Parallel()
+
+	t.Run("promotes env-backed common path var", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [tenant_id]
+endpoint_template_env_overrides:
+  tenant_id: TESTAPI_TENANT_ID
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /tenants/{tenant_id}/accounts
+      get:
+        method: GET
+        path: /tenants/{tenant_id}/accounts/{account_id}
+      create:
+        method: POST
+        path: /tenants/{tenant_id}/accounts
+  contacts:
+    description: Contacts
+    sub_resources:
+      notes:
+        description: Contact notes
+        endpoints:
+          list:
+            method: GET
+            path: /tenants/{tenant_id}/contacts/{contact_id}/notes
+    endpoints:
+      list:
+        method: GET
+        path: /tenants/{tenant_id}/contacts
+  audit:
+    description: Audit
+    endpoints:
+      lookup:
+        method: GET
+        path: /audit
+        params:
+          - name: tenant_id
+            type: string
+            required: true
+            positional: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"tenant_id"}, s.GlobalPathTemplateVars)
+		accountsList := s.Resources["accounts"].Endpoints["list"]
+		assert.Empty(t, accountsList.Params, "global path var should not be emitted as a command positional")
+		accountsGet := s.Resources["accounts"].Endpoints["get"]
+		assert.Equal(t, []string{"account_id"}, paramNames(accountsGet.Params),
+			"sparse path params must remain per-command positionals")
+		notesList := s.Resources["contacts"].SubResources["notes"].Endpoints["list"]
+		assert.Equal(t, []string{"contact_id"}, paramNames(notesList.Params),
+			"sub-resource endpoints must also drop the global path var while preserving sparse path params")
+		auditLookup := s.Resources["audit"].Endpoints["lookup"]
+		assert.Equal(t, []string{"tenant_id"}, paramNames(auditLookup.Params),
+			"same-named positional inputs that are not path placeholders must remain command inputs")
+	})
+
+	t.Run("keeps common path var positional without env override", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [tenant_id]
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /tenants/{tenant_id}/accounts
+      get:
+        method: GET
+        path: /tenants/{tenant_id}/accounts/{account_id}
+      delete:
+        method: DELETE
+        path: /tenants/{tenant_id}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "tenant_id")
+	})
+
+	t.Run("keeps sparse env-backed path var positional", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [user_id]
+endpoint_template_env_overrides:
+  user_id: TESTAPI_USER_ID
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /accounts
+      get:
+        method: GET
+        path: /accounts/{account_id}
+      members:
+        method: GET
+        path: /users/{user_id}/members
+      contacts:
+        method: GET
+        path: /contacts
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["members"].Params), "user_id")
+	})
+
+	t.Run("promotes env-backed path var on small APIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [tenant_id]
+endpoint_template_env_overrides:
+  tenant_id: TESTAPI_TENANT_ID
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /tenants/{tenant_id}/accounts
+      get:
+        method: GET
+        path: /tenants/{tenant_id}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"tenant_id"}, s.GlobalPathTemplateVars)
+		assert.Empty(t, s.Resources["accounts"].Endpoints["list"].Params)
+		assert.Equal(t, []string{"account_id"}, paramNames(s.Resources["accounts"].Endpoints["get"].Params))
+	})
+
+	t.Run("keeps root flag name collisions positional", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [profile]
+endpoint_template_env_overrides:
+  profile: TESTAPI_PROFILE
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /profiles/{profile}/accounts
+      get:
+        method: GET
+        path: /profiles/{profile}/accounts/{account_id}
+      delete:
+        method: DELETE
+        path: /profiles/{profile}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "profile")
+	})
+}
+
+func TestReservedRootFlagsMatchRootTemplate(t *testing.T) {
+	t.Parallel()
+
+	srcBytes, err := os.ReadFile("../generator/templates/root.go.tmpl")
+	require.NoError(t, err)
+	src := string(srcBytes)
+
+	flagRe := regexp.MustCompile(`PersistentFlags\(\)\.\w+Var\([^,]+,\s*"([^"{]+)"`)
+	var flagNames []string
+	for _, match := range flagRe.FindAllStringSubmatch(src, -1) {
+		flagNames = append(flagNames, match[1])
+	}
+	require.NotEmpty(t, flagNames, "root.go.tmpl persistent flags should be discoverable")
+	for _, name := range flagNames {
+		assert.Contains(t, reservedRootFlagNames, name, "promotable path template vars must not collide with root flag %q", name)
+	}
+
+	structRe := regexp.MustCompile(`(?s)type rootFlags struct \{(.*?)\n\}`)
+	structMatch := structRe.FindStringSubmatch(src)
+	require.Len(t, structMatch, 2, "root.go.tmpl rootFlags struct should be discoverable")
+	fieldRe := regexp.MustCompile(`(?m)^\s*([a-z][A-Za-z0-9]*)\s+`)
+	var fieldNames []string
+	for _, match := range fieldRe.FindAllStringSubmatch(structMatch[1], -1) {
+		fieldNames = append(fieldNames, match[1])
+	}
+	require.NotEmpty(t, fieldNames, "rootFlags fields should be discoverable")
+	for _, name := range fieldNames {
+		assert.Contains(t, reservedRootFlagFieldNames, name, "reserved root field list must track rootFlags.%s", name)
+	}
+}
+
+func paramNames(params []Param) []string {
+	names := make([]string, len(params))
+	for i, param := range params {
+		names[i] = param.Name
+	}
+	return names
+}
+
 func TestValidateReservedNames(t *testing.T) {
 	t.Parallel()
 
@@ -2880,6 +4927,100 @@ resources:
 		assert.NotContains(t, err.Error(), "newAgent_contextCmd")
 	})
 
+	t.Run("reserved search resource errors with remediation hint when no parent prefix exists", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  search:
+    description: Search
+    endpoints:
+      run:
+        method: POST
+        path: /search
+        description: Search
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reserved Printing Press template "search"`)
+		assert.Contains(t, err.Error(), `Rename to "search_resource"`)
+		assert.NotContains(t, err.Error(), "x-pp-resource")
+	})
+
+	t.Run("reserved search resource is parent-prefixed when endpoint path provides one", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+cache:
+  enabled: true
+  resources:
+    search: 5m
+  commands:
+    - name: dashboard
+      resources: [search]
+mcp:
+  intents:
+    - name: note_lookup
+      description: Look up a note
+      steps:
+        - endpoint: search.run
+          capture: note
+      returns: note
+resources:
+  search:
+    description: Note search
+    endpoints:
+      run:
+        method: POST
+        path: /notes/search
+        description: Search notes
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		assert.NotContains(t, s.Resources, "search")
+		require.Contains(t, s.Resources, "notes_search")
+		assert.Contains(t, s.Resources["notes_search"].Endpoints, "run")
+		assert.NotContains(t, s.Cache.Resources, "search")
+		assert.Equal(t, "5m", s.Cache.Resources["notes_search"])
+		require.Len(t, s.Cache.Commands, 1)
+		assert.Equal(t, []string{"notes_search"}, s.Cache.Commands[0].Resources)
+		require.Len(t, s.MCP.Intents, 1)
+		require.Len(t, s.MCP.Intents[0].Steps, 1)
+		assert.Equal(t, "notes_search.run", s.MCP.Intents[0].Steps[0].Endpoint)
+	})
+
+	t.Run("reserved search resource with exact endpoint does not parent-prefix from sibling endpoint", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  search:
+    description: Search
+    endpoints:
+      notes:
+        method: POST
+        path: /notes/search
+        description: Search notes
+      global:
+        method: POST
+        path: /search
+        description: Search everything
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reserved Printing Press template "search"`)
+		assert.Contains(t, err.Error(), `Rename to "search_resource"`)
+	})
+
 	t.Run("auth resource name rejected", func(t *testing.T) {
 		t.Parallel()
 		input := `name: testapi
@@ -2899,6 +5040,25 @@ resources:
 		_, err := ParseBytes([]byte(input))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `"auth"`)
+	})
+
+	t.Run("auth resource is allowed when no auth command is emitted", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  auth:
+    description: Public auth helpers
+    endpoints:
+      check_email:
+        method: GET
+        path: /api/auth/check-email
+        description: Check email
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
 	})
 
 	t.Run("non-reserved name with reserved-substring is allowed", func(t *testing.T) {
@@ -3026,6 +5186,134 @@ resources:
         method: GET
         path: /stores
         description: List
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("health resource passes until the generator emits a health command", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  health:
+    description: API health
+    endpoints:
+      get:
+        method: GET
+        path: /health
+        description: Health
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("live resource passes without streaming", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  live:
+    description: Live events
+    endpoints:
+      list:
+        method: GET
+        path: /live
+        description: List live events
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("live resource is rejected when streaming emits live command", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+streaming:
+  transport: websocket
+  url: wss://api.example.com/v1/ws
+resources:
+  live:
+    description: Live events
+    endpoints:
+      list:
+        method: GET
+        path: /live
+        description: List live events
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"live"`)
+		assert.Contains(t, err.Error(), "shadow framework cobra command")
+	})
+
+	t.Run("login resource is rejected for oauth2 auth-code CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: oauth2
+  authorization_url: https://auth.example.com/oauth/authorize
+  token_url: https://auth.example.com/oauth/token
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"login"`)
+		assert.Contains(t, err.Error(), "shadow framework cobra command")
+	})
+
+	t.Run("login resource is rejected for bearer auth-code CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  authorization_url: https://auth.example.com/oauth/authorize
+  token_url: https://auth.example.com/oauth/token
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"login"`)
+		assert.Contains(t, err.Error(), "shadow framework cobra command")
+	})
+
+	t.Run("login resource passes for non-oauth CLIs", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  login:
+    description: API login endpoint
+    endpoints:
+      create:
+        method: POST
+        path: /login
+        description: Log in
 `
 		_, err := ParseBytes([]byte(input))
 		require.NoError(t, err)
@@ -3172,6 +5460,162 @@ func TestValidateRejectsResourceBaseURLWithProxyEnvelope(t *testing.T) {
 	assert.Contains(t, err.Error(), "base_url")
 }
 
+func TestValidateRejectsAbsoluteEndpointPathWithProxyEnvelope(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(*APISpec)
+	}{
+		{
+			name: "top-level endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.Endpoints["list"] = Endpoint{
+					Method:      "GET",
+					Path:        "https://other.example.com/items",
+					Description: "List",
+				}
+				s.Resources["items"] = items
+			},
+		},
+		{
+			name: "subresource endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.SubResources = map[string]Resource{
+					"children": {
+						Endpoints: map[string]Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "https://children.example.com/items",
+								Description: "List children",
+							},
+						},
+					},
+				}
+				s.Resources["items"] = items
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{
+				Name:          "proxytest",
+				Version:       "0.1.0",
+				BaseURL:       "https://proxy.example.com",
+				ClientPattern: "proxy-envelope",
+				Resources: map[string]Resource{
+					"items": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items", Description: "List"},
+						},
+					},
+				},
+			}
+			tc.mutate(s)
+
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "proxy-envelope")
+			assert.Contains(t, err.Error(), "absolute endpoint paths")
+		})
+	}
+}
+
+func TestValidateRejectsEndpointBaseURLWithAbsoluteEndpointPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(*APISpec)
+	}{
+		{
+			name: "top-level endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.Endpoints["list"] = Endpoint{
+					Method:      "GET",
+					Path:        "https://absolute.example.com/items",
+					BaseURL:     "https://override.example.com/v1",
+					Description: "List",
+				}
+				s.Resources["items"] = items
+			},
+		},
+		{
+			name: "subresource endpoint",
+			mutate: func(s *APISpec) {
+				items := s.Resources["items"]
+				items.SubResources = map[string]Resource{
+					"children": {
+						Endpoints: map[string]Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "https://children.example.com/items",
+								BaseURL:     "https://override.example.com/v1",
+								Description: "List children",
+							},
+						},
+					},
+				}
+				s.Resources["items"] = items
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{
+				Name:    "absolute-conflict",
+				Version: "0.1.0",
+				BaseURL: "https://api.example.com",
+				Resources: map[string]Resource{
+					"items": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items", Description: "List"},
+						},
+					},
+				},
+			}
+			tc.mutate(s)
+
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "base_url")
+			assert.Contains(t, err.Error(), "absolute endpoint path")
+		})
+	}
+}
+
+// TestValidateRejectsBasePathWithProxyEnvelope — proxy-envelope routes via
+// the envelope's Service/Path fields, not a URL-level prefix; a BasePath
+// would be silently ignored by the proxy. Validate must fail-fast.
+func TestValidateRejectsBasePathWithProxyEnvelope(t *testing.T) {
+	t.Parallel()
+	s := &APISpec{
+		Name:          "proxypath",
+		Version:       "0.1.0",
+		BaseURL:       "https://proxy.example.com",
+		BasePath:      "/api/v1",
+		ClientPattern: "proxy-envelope",
+		Resources: map[string]Resource{
+			"items": {
+				Endpoints: map[string]Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List"},
+				},
+			},
+		},
+	}
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy-envelope")
+	assert.Contains(t, err.Error(), "base_path")
+}
+
 // TestValidateAcceptsResourceBaseURLWithoutProxyEnvelope — the same
 // resource override is accepted when client_pattern is not the proxy
 // flavor. Negative cases (no resource override, proxy-envelope alone)
@@ -3274,6 +5718,247 @@ resources:
 	assert.Equal(t, "paid", s.Resources["results"].Endpoints["premium"].Tier)
 	assert.Equal(t, "free", s.EffectiveTier(s.Resources["results"], s.Resources["results"].Endpoints["list"]))
 	assert.Equal(t, "paid", s.EffectiveTier(s.Resources["results"], s.Resources["results"].Endpoints["premium"]))
+}
+
+func TestNormalizeCookieDomain(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		authType   string
+		baseURL    string
+		preset     string
+		wantDomain string
+	}{
+		{
+			name:       "cookie auth derives leading-dot domain from base_url",
+			authType:   "cookie",
+			baseURL:    "https://www.factor75.com",
+			wantDomain: ".factor75.com",
+		},
+		{
+			name:       "composed auth derives domain too",
+			authType:   "composed",
+			baseURL:    "https://app.example.com",
+			wantDomain: ".app.example.com",
+		},
+		{
+			name:       "session handshake derives domain too",
+			authType:   "session_handshake",
+			baseURL:    "https://query1.finance.example",
+			wantDomain: ".query1.finance.example",
+		},
+		{
+			name:       "explicit cookie_domain is preserved",
+			authType:   "cookie",
+			baseURL:    "https://www.factor75.com",
+			preset:     ".custom.example.com",
+			wantDomain: ".custom.example.com",
+		},
+		{
+			name:       "non-cookie auth is untouched",
+			authType:   "bearer_token",
+			baseURL:    "https://www.example.com",
+			wantDomain: "",
+		},
+		{
+			name:       "no host yields no domain",
+			authType:   "cookie",
+			baseURL:    "",
+			wantDomain: "",
+		},
+		{
+			name:       "scheme-less base_url still derives a domain",
+			authType:   "cookie",
+			baseURL:    "api.example.com",
+			wantDomain: ".api.example.com",
+		},
+		{
+			name:       "degenerate www-only host yields no domain",
+			authType:   "cookie",
+			baseURL:    "https://www.",
+			wantDomain: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{BaseURL: tc.baseURL}
+			s.Auth.Type = tc.authType
+			s.Auth.CookieDomain = tc.preset
+			s.NormalizeCookieDomain()
+			assert.Equal(t, tc.wantDomain, s.Auth.CookieDomain)
+		})
+	}
+}
+
+func TestInferEndpointTemplateVarsFromBaseURLs(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:                 "templated",
+		BaseURL:              "https://{tenant}.api.example.com",
+		BasePath:             "/{base_path}",
+		GraphQLEndpointPath:  "/admin/{version}/graphql",
+		EndpointTemplateVars: []string{"explicit", "tenant"},
+		TierRouting: TierRoutingConfig{Tiers: map[string]TierConfig{
+			"z": {BaseURL: "https://{tier_z}.api.example.com"},
+			"a": {BaseURL: "https://{tier_a}.api.example.com"},
+		}},
+		Resources: map[string]Resource{
+			"z_resource": {
+				BaseURL: "https://{resource_z}.api.example.com",
+				Endpoints: map[string]Endpoint{
+					"z_endpoint": {BaseURL: "https://{endpoint_z}.api.example.com"},
+					"a_endpoint": {BaseURL: "https://{endpoint_a}.api.example.com"},
+				},
+				SubResources: map[string]Resource{
+					"z_sub": {BaseURL: "https://{sub_z}.api.example.com"},
+					"a_sub": {BaseURL: "https://{sub_a}.api.example.com"},
+				},
+			},
+			"a_resource": {
+				BaseURL: "https://{resource_a}.api.example.com/{tenant}",
+			},
+		},
+	}
+
+	s.InferEndpointTemplateVarsFromBaseURLs()
+
+	assert.Equal(t, []string{
+		"explicit",
+		"tenant",
+		"base_path",
+		"version",
+		"tier_a",
+		"tier_z",
+		"resource_a",
+		"resource_z",
+		"endpoint_a",
+		"endpoint_z",
+		"sub_a",
+		"sub_z",
+	}, s.EndpointTemplateVars)
+}
+
+func TestInferEndpointTemplateVarsFromBaseURLsFastPathSources(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(*APISpec)
+		want   string
+	}{
+		{
+			name: "base path",
+			mutate: func(s *APISpec) {
+				s.BasePath = "/{base_path}"
+			},
+			want: "base_path",
+		},
+		{
+			name: "graphql endpoint path",
+			mutate: func(s *APISpec) {
+				s.GraphQLEndpointPath = "/admin/{version}/graphql"
+			},
+			want: "version",
+		},
+		{
+			name: "tier base url",
+			mutate: func(s *APISpec) {
+				s.TierRouting = TierRoutingConfig{Tiers: map[string]TierConfig{
+					"paid": {BaseURL: "https://{tier}.api.example.com"},
+				}}
+			},
+			want: "tier",
+		},
+		{
+			name: "resource base url",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.BaseURL = "https://{resource}.api.example.com"
+				s.Resources["items"] = resource
+			},
+			want: "resource",
+		},
+		{
+			name: "endpoint base url",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.Endpoints["list"] = Endpoint{Method: "GET", Path: "/items", BaseURL: "https://{endpoint}.api.example.com"}
+				s.Resources["items"] = resource
+			},
+			want: "endpoint",
+		},
+		{
+			name: "absolute endpoint path",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.Endpoints["list"] = Endpoint{Method: "GET", Path: "https://{endpoint_path}.api.example.com/items/{id}"}
+				s.Resources["items"] = resource
+			},
+			want: "endpoint_path",
+		},
+		{
+			name: "subresource base url",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.SubResources = map[string]Resource{
+					"children": {BaseURL: "https://{subresource}.api.example.com"},
+				}
+				s.Resources["items"] = resource
+			},
+			want: "subresource",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{
+				Name:    "templated",
+				BaseURL: "https://api.example.com",
+				Resources: map[string]Resource{
+					"items": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items"},
+						},
+					},
+				},
+			}
+			tc.mutate(s)
+
+			s.InferEndpointTemplateVarsFromBaseURLs()
+
+			assert.Equal(t, []string{tc.want}, s.EndpointTemplateVars)
+		})
+	}
+}
+
+func TestInferEndpointTemplateVarsIgnoresAbsoluteEndpointPathParams(t *testing.T) {
+	t.Parallel()
+
+	s := &APISpec{
+		Name:    "templated",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]Resource{
+			"items": {
+				Endpoints: map[string]Endpoint{
+					"get": {
+						Method: "GET",
+						Path:   "https://api.example.com/items/{id}",
+						Params: []Param{{Name: "id", Type: "string", Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	s.InferEndpointTemplateVarsFromBaseURLs()
+
+	assert.Empty(t, s.EndpointTemplateVars,
+		"path-segment params in absolute endpoint paths should stay command inputs, not env-backed template vars")
 }
 
 func TestValidateTierRouting(t *testing.T) {
@@ -3384,6 +6069,32 @@ func TestValidateTierRouting(t *testing.T) {
 				s.Resources["items"] = resource
 			},
 			wantErr: "base_url",
+		},
+		{
+			name: "absolute endpoint path conflict",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				endpoint := resource.Endpoints["list"]
+				endpoint.Path = "https://other.example.com/items"
+				resource.Endpoints["list"] = endpoint
+				s.Resources["items"] = resource
+			},
+			wantErr: "absolute endpoint paths",
+		},
+		{
+			name: "subresource absolute endpoint path conflict",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.SubResources = map[string]Resource{
+					"children": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "https://children.example.com/items", Description: "List children"},
+						},
+					},
+				}
+				s.Resources["items"] = resource
+			},
+			wantErr: "absolute endpoint paths",
 		},
 		{
 			name: "auth-bearing tier through resource base url must pass host review",
@@ -3504,4 +6215,709 @@ func validTierRoutingSpec() *APISpec {
 			},
 		},
 	}
+}
+
+// TestValidateRejectsReservedPlaceholderHost guards against the OLX-style
+// regression in #818 where a browser-sniff emitter shipped
+// `https://example.com/resource` as a real endpoint path, compiling cleanly
+// into the runtime client and failing only on first live call. The validator
+// must reject any absolute URL field whose bare host is one of the IETF
+// reserved documentation hostnames (RFC 2606 / RFC 6761), while leaving
+// relative paths and subdomained hosts (api.example.com, used as legitimate
+// test scaffolding throughout the codebase) untouched.
+func TestValidateRejectsReservedPlaceholderHost(t *testing.T) {
+	baseValid := func() APISpec {
+		return APISpec{
+			Name:    "demo",
+			BaseURL: "https://api.example.com",
+			Auth:    AuthConfig{Type: "none"},
+			Resources: map[string]Resource{
+				"items": {
+					Endpoints: map[string]Endpoint{
+						"list": {Method: "GET", Path: "/items"},
+					},
+				},
+			},
+		}
+	}
+
+	cases := []struct {
+		name       string
+		mutate     func(s *APISpec)
+		wantErr    string
+		wantNoErr  bool
+		wantHostIn string
+	}{
+		{
+			name: "spec-level base_url with bare example.com host is rejected",
+			mutate: func(s *APISpec) {
+				s.BaseURL = "https://example.com"
+			},
+			wantHostIn: "example.com",
+		},
+		{
+			name: "endpoint path with bare example.com host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example.com/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.com",
+		},
+		{
+			name: "endpoint path with example.org host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "http://example.org/v1/things"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.org",
+		},
+		{
+			name: "endpoint base_url override with example.net host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.BaseURL = "https://example.net"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.net",
+		},
+		{
+			name: "endpoint path with example.test host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example.test/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.test",
+		},
+		{
+			name: "endpoint path with example.invalid host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example.invalid/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.invalid",
+		},
+		{
+			name: "endpoint path with bare example host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: `"example"`,
+		},
+		{
+			name: "resource base_url override with example.com host is rejected",
+			mutate: func(s *APISpec) {
+				r := s.Resources["items"]
+				r.BaseURL = "https://example.com"
+				s.Resources["items"] = r
+			},
+			wantHostIn: "example.com",
+		},
+		{
+			name: "sub-resource endpoint with placeholder host is rejected",
+			mutate: func(s *APISpec) {
+				s.Resources["items"] = Resource{
+					Endpoints: map[string]Endpoint{
+						"list": {Method: "GET", Path: "/items"},
+					},
+					SubResources: map[string]Resource{
+						"reviews": {
+							Endpoints: map[string]Endpoint{
+								"get": {Method: "GET", Path: "https://example.com/reviews"},
+							},
+						},
+					},
+				}
+			},
+			wantHostIn: "example.com",
+		},
+		{
+			name:      "relative path passes",
+			mutate:    func(s *APISpec) {},
+			wantNoErr: true,
+		},
+		{
+			name: "subdomained example.com base_url passes",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.BaseURL = "https://api.example.com/v2"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantNoErr: true,
+		},
+		{
+			name: "subdomained example.com path passes",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://geocoding-api.example.com/v1/search"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantNoErr: true,
+		},
+		{
+			name: "query string containing example.com passes (relative path)",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "/proxy?url=https://example.com/x"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantNoErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := baseValid()
+			tc.mutate(&s)
+			err := s.Validate()
+			if tc.wantNoErr {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantHostIn)
+			assert.Contains(t, err.Error(), "reserved placeholder host")
+		})
+	}
+}
+
+// TestWalkerConfig_YAMLRoundTrip catches future regressions in WalkerConfig
+// YAML tags or the Walker field's omitempty on Endpoint. The Walker pointer
+// and all three sub-fields must survive a marshal → unmarshal cycle.
+func TestWalkerConfig_YAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("populated walker survives round-trip", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{
+			Method: "GET",
+			Path:   "/games/{game_key}/leagues",
+			Walker: &WalkerConfig{
+				Parent:   "games",
+				KeyField: "game_key",
+				KeyParam: "game_key",
+			},
+		}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "walker:")
+		assert.Contains(t, string(data), "parent: games")
+		assert.Contains(t, string(data), "key_field: game_key")
+		assert.Contains(t, string(data), "key_param: game_key")
+
+		var roundTripped Endpoint
+		require.NoError(t, yaml.Unmarshal(data, &roundTripped))
+		require.NotNil(t, roundTripped.Walker)
+		assert.Equal(t, "games", roundTripped.Walker.Parent)
+		assert.Equal(t, "game_key", roundTripped.Walker.KeyField)
+		assert.Equal(t, "game_key", roundTripped.Walker.KeyParam)
+	})
+
+	t.Run("nil walker omits the section", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{Method: "GET", Path: "/games"}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "walker:")
+	})
+
+	t.Run("walker with only parent omits optional sub-fields", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{
+			Method: "GET",
+			Path:   "/leagues/{league_id}/teams",
+			Walker: &WalkerConfig{Parent: "leagues"},
+		}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "parent: leagues")
+		assert.NotContains(t, string(data), "key_field")
+		assert.NotContains(t, string(data), "key_param")
+	})
+}
+
+// TestAuthCompanionParseRoundTrip exercises the press-auth companion hints
+// (login_url, login_complete_selector, jwt_carrier_cookie). Round-trips
+// through ParseBytes so the YAML tags are exercised, not just the struct
+// field assignments.
+func TestAuthCompanionParseRoundTrip(t *testing.T) {
+	t.Run("all three companion fields parse cleanly", func(t *testing.T) {
+		yamlSpec := []byte(`name: example-api
+base_url: https://api.example.com
+auth:
+  type: composed
+  format: "Cookie {session}"
+  cookie_domain: example.com
+  cookies:
+    - session
+    - guestsession
+  login_url: https://www.example.com/account/login
+  login_complete_selector: "a[href*=signout]"
+  jwt_carrier_cookie: guestsession
+resources:
+  items:
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`)
+		s, err := ParseBytes(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://www.example.com/account/login", s.Auth.LoginURL)
+		assert.Equal(t, "a[href*=signout]", s.Auth.LoginCompleteSelector)
+		assert.Equal(t, "guestsession", s.Auth.JWTCarrierCookie)
+		assert.True(t, s.Auth.HasCompanionHints())
+	})
+
+	t.Run("no companion fields leaves zero values and HasCompanionHints false", func(t *testing.T) {
+		yamlSpec := []byte(`name: example-api
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [EXAMPLE_API_TOKEN]
+resources:
+  items:
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`)
+		s, err := ParseBytes(yamlSpec)
+		require.NoError(t, err)
+		assert.Empty(t, s.Auth.LoginURL)
+		assert.Empty(t, s.Auth.LoginCompleteSelector)
+		assert.Empty(t, s.Auth.JWTCarrierCookie)
+		assert.False(t, s.Auth.HasCompanionHints())
+	})
+}
+
+func TestAuthCompanionValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{
+			name: "https login_url is valid",
+			auth: AuthConfig{LoginURL: "https://example.com/login"},
+		},
+		{
+			name: "http localhost is valid",
+			auth: AuthConfig{LoginURL: "http://localhost:8080/login"},
+		},
+		{
+			name: "http 127.0.0.1 is valid",
+			auth: AuthConfig{LoginURL: "http://127.0.0.1/login"},
+		},
+		{
+			name:    "plain http elsewhere is rejected",
+			auth:    AuthConfig{LoginURL: "http://example.com/login"},
+			wantErr: "only https://",
+		},
+		{
+			name:    "ftp scheme is rejected",
+			auth:    AuthConfig{LoginURL: "ftp://example.com/"},
+			wantErr: "must use http or https",
+		},
+		{
+			name: "empty is valid (companion is optional)",
+			auth: AuthConfig{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthCompanion(tt.auth)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// TestAuthCompanionJWTCarrierCookieNotInCookiesWarns asserts that a
+// jwt_carrier_cookie that isn't in the cookies list surfaces a non-fatal
+// warning, not a hard error. Plausible typo, surface it but don't block.
+func TestAuthCompanionJWTCarrierCookieNotInCookiesWarns(t *testing.T) {
+	auth := AuthConfig{
+		Type:             "composed",
+		Cookies:          []string{"session", "csrf_token"},
+		JWTCarrierCookie: "guestsesion", // intentional typo
+	}
+	warnings := captureWarnings(t, func() {
+		err := validateAuthCompanion(auth)
+		require.NoError(t, err)
+	})
+	assert.Contains(t, warnings, "jwt_carrier_cookie")
+	assert.Contains(t, warnings, "guestsesion")
+}
+
+// TestAPISpecValidate_RejectsBadLoginURL plugs validateAuthCompanion into
+// the full APISpec validation path to confirm a malformed login_url
+// surfaces at Validate() time, not just when the helper is called
+// directly.
+func TestAPISpecValidate_RejectsBadLoginURL(t *testing.T) {
+	build := func(loginURL string) APISpec {
+		return APISpec{
+			Name:    "companion-validate",
+			BaseURL: "https://api.example.com",
+			Auth: AuthConfig{
+				Type:         "composed",
+				CookieDomain: "example.com",
+				Cookies:      []string{"session"},
+				LoginURL:     loginURL,
+				EnvVars:      []string{"COMPANION_VALIDATE_TOKEN"},
+			},
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+	}
+
+	t.Run("valid login_url passes Validate()", func(t *testing.T) {
+		s := build("https://example.com/login")
+		require.NoError(t, s.Validate())
+	})
+
+	t.Run("plain http is rejected at APISpec level", func(t *testing.T) {
+		s := build("http://example.com/login")
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "login_url")
+	})
+}
+
+// TestAuthHasCompanionHints documents the partial-hint state.
+// LoginCompleteSelector and JWTCarrierCookie are optional, so LoginURL
+// alone is enough to enable cookie-only companion login integration.
+func TestAuthHasCompanionHints(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want bool
+	}{
+		{name: "all fields set", auth: AuthConfig{LoginURL: "https://example.com/login", JWTCarrierCookie: "session", LoginCompleteSelector: "a"}, want: true},
+		{name: "login_url and carrier set, selector omitted", auth: AuthConfig{LoginURL: "https://example.com/login", JWTCarrierCookie: "session"}, want: true},
+		{name: "login_url only", auth: AuthConfig{LoginURL: "https://example.com/login"}, want: true},
+		{name: "carrier only", auth: AuthConfig{JWTCarrierCookie: "session"}, want: false},
+		{name: "empty", auth: AuthConfig{}, want: false},
+		{name: "whitespace-only login_url", auth: AuthConfig{LoginURL: "   ", JWTCarrierCookie: "session"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.auth.HasCompanionHints())
+		})
+	}
+}
+
+// TestAuthHasCookies pins the predicate that drives cookie-jar wiring in
+// client.go.tmpl and the WriteCookieJarFromMap call in auth_browser.go.tmpl.
+// It must gate on the cookie list, not Auth.Type, because composed-auth
+// specs without auth.cookies have nothing to persist.
+func TestAuthHasCookies(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want bool
+	}{
+		{name: "cookie-typed with cookie list", auth: AuthConfig{Type: "cookie", Cookies: []string{"session_id"}}, want: true},
+		{name: "composed-typed with cookie list", auth: AuthConfig{Type: "composed", Cookies: []string{"session_id", "csrf"}}, want: true},
+		{name: "composed-typed without cookie list", auth: AuthConfig{Type: "composed"}, want: false},
+		{name: "bearer with no cookies", auth: AuthConfig{Type: "bearer_token"}, want: false},
+		{name: "empty", auth: AuthConfig{}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.auth.HasCookies())
+		})
+	}
+}
+
+func TestAuthHasNonCookieAuth(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want bool
+	}{
+		{name: "env var specs", auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{{Name: "API_TOKEN"}}}, want: true},
+		{name: "legacy env vars", auth: AuthConfig{EnvVars: []string{"API_TOKEN"}}, want: true},
+		{name: "cookie-only", auth: AuthConfig{Type: "cookie", Cookies: []string{"session_id"}}, want: false},
+		{name: "empty", auth: AuthConfig{}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.auth.HasNonCookieAuth())
+		})
+	}
+}
+
+func TestPromoteParamsToBodyForWriteEndpoints(t *testing.T) {
+	t.Parallel()
+
+	const header = `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+`
+
+	t.Run("POST endpoint with params and no body promotes to body", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  messages:
+    description: Slack-style message endpoints
+    endpoints:
+      post_message:
+        method: POST
+        path: /chat.postMessage
+        description: Send a message
+        params:
+          - name: channel
+            type: string
+            required: true
+          - name: text
+            type: string
+            required: true
+          - name: thread_ts
+            type: string
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["messages"].Endpoints["post_message"]
+		assert.Empty(t, ep.Params, "non-path params should have moved to Body")
+		require.Len(t, ep.Body, 3)
+		bodyNames := []string{ep.Body[0].Name, ep.Body[1].Name, ep.Body[2].Name}
+		assert.ElementsMatch(t, []string{"channel", "text", "thread_ts"}, bodyNames)
+	})
+
+	t.Run("POST endpoint preserves path placeholders in Params", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  widgets:
+    description: Widget endpoints
+    endpoints:
+      activate:
+        method: POST
+        path: /widgets/{id}/activate
+        description: Activate a widget
+        params:
+          - name: reason
+            type: string
+            required: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["widgets"].Endpoints["activate"]
+		require.Len(t, ep.Params, 1, "id placeholder should remain in Params")
+		assert.Equal(t, "id", ep.Params[0].Name)
+		assert.True(t, ep.Params[0].Positional)
+		require.Len(t, ep.Body, 1)
+		assert.Equal(t, "reason", ep.Body[0].Name)
+	})
+
+	t.Run("POST endpoint with explicit body is left untouched", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  items:
+    description: Item endpoints
+    endpoints:
+      create:
+        method: POST
+        path: /items
+        description: Create item
+        params:
+          - name: org_id
+            type: string
+        body:
+          - name: name
+            type: string
+            required: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["items"].Endpoints["create"]
+		require.Len(t, ep.Params, 1)
+		assert.Equal(t, "org_id", ep.Params[0].Name)
+		require.Len(t, ep.Body, 1)
+		assert.Equal(t, "name", ep.Body[0].Name)
+	})
+
+	t.Run("GET endpoint params are not promoted", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  lookup:
+    description: Lookup endpoints
+    endpoints:
+      query:
+        method: GET
+        path: /lookup
+        description: Lookup
+        params:
+          - name: q
+            type: string
+            required: true
+          - name: limit
+            type: integer
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["lookup"].Endpoints["query"]
+		require.Len(t, ep.Params, 2)
+		assert.Empty(t, ep.Body)
+	})
+
+	t.Run("PUT and PATCH are also promoted", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  records:
+    description: Record endpoints
+    endpoints:
+      replace:
+        method: PUT
+        path: /records/{id}
+        description: Replace record
+        params:
+          - name: name
+            type: string
+      modify:
+        method: PATCH
+        path: /records/{id}
+        description: Patch record
+        params:
+          - name: status
+            type: string
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		put := s.Resources["records"].Endpoints["replace"]
+		require.Len(t, put.Body, 1)
+		assert.Equal(t, "name", put.Body[0].Name)
+
+		patch := s.Resources["records"].Endpoints["modify"]
+		require.Len(t, patch.Body, 1)
+		assert.Equal(t, "status", patch.Body[0].Name)
+	})
+
+	t.Run("DELETE is not promoted", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  records:
+    description: Record endpoints
+    endpoints:
+      remove:
+        method: DELETE
+        path: /records/{id}
+        description: Delete record
+        params:
+          - name: cascade
+            type: boolean
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["records"].Endpoints["remove"]
+		names := make([]string, len(ep.Params))
+		for i, p := range ep.Params {
+			names[i] = p.Name
+		}
+		assert.ElementsMatch(t, []string{"id", "cascade"}, names, "DELETE keeps the {id} placeholder enrichPathParams injected and the cascade query param")
+		assert.Empty(t, ep.Body, "DELETE keeps cascade as a query/flag, not body")
+	})
+
+	t.Run("subresource endpoints are walked", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  channels:
+    description: Channel endpoints
+    sub_resources:
+      messages:
+        description: Channel messages
+        endpoints:
+          post:
+            method: POST
+            path: /channels/{channelId}/messages
+            description: Post message
+            params:
+              - name: text
+                type: string
+                required: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["channels"].SubResources["messages"].Endpoints["post"]
+		require.Len(t, ep.Body, 1)
+		assert.Equal(t, "text", ep.Body[0].Name)
+	})
+
+	t.Run("explicit empty body: [] opts out of promotion", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  pipelines:
+    description: Pipeline endpoints
+    endpoints:
+      trigger:
+        method: POST
+        path: /pipelines/trigger
+        description: Trigger a pipeline
+        params:
+          - name: dry_run
+            type: boolean
+        body: []
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["pipelines"].Endpoints["trigger"]
+		assert.True(t, ep.BodySet, "explicit `body: []` should set BodySet")
+		assert.Empty(t, ep.Body, "explicit empty body stays empty")
+		require.Len(t, ep.Params, 1, "params stay as query params when author opted out")
+		assert.Equal(t, "dry_run", ep.Params[0].Name)
+	})
+
+	t.Run("mixed params and explicit body leaves params as query strings", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  uploads:
+    description: Upload endpoints
+    endpoints:
+      create:
+        method: POST
+        path: /uploads
+        description: Create upload
+        params:
+          - name: idempotency_key
+            type: string
+        body:
+          - name: filename
+            type: string
+            required: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["uploads"].Endpoints["create"]
+		assert.True(t, ep.BodySet)
+		require.Len(t, ep.Params, 1, "idempotency_key stays as query/flag, not silently moved into body")
+		assert.Equal(t, "idempotency_key", ep.Params[0].Name)
+		require.Len(t, ep.Body, 1)
+		assert.Equal(t, "filename", ep.Body[0].Name)
+	})
+
+	t.Run("absent body key leaves BodySet false and triggers promotion", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  notes:
+    description: Note endpoints
+    endpoints:
+      create:
+        method: POST
+        path: /notes
+        description: Create note
+        params:
+          - name: title
+            type: string
+            required: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["notes"].Endpoints["create"]
+		assert.False(t, ep.BodySet, "no body key in source -> BodySet false")
+		require.Len(t, ep.Body, 1, "title was promoted to body")
+		assert.Equal(t, "title", ep.Body[0].Name)
+	})
 }

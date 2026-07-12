@@ -1,0 +1,29 @@
+{
+  "api_name": "learn-loop-example",
+  "api_version": "1.0.0",
+  "auth_env_vars": [
+    "LEARN_LOOP_TOKEN"
+  ],
+  "auth_type": "bearer_token",
+  "cli_name": "learn-loop-example-pp-cli",
+  "creator": {
+    "handle": "printing-press-golden",
+    "name": "printing-press-golden"
+  },
+  "description": "Golden fixture exercising the spec-declared self-learning loop.",
+  "display_name": "Learn Loop Example",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "learn-loop-example-pp-mcp",
+  "mcp_ready": "full",
+  "mcp_tool_count": 2,
+  "owner": "printing-press-golden",
+  "printer": "printing-press-golden",
+  "printer_name": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "run_id": "<RUN_ID>",
+  "schema_version": 2,
+  "spec_checksum": "sha256:517f6cb2bfb0da30a73fe697d08ba2eaef21aab2de8396ead501cf3ab643aae9",
+  "spec_format": "internal",
+  "spec_path": "learn-loop-api.yaml",
+  "spec_url": "file://testdata/golden/fixtures/learn-loop-api.yaml"
+}

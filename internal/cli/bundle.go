@@ -7,11 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -22,6 +25,7 @@ func newBundleCmd() *cobra.Command {
 	var binaryPath string
 	var cliSkipBuild bool
 	var cliBinaryPath string
+	var bundleVersion string
 
 	cmd := &cobra.Command{
 		Use:   "bundle <cli-dir>",
@@ -31,21 +35,21 @@ suitable for drag-drop install in Claude Desktop, Claude Code, MCP for
 Windows, or any MCPB-aware host.
 
 The CLI directory must contain manifest.json (emitted automatically by
-` + "`printing-press generate`" + `). bundle compiles the MCP binary for the
+` + "`cli-printing-press generate`" + `). bundle compiles the MCP binary for the
 target platform via ` + "`go build`" + ` and ZIPs it with the manifest.
 
 Use --platform to cross-compile for a different host. Default is the
 current host (e.g., darwin/arm64). Use --skip-build with --binary to
 package an already-built binary instead of recompiling.
 
-` + "`printing-press generate`" + ` runs this automatically for the host platform
+` + "`cli-printing-press generate`" + ` runs this automatically for the host platform
 on each generation; you only need to invoke ` + "`bundle`" + ` directly to
 cross-compile, rebuild after manual edits, or pull a pre-built binary
 from another build pipeline.`,
-		Example: `  printing-press bundle ~/printing-press/library/marketing/dub
-  printing-press bundle ~/printing-press/library/marketing/dub --platform linux/amd64
-  printing-press bundle ./generated/notion --output /tmp/notion.mcpb
-  printing-press bundle ./generated/dub --skip-build --binary ./prebuilt/dub-pp-mcp`,
+		Example: `  cli-printing-press bundle ~/printing-press/library/marketing/dub
+  cli-printing-press bundle ~/printing-press/library/marketing/dub --platform linux/amd64
+  cli-printing-press bundle ./generated/notion --output /tmp/notion.mcpb
+  cli-printing-press bundle ./generated/dub --skip-build --binary ./prebuilt/dub-pp-mcp`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cliDir, err := filepath.Abs(args[0])
@@ -63,7 +67,7 @@ from another build pipeline.`,
 			if err != nil {
 				return &ExitError{
 					Code: ExitInputError,
-					Err:  fmt.Errorf("reading manifest.json (run `printing-press generate` first): %w", err),
+					Err:  fmt.Errorf("reading manifest.json (run `cli-printing-press generate` first): %w", err),
 				}
 			}
 			var manifest pipeline.MCPBManifest
@@ -73,18 +77,23 @@ from another build pipeline.`,
 			if manifest.Name == "" {
 				return fmt.Errorf("manifest.name is empty; cannot determine binary name")
 			}
+			if err := validateBundleVersion(bundleVersion); err != nil {
+				return &ExitError{Code: ExitInputError, Err: err}
+			}
 
 			goos, goarch, err := resolvePlatform(platform)
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
 
+			mcpArchiveName := bundleBinaryArchiveName(manifest.Name, goos)
 			if binaryPath == "" {
-				binaryPath = pipeline.StagedMCPBinaryPath(cliDir, manifest.Name)
+				binaryPath = bundleBinaryPath(cliDir, manifest.Name, goos)
 			}
 			cliName := pipeline.ReadCLIBinaryName(cliDir)
+			cliArchiveName := bundleBinaryArchiveName(cliName, goos)
 			if cliBinaryPath == "" && cliName != "" {
-				cliBinaryPath = pipeline.StagedMCPBinaryPath(cliDir, cliName)
+				cliBinaryPath = bundleBinaryPath(cliDir, cliName, goos)
 			}
 			if err := buildBundleBinaries(cliDir, manifest.Name, binaryPath, skipBuild, cliName, cliBinaryPath, cliSkipBuild, goos, goarch); err != nil {
 				return err
@@ -97,9 +106,11 @@ from another build pipeline.`,
 			if err := pipeline.BuildMCPBBundle(pipeline.BundleParams{
 				CLIDir:        cliDir,
 				BinaryPath:    binaryPath,
-				CLIBinaryName: cliName,
+				BinaryName:    mcpArchiveName,
+				CLIBinaryName: cliArchiveName,
 				CLIBinaryPath: cliBinaryPath,
 				OutputPath:    output,
+				Version:       bundleVersion,
 			}); err != nil {
 				return fmt.Errorf("packaging bundle: %w", err)
 			}
@@ -115,7 +126,23 @@ from another build pipeline.`,
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Pre-built MCP binary path (only meaningful with --skip-build)")
 	cmd.Flags().BoolVar(&cliSkipBuild, "cli-skip-build", false, "Skip go build for the companion CLI binary; use the binary at --cli-binary")
 	cmd.Flags().StringVar(&cliBinaryPath, "cli-binary", "", "Pre-built CLI binary path (only meaningful with --cli-skip-build)")
+	cmd.Flags().StringVar(&bundleVersion, "version", "", "Printed CLI release version to stamp into the bundled manifest")
 	return cmd
+}
+
+var bundleVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+
+func validateBundleVersion(version string) error {
+	if version == "" {
+		return nil
+	}
+	if trimmed, ok := strings.CutPrefix(version, "v"); ok {
+		return fmt.Errorf("--version must not have a v prefix (got %q); use %q", version, trimmed)
+	}
+	if !bundleVersionPattern.MatchString(version) || !semver.IsValid("v"+version) {
+		return fmt.Errorf("--version must be a semantic version without a v prefix, e.g. %q (got %q)", "1.2.3", version)
+	}
+	return nil
 }
 
 // autoBundleForHost packages a host-platform .mcpb after generate.
@@ -123,10 +150,10 @@ from another build pipeline.`,
 // trying the bundle in Claude Desktop on the generating machine before
 // publishing. The canonical multi-platform .mcpb artifacts are produced by
 // the public library's CI on merge to main and attached as release assets;
-// `printing-press publish package` strips build/ from the staged tree.
+// `cli-printing-press publish package` strips build/ from the staged tree.
 // Best-effort: skips silently for expected non-bundle states (no manifest,
 // no go.sum) and warns on real failures (malformed manifest, build/zip
-// errors). Users can always re-run via `printing-press bundle <dir>`.
+// errors). Users can always re-run via `cli-printing-press bundle <dir>`.
 func autoBundleForHost(cliDir string, w io.Writer) {
 	manifestPath := filepath.Join(cliDir, pipeline.MCPBManifestFilename)
 	manifestData, err := os.ReadFile(manifestPath)
@@ -150,15 +177,17 @@ func autoBundleForHost(cliDir string, w io.Writer) {
 	// Skip silently when the generated module hasn't run `go mod tidy` yet
 	// (e.g. generate --validate=false). Bundling requires a buildable module;
 	// otherwise the user gets a guaranteed-fail build and a confusing
-	// warning. They can run `printing-press bundle <dir>` after tidying.
+	// warning. They can run `cli-printing-press bundle <dir>` after tidying.
 	if _, err := os.Stat(filepath.Join(cliDir, "go.sum")); err != nil {
 		return
 	}
-	binaryPath := pipeline.StagedMCPBinaryPath(cliDir, manifest.Name)
+	binaryPath := bundleBinaryPath(cliDir, manifest.Name, runtime.GOOS)
+	mcpArchiveName := bundleBinaryArchiveName(manifest.Name, runtime.GOOS)
 	cliName := pipeline.ReadCLIBinaryName(cliDir)
+	cliArchiveName := bundleBinaryArchiveName(cliName, runtime.GOOS)
 	cliBinaryPath := ""
 	if cliName != "" {
-		cliBinaryPath = pipeline.StagedMCPBinaryPath(cliDir, cliName)
+		cliBinaryPath = bundleBinaryPath(cliDir, cliName, runtime.GOOS)
 	}
 	if err := buildBundleBinaries(cliDir, manifest.Name, binaryPath, false, cliName, cliBinaryPath, false, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Fprintf(w, "warning: %v\n", err)
@@ -168,7 +197,8 @@ func autoBundleForHost(cliDir string, w io.Writer) {
 	if err := pipeline.BuildMCPBBundle(pipeline.BundleParams{
 		CLIDir:        cliDir,
 		BinaryPath:    binaryPath,
-		CLIBinaryName: cliName,
+		BinaryName:    mcpArchiveName,
+		CLIBinaryName: cliArchiveName,
 		CLIBinaryPath: cliBinaryPath,
 		OutputPath:    output,
 	}); err != nil {
@@ -203,6 +233,20 @@ func buildBundleBinaries(cliDir, mcpName, mcpPath string, skipMCP bool, cliName,
 	return g.Wait()
 }
 
+func bundleBinaryPath(cliDir, name, goos string) string {
+	if name == "" {
+		return ""
+	}
+	return pipeline.StagedMCPBinaryPath(cliDir, bundleBinaryArchiveName(name, goos))
+}
+
+func bundleBinaryArchiveName(name, goos string) string {
+	if name == "" {
+		return ""
+	}
+	return platform.ExecutablePathForGOOS(name, goos)
+}
+
 // resolvePlatform parses an optional "<os>/<arch>" string and falls back
 // to the host's GOOS/GOARCH. Returns a useful error message when the
 // caller passes a malformed value rather than silently defaulting.
@@ -219,15 +263,15 @@ func resolvePlatform(s string) (string, string, error) {
 
 // buildMCPBBinary invokes `go build` on cmd/<name>/main.go inside cliDir,
 // targeting the requested GOOS/GOARCH and writing to outputPath. We pass
-// -trimpath and -ldflags="-s -w" to match the bundle conventions Claude
-// Desktop's prebuilt examples use; users who need debug builds can
+// -trimpath and a blank build id to avoid embedding operator-local paths while
+// retaining the size-oriented ldflags Claude Desktop examples use. Users can
 // --skip-build and pass their own binary.
 func buildMCPBBinary(cliDir, mcpName, outputPath, goos, goarch string) error {
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return fmt.Errorf("creating bin dir: %w", err)
 	}
 	pkg := "./cmd/" + mcpName
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", outputPath, pkg)
+	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w -buildid=", "-o", outputPath, pkg)
 	cmd.Dir = cliDir
 	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
 	if out, err := cmd.CombinedOutput(); err != nil {

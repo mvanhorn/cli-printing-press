@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check whether Go lint is needed
+      - name: Check whether lint validations are needed
         id: changes
         shell: bash
         run: |
@@ -33,21 +33,41 @@ jobs:
           printf '  %s\n' "${changed[@]}"
 
           needs_lint=false
+          needs_skill_docs=false
           for file in "${changed[@]}"; do
             case "$file" in
               *.go|go.mod|go.sum|.golangci.yml|.github/workflows/lint.yml)
                 needs_lint=true
-                break
                 ;;
             esac
+
+            case "$file" in
+              skills/*|docs/SKILLS.md|.github/scripts/validate-skill-docs.sh|.github/workflows/lint.yml)
+                needs_skill_docs=true
+                ;;
+            esac
+
+            if [[ "$needs_lint" == "true" && "$needs_skill_docs" == "true" ]]; then
+              break
+            fi
           done
 
           echo "needs_lint=$needs_lint" >> "$GITHUB_OUTPUT"
+          echo "needs_skill_docs=$needs_skill_docs" >> "$GITHUB_OUTPUT"
 
       - name: Skip Go lint
         if: steps.changes.outputs.needs_lint != 'true'
         run: |
           echo "Skipping golangci-lint: no Go, module, lint config, or lint workflow files changed."
+
+      - name: Skip skill docs validation
+        if: steps.changes.outputs.needs_skill_docs != 'true'
+        run: |
+          echo "Skipping skill docs validation: no skill docs, skill guidance, or skill-doc workflow files changed."
+
+      - name: Validate skill docs
+        if: steps.changes.outputs.needs_skill_docs == 'true'
+        run: bash .github/scripts/validate-skill-docs.sh
 
       # setup-go's bundled cache restores both GOMODCACHE and GOCACHE as one
       # ~1GB tarball; on this repo that adds ~75s of extract time per job.
@@ -91,6 +111,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ "${{ github.base_ref }}" == "main" ]]; then
+            echo "Delegating Go tests to Main CI for main-targeted PRs."
+            echo "needs_tests=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           git fetch --no-tags --prune origin "${{ github.base_ref }}"
           mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
 
@@ -100,7 +126,7 @@ jobs:
           needs_tests=false
           for file in "${changed[@]}"; do
             case "$file" in
-              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|catalog/*|internal/*|scripts/*|testdata/*)
+              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|internal/*|scripts/*|testdata/*)
                 needs_tests=true
                 break
                 ;;
@@ -139,16 +165,16 @@ jobs:
 
           case "${{ matrix.shard }}" in
             generator)
-              packages=(./internal/generator)
+              packages=(./internal/generator/...)
               ;;
             pipeline)
-              packages=(./internal/pipeline)
+              packages=(./internal/pipeline/...)
               ;;
             cli)
-              packages=(./internal/cli)
+              packages=(./internal/cli/...)
               ;;
             rest)
-              mapfile -t packages < <(go list ./... | grep -Ev '/internal/(generator|pipeline|cli)$')
+              mapfile -t packages < <(go list ./... | grep -Ev '/internal/(generator|pipeline|cli)(/|$)')
               ;;
             *)
               echo "unknown test shard: ${{ matrix.shard }}" >&2
@@ -198,7 +224,7 @@ jobs:
       - name: Skip Go tests
         if: needs.test-changes.outputs.needs_tests != 'true'
         run: |
-          echo "Skipping Go tests: no Go, module, CI workflow, catalog, script, or testdata changes."
+          echo "Skipping Go tests in CI: no relevant changes, or this main-targeted PR is covered by Main CI."
 
       - name: Check test shards
         if: needs.test-changes.outputs.needs_tests == 'true'
@@ -227,6 +253,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ "${{ github.base_ref }}" == "main" ]]; then
+            echo "Delegating generated compile tests to Main CI for main-targeted PRs."
+            echo "needs_full=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           git fetch --no-tags --prune origin "${{ github.base_ref }}"
           mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
 
@@ -236,7 +268,7 @@ jobs:
           needs_full=false
           for file in "${changed[@]}"; do
             case "$file" in
-              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|catalog/*|internal/cli/*|internal/generator/*|internal/openapi/*|internal/pipeline/*|internal/spec/*|testdata/*)
+              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|internal/cli/*|internal/generator/*|internal/openapi/*|internal/pipeline/*|internal/spec/*|testdata/*)
                 needs_full=true
                 break
                 ;;
@@ -325,7 +357,7 @@ jobs:
       - name: Skip generated compile tests
         if: needs.generated-test-changes.outputs.needs_full != 'true'
         run: |
-          echo "Skipping generated compile tests: no generator, parser, pipeline, CLI, module, workflow, catalog, or testdata changes."
+          echo "Skipping generated compile tests in CI: no relevant changes, or this main-targeted PR is covered by Main CI."
 
       - name: Check generated compile shards
         if: needs.generated-test-changes.outputs.needs_full == 'true'
@@ -343,39 +375,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Check whether skill docs validation is needed
-        id: changes
-        shell: bash
+      - name: Compatibility check
         run: |
-          set -euo pipefail
-
-          git fetch --no-tags --prune origin "${{ github.base_ref }}"
-          mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
-
-          echo "Changed files:"
-          printf '  %s\n' "${changed[@]}"
-
-          needs_skill_docs=false
-          for file in "${changed[@]}"; do
-            case "$file" in
-              skills/*|docs/SKILLS.md|.github/scripts/validate-skill-docs.sh|.github/workflows/lint.yml)
-                needs_skill_docs=true
-                break
-                ;;
-            esac
-          done
-
-          echo "needs_skill_docs=$needs_skill_docs" >> "$GITHUB_OUTPUT"
-
-      - name: Skip skill docs validation
-        if: steps.changes.outputs.needs_skill_docs != 'true'
-        run: |
-          echo "Skipping skill docs validation: no skill docs, skill guidance, or skill-doc workflow files changed."
-
-      - name: Validate skill docs
-        if: steps.changes.outputs.needs_skill_docs == 'true'
-        run: bash .github/scripts/validate-skill-docs.sh
+          echo "Skill docs validation runs inside go-lint."

@@ -53,6 +53,39 @@ func ok200(_ *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+func json200(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"application/json; charset=utf-8"}},
+		Body:       respBody(`{"ok":true}`),
+	}, nil
+}
+
+func jsonCaptchaFields200(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"application/json; charset=utf-8"}},
+		Body:       respBody(`{"hcaptcha_required":false,"turnstile_enabled":false,"captcha_provider":"hcaptcha"}`),
+	}, nil
+}
+
+func xml200(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"application/xml; charset=utf-8"}},
+		Body:       respBody(`<StoreModel><ok>true</ok></StoreModel>`),
+	}, nil
+}
+
+func impervaHcaptchaShell(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": {"text/html; charset=utf-8"}},
+		Body: respBody(`<html><head><script src="/_Incapsula_Resource?SWKMTFSR=1"></script></head>
+			<body><iframe src="https://newassets.hcaptcha.com/captcha/v1/index.html"></iframe></body></html>`),
+	}, nil
+}
+
 func cloudflareChallenge(_ *http.Request) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: 403,
@@ -63,6 +96,19 @@ func cloudflareChallenge(_ *http.Request) (*http.Response, error) {
 			"Content-Type": {"text/html"},
 		},
 		Body: respBody("<html>Just a moment...</html>"),
+	}, nil
+}
+
+func turnstileInterstitial(_ *http.Request) (*http.Response, error) {
+	body := strings.Repeat(" ", 20*1024) + `<html><script src="https://challenges.cloudflare.com/turnstile/v0/api.js"></script><p>You will be forwarded to the requested page shortly.</p></html>`
+	return &http.Response{
+		StatusCode: 200,
+		Header: http.Header{
+			"Cf-Ray":       {"abc123"},
+			"Server":       {"cloudflare"},
+			"Content-Type": {"text/html"},
+		},
+		Body: respBody(body),
 	}, nil
 }
 
@@ -83,10 +129,45 @@ func TestProbe_StdlibPasses(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, ModeStandardHTTP, result.Mode)
-	assert.Len(t, result.Probes, 1, "should stop at first clear pass")
+	assert.Len(t, result.Probes, 2, "full probes compare surf against stdlib for content negotiation drift")
 	assert.Equal(t, TransportStdlib, result.Probes[0].Transport)
 	assert.False(t, result.Partial)
 	assert.False(t, result.Recommendation.NeedsBrowserCapture)
+}
+
+func TestProbe_CleanHTML_RemainsStandardHTTP(t *testing.T) {
+	result, err := Probe(context.Background(), "https://example.com", Options{
+		HTTPClientFactory: fakeFactory(ok200, ok200),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ModeStandardHTTP, result.Mode)
+	assert.Empty(t, result.BodyEvidence)
+	assert.Empty(t, result.Probes[0].BodyEvidence)
+	assert.False(t, result.Recommendation.NeedsBrowserCapture)
+}
+
+func TestProbe_JSONAPIWithCaptchaFields_RemainsStandardHTTP(t *testing.T) {
+	result, err := Probe(context.Background(), "https://api.example.com/session/check", Options{
+		HTTPClientFactory: fakeFactory(jsonCaptchaFields200, jsonCaptchaFields200),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ModeStandardHTTP, result.Mode)
+	assert.Empty(t, result.BodyEvidence)
+	assert.Empty(t, result.Probes[0].Evidence)
+	assert.False(t, result.Recommendation.NeedsBrowserCapture)
+}
+
+func TestProbe_StdlibJSONSurfXMLMarksImpersonationUnsafe(t *testing.T) {
+	result, err := Probe(context.Background(), "https://example.com/api/stores/123", Options{
+		HTTPClientFactory: fakeFactory(json200, xml200),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ModeStandardHTTP, result.Mode)
+	require.NotNil(t, result.ImpersonationSafe)
+	assert.False(t, *result.ImpersonationSafe)
+	assert.Contains(t, result.Recommendation.Rationale, "Surf Chrome impersonation")
+	assert.Equal(t, "application/json; charset=utf-8", result.Probes[0].ContentType)
+	assert.Equal(t, "application/xml; charset=utf-8", result.Probes[1].ContentType)
 }
 
 func TestProbe_StdlibChallengedSurfClears_FoodS52Pattern(t *testing.T) {
@@ -111,6 +192,32 @@ func TestProbe_BothChallenged_RecommendsBrowserCapture(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, ModeBrowserClearanceHTTP, result.Mode)
+	assert.True(t, result.Recommendation.NeedsBrowserCapture)
+	assert.True(t, result.Recommendation.NeedsClearanceCookie)
+}
+
+func TestProbe_BothTurnstileInterstitials_RecommendsBrowserCapture(t *testing.T) {
+	result, err := Probe(context.Background(), "https://example.com", Options{
+		HTTPClientFactory: fakeFactory(turnstileInterstitial, turnstileInterstitial),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ModeBrowserClearanceHTTP, result.Mode)
+	assert.Equal(t, 200, result.Probes[0].Status)
+	assert.NotEmpty(t, result.Probes[0].Evidence)
+	assert.True(t, result.Recommendation.NeedsBrowserCapture)
+	assert.True(t, result.Recommendation.NeedsClearanceCookie)
+}
+
+func TestProbe_BothImpervaHcaptchaShells_RecommendsBrowserCaptureWithBodyEvidence(t *testing.T) {
+	result, err := Probe(context.Background(), "https://www.example.com", Options{
+		HTTPClientFactory: fakeFactory(impervaHcaptchaShell, impervaHcaptchaShell),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ModeBrowserClearanceHTTP, result.Mode)
+	assert.ElementsMatch(t, []string{"imperva", "hcaptcha"}, result.BodyEvidence)
+	require.Len(t, result.Probes, 2)
+	assert.ElementsMatch(t, []string{"imperva", "hcaptcha"}, result.Probes[0].BodyEvidence)
+	assert.ElementsMatch(t, []string{"imperva", "hcaptcha"}, result.Probes[1].BodyEvidence)
 	assert.True(t, result.Recommendation.NeedsBrowserCapture)
 	assert.True(t, result.Recommendation.NeedsClearanceCookie)
 }
