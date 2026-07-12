@@ -4314,9 +4314,26 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.NoError(t, csvSpec.Validate())
 	assert.True(t, csvSpec.Resources["posts"].Endpoints["list"].UsesCSVResponse())
 
+	xmlSpec := validHTMLSpec()
+	ep = xmlSpec.Resources["posts"].Endpoints["list"]
+	ep.ResponseFormat = ResponseFormatXML
+	ep.HTMLExtract = nil
+	xmlSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, xmlSpec.Validate())
+	assert.True(t, xmlSpec.Resources["posts"].Endpoints["list"].UsesXMLResponse())
+	assert.True(t, xmlSpec.HasXMLResponse())
+
+	mixedSpec := validHTMLSpec()
+	ep = mixedSpec.Resources["posts"].Endpoints["list"]
+	ep.ResponseFormat = ResponseFormatXML
+	ep.HTMLExtract = nil
+	mixedSpec.Resources["posts"].Endpoints["list"] = ep
+	mixedSpec.Resources["posts"].Endpoints["get"] = Endpoint{Method: "GET", Path: "/posts/{id}", Description: "Get a post (JSON)"}
+	assert.True(t, mixedSpec.HasXMLResponse())
+
 	badFormat := validHTMLSpec()
 	ep = badFormat.Resources["posts"].Endpoints["list"]
-	ep.ResponseFormat = "xml"
+	ep.ResponseFormat = "yaml"
 	badFormat.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badFormat.Validate(), "response_format must be one of")
 

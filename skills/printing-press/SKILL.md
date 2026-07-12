@@ -3602,6 +3602,9 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	}
 	// If the API returns CSV (`response_format: csv` in any spec endpoint),
 	// wrap raw client data with cliutil.ParseCSV(data) before embedding it in a JSON envelope.
+	// XML-only endpoints (`response_format: xml`) are auto-detected from the spec's
+	// response content type; the generated client already normalizes those bodies to JSON
+	// via cliutil.XMLToJSON, so novel code can treat `data` as ordinary JSON.
 	// Parse data into your feature's view. Use cliutil.CleanText for any
 	// text extracted from HTML or schema.org JSON-LD; re-implementing
 	// HTML-entity unescape inline is the &#39; bug class.

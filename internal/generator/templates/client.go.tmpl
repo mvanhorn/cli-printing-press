@@ -1635,6 +1635,14 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				}
 				return env, resp.StatusCode, nil
 			}
+{{- if .HasXMLResponse}}
+			// XML endpoints carry an application/xml Accept override. Use that
+			// per-request signal so mixed XML/JSON specs normalize only the XML
+			// endpoint's success body. A decode failure returns the raw bytes.
+			if isXMLRequest(req.Header.Get("Accept")) && isXMLResponseContentType(resp.Header.Get("Content-Type")) {
+				return cliutil.XMLToJSON(json.RawMessage(respBody)), resp.StatusCode, nil
+			}
+{{- end}}
 			return json.RawMessage(sanitizeJSONResponse(respBody)), resp.StatusCode, nil
 		}
 
@@ -2392,6 +2400,32 @@ func isBinaryResponseContentType(ct string) bool {
 	}
 	return true
 }
+{{- if .HasXMLResponse}}
+
+func isXMLRequest(accept string) bool {
+	for value := range strings.SplitSeq(accept, ",") {
+		mt := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+		if mt == "application/xml" || mt == "text/xml" || (strings.HasSuffix(mt, "+xml") && mt != "application/xhtml+xml") {
+			return true
+		}
+	}
+	return false
+}
+
+// isXMLResponseContentType reports whether a success response should be
+// normalized from XML to JSON. application/xhtml+xml is excluded: it is
+// HTML-shaped and belongs to the html response path.
+func isXMLResponseContentType(ct string) bool {
+	mt := strings.ToLower(strings.TrimSpace(ct))
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
+	if mt == "" || mt == "application/xhtml+xml" {
+		return false
+	}
+	return mt == "application/xml" || mt == "text/xml" || strings.HasSuffix(mt, "+xml")
+}
+{{- end}}
 
 // wrapBinaryResponse marshals body into a self-describing base64 envelope.
 func wrapBinaryResponse(ct string, body []byte) (json.RawMessage, error) {

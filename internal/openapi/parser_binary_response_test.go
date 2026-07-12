@@ -181,11 +181,13 @@ func TestParseBinaryOnlyResponseEmitsAcceptOverride(t *testing.T) {
 		assert.False(t, has, "text responses must not be forced into the binary response path")
 	})
 
-	t.Run("XML response gets no Accept override", func(t *testing.T) {
+	t.Run("XML response gets an application/xml Accept override and xml format", func(t *testing.T) {
 		e, ok := endpointByPath(parsed, "/widgets/{id}/xml")
 		require.True(t, ok)
-		_, has := acceptOverride(e)
-		assert.False(t, has, "XML responses must not be forced into the binary response path")
+		v, has := acceptOverride(e)
+		require.True(t, has, "XML-only endpoints pin Accept so the server returns XML, not 406")
+		assert.Equal(t, "application/xml", v)
+		assert.Equal(t, spec.ResponseFormatXML, e.ResponseFormat)
 	})
 }
 

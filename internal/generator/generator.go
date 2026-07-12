@@ -2496,6 +2496,12 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	if g.Spec.HasXMLResponse() {
+		if err := g.renderTemplate("cliutil_xml_parse.go.tmpl", filepath.Join("internal", "cliutil", "xml_parse.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil xml parse: %w", err)
+		}
+	}
+
 	// Emit the cliutil proxypath helper only for proxy-envelope clients —
 	// the BuildPath function is the only caller of net/url.Values in the
 	// cliutil package, and there's no point shipping it (and its tests)

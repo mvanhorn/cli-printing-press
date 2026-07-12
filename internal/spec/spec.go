@@ -48,6 +48,7 @@ const (
 	ResponseFormatJSON   = "json"
 	ResponseFormatCSV    = "csv"
 	ResponseFormatHTML   = "html"
+	ResponseFormatXML    = "xml"
 	ResponseFormatBinary = "binary"
 )
 
@@ -977,6 +978,35 @@ func resourceHasHTMLExtraction(resource Resource) bool {
 	}
 	for _, sub := range resource.SubResources {
 		if resourceHasHTMLExtraction(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasXMLResponse reports whether any endpoint in the spec declares
+// response_format: xml. The generated client gates its XML→JSON
+// normalization helper on this so JSON-only CLIs emit no XML code.
+func (s *APISpec) HasXMLResponse() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasXMLResponse(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasXMLResponse(resource Resource) bool {
+	for _, endpoint := range resource.Endpoints {
+		if endpoint.UsesXMLResponse() {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasXMLResponse(sub) {
 			return true
 		}
 	}
@@ -2044,7 +2074,7 @@ type Endpoint struct {
 	BodyIsArray        bool        `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
 	RequestContentType string      `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
 	Response           ResponseDef `yaml:"response" json:"response"`
-	ResponseFormat     string      `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default), csv, html, or binary
+	ResponseFormat     string      `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default), csv, html, xml, or binary
 	// DataSourceStrategy declares how this endpoint's generated read command
 	// should interpret --data-source. Empty inherits the resource strategy,
 	// then defaults to "auto".
@@ -2249,6 +2279,10 @@ func (e Endpoint) UsesBinaryResponse() bool {
 
 func (e Endpoint) UsesCSVResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatCSV
+}
+
+func (e Endpoint) UsesXMLResponse() bool {
+	return e.EffectiveResponseFormat() == ResponseFormatXML
 }
 
 type HTMLExtract struct {
@@ -4662,9 +4696,9 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 
 func validateEndpointResponseFormat(e Endpoint) error {
 	switch e.ResponseFormat {
-	case "", ResponseFormatJSON, ResponseFormatCSV, ResponseFormatHTML, ResponseFormatBinary:
+	case "", ResponseFormatJSON, ResponseFormatCSV, ResponseFormatHTML, ResponseFormatXML, ResponseFormatBinary:
 	default:
-		return fmt.Errorf("response_format must be one of: json, csv, html, binary")
+		return fmt.Errorf("response_format must be one of: json, csv, html, xml, binary")
 	}
 	if !e.UsesHTMLResponse() {
 		return nil

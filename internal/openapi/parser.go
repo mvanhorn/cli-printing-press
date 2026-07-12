@@ -3558,6 +3558,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			// templates do not re-walk schemas at generation time.
 			if responseUsesBinary(op) {
 				endpoint.ResponseFormat = spec.ResponseFormatBinary
+			} else if responseUsesXML(op) {
+				// XML-only success bodies are normalized to JSON by the
+				// generated client (response_format: xml). Pin Accept so the
+				// server returns XML instead of 406-ing the default
+				// application/json.
+				endpoint.ResponseFormat = spec.ResponseFormatXML
+				endpoint.HeaderOverrides = upsertHeaderOverride(endpoint.HeaderOverrides, "Accept", "application/xml")
 			}
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride
@@ -5304,6 +5311,42 @@ func responseUsesBinary(op *openapi3.Operation) bool {
 		}
 	}
 	return false
+}
+
+// responseUsesXML reports whether the operation's success response is
+// XML-only. It returns true when at least one declared success media type is
+// XML (application/xml, text/xml, or a *+xml suffix other than xhtml) and none
+// is JSON. A mixed JSON+XML response keeps the JSON default, so only genuinely
+// XML-only endpoints opt into the xml response_format normalization path.
+func responseUsesXML(op *openapi3.Operation) bool {
+	if op == nil || op.Responses == nil {
+		return false
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil || len(success.Value.Content) == 0 {
+		return false
+	}
+	sawXML := false
+	for ct := range success.Value.Content {
+		base := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+		switch {
+		case base == "application/json", base == "text/json", strings.HasSuffix(base, "+json"):
+			return false
+		case xmlResponseContentType(base):
+			sawXML = true
+		}
+	}
+	return sawXML
+}
+
+// xmlResponseContentType reports whether a media type is XML for response
+// normalization. application/xhtml+xml is intentionally excluded: it is
+// HTML-shaped and belongs to the html response path, not XML normalization.
+func xmlResponseContentType(base string) bool {
+	if base == "" || base == "application/xhtml+xml" {
+		return false
+	}
+	return base == "application/xml" || base == "text/xml" || strings.HasSuffix(base, "+xml")
 }
 
 func binaryContentType(contentType string) bool {
