@@ -26,6 +26,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/devicespec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/googlediscovery"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
@@ -427,6 +428,8 @@ func newGenerateCmd() *cobra.Command {
 					})
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
+				} else if googlediscovery.IsDiscovery(data) {
+					apiSpec, err = googlediscovery.Parse(specFile, data)
 				} else {
 					apiSpec, err = spec.ParseBytes(data)
 				}

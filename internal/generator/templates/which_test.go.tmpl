@@ -83,6 +83,39 @@ func TestRankWhich_NoMatchReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestWhichTokenMatch_DoesNotCrossResourceNames(t *testing.T) {
+	pairs := make([][2]string, 0, 2)
+	pairs = append(pairs, [2]string{"user", "usersettings"})
+	pairs = append(pairs, [2]string{"list", "listeners"})
+	for _, pair := range pairs {
+		if whichTokenMatch(pair[0], pair[1]) {
+			t.Fatalf("whichTokenMatch(%q, %q) must not use arbitrary prefixes", pair[0], pair[1])
+		}
+	}
+	if !whichTokenMatch("repositories", "repos") {
+		t.Fatal("known repository abbreviation should match")
+	}
+}
+
+func TestRankWhich_NestedResourceMatchSurvivesSpecificity(t *testing.T) {
+	index := make([]whichEntry, 0, 1)
+	index = append(index, whichEntry{Command: "projects tasks list-project", Description: "List project tasks"})
+	got := rankWhich(index, "tasks", 1)
+	if len(got) != 1 || got[0].Score <= 0 {
+		t.Fatalf("nested tasks command should remain a positive match, got %+v", got)
+	}
+}
+
+func TestRankWhich_WriteSynonymsAreNotPenalized(t *testing.T) {
+	index := make([]whichEntry, 0, 2)
+	index = append(index, whichEntry{Command: "projects list", Description: "List projects"})
+	index = append(index, whichEntry{Command: "projects edit", Description: "Edit a project"})
+	got := rankWhich(index, "edit project", 1)
+	if len(got) != 1 || got[0].Entry.Command != "projects edit" {
+		t.Fatalf("explicit write intent should select the edit command, got %+v", got)
+	}
+}
+
 // Sanity: whichIndex compiles and is well-formed. Generated CLIs with
 // zero NovelFeatures ship an empty index, and that is still a valid
 // state (which returns the "no curated index" error at runtime).
