@@ -56,7 +56,11 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
+	msg := fmt.Sprintf("%s %s returned HTTP %d", e.Method, e.Path, e.StatusCode)
+	if strings.TrimSpace(e.Body) != "" {
+		msg += ": " + e.Body
+	}
+	return msg
 }
 
 func rejectUnresolvedPathParams(path string, allowedTemplateVars map[string]string) error {
