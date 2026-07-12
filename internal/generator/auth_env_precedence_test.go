@@ -204,7 +204,12 @@ func TestEnvSourcedCredentialsStayOutOfConfigSave(t *testing.T) {
 			t.Fatalf("credentials.toml leaked env value %q after SaveTokens:\n%s", leaked, afterTokensText)
 		}
 	}
-	for _, want := range []string{"refreshed-access-token", "refreshed-refresh-token"} {
+	for _, want := range []string{
+		"refreshed-access-token",
+		"refreshed-refresh-token",
+		"token_expiry",
+		"2030-01-02T03:04:05Z",
+	} {
 		if !strings.Contains(afterTokensText, want) {
 			t.Fatalf("credentials.toml missing %q after SaveTokens:\n%s", want, afterTokensText)
 		}
@@ -213,6 +218,25 @@ func TestEnvSourcedCredentialsStayOutOfConfigSave(t *testing.T) {
 		if strings.Contains(afterTokensText, stale) {
 			t.Fatalf("credentials.toml kept stale value %q after SaveTokens:\n%s", stale, afterTokensText)
 		}
+	}
+
+	reloaded, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() after SaveTokens error = %v", err)
+	}
+	if !reloaded.TokenExpiry.Equal(expiry) {
+		t.Fatalf("reloaded TokenExpiry = %s, want %s", reloaded.TokenExpiry.Format(time.RFC3339), expiry.Format(time.RFC3339))
+	}
+
+	if err := cfg.SaveTokens(cfg.ClientID, cfg.ClientSecret, "zero-expiry-access-token", "zero-expiry-refresh-token", time.Time{}); err != nil {
+		t.Fatalf("SaveTokens() zero expiry error = %v", err)
+	}
+	zeroExpiryData, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(credentials.toml) after zero expiry SaveTokens error = %v", err)
+	}
+	if strings.Contains(string(zeroExpiryData), "token_expiry") {
+		t.Fatalf("credentials.toml wrote token_expiry for zero expiry:\n%s", string(zeroExpiryData))
 	}
 }
 

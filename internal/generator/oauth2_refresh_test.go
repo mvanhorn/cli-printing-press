@@ -52,7 +52,7 @@ func TestGenerateOAuth2RefreshAuth(t *testing.T) {
 	assert.Contains(t, skill, "This CLI uses OAuth2 with refresh-token rotation.")
 
 	writeOAuth2RefreshRuntimeTest(t, outputDir)
-	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestOAuth2RefreshTokenUsedBeforeRequest$")
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "^TestOAuth2Refresh(TokenUsedBeforeRequest|AfterUnauthorizedPersistsRotatedTokens)$")
 }
 
 func TestOAuth2RefreshDefaultsEnvVars(t *testing.T) {
@@ -165,10 +165,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"__MODULE_PATH__/internal/cliutil"
 	"__MODULE_PATH__/internal/config"
 )
 
@@ -224,6 +227,102 @@ func TestOAuth2RefreshTokenUsedBeforeRequest(t *testing.T) {
 	}
 	if cfg.AuthSource != "oauth2_refresh" {
 		t.Fatalf("auth source = %q, want oauth2_refresh", cfg.AuthSource)
+	}
+}
+
+func TestOAuth2RefreshAfterUnauthorizedPersistsRotatedTokens(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("OAUTH2_REFRESH_DATA_DIR", dataDir)
+
+	var apiCalls int
+	var tokenCalls int
+	handleToken := func(w http.ResponseWriter, r *http.Request) {
+		tokenCalls++
+		if r.Method != http.MethodPost {
+			t.Fatalf("token request method = %s, want POST", r.Method)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		if got := r.Form.Get("refresh_token"); got != "refresh-123" {
+			t.Fatalf("refresh_token = %q, want refresh-123", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `+"`"+`{"access_token":"access-after-401","refresh_token":"refresh-after-401","expires_in":3600}`+"`"+`)
+	}
+	handleResource := func(w http.ResponseWriter, r *http.Request) {
+		apiCalls++
+		switch apiCalls {
+		case 1:
+			if got := r.Header.Get("Authorization"); got != "Bearer stale-access" {
+				t.Fatalf("first Authorization = %q, want Bearer stale-access", got)
+			}
+			http.Error(w, "expired token", http.StatusUnauthorized)
+		case 2:
+			if got := r.Header.Get("Authorization"); got != "Bearer access-after-401" {
+				t.Fatalf("retry Authorization = %q, want Bearer access-after-401", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `+"`"+`{"ok":true}`+"`"+`)
+		default:
+			t.Fatalf("unexpected API call %d", apiCalls)
+		}
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			handleToken(w, r)
+		case "/resource":
+			handleResource(w, r)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		BaseURL:      srv.URL,
+		TokenURL:     srv.URL + "/token",
+		AccessToken:  "stale-access",
+		RefreshToken: "refresh-123",
+		ClientID:     "client-123",
+		ClientSecret: "secret-123",
+		TokenExpiry:  time.Now().Add(time.Hour),
+		Path:         filepath.Join(t.TempDir(), "config.toml"),
+	}
+	c := New(cfg, time.Second, 0)
+	c.HTTPClient = srv.Client()
+
+	if _, err := c.Get(context.Background(), "/resource", nil); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if apiCalls != 2 {
+		t.Fatalf("api calls = %d, want 2", apiCalls)
+	}
+	if tokenCalls != 1 {
+		t.Fatalf("token calls = %d, want 1", tokenCalls)
+	}
+
+	credentialsPath := filepath.Join(dataDir, "credentials.toml")
+	credentialsData, err := os.ReadFile(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(credentials.toml) error = %v", err)
+	}
+	credentialsText := string(credentialsData)
+	for _, want := range []string{"access-after-401", "refresh-after-401", "token_expiry"} {
+		if !strings.Contains(credentialsText, want) {
+			t.Fatalf("credentials.toml missing %q after 401 refresh:\n%s", want, credentialsText)
+		}
+	}
+	reloadedCreds, _, err := cliutil.LoadCredentials()
+	if err != nil {
+		t.Fatalf("LoadCredentials() after 401 refresh error = %v", err)
+	}
+	if reloadedCreds == nil || reloadedCreds.TokenExpiry.IsZero() {
+		t.Fatalf("reloaded TokenExpiry is zero after 401 refresh")
+	}
+	if want := time.Now().Add(50 * time.Minute); reloadedCreds.TokenExpiry.Before(want) {
+		t.Fatalf("reloaded TokenExpiry = %s is earlier than expected minimum %s", reloadedCreds.TokenExpiry, want)
 	}
 }
 `, "__MODULE_PATH__", modulePath)
