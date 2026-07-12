@@ -417,6 +417,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointNeedsClientLimit":  endpointNeedsClientLimit,
 		"endpointClientSideFilters": endpointClientSideFilters,
 		"globalScopeParams":         globalScopeParams,
+		"responsePathCases":         responsePathCases,
 		"envName":                   naming.EnvPrefix,
 		// endpointTemplateEnvName resolves the env-var name for a
 		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
@@ -5494,6 +5495,56 @@ func globalScopeEnvName(apiName string, p spec.Param) string {
 		placeholder = "SCOPE"
 	}
 	return naming.EnvPrefix(apiName) + "_" + placeholder
+}
+
+// responsePathCase is one deduplicated entry for the sync template's
+// responsePathForResource switch: the switch key (resource + NUL + path) and
+// the response envelope path to return for it.
+type responsePathCase struct {
+	Key          string
+	ResponsePath string
+}
+
+// responsePathCases returns deterministic switch cases deduplicated by resource
+// and path. Syncable endpoints take precedence because the generated lookup is
+// used by sync; endpoint name breaks ties to keep output stable.
+func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
+	resourceNames := make([]string, 0, len(resources))
+	for name := range resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	seen := map[string]struct{}{}
+	var out []responsePathCase
+	for _, resourceName := range resourceNames {
+		resource := resources[resourceName]
+		endpointNames := make([]string, 0, len(resource.Endpoints))
+		for endpointName := range resource.Endpoints {
+			endpointNames = append(endpointNames, endpointName)
+		}
+		sort.Slice(endpointNames, func(i, j int) bool {
+			left := resource.Endpoints[endpointNames[i]]
+			right := resource.Endpoints[endpointNames[j]]
+			if left.Syncable != right.Syncable {
+				return left.Syncable
+			}
+			return endpointNames[i] < endpointNames[j]
+		})
+		for _, endpointName := range endpointNames {
+			endpoint := resource.Endpoints[endpointName]
+			if endpoint.ResponsePath == "" {
+				continue
+			}
+			key := resourceName + "\x00" + endpoint.Path
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, responsePathCase{Key: key, ResponsePath: endpoint.ResponsePath})
+		}
+	}
+	return out
 }
 
 func globalScopeParams(resources map[string]spec.Resource) []spec.Param {
