@@ -1258,6 +1258,11 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	command.Help = help
+	// Success is exit 0 plus any code the command declares via
+	// pp:typed-exit-codes (or a command-level "Exit codes:" help block) — the
+	// same contract `verify` honors. Commands with no declaration keep the
+	// default {0}, so their happy/json verdicts are unchanged.
+	successCodes := liveDogfoodSuccessExitCodes(command)
 	mutating := liveDogfoodCommandMutates(command)
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
 
@@ -1337,7 +1342,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun)
 		happyResult.FixtureSource = fixtureSource
-		if happyRun.exitCode == 0 {
+		if successCodes[happyRun.exitCode] {
 			happyResult.Status = LiveDogfoodStatusPass
 			happyResult.Reason = ""
 		} else if liveDogfoodUnavailableForRunner(happyRun) {
@@ -1372,6 +1377,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 					jsonResult.Status = LiveDogfoodStatusPass
 					jsonResult.Reason = ""
 				}
+			} else if successCodes[jsonRun.exitCode] {
+				// Declared non-zero typed exit (an intentional usage exit or a
+				// get-by-id not-found): the command behaved as designed and emits
+				// no JSON body to validate, so this is a pass rather than a
+				// json_fidelity failure.
+				jsonResult.Status = LiveDogfoodStatusPass
+				jsonResult.Reason = ""
 			} else if liveDogfoodUnavailableForRunner(jsonRun) {
 				jsonResult.Status = LiveDogfoodStatusSkip
 				jsonResult.Reason = reasonUnavailableRunnerCredentials
@@ -2293,6 +2305,28 @@ func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
 		return "exit_nonzero"
 	}
 	return "other"
+}
+
+// liveDogfoodSuccessExitCodes returns the exit codes that count as a successful
+// run for a command: exit 0 plus any code the command declares via the
+// pp:typed-exit-codes annotation, or a command-level "Exit codes:" help block.
+// This mirrors typedSuccessCodes (which `verify` uses) for the liveDogfoodCommand
+// type. A command with no declaration returns {0}, so its happy_path and
+// json_fidelity verdicts are unchanged.
+func liveDogfoodSuccessExitCodes(command liveDogfoodCommand) map[int]bool {
+	if command.Annotations != nil {
+		if raw := strings.TrimSpace(command.Annotations[typedExitCodesAnnotation]); raw != "" {
+			if codes, ok := parseTypedExitCodesAnnotation(raw); ok {
+				codes[0] = true
+				return codes
+			}
+		}
+	}
+	if codes, ok := parseExitCodesFromHelp(command.Help); ok {
+		codes[0] = true
+		return codes
+	}
+	return map[int]bool{0: true}
 }
 
 // resolveLiveDogfoodAcceptanceIdentity finds the marker's api_name, run_id,

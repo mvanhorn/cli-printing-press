@@ -159,6 +159,24 @@ func TestGenerateLearnMCPParity_LocalWriteAnnotations(t *testing.T) {
 	require.NotContains(t, forgetBlock, "mcp:local-write",
 		"learnings forget must not carry local-write hints")
 
+	// teach-pattern exits 2 via usageErr on missing required flags, just like
+	// its teach/teach-playbook siblings, and writes to the local store. It must
+	// declare both annotations so verify and the live-dogfood matrix score its
+	// Execute cell honestly.
+	teachPatternBlock := commandBlock(t, teachSrc, `Use:   "teach-pattern"`)
+	require.Regexp(t, `"pp:typed-exit-codes":\s+"0,2"`, teachPatternBlock,
+		"teach-pattern must declare pp:typed-exit-codes 0,2")
+	require.Regexp(t, `"mcp:local-write":\s+"true"`, teachPatternBlock,
+		"teach-pattern must carry the local-write annotation")
+
+	// teach-lookup is the same family: local-store writer, usageErr exit 2 on
+	// missing required flags. It must declare the same annotations.
+	teachLookupBlock := commandBlock(t, teachSrc, `Use:   "teach-lookup"`)
+	require.Regexp(t, `"pp:typed-exit-codes":\s+"0,2"`, teachLookupBlock,
+		"teach-lookup must declare pp:typed-exit-codes 0,2")
+	require.Regexp(t, `"mcp:local-write":\s+"true"`, teachLookupBlock,
+		"teach-lookup must carry the local-write annotation")
+
 	// learnings reject tombstones and can delete materialized rows: same.
 	candSrc := readEmitted(t, outputDir, "internal", "cli", "learnings_candidates.go")
 	confirmBlock := commandBlock(t, candSrc, `Use:   "confirm <id>"`)
