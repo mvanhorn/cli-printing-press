@@ -24,7 +24,7 @@
   "printer_name": "printing-press-golden",
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
   "run_id": "<RUN_ID>",
-  "schema_version": 1,
+  "schema_version": 2,
   "spec_checksum": "sha256:a059b4da997e0e835f0cdcd911ef5894fc048b50506bdcd90260a7478efb2958",
   "spec_format": "internal",
   "spec_path": "tier-routing-api.yaml",

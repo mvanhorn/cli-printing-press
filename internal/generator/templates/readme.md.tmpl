@@ -53,7 +53,7 @@ npx -y @mvanhorn/printing-press-library install {{.Name}} --agent claude-code --
 {{ if .Category}}
 ### Without Node (Go fallback)
 
-If `npx` isn't available (no Node, offline), install the CLI directly via Go (requires Go 1.26.4 or newer):
+If `npx` isn't available (no Node, offline), install the CLI directly via Go (requires Go 1.26.5 or newer):
 
 ```bash
 go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
@@ -242,7 +242,7 @@ Get your API key from your API provider's developer portal. The key typically lo
 export {{.Name}}="<paste-your-key>"
 ```
 
-You can also persist this in your config file at `{{$.Config.Path}}`.
+To persist credentials, use `{{$.Name}}-pp-cli auth set-token <token>`. Stored secrets live in `credentials.toml` under the data directory, not in `config.toml`.
 {{- end}}
 {{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
 
@@ -318,7 +318,13 @@ This CLI uses your browser session for authentication. Log in to {{.Auth.CookieD
 {{.Name}}-pp-cli auth login --chrome
 ```
 
-Requires a cookie extraction tool. Install one:
+Or import an existing browser capture:
+
+```bash
+{{.Name}}-pp-cli auth login --cookies-file storage-state.json
+```
+
+`--cookies-file` accepts Playwright storage-state JSON or a raw `Cookie:` header text file. The Chrome path requires a cookie extraction tool. Install one:
 
 ```bash
 pip install pycookiecheat          # Python (recommended)
@@ -326,6 +332,15 @@ brew install barnardb/cookies/cookies  # Homebrew
 ```
 
 When your session expires, run `auth login --chrome` again.
+{{- else if eq .Auth.Type "session_handshake"}}
+
+### 2. Authenticate
+
+This CLI uses a browser-backed session handshake. Import browser cookies from Playwright storage-state JSON or a raw `Cookie:` header text file:
+
+```bash
+{{.Name}}-pp-cli auth login --cookies-file storage-state.json
+```
 {{- end}}
 
 ### {{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}3{{else}}2{{end}}. Verify Setup
@@ -407,6 +422,59 @@ These capabilities aren't available in any other tool for this API.
 
 Run `{{.Name}}-pp-cli --help` for the full command reference and flag list.
 
+## Paths & environment variables
+
+This CLI separates local files into four path kinds:
+
+| Kind | Contents |
+|------|----------|
+| `config` | User-editable settings such as `config.toml` and saved profiles |
+| `data` | Durable local data{{if .HasAuthCommand}}: `credentials.toml`, `data.db`, cookies, browser-session proof files, and other auth sidecars{{else}} such as `data.db`{{end}} |
+| `state` | Runtime state such as persisted queries, jobs, and `teach.log` |
+| `cache` | Regenerable HTTP/cache files |
+
+Each kind resolves independently. The ladder is:
+
+1. Per-kind env var: `{{envName .Name}}_CONFIG_DIR`, `{{envName .Name}}_DATA_DIR`, `{{envName .Name}}_STATE_DIR`, or `{{envName .Name}}_CACHE_DIR`
+2. `--home <dir>` for this invocation
+3. `{{envName .Name}}_HOME` for a flat relocated root
+4. XDG env vars: `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`
+5. Platform defaults matching existing installs
+
+For containers and agent sandboxes, prefer a single relocated root:
+
+```bash
+export {{envName .Name}}_HOME=/srv/{{.Name}}
+{{.Name}}-pp-cli doctor
+```
+
+Under `{{envName .Name}}_HOME=/srv/{{.Name}}`, the four dirs resolve to `/srv/{{.Name}}/config`, `/srv/{{.Name}}/data`, `/srv/{{.Name}}/state`, and `/srv/{{.Name}}/cache`.
+
+MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
+
+```json
+{
+  "mcpServers": {
+    "{{.Name}}": {
+      "command": "{{.Name}}-pp-mcp",
+      "env": {
+        "{{envName .Name}}_HOME": "/srv/{{.Name}}"
+      }
+    }
+  }
+}
+```
+
+Precedence matters in fleets: an ambient per-kind variable such as `{{envName .Name}}_DATA_DIR` overrides an explicit `--home` for that kind. Use `{{envName .Name}}_HOME` or the per-kind variables for durable fleet relocation; treat `--home` as the weaker per-invocation lever.
+
+Relocation is one-way. Unsetting `{{envName .Name}}_HOME` does not move files back to platform defaults, and `doctor` cannot find {{if .HasAuthCommand}}credentials{{else}}files{{end}} left under a former root. Move the files manually before unsetting relocation variables.
+
+{{if .HasAuthCommand -}}
+Existing installs keep working because the platform-default rung matches the legacy layout. On the first auth write, stored secrets leave `config.toml` and are consolidated into `credentials.toml` under the data directory. Run `{{.Name}}-pp-cli doctor --fail-on warn` to check path and credential-location warnings in automation.
+{{- else -}}
+Existing installs keep working because the platform-default rung matches the legacy layout. Run `{{.Name}}-pp-cli doctor --fail-on warn` to check path warnings in automation.
+{{- end}}
+
 ## Commands
 {{range $name, $resource := .Resources}}
 ### {{$name}}
@@ -424,16 +492,20 @@ Run `{{.Name}}-pp-cli --help` for the full command reference and flag list.
 
 ### Self-learning loop
 
-This CLI caches per-question discovery so repeat queries skip the walk and structurally similar queries get answered via entity substitution. Agents call `recall` before discovery and fire `teach &` after answering. See the `## Automatic learning` section in `SKILL.md` for the four-branch protocol.
+This CLI caches per-question discovery so repeat queries skip the walk and structurally similar queries get answered via entity substitution. The loop also self-captures: every invocation is journaled locally, and failed-flag corrections plus fresh teaches surface as candidates on the next `recall` for confirm/reject judgment. Agents call `recall` before discovery and fire `teach &` after answering. See the `## Automatic learning` section in `SKILL.md` for the full protocol.
 
 - **`{{$.Name}}-pp-cli recall <query>`** - Look up cached resources for a query before running discovery
 - **`{{$.Name}}-pp-cli teach`** - Record a query -> resource mapping (silent on success, safe to background with `&`)
 - **`{{$.Name}}-pp-cli learnings list`** - Inspect taught rows
 - **`{{$.Name}}-pp-cli learnings forget <query>`** - Undo a teach
+- **`{{$.Name}}-pp-cli learnings candidates`** - List auto-captured candidates awaiting confirm/reject
+- **`{{$.Name}}-pp-cli learnings stats`** - Local loop metrics: recall hit rate, teach-to-reuse, playbook resolution, candidate counts
 - **`{{$.Name}}-pp-cli teach-pattern`** - Install a query/resource template up front
 - **`{{$.Name}}-pp-cli teach-lookup`** - Add an entity mapping (e.g. country code, team alias) for pattern substitution
 
 Pass `--no-learn` or set `{{envPrefix .Name}}_NO_LEARN=true` to disable the loop for deterministic flows.
+
+The local store's schema version stamp is one-way: once this version of `{{$.Name}}-pp-cli` opens the database, older binaries refuse it with a version error — upgrade the binary rather than downgrading.
 {{- end}}
 
 ## Output Formats
@@ -475,7 +547,9 @@ This CLI is designed for AI agent consumption:
 - **Filterable** - `--select id,name` returns only fields you need
 - **Previewable** - `--dry-run` shows the request without sending
 {{- if .HasWriteCommands}}
-- **Explicit retries** - add `--idempotent` to create retries{{if .HasDelete}} and `--ignore-missing` to delete retries{{end}} when a no-op success is acceptable
+{{- if or .HasCreateCommands .HasDelete}}
+- **Explicit retries** - {{if .HasCreateCommands}}add `--idempotent` to create retries{{if .HasDelete}} and {{end}}{{end}}{{if .HasDelete}}add `--ignore-missing` to delete retries{{end}} when a no-op success is acceptable
+{{- end}}
 - **Confirmable** - `--yes` for explicit confirmation of destructive actions
 - **Piped input** - write commands can accept structured input when their help lists `--stdin`
 {{- else}}
@@ -532,7 +606,7 @@ Verifies configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}, cred
 
 ## Configuration
 
-Config file: `{{.Config.Path}}`
+Run `{{.Name}}-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is `{{.Config.Path}}`; `--home`, `{{envName .Name}}_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 {{- if or .Auth.EnvVarSpecs .Auth.EnvVars}}

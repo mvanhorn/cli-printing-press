@@ -83,7 +83,7 @@ EXISTING_LABELS=$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[]
 NEED_CREATE=false
 for required in \
   "comp:generator" "comp:openapi-parser" "comp:spec-parser" \
-  "comp:scorer" "comp:skill" "comp:catalog" \
+  "comp:scorer" "comp:skill" \
   "priority:P1" "priority:P2" "priority:P3" \
   "retro"; do
   if ! printf '%s\n' "$EXISTING_LABELS" | grep -qFx "$required"; then
@@ -98,13 +98,12 @@ if [ "$NEED_CREATE" = true ]; then
     gh label create "$name" --repo "$REPO" --color "$color" --description "$desc" 2>/dev/null || true
   }
 
-  # Component labels (6) — drive cross-retro discovery (`gh issue list --label comp:<slug>`)
+  # Component labels (5) — drive cross-retro discovery (`gh issue list --label comp:<slug>`)
   ensure_label "comp:generator"      "5319e7" "Generator templates (internal/generator/)"
   ensure_label "comp:openapi-parser" "5319e7" "OpenAPI parser (internal/openapi/)"
   ensure_label "comp:spec-parser"    "5319e7" "Internal spec parser (internal/spec/)"
   ensure_label "comp:scorer"         "5319e7" "verify / dogfood / scorecard"
   ensure_label "comp:skill"          "5319e7" "skills/printing-press/SKILL.md and related skill instructions"
-  ensure_label "comp:catalog"        "5319e7" "catalog/ entries"
 
   # Priority labels (3) — drive priority-based filtering. The label is the
   # primary carrier; titles do not duplicate the priority prefix.

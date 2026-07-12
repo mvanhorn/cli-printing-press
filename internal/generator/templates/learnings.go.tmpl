@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -60,24 +61,98 @@ var queryStopwords = map[string]struct{}{
 	"odds": {}, // odds-flavored helper word that exists on both sides
 }
 
-// NormalizeQuery lowercases, strips punctuation, collapses whitespace,
-// and removes a small stopword set. Exported so the CLI layer uses
-// the same normalization at both write (teach) and read (recall + apply)
-// time. The token set used by the Jaccard match is a side product —
-// see normalizeAndTokens.
-func NormalizeQuery(s string) string {
-	normalized, _ := normalizeAndTokens(s)
-	return normalized
+// defaultQuerySynonyms are the domain-neutral same-referent phrasing
+// folds (variant -> canonical) applied inside NormalizeQuery. Each
+// pair MUST name the same referent — never fold across day boundaries
+// ("tonight" is not "yesterday"). This map mirrors defaultSynonyms in
+// internal/learn/entities (this package must stay import-free of the
+// learn tree); a generator test pins the two copies identical.
+var defaultQuerySynonyms = map[string]string{
+	"last night": "yesterday",
+	"tonite":     "tonight",
+	"to-day":     "today",
+	"to-night":   "tonight",
+	"to-morrow":  "tomorrow",
+	"tmrw":       "tomorrow",
 }
 
-// normalizeAndTokens returns both the normalized string and the set of
-// non-stopword tokens. The token set is the canonical form the recall
-// Jaccard matcher uses; the string form is the canonical key under
-// which a learning is stored.
-func normalizeAndTokens(s string) (string, map[string]struct{}) {
+// querySynonymRule is one compiled fold: variant and canonical are
+// pre-tokenized through the same character filter normalizeAndTokens
+// uses, so a hyphenated variant like "to-day" matches its
+// post-tokenization shape ("to" + "day").
+type querySynonymRule struct {
+	variant   []string
+	canonical []string
+}
+
+var (
+	// querySynonyms accumulates defaults plus RegisterQuerySynonyms
+	// additions; querySynonymRules is its compiled form. Package-level
+	// by necessity: NormalizeQuery is a package function with no config
+	// receiver. Registration is one-shot at CLI startup (before any
+	// store use), matching the entities.Config mutation contract.
+	querySynonyms     = copyQuerySynonymDefaults()
+	querySynonymRules = compileQuerySynonyms(querySynonyms)
+)
+
+func copyQuerySynonymDefaults() map[string]string {
+	m := make(map[string]string, len(defaultQuerySynonyms)+8)
+	for v, c := range defaultQuerySynonyms {
+		m[v] = c
+	}
+	return m
+}
+
+// RegisterQuerySynonyms merges per-CLI same-referent phrasing folds
+// (variant -> canonical) into the write-side normalizer. Called once
+// at CLI startup by the generated learn-init shim with the spec's
+// declared synonyms — the same map it registers on the read-side
+// entities.Config, keeping the two normalizers symmetric. Entries
+// with an empty side are dropped; folding is a single hop.
+func RegisterQuerySynonyms(synonyms map[string]string) {
+	changed := false
+	for v, canonical := range synonyms {
+		v = strings.ToLower(strings.TrimSpace(v))
+		canonical = strings.ToLower(strings.TrimSpace(canonical))
+		if v == "" || canonical == "" || v == canonical {
+			continue
+		}
+		querySynonyms[v] = canonical
+		changed = true
+	}
+	if changed {
+		querySynonymRules = compileQuerySynonyms(querySynonyms)
+	}
+}
+
+// compileQuerySynonyms tokenizes each pair through the normalization
+// character filter and orders rules longest-variant-first (ties
+// lexicographic) so multiword folds win deterministically.
+func compileQuerySynonyms(synonyms map[string]string) []querySynonymRule {
+	rules := make([]querySynonymRule, 0, len(synonyms))
+	for v, canonical := range synonyms {
+		variantTokens := queryCharTokens(v)
+		canonicalTokens := queryCharTokens(canonical)
+		if len(variantTokens) == 0 || len(canonicalTokens) == 0 {
+			continue
+		}
+		rules = append(rules, querySynonymRule{variant: variantTokens, canonical: canonicalTokens})
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if len(rules[i].variant) != len(rules[j].variant) {
+			return len(rules[i].variant) > len(rules[j].variant)
+		}
+		return strings.Join(rules[i].variant, " ") < strings.Join(rules[j].variant, " ")
+	})
+	return rules
+}
+
+// queryCharTokens lowercases s, replaces every non-alphanumeric rune
+// with a space, and splits into tokens — the shared first stage of
+// NormalizeQuery and of synonym-rule compilation, so variants match
+// their post-tokenization shape.
+func queryCharTokens(s string) []string {
 	s = strings.ToLower(strings.TrimSpace(s))
-	// Replace common punctuation with spaces so "portugal's" splits into
-	// "portugal" + "s" and "?" disappears entirely.
 	b := strings.Builder{}
 	b.Grow(len(s))
 	for _, r := range s {
@@ -90,7 +165,72 @@ func normalizeAndTokens(s string) (string, map[string]struct{}) {
 			b.WriteByte(' ')
 		}
 	}
-	rawTokens := strings.Fields(b.String())
+	return strings.Fields(b.String())
+}
+
+// foldQueryTokens rewrites registered variant token sequences to their
+// canonical forms. Greedy left-to-right, longest rule first. Runs
+// BEFORE stopword filtering so a variant containing a stopword-shaped
+// token ("to" in "to-day" -> "to day") still folds as a unit.
+func foldQueryTokens(tokens []string) []string {
+	rules := querySynonymRules
+	if len(rules) == 0 || len(tokens) == 0 {
+		return tokens
+	}
+	out := make([]string, 0, len(tokens))
+	for i := 0; i < len(tokens); {
+		matched := false
+		for r := range rules {
+			rule := &rules[r]
+			if i+len(rule.variant) > len(tokens) {
+				continue
+			}
+			ok := true
+			for k, vt := range rule.variant {
+				if tokens[i+k] != vt {
+					ok = false
+					break
+				}
+			}
+			if !ok {
+				continue
+			}
+			out = append(out, rule.canonical...)
+			i += len(rule.variant)
+			matched = true
+			break
+		}
+		if !matched {
+			out = append(out, tokens[i])
+			i++
+		}
+	}
+	return out
+}
+
+// NormalizeQuery lowercases, strips punctuation, collapses whitespace,
+// folds same-referent synonym phrasings to their canonical form, and
+// removes a small stopword set. Exported so the CLI layer uses
+// the same normalization at both write (teach) and read (recall + apply)
+// time. The token set used by the Jaccard match is a side product —
+// see normalizeAndTokens.
+func NormalizeQuery(s string) string {
+	normalized, _ := normalizeAndTokens(s)
+	return normalized
+}
+
+// normalizeAndTokens returns both the normalized string and the set of
+// non-stopword tokens. The token set is the canonical form the recall
+// Jaccard matcher uses; the string form is the canonical key under
+// which a learning is stored.
+//
+// Stage order matters: character filtering, then synonym folding, then
+// stopword/dedupe filtering. Folding before stopword removal keeps
+// multiword variants intact ("to day" must fold before "to" drops),
+// and folding at the write path here plus the read path's
+// entities.Config fold is what keeps teach and recall keyed alike.
+func normalizeAndTokens(s string) (string, map[string]struct{}) {
+	rawTokens := foldQueryTokens(queryCharTokens(s))
 	tokens := make(map[string]struct{}, len(rawTokens))
 	kept := make([]string, 0, len(rawTokens))
 	for _, t := range rawTokens {
@@ -143,7 +283,7 @@ type UpsertLearningInput struct {
 // refreshes last_observed_at. Source on the existing row is preserved;
 // only confidence + last_observed_at update on re-teach. Returns the
 // row's ID and a bool indicating whether the row was newly inserted.
-func (s *Store) UpsertLearning(in UpsertLearningInput) (int64, bool, error) {
+func (s *Store) UpsertLearning(ctx context.Context, in UpsertLearningInput) (int64, bool, error) {
 	if strings.TrimSpace(in.ResourceID) == "" {
 		return 0, false, fmt.Errorf("upsert learning: resource_id is required")
 	}
@@ -172,20 +312,20 @@ func (s *Store) UpsertLearning(in UpsertLearningInput) (int64, bool, error) {
 	defer s.writeMu.Unlock()
 
 	now := time.Now().UTC()
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, false, err
 	}
 	defer tx.Rollback()
 
 	var existingID int64
-	err = tx.QueryRow(
+	err = tx.QueryRowContext(ctx,
 		`SELECT id FROM search_learnings
 		 WHERE query_pattern = ? AND resource_id = ? AND action = ?`,
 		pattern, in.ResourceID, action,
 	).Scan(&existingID)
 	if err == nil {
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`UPDATE search_learnings
 			 SET confidence = confidence + 1, last_observed_at = ?
 			 WHERE id = ?`,
@@ -277,7 +417,7 @@ type ListLearningsFilter struct {
 // filter applies a normalized LIKE match against query_pattern so a
 // filter value of "portugal" matches a row taught for "portugal world
 // cup odds".
-func (s *Store) ListLearnings(f ListLearningsFilter) ([]LearningRow, error) {
+func (s *Store) ListLearnings(ctx context.Context, f ListLearningsFilter) ([]LearningRow, error) {
 	clauses := []string{}
 	args := []any{}
 	if f.Query != "" {
@@ -317,7 +457,7 @@ func (s *Store) ListLearnings(f ListLearningsFilter) ([]LearningRow, error) {
 		ORDER BY last_observed_at DESC, id DESC
 		LIMIT ?`, where)
 
-	rows, err := s.db.Query(q, args...)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list learnings: %w", err)
 	}
@@ -355,7 +495,7 @@ type ForgetLearningsFilter struct {
 // removed. If All is false the filter must specify at least one of
 // ResourceID or Action (the Query is the primary scoping key and is
 // always required).
-func (s *Store) ForgetLearnings(f ForgetLearningsFilter) (int64, error) {
+func (s *Store) ForgetLearnings(ctx context.Context, f ForgetLearningsFilter) (int64, error) {
 	if f.Query == "" {
 		return 0, fmt.Errorf("forget learnings: query is required")
 	}
@@ -381,7 +521,7 @@ func (s *Store) ForgetLearnings(f ForgetLearningsFilter) (int64, error) {
 		args = append(args, f.Action)
 	}
 	q := "DELETE FROM search_learnings WHERE " + strings.Join(clauses, " AND ")
-	res, err := s.db.Exec(q, args...)
+	res, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {
 		return 0, fmt.Errorf("forget learnings: %w", err)
 	}

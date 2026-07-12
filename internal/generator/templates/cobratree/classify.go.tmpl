@@ -4,6 +4,7 @@
 package cobratree
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,6 +20,19 @@ const (
 	// Without it, hosts like Claude Desktop default to "could write or
 	// delete" and demand permission per call.
 	ReadOnlyAnnotation = "mcp:read-only"
+	// LocalWriteAnnotation, when set on a Cobra command to "true"/"1"/"yes",
+	// marks a command whose only writes land in the CLI's own local store
+	// (teach-style learn writes, playbook notes) - never external state and
+	// never user-visible files. The walker registers the resulting MCP tool
+	// with destructiveHint=false and openWorldHint=false; readOnlyHint stays
+	// unset because the command genuinely writes locally. Commands that
+	// delete user-visible data keep honest destructive semantics and must
+	// not carry this annotation.
+	LocalWriteAnnotation = "mcp:local-write"
+	// PositionalWriteSinksAnnotation lists zero-based positional argument
+	// indexes that write to user-visible files when populated. It is enforced
+	// only on commands that also carry ReadOnlyAnnotation.
+	PositionalWriteSinksAnnotation = "mcp:write-positionals"
 )
 
 type commandKind int
@@ -34,7 +48,7 @@ const (
 // mirroring the Cobra tree. Two cases qualify:
 //
 //  1. A typed MCP tool already covers the same capability (the typed tool's
-//     schema is strictly better than a shell-out). Examples: `sql`, `search`,
+//     schema is strictly better than a shell-out). Examples:
 //     `context`/`about`/`agent-context`, `api` (endpoint mirror tools cover it).
 //  2. The command is non-functional via MCP (interactive setup, shell-only
 //     ergonomics, trivial introspection, local-only feedback). Examples:
@@ -64,8 +78,6 @@ var frameworkCommands = map[string]bool{
 	"feedback":      true,
 	"help":          true,
 	"profile":       true,
-	"search":        true,
-	"sql":           true,
 	"version":       true,
 	"which":         true,
 }
@@ -104,6 +116,34 @@ func isMCPHidden(cmd *cobra.Command) bool {
 
 func isMCPReadOnly(cmd *cobra.Command) bool {
 	return annotationIsTrue(cmd, ReadOnlyAnnotation)
+}
+
+func isMCPLocalWrite(cmd *cobra.Command) bool {
+	return annotationIsTrue(cmd, LocalWriteAnnotation)
+}
+
+func positionalWriteSinkIndexes(cmd *cobra.Command) map[int]bool {
+	if cmd == nil || cmd.Annotations == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(cmd.Annotations[PositionalWriteSinksAnnotation])
+	if raw == "" {
+		return nil
+	}
+	out := map[int]bool{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		idx, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || idx < 0 {
+			continue
+		}
+		out[idx] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func annotationIsTrue(cmd *cobra.Command, key string) bool {

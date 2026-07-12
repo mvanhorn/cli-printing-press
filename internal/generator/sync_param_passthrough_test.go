@@ -513,38 +513,20 @@ func noBulkListSpec(name string) *spec.APISpec {
 	return apiSpec
 }
 
-// TestGenerateSyncEmitsEmptyHintWhenNoBulkList covers issue #1156. When a spec
+// TestGenerateSyncOmittedWhenNoBulkList covers issue #1156. When a spec
 // has no bulk-list endpoint (only parameterized detail pages and required-
-// query searches), defaultSyncResources renders empty and the runtime sync
-// command is a no-op. The template must emit a clear hint so users and agents
-// understand the silence and can find the population path (single-fetch
-// commands writing to the store).
-func TestGenerateSyncEmitsEmptyHintWhenNoBulkList(t *testing.T) {
+// query searches), there is no mirror-population path for generic sync, so the
+// generator omits the command instead of exposing a no-op surface.
+func TestGenerateSyncOmittedWhenNoBulkList(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := noBulkListSpec("nobulk")
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
-	require.NoError(t, err)
-	syncSrc := string(syncGo)
-
-	// Sanity: the structural precondition matches Allrecipes shape with both
-	// syncable and dependent slices empty, so defaultSyncResources renders
-	// with an empty body.
-	assert.Regexp(t,
-		`func defaultSyncResources\(\) \[\]string \{\s*return \[\]string\{\}\s*\}`,
-		syncSrc,
-		"defaultSyncResources should be empty for a spec with no bulk-list endpoints",
-	)
-
-	// The runtime hint surfaces in both modes so JSON-driven agents and human
-	// callers both see the explanation instead of a silent total_records:0.
-	assert.Contains(t, syncSrc, "no default sync resources",
-		"sync should print a stderr hint when defaultSyncResources is empty")
-	assert.Contains(t, syncSrc, `"reason":"no_bulk_list_endpoints"`,
-		"sync should emit a sync_warning JSON event when defaultSyncResources is empty")
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	assert.NotContains(t, rootSrc, "newSyncCmd(flags)")
 }
 
 // TestGenerateSyncSkipsEmptyHintWhenBulkListExists ensures the template hint

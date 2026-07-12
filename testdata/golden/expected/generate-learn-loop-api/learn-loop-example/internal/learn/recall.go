@@ -5,13 +5,18 @@ package learn
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"learn-loop-example-pp-cli/internal/learn/entities"
+	"learn-loop-example-pp-cli/internal/learn/lookups"
 	"learn-loop-example-pp-cli/internal/learn/patterns"
 )
 
@@ -42,7 +47,15 @@ const LearningActionBoost = "boost"
 
 // Hit is one row in the recall envelope. Field tags mirror the JSON
 // contract agents read.
+//
+// LearningID is the search_learnings row id backing this hit (0 for
+// pattern-synthesized hits, which have no backing row). The command
+// side records it as the recall_hit event's matched_row_id so
+// teach-to-reuse joins by row id — an alias-mediated or paraphrased
+// recall then credits the taught row even when the query family
+// differs from the teach-time family.
 type Hit struct {
+	LearningID       int64      `json:"learning_id,omitempty"`
 	ResourceID       string     `json:"resource_id"`
 	ResourceType     string     `json:"resource_type,omitempty"`
 	Venue            string     `json:"venue,omitempty"`
@@ -66,8 +79,21 @@ type Hit struct {
 // agent can surface the gotchas/workarounds even when the structured
 // playbook itself is sparse (or absent -- a notes-only row still
 // surfaces Notes).
+//
+// Candidates is the quarantined-knowledge section: open
+// learn_candidates rows surfaced for judgment. Structurally separate
+// by contract -- a candidate never appears inside Results, Playbook,
+// or Notes, and the key is omitted entirely when nothing is open so
+// the envelope stays byte-stable for stores with no pending
+// candidates.
+//
+// Family is the structural query family key (QueryFamily over the
+// promoted normalized form) — internal plumbing for the command
+// side's event instrumentation, deliberately kept out of the JSON
+// envelope (the agent-facing family surface is the playbook block).
 type Result struct {
 	Query         string            `json:"query"`
+	Family        string            `json:"-"`
 	Normalized    string            `json:"normalized"`
 	QueryEntities []string          `json:"query_entities"`
 	Found         bool              `json:"found"`
@@ -77,6 +103,11 @@ type Result struct {
 	Warnings      []string          `json:"warnings,omitempty"`
 	Playbook      *ResolvedPlaybook `json:"playbook,omitempty"`
 	Notes         string            `json:"notes,omitempty"`
+	Candidates    []Candidate       `json:"candidates,omitempty"`
+	// UnresolvedEntities feeds the invocation journal's learn context
+	// (SetJournalLearnContext) so derivation and synthesis can anchor
+	// on the recall entry. Never serialized into the envelope.
+	UnresolvedEntities []string `json:"-"`
 }
 
 // Opts tunes Recall behavior. Zero-value defaults:
@@ -188,6 +219,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 	// runs at teach time so stored query_entities stays symmetric
 	// with what recall sees.
 	normalized = PromoteEntities(normalized, resolver)
+	result.Family = QueryFamily(normalized)
 	queryTokens := strings.Fields(normalized.NonEntityNormalized)
 	result.QueryEntities = append([]string(nil), normalized.Entities...)
 	if result.QueryEntities == nil {
@@ -208,7 +240,24 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		}
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT query_pattern, COALESCE(query_entities, ''),
+	// Lookup-refresh capture: entities with no entity_lookups row under
+	// ANY source are recorded as recall lookup misses. The post-sync
+	// scanner (lookups.RefreshFromSynced) uses the recorded set as its
+	// noise filter — only entities a recall actually failed to resolve
+	// are eligible for derivation from synced resources. Recording is
+	// telemetry-class: best-effort, local-only, never fails the recall.
+	var unresolvedEntities []string
+	for _, e := range normalized.Entities {
+		if len(resolver.Resolve(e)) == 0 {
+			unresolvedEntities = append(unresolvedEntities, e)
+		}
+	}
+	if len(unresolvedEntities) > 0 {
+		_ = lookups.RecordMisses(ctx, db, unresolvedEntities)
+	}
+	result.UnresolvedEntities = append([]string(nil), unresolvedEntities...)
+
+	rows, err := db.QueryContext(ctx, `SELECT id, query_pattern, COALESCE(query_entities, ''),
 		COALESCE(venue, ''), COALESCE(resource_type, ''), resource_id, action,
 		COALESCE(alias_target, ''), source, confidence, created_at, last_observed_at
 		FROM search_learnings
@@ -230,6 +279,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 
 	for rows.Next() {
 		var (
+			learningID     int64
 			queryPattern   string
 			storedEntities string
 			venue          string
@@ -242,7 +292,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 			createdAt      time.Time
 			lastObserved   sql.NullTime
 		)
-		if err := rows.Scan(&queryPattern, &storedEntities, &venue, &resourceType,
+		if err := rows.Scan(&learningID, &queryPattern, &storedEntities, &venue, &resourceType,
 			&resourceID, &action, &aliasTarget, &source, &confidence, &createdAt, &lastObserved); err != nil {
 			return result, fmt.Errorf("recall scan: %w", err)
 		}
@@ -390,6 +440,7 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		}
 
 		hit := Hit{
+			LearningID:   learningID,
 			ResourceID:   resourceID,
 			ResourceType: resourceType,
 			Venue:        venue,
@@ -520,6 +571,19 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 		result.Warnings = append(result.Warnings, TopWarningNoLearningsForQueryFamily)
 	}
 
+	// Stateless run-sync suggestion: a cold recall whose entities have
+	// no lookup coverage under any source points the agent at `sync` —
+	// the post-sync scanner derives synced lookup rows from local data,
+	// healing print-time seed staleness without a reprint. No candidate
+	// row backs this; the warning is recomputed each call and clears on
+	// its own once the entity resolves.
+	if !result.Found {
+		for _, e := range unresolvedEntities {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s:%s (run sync to refresh entity lookups)", TopWarningLookupRefreshAvailable, e))
+		}
+	}
+
 	// Playbook + notes surface: orthogonal to the per-resource path.
 	// Look up the structural query family in learning_playbooks. A hit
 	// attaches the resolved playbook (with slot bindings) and the notes
@@ -567,6 +631,19 @@ func Recall(ctx context.Context, db *sql.DB, query string, opts Opts) (Result, e
 				result.Notes = notesText.String
 			}
 		}
+	}
+
+	// Quarantined-candidate surface: open learn_candidates rows ride
+	// the envelope in their own capped section, ranked family-anchor
+	// first. Read-only by contract -- it runs regardless of the
+	// capture-disable switch (which gates journaling and derivation
+	// only) and swallows errors so stores predating the candidates
+	// table keep working. Runs after the playbook lookup because the
+	// resolved playbook's steps feed the command-path-overlap rank
+	// tier.
+	if cands := surfaceCandidates(ctx, db, family, result.Playbook); len(cands) > 0 {
+		result.Candidates = cands
+		result.Warnings = append(result.Warnings, TopWarningCandidatesPresent)
 	}
 
 	return result, nil
@@ -723,4 +800,325 @@ func canonicalJaccard(a, b map[string]struct{}) float64 {
 		return 0
 	}
 	return float64(inter) / float64(union)
+}
+
+// Candidate classes mirror the CHECK constraint on learn_candidates
+// (and the store package's exported constants; the learn package reads
+// the table directly, like the playbook lookup above, so the literals
+// live here too).
+const (
+	candidateClassFlagAlias = "flag_alias"
+	candidateClassPlaybook  = "playbook_candidate"
+)
+
+// candidateSurfaceCap caps the envelope's candidates array. The full
+// open set stays reachable via the `learnings candidates` control
+// command; the envelope only carries the few worth acting on now.
+const candidateSurfaceCap = 3
+
+// candidateScanLimit bounds the single candidates SELECT on the recall
+// hot path. Family-anchored rows sort first inside the query itself,
+// so the bound can never starve the rows most relevant to this query.
+const candidateScanLimit = 24
+
+// candidateCommandBinary is the installed binary name next_action
+// steps are composed against. Byte-exact by contract: agents copy the
+// steps verbatim, so the confirm step must match the command names
+// registered under the `learnings` group.
+const candidateCommandBinary = "learn-loop-example-pp-cli"
+
+// Candidate is one open learn_candidates row surfaced in the recall
+// envelope for judgment. Quarantined knowledge: it sits below the
+// confidence skip floor and alters nothing until an explicit confirm.
+// NextAction is always exactly two steps -- try the candidate, then
+// the literal confirm command -- both copy-exact.
+type Candidate struct {
+	ID         int64     `json:"id"`
+	Class      string    `json:"class"`
+	Summary    string    `json:"summary"`
+	Sightings  int       `json:"sightings"`
+	LastSeen   time.Time `json:"last_seen"`
+	Rationale  string    `json:"rationale"`
+	NextAction []string  `json:"next_action"`
+}
+
+// candidateScan is the raw row shape surfaceCandidates ranks before
+// composing the envelope entries.
+type candidateScan struct {
+	id          int64
+	class       string
+	payload     string
+	sightings   int
+	queryFamily string
+	commandPath string
+	lastSeen    time.Time
+}
+
+// surfaceCandidates returns the capped, ranked candidates section for
+// the envelope. One bounded query on the hot path: open rows only,
+// family-anchored rows first, then sightings, then recency. The
+// command-path-overlap tier (between family anchor and raw sightings)
+// is resolved in Go against the already-resolved playbook. Errors are
+// swallowed by contract -- recall never fails, and stores predating
+// the learn_candidates table simply surface nothing.
+func surfaceCandidates(ctx context.Context, db *sql.DB, family string, resolved *ResolvedPlaybook) []Candidate {
+	rows, err := db.QueryContext(ctx, `SELECT id, class, payload, sightings,
+		COALESCE(query_family, ''), COALESCE(command_path, ''), last_seen_at
+		FROM learn_candidates
+		WHERE status = 'open'
+		ORDER BY CASE WHEN ? != '' AND query_family = ? THEN 0 ELSE 1 END,
+			sightings DESC, last_seen_at DESC, id ASC
+		LIMIT ?`, family, family, candidateScanLimit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var scanned []candidateScan
+	for rows.Next() {
+		var c candidateScan
+		var lastSeen string
+		if err := rows.Scan(&c.id, &c.class, &c.payload, &c.sightings,
+			&c.queryFamily, &c.commandPath, &lastSeen); err != nil {
+			return nil
+		}
+		// Tolerant parse: a foreign timestamp yields the zero time
+		// rather than dropping the row.
+		if t, perr := time.Parse(time.RFC3339, lastSeen); perr == nil {
+			c.lastSeen = t
+		}
+		scanned = append(scanned, c)
+	}
+	if rows.Err() != nil || len(scanned) == 0 {
+		return nil
+	}
+
+	tier := func(c candidateScan) int {
+		switch {
+		case family != "" && c.queryFamily == family:
+			return 0
+		case playbookUsesCommandPath(resolved, c.commandPath):
+			return 1
+		default:
+			return 2
+		}
+	}
+	// High-sighting unconfirmed rows must outrank fresh low-sighting
+	// ones within a tier: the no-confirm steady state depends on the
+	// same proven candidates resurfacing session after session.
+	sort.SliceStable(scanned, func(i, j int) bool {
+		ti, tj := tier(scanned[i]), tier(scanned[j])
+		if ti != tj {
+			return ti < tj
+		}
+		if scanned[i].sightings != scanned[j].sightings {
+			return scanned[i].sightings > scanned[j].sightings
+		}
+		if !scanned[i].lastSeen.Equal(scanned[j].lastSeen) {
+			return scanned[i].lastSeen.After(scanned[j].lastSeen)
+		}
+		return scanned[i].id < scanned[j].id
+	})
+	if len(scanned) > candidateSurfaceCap {
+		scanned = scanned[:candidateSurfaceCap]
+	}
+
+	out := make([]Candidate, 0, len(scanned))
+	for _, c := range scanned {
+		out = append(out, Candidate{
+			ID:         c.id,
+			Class:      c.class,
+			Summary:    candidateSummary(c.class, c.payload, c.queryFamily),
+			Sightings:  c.sightings,
+			LastSeen:   c.lastSeen,
+			Rationale:  candidateRationale(tier(c), c.sightings),
+			NextAction: candidateNextAction(c.id, c.class, c.payload, c.commandPath),
+		})
+	}
+	return out
+}
+
+// playbookUsesCommandPath reports whether the resolved playbook runs
+// the candidate's command path in any step -- the middle ranking tier:
+// a correction observed on a command this query's choreography uses is
+// more actionable here than an unrelated one.
+func playbookUsesCommandPath(resolved *ResolvedPlaybook, commandPath string) bool {
+	if resolved == nil {
+		return false
+	}
+	commandPath = strings.TrimSpace(commandPath)
+	if commandPath == "" {
+		return false
+	}
+	for _, step := range resolved.Playbook.Steps {
+		cmd := strings.TrimSpace(step.Cmd)
+		if cmd == commandPath || strings.HasPrefix(cmd, commandPath+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// candidateSummary renders a compact, human-scannable digest of the
+// payload -- never the full payload; `learnings confirm` prints that
+// before anything is blessed. Malformed payloads fall back to a
+// truncated verbatim form so the row stays identifiable.
+func candidateSummary(class, payload, family string) string {
+	switch class {
+	case candidateClassFlagAlias:
+		var p struct {
+			CommandPath   string `json:"command_path"`
+			FailedFlag    string `json:"failed_flag"`
+			CorrectedFlag string `json:"corrected_flag"`
+		}
+		if err := json.Unmarshal([]byte(payload), &p); err == nil &&
+			strings.TrimSpace(p.FailedFlag) != "" && strings.TrimSpace(p.CorrectedFlag) != "" {
+			if strings.TrimSpace(p.CommandPath) != "" {
+				return fmt.Sprintf("observed flag correction on `%s`: use %s instead of %s",
+					strings.TrimSpace(p.CommandPath), p.CorrectedFlag, p.FailedFlag)
+			}
+			return fmt.Sprintf("observed flag correction: use %s instead of %s", p.CorrectedFlag, p.FailedFlag)
+		}
+	case candidateClassPlaybook:
+		var p struct {
+			QueryFamily  string `json:"query_family"`
+			PlaybookJSON string `json:"playbook_json"`
+			NotesText    string `json:"notes_text"`
+		}
+		if err := json.Unmarshal([]byte(payload), &p); err == nil {
+			if family == "" {
+				family = strings.TrimSpace(p.QueryFamily)
+			}
+			steps := 0
+			if strings.TrimSpace(p.PlaybookJSON) != "" {
+				if pb, perr := ParsePlaybook([]byte(p.PlaybookJSON), "candidate"); perr == nil {
+					steps = len(pb.Steps)
+				}
+			}
+			switch {
+			case steps > 0 && family != "":
+				return fmt.Sprintf("proposed playbook (%d step(s)) for query family %q", steps, family)
+			case steps > 0:
+				return fmt.Sprintf("proposed playbook (%d step(s))", steps)
+			case strings.TrimSpace(p.NotesText) != "" && family != "":
+				return fmt.Sprintf("proposed guidance notes for query family %q", family)
+			case strings.TrimSpace(p.NotesText) != "":
+				return "proposed guidance notes"
+			}
+		}
+	}
+	return truncateForSummary(payload)
+}
+
+// truncateForSummary keeps a malformed payload identifiable in the
+// summary slot without dumping it wholesale. Rune-safe cut.
+func truncateForSummary(payload string) string {
+	const maxRunes = 120
+	payload = strings.TrimSpace(payload)
+	runes := []rune(payload)
+	if len(runes) <= maxRunes {
+		return payload
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+// candidateRationale explains in plain words why the row surfaced and
+// how often it has been seen. No scores, no bare floats -- agents read
+// this verbatim.
+func candidateRationale(tier, sightings int) string {
+	times := fmt.Sprintf("seen %d time", sightings)
+	if sightings != 1 {
+		times += "s"
+	}
+	switch tier {
+	case 0:
+		return "matches this query's family; " + times
+	case 1:
+		return "observed on a command this query's playbook runs; " + times
+	default:
+		return "unconfirmed observation from this CLI's own usage; " + times
+	}
+}
+
+// candidateNextAction composes the two byte-exact steps: first the
+// trial derived from the payload (for flag corrections, the corrected
+// example invocation; for playbook candidates, a note to try the
+// surfaced steps), then the literal confirm command registered under
+// the `learnings` group.
+func candidateNextAction(id int64, class, payload, commandPath string) []string {
+	confirm := fmt.Sprintf("%s learnings confirm %d", candidateCommandBinary, id)
+
+	trial := ""
+	if class == candidateClassFlagAlias {
+		var p struct {
+			CommandPath   string `json:"command_path"`
+			CorrectedFlag string `json:"corrected_flag"`
+		}
+		if err := json.Unmarshal([]byte(payload), &p); err == nil && strings.TrimSpace(p.CorrectedFlag) != "" {
+			path := strings.TrimSpace(p.CommandPath)
+			if path == "" {
+				path = strings.TrimSpace(commandPath)
+			}
+			if path == "" {
+				path = "<command>"
+			}
+			trial = fmt.Sprintf("%s %s %s <value>", candidateCommandBinary, path, strings.TrimSpace(p.CorrectedFlag))
+		}
+	}
+	if trial == "" {
+		if class == candidateClassPlaybook {
+			trial = "try the surfaced playbook steps for this query family and verify they answer the query"
+		} else {
+			trial = fmt.Sprintf("review the payload via `%s learnings candidates`, then retry the corrected invocation", candidateCommandBinary)
+		}
+	}
+	return []string{trial, confirm}
+}
+
+// FamilyHash derives the stable, non-reversible key the measurement
+// layer stores as learn_events.query_family_hash. Hashing keeps the
+// events table free of query-derived text (the family key is built
+// from the user's words) while still supporting equality joins for
+// teach-to-reuse fallback, playbook-amend correlation, and the forget
+// cascade. Empty family hashes to "" so callers store NULL.
+func FamilyHash(family string) string {
+	if strings.TrimSpace(family) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(family))
+	return hex.EncodeToString(sum[:8])
+}
+
+// PII rule names ScanPII returns. Stable vocabulary: the teach-path
+// warning names the rule verbatim, and generated SKILL/AGENTS prose
+// references the same names.
+const (
+	PIIRuleEmail = "email"
+	PIIRulePhone = "phone"
+)
+
+// piiEmailRE matches obvious email-address shapes.
+var piiEmailRE = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
+// piiPhoneRE matches obvious phone-number shapes. Deliberately
+// conservative: it requires separator formatting (or an international
+// +prefix) so bare numeric identifiers — resource ids, timestamps,
+// zip+4 codes — never trip the warning.
+var piiPhoneRE = regexp.MustCompile(`(?:\+\d{1,3}[\s.\-]?)?(?:\(\d{3}\)[\s.\-]?|\b\d{3}[\s.\-])\d{3}[\s.\-]\d{4}\b`)
+
+// ScanPII checks freeform text about to be persisted by a teach-side
+// write for obvious personally-identifying shapes and returns the
+// names of the rules that matched (empty when clean). The contract is
+// warn-only: callers surface a stderr warning naming the rule and
+// proceed — never block, never redact silently. Shared by the teach
+// and teach-playbook insert paths.
+func ScanPII(text string) []string {
+	var rules []string
+	if piiEmailRE.MatchString(text) {
+		rules = append(rules, PIIRuleEmail)
+	}
+	if piiPhoneRE.MatchString(text) {
+		rules = append(rules, PIIRulePhone)
+	}
+	return rules
 }

@@ -163,6 +163,9 @@ func (c *Client) awaitBudget(ctx context.Context, cost float64) error {
 // Query executes a GraphQL query via POST against graphqlEndpointPath and
 // returns the raw data payload.
 func (c *Client) Query(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("graphql query is empty; hand-author the query constant for this API")
+	}
 {{- if .HasCostThrottling}}
 	return c.queryWithThrottle(ctx, query, variables)
 {{- else}}

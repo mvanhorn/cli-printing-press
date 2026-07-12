@@ -31,22 +31,24 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			}
 			if !stdinBody {
 			}
+			path := "/projects/{projectId}/tasks/{taskId}"
+			if len(args) < 1 || args[0] == "" {
+				return usageErr(fmt.Errorf("projectId is required\nUsage: %s <%s>", cmd.CommandPath(), "projectId"))
+			}
+			path = replacePathParam(path, "projectId", args[0])
+			if len(args) < 2 || args[1] == "" {
+				return usageErr(fmt.Errorf("taskId is required\nUsage: %s <%s>", cmd.CommandPath(), "taskId"))
+			}
+			path = replacePathParam(path, "taskId", args[1])
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/projects/{projectId}/tasks/{taskId}"
-			path = replacePathParam(path, "projectId", args[0])
-			if len(args) < 2 {
-				return usageErr(fmt.Errorf("taskId is required\nUsage: %s <%s>", cmd.CommandPath(), "taskId"))
-			}
-			path = replacePathParam(path, "taskId", args[1])
 			params := map[string]string{}
 			if flagNotify != false {
 				params["notify"] = formatCLIParamValue(flagNotify)
 			}
-			var body map[string]any
+			var body any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
 				if err != nil {
@@ -58,15 +60,16 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				}
 				body = jsonBody
 			} else {
-				body = map[string]any{}
+				bodyMap := map[string]any{}
+				body = bodyMap
 				if cmd.Flags().Changed("completed") {
-					body["completed"] = bodyCompleted
+					bodyMap["completed"] = bodyCompleted
 				}
 				if bodyPriority != "" {
-					body["priority"] = bodyPriority
+					bodyMap["priority"] = bodyPriority
 				}
 				if bodyTitle != "" {
-					body["title"] = bodyTitle
+					bodyMap["title"] = bodyTitle
 				}
 			}
 			data, statusCode, err := c.PatchWithParams(cmd.Context(), path, params, body)
@@ -136,6 +139,9 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 					"status":   statusCode,
 					"success":  statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure),
 				}
+				if flags.agent {
+					envelope["meta"] = map[string]any{"source": "live"}
+				}
 				if partialFailure != nil {
 					envelope["partial_failure"] = partialFailure
 				}
@@ -174,7 +180,11 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				if len(filtered) > 0 {
 					var parsed any
 					if err := json.Unmarshal(filtered, &parsed); err == nil {
-						envelope["data"] = parsed
+						if flags.agent {
+							envelope["results"] = parsed
+						} else {
+							envelope["data"] = parsed
+						}
 					}
 				}
 				envelopeJSON, err := json.Marshal(envelope)

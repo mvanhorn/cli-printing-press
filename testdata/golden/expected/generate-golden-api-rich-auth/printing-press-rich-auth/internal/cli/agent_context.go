@@ -10,12 +10,14 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"printing-press-rich-pp-cli/internal/cliutil"
+	"printing-press-rich-pp-cli/internal/learn"
 )
 
 // agentContextSchemaVersion is bumped on any breaking change to the JSON
 // shape emitted by `agent-context`. Agents should check this before
-// parsing. Shape at v3 adds kind-aware auth env var metadata.
-const agentContextSchemaVersion = "3"
+// parsing. Shape at v4 adds resolved config/data/state/cache directories.
+const agentContextSchemaVersion = "4"
 
 // agentContext is the structured description of this CLI consumed by AI
 // agents. Inspired by Cloudflare's /cdn-cgi/explorer/api runtime endpoint
@@ -25,10 +27,15 @@ type agentContext struct {
 	SchemaVersion              string                 `json:"schema_version"`
 	CLI                        agentContextCLI        `json:"cli"`
 	Auth                       agentContextAuth       `json:"auth"`
+	Paths                      agentContextPaths      `json:"paths"`
 	Discovery                  *agentContextDiscovery `json:"discovery,omitempty"`
 	Commands                   []agentContextCommand  `json:"commands"`
 	AvailableProfiles          []string               `json:"available_profiles"`
 	FeedbackEndpointConfigured bool                   `json:"feedback_endpoint_configured"`
+	// LearnProtocol carries the recall-first protocol from the single
+	// shared source (internal/learn.RecallFirstProtocol) also consumed by
+	// the MCP context tool, so the two agent surfaces cannot drift.
+	LearnProtocol string `json:"learn_protocol"`
 }
 
 type agentContextCLI struct {
@@ -48,6 +55,13 @@ type agentContextAuthEnvVar struct {
 	Required    bool   `json:"required"`
 	Sensitive   bool   `json:"sensitive"`
 	Description string `json:"description,omitempty"`
+}
+
+type agentContextPaths struct {
+	ConfigDir string `json:"config_dir"`
+	DataDir   string `json:"data_dir"`
+	StateDir  string `json:"state_dir"`
+	CacheDir  string `json:"cache_dir"`
 }
 
 type agentContextDiscovery struct {
@@ -166,10 +180,25 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 			Mode:    authMode,
 			EnvVars: envVars,
 		},
+		Paths:                      buildAgentContextPaths(),
 		Discovery:                  buildAgentDiscoveryContext(),
 		Commands:                   collectAgentCommands(rootCmd),
 		AvailableProfiles:          profiles,
 		FeedbackEndpointConfigured: FeedbackEndpointConfigured(),
+		LearnProtocol:              learn.RecallFirstProtocol,
+	}
+}
+
+func buildAgentContextPaths() agentContextPaths {
+	configDir, _ := cliutil.ConfigDir()
+	dataDir, _ := cliutil.DataDir()
+	stateDir, _ := cliutil.StateDir()
+	cacheDir, _ := cliutil.CacheDir()
+	return agentContextPaths{
+		ConfigDir: configDir,
+		DataDir:   dataDir,
+		StateDir:  stateDir,
+		CacheDir:  cacheDir,
 	}
 }
 

@@ -26,6 +26,7 @@ from verify_skill import (  # noqa: E402
     extract_recipes,
     _cli_invocation_from_tokens,
     _extract_function_body,
+    _extract_prose_invocations,
 )
 
 
@@ -381,6 +382,21 @@ func newRrCmd() *cobra.Command {
 
             self.assertEqual([(["issuances", "cited-by"], ["rr", "7-2003"], [])], recipes)
 
+    def test_trailing_quote_is_stripped_from_flag_token(self):
+        """Prose that quotes a full command (`'cli cmd --refresh'`) glues the
+        closing quote onto the flag token; the declaration lookup must see
+        `--refresh`, not `--refresh'`. A genuinely undeclared flag still keeps
+        its real name after the quote is trimmed."""
+        _path, _positional, flags = _cli_invocation_from_tokens(
+            ["entitlements", "--refresh'", "to", "map"], None,
+        )
+        self.assertEqual(["--refresh"], flags)
+
+        _path, _positional, flags = _cli_invocation_from_tokens(
+            ["get", "--bogus')."], None,
+        )
+        self.assertEqual(["--bogus"], flags)
+
     def test_space_separated_long_flag_value_is_not_positional(self):
         cmd_path, positional, flags = _cli_invocation_from_tokens(
             ["search", "--filter", "status=active", "item-123"],
@@ -454,6 +470,73 @@ class UTF8ReadTest(unittest.TestCase):
                 self.assertIn("한국어", verify_skill.read_utf8(path))
 
             self.assertEqual(seen, ["utf-8"])
+
+
+class TestExtractProseInvocations(unittest.TestCase):
+    """Prose flag extraction must not leak wrapping quotes into flag tokens.
+
+    A single-quoted prose command like `'<cli> auth login --chrome'` cannot be
+    balanced by shlex, so extraction falls back to `str.split()`; without
+    quote stripping the closing quote leaks as the phantom flag `--chrome'`.
+    """
+
+    AUTH_GO = (
+        "package cli\n"
+        'import "github.com/spf13/cobra"\n'
+        "func newAuthCmd() *cobra.Command {\n"
+        '  c := &cobra.Command{Use: "auth"}\n'
+        "  return c\n"
+        "}\n"
+        "func newAuthLoginCmd() *cobra.Command {\n"
+        '  c := &cobra.Command{Use: "login"}\n'
+        '  c.Flags().Bool("chrome", false, "use chrome")\n'
+        "  return c\n"
+        "}\n"
+    )
+
+    def _cli_dir(self, tmp: str) -> Path:
+        return _write_cli(Path(tmp), {"auth.go": self.AUTH_GO})
+
+    def test_single_quoted_command_strips_trailing_quote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_dir = self._cli_dir(tmp)
+            text = "Run 'mycli auth login --chrome' to authenticate."
+            results = _extract_prose_invocations(text, "mycli", cli_dir)
+            flags = [f for _cmd, _pos, fl, _surface in results for f in fl]
+            self.assertIn("--chrome", flags)
+            self.assertNotIn("--chrome'", flags)
+            self.assertFalse(
+                any(f.endswith("'") or f.endswith('"') for f in flags),
+                f"flag tokens leaked a wrapping quote: {flags}",
+            )
+
+    def test_double_quoted_command_strips_trailing_quote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_dir = self._cli_dir(tmp)
+            # The opening quote sits after the binary, so the extracted
+            # fragment (`auth login --chrome" to authenticate.`) carries an
+            # unbalanced `"` that shlex.split rejects, forcing the
+            # fragment.split() fallback to yield `--chrome"`. Without the
+            # trailing-quote strip the flag token would leak that quote.
+            text = 'Run "mycli auth login --chrome" to authenticate.'
+            results = _extract_prose_invocations(text, "mycli", cli_dir)
+            flags = [f for _cmd, _pos, fl, _surface in results for f in fl]
+            self.assertIn("--chrome", flags)
+            self.assertFalse(
+                any(f.endswith("'") or f.endswith('"') for f in flags),
+                f"flag tokens leaked a wrapping quote: {flags}",
+            )
+
+    def test_undeclared_flag_in_prose_still_extracted(self):
+        # The quote fix must not suppress genuinely undeclared flags: a real
+        # but undeclared flag still surfaces so downstream flag-name checks
+        # can fail it.
+        with tempfile.TemporaryDirectory() as tmp:
+            cli_dir = self._cli_dir(tmp)
+            text = "Run mycli auth login --bogusflag to break things."
+            results = _extract_prose_invocations(text, "mycli", cli_dir)
+            flags = [f for _cmd, _pos, fl, _surface in results for f in fl]
+            self.assertIn("--bogusflag", flags)
 
 
 if __name__ == "__main__":

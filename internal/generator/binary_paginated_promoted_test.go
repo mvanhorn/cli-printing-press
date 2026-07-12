@@ -46,6 +46,9 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 		},
 	}
 
+	// Post-flip: opt out so this test exercises the non-learn shape it asserts.
+	apiSpec.Learn.Disabled = true
+
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	// Force no-store so the paginatedGet branch is exercised; resolvePaginatedRead
@@ -100,7 +103,7 @@ func TestGenerateBinaryStoreBackedPromotedThreadsHeader(t *testing.T) {
 		"store-backed binary GET must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
 		"store-backed binary GET must include the binary sentinel")
-	assert.Contains(t, endpointSrc, `resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "voices", false, path, params, headerOverrides, cmd.ErrOrStderr())`,
+	assert.Contains(t, endpointSrc, `resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "voices", false, path, params, headerOverrides, "", cmd.ErrOrStderr())`,
 		"store-backed binary GET must thread headerOverrides through the strategy-aware resolver")
 }
 

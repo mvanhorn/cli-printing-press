@@ -1,2 +1,4 @@
+info: learn: defaulting self-learning loop on (opt out with learn.disabled: true)
+info: learn.enabled promotes VisionSet.Store=true (the learn package depends on internal/store)
 warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
 Generated graphql-shared-golden at <ARTIFACT_DIR>/generate-graphql-shared-endpoint/graphql-shared-golden

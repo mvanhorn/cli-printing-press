@@ -45,6 +45,10 @@ func TestGenerateAuth0SPAEmitsCDPLoginCmd(t *testing.T) {
 		"auth.go should enable the Fetch domain for outbound interception")
 	assert.Contains(t, authGo, "EventRequestPaused",
 		"auth.go should listen for paused requests to read the Authorization header")
+	assert.Contains(t, authGo, "auth0SPACaptureURL()",
+		"auth.go should derive a navigation target from the spec")
+	assert.Contains(t, authGo, "chromedp.Navigate(captureURL)",
+		"CDP capture should navigate the controlled tab so the Fetch interceptor observes that tab's authenticated traffic")
 
 	// --auth0-spa flag must be wired.
 	assert.Contains(t, authGo, `"auth0-spa"`,
@@ -84,6 +88,31 @@ func TestGenerateAuth0SPAEmitsCDPLoginCmd(t *testing.T) {
 		"`--help` should list the --auth0-spa flag")
 	assert.Contains(t, string(out), "CDP",
 		"`--help` should mention the CDP capture path so users understand what --auth0-spa does")
+}
+
+func TestGenerateAuth0SPAWithoutEnvVarOmitsUnusedOSImport(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("factor75")
+	apiSpec.BaseURL = "https://api.example.com"
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "bearer_token",
+		Subtype: spec.AuthSubtypeAuth0SPAInMemory,
+		Header:  "Authorization",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "factor75-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	assert.NotContains(t, authGo, "\"os\"",
+		"auth0_spa_in_memory auth.go should omit os when no generated branch references os")
+
+	if testing.Short() {
+		t.Skip("skipping build check in -short mode (downloads chromedp)")
+	}
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./cmd/factor75-pp-cli")
 }
 
 // TestGenerateBearerTokenWithoutSubtypeUsesSimpleTemplate ensures that a

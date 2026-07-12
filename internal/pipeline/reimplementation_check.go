@@ -55,11 +55,19 @@ type ReimplementationCheckResult struct {
 	// dogfood analytics can distinguish "real API through abstraction" from
 	// "curated static data."
 	ExemptedViaClientDirective int `json:"exempted_via_client_directive,omitempty"`
+	// ExemptedViaComputedDataSource is the number of commands that passed
+	// via // pp:data-source computed. These commands intentionally compute
+	// from embedded policy/math tables instead of calling an API or store.
+	ExemptedViaComputedDataSource int `json:"exempted_via_computed_data_source,omitempty"`
+	// ExemptedViaLocalDataSource is the number of commands that passed
+	// via // pp:data-source local without a store package signal. These
+	// commands intentionally read local files or other local-only state.
+	ExemptedViaLocalDataSource int `json:"exempted_via_local_data_source,omitempty"`
 	// Suspicious is the list of commands whose files show no client
 	// call and no store access - the candidate hand-rolled responses.
 	Suspicious []ReimplementationFinding `json:"suspicious,omitempty"`
 	// MissingDataSourceStrategy is the list of hand-written novel-feature
-	// commands that do not declare // pp:data-source <auto|local|live>.
+	// commands that do not declare // pp:data-source <auto|local|live|computed>.
 	MissingDataSourceStrategy []ReimplementationFinding `json:"missing_data_source_strategy,omitempty"`
 	// Skipped is true when the check could not run (no research dir, no
 	// novel features, no matchable files).
@@ -148,6 +156,8 @@ var (
 	// with optional whitespace variations. If the command's handler body
 	// is only this, no other signal is going to save it.
 	trivialBodyRe = regexp.MustCompile(`RunE:\s*func\s*\(\s*cmd\s*\*cobra\.Command\s*,\s*args\s*\[\]string\s*\)\s*error\s*\{\s*return\s+nil\s*\}`)
+
+	todoStubRe = regexp.MustCompile(`(?i)\bTODO:\s*implement\s+novel\s+feature\b`)
 )
 
 // checkReimplementation scans the files that implement built novel
@@ -242,6 +252,12 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		case exemptClientDirective:
 			result.ExemptedViaClientDirective++
 			continue
+		case exemptComputedDataSource:
+			result.ExemptedViaComputedDataSource++
+			continue
+		case exemptLocalDataSource:
+			result.ExemptedViaLocalDataSource++
+			continue
 		}
 		if !ok {
 			finding.Command = nf.Command
@@ -294,6 +310,8 @@ const (
 	exemptStore
 	exemptAnnotation
 	exemptClientDirective
+	exemptComputedDataSource
+	exemptLocalDataSource
 )
 
 // classifyReimplementation returns the best classification across the
@@ -305,19 +323,33 @@ const (
 //  2. If any file carries the `// pp:client-call` marker, the command
 //     is exempted as a real API call hidden behind an abstraction.
 //     Return (_, exemptClientDirective, true).
-//  3. If any file shows a store signal, the command is exempted as a
+//  3. If any file declares // pp:data-source local and does not look
+//     like a TODO stub, the command is accepted as intentionally local.
+//  4. If any file declares // pp:data-source computed and does not look
+//     like a TODO stub, the command is exempted as intentional pure
+//     computation.
+//  5. If any file shows a store signal, the command is exempted as a
 //     local-SQLite feature. Return (_, exemptStore, true).
-//  4. If any file shows a client signal, the command is fine. Return
+//  6. If any file shows a client signal, the command is fine. Return
 //     (_, exemptNone, true).
-//  5. Otherwise the command is suspicious. Return a ReimplementationFinding
+//  7. Otherwise the command is suspicious. Return a ReimplementationFinding
 //     naming the primary file and a reason. Return (finding, exemptNone, false).
 //
-// The trivial-body regex is consulted only when rule 5 fires, to pick
+// The trivial-body regex is consulted only when rule 6 fires, to pick
 // between "empty stub" and "hand-rolled response" as the reason.
 func classifyReimplementation(leaf string, files []string, fileContent map[string]string, storeHelpers, clientHelpers map[string]bool) (ReimplementationFinding, exemptionKind, bool) {
 	hasClient := false
 	hasTrivialBody := false
+	hasTODOStub := false
 	primaryFile := files[0]
+	hasAnyTODOStub := false
+	for _, f := range files {
+		content, ok := fileContent[f]
+		if ok && todoStubRe.MatchString(content) {
+			hasAnyTODOStub = true
+			break
+		}
+	}
 	for _, f := range files {
 		content, ok := fileContent[f]
 		if !ok {
@@ -329,11 +361,17 @@ func classifyReimplementation(leaf string, files []string, fileContent map[strin
 		if clientCallDirectiveRe.MatchString(content) {
 			return ReimplementationFinding{File: f}, exemptClientDirective, true
 		}
+		if computedDataSource(content) && !hasAnyTODOStub {
+			return ReimplementationFinding{File: f}, exemptComputedDataSource, true
+		}
 		if hasStoreSignal(content) {
 			return ReimplementationFinding{File: f}, exemptStore, true
 		}
 		if callsStoreHelper(content, storeHelpers) {
 			return ReimplementationFinding{File: f}, exemptStore, true
+		}
+		if localDataSource(content) && !hasAnyTODOStub {
+			return ReimplementationFinding{File: f}, exemptLocalDataSource, true
 		}
 		commandScan := scanCommandHandler(content, leaf)
 		clientScanContent := content
@@ -351,12 +389,18 @@ func classifyReimplementation(leaf string, files []string, fileContent map[strin
 		if trivialBodyRe.MatchString(content) {
 			hasTrivialBody = true
 		}
+		if todoStubRe.MatchString(content) {
+			hasTODOStub = true
+			hasTrivialBody = true
+		}
 	}
 	if hasClient {
 		return ReimplementationFinding{File: primaryFile}, exemptNone, true
 	}
 	reason := "hand-rolled response: no API client call, no store access"
-	if hasTrivialBody {
+	if hasTODOStub {
+		reason = "TODO stub: no implementation"
+	} else if hasTrivialBody {
 		reason = "empty body: no implementation"
 	}
 	return ReimplementationFinding{File: primaryFile, Reason: reason}, exemptNone, false
@@ -377,22 +421,32 @@ func dataSourceStrategyFinding(files []string, fileContent map[string]string) (R
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(m[1])) {
-		case "auto", "local", "live":
+		case "auto", "local", "live", "computed":
 			return ReimplementationFinding{}, false
 		default:
 			return ReimplementationFinding{
 				File:   f,
-				Reason: "invalid // pp:data-source annotation: must be auto, local, or live",
+				Reason: "invalid // pp:data-source annotation: must be auto, local, live, or computed",
 			}, true
 		}
 	}
 	if firstMissing != "" {
 		return ReimplementationFinding{
 			File:   firstMissing,
-			Reason: "missing // pp:data-source <auto|local|live> annotation",
+			Reason: "missing // pp:data-source <auto|local|live|computed> annotation",
 		}, true
 	}
 	return ReimplementationFinding{}, false
+}
+
+func computedDataSource(content string) bool {
+	m := dataSourceDirectiveRe.FindStringSubmatch(content)
+	return len(m) > 1 && strings.EqualFold(strings.TrimSpace(m[1]), "computed")
+}
+
+func localDataSource(content string) bool {
+	m := dataSourceDirectiveRe.FindStringSubmatch(content)
+	return len(m) > 1 && strings.EqualFold(strings.TrimSpace(m[1]), "local")
 }
 
 func isGeneratedPrintingPressFile(content string) bool {
@@ -534,7 +588,7 @@ func hasBlockClientSignal(body *ast.BlockStmt, imports map[string]clientImportKi
 		if !ok {
 			return true
 		}
-		if isPrimitiveClientCall(call.Fun) || isImportedClientCall(call.Fun, imports, allowAnySiblingSelector) {
+		if isPrimitiveClientCall(call.Fun) || isImportedClientCall(call.Fun, imports, allowAnySiblingSelector) || isSidecarExecCall(call) {
 			found = true
 			return false
 		}
@@ -554,6 +608,34 @@ func isPrimitiveClientCall(expr ast.Expr) bool {
 		return true
 	}
 	return outboundHTTPCallRe.MatchString(strings.Join(parts, ".") + "(")
+}
+
+func isSidecarExecCall(call *ast.CallExpr) bool {
+	parts := selectorParts(call.Fun)
+	if len(parts) != 2 || parts[0] != "exec" {
+		return false
+	}
+	binaryArg := 0
+	switch parts[1] {
+	case "Command":
+		binaryArg = 0
+	case "CommandContext":
+		binaryArg = 1
+	default:
+		return false
+	}
+	if len(call.Args) <= binaryArg {
+		return false
+	}
+	lit, ok := call.Args[binaryArg].(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimSpace(value), "-pp-mcp")
 }
 
 func isImportedClientCall(expr ast.Expr, imports map[string]clientImportKind, allowAnySiblingSelector bool) bool {

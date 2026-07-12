@@ -78,6 +78,28 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 		require.NotContains(t, closure, "req.Header.Set(",
 			"query-param auth must not stamp any auth header on redirect")
 	})
+
+	t.Run("browser cookie auth uses jar redirect path", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("redirect-cookie")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:         "cookie",
+			Header:       "Cookie",
+			In:           "cookie",
+			CookieDomain: ".example.com",
+			Cookies:      []string{"session_id", "csrf_token"},
+			EnvVars:      []string{"REDIRECT_COOKIE_SESSION"},
+		}
+		client := generateClientSource(t, apiSpec)
+		closure := checkRedirectClosureBody(t, client)
+
+		require.Contains(t, closure, "Cookie-auth redirects: Go's http.Client + http.CookieJar handle",
+			"browser cookie auth must use the jar redirect branch, not the named in:cookie branch")
+		require.NotContains(t, closure, `ck.Name != "Cookie"`,
+			"browser cookie auth must not treat the Cookie header name as a cookie name when stripping redirects")
+		require.NotContains(t, closure, `req.AddCookie(ck)`,
+			"browser cookie auth redirects must not re-add preserved real cookies to cross-host redirects")
+	})
 }
 
 // checkRedirectClosureBody extracts the body of the CheckRedirect closure

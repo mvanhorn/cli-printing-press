@@ -79,11 +79,22 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.NotContains(t, promotedSrc, `"stdin"`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
-	assert.Contains(t, mcpSrc, `makeAPIHandler("POST", "/assets", false, false, nil, []mcpParamBinding`)
+	assert.Contains(t, mcpSrc, `makeAPIHandler("POST", "/assets", false, false, nil, mcpPageConfig{}, []mcpParamBinding`)
 	assert.Contains(t, mcpSrc, `Format: "binary"`)
 	assert.Contains(t, mcpSrc, `RequestContentType: "multipart/form-data"`)
 	assert.Contains(t, mcpSrc, `multipartFileFields[binding.WireName] = fmt.Sprintf("%v", v)`)
 	assert.Contains(t, mcpSrc, `data, _, err = c.PostMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)`)
+
+	// An object/array body param binds to its native JSON type even on a
+	// multipart endpoint (not WithString). The non-file field then flows
+	// through mcpMultipartFieldValue, which JSON-encodes a native composite
+	// rather than rendering it with Go's "%v". This locks the multipart path
+	// that became live once array/object params stopped binding as WithString —
+	// without it, a future refactor of the helper could silently reintroduce a
+	// malformed multipart field for composite params.
+	assert.Contains(t, mcpSrc, `mcplib.WithObject("metadata"`)
+	assert.Contains(t, mcpSrc, `multipartFields[binding.WireName] = mcpMultipartFieldValue(v)`)
+	assert.Regexp(t, `(?s)func mcpMultipartFieldValue\(v any\) string \{.*?json\.Marshal\(v\)`, mcpSrc)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
@@ -155,7 +166,7 @@ paths:
 	assert.NotContains(t, uploadSrc, `body["filename"] = bodyFilename`)
 
 	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_notes.go")
-	assert.Contains(t, createSrc, `body["title"] = bodyTitle`)
+	assert.Contains(t, createSrc, `bodyMap["title"] = bodyTitle`)
 	assert.Contains(t, createSrc, `c.PostWithParams(cmd.Context(), path, params, body)`)
 	assert.NotContains(t, createSrc, `c.PostMultipartWithParams`)
 

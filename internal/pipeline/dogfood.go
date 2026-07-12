@@ -53,6 +53,7 @@ type DogfoodReport struct {
 	NovelFeaturesCheck     NovelFeaturesCheckResult     `json:"novel_features_check"`
 	MCPSurfaceParityCheck  MCPSurfaceResult             `json:"mcp_surface_parity"`
 	ReimplementationCheck  ReimplementationCheckResult  `json:"reimplementation_check"`
+	DescriptionDriftCheck  *DescriptionDriftResult      `json:"description_drift_check,omitempty"`
 	SourceClientCheck      SourceClientCheckResult      `json:"source_client_check"`
 	PrintJSONFilteredCheck PrintJSONFilteredCheckResult `json:"print_json_filtered_check"`
 	TestPresence           TestPresenceResult           `json:"test_presence"`
@@ -76,6 +77,23 @@ type NamingViolation struct {
 	Banned    string `json:"banned"`
 	Preferred string `json:"preferred"`
 	Category  string `json:"category"`
+}
+
+type DescriptionDriftResult struct {
+	Expected string                    `json:"expected,omitempty"`
+	Findings []DescriptionDriftFinding `json:"findings,omitempty"`
+	Skipped  bool                      `json:"skipped,omitempty"`
+}
+
+type DescriptionDriftFinding struct {
+	Surface  string `json:"surface"`
+	File     string `json:"file"`
+	Actual   string `json:"actual"`
+	Expected string `json:"expected"`
+}
+
+func shouldReportDescriptionDrift(result DescriptionDriftResult) bool {
+	return !result.Skipped || result.Expected != "" || len(result.Findings) > 0
 }
 
 // TestPresenceResult reports coverage gaps in agent-authored pure-logic
@@ -252,7 +270,7 @@ func (s *openAPISpec) IsSynthetic() bool {
 }
 
 func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
-	releaseHome, err := scopeSubprocessHome()
+	releaseHome, err := scopeSubprocessHome(findCLINames(dir)...)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +336,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 			report.AuthCheck = checkAuth(dir, spec.Auth)
 		}
 		report.BrowserSessionCheck = checkBrowserSessionAuth(dir, spec.Auth)
-		report.OAuthScopeCoverage = checkOAuthScopeCoverage(dir, spec.OAuthScopeRequirements)
+		report.OAuthScopeCoverage = checkOAuthScopeCoverage(dir, spec.OAuthScopeRequirements, spec.Auth)
 	} else {
 		report.AuthCheck = AuthCheckResult{
 			Match:  true,
@@ -342,6 +360,9 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
 	report.MCPSurfaceParityCheck = checkMCPSurfaceParity(dir)
 	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
+	if drift := checkDescriptionDrift(dir, cfg.researchDir); shouldReportDescriptionDrift(drift) {
+		report.DescriptionDriftCheck = &drift
+	}
 	report.SourceClientCheck = checkSourceClients(dir)
 	report.PrintJSONFilteredCheck = checkPrintJSONFiltered(dir)
 	report.TestPresence = checkTestPresence(dir)
@@ -1369,14 +1390,26 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 
 	expectedPrefix := ""
 	expectedHeader := ""
+	formatPrefixOverrides := ""
+	formatLower := strings.ToLower(auth.Format)
 	switch {
-	case strings.Contains(strings.ToLower(auth.Format), "bot "):
+	case strings.Contains(formatLower, "bot "):
 		result.SpecScheme = `bot token format (expects "Bot " prefix)`
 		expectedPrefix = "Bot "
 	case strings.EqualFold(auth.Type, "bearer_token"):
-		result.SpecScheme = `bearer token format (expects "Bearer " prefix)`
-		expectedPrefix = "Bearer "
-	case strings.Contains(strings.ToLower(auth.Format), "basic "):
+		expectedPrefix = auth.HeaderPrefix() + " "
+		if formatPrefix, ok := authFormatSchemePrefix(auth.Format); ok {
+			if prefix := strings.TrimSpace(auth.Prefix); prefix != "" && !strings.EqualFold(strings.TrimSpace(formatPrefix), prefix) {
+				formatPrefixOverrides = prefix
+			}
+			expectedPrefix = formatPrefix
+		}
+		if formatPrefixOverrides != "" {
+			result.SpecScheme = fmt.Sprintf(`bearer token format (expects %q prefix from auth.format; auth.prefix %q ignored)`, expectedPrefix, formatPrefixOverrides)
+		} else {
+			result.SpecScheme = fmt.Sprintf(`bearer token format (expects %q prefix)`, expectedPrefix)
+		}
+	case strings.Contains(formatLower, "basic "):
 		result.SpecScheme = `basic auth format (expects "Basic " prefix)`
 		expectedPrefix = "Basic "
 	case strings.EqualFold(auth.Type, "api_key") && strings.EqualFold(auth.In, "header") && strings.TrimSpace(auth.Header) != "":
@@ -1451,7 +1484,11 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	result.Match = result.GeneratedFmt == expectedPrefix
 	if result.Match {
 		if tokenPreserving {
-			result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+			if formatPrefixOverrides != "" {
+				result.Detail = fmt.Sprintf(`auth.format %q overrides auth.prefix %q; generated client uses %q`, strings.TrimSpace(expectedPrefix), formatPrefixOverrides, strings.TrimSpace(expectedPrefix))
+			} else {
+				result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+			}
 		} else {
 			result.Match = false
 			result.Detail = invalidDetail
@@ -1462,11 +1499,29 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	return result
 }
 
-func checkOAuthScopeCoverage(dir string, requirements []oauthScopeRequirement) OAuthScopeCoverageResult {
+func authFormatSchemePrefix(format string) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(format))
+	if len(fields) == 0 || strings.Contains(fields[0], "{") {
+		return "", false
+	}
+	return fields[0] + " ", true
+}
+
+func checkOAuthScopeCoverage(dir string, requirements []oauthScopeRequirement, auth apispec.AuthConfig) OAuthScopeCoverageResult {
 	if len(requirements) == 0 {
 		return OAuthScopeCoverageResult{
 			Skipped: true,
 			Detail:  "no OAuth-scoped endpoints in spec",
+		}
+	}
+	if !oauthScopeCoverageApplies(auth) {
+		authType := strings.TrimSpace(auth.Type)
+		if authType == "" {
+			authType = "none"
+		}
+		return OAuthScopeCoverageResult{
+			Skipped: true,
+			Detail:  fmt.Sprintf("resolved auth type %s does not use OAuth scopes", authType),
 		}
 	}
 
@@ -1493,11 +1548,20 @@ func checkOAuthScopeCoverage(dir string, requirements []oauthScopeRequirement) O
 	if len(result.Violations) == 0 {
 		result.Detail = "all OAuth-scoped endpoints covered by generated auth scopes"
 	} else if len(generatedScopes) == 0 {
-		result.Detail = "generated auth.go declares no OAuth scopes"
+		result.Detail = "generated auth files declare no OAuth scopes"
 	} else {
 		result.Detail = fmt.Sprintf("%d OAuth-scoped endpoint(s) lack a generated auth scope", len(result.Violations))
 	}
 	return result
+}
+
+func oauthScopeCoverageApplies(auth apispec.AuthConfig) bool {
+	switch strings.ToLower(strings.TrimSpace(auth.Type)) {
+	case "api_key", "basic", "none", "cookie", "composed":
+		return false
+	default:
+		return true
+	}
 }
 
 func oauthScopeRequirementCovered(requirement oauthScopeRequirement, generated map[string]bool) bool {
@@ -1536,11 +1600,21 @@ func oauthScopeRequirementAlternatives(requirement oauthScopeRequirement) [][]st
 }
 
 func generatedOAuthScopes(dir string) []string {
-	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, "internal", "cli", "auth.go"), nil, 0)
-	if err != nil {
-		return nil
+	var scopes []string
+	for _, path := range []string{
+		filepath.Join(dir, "internal", "cli", "auth.go"),
+		filepath.Join(dir, "internal", "client", "client.go"),
+	} {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			continue
+		}
+		scopes = append(scopes, generatedOAuthScopesFromFile(file)...)
 	}
+	return uniqueSorted(scopes)
+}
 
+func generatedOAuthScopesFromFile(file *ast.File) []string {
 	scopeVars := scopeJoinVars(file)
 	var scopes []string
 	ast.Inspect(file, func(node ast.Node) bool {
@@ -1562,7 +1636,11 @@ func generatedOAuthScopes(dir string) []string {
 		}
 		return true
 	})
-	return uniqueSorted(scopes)
+	scopeFuncs := wiredScopeResolverFuncs(file)
+	if len(scopeFuncs) > 0 {
+		scopes = append(scopes, returnedScopeLiterals(file, scopeFuncs)...)
+	}
+	return scopes
 }
 
 func scopeJoinVars(file *ast.File) map[string]bool {
@@ -1583,6 +1661,98 @@ func scopeJoinVars(file *ast.File) map[string]bool {
 		return true
 	})
 	return vars
+}
+
+func wiredScopeResolverFuncs(file *ast.File) map[string]bool {
+	funcs := map[string]bool{}
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch n := node.(type) {
+		case *ast.IfStmt:
+			assign, ok := n.Init.(*ast.AssignStmt)
+			if !ok || n.Body == nil {
+				return true
+			}
+			for i, lhs := range assign.Lhs {
+				scopeVar, ok := dogfoodIdentName(lhs)
+				if !ok || i >= len(assign.Rhs) || !blockSetsScopeFromIdent(n.Body, scopeVar) {
+					continue
+				}
+				if call, ok := assign.Rhs[i].(*ast.CallExpr); ok {
+					if name := dogfoodCallName(call.Fun); name != "" {
+						funcs[name] = true
+					}
+				}
+			}
+		case *ast.CallExpr:
+			if len(n.Args) < 2 || dogfoodSelectorName(n.Fun) != "Set" || dogfoodStringLiteral(n.Args[0]) != "scope" {
+				return true
+			}
+			call, ok := n.Args[1].(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if name := dogfoodCallName(call.Fun); name != "" {
+				funcs[name] = true
+			}
+		}
+		return true
+	})
+	return funcs
+}
+
+func blockSetsScopeFromIdent(block *ast.BlockStmt, ident string) bool {
+	found := false
+	ast.Inspect(block, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) < 2 || dogfoodSelectorName(call.Fun) != "Set" || dogfoodStringLiteral(call.Args[0]) != "scope" {
+			return true
+		}
+		name, ok := dogfoodIdentName(call.Args[1])
+		if ok && name == ident {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func returnedScopeLiterals(file *ast.File, funcs map[string]bool) []string {
+	var values []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name == nil || !funcs[fn.Name.Name] || fn.Body == nil {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			ret, ok := node.(*ast.ReturnStmt)
+			if !ok {
+				return true
+			}
+			for _, result := range ret.Results {
+				values = append(values, scopeLiteralValues(result)...)
+			}
+			return true
+		})
+	}
+	return values
+}
+
+func scopeLiteralValues(expr ast.Expr) []string {
+	if value := strings.TrimSpace(dogfoodStringLiteral(expr)); value != "" {
+		return []string{value}
+	}
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || dogfoodSelectorName(call.Fun) != "ReplaceAll" || len(call.Args) == 0 {
+		return nil
+	}
+	if value := strings.TrimSpace(dogfoodStringLiteral(call.Args[0])); value != "" {
+		return []string{value}
+	}
+	return nil
 }
 
 func appendedStringValues(call *ast.CallExpr, scopeVars map[string]bool) []string {
@@ -1655,6 +1825,7 @@ var authPrefixCandidates = []authPrefixCandidate{
 	{prefix: "Bot ", concatRe: regexp.MustCompile(`"Bot "\s*\+`)},
 	{prefix: "Bearer ", concatRe: regexp.MustCompile(`"Bearer "\s*\+`)},
 	{prefix: "Basic ", concatRe: regexp.MustCompile(`"Basic "\s*\+`)},
+	{prefix: "Token ", concatRe: regexp.MustCompile(`"Token "\s*\+`)},
 }
 
 // composedAuthLiteralScheme classifies the auth scheme that a composed-auth or
@@ -1793,11 +1964,19 @@ func authCandidatesForPrefix(expectedPrefix string) []authPrefixCandidate {
 		return authPrefixCandidates
 	}
 	candidates := make([]authPrefixCandidate, 0, len(authPrefixCandidates))
+	foundExpected := false
 	for _, candidate := range authPrefixCandidates {
 		if candidate.prefix == expectedPrefix {
 			candidates = append(candidates, candidate)
+			foundExpected = true
 			break
 		}
+	}
+	if !foundExpected {
+		candidates = append(candidates, authPrefixCandidate{
+			prefix:   expectedPrefix,
+			concatRe: regexp.MustCompile(regexp.QuoteMeta(strconv.Quote(expectedPrefix)) + `\s*\+`),
+		})
 	}
 	for _, candidate := range authPrefixCandidates {
 		if candidate.prefix != expectedPrefix {
@@ -2355,6 +2534,96 @@ func hasPopulatedSyncResources(syncSource string) bool {
 	return !defaultSyncResourcesEmptyRe.MatchString(syncSource)
 }
 
+var rootShortLiteralRe = regexp.MustCompile(`Short:\s*(` + "`[^`]*`" + `|"(?:\\.|[^"])*")`)
+
+func checkDescriptionDrift(cliDir, researchDir string) DescriptionDriftResult {
+	if researchDir == "" {
+		return DescriptionDriftResult{Skipped: true}
+	}
+	research, err := LoadResearch(researchDir)
+	if err != nil || research.Narrative == nil {
+		return DescriptionDriftResult{Skipped: true}
+	}
+	expected := naming.ManifestDescription(research.Narrative.Headline)
+	if expected == "" {
+		expected = naming.ManifestDescription(research.Narrative.ValueProp)
+	}
+	if expected == "" {
+		return DescriptionDriftResult{Skipped: true}
+	}
+
+	result := DescriptionDriftResult{Expected: expected}
+	if actual, ok := readManifestDescription(filepath.Join(cliDir, CLIManifestFilename)); ok && !descriptionSurfaceMatches(actual, expected) {
+		result.Findings = append(result.Findings, DescriptionDriftFinding{
+			Surface:  "manifest.description",
+			File:     CLIManifestFilename,
+			Actual:   actual,
+			Expected: expected,
+		})
+	}
+	rootPath := filepath.Join(cliDir, "internal", "cli", "root.go")
+	if actual, ok := readRootShort(rootPath); ok && !descriptionSurfaceMatches(actual, expected) {
+		result.Findings = append(result.Findings, DescriptionDriftFinding{
+			Surface:  "root.Short",
+			File:     filepath.Join("internal", "cli", "root.go"),
+			Actual:   actual,
+			Expected: expected,
+		})
+	}
+	return result
+}
+
+func readManifestDescription(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var probe struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return "", false
+	}
+	desc := strings.TrimSpace(probe.Description)
+	return desc, desc != ""
+}
+
+func readRootShort(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	m := rootShortLiteralRe.FindStringSubmatch(string(data))
+	if len(m) < 2 {
+		return "", false
+	}
+	lit := m[1]
+	var value string
+	if unwrapped, ok := strings.CutPrefix(lit, "`"); ok {
+		value = strings.TrimSuffix(unwrapped, "`")
+	} else if unquoted, err := strconv.Unquote(lit); err == nil {
+		value = unquoted
+	}
+	value = strings.TrimSpace(value)
+	return value, value != ""
+}
+
+func descriptionSurfaceMatches(actual, expected string) bool {
+	actual = strings.ToLower(naming.ManifestDescription(actual))
+	expected = strings.ToLower(naming.ManifestDescription(expected))
+	if actual == "" || expected == "" {
+		return true
+	}
+	if actual == expected || strings.Contains(actual, expected) || strings.Contains(expected, actual) {
+		return true
+	}
+	if len([]rune(expected)) > 60 {
+		prefix := string([]rune(expected)[:60])
+		return strings.Contains(actual, prefix)
+	}
+	return false
+}
+
 type dogfoodVerdictRule struct {
 	verdict string
 	match   func(*DogfoodReport, bool) bool
@@ -2397,6 +2666,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	// Pure-logic packages with zero tests fail shipcheck; prompts alone have not kept this invariant reliable.
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.TestPresence.MissingTests) > 0 }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.NamingCheck.Violations) > 0 }},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		return r.DescriptionDriftCheck != nil && len(r.DescriptionDriftCheck.Findings) > 0
+	}},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool {
 		return mcpSurfaceCheckActive(r.MCPSurfaceParityCheck) && !r.MCPSurfaceParityCheck.HandEdited && !r.MCPSurfaceParityCheck.Pass
 	}},
@@ -2563,6 +2835,14 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		}
 		issues = append(issues, fmt.Sprintf("%d naming violations: %s",
 			len(report.NamingCheck.Violations), strings.Join(parts, "; ")))
+	}
+	if report.DescriptionDriftCheck != nil && len(report.DescriptionDriftCheck.Findings) > 0 {
+		parts := make([]string, 0, len(report.DescriptionDriftCheck.Findings))
+		for _, f := range report.DescriptionDriftCheck.Findings {
+			parts = append(parts, fmt.Sprintf("%s in %s is %q; expected %q", f.Surface, f.File, f.Actual, f.Expected))
+		}
+		issues = append(issues, fmt.Sprintf("%d description surface(s) drifted from research.json narrative: %s",
+			len(report.DescriptionDriftCheck.Findings), strings.Join(parts, "; ")))
 	}
 	// ThinTests is intentionally NOT added as a hard issue — it's a warning
 	// surfaced to Wave B's Phase 4.85 agentic reviewer for deeper judgment.
@@ -2808,30 +3088,46 @@ func sampleEvenlyCommandPaths(items [][]string, n int) [][]string {
 }
 
 func findCLIName(dir string) string {
+	names := findCLINames(dir)
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
+func findCLINames(dir string) []string {
 	cmdDir := filepath.Join(dir, "cmd")
 	entries, err := os.ReadDir(cmdDir)
 	if err != nil {
-		return ""
+		return nil
 	}
+	var names []string
 	for _, entry := range entries {
 		if entry.IsDir() && naming.IsCLIDirName(entry.Name()) {
-			return entry.Name()
+			names = append(names, entry.Name())
 		}
 	}
-	return ""
+	return names
 }
 
 func buildDogfoodBinary(dir, cliName string) (string, error) {
-	buildPath, err := filepath.Abs(filepath.Join(dir, cliName+"-dogfood"))
+	tmp, err := os.CreateTemp("", cliName+"-dogfood-*")
 	if err != nil {
-		return "", fmt.Errorf("resolving dogfood binary path: %w", err)
+		return "", fmt.Errorf("creating dogfood binary temp file: %w", err)
 	}
+	buildPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(buildPath)
+		return "", fmt.Errorf("closing dogfood binary temp file: %w", err)
+	}
+	_ = os.Remove(buildPath)
 	buildPath = platform.ExecutablePath(buildPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", buildPath, "./cmd/"+cliName)
 	cmd.Dir = dir
 	if err := cmd.Run(); err != nil {
+		_ = os.Remove(buildPath)
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("timed out after 2m")
 		}

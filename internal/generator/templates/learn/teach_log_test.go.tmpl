@@ -10,18 +10,32 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"{{modulePath}}/internal/cliutil"
 )
 
 func withTempHomeForLog(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("{{envPrefix .Name}}_STATE_DIR", "")
+	t.Setenv("{{envPrefix .Name}}_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
 	return dir
 }
 
-func readRawTeachLog(t *testing.T, home string) string {
+func teachLogPathForTest(t *testing.T) string {
 	t.Helper()
-	p := filepath.Join(home, ".local", "share", teachLogStateDirName, teachLogFileName)
+	dir, err := cliutil.StateDir()
+	if err != nil {
+		t.Fatalf("StateDir() error = %v", err)
+	}
+	return filepath.Join(dir, teachLogFileName)
+}
+
+func readRawTeachLog(t *testing.T) string {
+	t.Helper()
+	p := teachLogPathForTest(t)
 	b, err := os.ReadFile(p) // #nosec G304 -- temp test path
 	if err != nil {
 		t.Fatalf("read teach.log: %v", err)
@@ -30,8 +44,8 @@ func readRawTeachLog(t *testing.T, home string) string {
 }
 
 func TestAppendTeachLogWarning_CreatesDirectoryAndFile(t *testing.T) {
-	home := withTempHomeForLog(t)
-	stateDir := filepath.Join(home, ".local", "share", teachLogStateDirName)
+	withTempHomeForLog(t)
+	stateDir := filepath.Dir(teachLogPathForTest(t))
 	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
 		t.Fatalf("precondition: state dir should not exist yet")
 	}
@@ -48,7 +62,7 @@ func TestAppendTeachLogWarning_CreatesDirectoryAndFile(t *testing.T) {
 	} else if !info.IsDir() {
 		t.Fatalf("state dir not a directory")
 	}
-	raw := readRawTeachLog(t, home)
+	raw := readRawTeachLog(t)
 	if !strings.HasSuffix(raw, "\n") {
 		t.Errorf("line should end with newline; got %q", raw)
 	}
@@ -58,7 +72,7 @@ func TestAppendTeachLogWarning_CreatesDirectoryAndFile(t *testing.T) {
 }
 
 func TestAppendTeachLogWarning_JSONShape(t *testing.T) {
-	home := withTempHomeForLog(t)
+	withTempHomeForLog(t)
 	w := Warning{
 		Code:      "no_entity_overlap",
 		Resource:  "PREFIX-X",
@@ -68,7 +82,7 @@ func TestAppendTeachLogWarning_JSONShape(t *testing.T) {
 	if err := AppendTeachLogWarning("teach", "alpha widget", w); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	raw := readRawTeachLog(t, home)
+	raw := readRawTeachLog(t)
 	line := strings.TrimSpace(raw)
 	var entry TeachLogEntry
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
@@ -146,11 +160,11 @@ func TestReadTeachLogWarnings_FilterByResourceID(t *testing.T) {
 }
 
 func TestReadTeachLogWarnings_SkipsNonJSONLines(t *testing.T) {
-	home := withTempHomeForLog(t)
+	withTempHomeForLog(t)
 	if err := AppendTeachLogWarning("teach", "q", Warning{Code: "code", Resource: "STRUCTURED"}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	p := filepath.Join(home, ".local", "share", teachLogStateDirName, "teach.log")
+	p := teachLogPathForTest(t)
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatalf("open: %v", err)

@@ -3,6 +3,8 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1305,6 +1307,33 @@ func runMessages() {
 
 		assert.Equal(t, 5, scoreDeadCode(dir))
 	})
+
+	t.Run("generated helper extension points are not dead code", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+func applyResponsePath() {}
+func emitMissingPaginationCursorWarning() {}
+func emitMissingPaginationSignalWarning() {}
+func emitPaginatedGetMaxPagesWarning() {}
+func emitTruncationWarning() {}
+func extractGraphQLConnection() {}
+func extractGraphQLObject() {}
+func formatCLIParamValue() {}
+func nextClientSidePaginationCursor() {}
+func nextFullPageOffsetCursor() {}
+func paginatedGet() {}
+func paginationCursorToken() {}
+func replacePathParam() {}
+func responsePayloadParentAtPath() {}
+func writeNoop() {}
+`)
+
+		assert.Equal(t, 5, scoreDeadCode(dir))
+	})
 }
 
 func TestScorecard_VerifyCalibration(t *testing.T) {
@@ -1415,9 +1444,104 @@ func runLinks() string {
 		pipelineDir := t.TempDir()
 		sc, err := RunScorecard(dir, pipelineDir, "", nil)
 		assert.NoError(t, err)
-		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "live_api_verification"}, sc.UnscoredDimensions)
+		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "data_pipeline_integrity", "sync_correctness", "type_fidelity", "live_api_verification"}, sc.UnscoredDimensions)
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 		assert.NotContains(t, sc.GapReport, "auth_protocol scored 0/10 - needs improvement")
+	})
+
+	t.Run("graphql specs omit rest path validity from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+func runEvents() string {
+	path := "/events"
+	return path
+}
+`)
+		specPath := filepath.Join(dir, "spec.yaml")
+		writeScorecardFixture(t, dir, "spec.yaml", `
+name: events-graphql
+version: "0.1.0"
+base_url: https://api.example.com
+graphql_endpoint_path: /graphql
+auth:
+  type: none
+resources:
+  events:
+    description: Events
+    endpoints:
+      list:
+        method: POST
+        path: /graphql
+        description: List events
+`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+		assert.Zero(t, sc.Steinberger.PathValidity)
+		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
+	})
+
+	t.Run("OpenAPI GraphQL specs omit rest path validity from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli`)
+		writeScorecardFixture(t, dir, "internal/cli/events.go", `
+package cli
+
+func runEvents() string {
+	path := "/events"
+	return path
+}
+`)
+		specPath := filepath.Join(dir, "openapi.yaml")
+		writeScorecardFixture(t, dir, "openapi.yaml", `
+openapi: 3.0.3
+info:
+  title: Events GraphQL
+  version: 1.0.0
+  x-graphql-endpoint: /graphql
+paths:
+  /graphql:
+    post:
+      operationId: graphql
+      responses:
+        "200":
+          description: ok
+`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimPathValidity)
+		assert.Zero(t, sc.Steinberger.PathValidity)
+		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
+	})
+
+	t.Run("no store omits store pipeline dimensions from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+func initRoot() { rootCmd.AddCommand(newSyncCmd()) }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `package cli
+import "github.com/spf13/cobra"
+func newSyncCmd() *cobra.Command { return &cobra.Command{Use: "sync"} }
+`)
+		writeScorecardFixture(t, dir, "internal/cli/snapshot.go", `package cli
+import "github.com/spf13/cobra"
+func newSnapshotCmd() *cobra.Command { return &cobra.Command{Use: "snapshot"} }
+`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, "", nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimDataPipelineIntegrity)
+		assert.Contains(t, sc.UnscoredDimensions, DimSyncCorrectness)
+		assert.Contains(t, sc.UnscoredDimensions, DimTypeFidelity)
+		assert.NotContains(t, sc.GapReport, "data_pipeline_integrity scored 0/10 - needs improvement")
+		assert.NotContains(t, sc.GapReport, "sync_correctness scored 0/10 - needs improvement")
+		assert.NotContains(t, sc.GapReport, "type_fidelity scored 0/5 - needs improvement")
 	})
 
 	t.Run("hidden endpoint mirrors omit mcp description quality from scoring", func(t *testing.T) {
@@ -1496,7 +1620,9 @@ func runLinks() string {
 			scBearer.Steinberger.SyncCorrectness +
 			scBearer.Steinberger.TypeFidelity +
 			scBearer.Steinberger.DeadCode
-		expectedDelta := (sharedTier2Raw * 50 / 40) - (sharedTier2Raw * 50 / 50)
+		noAuthMax := scorecardTierMax(scNoAuth, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
+		bearerMax := scorecardTierMax(scBearer, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol, DimSyncCorrectness, DimDataPipelineIntegrity, DimTypeFidelity)
+		expectedDelta := (sharedTier2Raw * 50 / noAuthMax) - (sharedTier2Raw * 50 / bearerMax)
 		assert.Equal(t, scBearer.Steinberger.Total+expectedDelta, scNoAuth.Steinberger.Total)
 	})
 
@@ -2476,7 +2602,7 @@ func runLinks() string {
 		body := string(data)
 		assert.True(t, strings.Contains(body, `"path_validity":0`))
 		assert.True(t, strings.Contains(body, `"auth_protocol":0`))
-		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_description_quality","mcp_token_efficiency","mcp_remote_transport","mcp_tool_design","mcp_surface_strategy","cache_freshness","path_validity","auth_protocol","live_api_verification"]`))
+		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_description_quality","mcp_token_efficiency","mcp_remote_transport","mcp_tool_design","mcp_surface_strategy","cache_freshness","path_validity","auth_protocol","data_pipeline_integrity","sync_correctness","type_fidelity","live_api_verification"]`))
 	})
 }
 
@@ -4285,20 +4411,30 @@ func isTerminal() bool { return false }`,
 	}
 }
 
-// TestScoreVision_LearnLoopPresenceAddsHalfPoint pins the presence-only credit
-// for the self-learning recall/teach loop. A CLI that ships internal/learn/doc.go
-// gains 0.5 in Vision tier 1 over an otherwise-identical CLI without it. The
-// credit is for the loop's presence, not its richness — teach traffic
-// accumulates value at runtime, not at print time.
+// TestScoreVision_LearnCreditIsStaticBehavioral pins the retirement of the
+// internal/learn/doc.go presence sentinel. Once the learn loop is default-on,
+// every printed CLI ships doc.go, so its presence proves nothing. Vision
+// credit for the loop is now split into two static-behavioral quarter points:
 //
-// The fixture is sized so the +0.5 credit crosses an integer boundary: baseline
-// scores 3 (3.5 total → int trunc) and the learn-enabled fixture scores 4
-// (4.0 total → int).
-func TestScoreVision_LearnLoopPresenceAddsHalfPoint(t *testing.T) {
-	build := func(includeLearn bool) string {
+//	+0.25 when root.go actually registers the learn command surface
+//	      (teach + recall + learnings constructor calls, read via the same
+//	      reachable-command parse the rest of the scorer uses);
+//	+0.25 when the emitted seed artifact carries non-empty entity lookup
+//	      seeds (the stamped lookups.SeedConfig map in learn_init.go).
+//
+// The base fixture is sized at 3.75 raw points (tier1 3.0 + tier2 wiring
+// 0.75) so each individual +0.25 crosses the integer boundary to 4, and the
+// retired doc.go sentinel alone visibly earns nothing (would cross to 4 if
+// it still carried +0.5).
+func TestScoreVision_LearnCreditIsStaticBehavioral(t *testing.T) {
+	build := func(docSentinel, registered, seeded bool) string {
 		dir := t.TempDir()
+		rootRegs := "newSearchCmd(nil), newExportCmd(nil), newSyncCmd(nil)"
+		if registered {
+			rootRegs += ", newTeachCmd(nil, nil), newRecallCmd(nil, nil), newLearningsCmd(nil, nil)"
+		}
 		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
-func newRootCmd() { rootCmd.AddCommand(newSearchCmd(nil), newExportCmd(nil)) }
+func newRootCmd() { rootCmd.AddCommand(`+rootRegs+`) }
 `)
 		writeScorecardFixture(t, dir, "internal/cli/search.go", `package cli
 func newSearchCmd(flags any) {}
@@ -4308,28 +4444,204 @@ func newExportCmd(flags any) {}
 `)
 		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
 `)
-		if includeLearn {
+		if docSentinel {
 			writeScorecardFixture(t, dir, "internal/learn/doc.go", `// Package learn owns the generated recall/teach loop.
 package learn
+`)
+		}
+		if seeded {
+			writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+import "example.com/project/internal/learn/lookups"
+func initLearn(db any) error {
+	seeds := map[string][]lookups.SeedConfig{
+		"team": {
+			{Canonical: "SEA", Values: []string{"Mariners", "Seattle"}},
+		},
+	}
+	_, err := lookups.SeedFromConfig(nil, seeds)
+	return err
+}
 `)
 		}
 		return dir
 	}
 
-	baseline := scoreVision(build(false))
-	withCredit := scoreVision(build(true))
-
-	assert.Equal(t, 3, baseline,
-		"export+store+search wiring should sum to 3.5 tier points → int 3")
-	assert.Equal(t, 4, withCredit,
-		"adding internal/learn/doc.go should push tier 1 to 4.0 → int 4")
+	assert.Equal(t, 3, scoreVision(build(false, false, false)),
+		"base fixture should sum to 3.75 raw points → int 3")
+	assert.Equal(t, 3, scoreVision(build(true, false, false)),
+		"internal/learn/doc.go presence alone must earn nothing — the sentinel is retired")
+	assert.Equal(t, 4, scoreVision(build(false, true, false)),
+		"registered teach+recall+learnings surface should earn +0.25 → 4.0 → int 4")
+	assert.Equal(t, 4, scoreVision(build(false, false, true)),
+		"non-empty entity lookup seeds should earn +0.25 → 4.0 → int 4")
+	assert.Equal(t, 4, scoreVision(build(true, true, true)),
+		"full learn evidence earns +0.5 combined → 4.25 → int 4")
 }
 
-func TestScoreVision_LearnLoopGoldenFixtureAddsHalfPoint(t *testing.T) {
+func TestScoreVision_LearnLoopGoldenFixtureEarnsBehavioralCredit(t *testing.T) {
 	fixture := filepath.Join("..", "..", "testdata", "golden", "expected", "generate-learn-loop-api", "learn-loop-example")
 	score := scoreVision(fixture)
 
-	assert.GreaterOrEqual(t, score, 4, "learn-enabled golden fixture should receive the doc.go presence credit")
+	assert.GreaterOrEqual(t, score, 4, "learn-enabled golden fixture registers teach/recall/learnings and stamps seeds, so it should earn the behavioral credit")
+}
+
+func TestLearnCommandSurfaceRegistered(t *testing.T) {
+	write := func(t *testing.T, rootBody string) string {
+		dir := t.TempDir()
+		if rootBody != "" {
+			writeScorecardFixture(t, dir, "internal/cli/root.go", rootBody)
+		}
+		return dir
+	}
+
+	t.Run("all three learn commands registered", func(t *testing.T) {
+		dir := write(t, `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newTeachCmd(nil, nil))
+	rootCmd.AddCommand(newRecallCmd(nil, nil))
+	rootCmd.AddCommand(newLearningsCmd(nil, nil))
+}
+`)
+		assert.True(t, learnCommandSurfaceRegistered(filepath.Join(dir, "internal", "cli")))
+	})
+
+	t.Run("missing learnings registration", func(t *testing.T) {
+		dir := write(t, `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newTeachCmd(nil, nil), newRecallCmd(nil, nil))
+}
+`)
+		assert.False(t, learnCommandSurfaceRegistered(filepath.Join(dir, "internal", "cli")),
+			"a partial surface (no learnings) must not earn the registration credit")
+	})
+
+	t.Run("constructor names outside AddCommand do not count", func(t *testing.T) {
+		dir := write(t, `package cli
+// newTeachCmd newRecallCmd newLearningsCmd mentioned in a comment only.
+func newRootCmd() {
+	rootCmd.AddCommand(newSearchCmd(nil))
+}
+`)
+		assert.False(t, learnCommandSurfaceRegistered(filepath.Join(dir, "internal", "cli")),
+			"registration evidence must come from parsed AddCommand calls, not substring mentions")
+	})
+
+	t.Run("missing root.go", func(t *testing.T) {
+		dir := write(t, "")
+		assert.False(t, learnCommandSurfaceRegistered(filepath.Join(dir, "internal", "cli")))
+	})
+}
+
+func TestLearnEntitySeedsNonEmpty(t *testing.T) {
+	t.Run("stamped seed map in learn_init.go", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+import "example.com/project/internal/learn/lookups"
+func initLearn(db any) error {
+	seeds := map[string][]lookups.SeedConfig{
+		"venue": {
+			{Canonical: "KALSHI", Values: []string{"kalshi"}},
+		},
+	}
+	_, err := lookups.SeedFromConfig(nil, seeds)
+	return err
+}
+`)
+		assert.True(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("empty-seed learn_init.go earns nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+func initLearn(db any) error {
+	_ = db
+	return nil
+}
+`)
+		assert.False(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("generic lookups library alone earns nothing", func(t *testing.T) {
+		// The emitted lookups library always contains SeedConfig and
+		// variable-reference Canonical fields; that must not count as
+		// seed data.
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/learn/lookups/seeds.go", `package lookups
+type SeedConfig struct {
+	Canonical string
+	Values    []string
+}
+func SeedFromConfig(db any, seedsByKind map[string][]SeedConfig) (int, error) {
+	rows := make([]LookupRow, 0)
+	for kind, seeds := range seedsByKind {
+		for _, s := range seeds {
+			rows = append(rows, LookupRow{Kind: kind, Canonical: s.Canonical, Value: s.Canonical, Source: "seeded"})
+		}
+	}
+	_ = rows
+	return 0, nil
+}
+`)
+		assert.False(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("commented seed shape earns nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+// SeedConfig example only: Canonical: "SEA"
+func initLearn(db any) error {
+	_ = db
+	return nil
+}
+`)
+		assert.False(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("hand-authored seed table under lookups counts", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/learn/lookups/seeds.go", `package lookups
+var builtinSeeds = map[string][]SeedConfig{
+	"team": {
+		{Canonical: "SEA", Values: []string{"Mariners"}},
+	},
+}
+`)
+		assert.True(t, learnEntitySeedsNonEmpty(dir))
+	})
+
+	t.Run("no seed artifacts at all", func(t *testing.T) {
+		assert.False(t, learnEntitySeedsNonEmpty(t.TempDir()))
+	})
+}
+
+// TestScorecardSourcesNeverImportOSExec pins the scorecard's pure-static
+// contract: every scorecard credit is computed by scanning emitted source
+// content, never by executing printed binaries. Execution proof belongs to
+// verify and the acceptance print. Any scorecard source file importing
+// os/exec is a contract violation, regardless of what it does with it.
+func TestScorecardSourcesNeverImportOSExec(t *testing.T) {
+	matches, err := filepath.Glob("scorecard*.go")
+	if err != nil {
+		t.Fatalf("glob scorecard sources: %v", err)
+	}
+
+	checked := 0
+	fset := token.NewFileSet()
+	for _, m := range matches {
+		if strings.HasSuffix(m, "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(fset, m, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", m, err)
+		}
+		for _, imp := range parsed.Imports {
+			assert.NotEqual(t, `"os/exec"`, imp.Path.Value,
+				"%s must not import os/exec — the scorecard never executes binaries", m)
+		}
+		checked++
+	}
+	assert.GreaterOrEqual(t, checked, 2, "expected to check scorecard.go and scorecard_structural.go at minimum")
 }
 
 func TestScoreVision_ImportPresenceAddsHalfPoint(t *testing.T) {
@@ -4362,6 +4674,10 @@ func TestScoreVision_MaxReachableAndPartialStaysSub10(t *testing.T) {
 	build := func(includeLearn, includeFTS5 bool) string {
 		dir := t.TempDir()
 
+		learnRegs := ""
+		if includeLearn {
+			learnRegs = "\n\t\tnewTeachCmd(nil, nil),\n\t\tnewRecallCmd(nil, nil),\n\t\tnewLearningsCmd(nil, nil),"
+		}
 		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
 func newRootCmd() {
 	rootCmd.AddCommand(
@@ -4370,7 +4686,7 @@ func newRootCmd() {
 		newExportCmd(nil),
 		newTailCmd(nil),
 		newImportCmd(nil),
-		newAnalyticsCmd(nil),
+		newAnalyticsCmd(nil),`+learnRegs+`
 	)
 }
 `)
@@ -4427,13 +4743,27 @@ const schema = `
 			writeScorecardFixture(t, dir, "internal/learn/doc.go", `// Package learn owns the generated recall/teach loop.
 package learn
 `)
+			writeScorecardFixture(t, dir, "internal/cli/learn_init.go", `package cli
+import "example.com/project/internal/learn/lookups"
+func initLearn(db any) error {
+	seeds := map[string][]lookups.SeedConfig{
+		"team": {
+			{Canonical: "SEA", Values: []string{"Mariners"}},
+		},
+	}
+	_, err := lookups.SeedFromConfig(nil, seeds)
+	return err
+}
+`)
 		}
 		return dir
 	}
 
 	// Before the tier2 schema+wiring cap fix, build(true,true) scored 9 and
 	// build(false,false) scored 8. Both sat in the affected (3.0,3.5] band;
-	// the full fixture now reaches 10, the partial reaches 9.
+	// the full fixture now reaches 10, the partial reaches 9. The learn half
+	// point is behavioral now: registered teach/recall/learnings (+0.25) plus
+	// stamped non-empty seeds (+0.25).
 	assert.Equal(t, 10, scoreVision(build(true, true)))
 	assert.Equal(t, 9, scoreVision(build(false, false)))
 }

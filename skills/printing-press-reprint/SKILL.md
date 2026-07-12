@@ -137,13 +137,29 @@ can lag even when `run_id` matches; this step closes that gap.
 
 The index ships in one of two shapes: the per-patch directory
 `.printing-press-patches/` (current) or the legacy single-array
-`.printing-press-patches.json` (older CLIs not yet normalized). Prefer the
-directory; fall back to the legacy file.
+`.printing-press-patches.json` (older CLIs not yet normalized). Always check
+both shapes when reachable. Prefer the directory when it contains patch files,
+but never let an absent legacy single-file index set `PATCH_COUNT=0` until the
+directory fallback has been read.
 
 ```bash
 PATCHES_DIR="$LIB_TARGET/.printing-press-patches"
 PATCHES_LEGACY="$LIB_TARGET/.printing-press-patches.json"
 if [[ -n "$LIB_PATH" ]]; then
+  # Fetch the legacy shape if present, but do not treat a 404 as proof that no
+  # patches exist. Current library entries may carry only the per-patch
+  # directory below.
+  tmp=$(mktemp)
+  if gh api -H "Accept: application/vnd.github.v3.raw" \
+       "repos/mvanhorn/printing-press-library/contents/$LIB_PATH/.printing-press-patches.json" \
+       > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$PATCHES_LEGACY"
+  else
+    rm -f "$tmp"
+  fi
+
+  # Fetch the current directory shape independently. This is the required
+  # fallback when `.printing-press-patches.json` is absent.
   listing=$(gh api "repos/mvanhorn/printing-press-library/contents/$LIB_PATH/.printing-press-patches" 2>/dev/null || true)
   if jq -e 'type == "array"' <<<"$listing" >/dev/null 2>&1; then
     mkdir -p "$PATCHES_DIR"
@@ -156,21 +172,17 @@ if [[ -n "$LIB_PATH" ]]; then
           rm -f "$tmp"
         fi
       done
-  else
-    tmp=$(mktemp)
-    if gh api -H "Accept: application/vnd.github.v3.raw" \
-         "repos/mvanhorn/printing-press-library/contents/$LIB_PATH/.printing-press-patches.json" \
-         > "$tmp" 2>/dev/null; then
-      mv "$tmp" "$PATCHES_LEGACY"
-    else
-      rm -f "$tmp"
-    fi
   fi
 fi
 
-# Count from whichever shape is present locally; PATCHES_SOURCE is what Phase D reads.
+# Count from the first non-empty shape locally; PATCHES_SOURCE is what Phase D reads.
 if [[ -d "$PATCHES_DIR" ]]; then
-  PATCH_COUNT=$(find "$PATCHES_DIR" -maxdepth 1 -name '*.json' ! -name '_meta.json' | wc -l | tr -d ' ')
+  DIR_PATCH_COUNT=$(find "$PATCHES_DIR" -maxdepth 1 -name '*.json' ! -name '_meta.json' | wc -l | tr -d ' ')
+else
+  DIR_PATCH_COUNT=0
+fi
+if [[ "$DIR_PATCH_COUNT" != "0" ]]; then
+  PATCH_COUNT="$DIR_PATCH_COUNT"
   PATCHES_SOURCE="$PATCHES_DIR"
 elif [[ -f "$PATCHES_LEGACY" ]]; then
   PATCH_COUNT=$(jq '(.patches // []) | length' "$PATCHES_LEGACY" 2>/dev/null || echo 0)
@@ -393,6 +405,16 @@ for review. This honors the prefer-`regen-merge` guidance under the
 `skills/printing-press/SKILL.md` (anchor `hand-edit-durability`). If a future
 edit to that phase changes the routing rule, update this paragraph in the same
 PR -- the reprint skill is the dominant entry point that fires it.
+
+Before the hand-off, compare regenerated manifest files against the tracked
+published tree. If `$LIB_TARGET/manifest.json` or
+`$LIB_TARGET/tools-manifest.json` exists, diff each file against the freshly
+generated counterpart under `$CLI_WORK_DIR` and surface non-empty diffs in the
+handoff prompt. Treat a diff as a reconciliation checkpoint, not as automatic
+overwrite approval: the operator must decide whether to preserve the tracked
+hand-edit, fold it into the spec/research inputs, or intentionally accept the
+regenerated value. Do not continue silently when tracked manifest fields,
+tool metadata, or descriptions would be dropped.
 
 Attribution also stays owned by `/printing-press`: the hand-off runs generation
 for the same API slug, and the generate/promote path must preserve the existing

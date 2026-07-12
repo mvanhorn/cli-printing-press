@@ -1337,29 +1337,6 @@ func TestApplyManifestNameOverrideReplacesParsedName(t *testing.T) {
 		"inferred auth env var specs should follow the manifest api_name")
 }
 
-func TestApplyCatalogMetadataUsesCatalogBaseURL(t *testing.T) {
-	t.Parallel()
-
-	parsed := &spec.APISpec{
-		Name:                 "elevenlabs",
-		BaseURL:              spec.PlaceholderBaseURL,
-		BaseURLIsPlaceholder: true,
-		Auth: spec.AuthConfig{
-			Type:   "api_key",
-			Header: "xi-api-key",
-		},
-	}
-
-	applyCatalogMetadata(parsed)
-
-	assert.Equal(t, "https://api.elevenlabs.io", parsed.BaseURL)
-	assert.False(t, parsed.BaseURLIsPlaceholder)
-	assert.Equal(t, "ElevenLabs", parsed.DisplayName)
-	assert.Equal(t, "https://elevenlabs.io/app/settings/api-keys", parsed.Auth.KeyURL)
-	assert.Equal(t, "standard", parsed.HTTPTransport)
-	assert.Equal(t, "official", parsed.SpecSource)
-}
-
 // TestApplyManifestNameOverrideNoOpWhenManifestAgrees — most CLIs are
 // already aligned (manifest api_name matches spec-derived slug). The
 // override must be a no-op so it doesn't churn unrelated state.

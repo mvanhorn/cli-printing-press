@@ -6,22 +6,35 @@ package cli
 {{- $requiredRequestAuthEnvVars := requiredRequestAuthEnvVars .Auth}}
 {{- $optionalRequestAuthEnvVars := optionalRequestAuthEnvVars .Auth}}
 {{- $authSetTokenAvailable := authSetTokenAvailable .Auth}}
+{{- $authSetCredentialsAvailable := authSetCredentialsAvailable .Auth}}
+{{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
 
 import (
+{{- if eq .Auth.Type "session_handshake"}}
+	"encoding/json"
+{{- end}}
 	"fmt"
+{{- if eq .Auth.Type "session_handshake"}}
+	"net/http"
+{{- end}}
 {{- if or .Auth.KeyURL .WebsiteURL}}
 	"os/exec"
 	"runtime"
 {{- end}}
-{{- if .Auth.EnvVars}}
+{{- if or .Auth.EnvVars (eq .Auth.Type "session_handshake")}}
 	"os"
 {{- end}}
-
-{{- if or .Auth.KeyURL .WebsiteURL}}
-	"{{modulePath}}/internal/cliutil"
+{{- if eq .Auth.Type "session_handshake"}}
+	"strings"
+	"time"
 {{- end}}
-	"{{modulePath}}/internal/config"
+
 	"github.com/spf13/cobra"
+{{- if eq .Auth.Type "session_handshake"}}
+	"{{modulePath}}/internal/client"
+{{- end}}
+	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/config"
 )
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {
@@ -31,9 +44,17 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 		RunE:  parentNoSubcommandRunE(flags),
 	}
 
+{{ if eq .Auth.Type "session_handshake"}}
+	cmd.AddCommand(newAuthLoginCmd(flags))
+{{ end -}}
 	cmd.AddCommand(newAuthSetupCmd(flags))
 	cmd.AddCommand(newAuthStatusCmd(flags))
+{{- if $authSetTokenAvailable}}
 	cmd.AddCommand(newAuthSetTokenCmd(flags))
+{{- end}}
+{{- if $authSetCredentialsAvailable}}
+	cmd.AddCommand(newAuthSetCredentialsCmd(flags))
+{{- end}}
 	cmd.AddCommand(newAuthLogoutCmd(flags))
 
 	return cmd
@@ -51,9 +72,9 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
 {{- if .Auth.KeyURL}}
-			fmt.Fprintln(w, "Get a key at: {{.Auth.KeyURL}}")
+			fmt.Fprintln(w, {{printf "%q" (printf "Get a key at: %s" .Auth.KeyURL)}})
 {{- else if .WebsiteURL}}
-			fmt.Fprintln(w, "See API docs: {{.WebsiteURL}}")
+			fmt.Fprintln(w, {{printf "%q" (printf "See API docs: %s" .WebsiteURL)}})
 {{- else}}
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 {{- end}}
@@ -80,6 +101,9 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 {{- if $authSetTokenAvailable}}
 			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
 {{- end}}
+{{- if $authSetCredentialsAvailable}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}")
+{{- end}}
 {{- if $optionalRequestAuthEnvVars}}
 			fmt.Fprintln(w, "")
 {{- if and (not $requiredRequestAuthEnvVars) .Auth.IsAuthEnvVarORCase}}
@@ -101,12 +125,15 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 {{- if $authSetTokenAvailable}}
 			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
 {{- end}}
+{{- if $authSetCredentialsAvailable}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}")
+{{- end}}
 {{- end}}
 			if !launch {
 				return nil
 			}
 {{- if or .Auth.KeyURL .WebsiteURL}}
-			launchURL := {{if .Auth.KeyURL}}"{{.Auth.KeyURL}}"{{else}}"{{.WebsiteURL}}"{{end}}
+			launchURL := {{if .Auth.KeyURL}}{{printf "%q" .Auth.KeyURL}}{{else}}{{printf "%q" .WebsiteURL}}{{end}}
 			if cliutil.IsVerifyEnv() {
 				fmt.Fprintf(w, "would launch: %s\n", launchURL)
 				return nil
@@ -123,6 +150,131 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&launch, "launch", false, "Open the setup URL in your default browser")
 	return cmd
 }
+
+{{- if eq .Auth.Type "session_handshake"}}
+
+func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
+	var cookiesFile string
+	cmd := &cobra.Command{
+		Use:     "login",
+		Short:   "Import a browser session for the session handshake",
+		Example: "  {{.Name}}-pp-cli auth login --cookies-file storage-state.json",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := cmd.OutOrStdout()
+			if strings.TrimSpace(cookiesFile) == "" {
+				fmt.Fprintln(w, "Import browser-session cookies from Playwright storage-state JSON or a raw Cookie header file:")
+				fmt.Fprintf(w, "  {{.Name}}-pp-cli auth login --cookies-file storage-state.json\n")
+				return nil
+			}
+			imported, err := loadSessionCookiesFromFile(cookiesFile, "{{.Auth.CookieDomain}}")
+			if err != nil {
+				return authErr(err)
+			}
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+			c := client.New(cfg, flags.timeout, flags.rateLimit)
+			if c.Session == nil {
+				return authErr(fmt.Errorf("session handshake manager is not configured"))
+			}
+			if err := c.Session.ImportSession("{{.BaseURL}}", imported, ""); err != nil {
+				return authErr(err)
+			}
+			if _, err := c.Session.EnsureToken(); err != nil {
+				return authErr(fmt.Errorf("fetching session token with imported cookies: %w", err))
+			}
+			fmt.Fprintf(w, "%s Imported browser-session cookies and refreshed the session token.\n", green("OK"))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&cookiesFile, "cookies-file", "", "Import cookies from a Playwright storage-state JSON file or raw Cookie header file")
+	return cmd
+}
+
+func loadSessionCookiesFromFile(path string, domain string) ([]*http.Cookie, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading cookies file: %w", err)
+	}
+	var state struct {
+		Cookies []struct {
+			Name     string  `json:"name"`
+			Value    string  `json:"value"`
+			Domain   string  `json:"domain"`
+			Path     string  `json:"path"`
+			Expires  float64 `json:"expires"`
+			Secure   bool    `json:"secure"`
+			HTTPOnly bool    `json:"httpOnly"`
+		} `json:"cookies"`
+	}
+	if err := json.Unmarshal(data, &state); err == nil {
+		if len(state.Cookies) == 0 {
+			return nil, fmt.Errorf("cookies file contains an empty cookies array")
+		}
+		cookies := make([]*http.Cookie, 0, len(state.Cookies))
+		for _, c := range state.Cookies {
+			if !sessionCookieDomainMatches(c.Domain, domain) {
+				continue
+			}
+			name := strings.TrimSpace(c.Name)
+			if name == "" {
+				continue
+			}
+			path := c.Path
+			if path == "" {
+				path = "/"
+			}
+			ck := &http.Cookie{Name: name, Value: c.Value, Domain: c.Domain, Path: path, Secure: c.Secure, HttpOnly: c.HTTPOnly}
+			if c.Expires > 0 {
+				ck.Expires = time.Unix(int64(c.Expires), 0)
+			}
+			cookies = append(cookies, ck)
+		}
+		if len(cookies) == 0 {
+			return nil, fmt.Errorf("cookies file contains no cookies for %s", domain)
+		}
+		return cookies, nil
+	}
+	header := trimSessionCookieHeaderPrefix(string(data))
+	cookies := parseSessionCookieHeaderCookies(header)
+	if len(cookies) == 0 {
+		return nil, fmt.Errorf("cookies file is empty")
+	}
+	return cookies, nil
+}
+
+func trimSessionCookieHeaderPrefix(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= len("Cookie:") && strings.EqualFold(s[:len("Cookie:")], "Cookie:") {
+		return strings.TrimSpace(s[len("Cookie:"):])
+	}
+	return s
+}
+
+func parseSessionCookieHeaderCookies(header string) []*http.Cookie {
+	parts := strings.Split(header, ";")
+	cookies := make([]*http.Cookie, 0, len(parts))
+	for _, part := range parts {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok || strings.TrimSpace(name) == "" {
+			continue
+		}
+		cookies = append(cookies, &http.Cookie{Name: strings.TrimSpace(name), Value: strings.TrimSpace(value), Path: "/"})
+	}
+	return cookies
+}
+
+func sessionCookieDomainMatches(cookieDomain string, targetDomain string) bool {
+	target := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(targetDomain)), ".")
+	if target == "" {
+		return true
+	}
+	candidate := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(cookieDomain)), ".")
+	return candidate == target || strings.HasSuffix(candidate, "."+target) || (strings.Contains(candidate, ".") && strings.HasSuffix(target, "."+candidate))
+}
+
+{{- end}}
 
 {{- if or .Auth.KeyURL .WebsiteURL}}
 
@@ -202,6 +354,9 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 {{- if $authSetTokenAvailable}}
 				fmt.Fprintf(w, "  {{.Name}}-pp-cli auth set-token <token>\n")
 {{- end}}
+{{- if $authSetCredentialsAvailable}}
+				fmt.Fprintf(w, "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}\n")
+{{- end}}
 {{- if $optionalRequestAuthEnvVars}}
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Optional request credentials:")
@@ -229,7 +384,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "set-token <token>",
-		Short: "Save an API token to the config file",
+		Short: "Save an API token to the credentials file",
 		Example: "  {{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -260,17 +415,95 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 
-			// JSON envelope: {saved, config_path}.
+			savePath := credentialSavePath(cfg)
+			// JSON envelope: {saved, config_path, credentials_path}.
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				out := map[string]any{
 					"saved":       true,
 					"config_path": cfg.Path,
-				}, flags)
+				}
+				if !cfg.AgentcookieManagedByExternalStore() {
+					out["credentials_path"] = savePath
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", cfg.Path)
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", savePath)
 			return nil
 		},
 	}
+}
+
+{{- if $authSetCredentialsAvailable}}
+
+func newAuthSetCredentialsCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "set-credentials <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}>{{if (index $basicAuthEnvVars 1).Required}} <{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}>{{else}} [{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}]{{end}}",
+		Short: "Save Basic auth credentials to the credentials file",
+		Example: "  {{.Name}}-pp-cli auth set-credentials {{authEnvPlaceholder (index $basicAuthEnvVars 0)}} {{authEnvPlaceholder (index $basicAuthEnvVars 1)}}",
+		Args: func(cmd *cobra.Command, args []string) error {
+{{- if (index $basicAuthEnvVars 1).Required}}
+			if len(args) != 2 {
+				return fmt.Errorf("requires exactly 2 args: <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}> <{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}>")
+			}
+{{- else}}
+			if len(args) < 1 || len(args) > 2 {
+				return fmt.Errorf("requires 1 or 2 args: <{{envVarPlaceholder (index $basicAuthEnvVars 0).Name}}> [{{envVarPlaceholder (index $basicAuthEnvVars 1).Name}}]")
+			}
+{{- end}}
+{{- if (index $basicAuthEnvVars 0).Required}}
+			if args[0] == "" {
+				return fmt.Errorf("{{(index $basicAuthEnvVars 0).Name}} is required")
+			}
+{{- end}}
+{{- if (index $basicAuthEnvVars 1).Required}}
+			if args[1] == "" {
+				return fmt.Errorf("{{(index $basicAuthEnvVars 1).Name}} is required")
+			}
+{{- end}}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+			value1 := ""
+			if len(args) > 1 {
+				value1 = args[1]
+			}
+			if err := cfg.SaveCredentials(args[0], value1); err != nil {
+				return configErr(fmt.Errorf("saving credentials: %w", err))
+			}
+			savePath := credentialSavePath(cfg)
+			if flags.asJSON {
+				out := map[string]any{
+					"saved":       true,
+					"config_path": cfg.Path,
+				}
+				if !cfg.AgentcookieManagedByExternalStore() {
+					out["credentials_path"] = savePath
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Credentials saved to %s\n", savePath)
+			return nil
+		},
+	}
+}
+
+{{- end}}
+
+func credentialSavePath(cfg *config.Config) string {
+	if cfg != nil && cfg.AgentcookieManagedByExternalStore() {
+		return cfg.Path
+	}
+	if path, err := cliutil.CredentialsFilePath(); err == nil {
+		return path
+	}
+	if cfg != nil {
+		return cfg.Path
+	}
+	return ""
 }
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {

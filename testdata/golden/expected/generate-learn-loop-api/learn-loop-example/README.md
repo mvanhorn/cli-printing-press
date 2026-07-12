@@ -159,6 +159,55 @@ learn-loop-example-pp-cli games
 
 Run `learn-loop-example-pp-cli --help` for the full command reference and flag list.
 
+## Paths & environment variables
+
+This CLI separates local files into four path kinds:
+
+| Kind | Contents |
+|------|----------|
+| `config` | User-editable settings such as `config.toml` and saved profiles |
+| `data` | Durable local data: `credentials.toml`, `data.db`, cookies, browser-session proof files, and other auth sidecars |
+| `state` | Runtime state such as persisted queries, jobs, and `teach.log` |
+| `cache` | Regenerable HTTP/cache files |
+
+Each kind resolves independently. The ladder is:
+
+1. Per-kind env var: `LEARN_LOOP_EXAMPLE_CONFIG_DIR`, `LEARN_LOOP_EXAMPLE_DATA_DIR`, `LEARN_LOOP_EXAMPLE_STATE_DIR`, or `LEARN_LOOP_EXAMPLE_CACHE_DIR`
+2. `--home <dir>` for this invocation
+3. `LEARN_LOOP_EXAMPLE_HOME` for a flat relocated root
+4. XDG env vars: `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`
+5. Platform defaults matching existing installs
+
+For containers and agent sandboxes, prefer a single relocated root:
+
+```bash
+export LEARN_LOOP_EXAMPLE_HOME=/srv/learn-loop-example
+learn-loop-example-pp-cli doctor
+```
+
+Under `LEARN_LOOP_EXAMPLE_HOME=/srv/learn-loop-example`, the four dirs resolve to `/srv/learn-loop-example/config`, `/srv/learn-loop-example/data`, `/srv/learn-loop-example/state`, and `/srv/learn-loop-example/cache`.
+
+MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
+
+```json
+{
+  "mcpServers": {
+    "learn-loop-example": {
+      "command": "learn-loop-example-pp-mcp",
+      "env": {
+        "LEARN_LOOP_EXAMPLE_HOME": "/srv/learn-loop-example"
+      }
+    }
+  }
+}
+```
+
+Precedence matters in fleets: an ambient per-kind variable such as `LEARN_LOOP_EXAMPLE_DATA_DIR` overrides an explicit `--home` for that kind. Use `LEARN_LOOP_EXAMPLE_HOME` or the per-kind variables for durable fleet relocation; treat `--home` as the weaker per-invocation lever.
+
+Relocation is one-way. Unsetting `LEARN_LOOP_EXAMPLE_HOME` does not move files back to platform defaults, and `doctor` cannot find credentials left under a former root. Move the files manually before unsetting relocation variables.
+
+Existing installs keep working because the platform-default rung matches the legacy layout. On the first auth write, stored secrets leave `config.toml` and are consolidated into `credentials.toml` under the data directory. Run `learn-loop-example-pp-cli doctor --fail-on warn` to check path and credential-location warnings in automation.
+
 ## Commands
 
 ### games
@@ -176,16 +225,20 @@ Leagues, fetched per-game by walking games and extracting each game's game_key i
 
 ### Self-learning loop
 
-This CLI caches per-question discovery so repeat queries skip the walk and structurally similar queries get answered via entity substitution. Agents call `recall` before discovery and fire `teach &` after answering. See the `## Automatic learning` section in `SKILL.md` for the four-branch protocol.
+This CLI caches per-question discovery so repeat queries skip the walk and structurally similar queries get answered via entity substitution. The loop also self-captures: every invocation is journaled locally, and failed-flag corrections plus fresh teaches surface as candidates on the next `recall` for confirm/reject judgment. Agents call `recall` before discovery and fire `teach &` after answering. See the `## Automatic learning` section in `SKILL.md` for the full protocol.
 
 - **`learn-loop-example-pp-cli recall <query>`** - Look up cached resources for a query before running discovery
 - **`learn-loop-example-pp-cli teach`** - Record a query -> resource mapping (silent on success, safe to background with `&`)
 - **`learn-loop-example-pp-cli learnings list`** - Inspect taught rows
 - **`learn-loop-example-pp-cli learnings forget <query>`** - Undo a teach
+- **`learn-loop-example-pp-cli learnings candidates`** - List auto-captured candidates awaiting confirm/reject
+- **`learn-loop-example-pp-cli learnings stats`** - Local loop metrics: recall hit rate, teach-to-reuse, playbook resolution, candidate counts
 - **`learn-loop-example-pp-cli teach-pattern`** - Install a query/resource template up front
 - **`learn-loop-example-pp-cli teach-lookup`** - Add an entity mapping (e.g. country code, team alias) for pattern substitution
 
 Pass `--no-learn` or set `LEARN_LOOP_EXAMPLE_NO_LEARN=true` to disable the loop for deterministic flows.
+
+The local store's schema version stamp is one-way: once this version of `learn-loop-example-pp-cli` opens the database, older binaries refuse it with a version error — upgrade the binary rather than downgrading.
 
 ## Output Formats
 
@@ -230,7 +283,7 @@ Verifies configuration, credentials, and connectivity to the API.
 
 ## Configuration
 
-Config file: ``
+Run `learn-loop-example-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is ``; `--home`, `LEARN_LOOP_EXAMPLE_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

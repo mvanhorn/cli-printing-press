@@ -5,9 +5,16 @@ package client
 
 import (
 	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"{{modulePath}}/internal/config"
 )
 
 func TestTruncateBody(t *testing.T) {
@@ -68,5 +75,58 @@ func TestTruncateBody_UTF8RuneAtBoundary(t *testing.T) {
 	// Partial rune must be dropped, not replaced: 4094 valid bytes + "...".
 	if want := 4094 + 3; len(got) != want {
 		t.Fatalf("len = %d, want %d (partial rune should be dropped, not replaced)", len(got), want)
+	}
+}
+
+func TestCacheKeyDelimitsSortedQueryParams(t *testing.T) {
+	t.Parallel()
+
+	c := &Client{BaseURL: "https://api.example.test"}
+	collidingTwoParams := c.cacheKey("/titles", map[string]string{
+		"country": "USAformat",
+		"year":    "bluray",
+	})
+	collidingThreeParams := c.cacheKey("/titles", map[string]string{
+		"country": "USA",
+		"format":  "bluray",
+		"year":    "",
+	})
+	if collidingTwoParams == collidingThreeParams {
+		t.Fatalf("cache keys collided for adjacent query params: %q", collidingTwoParams)
+	}
+
+	first := c.cacheKey("/titles", map[string]string{"format": "4k", "country": "USA"})
+	second := c.cacheKey("/titles", map[string]string{"country": "USA", "format": "4k"})
+	if first != second {
+		t.Fatalf("cache key should be deterministic regardless of map order: %q != %q", first, second)
+	}
+}
+
+func TestGetWithHeadersValuesPreservesRepeatedQueryParams(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := r.URL.Query()["format"]
+		if len(got) != 2 || got[0] != "blu-ray" || got[1] != "4k" {
+			t.Fatalf("format query values = %#v, want [blu-ray 4k]", got)
+		}
+		if got := r.URL.Query().Get("country"); got != "US" {
+			t.Fatalf("country = %q, want US", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	c := New(&config.Config{BaseURL: server.URL}, time.Second, 0)
+	c.HTTPClient = server.Client()
+	c.NoCache = true
+
+	params := url.Values{
+		"format":  []string{"blu-ray", "4k"},
+		"country": []string{"US"},
+	}
+	if _, err := c.GetWithHeadersValues(context.Background(), "/titles", params, nil); err != nil {
+		t.Fatalf("GetWithHeadersValues returned error: %v", err)
 	}
 }

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -231,6 +232,35 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 		assert.Contains(t, detail, "items has 2 rows")
 	})
 
+	t.Run("falls back when sync rejects full flag", func(t *testing.T) {
+		binary := buildNoFullSyncDataPipelineProbeBinary(t, 2)
+
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("reports unknown sync flag distinctly", func(t *testing.T) {
+		binary := buildUnknownFlagSyncDataPipelineProbeBinary(t)
+
+		pass, detail := runDataPipelineTest(binary, "", "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Equal(t, "FAIL: sync rejected flag --full", detail)
+	})
+
+	t.Run("skips no-store CLIs whose sync command is not the data pipeline", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "browser-sniff"}))
+		binary := buildUnknownFlagSyncDataPipelineProbeBinary(t)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Equal(t, "SKIP (CLI has no local store)", detail)
+	})
+
 	t.Run("passes when an auxiliary table is empty before populated data table", func(t *testing.T) {
 		binary := buildAuxiliaryFirstDataPipelineProbeBinary(t, 0, 2)
 
@@ -277,6 +307,13 @@ func TestRunDataPipelineTestMockModeRequiresRows(t *testing.T) {
 	})
 }
 
+func TestUnknownSyncFlagIgnoresEmptyFlagName(t *testing.T) {
+	flag, ok := unknownSyncFlag(errors.New("unknown flag: "))
+
+	assert.False(t, ok)
+	assert.Empty(t, flag)
+}
+
 func TestRunDataPipelineTestSkipsUnsyncableCLIs(t *testing.T) {
 	t.Run("skips local-datastore manifests before sync", func(t *testing.T) {
 		dir := seedDataPipelineCLIDir(t, true)
@@ -303,12 +340,51 @@ func TestRunDataPipelineTestSkipsUnsyncableCLIs(t *testing.T) {
 	t.Run("runs normal sync CLIs", func(t *testing.T) {
 		dir := seedDataPipelineCLIDir(t, true)
 		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		seedDataPipelineStore(t, dir, true)
 		binary := buildDataPipelineProbeBinary(t, 2)
 
 		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
 
 		assert.True(t, pass)
 		assert.Contains(t, detail, "items has 2 rows")
+	})
+
+	t.Run("mock mode skips row requirement for stores without syncable resources", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "browser-sniff"}))
+		seedDataPipelineStore(t, dir, false)
+		binary := buildDataPipelineProbeBinary(t, 0)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Equal(t, "PASS: 1 domain tables created (mock mode; no syncable resources declared)", detail)
+	})
+
+	t.Run("mock mode skips graphql sync data pipeline", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		seedDataPipelineStore(t, dir, true)
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+		writeTestFile(t, filepath.Join(dir, "internal", "client", "graphql.go"), "package client\n")
+		binary := buildFailingSyncDataPipelineProbeBinary(t)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.True(t, pass)
+		assert.Equal(t, "SKIP (GraphQL CLI: mock server cannot synthesize sync data)", detail)
+	})
+
+	t.Run("mock mode still fails zero rows when syncable resources exist", func(t *testing.T) {
+		dir := seedDataPipelineCLIDir(t, true)
+		require.NoError(t, WriteCLIManifest(dir, CLIManifest{SpecFormat: "openapi3"}))
+		seedDataPipelineStore(t, dir, true)
+		binary := buildDataPipelineProbeBinary(t, 0)
+
+		pass, detail := runDataPipelineTest(binary, dir, "mock", os.Environ, 2)
+
+		assert.False(t, pass)
+		assert.Contains(t, detail, "1 domain tables created but 0 rows after sync")
 	})
 }
 
@@ -725,6 +801,112 @@ func dbArg(args []string) string {
 	return binaryPath
 }
 
+func buildNoFullSyncDataPipelineProbeBinary(t *testing.T, rowCount int) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, fmt.Sprintf(`package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 0 {
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "sync":
+		for _, arg := range args[1:] {
+			if arg == "--full" {
+				fmt.Fprintln(os.Stderr, "unknown flag: --full")
+				os.Exit(1)
+			}
+		}
+		dbPath := dbArg(args[1:])
+		if dbPath == "" {
+			os.Exit(1)
+		}
+		if err := os.WriteFile(dbPath+".marker", []byte(dbPath), 0o644); err != nil {
+			os.Exit(1)
+		}
+		return
+	case "sql":
+		dbPath := dbArg(args[1:])
+		if dbPath == "" {
+			os.Exit(1)
+		}
+		usedDB, err := os.ReadFile(dbPath + ".marker")
+		if err != nil || string(usedDB) != dbPath {
+			os.Exit(1)
+		}
+		query := args[len(args)-1]
+		if strings.Contains(query, "sqlite_master") {
+			fmt.Println("items")
+			return
+		}
+		if strings.Contains(query, "count(*)") {
+			fmt.Println(%d)
+			return
+		}
+	}
+	os.Exit(1)
+}
+
+func dbArg(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--db" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+`, rowCount))
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildUnknownFlagSyncDataPipelineProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "sync" {
+		for _, arg := range args[1:] {
+			if arg == "--full" {
+				fmt.Fprintln(os.Stderr, "unknown flag: --full")
+				os.Exit(1)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "sync requires --full")
+		os.Exit(1)
+	}
+	os.Exit(1)
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
 func seedDataPipelineCLIDir(t *testing.T, includeSync bool) string {
 	t.Helper()
 
@@ -747,6 +929,31 @@ func newRootCmd() {}
 func newItemsCmd(flags any) {}
 `)
 	return dir
+}
+
+func seedDataPipelineStore(t *testing.T, dir string, syncableResources bool) {
+	t.Helper()
+
+	storeDir := filepath.Join(dir, "internal", "store")
+	require.NoError(t, os.MkdirAll(storeDir, 0o755))
+	content := `package store
+
+func Open() {}
+`
+	if syncableResources {
+		content += `
+func defaultSyncResources() []string {
+	return []string{"items"}
+}
+`
+	} else {
+		content += `
+func defaultSyncResources() []string {
+	return []string{}
+}
+`
+	}
+	writeTestFile(t, filepath.Join(storeDir, "store.go"), content)
 }
 
 func buildAuxiliaryFirstDataPipelineProbeBinary(t *testing.T, settingsRows, itemRows int) string {
@@ -1038,6 +1245,12 @@ func main() {}
 	assert.FileExists(t, binaryPath)
 }
 
+func TestBuildCLIArgsUseReproducibleBuildFlags(t *testing.T) {
+	args := buildCLIArgs("out-bin", "./cmd/sample-pp-cli")
+
+	assert.Equal(t, []string{"build", "-trimpath", "-ldflags=-buildid=", "-o", "out-bin", "./cmd/sample-pp-cli"}, args)
+}
+
 // TestExtractPositionalPlaceholders covers the placeholder extractor used
 // by inferPositionalArgs. The bracketed-flag-descriptor cases are the
 // retro #301 F2 regression: cobra Use strings like
@@ -1098,6 +1311,16 @@ func TestExtractPositionalPlaceholders(t *testing.T) {
 			name:  "lowercases names",
 			usage: " <Region> [flags]",
 			want:  []string{"region"},
+		},
+		{
+			name:  "pipe alternative chooses first id-shaped option",
+			usage: " <name|id|uuid> [flags]",
+			want:  []string{"id"},
+		},
+		{
+			name:  "pipe alternative falls back to first option",
+			usage: " <query|text> [flags]",
+			want:  []string{"query"},
 		},
 	}
 	for _, tt := range tests {

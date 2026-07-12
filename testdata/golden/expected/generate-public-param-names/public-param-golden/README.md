@@ -130,6 +130,55 @@ public-param-golden-pp-cli stores create --store-code example-value
 
 Run `public-param-golden-pp-cli --help` for the full command reference and flag list.
 
+## Paths & environment variables
+
+This CLI separates local files into four path kinds:
+
+| Kind | Contents |
+|------|----------|
+| `config` | User-editable settings such as `config.toml` and saved profiles |
+| `data` | Durable local data such as `data.db` |
+| `state` | Runtime state such as persisted queries, jobs, and `teach.log` |
+| `cache` | Regenerable HTTP/cache files |
+
+Each kind resolves independently. The ladder is:
+
+1. Per-kind env var: `PUBLIC_PARAM_GOLDEN_CONFIG_DIR`, `PUBLIC_PARAM_GOLDEN_DATA_DIR`, `PUBLIC_PARAM_GOLDEN_STATE_DIR`, or `PUBLIC_PARAM_GOLDEN_CACHE_DIR`
+2. `--home <dir>` for this invocation
+3. `PUBLIC_PARAM_GOLDEN_HOME` for a flat relocated root
+4. XDG env vars: `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`
+5. Platform defaults matching existing installs
+
+For containers and agent sandboxes, prefer a single relocated root:
+
+```bash
+export PUBLIC_PARAM_GOLDEN_HOME=/srv/public-param-golden
+public-param-golden-pp-cli doctor
+```
+
+Under `PUBLIC_PARAM_GOLDEN_HOME=/srv/public-param-golden`, the four dirs resolve to `/srv/public-param-golden/config`, `/srv/public-param-golden/data`, `/srv/public-param-golden/state`, and `/srv/public-param-golden/cache`.
+
+MCP servers do not receive CLI flags from the host. Put relocation in the host `env` block:
+
+```json
+{
+  "mcpServers": {
+    "public-param-golden": {
+      "command": "public-param-golden-pp-mcp",
+      "env": {
+        "PUBLIC_PARAM_GOLDEN_HOME": "/srv/public-param-golden"
+      }
+    }
+  }
+}
+```
+
+Precedence matters in fleets: an ambient per-kind variable such as `PUBLIC_PARAM_GOLDEN_DATA_DIR` overrides an explicit `--home` for that kind. Use `PUBLIC_PARAM_GOLDEN_HOME` or the per-kind variables for durable fleet relocation; treat `--home` as the weaker per-invocation lever.
+
+Relocation is one-way. Unsetting `PUBLIC_PARAM_GOLDEN_HOME` does not move files back to platform defaults, and `doctor` cannot find files left under a former root. Move the files manually before unsetting relocation variables.
+
+Existing installs keep working because the platform-default rung matches the legacy layout. Run `public-param-golden-pp-cli doctor --fail-on warn` to check path warnings in automation.
+
 ## Commands
 
 ### stores
@@ -139,6 +188,23 @@ Store lookup operations
 - **`public-param-golden-pp-cli stores create`** - Create a store record
 - **`public-param-golden-pp-cli stores find`** - Find nearby stores by address
 
+
+### Self-learning loop
+
+This CLI caches per-question discovery so repeat queries skip the walk and structurally similar queries get answered via entity substitution. The loop also self-captures: every invocation is journaled locally, and failed-flag corrections plus fresh teaches surface as candidates on the next `recall` for confirm/reject judgment. Agents call `recall` before discovery and fire `teach &` after answering. See the `## Automatic learning` section in `SKILL.md` for the full protocol.
+
+- **`public-param-golden-pp-cli recall <query>`** - Look up cached resources for a query before running discovery
+- **`public-param-golden-pp-cli teach`** - Record a query -> resource mapping (silent on success, safe to background with `&`)
+- **`public-param-golden-pp-cli learnings list`** - Inspect taught rows
+- **`public-param-golden-pp-cli learnings forget <query>`** - Undo a teach
+- **`public-param-golden-pp-cli learnings candidates`** - List auto-captured candidates awaiting confirm/reject
+- **`public-param-golden-pp-cli learnings stats`** - Local loop metrics: recall hit rate, teach-to-reuse, playbook resolution, candidate counts
+- **`public-param-golden-pp-cli teach-pattern`** - Install a query/resource template up front
+- **`public-param-golden-pp-cli teach-lookup`** - Add an entity mapping (e.g. country code, team alias) for pattern substitution
+
+Pass `--no-learn` or set `PUBLIC_PARAM_GOLDEN_NO_LEARN=true` to disable the loop for deterministic flows.
+
+The local store's schema version stamp is one-way: once this version of `public-param-golden-pp-cli` opens the database, older binaries refuse it with a version error — upgrade the binary rather than downgrading.
 
 ## Output Formats
 
@@ -170,6 +236,7 @@ This CLI is designed for AI agent consumption:
 - **Explicit retries** - add `--idempotent` to create retries when a no-op success is acceptable
 - **Confirmable** - `--yes` for explicit confirmation of destructive actions
 - **Piped input** - write commands can accept structured input when their help lists `--stdin`
+- **Offline-friendly** - sync/search commands can use the local SQLite store when available
 - **Agent-safe by default** - no colors or formatting unless `--human-friendly` is set
 
 Exit codes: `0` success, `2` usage error, `3` not found, `5` API error, `7` rate limited, `10` config error.
@@ -184,7 +251,7 @@ Verifies configuration and connectivity to the API.
 
 ## Configuration
 
-Config file: ``
+Run `public-param-golden-pp-cli doctor` to see the resolved config, data, state, and cache directories. The platform-default config path is ``; `--home`, `PUBLIC_PARAM_GOLDEN_HOME`, and per-kind env vars can relocate it.
 
 Static request headers can be configured under `headers`; per-command header overrides take precedence.
 

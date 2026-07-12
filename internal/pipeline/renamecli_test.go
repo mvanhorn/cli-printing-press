@@ -445,6 +445,33 @@ func main() {}
 		assert.Contains(t, err.Error(), "does not match")
 	})
 
+	t.Run("rejects stray old or new slug directories", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			strayDir string
+		}{
+			{name: "old slug", strayDir: "home-health"},
+			{name: "new slug", strayDir: "home-air-health"},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				root := t.TempDir()
+				oldName := "home-health-pp-cli"
+				newName := "home-air-health-pp-cli"
+				cliDir := filepath.Join(root, "home-health")
+				require.NoError(t, os.MkdirAll(cliDir, 0o755))
+				writeTestCLITree(t, cliDir, oldName, "home-health")
+				require.NoError(t, os.MkdirAll(filepath.Join(cliDir, tt.strayDir), 0o755))
+
+				_, err := RenameCLI(cliDir, oldName, newName, "home-health")
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "stray top-level directory")
+				assert.Contains(t, err.Error(), tt.strayDir)
+			})
+		}
+	})
+
 	t.Run("works when dir base is slug but old-name is CLI name", func(t *testing.T) {
 		root := t.TempDir()
 		oldName := "dub-pp-cli"

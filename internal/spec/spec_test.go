@@ -153,6 +153,83 @@ resources:
 	assert.True(t, param.DispatchParamSet)
 }
 
+func TestParsePagePagination(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: page-pagination
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  photos:
+    endpoints:
+      list:
+        method: GET
+        path: /photos
+        params:
+          - name: page
+            type: integer
+          - name: per_page
+            type: integer
+            default: 25
+        pagination:
+          type: page
+          cursor_param: page
+          limit_param: per_page
+        response:
+          type: array
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	list := s.Resources["photos"].Endpoints["list"]
+	require.NotNil(t, list.Pagination)
+	assert.Equal(t, "page", list.Pagination.Type)
+	assert.Equal(t, "page", list.Pagination.CursorParam)
+	assert.Equal(t, "per_page", list.Pagination.LimitParam)
+}
+
+func TestParseEndpointExampleAndHappyArgs(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`
+name: fixture-api
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  geography:
+    endpoints:
+      counties:
+        method: GET
+        path: /geography/counties
+        example: "fixture-api-pp-cli geography counties --zip 60614"
+        happy_args: "--zip=60614"
+        live_dogfood_requires_tier: enterprise
+        params:
+          - name: zip
+            type: string
+            required: true
+      states:
+        method: GET
+        path: /geography/states
+`)
+
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	counties := s.Resources["geography"].Endpoints["counties"]
+	assert.Equal(t, "fixture-api-pp-cli geography counties --zip 60614", counties.Example)
+	assert.Equal(t, "--zip=60614", counties.HappyArgs)
+	assert.Equal(t, "enterprise", counties.LiveDogfoodRequiresTier)
+
+	states := s.Resources["geography"].Endpoints["states"]
+	assert.Empty(t, states.Example)
+	assert.Empty(t, states.HappyArgs)
+	assert.Empty(t, states.LiveDogfoodRequiresTier)
+}
+
 func TestDispatchParamFalseSurvivesRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -348,6 +425,50 @@ resources:
 	require.IsType(t, map[string]any{}, param.ItemTemplate)
 	template := param.ItemTemplate.(map[string]any)
 	assert.Equal(t, "required", template["type"])
+}
+
+func TestParseObjectSchemaArrayBodyItemTypes(t *testing.T) {
+	yamlSpec := []byte(`
+name: typed-array-body
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  messages:
+    endpoints:
+      send:
+        method: POST
+        path: /messages
+        body:
+          schema:
+            type: object
+            properties:
+              tags:
+                type: array
+                items:
+                  type: string
+              recipients:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+
+	body := s.Resources["messages"].Endpoints["send"].Body
+	byName := map[string]Param{}
+	for _, param := range body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "array", byName["tags"].Type)
+	assert.Equal(t, "string", byName["tags"].ItemType)
+	assert.Equal(t, "array", byName["recipients"].Type)
+	assert.Equal(t, "object", byName["recipients"].ItemType)
+	require.Len(t, byName["recipients"].Fields, 1)
 }
 
 func TestParseCSVArrayObjectTemplateMustBeObject(t *testing.T) {
@@ -1448,6 +1569,71 @@ func TestThrottlingValidate(t *testing.T) {
 	}
 }
 
+func TestQuerySyncValidate(t *testing.T) {
+	full := func() *QuerySyncConfig {
+		return &QuerySyncConfig{
+			Path:          "/query",
+			QueryTemplate: "select * from {entity} startposition {start} maxresults {limit}",
+			VersionParam:  "minorversion",
+			VersionValue:  "75",
+			EnvelopeKey:   "QueryResponse",
+			PageSize:      1000,
+		}
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*QuerySyncConfig)
+		nilCfg  bool
+		wantErr string
+	}{
+		{name: "absent hint is a no-op", nilCfg: true},
+		{name: "full config is valid", mutate: func(*QuerySyncConfig) {}},
+		{
+			name:    "missing path is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.Path = "" },
+			wantErr: "query_sync.path is required",
+		},
+		{
+			name:    "missing query_template is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.QueryTemplate = "" },
+			wantErr: "query_sync.query_template is required",
+		},
+		{
+			name:    "query_template missing {start} is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.QueryTemplate = "select * from {entity} maxresults {limit}" },
+			wantErr: "{start} placeholder",
+		},
+		{
+			name: "query_template missing {entity} is rejected",
+			mutate: func(q *QuerySyncConfig) {
+				q.QueryTemplate = "select * from Widget startposition {start} maxresults {limit}"
+			},
+			wantErr: "{entity} placeholder",
+		},
+		{
+			name:    "version_param without value is rejected",
+			mutate:  func(q *QuerySyncConfig) { q.VersionValue = "" },
+			wantErr: "must be set together",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg *QuerySyncConfig
+			if !tt.nilCfg {
+				cfg = full()
+				tt.mutate(cfg)
+			}
+			err := validateQuerySync(cfg)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestAuthPrefixValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1580,7 +1766,30 @@ func TestOAuth2GrantValidate(t *testing.T) {
 	}{
 		{name: "empty is valid (defaults to authorization_code)", cfg: AuthConfig{}},
 		{name: "explicit authorization_code is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}},
+		{
+			name: "authorization_code rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant: OAuth2GrantAuthorizationCode,
+				TokenURL:    "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
+		{
+			name: "empty default grant rejects placeholder token URL host",
+			cfg: AuthConfig{
+				TokenURL: "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
 		{name: "client_credentials is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}},
+		{
+			name: "client_credentials rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant: OAuth2GrantClientCredentials,
+				TokenURL:    "https://{tenant}.example.com/oauth/token",
+			},
+			wantErr: "unresolved placeholder",
+		},
 		{
 			name: "device_code is valid with required endpoints",
 			cfg: AuthConfig{
@@ -1631,6 +1840,15 @@ func TestOAuth2GrantValidate(t *testing.T) {
 				TokenURL:               "http://login.example.com/token",
 			},
 			wantErr: `auth.token_url uses http://`,
+		},
+		{
+			name: "device_code rejects placeholder token URL host",
+			cfg: AuthConfig{
+				OAuth2Grant:            OAuth2GrantDeviceCode,
+				DeviceAuthorizationURL: "https://login.example.com/device",
+				TokenURL:               "https://{tenant}.example.com/token",
+			},
+			wantErr: "unresolved placeholder",
 		},
 		{
 			name:    "typo (e.g. authorisation) is rejected",
@@ -2375,6 +2593,57 @@ description: Missing base_url and resources
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "base_url is required")
 	})
+
+	t.Run("duplicate top-level keys fail clearly", func(t *testing.T) {
+		t.Parallel()
+		input := `name: duplicateapi
+base_url: https://api.example.com
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+resources:
+  teams:
+    endpoints:
+      list:
+        method: GET
+        path: /teams
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate top-level key(s): resources")
+	})
+
+	t.Run("resource-shaped entries under types fail clearly", func(t *testing.T) {
+		t.Parallel()
+		input := `name: misroutedapi
+base_url: https://api.example.com
+resources:
+  users:
+    endpoints:
+      list:
+        method: GET
+        path: /users
+types:
+  Team:
+    fields:
+      id:
+        type: string
+  misplaced_widgets:
+    description: Appended at the wrong indentation level
+    endpoints:
+      list:
+        method: GET
+        path: /widgets
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resource-shaped entry under 'types:'")
+		assert.Contains(t, err.Error(), "misplaced_widgets")
+		assert.Contains(t, err.Error(), "wrong indentation")
+	})
 }
 
 func TestOperationsShorthand(t *testing.T) {
@@ -3035,6 +3304,32 @@ learn: {}
 		assert.Empty(t, s.Learn.EntityLookupSeeds)
 	})
 
+	t.Run("enabled false records explicit legacy opt-out", func(t *testing.T) {
+		input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+learn:
+  enabled: false
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		require.NoError(t, s.Validate())
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+	})
+
 	t.Run("absent block: omitting learn yields zero-value LearnConfig", func(t *testing.T) {
 		input := `
 name: demo
@@ -3158,6 +3453,185 @@ resources:
 		}
 		require.NoError(t, s.Validate())
 		assert.Equal(t, []string{"valid", "also-valid"}, s.Learn.Stopwords)
+	})
+}
+
+func TestLearnConfigDisabledAndSynonyms(t *testing.T) {
+	learnSpecYAML := func(learnBlock string) []byte {
+		return []byte(`
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+` + learnBlock)
+	}
+
+	t.Run("disabled round-trips through parse and marshal", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  disabled: true\n"))
+		require.NoError(t, err)
+		assert.True(t, s.Learn.Disabled)
+		assert.False(t, s.Learn.Enabled)
+
+		out, err := yaml.Marshal(s.Learn)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "disabled: true")
+
+		var back LearnConfig
+		require.NoError(t, yaml.Unmarshal(out, &back))
+		assert.True(t, back.Disabled)
+	})
+
+	t.Run("disabled true with enabled true rejected as contradictory, naming both fields", func(t *testing.T) {
+		_, err := ParseBytes(learnSpecYAML("learn:\n  disabled: true\n  enabled: true\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "learn.disabled")
+		assert.Contains(t, err.Error(), "learn.enabled")
+	})
+
+	t.Run("enabled false alone parses cleanly as a legacy opt-out", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: false\n"))
+		require.NoError(t, err)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+		assert.False(t, s.Learn.Disabled)
+
+		out, err := yaml.Marshal(s.Learn)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "enabled: false")
+
+		var back LearnConfig
+		require.NoError(t, yaml.Unmarshal(out, &back))
+		assert.False(t, back.Enabled)
+		assert.True(t, back.EnabledSet)
+	})
+
+	t.Run("synonyms round-trip through parse", func(t *testing.T) {
+		s, err := ParseBytes(learnSpecYAML("learn:\n  enabled: true\n  synonyms:\n    last night: yesterday\n"))
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"last night": "yesterday"}, s.Learn.Synonyms)
+	})
+
+	synonymCases := []struct {
+		name     string
+		synonyms map[string]string
+		wantErr  string
+	}{
+		{
+			name:     "valid lowercase pair accepted",
+			synonyms: map[string]string{"last night": "yesterday"},
+		},
+		{
+			name:     "empty key rejected",
+			synonyms: map[string]string{"": "yesterday"},
+			wantErr:  "learn.synonyms",
+		},
+		{
+			name:     "empty value rejected",
+			synonyms: map[string]string{"last night": ""},
+			wantErr:  "learn.synonyms",
+		},
+		{
+			name:     "uppercase key rejected",
+			synonyms: map[string]string{"Last Night": "yesterday"},
+			wantErr:  "lowercase",
+		},
+		{
+			name:     "uppercase value rejected",
+			synonyms: map[string]string{"last night": "Yesterday"},
+			wantErr:  "lowercase",
+		},
+		{
+			name:     "self-referential pair rejected",
+			synonyms: map[string]string{"yesterday": "yesterday"},
+			wantErr:  "itself",
+		},
+		{
+			name:     "chained pair rejected: a value must not itself be a key",
+			synonyms: map[string]string{"last night": "yesterday", "yesterday": "prior day"},
+			wantErr:  "chain",
+		},
+	}
+	for _, tc := range synonymCases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := APISpec{
+				Name:      "demo",
+				BaseURL:   "http://x",
+				Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+				Learn: LearnConfig{
+					Enabled:  true,
+					Synonyms: tc.synonyms,
+				},
+			}
+			err := s.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestApplyLearnLoopDefault(t *testing.T) {
+	base := func() *APISpec {
+		return &APISpec{Name: "demo"}
+	}
+
+	t.Run("learn-less spec defaults Enabled on and writes the info line", func(t *testing.T) {
+		s := base()
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.True(t, s.Learn.Enabled)
+		assert.Contains(t, buf.String(), "defaulting self-learning loop on (opt out with learn.disabled: true)")
+	})
+
+	t.Run("disabled spec short-circuits with no change and no output", func(t *testing.T) {
+		s := base()
+		s.Learn.Disabled = true
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.Disabled)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("explicit enabled false short-circuits with no change and no output", func(t *testing.T) {
+		s := base()
+		s.Learn.EnabledSet = true
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.False(t, s.Learn.Enabled)
+		assert.True(t, s.Learn.EnabledSet)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("explicitly enabled spec is a no-op with no output", func(t *testing.T) {
+		s := base()
+		s.Learn.Enabled = true
+		s.Learn.Stopwords = []string{"the"}
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.True(t, s.Learn.Enabled)
+		assert.Equal(t, []string{"the"}, s.Learn.Stopwords)
+		assert.Empty(t, buf.String())
+	})
+
+	t.Run("nil receiver is safe", func(t *testing.T) {
+		var s *APISpec
+		var buf bytes.Buffer
+		s.ApplyLearnLoopDefault(&buf)
+		assert.Empty(t, buf.String())
 	})
 }
 
@@ -3848,7 +4322,6 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	require.NoError(t, xmlSpec.Validate())
 	assert.True(t, xmlSpec.Resources["posts"].Endpoints["list"].UsesXMLResponse())
 	assert.True(t, xmlSpec.HasXMLResponse())
-	assert.True(t, xmlSpec.AllResponsesXML(), "a spec whose only endpoint is XML is XML-only")
 
 	mixedSpec := validHTMLSpec()
 	ep = mixedSpec.Resources["posts"].Endpoints["list"]
@@ -3857,7 +4330,6 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	mixedSpec.Resources["posts"].Endpoints["list"] = ep
 	mixedSpec.Resources["posts"].Endpoints["get"] = Endpoint{Method: "GET", Path: "/posts/{id}", Description: "Get a post (JSON)"}
 	assert.True(t, mixedSpec.HasXMLResponse())
-	assert.False(t, mixedSpec.AllResponsesXML(), "a JSON sibling endpoint makes the spec non-XML-only")
 
 	badFormat := validHTMLSpec()
 	ep = badFormat.Resources["posts"].Endpoints["list"]
@@ -3865,9 +4337,23 @@ func TestHTMLResponseExtractionValidation(t *testing.T) {
 	badFormat.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badFormat.Validate(), "response_format must be one of")
 
+	postSpec := validHTMLSpec()
+	ep = postSpec.Resources["posts"].Endpoints["list"]
+	ep.Method = "POST"
+	postSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, postSpec.Validate())
+
+	tableSpec := validHTMLSpec()
+	ep = tableSpec.Resources["posts"].Endpoints["list"]
+	ep.Method = "POST"
+	ep.HTMLExtract.Mode = HTMLExtractModeTable
+	ep.Response = ResponseDef{Type: "array", Item: "html_table_row"}
+	tableSpec.Resources["posts"].Endpoints["list"] = ep
+	require.NoError(t, tableSpec.Validate())
+
 	badMethod := validHTMLSpec()
 	ep = badMethod.Resources["posts"].Endpoints["list"]
-	ep.Method = "POST"
+	ep.Method = "PUT"
 	badMethod.Resources["posts"].Endpoints["list"] = ep
 	require.ErrorContains(t, badMethod.Validate(), "html response_format is only supported")
 }
@@ -5249,6 +5735,79 @@ resources:
 	assert.Equal(t, "paid", s.Resources["results"].Endpoints["premium"].Tier)
 	assert.Equal(t, "free", s.EffectiveTier(s.Resources["results"], s.Resources["results"].Endpoints["list"]))
 	assert.Equal(t, "paid", s.EffectiveTier(s.Resources["results"], s.Resources["results"].Endpoints["premium"]))
+}
+
+func TestNormalizeCookieDomain(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		authType   string
+		baseURL    string
+		preset     string
+		wantDomain string
+	}{
+		{
+			name:       "cookie auth derives leading-dot domain from base_url",
+			authType:   "cookie",
+			baseURL:    "https://www.factor75.com",
+			wantDomain: ".factor75.com",
+		},
+		{
+			name:       "composed auth derives domain too",
+			authType:   "composed",
+			baseURL:    "https://app.example.com",
+			wantDomain: ".app.example.com",
+		},
+		{
+			name:       "session handshake derives domain too",
+			authType:   "session_handshake",
+			baseURL:    "https://query1.finance.example",
+			wantDomain: ".query1.finance.example",
+		},
+		{
+			name:       "explicit cookie_domain is preserved",
+			authType:   "cookie",
+			baseURL:    "https://www.factor75.com",
+			preset:     ".custom.example.com",
+			wantDomain: ".custom.example.com",
+		},
+		{
+			name:       "non-cookie auth is untouched",
+			authType:   "bearer_token",
+			baseURL:    "https://www.example.com",
+			wantDomain: "",
+		},
+		{
+			name:       "no host yields no domain",
+			authType:   "cookie",
+			baseURL:    "",
+			wantDomain: "",
+		},
+		{
+			name:       "scheme-less base_url still derives a domain",
+			authType:   "cookie",
+			baseURL:    "api.example.com",
+			wantDomain: ".api.example.com",
+		},
+		{
+			name:       "degenerate www-only host yields no domain",
+			authType:   "cookie",
+			baseURL:    "https://www.",
+			wantDomain: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := &APISpec{BaseURL: tc.baseURL}
+			s.Auth.Type = tc.authType
+			s.Auth.CookieDomain = tc.preset
+			s.NormalizeCookieDomain()
+			assert.Equal(t, tc.wantDomain, s.Auth.CookieDomain)
+		})
+	}
 }
 
 func TestInferEndpointTemplateVarsFromBaseURLs(t *testing.T) {

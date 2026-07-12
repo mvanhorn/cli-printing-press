@@ -11,8 +11,10 @@ the generator repo:
     cosign with OIDC, allowlist that specific workflow at that time.
   - R3 (replace directives in library/**/go.mod) — omitted.
   - R4 (GOPROXY/GOFLAGS/GONOSUMCHECK in workflows) — applied unchanged.
-  - R5 (npm lifecycle scripts) — omitted.
-  - R6 (module-path drift) — omitted.
+  - R5 (hard-coded actions/setup-go versions) — adapted to require
+    go-version-file: go.mod.
+  - R6 (npm lifecycle scripts) — omitted.
+  - R7 (module-path drift) — omitted.
 
 Detection strategy for R1/R2/R4: parse the YAML structurally with pyyaml
 (pre-installed on ubuntu-latest runners) and walk the parsed dict tree.
@@ -232,6 +234,35 @@ def _walk_go_env_overrides(parsed: Any) -> list[str]:
     return found
 
 
+def _walk_setup_go_version_literals(parsed: Any) -> list[str]:
+    """Return literal `go-version` values from actions/setup-go steps."""
+    found: list[str] = []
+    if not isinstance(parsed, dict):
+        return found
+    jobs = parsed.get("jobs")
+    if not isinstance(jobs, dict):
+        return found
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            uses = step.get("uses")
+            if not isinstance(uses, str) or not uses.startswith("actions/setup-go"):
+                continue
+            with_block = step.get("with")
+            if not isinstance(with_block, dict):
+                continue
+            version = with_block.get("go-version")
+            if version is not None:
+                found.append(str(version).strip())
+    return found
+
+
 def _collect_go_env_from(env_block: Any, out: list[str]) -> None:
     if not isinstance(env_block, dict):
         return
@@ -407,6 +438,53 @@ def signal_go_env_override(change: FileChange) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# R5: setup-go must read the repo-wide go.mod floor
+# ---------------------------------------------------------------------------
+
+
+def signal_setup_go_uses_go_version_file(change: FileChange) -> list[Finding]:
+    """R5. Go workflow versions must come from go.mod. Hard-coded setup-go
+    pins make emergency vulnerability bumps a multi-file hunt, and stale pins
+    can keep CI on a vulnerable standard library after go.mod moves forward.
+
+    Structural diff: fires only for literal pins newly introduced by the PR.
+    """
+    if not is_workflow(change.path) or change.head_content is None:
+        return []
+
+    head_literals = set(_walk_setup_go_version_literals(_parse_workflow(change.head_content)))
+    if not head_literals:
+        return []
+
+    base_literals: set[str] = set()
+    if change.base_content is not None:
+        base_literals = set(_walk_setup_go_version_literals(_parse_workflow(change.base_content)))
+
+    new_literals = sorted(head_literals - base_literals)
+    if not new_literals:
+        return []
+
+    literal = new_literals[0]
+    return [
+        Finding(
+            path=change.path,
+            line=_find_line_in(change.head_content, "go-version:"),
+            severity="block",
+            signal_id="setup_go_hardcoded_version",
+            message=(
+                "Workflow pins actions/setup-go with `go-version: %s`. Go "
+                "toolchain floor bumps must be single-source so vulnerability "
+                "fixes do not leave stale workflow pins behind." % literal
+            ),
+            remediation=(
+                "Use `go-version-file: go.mod` in actions/setup-go and bump "
+                "the root go.mod directive when the repo-wide Go floor changes."
+            ),
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Signal dispatch
 # ---------------------------------------------------------------------------
 
@@ -415,6 +493,7 @@ ALL_SIGNALS = (
     signal_workflow_trust,
     signal_id_token_outside_allowlist,
     signal_go_env_override,
+    signal_setup_go_uses_go_version_file,
 )
 
 

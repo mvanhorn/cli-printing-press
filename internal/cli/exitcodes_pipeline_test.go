@@ -79,7 +79,7 @@ func TestPrintCmd_AlreadyExists_ExitCode(t *testing.T) {
 // TestPipelineInitDiscoverSpec_ErrorSubstring verifies that a spec discovery
 // failure from pipeline.Init contains "discovering spec", which the print
 // command's exit-code classification depends on. This test uses a bogus API
-// name with no catalog entry and no network to trigger the failure.
+// name with no known spec and no network to trigger the failure.
 func TestPipelineInitDiscoverSpec_ErrorSubstring(t *testing.T) {
 	orig, err := os.Getwd()
 	if err != nil {

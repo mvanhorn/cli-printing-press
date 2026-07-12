@@ -26,9 +26,33 @@ func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
+	"strings"
 	"testing"
 )
+
+func captureWriteThroughStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() {
+		os.Stderr = old
+	}()
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	return string(data)
+}
 
 func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 	home := t.TempDir()
@@ -109,7 +133,33 @@ func TestWriteThroughCacheEnvelopeExtractionParity(t *testing.T) {
 		t.Fatalf("empty list envelope with a records wrapper must cache nothing, got %d", len(emptyRecords))
 	}
 }
+
+func TestWriteThroughCacheWarnsOnlyWhenNoRowsPersist(t *testing.T) {
+	home := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", oldHome)
+	})
+
+	ctx := context.Background()
+	stderr := captureWriteThroughStderr(t, func() {
+		writeThroughCache(ctx, "snapshots", json.RawMessage(`+"`"+`[{"symbol":"NIFTY"},{"symbol":"BANKNIFTY"}]`+"`"+`))
+	})
+	if !strings.Contains(stderr, "not cached locally") {
+		t.Fatalf("zero-persist write-through cache should warn, got stderr %q", stderr)
+	}
+
+	stderr = captureWriteThroughStderr(t, func() {
+		writeThroughCache(ctx, "mixedsnapshots", json.RawMessage(`+"`"+`[{"id":"ok-1"},{"symbol":"NIFTY"}]`+"`"+`))
+	})
+	if stderr != "" {
+		t.Fatalf("mixed write-through cache should not warn when at least one row persists, got stderr %q", stderr)
+	}
+}
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestWriteThroughCacheEnvelopeExtractionParity", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestWriteThroughCacheEnvelopeExtractionParity|TestWriteThroughCacheWarnsOnlyWhenNoRowsPersist", "-count=1")
 }

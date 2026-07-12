@@ -16,7 +16,7 @@ import (
 
 // RunWorkflowVerification builds the CLI and runs all workflows from the manifest.
 func RunWorkflowVerification(dir string) (*WorkflowVerifyReport, error) {
-	releaseHome, err := scopeSubprocessHome()
+	releaseHome, err := scopeSubprocessHome(findCLINames(dir)...)
 	if err != nil {
 		return nil, err
 	}

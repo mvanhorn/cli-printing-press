@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -279,6 +280,39 @@ func Execute() error {
 
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
 	require.NoError(t, err, "shell operators must not be counted as positionals: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+}
+
+func TestVerifySkill_QuotedHashIsNotTreatedAsComment(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\n" +
+		"fixture-pp-cli compare \"topic #tag\" expected\n" +
+		"fixture-pp-cli compare 'topic #tag' expected\n" +
+		"fixture-pp-cli compare literal expected # trailing comment\n" +
+		"```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"compare.go": `package cli
+import "github.com/spf13/cobra"
+func newCompareCmd() *cobra.Command {
+	return &cobra.Command{Use: "compare <left> <right>"}
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newCompareCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "positional-args").CombinedOutput()
+	require.NoError(t, err, "quoted # arguments must remain positional while unquoted trailing comments are stripped: %s", string(out))
 	require.Contains(t, string(out), "All checks passed")
 }
 
@@ -697,6 +731,19 @@ func TestVerifySkill_CanonicalSectionsPassesOnFreshFixture(t *testing.T) {
 	require.Contains(t, string(out), "canonical-sections passed")
 }
 
+// TestVerifySkill_CanonicalSectionsNormalizesCRLF guards against Windows
+// checkouts rewriting SKILL.md line endings and producing false drift in the
+// generator-owned install section.
+func TestVerifySkill_CanonicalSectionsNormalizesCRLF(t *testing.T) {
+	t.Parallel()
+	bin := buildPrintingPressBinary(t)
+	install := strings.ReplaceAll(generator.CanonicalSkillInstallSection("myapi", "productivity"), "\n", "\r\n")
+	dir := writeCanonicalFixture(t, "myapi", "productivity", install)
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
+	require.NoError(t, err, "CRLF-only line ending differences must not fail canonical-sections: %s", string(out))
+	require.Contains(t, string(out), "canonical-sections passed")
+}
+
 // TestVerifySkill_CanonicalSectionsCatchesFlagStrip is the regression
 // guard for the trigger-dev SKILL slip — an automation loop stripped
 // `--cli-only` from the npx installer line to silence a verify-skill
@@ -768,7 +815,7 @@ func Execute() error { return (&cobra.Command{Use: "`+name+`-pp-cli"}).Execute()
 `), 0o644))
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-		[]byte("module github.com/example/"+name+"-pp-cli\n\ngo 1.26.4\n"), 0o644))
+		[]byte("module github.com/example/"+name+"-pp-cli\n\ngo 1.26.5\n"), 0o644))
 
 	manifest := fmt.Sprintf(`{"api_name":%q,"cli_name":%q,"category":%q}`,
 		name, name+"-pp-cli", category)
@@ -898,17 +945,35 @@ func writeVerifySkillFixture(t *testing.T, dir string, files map[string]string, 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"fixture-pp-cli"}`), 0o644))
 }
 
-// buildPrintingPressBinary compiles the printing-press binary into a test
-// tempdir and returns its path. Built once per test because each test's
-// TempDir is fresh; Go's test cache ensures the compile is fast.
+var (
+	printingPressBinaryOnce sync.Once
+	printingPressBinaryPath string
+	printingPressBinaryErr  error
+)
+
+// buildPrintingPressBinary compiles the printing-press binary once for this
+// package's verify-skill subprocess tests and returns its path.
 func buildPrintingPressBinary(t *testing.T) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "printing-press")
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/cli-printing-press")
-	// The test runs from internal/cli; go up to repo root.
-	cmd.Dir = "../.."
-	if buildOut, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building printing-press: %v\n%s", err, string(buildOut))
-	}
-	return out
+
+	printingPressBinaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "printing-press-test-bin-*")
+		if err != nil {
+			printingPressBinaryErr = err
+			return
+		}
+
+		out := filepath.Join(dir, "printing-press")
+		cmd := exec.Command("go", "build", "-o", out, "./cmd/cli-printing-press")
+		// The test runs from internal/cli; go up to repo root.
+		cmd.Dir = "../.."
+		if buildOut, err := cmd.CombinedOutput(); err != nil {
+			printingPressBinaryErr = fmt.Errorf("building printing-press: %w\n%s", err, string(buildOut))
+			return
+		}
+		printingPressBinaryPath = out
+	})
+
+	require.NoError(t, printingPressBinaryErr)
+	return printingPressBinaryPath
 }

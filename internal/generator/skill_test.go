@@ -349,7 +349,7 @@ func TestCompactDescriptionPrefersCLIShapedCopy(t *testing.T) {
 	assert.NotContains(t, string(goreleaser), "# Introduction")
 }
 
-func TestCatalogDescriptionPreservesCompleteLongCopy(t *testing.T) {
+func TestManifestDescriptionPreservesCompleteLongCopy(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("longcopy")
@@ -357,10 +357,10 @@ func TestCatalogDescriptionPreservesCompleteLongCopy(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "longcopy-pp-cli")
 	gen := New(apiSpec, outputDir)
 
-	assert.Equal(t, apiSpec.CLIDescription, gen.CatalogDescription())
+	assert.Equal(t, apiSpec.CLIDescription, gen.ManifestDescription())
 }
 
-func TestCatalogDescriptionSkipsLiteralEllipsisCandidates(t *testing.T) {
+func TestManifestDescriptionSkipsLiteralEllipsisCandidates(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("longcopy")
@@ -368,7 +368,7 @@ func TestCatalogDescriptionSkipsLiteralEllipsisCandidates(t *testing.T) {
 	apiSpec.Description = "Complete fallback sentence."
 	gen := New(apiSpec, filepath.Join(t.TempDir(), "longcopy-pp-cli"))
 
-	assert.Equal(t, "Complete fallback sentence.", gen.CatalogDescription())
+	assert.Equal(t, "Complete fallback sentence.", gen.ManifestDescription())
 }
 
 // TestSkillRendersAuthBranchPerType asserts the deterministic Auth Setup
@@ -407,6 +407,26 @@ func TestSkillRendersAuthBranchPerType(t *testing.T) {
 				"auth-type %q should produce %q in SKILL.md Auth Setup", tc.authType, tc.expect)
 		})
 	}
+}
+
+func TestSkillAuthSetupPrefersNarrativeEvenWhenSpecAuthIsNone(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("tierfree")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	outputDir := filepath.Join(t.TempDir(), "tierfree-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		AuthNarrative: "Most commands are public, but premium download routes require `AA_API_KEY`.",
+	}
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	assert.Contains(t, content, "Most commands are public, but premium download routes require `AA_API_KEY`.")
+	assert.NotContains(t, content, "No authentication required.")
 }
 
 // TestSkillRendersExtraCommands asserts that hand-written commands declared
@@ -548,7 +568,7 @@ func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
 		"kind: shell is invalid per ClawHub schema; must never appear")
 	assert.NotContains(t, content, `kind: "shell"`,
 		"kind: shell is invalid per ClawHub schema; must never appear")
-	assert.NotContains(t, content, `"command":`,
+	assert.NotContains(t, body, `"command":`,
 		"command field is not in ClawHub schema; must never appear in metadata")
 	assert.NotContains(t, content, `\"openclaw\":`,
 		"metadata must not be a JSON-string blob anymore")

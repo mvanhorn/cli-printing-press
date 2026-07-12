@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -28,6 +29,7 @@ var (
 	maxEndpointsPerResource      = 50
 	endpointLimitExplicit        = false // true when user set --max-endpoints-per-resource
 	globalScopeParamNormalizerRE = regexp.MustCompile(`[^a-zA-Z0-9]+`)
+	authFormatPlaceholderRE      = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 )
 
 type additionalHeaderFallbackMode int
@@ -48,6 +50,8 @@ const (
 	extensionAuthDescription       = "x-auth-description"
 	extensionAuthCompanion         = "x-auth-companion"
 	extensionAuthSubtype           = "x-auth-subtype"
+	extensionAuthBasicUsername     = "x-auth-basic-username"
+	extensionAuthBasicPassword     = "x-auth-basic-password"
 	extensionOAuthDeviceFlow       = "x-oauth-device-flow"
 	extensionOAuthRefreshTokenMech = "x-oauth-refresh-token-mechanism"
 	extensionSpeakeasyExample      = "x-speakeasy-example"
@@ -56,13 +60,20 @@ const (
 	extensionRoles                 = "x-roles"
 	extensionRequiresRole          = "x-requires-role"
 	extensionRateClass             = "x-rate-class"
+	extensionDefaultRateLimit      = "x-pp-default-rate-limit"
 	extensionMCP                   = "x-mcp"
 	extensionLegacyMCP             = "mcp"
 	extensionDataSourceStrategy    = "x-data-source-strategy"
 	extensionCache                 = "x-cache"
+	extensionLearn                 = "x-learn"
 	extensionStreaming             = "x-streaming"
+	extensionPPQuery               = "x-pp-query"
+	extensionPPSyncable            = "x-pp-syncable"
+	extensionPPPagination          = "x-pp-pagination"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionHappyArgs             = "x-happy-args"
+	extensionPPExample             = "x-pp-example"
+	extensionLiveDogfoodTier       = "x-live-dogfood-requires-tier"
 	extensionDispatchParam         = "x-pp-dispatch-param"
 	extensionPPResource            = "x-pp-resource"
 	extensionParamURLName          = "x-url-name"
@@ -620,6 +631,10 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	defaultRateLimit, err := parseDefaultRateLimitOpenAPIExtension(doc, extensionDefaultRateLimit)
+	if err != nil {
+		return nil, err
+	}
 	roles, err := parseStringListOpenAPIExtension(doc, extensionRoles)
 	if err != nil {
 		return nil, err
@@ -633,7 +648,15 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	if err != nil {
 		return nil, err
 	}
+	learnConfig, err := parseTypedExtension[spec.LearnConfig](doc, extensionLearn)
+	if err != nil {
+		return nil, err
+	}
 	streamingConfig, err := parseTypedExtension[spec.StreamingConfig](doc, extensionStreaming)
+	if err != nil {
+		return nil, err
+	}
+	querySyncConfig, err := parseQuerySyncExtension(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -658,12 +681,15 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 		WebsiteURL:                   websiteURL,
 		ProxyRoutes:                  proxyRoutes,
 		RateClass:                    rateClass,
+		DefaultRateLimit:             defaultRateLimit,
 		Auth:                         auth,
 		Roles:                        roles,
 		TierRouting:                  tierRouting,
 		MCP:                          mcpConfig,
 		Cache:                        cacheConfig,
+		Learn:                        learnConfig,
 		Streaming:                    streamingConfig,
+		QuerySync:                    querySyncConfig,
 		EndpointTemplateVars:         templateVars,
 		EndpointTemplateEnvOverrides: templateEnvOverrides,
 		EndpointPathParamDefaults:    pathParamDefaults,
@@ -823,6 +849,20 @@ func parseTypedExtension[T any](doc *openapi3.T, key string) (T, error) {
 	return parseTypedExtensionRaw[T](key, raw)
 }
 
+// parseQuerySyncExtension decodes the root-level x-pp-query extension into a
+// *spec.QuerySyncConfig, returning nil (not a zero struct) when absent so the
+// sync generator's presence gate stays off for every non-query API.
+func parseQuerySyncExtension(doc *openapi3.T) (*spec.QuerySyncConfig, error) {
+	if _, ok := lookupOpenAPIExtension(doc, extensionPPQuery); !ok {
+		return nil, nil
+	}
+	cfg, err := parseTypedExtension[spec.QuerySyncConfig](doc, extensionPPQuery)
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
 func parseMCPExtension(doc *openapi3.T) (spec.MCPConfig, error) {
 	if raw, ok := lookupOpenAPIExtension(doc, extensionMCP); ok {
 		return parseTypedExtensionRaw[spec.MCPConfig](extensionMCP, raw)
@@ -886,6 +926,66 @@ func parseStringOpenAPIExtension(doc *openapi3.T, key string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// parseDefaultRateLimitOpenAPIExtension reads x-pp-default-rate-limit from the
+// root or info object. The value may be the string "auto" (case-insensitive) or
+// a non-negative number (JSON number or numeric string); it returns the
+// canonical string form ("auto" or e.g. "2"). Absent → "".
+func parseDefaultRateLimitOpenAPIExtension(doc *openapi3.T, key string) (string, error) {
+	var raw any
+	var ok bool
+	if doc != nil && doc.Extensions != nil {
+		raw, ok = doc.Extensions[key]
+	}
+	if !ok {
+		if doc != nil && doc.Info != nil && doc.Info.Extensions != nil {
+			raw, ok = doc.Info.Extensions[key]
+		}
+	}
+	if !ok {
+		return "", nil
+	}
+	invalid := fmt.Errorf("%s must be \"auto\" or a non-negative number", key)
+	switch v := raw.(type) {
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return "", nil
+		}
+		if strings.EqualFold(s, "auto") {
+			return "auto", nil
+		}
+		if f, err := parseNonNegativeFloat(s); err == nil {
+			return f, nil
+		}
+		return "", invalid
+	case json.Number:
+		if f, err := parseNonNegativeFloat(v.String()); err == nil {
+			return f, nil
+		}
+		return "", invalid
+	case float64:
+		if v < 0 {
+			return "", invalid
+		}
+		return strconv.FormatFloat(v, 'g', -1, 64), nil
+	default:
+		return "", invalid
+	}
+}
+
+// parseNonNegativeFloat validates a numeric string is a non-negative number and
+// returns it in canonical (no trailing-zero) form.
+func parseNonNegativeFloat(s string) (string, error) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return "", err
+	}
+	if f < 0 {
+		return "", fmt.Errorf("negative")
+	}
+	return strconv.FormatFloat(f, 'g', -1, 64), nil
 }
 
 func parseStringListOpenAPIExtension(doc *openapi3.T, key string) ([]string, error) {
@@ -1100,10 +1200,17 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 		case "bearer":
 			auth.Type = "bearer_token"
 			auth.Header = "Authorization"
+			if xFmt := stringExtension(scheme.Extensions, "x-auth-format"); xFmt != "" {
+				auth.Format = xFmt
+			}
 		case "basic":
 			auth.Type = "api_key"
 			auth.Header = "Authorization"
 			auth.Format = "Basic {username}:{password}"
+			if xFmt := stringExtension(scheme.Extensions, "x-auth-format"); xFmt != "" {
+				auth.Format = xFmt
+			}
+			applyBasicAuthConstantHints(&auth, scheme.Extensions, scheme.Description)
 		}
 	case "apikey":
 		auth.Type = "api_key"
@@ -1143,6 +1250,9 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 				if prefix = strings.TrimSpace(prefix); prefix != "" {
 					auth.Format = prefix + " {token}"
 				}
+			}
+			if xFmt := stringExtension(scheme.Extensions, "x-auth-format"); xFmt != "" {
+				auth.Format = xFmt
 			}
 		}
 		// Detect bot token pattern from scheme name (e.g. "BotToken")
@@ -1455,6 +1565,9 @@ func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string
 	switch authType {
 	case "api_key":
 		if authFormatIsBasic(format) {
+			if envVars := basicAuthEnvVarsFromFormat(format, envPrefix); len(envVars) > 0 {
+				return envVars
+			}
 			return []string{envPrefix + "_USERNAME", envPrefix + "_PASSWORD"}
 		}
 		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN).
@@ -1843,15 +1956,130 @@ func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
 		if auth.Type == "cookie" || strings.EqualFold(auth.In, "cookie") {
 			envVar.Kind = spec.AuthEnvVarKindHarvested
 		}
-		if authFormatIsBasic(auth.Format) && i == 0 {
+		if authFormatIsBasic(auth.Format) && i == 0 && basicAuthFirstPlaceholderIsPublic(auth.Format) {
 			envVar.Sensitive = false
 		}
 		auth.EnvVarSpecs = append(auth.EnvVarSpecs, envVar)
 	}
 }
 
+func basicAuthFirstPlaceholderIsPublic(format string) bool {
+	matches := authFormatPlaceholderRE.FindAllStringSubmatch(format, -1)
+	if len(matches) == 0 || len(matches[0]) < 2 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(matches[0][1])) {
+	case "username", "user":
+		return true
+	default:
+		return false
+	}
+}
+
+func basicAuthEnvVarsFromFormat(format, envPrefix string) []string {
+	matches := authFormatPlaceholderRE.FindAllStringSubmatch(format, -1)
+	if len(matches) == 0 || len(matches) > 2 {
+		return nil
+	}
+	envVars := make([]string, 0, len(matches))
+	seen := map[string]struct{}{}
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		placeholder := strings.TrimSpace(match[1])
+		if placeholder == "" {
+			return nil
+		}
+		if _, ok := seen[placeholder]; ok {
+			continue
+		}
+		seen[placeholder] = struct{}{}
+		envVars = append(envVars, envPrefix+"_"+strings.ToUpper(toSnakeCase(placeholder)))
+	}
+	if len(envVars) == 0 || len(envVars) > 2 {
+		return nil
+	}
+	return envVars
+}
+
 func authFormatIsBasic(format string) bool {
 	return strings.Contains(strings.ToLower(format), "basic ")
+}
+
+func applyBasicAuthConstantHints(auth *spec.AuthConfig, extensions map[string]any, description string) {
+	if auth == nil || !authFormatIsBasic(auth.Format) {
+		return
+	}
+	username := stringExtension(extensions, extensionAuthBasicUsername)
+	password := stringExtension(extensions, extensionAuthBasicPassword)
+	if username == "" && password == "" {
+		username = describedBasicCredentialConstant(description, "username")
+		password = describedBasicCredentialConstant(description, "password")
+	}
+	switch {
+	case username != "" && password == "":
+		auth.Format = "Basic " + username + ":{token}"
+	case password != "" && username == "":
+		auth.Format = "Basic {token}:" + password
+	}
+}
+
+func describedBasicCredentialConstant(description, field string) string {
+	description = strings.TrimSpace(description)
+	field = strings.ToLower(strings.TrimSpace(field))
+	if description == "" || field == "" {
+		return ""
+	}
+	pattern := regexp.MustCompile(`(?i)` + "`?" + regexp.QuoteMeta(field) + "`?" + `\s*(?:is|=|:)\s*([^,.;\n]+)`)
+	match := pattern.FindStringSubmatch(description)
+	if len(match) < 2 {
+		return ""
+	}
+	value := strings.TrimSpace(match[1])
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "`") {
+		if end := strings.Index(value[1:], "`"); end >= 0 {
+			return strings.TrimSpace(value[1 : 1+end])
+		}
+	}
+	if strings.HasPrefix(value, `"`) {
+		if end := strings.Index(value[1:], `"`); end >= 0 {
+			return strings.TrimSpace(value[1 : 1+end])
+		}
+	}
+	if strings.HasPrefix(value, "'") {
+		if end := strings.Index(value[1:], "'"); end >= 0 {
+			return strings.TrimSpace(value[1 : 1+end])
+		}
+	}
+	parts := strings.Fields(value)
+	if len(parts) != 1 {
+		return ""
+	}
+	candidate := strings.Trim(parts[0], "`'\"")
+	if candidate == "" || !looksLikeBasicConstant(candidate) {
+		return ""
+	}
+	return candidate
+}
+
+func looksLikeBasicConstant(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	switch lower {
+	case "", "a", "an", "the", "your", "you", "username", "password", "key", "secret", "token",
+		"always", "required", "provided", "required.", "optional", "empty", "blank":
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func applyAuthVarsRichOverride(auth *spec.AuthConfig, extensions map[string]any, path string) {
@@ -2765,7 +2993,7 @@ func candidateSecuritySchemeNames(doc *openapi3.T, usageCounts map[string]int) [
 	var names []string
 
 	if doc.Security != nil {
-		for _, requirement := range doc.Security {
+		for _, requirement := range definedSecurityRequirements(doc, doc.Security) {
 			var requirementNames []string
 			for name := range requirement {
 				requirementNames = append(requirementNames, name)
@@ -2831,12 +3059,63 @@ func securitySchemeOperationUsageCounts(doc *openapi3.T) map[string]int {
 
 func effectiveSecurityRequirements(op *openapi3.Operation, doc *openapi3.T) openapi3.SecurityRequirements {
 	if op != nil && op.Security != nil {
-		return *op.Security
+		requirements := definedSecurityRequirements(doc, *op.Security)
+		if len(requirements) > 0 || securityRequirementsAllowAnonymous(*op.Security) {
+			return requirements
+		}
+		if securityRequirementsReferenceDefinedScheme(doc, *op.Security) {
+			return nil
+		}
+		return definedSecurityRequirements(doc, doc.Security)
 	}
 	if doc == nil {
 		return nil
 	}
-	return doc.Security
+	return definedSecurityRequirements(doc, doc.Security)
+}
+
+func definedSecurityRequirements(doc *openapi3.T, requirements openapi3.SecurityRequirements) openapi3.SecurityRequirements {
+	if len(requirements) == 0 {
+		return requirements
+	}
+	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
+		return nil
+	}
+
+	filtered := make(openapi3.SecurityRequirements, 0, len(requirements))
+	for _, requirement := range requirements {
+		if len(requirement) == 0 {
+			filtered = append(filtered, requirement)
+			continue
+		}
+		defined := openapi3.SecurityRequirement{}
+		hasUndefined := false
+		for name, scopes := range requirement {
+			if securitySchemeValue(doc.Components.SecuritySchemes[name]) == nil {
+				hasUndefined = true
+				break
+			}
+			defined[name] = scopes
+		}
+		if !hasUndefined && len(defined) > 0 {
+			filtered = append(filtered, defined)
+		}
+	}
+	return filtered
+}
+
+func securityRequirementsReferenceDefinedScheme(doc *openapi3.T, requirements openapi3.SecurityRequirements) bool {
+	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
+		return false
+	}
+	for _, requirement := range requirements {
+		for name := range requirement {
+			if securitySchemeValue(doc.Components.SecuritySchemes[name]) != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Ordering rationale: Bearer is the simplest already-minted token shape and
@@ -2988,11 +3267,11 @@ func allEffectiveSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequirem
 					continue
 				}
 				if op.Security != nil {
-					requirements = append(requirements, (*op.Security)...)
+					requirements = append(requirements, effectiveSecurityRequirements(op, doc)...)
 					continue
 				}
 				if !rootIncluded {
-					requirements = append(requirements, doc.Security...)
+					requirements = append(requirements, definedSecurityRequirements(doc, doc.Security)...)
 					rootIncluded = true
 				}
 			}
@@ -3001,7 +3280,7 @@ func allEffectiveSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequirem
 	if len(requirements) > 0 {
 		return requirements
 	}
-	return doc.Security
+	return definedSecurityRequirements(doc, doc.Security)
 }
 
 func securitySchemeValue(ref *openapi3.SecuritySchemeRef) *openapi3.SecurityScheme {
@@ -3119,9 +3398,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 		// not method-scoped, so per-operation reads would either duplicate or
 		// disagree on the same identity.
 		pathResourceIDOverride := readPathItemResourceID(pathItem, path)
+		pathTenantScopeColumn := readPathItemTenantScopeColumn(pathItem, path)
+		pathMembershipField := readPathItemMembershipField(pathItem, path)
 		pathCritical := readPathItemCritical(pathItem, path)
+		pathSyncable, _ := boolExtension(pathItem.Extensions, extensionPPSyncable)
 		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 		pathDataSourceStrategy := readDataSourceStrategyExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
+		pathLiveDogfoodTier := readLiveDogfoodTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 
 		methods := make([]string, 0, len(operations))
 		for method := range operations {
@@ -3237,6 +3520,16 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				endpoint.DataSourceStrategy = pathDataSourceStrategy
 			}
 			endpoint.HappyArgs = readHappyArgsExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			if ex := readExampleExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path)); ex != "" {
+				endpoint.Example = ex
+			}
+			endpoint.LiveDogfoodRequiresTier = readLiveDogfoodTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			if endpoint.LiveDogfoodRequiresTier == "" {
+				endpoint.LiveDogfoodRequiresTier = pathLiveDogfoodTier
+			}
+			if endpoint.LiveDogfoodRequiresTier == "" {
+				endpoint.LiveDogfoodRequiresTier = inferLiveDogfoodTier(method, path, op)
+			}
 
 			// Namespace the inline-item synthetic name with the resource so
 			// two resources whose default GET endpoints both compute the
@@ -3245,7 +3538,10 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, targetResourceName+"_"+endpointName, out)
 			populateFieldSelectorDefaults(&endpoint, op)
 			if strings.ToUpper(method) == "GET" {
-				endpoint.Pagination = detectPagination(endpoint.Params, op)
+				endpoint.Pagination = readPaginationExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+				if endpoint.Pagination == nil {
+					endpoint.Pagination = detectPagination(endpoint.Params, op)
+				}
 				// Only single-resource fetches (GET /resource/{id}) can carry
 				// embedded paged sub-resources; list endpoints ARE the paged
 				// endpoint themselves and don't need a companion helper.
@@ -3281,7 +3577,11 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 			if strings.ToUpper(method) == "POST" {
 				endpoint.Pagination = detectPostQueryIDWalkPagination(endpoint.Body, op, endpoint.IDField)
 			}
+			endpoint.TenantScopeColumn = pathTenantScopeColumn
+			endpoint.MembershipField = pathMembershipField
 			endpoint.Critical = pathCritical
+			opSyncable, _ := boolExtension(op.Extensions, extensionPPSyncable)
+			endpoint.Syncable = pathSyncable || opSyncable
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 
 			// Binary-only success responses (e.g. PDF/octet-stream downloads)
@@ -4180,6 +4480,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		if schema != nil && schema.Default != nil {
 			param.Default = schema.Default
 		}
+		setParamMaximum(&param, schema)
 		if param.Positional {
 			param.Required = true
 		}
@@ -4192,6 +4493,36 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 	reclassifyPathParamModifiers(params)
 
 	return params
+}
+
+// setParamMaximum records a numeric upper-bound constraint from the schema onto
+// the param, normalizing the two OpenAPI encodings of an exclusive bound.
+// OpenAPI 3.1 writes `exclusiveMaximum: N` as a number; OpenAPI 3.0 writes
+// `maximum: N` plus `exclusiveMaximum: true`. Either way the largest legal value
+// is strictly below N, so it lands in ExclusiveMaximum; a plain inclusive
+// `maximum` lands in Maximum. Downstream (the sync profiler) turns whichever is
+// set into an effective integer page-size cap.
+func setParamMaximum(param *spec.Param, schema *openapi3.Schema) {
+	if param == nil || schema == nil {
+		return
+	}
+	// OpenAPI 3.0: `exclusiveMaximum: true` turns `maximum` into an exclusive
+	// bound — it is not also an inclusive one.
+	if schema.ExclusiveMax.IsTrue() {
+		if schema.Max != nil {
+			param.ExclusiveMaximum = schema.Max
+		}
+		return
+	}
+	// OpenAPI 3.1 (or no exclusive modifier): `maximum` is inclusive, and a
+	// numeric `exclusiveMaximum` is an independent assertion. Both may be
+	// present; capture each so the profiler can take the most restrictive.
+	if schema.Max != nil {
+		param.Maximum = schema.Max
+	}
+	if schema.ExclusiveMax.Value != nil {
+		param.ExclusiveMaximum = schema.ExclusiveMax.Value
+	}
 }
 
 func readParamURLNameOverrides(pathItem *openapi3.PathItem, op *openapi3.Operation) map[string]string {
@@ -4599,12 +4930,17 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 			Format:      schemaFormat(paramSchema),
 			Example:     schemaExample(paramSchema),
 		}
+		if schemaHasCompositeUnionAlternative(paramSchema, map[*openapi3.Schema]struct{}{}) {
+			param.Type = "string"
+			param.Format = "json_or_scalar"
+		}
 		if inferCSVArrays && isStringArraySchema(paramSchema) {
 			param.ItemType = "string"
 		}
 		if paramSchema != nil && paramSchema.Default != nil {
 			param.Default = paramSchema.Default
 		}
+		setParamMaximum(&param, paramSchema)
 		// For array types, propagate item-level enum as a Fields entry
 		// so downstream consumers (profiler) can access it.
 		if paramSchema != nil && paramSchema.Type != nil && paramSchema.Type.Is(openapi3.TypeArray) &&
@@ -4789,6 +5125,10 @@ func mapBodyFieldsDepth(schema *openapi3.Schema, inferCSVArrays bool, visited ma
 			Enum:        schemaEnum(fieldSchema),
 			Format:      schemaFormat(fieldSchema),
 		})
+		if schemaHasCompositeUnionAlternative(fieldSchema, map[*openapi3.Schema]struct{}{}) {
+			fields[len(fields)-1].Type = "string"
+			fields[len(fields)-1].Format = "json_or_scalar"
+		}
 		if inferCSVArrays && isStringArraySchema(fieldSchema) {
 			fields[len(fields)-1].ItemType = "string"
 		}
@@ -5118,6 +5458,46 @@ func readPathItemResourceID(pathItem *openapi3.PathItem, path string) string {
 	}
 }
 
+// readPathItemTenantScopeColumn reads `x-pp-tenant-scope-column` from a path
+// item. String-only; other shapes warn and return "". Mirrors
+// readPathItemResourceID.
+func readPathItemTenantScopeColumn(pathItem *openapi3.PathItem, path string) string {
+	if pathItem == nil || pathItem.Extensions == nil {
+		return ""
+	}
+	raw, ok := pathItem.Extensions["x-pp-tenant-scope-column"]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		warnf("path %q: x-pp-tenant-scope-column must be a string, got %T; ignoring", path, raw)
+		return ""
+	}
+}
+
+// readPathItemMembershipField reads `x-pp-membership-field` from a path item.
+// String-only; other shapes warn and return "". Mirrors
+// readPathItemTenantScopeColumn.
+func readPathItemMembershipField(pathItem *openapi3.PathItem, path string) string {
+	if pathItem == nil || pathItem.Extensions == nil {
+		return ""
+	}
+	raw, ok := pathItem.Extensions["x-pp-membership-field"]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		warnf("path %q: x-pp-membership-field must be a string, got %T; ignoring", path, raw)
+		return ""
+	}
+}
+
 // readPathItemCritical reads the `x-critical` extension from a path item.
 // Accepts native booleans and the truthy strings "true"/"1" (case-insensitive).
 // Other shapes emit a warning and return false.
@@ -5218,6 +5598,120 @@ func readHappyArgsExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(value)
+}
+
+// readExampleExtension reads an operation-level x-pp-example string and returns
+// it as the verbatim Cobra Example for the generated command, overriding the
+// synthesized example. It exists for all-optional "one-of" endpoints (pass one
+// of channelId / handle / url): the synthesized example only includes required
+// params, so such endpoints would otherwise advertise a bare command the API
+// rejects with a 4xx. Marking a param required to force it into the example
+// would wrongly make the CLI flag mandatory; x-pp-example fixes only the
+// example. Absent (the common case) returns "", preserving synthesis exactly.
+func readExampleExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionPPExample]
+	if !ok || raw == nil {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionPPExample, raw)
+		return ""
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	// Endpoint.Example is emitted as the verbatim Cobra Example line, and
+	// synthesized examples carry a leading two-space indent. Normalize the
+	// authored value to the same indent so x-pp-example renders identically
+	// whether or not the author included the leading spaces.
+	lines := strings.Split(trimmed, "\n")
+	for i, line := range lines {
+		lines[i] = "  " + strings.TrimLeft(line, " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func readLiveDogfoodTierExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionLiveDogfoodTier]
+	if !ok || raw == nil {
+		return ""
+	}
+	tier, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionLiveDogfoodTier, raw)
+		return ""
+	}
+	return strings.TrimSpace(tier)
+}
+
+func inferLiveDogfoodTier(method, path string, op *openapi3.Operation) string {
+	if !strings.EqualFold(method, "GET") {
+		return ""
+	}
+	if hasEventStreamResponse(op) || hasTerminalStreamPathSegment(path) {
+		return "streaming"
+	}
+	return ""
+}
+
+func hasEventStreamResponse(op *openapi3.Operation) bool {
+	if op == nil || op.Responses == nil {
+		return false
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return false
+	}
+	for contentType := range success.Value.Content {
+		if strings.EqualFold(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]), "text/event-stream") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTerminalStreamPathSegment(path string) bool {
+	path = strings.TrimRight(strings.TrimSpace(path), "/")
+	lastSlash := strings.LastIndex(path, "/")
+	if lastSlash >= 0 {
+		path = path[lastSlash+1:]
+	}
+	if strings.HasPrefix(path, "{") || strings.HasPrefix(path, ":") {
+		return false
+	}
+	return strings.EqualFold(path, "stream")
+}
+
+func readPaginationExtension(extensions map[string]any, context string) *spec.Pagination {
+	if extensions == nil {
+		return nil
+	}
+	raw, ok := extensions[extensionPPPagination]
+	if !ok || raw == nil {
+		return nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionPPPagination, raw)
+		return nil
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return nil
+	}
+	if value == spec.PaginationTypeNone {
+		return &spec.Pagination{Type: spec.PaginationTypeNone}
+	}
+	warnf("%s: %s=%q is not supported; ignoring", context, extensionPPPagination, value)
+	return nil
 }
 
 // readWalkerExtension reads the `x-pp-sync-walker` extension from an
@@ -5871,6 +6365,28 @@ func mapBodyParamType(schema *openapi3.Schema, inferCSVArrays bool) string {
 		return "string_csv_array"
 	}
 	return mapSchemaType(schema)
+}
+
+func schemaHasCompositeUnionAlternative(schema *openapi3.Schema, visited map[*openapi3.Schema]struct{}) bool {
+	if schema == nil {
+		return false
+	}
+	if _, ok := visited[schema]; ok {
+		return false
+	}
+	visited[schema] = struct{}{}
+	defer delete(visited, schema)
+
+	for _, candidate := range append(append([]*openapi3.SchemaRef{}, schema.OneOf...), schema.AnyOf...) {
+		value := schemaRefValue(candidate)
+		if isObjectSchema(value) || isArraySchema(value) {
+			return true
+		}
+		if schemaHasCompositeUnionAlternative(value, visited) {
+			return true
+		}
+	}
+	return false
 }
 
 func isStringArraySchema(schema *openapi3.Schema) bool {
@@ -7482,7 +7998,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	var pag spec.Pagination
 
 	// Detect limit param
-	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page", "page[size]"} {
+	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "perpage", "per_page", "page[size]"} {
 		if orig, ok := originalCase[name]; ok {
 			pag.LimitParam = orig
 			break
@@ -7508,7 +8024,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		}
 	}
 	if pag.Type == "" {
-		for _, name := range []string{"offset"} {
+		for _, name := range []string{"offset", "skip"} {
 			if orig, ok := originalCase[name]; ok {
 				pag.CursorParam = orig
 				pag.Type = "offset"

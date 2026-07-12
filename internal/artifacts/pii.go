@@ -125,14 +125,12 @@ var piiDetectors = []piiDetector{
 	},
 	{
 		kind: PIIKindPhoneUS,
-		// US-shaped 10-digit phone with optional +1 prefix and
-		// parens/separators. NANP requires the area code and the
-		// exchange code to each start with 2-9 — leading 0 or 1 is
-		// not a real US phone. That constraint filters out 10-digit
-		// product UPCs (`0190074442`) and coordinate-shaped numerics
-		// (`106.0512973`) without rejecting any real phone shape.
+		// Formatted US phone with optional +1 prefix. NANP requires the
+		// area code and the exchange code to each start with 2-9; requiring
+		// separators/parentheses avoids treating bare 10-digit IDs, DNS SOA
+		// serials, and epoch timestamps as customer phone numbers.
 		// Catches "(415) 555-0123", "415-555-0123", "+1 415 555 0123".
-		pattern: regexp.MustCompile(`\b(?:\+?1[\s.\-]?)?\(?[2-9]\d{2}\)?[\s.\-]?[2-9]\d{2}[\s.\-]?\d{4}\b`),
+		pattern: regexp.MustCompile(`(?:\+?1[\s.\-]+)?(?:\([2-9]\d{2}\)[\s.\-]*|\b[2-9]\d{2}[\s.\-]+)[2-9]\d{2}[\s.\-]+\d{4}\b`),
 	},
 	{
 		kind: PIIKindZipPlus4,
@@ -160,11 +158,17 @@ var piiDetectors = []piiDetector{
 const PIIRedactedSentinel = "<redacted>"
 
 var piiJSONScalarKeys = map[string]bool{
+	"accesstoken":     true,
 	"address":         true,
 	"address1":        true,
 	"address2":        true,
+	"apikey":          true,
+	"apitoken":        true,
 	"billingaddress":  true,
 	"cardlast4":       true,
+	"clientsecret":    true,
+	"csrf":            true,
+	"csrftoken":       true,
 	"customeremail":   true,
 	"customername":    true,
 	"email":           true,
@@ -176,16 +180,23 @@ var piiJSONScalarKeys = map[string]bool{
 	"last4":           true,
 	"mobile":          true,
 	"name":            true,
+	"password":        true,
 	"phone":           true,
 	"phonenumber":     true,
 	"postalcode":      true,
+	"refreshtoken":    true,
+	"secret":          true,
+	"session":         true,
+	"sessiontoken":    true,
 	"shippingaddress": true,
 	"street":          true,
 	"streetaddress":   true,
+	"token":           true,
+	"websocketurl":    true,
 	"zip":             true,
 }
 
-var piiJSONKeyNeedleRE = regexp.MustCompile(`(?i)"(?:address1?|address2|billing[_ -]?address|card[_ -]?last[_ -]?4|customer[_ -]?(?:email|name)|email|first[_ -]?name|full[_ -]?name|invoice(?:[_ -]?number)?|last[_ -]?name|last[_ -]?4|mobile|name|phone(?:[_ -]?number)?|postal[_ -]?code|shipping[_ -]?address|street(?:[_ -]?address)?|zip)"\s*:`)
+var piiJSONKeyNeedleRE = regexp.MustCompile(`(?i)"(?:access[_ -]?token|address1?|address2|api[_ -]?key|api[_ -]?token|billing[_ -]?address|card[_ -]?last[_ -]?4|client[_ -]?secret|csrf(?:[_ -]?token)?|customer[_ -]?(?:email|name)|email|first[_ -]?name|full[_ -]?name|invoice(?:[_ -]?number)?|last[_ -]?name|last[_ -]?4|mobile|name|password|phone(?:[_ -]?number)?|postal[_ -]?code|refresh[_ -]?token|secret|session(?:[_ -]?token)?|shipping[_ -]?address|street(?:[_ -]?address)?|token|websocket[_ -]?url|zip)"\s*:`)
 
 // RedactPIIText returns text with customer-PII shapes replaced before the
 // text is written to durable artifacts. JSON input preserves non-PII fields
@@ -381,6 +392,7 @@ func redactDetectorMatches(det piiDetector, text string) string {
 		match := text[loc[0]:loc[1]]
 		b.WriteString(text[last:loc[0]])
 		if isSyntheticPIIPlaceholder(det.kind, match) ||
+			(det.kind == PIIKindEmail && isBenignEmailContext(text, loc[0], match)) ||
 			(det.kind == PIIKindPhoneUS && isGitHubContextBarePhoneID(text, loc[0], match)) {
 			b.WriteString(match)
 		} else {
@@ -539,6 +551,78 @@ func isRFCReservedEmail(matched string) bool {
 		strings.HasSuffix(domain, ".test") ||
 		strings.HasSuffix(domain, ".invalid") ||
 		strings.HasSuffix(domain, ".localhost")
+}
+
+func isBenignEmailContext(line string, matchStart int, matchedSpan string) bool {
+	return isGitHubNoreplyEmail(matchedSpan) || isURLUserinfoPlaceholderEmail(line, matchStart, matchedSpan)
+}
+
+func isGitHubNoreplyEmail(matched string) bool {
+	lower := strings.ToLower(matched)
+	if !strings.HasSuffix(lower, "@users.noreply.github.com") {
+		return false
+	}
+	local := strings.TrimSuffix(lower, "@users.noreply.github.com")
+	id, handle, ok := strings.Cut(local, "+")
+	if ok {
+		if id == "" || handle == "" {
+			return false
+		}
+		for _, r := range id {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return isGitHubHandleLocalPart(handle)
+	}
+	return isGitHubHandleLocalPart(local)
+}
+
+func isGitHubHandleLocalPart(handle string) bool {
+	if handle == "" {
+		return false
+	}
+	for _, r := range handle {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isURLUserinfoPlaceholderEmail(line string, matchStart int, matched string) bool {
+	local, _, ok := strings.Cut(strings.ToLower(matched), "@")
+	if !ok || !map[string]bool{
+		"apikey":   true,
+		"password": true,
+		"pass":     true,
+		"secret":   true,
+		"token":    true,
+	}[local] {
+		return false
+	}
+	prefixStart := matchStart
+	for prefixStart > 0 {
+		r := line[prefixStart-1]
+		if r == '"' || r == '\'' || r == '`' || r == '<' || r == '(' || r == '[' || r == '{' || r == ' ' || r == '\t' || r == '\n' {
+			break
+		}
+		prefixStart--
+	}
+	prefix := strings.ToLower(line[prefixStart:matchStart])
+	if !strings.HasSuffix(prefix, ":") {
+		return false
+	}
+	user := strings.TrimSuffix(prefix, ":")
+	if schemeIdx := strings.LastIndex(user, "://"); schemeIdx != -1 {
+		user = user[schemeIdx+len("://"):]
+	}
+	return map[string]bool{
+		"login":    true,
+		"user":     true,
+		"username": true,
+	}[user]
 }
 
 func isNANPFictionalPhone(matched string) bool {
@@ -809,6 +893,9 @@ func scanPIIFileWithRel(path, relSlash string) ([]PIIFinding, error) {
 			for _, match := range det.pattern.FindAllStringIndex(line, -1) {
 				matchedSpan := line[match[0]:match[1]]
 				if isSyntheticPIIPlaceholder(det.kind, matchedSpan) {
+					continue
+				}
+				if det.kind == PIIKindEmail && isBenignEmailContext(line, match[0], matchedSpan) {
 					continue
 				}
 				if det.kind == PIIKindPhoneUS && isGitHubContextBarePhoneID(line, match[0], matchedSpan) {

@@ -123,7 +123,7 @@ func (c *Client) WithTier(tier string) *Client {
 func newTierLimiters(rateLimit float64) map[string]*cliutil.AdaptiveLimiter {
 	return map[string]*cliutil.AdaptiveLimiter{
 {{- range $tierName, $_ := .TierRouting.Tiers}}
-		{{printf "%q" $tierName}}: cliutil.NewAdaptiveLimiter(rateLimit),
+		{{printf "%q" $tierName}}: newRateLimiter(rateLimit),
 {{- end}}
 	}
 }
@@ -331,6 +331,49 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("%s %s returned HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
 }
 
+func rejectUnresolvedPathParams(path string, allowedTemplateVars map[string]string) error {
+	for {
+		start := strings.IndexByte(path, '{')
+		if start < 0 {
+			return nil
+		}
+		rest := path[start+1:]
+		end := strings.IndexByte(rest, '}')
+		if end < 0 {
+			return nil
+		}
+		name := rest[:end]
+		if _, ok := allowedTemplateVars[name]; ok {
+			path = rest[end+1:]
+			continue
+		}
+		if isPathPlaceholderName(name) {
+			return fmt.Errorf("unresolved path parameter {%s}", name)
+		}
+		path = rest[end+1:]
+	}
+}
+
+func isPathPlaceholderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// maxIdleConnsPerHost sizes the keep-alive pool so concurrent sync workers
+// reuse warm connections instead of re-paying the TLS handshake (~0.5s) per
+// request. The rate limiter caps throughput, so simultaneous in-flight
+// connections stay ≈ budget×latency (a handful) regardless of --concurrency;
+// 32 covers any sane worker count with margin.
+const maxIdleConnsPerHost = 32
+
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 {{- if .UsesHTTP2DisabledTransport}}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
@@ -376,15 +419,50 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 	}
 	return httpClient
 {{- else}}
-	return &http.Client{Timeout: timeout, Jar: jar}
+	// Clone (do NOT build a bare &http.Transport{}) so Proxy=ProxyFromEnvironment,
+	// IdleConnTimeout, and dialer keep-alive survive — a bare struct would break
+	// corporate-proxy users (a public-build regression).
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	if tr.MaxIdleConns < maxIdleConnsPerHost {
+		tr.MaxIdleConns = maxIdleConnsPerHost
+	}
+	return &http.Client{Timeout: timeout, Jar: jar, Transport: tr}
 {{- end}}
 }
 
+// RateLimitAuto is the default --rate-limit value: a negative sentinel meaning
+// "auto" — pace by the server's advertised budget (X-Ratelimit-* headers), with
+// an adaptive 429-probe fallback for header-less servers, and NO manual ceiling.
+// A positive value imposes that value as an explicit politeness ceiling; 0
+// disables pacing entirely.
+const RateLimitAuto = -1.0
+
+// defaultAutoStartRate is the conservative pace an auto-mode limiter uses until
+// the first response's rate-limit headers arrive (after which the server's
+// advertised budget governs). Modest so the very first request to an unknown
+// server is polite; headers raise it within one round-trip.
+const defaultAutoStartRate = 2.0
+
+// newRateLimiter maps the user-facing --rate-limit value to a limiter:
+//
+//	< 0 (RateLimitAuto): headers/adaptive govern, no ceiling (the default)
+//	== 0:                pacing disabled (nil limiter)
+//	> 0:                 explicit hard ceiling at that rate
+func newRateLimiter(rateLimit float64) *cliutil.AdaptiveLimiter {
+	if rateLimit < 0 {
+		return cliutil.NewAdaptiveLimiterAuto(defaultAutoStartRate)
+	}
+	return cliutil.NewAdaptiveLimiter(rateLimit) // 0 -> nil (disabled); >0 -> explicit ceiling
+}
+
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
-	homeDir, _ := os.UserHomeDir()
-	cacheDir := filepath.Join(homeDir, ".cache", "{{.Name}}-pp-cli", "http")
+	cacheDir := ""
+	if dir, err := cliutil.CacheDir(); err == nil {
+		cacheDir = filepath.Join(dir, "http")
+	}
 {{- if eq .Auth.Type "session_handshake"}}
-	sess := newSessionManager(timeout)
+	sess := newSessionManager(timeout, cfg.Path)
 	httpClient := newHTTPClient(timeout, sess.CookieJar())
 	sess.AttachTo(httpClient)
 	c := &Client{
@@ -395,7 +473,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
-		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+		limiter:    newRateLimiter(rateLimit),
 {{- if .HasTierRouting}}
 		limiters:   newTierLimiters(rateLimit),
 {{- end}}
@@ -413,7 +491,16 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	}
 {{- else}}
 {{- if .Auth.HasCookies}}
-	httpClient := newHTTPClient(timeout, LoadCookieJar())
+	cookieJar := LoadCookieJar()
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+	// Seed the jar from a session captured via the env var or stored in
+	// credentials but not yet in cookies.json, so the credential rides every
+	// request and net/http absorbs Set-Cookie rotation across the session.
+	if cfg != nil {
+		SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
+	}
+{{- end}}
+	httpClient := newHTTPClient(timeout, cookieJar)
 {{- else}}
 	httpClient := newHTTPClient(timeout, nil)
 {{- end}}
@@ -425,7 +512,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
-		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+		limiter:    newRateLimiter(rateLimit),
 {{- if .HasTierRouting}}
 		limiters:   newTierLimiters(rateLimit),
 {{- end}}
@@ -458,14 +545,19 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			return errors.New("stopped after 10 redirects")
 		}
 {{- if .HasTierRouting}}
-		// Tier routing picks header vs query at runtime via authForRequest;
-		// re-deriving here would duplicate that selection logic, so we cap
-		// depth only. Known limitation: Go strips standard auth headers
-		// (Authorization, Cookie) on cross-host redirects but not custom
-		// header names, so a tier credential carried on a custom header
-		// could still be forwarded on a cross-host hop. Stripping it here
-		// requires the runtime tier selection and is tracked separately
-		// from the static-auth cross-host fix below.
+		// Tier routing picks header vs query at request time on a WithTier copy,
+		// while this redirect callback is installed once on the shared
+		// http.Client. On cross-host redirects, delete every tier auth header
+		// name the generated CLI can use; same-host redirects keep Go's copied
+		// header unchanged. Go strips Authorization/Cookie automatically on
+		// cross-host redirects, but not arbitrary tier header names.
+		if req.URL.Host != via[0].URL.Host {
+	{{- range $tierName, $tier := .TierRouting.Tiers}}
+	{{- if and (ne $tier.Auth.Type "") (ne $tier.Auth.Type "none") (eq (authPlacement $tier.Auth) "header")}}
+			req.Header.Del({{printf "%q" (authParameterName $tier.Auth)}})
+	{{- end}}
+	{{- end}}
+		}
 {{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
 		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
@@ -485,7 +577,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 		// Auth lives on URL query; Go preserves the query on relative
 		// redirects, so nothing to re-derive.
-{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 		// The auth cookie set on the initial request is carried verbatim by Go
 		// on same-host redirects, so re-adding it here would double the Cookie
 		// header (the same hazard the cookie-jar branch below avoids). Only the
@@ -563,6 +655,10 @@ func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[str
 	return result, err
 }
 
+func (c *Client) GetWithHeadersValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error) {
+	return c.GetWithHeaders(ctx, pathWithQueryValues(path, params), nil, headers)
+}
+
 // GetNoCache issues a GET that bypasses the cache read for this call only,
 // then refreshes the cache with the fresh response on success. Use for
 // polling-until-terminal patterns where every call must reflect current
@@ -586,6 +682,10 @@ func (c *Client) GetWithHeadersNoCache(ctx context.Context, path string, params 
 		c.writeCache(path, params, result{{if .HasHTMLExtraction}}, c.lastContentType{{end}})
 	}
 	return result, err
+}
+
+func (c *Client) GetWithHeadersNoCacheValues(ctx context.Context, path string, params url.Values, headers map[string]string) (json.RawMessage, error) {
+	return c.GetWithHeadersNoCache(ctx, pathWithQueryValues(path, params), nil, headers)
 }
 
 func (c *Client) responseCacheEnabled(binaryResponse bool) bool {
@@ -672,13 +772,12 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 			key += "|config_path=" + c.Config.Path
 		}
 	}
-	paramKeys := make([]string, 0, len(params))
-	for k := range params {
-		paramKeys = append(paramKeys, k)
-	}
-	sort.Strings(paramKeys)
-	for _, k := range paramKeys {
-		key += k + "=" + params[k]
+	if len(params) > 0 {
+		query := url.Values{}
+		for k, v := range params {
+			query.Set(k, v)
+		}
+		key += "|query=" + query.Encode()
 	}
 {{- if .EndpointTemplateVars}}
 	// Include resolved template-var values in the cache identity so two
@@ -699,13 +798,28 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	return hex.EncodeToString(h[:8])
 }
 
+func pathWithQueryValues(path string, params url.Values) string {
+	if len(params) == 0 {
+		return path
+	}
+	encoded := params.Encode()
+	if encoded == "" {
+		return path
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + encoded
+}
+
 func (c *Client) readCache(path string, params map[string]string) (json.RawMessage, {{if .HasHTMLExtraction}}string, {{end}}bool) {
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
 	info, err := os.Stat(cacheFile)
 	if err != nil || time.Since(info.ModTime()) > 5*time.Minute {
 		return nil, {{if .HasHTMLExtraction}}"", {{end}}false
 	}
-	data, err := os.ReadFile(cacheFile)
+	data, err := os.ReadFile(filepath.Clean(cacheFile)) // #nosec G304 -- app-derived cache path from sha256 cache key.
 	if err != nil {
 		return nil, {{if .HasHTMLExtraction}}"", {{end}}false
 	}
@@ -718,9 +832,9 @@ func (c *Client) readCache(path string, params map[string]string) (json.RawMessa
 }
 
 func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage{{if .HasHTMLExtraction}}, contentType string{{end}}) {
-	os.MkdirAll(c.cacheDir, 0o700)
+	_ = os.MkdirAll(c.cacheDir, 0o700)
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
-	os.WriteFile(cacheFile, []byte(data), 0o600)
+	_ = os.WriteFile(cacheFile, []byte(data), 0o600)
 {{- if .HasHTMLExtraction}}
 	c.writeCacheContentType(cacheFile, contentType)
 {{- end}}
@@ -733,7 +847,7 @@ type cacheMetadata struct {
 }
 
 func (c *Client) readCacheContentType(cacheFile string) string {
-	data, err := os.ReadFile(cacheFile + ".meta.json")
+	data, err := os.ReadFile(filepath.Clean(cacheFile + ".meta.json")) // #nosec G304 -- app-derived cache metadata path.
 	if err != nil {
 		return ""
 	}
@@ -832,6 +946,19 @@ func (c *Client) PostFormWithHeaders(ctx context.Context, path string, fields ur
 
 func (c *Client) PostFormWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "POST", path, params, formRequestBody{Fields: fields}, headers)
+}
+
+// PostQueryFormWithParams is a form-encoded POST that does not mutate remote
+// state. It is the form-body counterpart to PostQueryWithParams for POST
+// search/table endpoints that return read-only data.
+func (c *Client) PostQueryFormWithParams(ctx context.Context, path string, params map[string]string, fields url.Values) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "POST", path, params, formRequestBody{Fields: fields}, nil)
+}
+
+// PostQueryFormWithParamsAndHeaders is the headers-aware counterpart to
+// PostQueryFormWithParams.
+func (c *Client) PostQueryFormWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "POST", path, params, formRequestBody{Fields: fields}, headers)
 }
 
 {{ end }}
@@ -1113,6 +1240,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
 		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
 	}
+	if err := rejectUnresolvedPathParams(path, {{if .EndpointTemplateVars}}templateVarEnvNames{{else}}nil{{end}}); err != nil {
+		return nil, 0, err
+	}
 {{- if .EndpointTemplateVars}}
 	// EndpointTemplateVars are declared in the spec — resolve {placeholder}
 	// markers in BaseURL (and, for non-proxy clients, the request path)
@@ -1134,6 +1264,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	if urlErr != nil {
 		return nil, 0, urlErr
 	}
+	resolvedPath, pathErr := buildURL("", path, endpointVars)
+	if pathErr != nil {
+		return nil, 0, pathErr
+	}
+	path = resolvedPath
 {{- else}}
 	targetURL := {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}}
 {{- end}}
@@ -1249,7 +1384,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		return c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides, authHeader)
 	}
 
-	const maxRetries = 3
+	maxRetries := clientMaxRetries()
 	var lastErr error
 {{- if and .HasAuthCommand (ne .Auth.TokenURL "")}}
 	refreshedAfterUnauthorized := false
@@ -1345,18 +1480,26 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			q := req.URL.Query()
 			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
 			req.URL.RawQuery = q.Encode()
-{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 			req.AddCookie(&http.Cookie{Name: "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", Value: authHeader})
 {{- else if eq .Auth.Type "cookie"}}
-			// Cookie-auth: LoadCookieJar is the sole source of outbound
-			// cookies. net/http's Client.send calls jar.Cookies + AddCookie
-			// for each cookie, which concatenates without dedup; a manual
-			// req.Header.Set here would ship every session cookie twice and
-			// trip upstream WAFs. auth login persists the same cookie set
-			// to both the jar and config, so the jar carries every value
-			// SaveTokens stores. authHeader is read only by the dry-run /
-			// signing paths above; intentionally not consumed on the live
-			// wire here.
+{{- if and .Auth.Header (ne .Auth.Header "Cookie")}}
+			// Cookie-typed auth whose credential is carried in a real request
+			// header (e.g. an Authorization bearer) rather than as cookies.
+			// The jar still carries any session cookies; this header is the
+			// primary credential and must ride the live wire.
+			req.Header.Set("{{.Auth.Header}}", authHeader)
+{{- else}}
+			// Cookie-auth: the cookie jar is the sole source of outbound
+			// cookies. New() loads it from cookies.json and seeds it from
+			// the env-var / credentials session via SeedCookieJar, so every
+			// cookie source flows through the jar. net/http's Client.send
+			// calls jar.Cookies + AddCookie for each cookie, which
+			// concatenates without dedup; a manual req.Header.Set here would
+			// ship every session cookie twice and trip upstream WAFs.
+			// authHeader is read only by the dry-run / signing paths above;
+			// intentionally not consumed on the live wire here.
+{{- end}}
 {{- else}}
 			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- end}}
@@ -1424,14 +1567,12 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		// application/json; specs that need a different content type
 		// (vendor mediatypes, XML, HTML) declare it via RequiredHeaders or
 		// per-endpoint headerOverrides, both of which run before this
-		// if-empty default. XML-backed specs (response_format: xml) flip
-		// the default to application/xml so direct client calls negotiate
-		// the right representation instead of risking a 406 on XML-only APIs.
+		// if-empty default.
 		if req.Header.Get("Accept") == "" {
 			if binaryResponse {
 				req.Header.Set("Accept", "*/*")
 			} else {
-				req.Header.Set("Accept", "application/{{if .AllResponsesXML}}xml{{else}}json{{end}}")
+				req.Header.Set("Accept", "application/json")
 			}
 		}
 {{- end}}
@@ -1442,13 +1583,32 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				return nil, 0, ctxErr
 			}
 			lastErr = fmt.Errorf("%s %s: %w", method, c.displayURL(path, authHeader), c.maskError(err, authHeader))
+			// Transient network failure (connection reset, DNS blip, request
+			// timeout). Back off before retrying — same exponential schedule as
+			// the 5xx path below — so a brief outage does not burn every attempt
+			// in a tight loop. ctx cancellation breaks out of the wait at once.
+			if attempt < maxRetries {
+				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
+				fmt.Fprintf(os.Stderr, "network error (%v), retrying in %s (attempt %d/%d)\n", c.maskError(err, authHeader), wait, attempt+1, maxRetries)
+				if serr := sleepContext(ctx, wait); serr != nil {
+					return nil, 0, serr
+				}
+			}
 			continue
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
+		}
+
+		// Pace to the server-advertised budget when it ships rate-limit
+		// headers (every response, success or 429). This takes priority over
+		// the blind adaptive ramp/halve, which only governs header-less
+		// servers and the very first request of a session.
+		if remaining, resetAt, ok := cliutil.ParseRateLimitHeaders(resp.Header); ok {
+			c.limiter.ObserveHeaders(remaining, resetAt)
 		}
 
 		// Success
@@ -1471,13 +1631,11 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 				}
 				return env, resp.StatusCode, nil
 			}
-{{- if .AllResponsesXML}}
-			// XML-only specs (every endpoint response_format: xml) normalize
-			// success bodies to a generic JSON document so --json, --select, and
-			// table output work unchanged. Non-XML content types (e.g. a JSON
-			// error envelope) pass through untouched; a decode failure returns
-			// the raw bytes rather than corrupting the body.
-			if isXMLResponseContentType(resp.Header.Get("Content-Type")) {
+{{- if .HasXMLResponse}}
+			// XML endpoints carry an application/xml Accept override. Use that
+			// per-request signal so mixed XML/JSON specs normalize only the XML
+			// endpoint's success body. A decode failure returns the raw bytes.
+			if isXMLRequest(req.Header.Get("Accept")) && isXMLResponseContentType(resp.Header.Get("Content-Type")) {
 				return cliutil.XMLToJSON(json.RawMessage(respBody)), resp.StatusCode, nil
 			}
 {{- end}}
@@ -1664,7 +1822,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{.Auth.TokenParamName}}", maskToken(authHeader))
 	}
 {{- end}}
-{{- else if and .Auth .Auth.In (eq .Auth.In "cookie")}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "cookie") (not (isBrowserCookieAuth .Auth))}}
 	if authHeader != "" {
 		// in:cookie auth ships on the Cookie header; preview it as such so the
 		// dry run matches the live wire format.
@@ -1754,9 +1912,17 @@ func (c *Client) persistedQueryHashes() map[string]string {
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- app-owned persisted-query registry path.
 	if err != nil {
-		return nil
+		if c != nil && c.Config != nil && c.Config.Path != "" {
+			legacyPath := filepath.Join(filepath.Dir(c.Config.Path), "persisted-queries.json")
+			if legacyPath != path {
+					data, err = os.ReadFile(filepath.Clean(legacyPath)) // #nosec G304 -- app-owned legacy persisted-query registry path.
+			}
+		}
+		if err != nil {
+			return nil
+		}
 	}
 	var entries []persistedQueryRegistryEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
@@ -1772,14 +1938,10 @@ func (c *Client) persistedQueryHashes() map[string]string {
 }
 
 func (c *Client) persistedQueryRegistryPath() string {
-	if c != nil && c.Config != nil && c.Config.Path != "" {
-		return filepath.Join(filepath.Dir(c.Config.Path), "persisted-queries.json")
+	if dir, err := cliutil.StateDir(); err == nil {
+		return filepath.Join(dir, "persisted-queries.json")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".config", "{{.Name}}-pp-cli", "persisted-queries.json")
+	return ""
 }
 
 func rewritePersistedQueryPayload(payload any, hashes map[string]string) bool {
@@ -1933,7 +2095,7 @@ func authPlaceholderCredentialError(cfg *config.Config) error {
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login or {{.Name}}-pp-cli auth set-token <token>")
 {{- else if eq .Auth.EffectiveOAuth2Grant "device_code"}}
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login --device-code or {{.Name}}-pp-cli auth set-token <token>")
-{{- else if eq .Auth.Type "oauth2"}}
+{{- else if or (eq .Auth.Type "oauth2") (authBrowserLoginAvailable .Auth)}}
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login")
 {{- else}}
 	return authPlaceholderCredentialErrorWithSetup(cfg, "{{- with .Auth.CanonicalEnvVar}}export {{.Name}}=<your-token> or {{end}}{{.Name}}-pp-cli auth set-token <token>")
@@ -1996,6 +2158,13 @@ func resolveClientCredentialsScope({{if $ccScopeUsesClientID}}clientID string{{e
 {{- end}}
 }
 
+func resolveClientCredentialsUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv("{{envName .Name}}_USER_AGENT")); ua != "" {
+		return ua
+	}
+	return "{{.Name}}-pp-cli/{{.Version}}"
+}
+
 {{- if clientCredentialsTokenURLHasTenant .Auth}}
 func resolveClientCredentialsTokenURL(tokenURL, tenant string) (string, error) {
 	idx := strings.Index(strings.ToLower(tokenURL), "/common/")
@@ -2018,7 +2187,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 		tokenURL = c.Config.TokenURL
 	}
 	if tokenURL == "" {
-		tokenURL = "{{.Auth.TokenURL}}"
+		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
 {{- end}}
 	if tokenURL == "" {
@@ -2035,9 +2204,7 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 	}
 {{- end}}
 	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
+		"grant_type": {"client_credentials"},
 	}
 	if scope := resolveClientCredentialsScope({{if $ccScopeUsesClientID}}clientID{{end}}); scope != "" {
 		form.Set("scope", scope)
@@ -2047,6 +2214,8 @@ func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecr
 		return fmt.Errorf("building token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", resolveClientCredentialsUserAgent())
+	req.SetBasicAuth(clientID, clientSecret)
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("calling token endpoint: %w", err)
@@ -2096,7 +2265,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 
 	tokenURL := c.Config.TokenURL
 	if tokenURL == "" {
-		tokenURL = "{{.Auth.TokenURL}}"
+		tokenURL = {{printf "%q" .Auth.TokenURL}}
 	}
 
 	params := url.Values{
@@ -2227,7 +2396,17 @@ func isBinaryResponseContentType(ct string) bool {
 	}
 	return true
 }
-{{- if .AllResponsesXML}}
+{{- if .HasXMLResponse}}
+
+func isXMLRequest(accept string) bool {
+	for value := range strings.SplitSeq(accept, ",") {
+		mt := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+		if mt == "application/xml" || mt == "text/xml" || (strings.HasSuffix(mt, "+xml") && mt != "application/xhtml+xml") {
+			return true
+		}
+	}
+	return false
+}
 
 // isXMLResponseContentType reports whether a success response should be
 // normalized from XML to JSON. application/xhtml+xml is excluded: it is
@@ -2405,4 +2584,11 @@ func truncateBody(b []byte) string {
 		return string(b)
 	}
 	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
+}
+
+func clientMaxRetries() int {
+	if cliutil.IsVerifyEnv() || cliutil.IsDogfoodEnv() {
+		return 0
+	}
+	return 3
 }

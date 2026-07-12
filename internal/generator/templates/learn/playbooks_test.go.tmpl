@@ -4,9 +4,15 @@
 package learn
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
+
+	"{{modulePath}}/internal/learn/entities"
 )
 
 // stubResolver is a test-only EntityResolver backed by an in-memory
@@ -338,5 +344,219 @@ func TestResolveSlots_DeterministicMultiCanonical(t *testing.T) {
 	}
 	if slot["canonical"] != "Alpha" {
 		t.Errorf("expected deterministic first canonical 'Alpha', got %v", slot["canonical"])
+	}
+}
+
+// openPlaybookLookupDB creates a throwaway SQLite database with only the
+// learning_playbooks table — the single table the dual-key lookup
+// touches. Mirrors the v3 store migration shape.
+func openPlaybookLookupDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "playbooks.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec(`CREATE TABLE learning_playbooks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		query_family TEXT NOT NULL UNIQUE,
+		playbook_json TEXT,
+		notes_text TEXT,
+		source TEXT NOT NULL,
+		confidence INTEGER NOT NULL DEFAULT 2,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		last_observed_at DATETIME
+	)`); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	return db
+}
+
+func seedLookupPlaybookRow(t *testing.T, db *sql.DB, family, notes string) {
+	t.Helper()
+	if _, err := db.Exec(
+		`INSERT INTO learning_playbooks (query_family, notes_text, source, confidence)
+		 VALUES (?, ?, 'taught', 2)`,
+		family, notes,
+	); err != nil {
+		t.Fatalf("seed playbook row: %v", err)
+	}
+}
+
+func storedFamilyKeys(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT query_family FROM learning_playbooks ORDER BY id`)
+	if err != nil {
+		t.Fatalf("list families: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			t.Fatalf("scan family: %v", err)
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func TestLookupPlaybookByFamily_FoldedKeyExactHit(t *testing.T) {
+	t.Parallel()
+	db := openPlaybookLookupDB(t)
+	cfg := entities.NewConfig()
+
+	// Row stored post-fold under the canonical family.
+	folded := QueryFamily(Normalize("why did Alpha win yesterday", cfg))
+	seedLookupPlaybookRow(t, db, folded, "canonical-notes")
+
+	// The variant phrasing folds to the same family and hits directly.
+	q := Normalize("why did Alpha win last night", cfg)
+	row, found, err := LookupPlaybookByFamily(context.Background(), db, cfg,
+		QueryFamily(q), QueryFamilyPreFold(q))
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !found {
+		t.Fatal("expected folded-key hit")
+	}
+	if row.QueryFamily != folded || row.NotesText != "canonical-notes" {
+		t.Errorf("row = %+v, want family %q", row, folded)
+	}
+}
+
+func TestLookupPlaybookByFamily_PreFoldRowFoundAndRekeyed(t *testing.T) {
+	t.Parallel()
+	db := openPlaybookLookupDB(t)
+	cfg := entities.NewConfig()
+
+	// Row stored PRE-fold under the non-canonical variant's family
+	// ("last night" shape), as an older CLI build would have keyed it.
+	preFold := QueryFamily(NormalizeUnfolded("why did Alpha win last night", cfg))
+	folded := QueryFamily(Normalize("why did Alpha win last night", cfg))
+	if preFold == folded {
+		t.Fatalf("test setup: pre-fold %q must differ from folded %q", preFold, folded)
+	}
+	seedLookupPlaybookRow(t, db, preFold, "stranded-notes")
+
+	// A "yesterday" query must still find it — and heal the key in place.
+	q := Normalize("why did Alpha win yesterday", cfg)
+	row, found, err := LookupPlaybookByFamily(context.Background(), db, cfg,
+		QueryFamily(q), QueryFamilyPreFold(q))
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !found {
+		t.Fatal("pre-fold row was stranded: folded query missed it")
+	}
+	if row.NotesText != "stranded-notes" {
+		t.Errorf("row = %+v, want the stranded row", row)
+	}
+	got := storedFamilyKeys(t, db)
+	if len(got) != 1 || got[0] != folded {
+		t.Errorf("stored family = %v, want rekeyed to [%q]", got, folded)
+	}
+}
+
+func TestLookupPlaybookByFamily_RawKeyFallbackRekeys(t *testing.T) {
+	t.Parallel()
+	db := openPlaybookLookupDB(t)
+	cfg := entities.NewConfig()
+
+	// Row stored pre-fold; the query arrives in the SAME non-canonical
+	// phrasing, so its pre-fold family equals the stored key exactly.
+	// The raw-key fallback should hit without needing the full scan,
+	// then rekey to the folded form.
+	q := Normalize("why did Alpha win last night", cfg)
+	raw := QueryFamilyPreFold(q)
+	folded := QueryFamily(q)
+	seedLookupPlaybookRow(t, db, raw, "raw-keyed-notes")
+
+	row, found, err := LookupPlaybookByFamily(context.Background(), db, cfg, folded, raw)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if !found || row.NotesText != "raw-keyed-notes" {
+		t.Fatalf("raw-key fallback missed: found=%v row=%+v", found, row)
+	}
+	got := storedFamilyKeys(t, db)
+	if len(got) != 1 || got[0] != folded {
+		t.Errorf("stored family = %v, want rekeyed to [%q]", got, folded)
+	}
+}
+
+func TestLookupPlaybookByFamily_RekeyIsIdempotent(t *testing.T) {
+	t.Parallel()
+	db := openPlaybookLookupDB(t)
+	cfg := entities.NewConfig()
+
+	preFold := QueryFamily(NormalizeUnfolded("why did Alpha win last night", cfg))
+	seedLookupPlaybookRow(t, db, preFold, "notes")
+
+	q := Normalize("why did Alpha win yesterday", cfg)
+	folded := QueryFamily(q)
+	for i := 0; i < 2; i++ {
+		row, found, err := LookupPlaybookByFamily(context.Background(), db, cfg,
+			folded, QueryFamilyPreFold(q))
+		if err != nil {
+			t.Fatalf("lookup %d: %v", i+1, err)
+		}
+		if !found || row.QueryFamily != folded {
+			t.Fatalf("lookup %d: found=%v family=%q, want %q", i+1, found, row.QueryFamily, folded)
+		}
+	}
+	got := storedFamilyKeys(t, db)
+	if len(got) != 1 || got[0] != folded {
+		t.Errorf("second lookup must be a no-op on keys; got %v", got)
+	}
+}
+
+func TestLookupPlaybookByFamily_DayBoundaryNeverMatches(t *testing.T) {
+	t.Parallel()
+	db := openPlaybookLookupDB(t)
+	cfg := entities.NewConfig()
+
+	// A "tonight" family must never be reachable from a "yesterday" query.
+	tonightFam := QueryFamily(Normalize("who wins tonight", cfg))
+	seedLookupPlaybookRow(t, db, tonightFam, "tonight-notes")
+
+	q := Normalize("who wins yesterday", cfg)
+	_, found, err := LookupPlaybookByFamily(context.Background(), db, cfg,
+		QueryFamily(q), QueryFamilyPreFold(q))
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if found {
+		t.Fatal("tonight family must not fold across the day boundary to yesterday")
+	}
+	if got := storedFamilyKeys(t, db); len(got) != 1 || got[0] != tonightFam {
+		t.Errorf("tonight row must stay untouched; got %v", got)
+	}
+}
+
+func TestLookupPlaybookByFamily_EmptyFamilyMisses(t *testing.T) {
+	t.Parallel()
+	db := openPlaybookLookupDB(t)
+	cfg := entities.NewConfig()
+	_, found, err := LookupPlaybookByFamily(context.Background(), db, cfg, "", "")
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if found {
+		t.Fatal("empty family must not match anything")
+	}
+}
+
+func TestFoldFamilyKey_NonAdjacentVariantTokens(t *testing.T) {
+	t.Parallel()
+	cfg := entities.NewConfig()
+	// Sorted family keys can separate a multiword variant's tokens;
+	// bag folding still collapses them and re-sorts.
+	if got := FoldFamilyKey("last mood night", cfg); got != "mood yesterday" {
+		t.Errorf("FoldFamilyKey = %q, want %q", got, "mood yesterday")
+	}
+	// Already-canonical keys are unchanged.
+	if got := FoldFamilyKey("mood yesterday", cfg); got != "mood yesterday" {
+		t.Errorf("FoldFamilyKey (canonical) = %q, want unchanged", got)
 	}
 }

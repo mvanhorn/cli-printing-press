@@ -406,6 +406,101 @@ components:
 	assert.Empty(t, report.OAuthScopeCoverage.Violations)
 }
 
+func TestRunDogfoodOAuthScopeCoverageReadsClientCredentialsScopeHelper(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+import (
+	"net/url"
+	"os"
+)
+
+func resolveClientCredentialsScope() string {
+	if scope := os.Getenv("VIDEOS_OAUTH_SCOPE"); scope != "" {
+		return scope
+	}
+	return "all"
+}
+
+func mintClientCredentialsToken() {
+	form := url.Values{}
+	if scope := resolveClientCredentialsScope(); scope != "" {
+		form.Set("scope", scope)
+	}
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [all]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.com/token
+          scopes:
+            all: Full access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+}
+
+func TestRunDogfoodOAuthScopeCoverageIgnoresUnwiredClientCredentialsScopeHelper(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func resolveClientCredentialsScope() string {
+	return "all"
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [all]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.com/token
+          scopes:
+            all: Full access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
+}
+
 func TestRunDogfoodOAuthScopeCoverageIgnoresUnjoinedScopesVariable(t *testing.T) {
 	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
 func helper() {
@@ -446,7 +541,7 @@ components:
 	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
 	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
-	assert.Equal(t, "generated auth.go declares no OAuth scopes", report.OAuthScopeCoverage.Detail)
+	assert.Equal(t, "generated auth files declare no OAuth scopes", report.OAuthScopeCoverage.Detail)
 }
 
 func TestRunDogfoodOAuthScopeCoverageSurvivesUndefinedNonOAuthScheme(t *testing.T) {
@@ -493,6 +588,74 @@ components:
 	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
 	assert.Equal(t, "GET /analytics", report.OAuthScopeCoverage.Violations[0].Endpoint)
 	assert.Equal(t, []string{"yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
+}
+
+func TestRunDogfoodOAuthScopeCoverageSkipsResolvedAPIKeyAuth(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      responses:
+        "200":
+          description: ok
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            yt-analytics.readonly: Analytics read access
+`)
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion:  CurrentCLIManifestSchemaVersion,
+		APIName:        "videos",
+		CLIName:        "videos-pp-cli",
+		AuthType:       "api_key",
+		AuthPreference: "ApiKeyAuth",
+	}))
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func addAuth(req interface{ HeaderSet(string, string) }, authHeader string) {
+	req.HeaderSet("X-API-Key", authHeader)
+}
+func wire(req *request, authHeader string) {
+	req.Header.Set("X-API-Key", authHeader)
+}
+type request struct{ Header header }
+type header struct{}
+func (header) Set(string, string) {}
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, "FAIL", report.Verdict, report.Issues)
+	assert.True(t, report.OAuthScopeCoverage.Skipped)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+	assert.Contains(t, report.OAuthScopeCoverage.Detail, "resolved auth type api_key")
+	assert.NotContains(t, report.Issues, "OAuth scope coverage missing for 1 endpoint(s)")
 }
 
 func TestLoadOpenAPISpecCollectsRootOAuthScopeRequirements(t *testing.T) {
@@ -792,11 +955,48 @@ func TestDeriveDogfoodVerdict_FailsOnMissingDataSourceStrategy(t *testing.T) {
 		MissingDataSourceStrategy: []ReimplementationFinding{{
 			Command: "id-hunt",
 			File:    "id_hunt.go",
-			Reason:  "missing // pp:data-source <auto|local|live> annotation",
+			Reason:  "missing // pp:data-source <auto|local|live|computed> annotation",
 		}},
 	}
 
 	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+}
+
+func TestCheckDescriptionDriftFlagsManifestAndRootShort(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), []byte(`{
+  "schema_version": 1,
+  "description": "Old stale headline"
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func newRootCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "example",
+		Short: "Old stale headline",
+	}
+}
+`), 0o644))
+
+	researchDir := t.TempDir()
+	require.NoError(t, writeResearchJSON(&ResearchResult{
+		Narrative: &ReadmeNarrative{
+			Headline: "Fresh headline from research",
+		},
+	}, researchDir))
+
+	got := checkDescriptionDrift(dir, researchDir)
+	require.Len(t, got.Findings, 2)
+	assert.Equal(t, "Fresh headline from research", got.Expected)
+	assert.Contains(t, got.Findings[0].Actual, "Old stale headline")
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(&DogfoodReport{
+		PipelineCheck:         PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
+		DescriptionDriftCheck: &got,
+	}, false))
 }
 
 func TestExtractExamplesSection(t *testing.T) {
@@ -1202,6 +1402,71 @@ func (c *Config) AuthHeader() string {
 	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer {token}"})
 	assert.True(t, result.Match)
 	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+}
+
+func TestCheckAuthRecognizesBearerTokenPrefixOverride(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Token " + c.Token
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Token ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `"Token " prefix`)
+}
+
+func TestCheckAuthMakesFormatOverPrefixPrecedenceExplicit(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.SpecScheme, `auth.format`)
+	assert.Contains(t, result.SpecScheme, `auth.prefix "Token" ignored`)
+	assert.Contains(t, result.Detail, `auth.format "Bearer" overrides auth.prefix "Token"`)
+}
+
+func TestCheckAuthRejectsBearerTokenPrefixMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Token " + c.Token
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Prefix: "Bearer"})
+	assert.False(t, result.Match)
+	assert.Equal(t, "Token ", result.GeneratedFmt)
+	assert.Contains(t, result.Detail, `spec expects "Bearer" but generated client uses "Token"`)
 }
 
 func TestCheckAuthRecognizesHeaderAPIKey(t *testing.T) {
@@ -3480,13 +3745,13 @@ func TestCollectDogfoodIssues_IncludesMissingDataSourceStrategy(t *testing.T) {
 			MissingDataSourceStrategy: []ReimplementationFinding{{
 				Command: "id-hunt",
 				File:    "id_hunt.go",
-				Reason:  "missing // pp:data-source <auto|local|live> annotation",
+				Reason:  "missing // pp:data-source <auto|local|live|computed> annotation",
 			}},
 		},
 	}
 
 	issues := collectDogfoodIssues(report, false)
-	assert.Contains(t, issues, "1/2 novel features missing data-source strategy: id-hunt (id_hunt.go) — missing // pp:data-source <auto|local|live> annotation")
+	assert.Contains(t, issues, "1/2 novel features missing data-source strategy: id-hunt (id_hunt.go) — missing // pp:data-source <auto|local|live|computed> annotation")
 }
 
 func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {

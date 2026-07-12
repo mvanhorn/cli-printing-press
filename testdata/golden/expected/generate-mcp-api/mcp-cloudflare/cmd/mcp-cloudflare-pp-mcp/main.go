@@ -27,6 +27,9 @@ const (
 var version = "0.0.0-dev"
 
 func main() {
+	// Pin the learn-event surface for this process and every walker
+	// shell-out child, so usage events record surface=mcp.
+	_ = os.Setenv("MCP_CLOUDFLARE_LEARN_SURFACE", "mcp")
 	s := server.NewMCPServer(
 		"Mcp Cloudflare",
 		version,

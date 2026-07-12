@@ -70,8 +70,31 @@ func (s *Store) UpsertPlaybook(in UpsertPlaybookInput) (int64, bool, error) {
 	}
 	defer tx.Rollback()
 
+	id, inserted, err := upsertPlaybookTx(tx, in, now)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	return id, inserted, nil
+}
+
+func upsertPlaybookTx(tx *sql.Tx, in UpsertPlaybookInput, now time.Time) (int64, bool, error) {
+	family := strings.TrimSpace(in.QueryFamily)
+	if family == "" {
+		return 0, false, fmt.Errorf("upsert playbook: query_family is required")
+	}
+	if strings.TrimSpace(in.PlaybookJSON) == "" && strings.TrimSpace(in.NotesText) == "" {
+		return 0, false, fmt.Errorf("upsert playbook: at least one of playbook_json or notes_text must be non-empty")
+	}
+	source := in.Source
+	if source == "" {
+		source = LearningSourceTaught
+	}
+
 	var existingID int64
-	err = tx.QueryRow(
+	err := tx.QueryRow(
 		`SELECT id FROM learning_playbooks WHERE query_family = ?`,
 		family,
 	).Scan(&existingID)
@@ -100,9 +123,6 @@ func (s *Store) UpsertPlaybook(in UpsertPlaybookInput) (int64, bool, error) {
 		); err != nil {
 			return 0, false, fmt.Errorf("upsert playbook update: %w", err)
 		}
-		if err := tx.Commit(); err != nil {
-			return 0, false, err
-		}
 		return existingID, false, nil
 	}
 	if err != sql.ErrNoRows {
@@ -119,9 +139,6 @@ func (s *Store) UpsertPlaybook(in UpsertPlaybookInput) (int64, bool, error) {
 		return 0, false, fmt.Errorf("upsert playbook insert: %w", err)
 	}
 	id, _ := res.LastInsertId()
-	if err := tx.Commit(); err != nil {
-		return 0, false, err
-	}
 	return id, true, nil
 }
 
@@ -154,8 +171,27 @@ func (s *Store) AppendPlaybookNotes(family, marker string) (int64, bool, error) 
 	}
 	defer tx.Rollback()
 
+	id, inserted, err := appendPlaybookNotesTx(tx, family, marker, now)
+	if err != nil {
+		return 0, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	return id, inserted, nil
+}
+
+func appendPlaybookNotesTx(tx *sql.Tx, family, marker string, now time.Time) (int64, bool, error) {
+	family = strings.TrimSpace(family)
+	if family == "" {
+		return 0, false, fmt.Errorf("append playbook notes: query_family is required")
+	}
+	if marker == "" {
+		return 0, false, fmt.Errorf("append playbook notes: marker is required")
+	}
+
 	var existingID int64
-	err = tx.QueryRow(
+	err := tx.QueryRow(
 		`SELECT id FROM learning_playbooks WHERE query_family = ?`,
 		family,
 	).Scan(&existingID)
@@ -170,9 +206,6 @@ func (s *Store) AppendPlaybookNotes(family, marker string) (int64, bool, error) 
 		); err != nil {
 			return 0, false, fmt.Errorf("append playbook notes update: %w", err)
 		}
-		if err := tx.Commit(); err != nil {
-			return 0, false, err
-		}
 		return existingID, false, nil
 	case sql.ErrNoRows:
 		initial := strings.TrimLeft(marker, "\n")
@@ -186,9 +219,6 @@ func (s *Store) AppendPlaybookNotes(family, marker string) (int64, bool, error) 
 			return 0, false, fmt.Errorf("append playbook notes insert: %w", err)
 		}
 		id, _ := res.LastInsertId()
-		if err := tx.Commit(); err != nil {
-			return 0, false, err
-		}
 		return id, true, nil
 	default:
 		return 0, false, fmt.Errorf("append playbook notes lookup: %w", err)

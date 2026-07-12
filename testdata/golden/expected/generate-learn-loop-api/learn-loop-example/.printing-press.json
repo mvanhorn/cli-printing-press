@@ -21,7 +21,7 @@
   "printer_name": "printing-press-golden",
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
   "run_id": "<RUN_ID>",
-  "schema_version": 1,
+  "schema_version": 2,
   "spec_checksum": "sha256:517f6cb2bfb0da30a73fe697d08ba2eaef21aab2de8396ead501cf3ab643aae9",
   "spec_format": "internal",
   "spec_path": "learn-loop-api.yaml",

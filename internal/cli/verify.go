@@ -45,6 +45,7 @@ func newVerifyCmdWithOptions(opts verifyCmdOptions) *cobra.Command {
 	var asJSON bool
 	var cleanup bool
 	var noSpec bool
+	var writeManifest string
 
 	cmd := &cobra.Command{
 		Use:   "verify",
@@ -110,6 +111,11 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 			if err := cleanupVerifyArtifacts(dir, cleanup); err != nil {
 				return err
 			}
+			if writeManifest != "" {
+				if _, err := pipeline.PersistVerifyToManifest(writeManifest, report); err != nil {
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("writing verify summary to manifest: %w", err)}
+				}
+			}
 
 			if asJSON {
 				output := map[string]any{"verify": report}
@@ -152,6 +158,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&cleanup, "cleanup", false, "Remove transient build artifacts after verification")
 	cmd.Flags().BoolVar(&noSpec, "no-spec", false, "Structural verification only (no API spec required)")
+	cmd.Flags().StringVar(&writeManifest, "write-manifest", "", "Path to .printing-press.json to update with verify summary")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
 }

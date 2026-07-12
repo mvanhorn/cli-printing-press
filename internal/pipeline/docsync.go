@@ -97,6 +97,19 @@ func SyncCLINarrativeDocs(dir, apiName string, narrative *ReadmeNarrative) ([]sy
 	}
 
 	changed, err = syncMarkdownFeatureSection(
+		filepath.Join(dir, "README.md"),
+		"## Recipes",
+		renderRecipesSection(narrative.Recipes),
+		[]string{"## Usage"},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		synced = append(synced, syncedArtifact{Path: "README.md", Detail: "Recipes"})
+	}
+
+	changed, err = syncMarkdownFeatureSection(
 		filepath.Join(dir, "SKILL.md"),
 		"## Recipes",
 		renderRecipesSection(narrative.Recipes),

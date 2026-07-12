@@ -27,10 +27,11 @@ func TestGeneratedReadCommandUsesDataSourceStrategy(t *testing.T) {
 
 	dataSourceSrc := readGeneratedFile(t, outputDir, "internal", "cli", "data_source.go")
 	require.Contains(t, dataSourceSrc, "func resolveReadWithStrategy(")
+	require.Contains(t, dataSourceSrc, "func resolveReadWithStrategyAndResponsePath(")
 	require.Contains(t, dataSourceSrc, `no live equivalent for this command (requested %q)`)
 
 	commandSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
-	require.Contains(t, commandSrc, `resolveReadWithStrategy(cmd.Context(), c, flags, "local", "items"`)
+	require.Contains(t, commandSrc, `resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "local", "items"`)
 }
 
 func TestGeneratedLiveReadUsesStrategyAwareResolver(t *testing.T) {
@@ -52,7 +53,7 @@ func TestGeneratedLiveReadUsesStrategyAwareResolver(t *testing.T) {
 	require.Contains(t, dataSourceSrc, `no local data source for this command (requested %q)`)
 
 	commandSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_items.go")
-	require.Contains(t, commandSrc, `resolveReadWithStrategy(cmd.Context(), c, flags, "live", "items"`)
+	require.Contains(t, commandSrc, `resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "live", "items"`)
 }
 
 func TestGeneratedGraphQLListValidatesLocalStrategyBeforeLocalDispatch(t *testing.T) {
@@ -130,6 +131,9 @@ func TestGeneratedGraphQLGetHonorsLocalStrategy(t *testing.T) {
 		}},
 	}
 	apiSpec.Resources["items"] = items
+	// Post-flip: opt out so the no-store arm below exercises the non-learn
+	// shape it asserts.
+	apiSpec.Learn.Disabled = true
 
 	storeOutputDir := filepath.Join(t.TempDir(), "graphql-get-local-strategy-store-pp-cli")
 	storeGen := New(apiSpec, storeOutputDir)
@@ -137,7 +141,7 @@ func TestGeneratedGraphQLGetHonorsLocalStrategy(t *testing.T) {
 	require.NoError(t, storeGen.Generate())
 
 	storeGetSrc := readGeneratedFile(t, storeOutputDir, "internal", "cli", "promoted_items.go")
-	require.Contains(t, storeGetSrc, `resolveReadWithStrategy(cmd.Context(), c, flags, "local", "items", false`)
+	require.Contains(t, storeGetSrc, `resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "local", "items", false`)
 
 	noStoreOutputDir := filepath.Join(t.TempDir(), "graphql-get-local-strategy-nostore-pp-cli")
 	noStoreGen := New(apiSpec, noStoreOutputDir)

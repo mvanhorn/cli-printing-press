@@ -5,6 +5,7 @@ package entities
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -28,6 +29,32 @@ var defaultStopwords = map[string]struct{}{
 	"this": {}, "that": {}, "these": {}, "those": {}, "it": {}, "its": {},
 }
 
+// defaultSynonyms are the domain-neutral same-referent phrasing folds
+// (variant -> canonical) every Config ships with. Each pair MUST name
+// the same referent: "last night" and "yesterday" are the same day, so
+// they fold; "tonight" and "yesterday" are different days, so they
+// never may. Per-CLI additions go through RegisterSynonyms, NOT here.
+//
+// This map is duplicated as defaultQuerySynonyms in the store package
+// (which cannot import this one); a generator test pins the two copies
+// identical.
+var defaultSynonyms = map[string]string{
+	"last night": "yesterday",
+	"tonite":     "tonight",
+	"to-day":     "today",
+	"to-night":   "tonight",
+	"to-morrow":  "tomorrow",
+	"tmrw":       "tomorrow",
+}
+
+// synonymRule is one compiled variant -> canonical fold. Variant and
+// canonical are pre-split into lowercase word sequences so multiword
+// variants ("last night") match across token boundaries.
+type synonymRule struct {
+	variant   []string
+	canonical []string
+}
+
 // Config holds per-CLI registration for the entity extractor. Construct
 // with NewConfig(), then register CLI-specific ticker patterns and
 // stopwords. Pass the same Config to every Extract call within a CLI
@@ -36,18 +63,26 @@ var defaultStopwords = map[string]struct{}{
 type Config struct {
 	tickerPatterns []*regexp.Regexp
 	stopwords      map[string]struct{}
+	synonyms       map[string]string
+	synonymRules   []synonymRule
 }
 
 // NewConfig returns a Config preloaded with the domain-agnostic
-// default stopword set. No ticker patterns are registered by default --
-// each consumer CLI must add its own.
+// default stopword set and the default same-referent synonym folds.
+// No ticker patterns are registered by default -- each consumer CLI
+// must add its own.
 func NewConfig() *Config {
 	cfg := &Config{
 		stopwords: make(map[string]struct{}, len(defaultStopwords)+16),
+		synonyms:  make(map[string]string, len(defaultSynonyms)+8),
 	}
 	for w := range defaultStopwords {
 		cfg.stopwords[w] = struct{}{}
 	}
+	for v, c := range defaultSynonyms {
+		cfg.synonyms[v] = c
+	}
+	cfg.recompileSynonyms()
 	return cfg
 }
 
@@ -77,6 +112,177 @@ func (c *Config) RegisterStopwords(words ...string) {
 			c.stopwords[w] = struct{}{}
 		}
 	}
+}
+
+// RegisterSynonyms adds per-CLI same-referent phrasing folds (variant
+// -> canonical) on top of the default set. Keys and values are
+// lowercased on registration; entries with an empty side are dropped.
+// Folding is a single hop: canonical forms are never re-folded, so a
+// registration must map straight to the final phrasing.
+//
+// Same-referent ONLY. A synonym here means "these two phrasings name
+// the same thing" -- never "these are related". Registering a fold
+// across referents (e.g. two different days) silently corrupts every
+// stored query family that uses either phrasing.
+func (c *Config) RegisterSynonyms(synonyms map[string]string) {
+	changed := false
+	for v, canonical := range synonyms {
+		v = strings.ToLower(strings.TrimSpace(v))
+		canonical = strings.ToLower(strings.TrimSpace(canonical))
+		if v == "" || canonical == "" || v == canonical {
+			continue
+		}
+		c.synonyms[v] = canonical
+		changed = true
+	}
+	if changed {
+		c.recompileSynonyms()
+	}
+}
+
+// recompileSynonyms rebuilds the ordered rule list from the synonym
+// map. Longest variant first so a two-word variant wins over any
+// single-word prefix of it; ties break lexicographically so rule
+// order (and therefore folding) is deterministic.
+func (c *Config) recompileSynonyms() {
+	rules := make([]synonymRule, 0, len(c.synonyms))
+	for v, canonical := range c.synonyms {
+		variantTokens := strings.Fields(v)
+		canonicalTokens := strings.Fields(canonical)
+		if len(variantTokens) == 0 || len(canonicalTokens) == 0 {
+			continue
+		}
+		rules = append(rules, synonymRule{variant: variantTokens, canonical: canonicalTokens})
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if len(rules[i].variant) != len(rules[j].variant) {
+			return len(rules[i].variant) > len(rules[j].variant)
+		}
+		return strings.Join(rules[i].variant, " ") < strings.Join(rules[j].variant, " ")
+	})
+	c.synonymRules = rules
+}
+
+// FoldSynonyms rewrites every registered variant phrasing in query to
+// its canonical form, matching case-insensitively on whitespace-split
+// words (surrounding punctuation ignored, same trim set as Extract).
+// Unmatched words pass through untouched, so entity capitalization
+// survives. Runs BEFORE extraction so a folded word never reaches the
+// entity classifier -- sentence-initial "Last night" folds instead of
+// minting a spurious "Last" entity.
+func (c *Config) FoldSynonyms(query string) string {
+	if len(c.synonymRules) == 0 {
+		return query
+	}
+	words := strings.Fields(query)
+	if len(words) == 0 {
+		return query
+	}
+	lowered := make([]string, len(words))
+	for i, w := range words {
+		lowered[i] = strings.ToLower(trimPunct(w))
+	}
+	out := make([]string, 0, len(words))
+	folded := false
+	for i := 0; i < len(words); {
+		rule := c.matchSynonymAt(lowered, i)
+		if rule == nil {
+			out = append(out, words[i])
+			i++
+			continue
+		}
+		out = append(out, rule.canonical...)
+		i += len(rule.variant)
+		folded = true
+	}
+	if !folded {
+		return query
+	}
+	return strings.Join(out, " ")
+}
+
+// matchSynonymAt returns the first rule whose variant word sequence
+// matches lowered starting at position i, or nil. Rules are ordered
+// longest-variant-first, so multiword folds win over shorter ones.
+func (c *Config) matchSynonymAt(lowered []string, i int) *synonymRule {
+	for r := range c.synonymRules {
+		rule := &c.synonymRules[r]
+		if i+len(rule.variant) > len(lowered) {
+			continue
+		}
+		match := true
+		for k, vt := range rule.variant {
+			if lowered[i+k] != vt {
+				match = false
+				break
+			}
+		}
+		if match {
+			return rule
+		}
+	}
+	return nil
+}
+
+// FoldTokenBag applies the synonym folds to an UNORDERED token bag:
+// a rule fires when every variant token is present, regardless of
+// adjacency. Needed for stored query-family keys, which are
+// alphabetically sorted and so may separate a multiword variant's
+// tokens. Input tokens must already be lowercase. Returns the input
+// slice unchanged when nothing folds; order of the returned tokens is
+// unspecified (family-key callers re-sort).
+func (c *Config) FoldTokenBag(tokens []string) []string {
+	if len(c.synonymRules) == 0 || len(tokens) == 0 {
+		return tokens
+	}
+	counts := make(map[string]int, len(tokens))
+	for _, t := range tokens {
+		counts[t]++
+	}
+	changed := false
+	for r := range c.synonymRules {
+		rule := &c.synonymRules[r]
+		// Bound iterations by the bag size: single-hop folding can
+		// never fire more times than there are tokens, and the bound
+		// hard-stops any accidental variant/canonical overlap cycle.
+		for guard := 0; guard < len(tokens) && bagHasAll(counts, rule.variant); guard++ {
+			for _, vt := range rule.variant {
+				counts[vt]--
+				if counts[vt] == 0 {
+					delete(counts, vt)
+				}
+			}
+			for _, ct := range rule.canonical {
+				counts[ct]++
+			}
+			changed = true
+		}
+	}
+	if !changed {
+		return tokens
+	}
+	out := make([]string, 0, len(tokens))
+	for tok, n := range counts {
+		for k := 0; k < n; k++ {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+// bagHasAll reports whether counts holds at least one instance of
+// every token in want (counting multiplicity within want).
+func bagHasAll(counts map[string]int, want []string) bool {
+	need := make(map[string]int, len(want))
+	for _, w := range want {
+		need[w]++
+	}
+	for w, n := range need {
+		if counts[w] < n {
+			return false
+		}
+	}
+	return true
 }
 
 // IsStopword reports whether a lowercase token is a stopword for this

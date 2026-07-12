@@ -4,12 +4,367 @@
 package mcp
 
 import (
+{{- if or .VisionSet.Search .VisionSet.Store}}
+	"context"
+{{- end}}
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+{{- if and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource}}
+	"time"
+{{- end}}
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"{{modulePath}}/internal/cliutil"
+	"{{modulePath}}/internal/mcp/bound"
+{{- if or .VisionSet.Search .VisionSet.Store}}
+	"{{modulePath}}/internal/store"
+{{- end}}
 )
+
+func TestMCPPathResolutionMatchesCLIResolverWithHomeEnv(t *testing.T) {
+	resetMCPPathEnv(t)
+	root := filepath.Join(t.TempDir(), "shared-home")
+	t.Setenv("{{envName .Name}}_HOME", root)
+
+	cfg, err := newMCPConfig()
+	if err != nil {
+		t.Fatalf("newMCPConfig() error = %v", err)
+	}
+	cliConfigDir, err := cliutil.ConfigDir()
+	if err != nil {
+		t.Fatalf("cliutil.ConfigDir() error = %v", err)
+	}
+	if want := filepath.Join(cliConfigDir, "config.{{or .Config.Format "json"}}"); cfg.Path != want {
+		t.Fatalf("MCP config path = %q, want CLI resolver path %q", cfg.Path, want)
+	}
+
+	gotDB, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	cliDataDir, err := cliutil.DataDir()
+	if err != nil {
+		t.Fatalf("cliutil.DataDir() error = %v", err)
+	}
+	if want := filepath.Join(cliDataDir, "data.db"); gotDB != want {
+		t.Fatalf("MCP db path = %q, want CLI resolver path %q", gotDB, want)
+	}
+}
+
+func TestMCPPathResolutionMatchesCLIResolverWithPlatformDefaults(t *testing.T) {
+	home := resetMCPPathEnv(t)
+
+	cfg, err := newMCPConfig()
+	if err != nil {
+		t.Fatalf("newMCPConfig() error = %v", err)
+	}
+	if want := filepath.Join(home, ".config", "{{.Name}}-pp-cli", "config.{{or .Config.Format "json"}}"); cfg.Path != want {
+		t.Fatalf("MCP config path = %q, want %q", cfg.Path, want)
+	}
+
+	gotDB, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	if want := filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db"); gotDB != want {
+		t.Fatalf("MCP db path = %q, want %q", gotDB, want)
+	}
+}
+
+func resetMCPPathEnv(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, name := range []string{
+		"{{envName .Name}}_CONFIG",
+		"{{envName .Name}}_CONFIG_DIR",
+		"{{envName .Name}}_DATA_DIR",
+		"{{envName .Name}}_STATE_DIR",
+		"{{envName .Name}}_CACHE_DIR",
+		"{{envName .Name}}_HOME",
+		"XDG_CONFIG_HOME",
+		"XDG_DATA_HOME",
+		"XDG_STATE_HOME",
+		"XDG_CACHE_HOME",
+	} {
+		t.Setenv(name, "")
+	}
+	restore, err := cliutil.SetHomeOverride("")
+	if err != nil {
+		t.Fatalf("reset home override: %v", err)
+	}
+	t.Cleanup(restore)
+	return home
+}
+
+func TestMCPRegisterToolsPreservesTypedSpecialTools(t *testing.T) {
+	s := server.NewMCPServer("{{.Name}}", "test")
+	RegisterTools(s)
+
+	tools := s.ListTools()
+	if len(tools) == 0 {
+		t.Fatal("RegisterTools registered no tools")
+	}
+	contextTool, ok := tools["context"]
+	if !ok {
+		t.Fatalf("typed context tool missing from registered tools: %#v", tools)
+	}
+	if !strings.Contains(contextTool.Tool.Description, "Get API domain context") {
+		t.Fatalf("context tool appears to have been overwritten by command mirror: %q", contextTool.Tool.Description)
+	}
+{{- if .VisionSet.Search}}
+	searchTool, ok := tools["search"]
+	if !ok {
+		t.Fatalf("typed search tool missing from registered tools: %#v", tools)
+	}
+	if !strings.Contains(searchTool.Tool.Description, "Full-text search across all synced data") {
+		t.Fatalf("search tool appears to have been overwritten by command mirror: %q", searchTool.Tool.Description)
+	}
+{{- end}}
+{{- if .VisionSet.Store}}
+	sqlTool, ok := tools["sql"]
+	if !ok {
+		t.Fatalf("typed sql tool missing from registered tools: %#v", tools)
+	}
+	if !strings.Contains(sqlTool.Tool.Description, "Run read-only SQL against local database") {
+		t.Fatalf("sql tool appears to have been overwritten by command mirror: %q", sqlTool.Tool.Description)
+	}
+{{- end}}
+}
+
+{{- if .VisionSet.Search}}
+
+func TestMCPSearchMissingStoreIsActionable(t *testing.T) {
+	resetMCPPathEnv(t)
+
+	result, err := handleSearch(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": "alpha"},
+	}})
+	if err != nil {
+		t.Fatalf("handleSearch returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("handleSearch missing store IsError = %v, want true", result != nil && result.IsError)
+	}
+	text := mcpTextContent(t, result)
+	for _, want := range []string{"No local data store found", "data.db", "Run", "sync"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing-store error %q missing %q", text, want)
+		}
+	}
+}
+
+func TestMCPSearchEmptyStoreReturnsActionableEnvelope(t *testing.T) {
+	resetMCPPathEnv(t)
+	path, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("creating empty store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing empty store: %v", err)
+	}
+
+	result, err := handleSearch(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": "alpha"},
+	}})
+	if err != nil {
+		t.Fatalf("handleSearch returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleSearch empty store IsError = %v, want false", result != nil && result.IsError)
+	}
+	text := mcpTextContent(t, result)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("empty-store envelope length = %d, want <= %d", len(text), bound.MaxBytes)
+	}
+	var envelope struct {
+		Count       int               `json:"count"`
+		Results     []json.RawMessage `json:"results"`
+		StoreStatus string            `json:"store_status"`
+		Resumable   bool              `json:"resumable"`
+		NextStep    string            `json:"next_step"`
+{{- if .APISpec.IsLocalSQLiteSource}}
+		Meta        map[string]any    `json:"meta"`
+{{- end}}
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("empty-store result must be valid JSON: %v\n%s", err, text)
+	}
+	if envelope.Count != 0 || len(envelope.Results) != 0 {
+		t.Fatalf("empty-store envelope returned rows: %s", text)
+	}
+	if envelope.StoreStatus != "empty" {
+		t.Fatalf("store_status = %q, want empty in %s", envelope.StoreStatus, text)
+	}
+	if envelope.Resumable {
+		t.Fatalf("empty-store envelope should not claim cursor support: %s", text)
+	}
+{{- if .APISpec.IsLocalSQLiteSource}}
+	if envelope.Meta["source"] != "local" {
+		t.Fatalf("empty-store meta.source = %#v, want local in %s", envelope.Meta["source"], text)
+	}
+{{- end}}
+	if !strings.Contains(envelope.NextStep, "sync") {
+		t.Fatalf("empty-store next_step should mention sync: %s", text)
+	}
+}
+{{- end}}
+
+{{- if and (or .VisionSet.Search .VisionSet.Store) .APISpec.IsLocalSQLiteSource}}
+
+func TestMCPLocalStoreMetaIncludesOldestSyncedAt(t *testing.T) {
+	resetMCPPathEnv(t)
+	path, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("creating store: %v", err)
+	}
+	defer db.Close()
+
+	syncedAt := time.Date(2026, 6, 30, 12, 34, 56, 0, time.UTC)
+	if _, err := db.DB().Exec(`INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES (?, ?, ?)`, "{{firstResource .Resources}}", syncedAt, 0); err != nil {
+		t.Fatalf("seed sync_state: %v", err)
+	}
+
+	meta, err := mcpLocalStoreMeta(db)
+	if err != nil {
+		t.Fatalf("mcpLocalStoreMeta() error = %v", err)
+	}
+	if meta["source"] != "local" {
+		t.Fatalf("meta.source = %#v, want local", meta["source"])
+	}
+	if meta["oldest_synced_at"] != syncedAt.Format(time.RFC3339) {
+		t.Fatalf("meta.oldest_synced_at = %#v, want %q", meta["oldest_synced_at"], syncedAt.Format(time.RFC3339))
+	}
+}
+{{- end}}
+
+{{- if .VisionSet.Store}}
+
+func TestMCPSQLMissingStoreIsActionable(t *testing.T) {
+	resetMCPPathEnv(t)
+
+	result, err := handleSQL(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": "SELECT 1"},
+	}})
+	if err != nil {
+		t.Fatalf("handleSQL returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("handleSQL missing store IsError = %v, want true", result != nil && result.IsError)
+	}
+	text := mcpTextContent(t, result)
+	for _, want := range []string{"No local data store found", "data.db", "Run", "sync"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing-store error %q missing %q", text, want)
+		}
+	}
+}
+
+func TestMCPSQLEmptyStoreReturnsActionableEnvelope(t *testing.T) {
+	resetMCPPathEnv(t)
+	path, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("creating empty store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing empty store: %v", err)
+	}
+
+	result, err := handleSQL(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": "SELECT * FROM resources"},
+	}})
+	if err != nil {
+		t.Fatalf("handleSQL returned transport error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("handleSQL empty store IsError = %v, want false", result != nil && result.IsError)
+	}
+	text := mcpTextContent(t, result)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("empty-store envelope length = %d, want <= %d", len(text), bound.MaxBytes)
+	}
+	var envelope struct {
+		Count       int                `json:"count"`
+		Rows        []map[string]any   `json:"rows"`
+		Columns     []string           `json:"columns"`
+		StoreStatus string             `json:"store_status"`
+		Resumable   bool               `json:"resumable"`
+		NextStep    string             `json:"next_step"`
+{{- if .APISpec.IsLocalSQLiteSource}}
+		Meta        map[string]any     `json:"meta"`
+{{- end}}
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("empty-store SQL result must be valid JSON: %v\n%s", err, text)
+	}
+	if envelope.Count != 0 || len(envelope.Rows) != 0 {
+		t.Fatalf("empty-store SQL envelope returned rows: %s", text)
+	}
+	if len(envelope.Columns) == 0 {
+		t.Fatalf("empty-store SQL envelope should preserve columns: %s", text)
+	}
+	if envelope.StoreStatus != "empty" {
+		t.Fatalf("store_status = %q, want empty in %s", envelope.StoreStatus, text)
+	}
+	if envelope.Resumable {
+		t.Fatalf("empty-store SQL envelope should not claim cursor support: %s", text)
+	}
+{{- if .APISpec.IsLocalSQLiteSource}}
+	if envelope.Meta["source"] != "local" {
+		t.Fatalf("empty-store SQL meta.source = %#v, want local in %s", envelope.Meta["source"], text)
+	}
+{{- end}}
+	if !strings.Contains(envelope.NextStep, "sync") {
+		t.Fatalf("empty-store SQL next_step should mention sync: %s", text)
+	}
+}
+
+func TestMCPSQLDomainTableMismatchIsActionable(t *testing.T) {
+	resetMCPPathEnv(t)
+	path, err := mcpDBPath()
+	if err != nil {
+		t.Fatalf("mcpDBPath() error = %v", err)
+	}
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("creating empty store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing empty store: %v", err)
+	}
+
+	result, err := handleSQL(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": "SELECT * FROM widgets"},
+	}})
+	if err != nil {
+		t.Fatalf("handleSQL returned transport error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("handleSQL domain-table mismatch IsError = %v, want true", result != nil && result.IsError)
+	}
+	text := mcpTextContent(t, result)
+	for _, want := range []string{"resources(resource_type, id, data)", "resource_type", "json_extract", "widgets"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("domain-table mismatch error %q missing %q", text, want)
+		}
+	}
+}
+{{- end}}
 
 // TestValidateReadOnlyQuery_AllowsSelectAndWITH pins the contract: the MCP
 // sql tool's allowlist accepts SELECT and WITH-prefix queries, including
@@ -157,8 +512,8 @@ func TestStripLeadingSQLNoise(t *testing.T) {
 }
 
 func TestMCPToolResultTextBoundsListResponses(t *testing.T) {
-	items := make([]string, 0, mcpToolResultMaxItems+25)
-	for i := 0; i < mcpToolResultMaxItems+25; i++ {
+	items := make([]string, 0, bound.MaxItems+25)
+	for i := 0; i < bound.MaxItems+25; i++ {
 		items = append(items, strings.Repeat("x", 1600))
 	}
 	data, err := json.Marshal(items)
@@ -167,8 +522,8 @@ func TestMCPToolResultTextBoundsListResponses(t *testing.T) {
 	}
 
 	text := mcpTextContent(t, mcpToolResultText("GET", data))
-	if len(text) > mcpToolResultMaxBytes {
-		t.Fatalf("bounded result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), bound.MaxBytes)
 	}
 
 	var envelope struct {
@@ -196,8 +551,8 @@ func TestMCPToolResultTextBoundsListResponses(t *testing.T) {
 }
 
 func TestMCPToolResultTextBoundsSingleArrayEnvelope(t *testing.T) {
-	groups := make([]map[string]string, 0, mcpToolResultMaxItems+25)
-	for i := 0; i < mcpToolResultMaxItems+25; i++ {
+	groups := make([]map[string]string, 0, bound.MaxItems+25)
+	for i := 0; i < bound.MaxItems+25; i++ {
 		groups = append(groups, map[string]string{
 			"id":   strings.Repeat("g", 8),
 			"name": strings.Repeat("verbose group name ", 90),
@@ -212,8 +567,8 @@ func TestMCPToolResultTextBoundsSingleArrayEnvelope(t *testing.T) {
 	}
 
 	text := mcpTextContent(t, mcpToolResultText("GET", data))
-	if len(text) > mcpToolResultMaxBytes {
-		t.Fatalf("bounded result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("bounded result length = %d, want <= %d", len(text), bound.MaxBytes)
 	}
 
 	var envelope struct {
@@ -242,15 +597,15 @@ func TestMCPToolResultTextBoundsSingleArrayEnvelope(t *testing.T) {
 
 func TestMCPToolResultTextFallsBackToOversizedPreview(t *testing.T) {
 	data, err := json.Marshal(map[string]string{
-		"blob": strings.Repeat("z", mcpToolResultMaxBytes+10000),
+		"blob": strings.Repeat("z", bound.MaxBytes+10000),
 	})
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 
 	text := mcpTextContent(t, mcpToolResultText("GET", data))
-	if len(text) > mcpToolResultMaxBytes {
-		t.Fatalf("preview result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("preview result length = %d, want <= %d", len(text), bound.MaxBytes)
 	}
 
 	var envelope struct {
@@ -274,15 +629,15 @@ func TestMCPToolResultTextFallsBackToOversizedPreview(t *testing.T) {
 
 func TestMCPToolResultTextBoundsOversizedNonGETResponses(t *testing.T) {
 	data, err := json.Marshal(map[string]string{
-		"blob": strings.Repeat("z", mcpToolResultMaxBytes+10000),
+		"blob": strings.Repeat("z", bound.MaxBytes+10000),
 	})
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
 	}
 
 	text := mcpTextContent(t, mcpToolResultText("POST", data))
-	if len(text) > mcpToolResultMaxBytes {
-		t.Fatalf("preview result length = %d, want <= %d", len(text), mcpToolResultMaxBytes)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("preview result length = %d, want <= %d", len(text), bound.MaxBytes)
 	}
 
 	var envelope struct {

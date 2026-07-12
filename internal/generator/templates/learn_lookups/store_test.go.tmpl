@@ -4,7 +4,10 @@
 package lookups
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -192,6 +195,78 @@ func TestLookup_SourcePriority(t *testing.T) {
 	}
 }
 
+// TestSourcePriorityLadder_BothReadPaths pins the full four-tier
+// ladder (taught > inferred > synced > seeded) on BOTH hardcoded CASE
+// sites. The two functions carry independent copies of the SQL;
+// updating only one silently inverts priority for the other, so every
+// combination is asserted against Lookup AND LookupAll.
+func TestSourcePriorityLadder_BothReadPaths(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		sources map[string]string // source -> value
+		want    []string          // LookupAll order; want[0] is the Lookup winner
+	}{
+		{
+			name: "taught beats synced",
+			sources: map[string]string{
+				SourceTaught: "TAUGHT",
+				SourceSynced: "SYNC",
+			},
+			want: []string{"TAUGHT", "SYNC"},
+		},
+		{
+			name: "synced beats seeded",
+			sources: map[string]string{
+				SourceSynced: "SYNC",
+				SourceSeeded: "SEED",
+			},
+			want: []string{"SYNC", "SEED"},
+		},
+		{
+			name: "full ladder",
+			sources: map[string]string{
+				SourceTaught:   "TAUGHT",
+				SourceInferred: "INF",
+				SourceSynced:   "SYNC",
+				SourceSeeded:   "SEED",
+			},
+			want: []string{"TAUGHT", "INF", "SYNC", "SEED"},
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db := openTestDB(t)
+			kind := fmt.Sprintf("kind_%d", i)
+			for source, value := range tc.sources {
+				if err := Upsert(db, kind, "Alpha", value, source); err != nil {
+					t.Fatalf("Upsert %s: %v", source, err)
+				}
+			}
+			got, ok, err := Lookup(db, kind, "Alpha")
+			if err != nil {
+				t.Fatalf("Lookup: %v", err)
+			}
+			if !ok || got != tc.want[0] {
+				t.Errorf("Lookup = (%q, %v), want (%q, true)", got, ok, tc.want[0])
+			}
+			all, err := LookupAll(db, kind, "Alpha")
+			if err != nil {
+				t.Fatalf("LookupAll: %v", err)
+			}
+			if len(all) != len(tc.want) {
+				t.Fatalf("LookupAll returned %v, want %v", all, tc.want)
+			}
+			for j := range tc.want {
+				if all[j] != tc.want[j] {
+					t.Errorf("LookupAll[%d] = %q, want %q (full order %v vs %v)", j, all[j], tc.want[j], all, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestUpsert_NewKindWorksWithoutCodeChange(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -323,5 +398,297 @@ func TestSeedBatch_DefaultsSource(t *testing.T) {
 	}
 	if source != "seeded" {
 		t.Errorf("default seed source = %q, want seeded", source)
+	}
+}
+
+// openRefreshTestDB extends openTestDB with the synced `resources`
+// table the RefreshFromSynced scanner reads. The learn_recall_misses
+// table is deliberately NOT created here — RecordMisses owns its lazy
+// DDL and the scanner must tolerate its absence.
+func openRefreshTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db := openTestDB(t)
+	if _, err := db.Exec(`
+		CREATE TABLE resources (
+			id TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			data JSON NOT NULL,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)
+	`); err != nil {
+		t.Fatalf("create resources: %v", err)
+	}
+	return db
+}
+
+func insertRefreshResource(t *testing.T, db *sql.DB, resourceType, id, title string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]string{"title": title})
+	if err != nil {
+		t.Fatalf("marshal resource: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO resources (resource_type, id, data) VALUES (?, ?, ?)`,
+		resourceType, id, string(payload)); err != nil {
+		t.Fatalf("insert resource: %v", err)
+	}
+}
+
+// titleExtractor is the test stand-in for the sync command's
+// learn.ResourceEntitiesFromJSON composition: it reads the `title`
+// field of the stored JSON payload as a single entity token.
+func titleExtractor(_ string, data []byte) []string {
+	var obj struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil
+	}
+	title := strings.TrimSpace(obj.Title)
+	if title == "" {
+		return nil
+	}
+	return []string{title}
+}
+
+func recordMiss(t *testing.T, db *sql.DB, entities ...string) {
+	t.Helper()
+	if err := RecordMisses(context.Background(), db, entities); err != nil {
+		t.Fatalf("RecordMisses: %v", err)
+	}
+}
+
+func countSyncedRows(t *testing.T, db *sql.DB, kind string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM entity_lookups WHERE kind = ? AND source = ?`,
+		kind, SourceSynced).Scan(&n); err != nil {
+		t.Fatalf("count synced rows: %v", err)
+	}
+	return n
+}
+
+func TestRecordMisses_CreatesTableAndBumpsCount(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	recordMiss(t, db, "Zephyr Cup", "  ", "")
+	recordMiss(t, db, "zephyr cup")
+
+	var entity string
+	var count int
+	if err := db.QueryRow(`SELECT entity, miss_count FROM learn_recall_misses`).Scan(&entity, &count); err != nil {
+		t.Fatalf("select miss: %v", err)
+	}
+	if entity != "zephyr cup" {
+		t.Errorf("recorded entity = %q, want lowercased %q", entity, "zephyr cup")
+	}
+	if count != 2 {
+		t.Errorf("miss_count = %d, want 2 (case-folded repeat bumps, not duplicates)", count)
+	}
+}
+
+// TestRefreshFromSynced_DerivesMissedEntityAndResolves is the
+// staleness-heal scenario: an entity absent from print-time seeds but
+// present in synced resources becomes resolvable after a refresh pass,
+// under source='synced'.
+func TestRefreshFromSynced_DerivesMissedEntityAndResolves(t *testing.T) {
+	t.Parallel()
+	db := openRefreshTestDB(t)
+
+	// Pre-refresh: the entity is unresolvable.
+	if _, ok, err := Lookup(db, "events", "Zephyr Cup"); err != nil || ok {
+		t.Fatalf("pre-refresh Lookup = (ok=%v, err=%v), want miss", ok, err)
+	}
+
+	recordMiss(t, db, "Zephyr Cup")
+	insertRefreshResource(t, db, "events", "e1", "Zephyr Cup")
+
+	res, err := RefreshFromSynced(context.Background(), db, RefreshOpts{Extract: titleExtractor})
+	if err != nil {
+		t.Fatalf("RefreshFromSynced: %v", err)
+	}
+	if res.Inserted != 1 {
+		t.Fatalf("Inserted = %d, want 1", res.Inserted)
+	}
+
+	var source string
+	if err := db.QueryRow(`SELECT source FROM entity_lookups WHERE kind = 'events' AND canonical = 'Zephyr Cup'`).Scan(&source); err != nil {
+		t.Fatalf("select derived row: %v", err)
+	}
+	if source != SourceSynced {
+		t.Errorf("derived row source = %q, want %q", source, SourceSynced)
+	}
+
+	got, ok, err := Lookup(db, "events", "Zephyr Cup")
+	if err != nil {
+		t.Fatalf("post-refresh Lookup: %v", err)
+	}
+	if !ok || got != "Zephyr Cup" {
+		t.Errorf("post-refresh Lookup = (%q, %v), want (\"Zephyr Cup\", true)", got, ok)
+	}
+
+	// Idempotent: a second pass derives nothing new.
+	res2, err := RefreshFromSynced(context.Background(), db, RefreshOpts{Extract: titleExtractor})
+	if err != nil {
+		t.Fatalf("second RefreshFromSynced: %v", err)
+	}
+	if res2.Inserted != 0 {
+		t.Errorf("second pass Inserted = %d, want 0", res2.Inserted)
+	}
+}
+
+// TestRefreshFromSynced_ContainmentMatchesCompoundEntity covers the
+// compound-title shape: the recorded miss is embedded in a longer
+// resource-side entity, which still qualifies for derivation.
+func TestRefreshFromSynced_ContainmentMatchesCompoundEntity(t *testing.T) {
+	t.Parallel()
+	db := openRefreshTestDB(t)
+	recordMiss(t, db, "zephyr cup")
+	insertRefreshResource(t, db, "events", "e1", "Zephyr Cup Final")
+
+	res, err := RefreshFromSynced(context.Background(), db, RefreshOpts{Extract: titleExtractor})
+	if err != nil {
+		t.Fatalf("RefreshFromSynced: %v", err)
+	}
+	if res.Inserted != 1 {
+		t.Fatalf("Inserted = %d, want 1", res.Inserted)
+	}
+	got, ok, err := Lookup(db, "events", "Zephyr Cup Final")
+	if err != nil || !ok || got != "Zephyr Cup Final" {
+		t.Errorf("Lookup = (%q, %v, %v), want compound entity derived", got, ok, err)
+	}
+}
+
+// TestRefreshFromSynced_IgnoresNeverMissedEntities: resources whose
+// entities never appeared in a recorded recall miss must not produce
+// rows — the miss filter is the primary noise guard.
+func TestRefreshFromSynced_IgnoresNeverMissedEntities(t *testing.T) {
+	t.Parallel()
+	db := openRefreshTestDB(t)
+	recordMiss(t, db, "zephyr cup")
+	insertRefreshResource(t, db, "events", "e1", "Quiet Unrelated Item")
+
+	res, err := RefreshFromSynced(context.Background(), db, RefreshOpts{Extract: titleExtractor})
+	if err != nil {
+		t.Fatalf("RefreshFromSynced: %v", err)
+	}
+	if res.Inserted != 0 {
+		t.Errorf("Inserted = %d, want 0 (entity never missed)", res.Inserted)
+	}
+	if n := countSyncedRows(t, db, "events"); n != 0 {
+		t.Errorf("synced rows = %d, want 0", n)
+	}
+}
+
+// TestRefreshFromSynced_DedupsAgainstExistingCanonicals: an entity the
+// resolver can already resolve (existing canonical or value under any
+// source) is never re-derived.
+func TestRefreshFromSynced_DedupsAgainstExistingCanonicals(t *testing.T) {
+	t.Parallel()
+	db := openRefreshTestDB(t)
+	if err := Upsert(db, "events", "Zephyr Cup", "zc-2026", SourceSeeded); err != nil {
+		t.Fatalf("Upsert seeded: %v", err)
+	}
+	recordMiss(t, db, "zephyr cup")
+	insertRefreshResource(t, db, "events", "e1", "Zephyr Cup")
+
+	res, err := RefreshFromSynced(context.Background(), db, RefreshOpts{Extract: titleExtractor})
+	if err != nil {
+		t.Fatalf("RefreshFromSynced: %v", err)
+	}
+	if res.Inserted != 0 {
+		t.Errorf("Inserted = %d, want 0 (already resolvable via seeded canonical)", res.Inserted)
+	}
+	if n := countSyncedRows(t, db, "events"); n != 0 {
+		t.Errorf("synced rows = %d, want 0", n)
+	}
+}
+
+// TestRefreshFromSynced_PerKindCapHolds: a large resources fixture
+// stays under the per-kind cap, and pre-existing synced rows count
+// toward it across passes.
+func TestRefreshFromSynced_PerKindCapHolds(t *testing.T) {
+	t.Parallel()
+	db := openRefreshTestDB(t)
+
+	// 3 pre-existing synced rows for the kind + 12 fresh candidates,
+	// cap 5 -> only 2 more may land.
+	for i := 0; i < 3; i++ {
+		if err := Upsert(db, "events", fmt.Sprintf("Prior Entity %02d", i), fmt.Sprintf("Prior Entity %02d", i), SourceSynced); err != nil {
+			t.Fatalf("Upsert prior synced: %v", err)
+		}
+	}
+	for i := 0; i < 12; i++ {
+		entity := fmt.Sprintf("Missed Entity %02d", i)
+		recordMiss(t, db, entity)
+		insertRefreshResource(t, db, "events", fmt.Sprintf("e%02d", i), entity)
+	}
+
+	res, err := RefreshFromSynced(context.Background(), db, RefreshOpts{Extract: titleExtractor, PerKindCap: 5})
+	if err != nil {
+		t.Fatalf("RefreshFromSynced: %v", err)
+	}
+	if res.Inserted != 2 {
+		t.Errorf("Inserted = %d, want 2 (cap 5 minus 3 pre-existing)", res.Inserted)
+	}
+	if n := countSyncedRows(t, db, "events"); n != 5 {
+		t.Errorf("synced rows = %d, want exactly the cap (5)", n)
+	}
+}
+
+// TestRefreshFromSynced_DefaultCapOnLargeFixture drives a fixture
+// larger than DefaultSyncedPerKindCap through a default-opts pass and
+// asserts the cap holds.
+func TestRefreshFromSynced_DefaultCapOnLargeFixture(t *testing.T) {
+	t.Parallel()
+	db := openRefreshTestDB(t)
+	total := DefaultSyncedPerKindCap + 5
+	missed := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		entity := fmt.Sprintf("Bulk Entity %03d", i)
+		missed = append(missed, entity)
+		insertRefreshResource(t, db, "events", fmt.Sprintf("e%03d", i), entity)
+	}
+	recordMiss(t, db, missed...)
+
+	res, err := RefreshFromSynced(context.Background(), db, RefreshOpts{Extract: titleExtractor})
+	if err != nil {
+		t.Fatalf("RefreshFromSynced: %v", err)
+	}
+	if res.Inserted != DefaultSyncedPerKindCap {
+		t.Errorf("Inserted = %d, want default cap %d", res.Inserted, DefaultSyncedPerKindCap)
+	}
+	if n := countSyncedRows(t, db, "events"); n != DefaultSyncedPerKindCap {
+		t.Errorf("synced rows = %d, want %d", n, DefaultSyncedPerKindCap)
+	}
+}
+
+// TestRefreshFromSynced_LocalOnlyNoWorkPaths pins the constructive
+// no-network contract: the scanner's inputs are the local DB handle
+// and a pure extraction func, and every quiet path (no misses table,
+// nil extractor) is a clean no-op rather than an error.
+func TestRefreshFromSynced_LocalOnlyNoWorkPaths(t *testing.T) {
+	t.Parallel()
+	db := openRefreshTestDB(t)
+	insertRefreshResource(t, db, "events", "e1", "Zephyr Cup")
+
+	// No learn_recall_misses table at all: nothing derived, no error.
+	res, err := RefreshFromSynced(context.Background(), db, RefreshOpts{Extract: titleExtractor})
+	if err != nil {
+		t.Fatalf("RefreshFromSynced without misses table: %v", err)
+	}
+	if res.Inserted != 0 || res.Scanned != 0 {
+		t.Errorf("no-misses pass = %+v, want zero work", res)
+	}
+
+	// Nil extractor: no-op by construction.
+	recordMiss(t, db, "zephyr cup")
+	res, err = RefreshFromSynced(context.Background(), db, RefreshOpts{})
+	if err != nil {
+		t.Fatalf("RefreshFromSynced with nil Extract: %v", err)
+	}
+	if res.Inserted != 0 || res.Scanned != 0 {
+		t.Errorf("nil-extract pass = %+v, want zero work", res)
 	}
 }

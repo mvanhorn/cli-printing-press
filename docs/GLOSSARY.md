@@ -2,7 +2,7 @@
 
 Operational naming and disambiguation conventions for this repo, plus the implementation-level names — packages, subcommands, on-disk files — that [`CONCEPTS.md`](../CONCEPTS.md) deliberately omits to stay code-free.
 
-For what a **domain noun means** — the Printing Press, printed CLI, spec, brief, manuscript, library, catalog, verify, dogfood, scorecard, emboss, polish, retro, creator, and the rest — see [`CONCEPTS.md`](../CONCEPTS.md) at the repo root. This file covers two things CONCEPTS.md does not: (1) how to *refer* to overloaded terms, and (2) the concrete files, packages, and subcommands that back those concepts.
+For what a **domain noun means** — the Printing Press, printed CLI, spec, brief, manuscript, library, verify, dogfood, scorecard, emboss, polish, retro, creator, and the rest — see [`CONCEPTS.md`](../CONCEPTS.md) at the repo root. This file covers two things CONCEPTS.md does not: (1) how to *refer* to overloaded terms, and (2) the concrete files, packages, and subcommands that back those concepts.
 
 ## Naming conventions
 
@@ -19,7 +19,7 @@ These defaults resolve overloaded words; follow the cross-reference for the full
 - "library" → local library (`~/printing-press/library/<api-slug>/`). The public library is always called out explicitly: "public library" or "public library repo." (CONCEPTS: *local library*, *public library*.)
 - "publish" → prefer "the publish step" (the pipeline's publish phase) or "publish to the public library" (the `/printing-press-publish` skill workflow) when context is not already established. (CONCEPTS: *publish*, under Flagged ambiguities.)
 - "manifest" → `tools-manifest.json` (the MCP tool catalog). The other manifests (`manifest.json` for plugin metadata, `.printing-press.json` for provenance) are always called by full name. (See Implementation reference.)
-- "catalog" → the embedded `catalog/` in this repo. The public library's category-organized catalog of finished CLIs is "public library catalog." (CONCEPTS: *catalog*.)
+- "catalog" → qualify the noun. Use "public library catalog" for the category-organized index of finished CLIs, and "tool catalog" for MCP/tool manifests.
 - "the CLI" → a printed CLI, not the generator binary. Say "cli-printing-press binary" or "generator binary" for the latter. (CONCEPTS: *printed CLI*; below: *the cli-printing-press binary*.)
 
 On-disk locations for the artifact concepts — local library, manuscripts, runstate — live in [`ARTIFACTS.md`](ARTIFACTS.md), not here.

@@ -13,12 +13,22 @@ import (
 )
 
 var positionalPattern = regexp.MustCompile(`(?:^|\s)(?:<[^>]+>|\[[^\]]+\])`)
+var positionalTokenPattern = regexp.MustCompile(`(?:^|\s)(<[^>]+>|\[[^\]]+\])`)
 
-func toolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
+type positionalArg struct {
+	InputName string
+	Display   string
+	Required  bool
+}
+
+func toolOptionsForFlags(cmd *cobra.Command, blocked map[string]bool, positionals []positionalArg) []mcplib.ToolOption {
 	var opts []mcplib.ToolOption
 	seen := map[string]bool{}
 	addFlag := func(flag *pflag.Flag) {
 		if flag == nil || flag.Hidden || flag.Deprecated != "" {
+			return
+		}
+		if reservedStructuredArgs[flag.Name] {
 			return
 		}
 		if seen[flag.Name] {
@@ -27,9 +37,47 @@ func toolOptionsForFlags(cmd *cobra.Command) []mcplib.ToolOption {
 		seen[flag.Name] = true
 		opts = append(opts, toolOptionForFlag(flag))
 	}
-	cmd.InheritedFlags().VisitAll(addFlag)
 	cmd.NonInheritedFlags().VisitAll(addFlag)
+	cmd.InheritedFlags().VisitAll(func(flag *pflag.Flag) {
+		if blocked[flag.Name] {
+			return
+		}
+		addFlag(flag)
+	})
+	for _, positional := range positionals {
+		if seen[positional.InputName] {
+			continue
+		}
+		seen[positional.InputName] = true
+		opts = append(opts, toolOptionForPositional(positional))
+	}
 	return opts
+}
+
+func allowedStructuredArgsForCommand(cmd *cobra.Command, blocked map[string]bool, positionals []positionalArg, allowRawArgs bool) map[string]bool {
+	allowed := map[string]bool{}
+	if allowRawArgs {
+		allowed["args"] = true
+	}
+	seen := map[string]bool{}
+	addFlag := func(flag *pflag.Flag) {
+		if flag == nil || flag.Hidden || flag.Deprecated != "" {
+			return
+		}
+		if reservedStructuredArgs[flag.Name] || blocked[flag.Name] || seen[flag.Name] {
+			return
+		}
+		seen[flag.Name] = true
+		allowed[flag.Name] = true
+	}
+	if cmd != nil {
+		cmd.NonInheritedFlags().VisitAll(addFlag)
+		cmd.InheritedFlags().VisitAll(addFlag)
+	}
+	for _, positional := range positionals {
+		allowed[positional.InputName] = true
+	}
+	return allowed
 }
 
 func toolOptionForFlag(flag *pflag.Flag) mcplib.ToolOption {
@@ -50,6 +98,14 @@ func toolOptionForFlag(flag *pflag.Flag) mcplib.ToolOption {
 		propOpts[0] = mcplib.Description(flagDescription(flag) + " (unknown Cobra flag type " + flag.Value.Type() + "; pass as a string)")
 		return mcplib.WithString(flag.Name, propOpts...)
 	}
+}
+
+func toolOptionForPositional(positional positionalArg) mcplib.ToolOption {
+	propOpts := []mcplib.PropertyOption{mcplib.Description("Positional argument " + positional.Display)}
+	if positional.Required {
+		propOpts = append(propOpts, mcplib.Required())
+	}
+	return mcplib.WithString(positional.InputName, propOpts...)
 }
 
 func flagDescription(flag *pflag.Flag) string {
@@ -73,4 +129,95 @@ func isRequired(flag *pflag.Flag) bool {
 
 func commandTakesArgs(cmd *cobra.Command) bool {
 	return positionalPattern.MatchString(cmd.Use)
+}
+
+func positionalArgsForCommand(cmd *cobra.Command, blocked map[string]bool) []positionalArg {
+	if cmd == nil {
+		return nil
+	}
+	flagNames := map[string]bool{}
+	cmd.InheritedFlags().VisitAll(func(flag *pflag.Flag) {
+		if flag != nil && !blocked[flag.Name] {
+			flagNames[flag.Name] = true
+		}
+	})
+	cmd.NonInheritedFlags().VisitAll(func(flag *pflag.Flag) {
+		if flag != nil {
+			flagNames[flag.Name] = true
+		}
+	})
+	var out []positionalArg
+	seenPositional := map[string]bool{}
+	for _, match := range positionalTokenPattern.FindAllStringSubmatch(cmd.Use, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		raw := strings.TrimSpace(match[1])
+		if strings.Contains(raw, "--") {
+			continue
+		}
+		required := strings.HasPrefix(raw, "<")
+		// Strip positional decorations outright. A nested variadic like
+		// "[<slug>...]" leaves an inner ">" that end-trimming cannot reach
+		// (the "..." shields it), which would emit an invalid schema key.
+		name := strings.NewReplacer("<", "", ">", "", "[", "", "]", "").Replace(raw)
+		name = strings.TrimSuffix(strings.TrimSpace(name), "...")
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		inputName := name
+		if reservedStructuredArgs[inputName] || flagNames[inputName] {
+			inputName = "positional-" + inputName
+		}
+		// Collapse repeats of the same name (e.g. "<slug> [<slug>...]") into a
+		// single positional slot; distinct-index dedup happens downstream.
+		if seenPositional[inputName] {
+			continue
+		}
+		seenPositional[inputName] = true
+		out = append(out, positionalArg{
+			InputName: inputName,
+			Display:   raw,
+			Required:  required,
+		})
+	}
+	return out
+}
+
+func blockedStructuredArgsForCommand(cmd *cobra.Command) map[string]bool {
+	blocked := map[string]bool{}
+	for name := range reservedStructuredArgs {
+		blocked[name] = true
+	}
+	if cmd == nil {
+		return blocked
+	}
+	localFlags := map[string]bool{}
+	cmd.NonInheritedFlags().VisitAll(func(flag *pflag.Flag) {
+		if flag == nil || flag.Hidden || flag.Deprecated != "" {
+			return
+		}
+		localFlags[flag.Name] = true
+	})
+	cmd.InheritedFlags().VisitAll(func(flag *pflag.Flag) {
+		if flag == nil || flag.Hidden || flag.Deprecated != "" {
+			return
+		}
+		if blockedRootFlags[flag.Name] && !localFlags[flag.Name] {
+			blocked[flag.Name] = true
+		}
+	})
+	return blocked
+}
+
+func cliFlagBlockedArgs(blocked map[string]bool, positionals []positionalArg) map[string]bool {
+	out := map[string]bool{}
+	for name, value := range blocked {
+		out[name] = value
+	}
+	for _, positional := range positionals {
+		out[positional.InputName] = true
+	}
+	return out
 }

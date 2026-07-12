@@ -16,8 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGenerateDeduplicatesCamelCollidingBodyFields covers issue #287, the
-// body-field analogue of #275 F-2. Two body fields whose Go identifiers
+// TestGenerateDeduplicatesCamelCollidingBodyFields covers the body-field
+// analogue of query-parameter identifier collisions. Two body fields whose
+// Go identifiers
 // collapse to the same `body<Camel>` after camelization (e.g., `start_time`
 // and `StartTime` both yield `bodyStartTime`) currently produce duplicate
 // `var body<X>` declarations and refuse to compile. The fix mirrors F-2:
@@ -626,7 +627,7 @@ func TestFlattenCollidingBodyFields_NoCollisionPassesThrough(t *testing.T) {
 }
 
 // TestGenerateProjectComponentShapeCompiles is the end-to-end regression
-// for the Atlassian Jira validate-catalog failure: a POST endpoint whose
+// for an Atlassian Jira generation failure: a POST endpoint whose
 // body contains both `leadAccountId` (scalar) and `lead` (object with
 // nested `accountId`) must produce a generated CLI that compiles. Before
 // the flattenCollidingBodyFields pass, this shape emitted two

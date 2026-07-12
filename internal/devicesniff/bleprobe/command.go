@@ -282,6 +282,8 @@ const dogfoodMaxDurationMillis = 3000
 func isVerifyEnv() bool  { return os.Getenv("PRINTING_PRESS_VERIFY") == "1" }
 func isDogfoodEnv() bool { return os.Getenv("PRINTING_PRESS_DOGFOOD") == "1" }
 
+var liveAdapterFactory = ble.NewLiveAdapter
+
 // liveDurationMillis curtails the live scan/subscribe window under the dogfood
 // matrix; replay backends ignore the duration, so the cap is a no-op there.
 func liveDurationMillis(opts probeOptions) int {
@@ -298,7 +300,7 @@ func loadBackend(opts probeOptions) (ble.EvidenceInput, ble.Adapter, error) {
 		if isVerifyEnv() {
 			return ble.EvidenceInput{}, nil, fmt.Errorf("live BLE is disabled under PRINTING_PRESS_VERIFY; pass --input replay evidence instead")
 		}
-		adapter, err := ble.NewLiveAdapter()
+		adapter, err := liveAdapterFactory()
 		if err != nil {
 			return ble.EvidenceInput{}, nil, err
 		}

@@ -21,7 +21,7 @@
   "printer_name": "printing-press-golden",
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
   "run_id": "<RUN_ID>",
-  "schema_version": 1,
+  "schema_version": 2,
   "spec_checksum": "sha256:2aa39c064cd068cb090102e22a446f9542fa06f75453d52e4fa9db5c21f27809",
   "spec_format": "internal",
   "spec_path": "sync-walker-api.yaml",

@@ -13,14 +13,11 @@ import (
 	"testing"
 	"time"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/specmeta"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,6 +101,95 @@ func staleGeneratedCommand() {}
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/regenapp-pp-cli")
 }
 
+func TestGenerateCmdForcePreservesLegacyRootVersionLayout(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "legacyversion")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: legacyversion
+description: Legacy version API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/legacyversion-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+
+	runGenerate := func() {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		require.NoError(t, cmd.Execute())
+	}
+
+	runGenerate()
+
+	rootPath := filepath.Join(outputDir, "internal", "cli", "root.go")
+	versionPath := filepath.Join(outputDir, "internal", "cli", "version.go")
+	rootSrc, err := os.ReadFile(rootPath)
+	require.NoError(t, err)
+	legacyVersionDecls := `
+
+// version is the printed CLI's version, overridable at build time via ldflags.
+var version = "2026.6.1"
+
+// newVersionCmd prints the CLI name and version.
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("%s %s\n", cmd.Root().Name(), version)
+		},
+	}
+}
+`
+	require.NoError(t, os.WriteFile(rootPath, append(rootSrc, []byte(legacyVersionDecls)...), 0o644))
+	require.NoError(t, os.Remove(versionPath))
+
+	mcpMainPath := filepath.Join(outputDir, "cmd", "legacyversion-pp-mcp", "main.go")
+	mcpMain, err := os.ReadFile(mcpMainPath)
+	require.NoError(t, err)
+	mcpMain = bytes.Replace(mcpMain, []byte(`// version is the printed MCP server's version, overridable at build time via ldflags.
+var version = "0.0.0-dev"
+
+`), nil, 1)
+	mcpMain = bytes.Replace(mcpMain, []byte("\t\tversion,\n"), []byte("\t\t\"2026.6.1\",\n"), 1)
+	require.NoError(t, os.WriteFile(mcpMainPath, mcpMain, 0o644))
+	require.NotContains(t, string(mcpMain), `var version =`,
+		"legacy MCP fixture must strip the generated version var before the second generate")
+
+	runGenerate()
+
+	assert.NoFileExists(t, versionPath, "legacy root.go version layout must not gain internal/cli/version.go")
+	rootSrc, err = os.ReadFile(rootPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(rootSrc), `var version = "2026.6.1"`)
+	assert.Contains(t, string(rootSrc), "func newVersionCmd() *cobra.Command")
+	mcpMain, err = os.ReadFile(mcpMainPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(mcpMain), `var version =`)
+	assert.Contains(t, string(mcpMain), `"2026.6.1"`)
+
+	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
+	runGoCommandForCLITest(t, outputDir, "build", "./...")
+}
+
 func TestApplyLibraryAttributionForGeneratePreservesCreatorAndPrependsReprinter(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)
@@ -177,7 +263,7 @@ resources:
 
 	const modulePath = "github.com/mvanhorn/printing-press-library/library/sales-and-crm/tenderned"
 	require.NoError(t, os.MkdirAll(outputDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.26.4\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.26.5\n"), 0o644))
 
 	cmd := newGenerateCmd()
 	cmd.SetArgs([]string{
@@ -1044,6 +1130,11 @@ resources:
 	require.Len(t, manifest.NovelFeatures, 1)
 	assert.Equal(t, "Built insight", manifest.NovelFeatures[0].Name)
 	assert.Equal(t, "items insight", manifest.NovelFeatures[0].Command)
+
+	which, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "which.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(which), `Command: "items insight"`)
+	assert.NotContains(t, string(which), "items planned")
 }
 
 func TestGenerateCmdAppliesBrowserClearanceReachability(t *testing.T) {
@@ -3202,12 +3293,113 @@ resources:
 		"--output", outputDir,
 		"--validate=false",
 		"--force",
+		"--traffic-analysis", analysisPath,
 		"--transport", "browser-chrome",
 	})
 
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires live browser page-context execution")
+	assert.NoFileExists(t, filepath.Join(outputDir, "README.md"))
+}
+
+func TestGenerateCmdAllowsBrowserRequiredWithReachabilityOverride(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	analysisPath := filepath.Join(dir, "sample-spec-traffic-analysis.json")
+	outputDir := filepath.Join(dir, "overrideapp")
+
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: overrideapp
+description: Override app API
+version: 0.1.0
+base_url: https://api.example.com
+spec_source: sniffed
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/overrideapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+	require.NoError(t, os.WriteFile(analysisPath, []byte(`{
+  "version": "1",
+  "reachability": {"mode": "browser_required", "confidence": 0.9},
+  "generation_hints": ["reachability_override_browser_required_to_browser_http"]
+}`), 0o600))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+		"--traffic-analysis", analysisPath,
+		"--transport", "browser-chrome",
+	})
+
+	require.NoError(t, cmd.Execute())
+	assert.FileExists(t, filepath.Join(outputDir, "README.md"))
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+}
+
+func TestGenerateCmdRejectsConflictingReachabilityOverrideTransport(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	analysisPath := filepath.Join(dir, "sample-spec-traffic-analysis.json")
+	outputDir := filepath.Join(dir, "conflictapp")
+
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: conflictapp
+description: Conflict app API
+version: 0.1.0
+base_url: https://api.example.com
+spec_source: sniffed
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/conflictapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+	require.NoError(t, os.WriteFile(analysisPath, []byte(`{
+  "version": "1",
+  "reachability": {"mode": "browser_required", "confidence": 0.9},
+  "generation_hints": ["reachability_override_browser_required_to_browser_http"]
+}`), 0o600))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+		"--traffic-analysis", analysisPath,
+		"--transport", "standard",
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reachability override")
+	assert.Contains(t, err.Error(), "conflicts")
 	assert.NoFileExists(t, filepath.Join(outputDir, "README.md"))
 }
 
@@ -3267,6 +3459,56 @@ func TestGenerateCmdRejectsTrafficAnalysisWithPlan(t *testing.T) {
 	assert.Contains(t, err.Error(), "--traffic-analysis cannot be used with --plan")
 }
 
+func TestGenerateCmdPlanDryRunWritesNoFiles(t *testing.T) {
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	outputDir := filepath.Join(dir, "plan-output")
+	plan := "# Plan\n\n## Commands\n\n- `doctor` - Check health\n- `scan` - Scan things\n"
+	require.NoError(t, os.WriteFile(planPath, []byte(plan), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--plan", planPath,
+		"--name", "plan-dry-run",
+		"--output", outputDir,
+		"--dry-run",
+	})
+
+	stderr, err := runWithCapturedStderr(t, cmd.Execute)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "Commands:   1")
+	assert.Contains(t, stderr, "Contract:   lightweight scaffold, not a full Printing Press CLI")
+	_, err = os.Stat(outputDir)
+	assert.True(t, os.IsNotExist(err), "plan dry-run must not create output directory")
+
+	stdout, err := runWithCapturedStdout(t, func() error {
+		return printPlanDryRun(&generator.PlanSpec{
+			CLIName: "plan-dry-run",
+			Commands: []generator.PlanCommand{
+				{Name: "doctor", Description: "Check health"},
+				{Name: "version", Description: "Show version"},
+				{Name: "scan", Description: "Scan things"},
+			},
+		}, outputDir, planPath, 1)
+	})
+	require.NoError(t, err)
+	var dryRunSummary map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &dryRunSummary))
+	assert.Equal(t, float64(1), dryRunSummary["commands"])
+
+	writeOutputDir := filepath.Join(dir, "plan-write-output")
+	cmd = newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--plan", planPath,
+		"--name", "plan-dry-run",
+		"--output", writeOutputDir,
+	})
+
+	stderr, err = runWithCapturedStderr(t, cmd.Execute)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "Notice: plan mode emits a lightweight scaffold, not a full Printing Press CLI.")
+}
+
 func TestGenerateCmdHonorsExplicitOutput(t *testing.T) {
 	t.Parallel()
 
@@ -3310,23 +3552,6 @@ resources:
 		"the spec-derived directory must not be created when --output is explicit")
 }
 
-func TestOpenAPIAuthPreferenceForGenerateFromJiraCatalogEntry(t *testing.T) {
-	t.Parallel()
-
-	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
-	require.NoError(t, err)
-	require.Equal(t, "basicAuth", jira.AuthPreference)
-
-	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "", ""),
-		"catalog spec_url match should forward auth_preference without --auth-preference")
-	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{jira.SpecURL}, "", ""),
-		"explicit --auth-preference must override catalog")
-
-	localSpec := filepath.Join(t.TempDir(), "swagger.json")
-	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "jira", []string{localSpec}, "", ""),
-		"catalog slug via --name should resolve auth_preference without https spec refs")
-}
-
 func TestOpenAPIAuthPreferenceForGenerateFromPriorManifest(t *testing.T) {
 	t.Parallel()
 
@@ -3338,9 +3563,9 @@ func TestOpenAPIAuthPreferenceForGenerateFromPriorManifest(t *testing.T) {
 		AuthPreference: "ApiKeyAuth",
 	}))
 
-	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", "", []string{filepath.Join(dir, "spec.yaml")}, "", dir),
-		"prior manifest auth_preference should be the fallback below flag and catalog")
-	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{filepath.Join(dir, "spec.yaml")}, "", dir),
+	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", dir),
+		"prior manifest auth_preference should be the fallback below the explicit flag")
+	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", dir),
 		"explicit --auth-preference must override prior manifest")
 }
 
@@ -3355,7 +3580,7 @@ func TestOpenAPIAuthPreferenceForGenerateSkipsPriorManifestWhenDirUnknown(t *tes
 		AuthPreference: "UnrelatedAuth",
 	}))
 
-	assert.Empty(t, openAPIAuthPreferenceForGenerate("", "", []string{filepath.Join(t.TempDir(), "spec.yaml")}, "", ""),
+	assert.Empty(t, openAPIAuthPreferenceForGenerate("", ""),
 		"unknown manifest dir must not fall back to the current working directory")
 }
 
@@ -3398,85 +3623,8 @@ paths:
 
 	manifestDir := openAPIAuthPreferenceManifestDir("", "", []string{specPath}, "", specBytes)
 	require.Equal(t, defaultDir, manifestDir)
-	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", "", []string{specPath}, "", manifestDir),
+	assert.Equal(t, "ApiKeyAuth", openAPIAuthPreferenceForGenerate("", manifestDir),
 		"default-output regen should find the prior manifest before full OpenAPI parsing")
-}
-
-func TestOpenAPIAuthPreferenceForGenerateParsesJiraLikeSpecWithCatalogDefault(t *testing.T) {
-	t.Parallel()
-
-	// Mirrors real Jira-style specs: OAuth2 authorizationCode + HTTP Basic; default
-	// parser choice is OAuth2 unless AuthPreference pins basicAuth (see openapi parser tests).
-	specBytes := []byte(`openapi: "3.0.3"
-info:
-  title: Atlassian-like
-  version: "1.0"
-servers:
-  - url: https://example.atlassian.net
-components:
-  securitySchemes:
-    OAuth2:
-      type: oauth2
-      flows:
-        authorizationCode:
-          authorizationUrl: https://auth.example.com/authorize
-          tokenUrl: https://auth.example.com/token
-          scopes:
-            read: read access
-    basicAuth:
-      type: http
-      scheme: basic
-paths:
-  /v1/things:
-    get:
-      operationId: list things
-      security:
-        - basicAuth: []
-        - OAuth2: [read]
-      responses: {"200": {description: ok}}
-`)
-
-	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
-	require.NoError(t, err)
-
-	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "", "")
-	require.Equal(t, "basicAuth", pref)
-
-	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, openapi.ParseOptions{AuthPreference: pref})
-	require.NoError(t, err)
-	assert.Equal(t, "basicAuth", parsed.Auth.Scheme)
-	assert.Equal(t, "api_key", parsed.Auth.Type)
-
-	defaultParsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec2.yaml"), specBytes, openapi.ParseOptions{})
-	require.NoError(t, err)
-	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without catalog-driven preference, OAuth2 wins")
-}
-
-func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
-	apiSpec := &spec.APISpec{Name: "test-api", BaseURL: spec.PlaceholderBaseURL, BaseURLIsPlaceholder: true}
-
-	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
-		DisplayName: "Test.API",
-		OwnerName:   "Trevin Chow",
-		BaseURL:     "https://api.example.com/",
-		Regions:     []string{"NL"},
-		APILanguage: "nl",
-		MCP: spec.MCPConfig{
-			Transport:     []string{"stdio", "http"},
-			Orchestration: "code",
-			EndpointTools: "hidden",
-		},
-	})
-
-	assert.Equal(t, "Test.API", apiSpec.DisplayName)
-	assert.Equal(t, "Trevin Chow", apiSpec.OwnerName)
-	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
-	assert.Equal(t, []string{"NL"}, apiSpec.Regions)
-	assert.Equal(t, "nl", apiSpec.APILanguage)
-	assert.False(t, apiSpec.BaseURLIsPlaceholder)
-	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
-	assert.Equal(t, "code", apiSpec.MCP.Orchestration)
-	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
 }
 
 func TestRebaseAuthEnvPrefix(t *testing.T) {
@@ -3488,71 +3636,14 @@ func TestRebaseAuthEnvPrefix(t *testing.T) {
 		},
 	}
 
-	catalogmeta.RebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
+	specmeta.RebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
 
 	assert.Equal(t, []string{"ELEVENLABS_API_KEY", "UNCHANGED_TOKEN"}, auth.EnvVars)
 	assert.Equal(t, "ELEVENLABS_CLIENT_ID", auth.EnvVarSpecs[0].Name)
 	assert.Equal(t, "CUSTOM_SECRET", auth.EnvVarSpecs[1].Name)
 }
 
-func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {
-	apiSpec := &spec.APISpec{
-		Name:                        "cloud-run-admin",
-		DisplayName:                 "Cloud Run Admin",
-		DisplayNameDerivedFromTitle: true,
-	}
-
-	enrichSpecFromCatalog(apiSpec, "https://api.apis.guru/v2/specs/googleapis.com/run/v2/openapi.yaml")
-
-	assert.Equal(t, "Google Cloud Run", apiSpec.DisplayName)
-	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
-	assert.Equal(t, "cloud", apiSpec.Category)
-	assert.Equal(t, "https://cloud.google.com/run/docs/reference/rest", apiSpec.WebsiteURL)
-}
-
-func TestEnrichSpecFromCatalogCategoryWinsOverFlagValue(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := &spec.APISpec{
-		Name:     "asana",
-		Category: "developer-tools",
-	}
-
-	enrichSpecFromCatalog(apiSpec)
-
-	assert.Equal(t, "project-management", apiSpec.Category)
-}
-
-func TestRunGenerateProjectUsesCatalogDescription(t *testing.T) {
-	t.Parallel()
-
-	entry, err := catalog.LookupFS(catalogfs.FS, "asana")
-	require.NoError(t, err)
-	apiSpec := &spec.APISpec{
-		Name:        "asana",
-		Description: "Weak source-spec fallback copy.",
-		Version:     "1.0",
-		BaseURL:     "https://api.example.com",
-		Auth:        spec.AuthConfig{Type: "none"},
-		Resources: map[string]spec.Resource{
-			"items": {
-				Description: "Items",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {Method: "GET", Path: "/items", Description: "List items"},
-				},
-			},
-		},
-	}
-	outputDir := filepath.Join(t.TempDir(), "asana")
-
-	got, err := runGenerateProject(apiSpec, outputDir, generateProjectOptions{})
-	require.NoError(t, err)
-
-	assert.Equal(t, entry.Description, got.CatalogDescription)
-	assert.False(t, strings.HasSuffix(got.CatalogDescription, "..."))
-}
-
-func TestRunGenerateProjectReturnsResearchNarrativeCatalogMetadata(t *testing.T) {
+func TestRunGenerateProjectReturnsResearchNarrativeManifestMetadata(t *testing.T) {
 	t.Parallel()
 
 	researchDir := t.TempDir()
@@ -3587,7 +3678,11 @@ func TestRunGenerateProjectReturnsResearchNarrativeCatalogMetadata(t *testing.T)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Alaska Airlines", got.DisplayName)
-	assert.Equal(t, "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.", got.CatalogDescription)
+	assert.Equal(t, "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.", got.ManifestDescription)
+	toolsManifest, err := pipeline.ReadToolsManifest(outputDir)
+	require.NoError(t, err)
+	assert.Equal(t, got.ManifestDescription, toolsManifest.Description)
+	assert.NotContains(t, toolsManifest.Description, "Weak source-spec fallback copy.")
 	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(skill), "## Anti-triggers")
@@ -3804,36 +3899,14 @@ func TestApplyResearchAuthMetadataRejectsUnsafeCanonicalEnvVars(t *testing.T) {
 	}
 }
 
-func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {
-	apiSpec := &spec.APISpec{
-		Name:                        "trigger-dev",
-		DisplayName:                 "Trigger Dev",
-		DisplayNameDerivedFromTitle: true,
-	}
-
-	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
-		DisplayName: "Trigger.dev",
-	})
-
-	assert.Equal(t, "Trigger.dev", apiSpec.DisplayName)
-	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
-}
-
-func TestEnrichSpecFromCatalogKeepsExplicitDisplayName(t *testing.T) {
-	apiSpec := &spec.APISpec{
-		Name:        "trigger-dev",
-		DisplayName: "Spec.dev",
-	}
-
-	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
-		DisplayName: "Trigger.dev",
-	})
-
-	assert.Equal(t, "Spec.dev", apiSpec.DisplayName)
-}
-
 func runGoCommandForCLITest(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	if testing.Short() && len(args) > 0 {
+		if args[0] == "build" || (len(args) >= 2 && args[0] == "mod" && args[1] == "tidy") {
+			t.Logf("skipping go %s in -short mode; full CI runs generated CLI compile coverage", strings.Join(args, " "))
+			return
+		}
+	}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()

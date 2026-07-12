@@ -10,9 +10,6 @@ import (
 	"regexp"
 	"strings"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpoverrides"
@@ -20,6 +17,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/specmeta"
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 )
@@ -84,7 +82,6 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if prior != "" {
 		fmt.Fprintf(os.Stderr, "mcp-sync: using manifest api_name %q over spec-derived slug %q\n", parsed.Name, prior)
 	}
-	applyCatalogMetadata(parsed)
 	// Validate that spec.yaml.name matches the directory's basename.
 	// Older library CLIs sometimes have drift (weather-goat's
 	// spec.yaml.name = "weather"; open-meteo's name diverges similarly)
@@ -119,7 +116,7 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// Falls through to the public library's registry.json when
 	// manifest.json has no usable value (browser-sniffed CLIs that
 	// never had a manifest, or a manifest already corrupted to the
-	// slug form). The registry is the catalog source of truth for
+	// slug form). The public-library registry is the source of truth for
 	// brand names.
 	if parsed.DisplayName == "" {
 		if existing := readExistingManifestDisplayName(cliDir); existing != "" {
@@ -530,20 +527,9 @@ func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) (prior strin
 	if parsed.Config.Path == fmt.Sprintf(defaultConfigPathFormat, naming.CLI(prior)) {
 		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(apiName))
 	}
-	catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, apiName)
+	specmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, apiName)
 	parsed.Name = apiName
 	return prior, true
-}
-
-func applyCatalogMetadata(parsed *spec.APISpec) {
-	if parsed == nil {
-		return
-	}
-	entry, err := catalog.LookupFS(catalogfs.FS, parsed.Name)
-	if err != nil {
-		return
-	}
-	catalogmeta.ApplyRuntimeMetadata(parsed, entry)
 }
 
 // readExistingManifestDisplayName returns the display_name from an

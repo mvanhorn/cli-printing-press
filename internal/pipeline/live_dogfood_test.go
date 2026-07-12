@@ -180,7 +180,25 @@ func TestClassifyLiveDogfoodFailure(t *testing.T) {
 		},
 		{
 			name: "transport_error on connection refused",
-			in:   LiveDogfoodTestResult{Reason: "dial tcp: connection refused", ExitCode: 1},
+			in:   LiveDogfoodTestResult{Reason: "dial tcp 1.2.3.4:443: connect: connection refused", ExitCode: 1},
+			want: "transport_error",
+		},
+		{
+			// Regression: a help-kind failure's OutputSample carries the full
+			// --help text, which includes the global "--timeout duration"
+			// flag line. The transport case must scan Reason only, not the
+			// combined hay, or every help failure mislabels as transport_error.
+			name: "help failure with --timeout flag text is not transport_error",
+			in: LiveDogfoodTestResult{
+				Kind:         LiveDogfoodTestHelp,
+				Reason:       "missing Examples section",
+				OutputSample: "Usage:\n  x [flags]\n\nGlobal Flags:\n      --timeout duration   Request timeout (default 1m0s)\n",
+			},
+			want: "other",
+		},
+		{
+			name: "transport_error on genuine timeout in reason",
+			in:   LiveDogfoodTestResult{Reason: "context deadline exceeded (Client.Timeout exceeded while awaiting headers)", ExitCode: 1},
 			want: "transport_error",
 		},
 		{
@@ -476,6 +494,99 @@ exit 99
 	gotCookies, err := os.ReadFile(cookiePath)
 	require.NoError(t, err)
 	assert.Equal(t, cookieOriginalBody, string(gotCookies), "live dogfood must not mutate the operator's real cookies")
+}
+
+// TestRunLiveDogfoodCookieAuthNoSessionSkips covers issue #3104: a cookie-auth
+// CLI run in the sandboxed dogfood HOME (no captured session) 401s every
+// command. Those 401s are a harness artifact, not a CLI defect, so the runner
+// records a clean skip verdict (CLI exits 0) and writes a phase5-skip.json the
+// promote gate accepts — instead of counting the 401s as failures.
+func TestRunLiveDogfoodCookieAuthNoSessionSkips(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	const binaryName = "fixture-pp-cli"
+
+	// Sandboxed HOME so the cookie jar is absent — mirror the real harness.
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	require.NoError(t, WriteCLIManifest(dir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "fixture",
+		RunID:         "run-cookie-no-session",
+		AuthType:      "cookie",
+		SpecFormat:    "openapi3",
+	}))
+	writeStubBinary(t, dir, binaryName, `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"account","subcommands":[{"name":"show"}]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show the authenticated account.
+
+Usage:
+  fixture-pp-cli account show [flags]
+
+Examples:
+  fixture-pp-cli account show
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "account" ] && [ "$2" = "show" ]; then
+  echo "HTTP 401: couldn't authenticate; login required" >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`)
+
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		WriteAcceptancePath: markerPath,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, liveDogfoodVerdictCookieAuthNoSession, report.Verdict, report.Tests)
+	assert.Equal(t, 0, report.Failed, "cookie-auth 401s must not count as failures")
+
+	// The runner writes the skip marker, not the fail acceptance marker.
+	_, err = os.Stat(markerPath)
+	assert.True(t, os.IsNotExist(err), "no fail acceptance marker should be written for the cookie-auth skip")
+	skipPath := filepath.Join(filepath.Dir(markerPath), Phase5SkipFilename)
+	data, err := os.ReadFile(skipPath)
+	require.NoError(t, err, "cookie-auth skip must write a phase5-skip.json marker")
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "skip", marker.Status)
+	assert.Equal(t, phase5SkipReasonCookieAuthNoHarnessSession, marker.SkipReason)
+	assert.Equal(t, "cookie", marker.AuthContext.Type)
+
+	// The promote gate accepts the skip marker.
+	validation := ValidatePhase5Gate(filepath.Dir(skipPath), CLIManifest{
+		APIName: marker.APIName, RunID: marker.RunID, AuthType: "cookie",
+	})
+	assert.True(t, validation.Passed, validation.Detail)
+	assert.Equal(t, "skip", validation.Status)
 }
 
 func TestRunLiveDogfoodSyncsOAuth2RefreshConfigBackToOperatorHome(t *testing.T) {
@@ -864,6 +975,61 @@ func main() {
 	happy := findResultByCommandKind(report, "widgets list", LiveDogfoodTestHappy)
 	require.NotNil(t, happy)
 	assert.Equal(t, LiveDogfoodStatusPass, happy.Status)
+}
+
+func TestRunLiveDogfoodDoesNotLeaveFallbackDogfoodBinary(t *testing.T) {
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	writeTestManifestForLiveDogfoodCLIName(t, dir, binaryName)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/live-dogfood-artifact-test\n\ngo 1.23\n"), 0o644))
+	cmdDir := filepath.Join(dir, "cmd", binaryName)
+	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	mainPath := filepath.Join(cmdDir, "main.go")
+	mainSource := `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	switch strings.Join(os.Args[1:], " ") {
+	case "agent-context":
+		fmt.Print(` + "`" + `{"commands":[{"name":"widgets","subcommands":[{"name":"list"}]}]}` + "`" + `)
+	case "widgets list --help":
+		fmt.Print(` + "`" + `List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list
+
+Flags:
+      --json    Output JSON
+` + "`" + `)
+	case "widgets list", "widgets list --json":
+		fmt.Print(` + "`" + `{"ok":true}` + "`" + `)
+	default:
+		fmt.Fprintf(os.Stderr, "unexpected args: %v\n", os.Args[1:])
+		os.Exit(2)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(mainPath, []byte(mainSource), 0o644))
+
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: "",
+		Level:      "full",
+		Timeout:    5 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "PASS", report.Verdict, report.Tests)
+	assert.NoFileExists(t, filepath.Join(dir, binaryName+"-dogfood"))
+	assert.NotContains(t, report.Binary, dir+string(os.PathSeparator), "fallback dogfood binary should not be built in the CLI dir")
+	assert.NoFileExists(t, report.Binary)
 }
 
 func TestRunLiveDogfoodSkipsRequiresTierMismatch(t *testing.T) {
@@ -1363,6 +1529,16 @@ func TestRunLiveDogfoodSkipsHappyPathOnRequiredParam4xx(t *testing.T) {
 	require.NotNil(t, summaryJSON, "expected reports summary json_fidelity result")
 	assert.Equal(t, LiveDogfoodStatusSkip, summaryJSON.Status)
 	assert.Equal(t, reasonRequiredParamFixture, summaryJSON.Reason)
+
+	eventsHappy := findResultByCommandKind(report, "events list", LiveDogfoodTestHappy)
+	require.NotNil(t, eventsHappy, "expected events list happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, eventsHappy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, eventsHappy.Reason)
+
+	eventsJSON := findResultByCommandKind(report, "events list", LiveDogfoodTestJSON)
+	require.NotNil(t, eventsJSON, "expected events list json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, eventsJSON.Status)
+	assert.Equal(t, reasonRequiredParamFixture, eventsJSON.Reason)
 }
 
 func TestRunLiveDogfoodSkipsMutatingCommandsWithoutRunnableExample(t *testing.T) {
@@ -1495,6 +1671,9 @@ if [ "$1" = "agent-context" ]; then
     {"name":"reports","subcommands":[
       {"name":"prospects"},
       {"name":"summary"}
+    ]},
+    {"name":"events","subcommands":[
+      {"name":"list","annotations":{"pp:method":"GET","mcp:read-only":"true"}}
     ]}
   ]
 }
@@ -1552,6 +1731,31 @@ fi
 if [ "$1" = "reports" ] && [ "$2" = "summary" ]; then
   echo 'summary'
   exit 0
+fi
+
+if [ "$1" = "events" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List calendar events.
+
+Usage:
+  fixture-pp-cli events list [flags]
+
+Examples:
+  fixture-pp-cli events list --account-id 550e8400-e29b-41d4-a716-446655440000 --calendar-ids example-value --start 2026-01-15T09:00:00Z --end 2026-01-15T10:00:00Z
+
+Flags:
+      --account-id string     Account id
+      --calendar-ids string   Calendar ids
+      --end string            End time
+      --json                  Output JSON
+      --start string          Start time
+HELP
+  exit 0
+fi
+
+if [ "$1" = "events" ] && [ "$2" = "list" ]; then
+  echo 'unexpected events list invocation with synthetic required query params' >&2
+  exit 9
 fi
 
 echo "unexpected args: $*" >&2
@@ -1675,6 +1879,110 @@ exit 99
 	return dir, binaryName
 }
 
+func writeLiveDogfoodSyntheticID404Fixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"notes","subcommands":[
+      {"name":"get","annotations":{"pp:method":"GET","pp:happy-args":"note_id=550e8400-e29b-41d4-a716-446655440000"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "notes" ] && [ "$2" = "get" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Get a note.
+
+Usage:
+  fixture-pp-cli notes get <note_id> [flags]
+
+Examples:
+  fixture-pp-cli notes get 550e8400-e29b-41d4-a716-446655440000
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "notes" ] && [ "$2" = "get" ]; then
+  if [ "${3:-}" = "__printing_press_invalid__" ]; then
+    echo 'HTTP 404: {"error":"note not found"}' >&2
+    exit 3
+  fi
+  echo 'HTTP 404: {"error":"note not found"}' >&2
+  exit 3
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodFeatureAbsentFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"workspaces","subcommands":[
+      {"name":"list","annotations":{"pp:method":"GET","mcp:read-only":"true"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "workspaces" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List workspaces.
+
+Usage:
+  fixture-pp-cli workspaces list [flags]
+
+Examples:
+  fixture-pp-cli workspaces list
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "workspaces" ] && [ "$2" = "list" ]; then
+  echo 'HTTP 404: {"error":"feature not enabled for this workspace"}' >&2
+  exit 3
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
 func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
 	t.Parallel()
 
@@ -1785,6 +2093,44 @@ func TestLiveDogfoodRequiredParamFixtureReason(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, liveDogfoodRequiredParamFixtureReason(tc.run))
+		})
+	}
+}
+
+func TestLiveDogfoodFeatureAbsentFixtureReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		run  liveDogfoodRun
+		want string
+	}{
+		{
+			name: "explicit feature unavailable 404 is blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"feature not enabled for this workspace"}`, exitCode: 1},
+			want: reasonFeatureAbsentFixture,
+		},
+		{
+			name: "plain workspace not found remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"workspace not found"}`, exitCode: 1},
+		},
+		{
+			name: "plain team not found remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"team not found"}`, exitCode: 1},
+		},
+		{
+			name: "generic not available for remains failure",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"note is not available for account acct_1"}`, exitCode: 1},
+		},
+		{
+			name: "successful output is not blocked fixture",
+			run:  liveDogfoodRun{stderr: `HTTP 404: {"error":"feature not enabled"}`, exitCode: 0},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, liveDogfoodFeatureAbsentFixtureReason(tc.run))
 		})
 	}
 }
@@ -1944,10 +2290,11 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		level   string
-		results []LiveDogfoodTestResult
-		want    string
+		name     string
+		level    string
+		authType string
+		results  []LiveDogfoodTestResult
+		want     string
 	}{
 		{
 			name:  "quick all pass classic",
@@ -2057,6 +2404,44 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 			},
 			want: "FAIL",
 		},
+		{
+			// Cookie auth with no captured session: the sandboxed HOME 401s
+			// every command. That is a harness artifact, so the no-live-signal
+			// outcome becomes a clean skip verdict, not a FAIL.
+			name:     "cookie auth credential-unavailable skips become a clean skip",
+			level:    "full",
+			authType: "cookie",
+			results: []LiveDogfoodTestResult{
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
+			},
+			want: liveDogfoodVerdictCookieAuthNoSession,
+		},
+		{
+			// A cookie-auth CLI that did get one real live pass (session
+			// injected) certifies normally, not as a skip.
+			name:     "cookie auth with a live pass certifies normally",
+			level:    "full",
+			authType: "cookie",
+			results: []LiveDogfoodTestResult{
+				{Status: LiveDogfoodStatusPass, Kind: LiveDogfoodTestHappy, Args: []string{"account", "show"}},
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
+			},
+			want: "PASS",
+		},
+		{
+			// A genuine non-auth failure (e.g. a crashing --help) alongside the
+			// session-less 401 skips must NOT be masked by the cookie-auth
+			// clean-skip path: report.Failed > 0 keeps the verdict FAIL so the
+			// gate still sees the real defect.
+			name:     "cookie auth with a genuine failure stays FAIL, not a clean skip",
+			level:    "full",
+			authType: "cookie",
+			results: []LiveDogfoodTestResult{
+				{Status: LiveDogfoodStatusFail, Kind: LiveDogfoodTestHappy, Args: []string{"widgets", "list"}},
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
+			},
+			want: "FAIL",
+		},
 	}
 
 	for _, tt := range tests {
@@ -2066,7 +2451,7 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 				Verdict: "PASS",
 				Tests:   tt.results,
 			}
-			finalizeLiveDogfoodReport(report)
+			finalizeLiveDogfoodReport(report, tt.authType)
 			assert.Equal(t, tt.want, report.Verdict, "Passed=%d Failed=%d Skipped=%d MatrixSize=%d",
 				report.Passed, report.Failed, report.Skipped, report.MatrixSize)
 		})
@@ -2154,6 +2539,21 @@ func TestExtractFirstIDFromJSON(t *testing.T) {
 			want:   "cus_xyz", ok: true,
 		},
 		{
+			name:   "provenance envelope with only resource id field is not harvested without context",
+			stdout: `{"results":{"items":[{"note_id":"note-real-1"}]},"meta":{"source":"live"}}`,
+			want:   "", ok: false,
+		},
+		{
+			name:   "foreign id-like field is not harvested",
+			stdout: `{"results":{"items":[{"account_id":"acct_1"}]}}`,
+			want:   "", ok: false,
+		},
+		{
+			name:   "ambiguous foreign and resource ids are not harvested",
+			stdout: `{"results":[{"account_id":"acct_1","note_id":"note_1"}]}`,
+			want:   "", ok: false,
+		},
+		{
 			name:   "list shape (long-tail)",
 			stdout: `{"list":[{"id":"L1"}]}`,
 			want:   "L1", ok: true,
@@ -2207,6 +2607,206 @@ func TestExtractFirstIDFromJSON(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestRunLiveDogfoodSkipsAnnotatedSyntheticID404(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodSyntheticID404Fixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	happy := findResultByCommandKind(report, "notes get", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "notes get", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonRequiredParamFixture, jsonResult.Reason)
+}
+
+func TestRunLiveDogfoodSkipsFeatureAbsentNotFound(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodFeatureAbsentFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	happy := findResultByCommandKind(report, "workspaces list", LiveDogfoodTestHappy)
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, "blocked-fixture: feature absent for runner credentials", happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "workspaces list", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, "blocked-fixture: feature absent for runner credentials", jsonResult.Reason)
+}
+
+func TestRunLiveDogfoodSkipsPPInteractiveAnnotation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodInteractiveFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	help := findResultByCommandKind(report, "oauth connect", LiveDogfoodTestHelp)
+	require.NotNil(t, help)
+	assert.Equal(t, LiveDogfoodStatusPass, help.Status)
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHappy, LiveDogfoodTestJSON, LiveDogfoodTestError} {
+		got := findResultByCommandKind(report, "oauth connect", kind)
+		require.NotNil(t, got)
+		assert.Equal(t, LiveDogfoodStatusSkip, got.Status)
+		assert.Equal(t, "interactive command requires human input", got.Reason)
+	}
+}
+
+func TestRunLiveDogfoodSkipsMutatingPPInteractiveRealErrorPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodMutatingInteractiveFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	for _, kind := range []LiveDogfoodTestKind{
+		LiveDogfoodTestHappy,
+		LiveDogfoodTestJSON,
+		LiveDogfoodTestError,
+		LiveDogfoodTestErrorReal,
+	} {
+		got := findResultByCommandKind(report, "widgets create", kind)
+		require.NotNil(t, got, "missing %s result", kind)
+		assert.Equal(t, LiveDogfoodStatusSkip, got.Status)
+		assert.Equal(t, "interactive command requires human input", got.Reason)
+	}
+}
+
+func writeLiveDogfoodInteractiveFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"oauth","subcommands":[
+      {"name":"connect","annotations":{"pp:interactive":"true"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "oauth" ] && [ "$2" = "connect" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Connect OAuth.
+
+Usage:
+  fixture-pp-cli oauth connect [flags]
+
+Examples:
+  fixture-pp-cli oauth connect
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+echo "interactive command should not run: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
+}
+
+func writeLiveDogfoodMutatingInteractiveFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"create","annotations":{"pp:interactive":"true","pp:method":"POST"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "create" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Create widget.
+
+Usage:
+  fixture-pp-cli widgets create [flags]
+
+Examples:
+  fixture-pp-cli widgets create --name demo --dry-run
+
+Flags:
+      --dry-run    Preview without writing
+      --json       Output JSON
+      --name string
+HELP
+  exit 0
+fi
+
+echo "mutating interactive command should not run: $*" >&2
+exit 99
+`
+	writeStubBinary(t, dir, binaryName, script)
+	return dir, binaryName
 }
 
 func TestBuildSiblingMap(t *testing.T) {
@@ -2312,7 +2912,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "list"},
 		Help: "Usage:\n  cli widgets list [flags]\n",
 	}
-	args, skipped, _, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, ctx)
+	args, skipped, _, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, 0, ctx)
 	assert.False(t, skipped)
 	assert.Equal(t, []string{"widgets", "list"}, args)
 
@@ -2321,7 +2921,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "search"},
 		Help: "Usage:\n  cli widgets search <query> [flags]\n",
 	}
-	_, skipped, reason, _ := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, ctx)
+	_, skipped, reason, _ := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "non-id positional")
 
@@ -2330,7 +2930,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "get"},
 		Help: "Usage:\n  cli widgets get <id> [flags]\n",
 	}
-	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, ctx)
+	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
 
@@ -2339,7 +2939,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"movies", "get"},
 		Help: "Usage:\n  cli movies get <movieId> [flags]\n",
 	}
-	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, ctx)
+	_, skipped, reason, _ = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, 0, ctx)
 	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
 
@@ -2348,7 +2948,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"get"},
 		Help: "Usage:\n  cli get <id> <name> [flags]\n",
 	}
-	_, skipped, _, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, ctx)
+	_, skipped, _, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, 0, ctx)
 	assert.True(t, skipped)
 }
 
@@ -2389,7 +2989,7 @@ exit 99
 		storeDBPath: dbPath,
 	}
 
-	args, skipped, reason, source := resolveCommandPositionals(cmd, []string{"projects", "tasks", "get", "example-project", "example-task"}, ctx)
+	args, skipped, reason, source := resolveCommandPositionals(cmd, []string{"projects", "tasks", "get", "example-project", "example-task"}, 0, ctx)
 	require.False(t, skipped, reason)
 	assert.Equal(t, []string{"projects", "tasks", "get", "real-project-1", "real-task-1"}, args)
 	assert.Empty(t, source, "mixed store and companion resolution should not be counted as store-backed")
@@ -3916,15 +4516,19 @@ func TestRunLiveDogfoodStoreFixtureSourceUsesSyncedResourceID(t *testing.T) {
 	assert.Equal(t, "store", jsonResult.FixtureSource)
 }
 
-func TestRunLiveDogfoodStoreFixtureSourceMarksSyntheticWhenStoreEmpty(t *testing.T) {
+func TestRunLiveDogfoodStoreFixtureSourceSkipsWhenStoreEmpty(t *testing.T) {
 	dir, binaryName := writeLiveDogfoodStoreFixture(t, false)
 	report := runRichFixtureMatrix(t, dir, binaryName)
 
 	happy := findResultByCommandKind(report, "tasks get-task", LiveDogfoodTestHappy)
 	require.NotNil(t, happy, "expected tasks get-task happy_path result")
-	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
-	assert.Equal(t, []string{"tasks", "get-task", "example-id"}, happy.Args)
-	assert.Equal(t, "synthetic", happy.FixtureSource)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, reasonRequiredParamFixture, happy.Reason)
+
+	jsonResult := findResultByCommandKind(report, "tasks get-task", LiveDogfoodTestJSON)
+	require.NotNil(t, jsonResult, "expected tasks get-task json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, jsonResult.Status)
+	assert.Equal(t, reasonRequiredParamFixture, jsonResult.Reason)
 }
 
 func TestRunLiveDogfoodResolveSuccessSinglePositional(t *testing.T) {
@@ -4630,6 +5234,107 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "12"}, args,
 		"flag-form pp:happy-args must override the Example placeholder")
 
+	// Flag-only overlays must not hide synthetic ID fixtures that remain in
+	// the Example. Those still cannot be sent to a real upstream API.
+	syntheticFlagCmd := liveDogfoodCommand{
+		Path: []string{"users", "get-by-ids"},
+		Help: `Usage:
+  cli users get-by-ids [flags]
+
+Examples:
+  cli users get-by-ids --ids example-value --format=summary
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--format=json"},
+	}
+	args, ok = liveDogfoodHappyArgs(syntheticFlagCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "example-value", "--format=json"}, args)
+	assert.Equal(t, reasonRequiredParamFixture, happyPathSyntheticParamFixtureSkip(syntheticFlagCmd, args),
+		"flag-only pp:happy-args must still skip unresolved synthetic ID fixtures")
+
+	boolFlagCmd := liveDogfoodCommand{
+		Path: []string{"widgets", "get"},
+		Help: `Usage:
+  cli widgets get <id> [flags]
+
+Examples:
+  cli widgets get --verbose widget-1
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--verbose=true"},
+	}
+	args, ok = liveDogfoodHappyArgs(boolFlagCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "get", "--verbose", "true", "widget-1"}, args,
+		"boolean flag overlay must not consume the following positional")
+
+	filterBoolFlagCmd := liveDogfoodCommand{
+		Path: []string{"widgets", "get"},
+		Help: `Usage:
+  cli widgets get <id> [flags]
+
+Examples:
+  cli widgets get --filter active --verbose widget-1
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--verbose=true"},
+	}
+	args, ok = liveDogfoodHappyArgs(filterBoolFlagCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "get", "--filter", "active", "--verbose", "true", "widget-1"}, args,
+		"preceding flag values must not be counted as consumed positionals")
+
+	// Flag-only pp:happy-args overlays the runnable Example but still leaves
+	// positional IDs available for the live fixture resolver. This matches
+	// verify's happy-args behavior: annotated flags do not replace inferred
+	// positionals.
+	flagOnlyPositionalCmd := liveDogfoodCommand{
+		Path: []string{"widgets", "get"},
+		Help: `Usage:
+  cli widgets get <id> [flags]
+
+Examples:
+  cli widgets get 550e8400-e29b-41d4-a716-446655440000 --format=summary
+`,
+		Annotations: map[string]string{happyArgsAnnotation: "--include=stats"},
+	}
+	args, ok = liveDogfoodHappyArgs(flagOnlyPositionalCmd)
+	require.True(t, ok)
+	assert.Equal(t, []string{"widgets", "get", "550e8400-e29b-41d4-a716-446655440000", "--format=summary", "--include", "stats"}, args)
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "fixture-pp-cli")
+	require.NoError(t, os.WriteFile(binaryPath, []byte(`#!/bin/sh
+set -u
+if [ "$1" = "widgets" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  echo 'Usage: fixture-pp-cli widgets list [flags]'
+  exit 0
+fi
+if [ "$1" = "widgets" ] && [ "$2" = "list" ] && [ "${3:-}" = "--json" ]; then
+  echo '{"results":[{"id":"real-widget-1"}]}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 99
+`), 0o755))
+	resolved, skipped, reason, _ := resolveCommandPositionals(flagOnlyPositionalCmd, args, 0, resolveCtx{
+		binaryPath: binaryPath,
+		cliDir:     dir,
+		siblings: map[string][]liveDogfoodCommand{
+			"widgets": {{Path: []string{"widgets", "list"}}},
+		},
+		cache:   newCompanionCache(),
+		timeout: time.Second,
+	})
+	require.False(t, skipped, reason)
+	assert.Equal(t, []string{"widgets", "get", "real-widget-1", "--format=summary", "--include", "stats"}, resolved)
+
+	_, skipped, reason, _ = resolveCommandPositionals(flagOnlyPositionalCmd, args, 0, resolveCtx{
+		siblings: map[string][]liveDogfoodCommand{},
+		cache:    newCompanionCache(),
+		timeout:  time.Second,
+	})
+	assert.True(t, skipped)
+	assert.Equal(t, reasonRequiredParamFixture, reason)
+
 	// Positional form: <name>=value contributes the value as a positional arg.
 	// resolveCommandPositionals must NOT re-resolve (or skip) it even when the
 	// Usage line carries an <id> placeholder and no list companion is reachable.
@@ -4641,7 +5346,7 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 	args, ok = liveDogfoodHappyArgs(posCmd)
 	require.True(t, ok)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, args)
-	resolved, skipped, reason, _ := resolveCommandPositionals(posCmd, args, resolveCtx{})
+	resolved, skipped, reason, _ = resolveCommandPositionals(posCmd, args, 1, resolveCtx{})
 	assert.False(t, skipped, "pp:happy-args positional must not be skipped: %s", reason)
 	assert.Equal(t, []string{"tweets", "get", "1750000000000000000"}, resolved,
 		"resolveCommandPositionals must preserve the pp:happy-args positional value")
@@ -4656,4 +5361,91 @@ func TestLiveDogfoodHappyArgsHonorsPPHappyArgs(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []string{"users", "get-by-ids", "--ids", "example-value"}, args,
 		"empty pp:happy-args must fall through to Example derivation")
+}
+
+func TestHappyArgsContainSyntheticFlagPlaceholder(t *testing.T) {
+	assert.True(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"events", "list", "--account-id", "550e8400-e29b-41d4-a716-446655440000", "--calendar-ids", "example-value"},
+		[]string{"events", "list"},
+	))
+	assert.True(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"users", "get-by-ids", "--ids=example-value"},
+		[]string{"users", "get-by-ids"},
+	))
+	assert.True(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"keys", "list", "--api-key", "your-token-here"},
+		[]string{"keys", "list"},
+	))
+	assert.False(t, happyArgsContainSyntheticFlagPlaceholder(
+		[]string{"widgets", "search", "--query", "example-value"},
+		[]string{"widgets", "search"},
+	))
+}
+
+func TestLiveDogfoodSyntheticPositionalValueHandlesBooleanFlags(t *testing.T) {
+	t.Parallel()
+
+	commandPath := []string{"widgets", "get"}
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--verbose", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
+		1,
+	))
+	assert.False(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--limit", "5", "real-widget-1"},
+		commandPath,
+		0,
+		1,
+	))
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--limit", "5", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
+		1,
+	))
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "get", "--", "550e8400-e29b-41d4-a716-446655440000"},
+		commandPath,
+		0,
+		1,
+	))
+
+	movePath := []string{"widgets", "move"}
+	assert.True(t, liveDogfoodSyntheticPositionalValue(
+		[]string{"widgets", "move", "--verbose", "550e8400-e29b-41d4-a716-446655440000", "real-target"},
+		movePath,
+		0,
+		2,
+	))
+}
+
+// TestLiveDogfoodSkipsInteractiveAuthCommands locks in that the live matrix
+// skips promoted login/logout (interactive OAuth lifecycle commands) the same
+// way it already skips the "auth" parent. Probing their happy path would bind a
+// local callback port and block on a browser redirect until the per-command
+// timeout, so they must never enter the command list.
+func TestLiveDogfoodSkipsInteractiveAuthCommands(t *testing.T) {
+	t.Parallel()
+
+	roots := []dogfoodAgentCommand{
+		{Name: "login"},
+		{Name: "logout"},
+		{Name: "auth", Subcommands: []dogfoodAgentCommand{{Name: "login"}}},
+		{Name: "tasks", Subcommands: []dogfoodAgentCommand{{Name: "list"}}},
+	}
+	var cmds []liveDogfoodCommand
+	for _, root := range roots {
+		collectLiveDogfoodCommands(nil, root, &cmds)
+	}
+
+	var names []string
+	for _, c := range cmds {
+		names = append(names, strings.Join(c.Path, " "))
+	}
+
+	assert.NotContains(t, names, "login")
+	assert.NotContains(t, names, "logout")
+	assert.NotContains(t, names, "auth login")
+	assert.Contains(t, names, "tasks list", "non-auth commands must still be collected")
 }

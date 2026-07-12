@@ -19,14 +19,13 @@ func newQuotesListCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  fastapi-operationids-golden-pp-cli quotes list",
 		Annotations: map[string]string{"pp:endpoint": "quotes.list", "pp:method": "GET", "pp:path": "/api/quotes", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path := "/api/quotes"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/api/quotes"
 			params := map[string]string{}
-			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "quotes", true, path, params, nil, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "quotes", true, path, params, nil, "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -71,7 +70,7 @@ func newQuotesListCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"})
 		},
 	}
 

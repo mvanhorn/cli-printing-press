@@ -1,5 +1,5 @@
 // Package narrativecheck validates that command strings in
-// research.json's narrative.quickstart and narrative.recipes resolve
+// research.json's narrative command fields and command-shaped prose snippets resolve
 // against a built printed-CLI binary's Cobra tree.
 //
 // The narrative is LLM-authored (or hand-edited) and easily drifts from
@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -33,8 +34,13 @@ import (
 type Section string
 
 const (
-	SectionQuickstart Section = "quickstart"
-	SectionRecipes    Section = "recipes"
+	SectionQuickstart    Section = "quickstart"
+	SectionRecipes       Section = "recipes"
+	SectionHeadline      Section = "headline"
+	SectionValueProp     Section = "value_prop"
+	SectionAuthNarrative Section = "auth_narrative"
+	SectionWhenToUse     Section = "when_to_use"
+	SectionTroubleshoot  Section = "troubleshoots.fix"
 )
 
 // Status is a command's classification after the --help walk.
@@ -224,11 +230,19 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 	// Decode just the narrative subtree we care about. Tolerates extra
 	// fields in research.json (the schema is wider than narrative).
 	var doc struct {
+		APIName   string `json:"api_name"`
 		Narrative struct {
-			Quickstart []struct {
+			Headline      string `json:"headline"`
+			ValueProp     string `json:"value_prop"`
+			AuthNarrative string `json:"auth_narrative"`
+			Quickstart    []struct {
 				Command string `json:"command"`
 			} `json:"quickstart"`
-			Recipes []struct {
+			Troubleshoots []struct {
+				Fix string `json:"fix"`
+			} `json:"troubleshoots"`
+			WhenToUse string `json:"when_to_use"`
+			Recipes   []struct {
 				Command string `json:"command"`
 			} `json:"recipes"`
 		} `json:"narrative"`
@@ -248,7 +262,59 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 			out = append(out, sectionCommand{Section: SectionRecipes, Command: cmd})
 		}
 	}
+	codeSpanCommands := []struct {
+		section Section
+		text    string
+	}{
+		{section: SectionHeadline, text: doc.Narrative.Headline},
+		{section: SectionValueProp, text: doc.Narrative.ValueProp},
+		{section: SectionAuthNarrative, text: doc.Narrative.AuthNarrative},
+		{section: SectionWhenToUse, text: doc.Narrative.WhenToUse},
+	}
+	for _, tip := range doc.Narrative.Troubleshoots {
+		codeSpanCommands = append(codeSpanCommands, struct {
+			section Section
+			text    string
+		}{section: SectionTroubleshoot, text: tip.Fix})
+	}
+	expectedBinaries := narrativeBinaryNames(doc.APIName)
+	for _, entry := range codeSpanCommands {
+		for _, cmd := range extractNarrativeCodeSpanCommands(entry.text, expectedBinaries) {
+			out = append(out, sectionCommand{Section: entry.section, Command: cmd})
+		}
+	}
 	return out, nil
+}
+
+var markdownCodeSpanRE = regexp.MustCompile("`([^`\\n]+)`")
+
+func narrativeBinaryNames(apiName string) map[string]bool {
+	slug := naming.Slug(apiName)
+	if slug == "" {
+		return nil
+	}
+	return map[string]bool{
+		naming.CLI(slug):       true,
+		naming.LegacyCLI(slug): true,
+	}
+}
+
+func extractNarrativeCodeSpanCommands(text string, expectedBinaries map[string]bool) []string {
+	if len(expectedBinaries) == 0 || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	var commands []string
+	for _, match := range markdownCodeSpanRE.FindAllStringSubmatch(text, -1) {
+		code := strings.TrimSpace(match[1])
+		tokens, err := shellargs.Split(code)
+		if err != nil || len(tokens) < 2 {
+			continue
+		}
+		if expectedBinaries[tokens[0]] && len(extractSubcommandWords(code)) > 0 {
+			commands = append(commands, code)
+		}
+	}
+	return commands
 }
 
 // classify mirrors the bash recipe's wordlist rule: drop the leading

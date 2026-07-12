@@ -110,6 +110,153 @@ func newTodayCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+func TestCheckReimplementation_ComputedDataSourceWithoutClient_Passes(t *testing.T) {
+	files := map[string]string{
+		"irmaa.go": `package cli
+
+import "github.com/spf13/cobra"
+
+// pp:data-source computed
+func newIRMAACmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "irmaa",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Println("tier: standard")
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "IRMAA", Command: "irmaa"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 {
+		t.Fatalf("MissingDataSourceStrategy: want 0, got %d (%v)", len(got.MissingDataSourceStrategy), got.MissingDataSourceStrategy)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_LocalDataSourceWithoutClient_Passes(t *testing.T) {
+	files := map[string]string{
+		"preset.go": `package cli
+
+import (
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+// pp:data-source local
+func newPresetCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "preset",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := os.ReadFile("presets.json")
+			return err
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Preset", Command: "preset"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 {
+		t.Fatalf("MissingDataSourceStrategy: want 0, got %d (%v)", len(got.MissingDataSourceStrategy), got.MissingDataSourceStrategy)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_ComputedDataSourceTODOStillFlagged(t *testing.T) {
+	files := map[string]string{
+		"irmaa.go": `package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+// pp:data-source computed
+func newIRMAACmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "irmaa",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "irmaa")
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "IRMAA", Command: "irmaa"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 {
+		t.Fatalf("MissingDataSourceStrategy: want 0, got %d (%v)", len(got.MissingDataSourceStrategy), got.MissingDataSourceStrategy)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+	if !strings.Contains(got.Suspicious[0].Reason, "TODO") && !strings.Contains(got.Suspicious[0].Reason, "stub") {
+		t.Fatalf("Reason should mention TODO/stub, got %q", got.Suspicious[0].Reason)
+	}
+}
+
+func TestCheckReimplementation_ComputedDataSourceTODOInSiblingFileStillFlagged(t *testing.T) {
+	files := map[string]string{
+		"irmaa.go": `package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+// pp:data-source computed
+func newIRMAACmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "irmaa",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("TODO: implement novel feature %q", "irmaa")
+		},
+	}
+}
+`,
+		"irmaa_helpers.go": `package cli
+
+// pp:data-source computed
+func irmaaBracket() string {
+	return "standard"
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "IRMAA", Command: "irmaa"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if len(got.MissingDataSourceStrategy) != 0 {
+		t.Fatalf("MissingDataSourceStrategy: want 0, got %d (%v)", len(got.MissingDataSourceStrategy), got.MissingDataSourceStrategy)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+	if !strings.Contains(got.Suspicious[0].Reason, "TODO") && !strings.Contains(got.Suspicious[0].Reason, "stub") {
+		t.Fatalf("Reason should mention TODO/stub, got %q", got.Suspicious[0].Reason)
+	}
+}
+
 func TestCheckReimplementation_MissingDataSourceStrategy_Flagged(t *testing.T) {
 	files := map[string]string{
 		"today.go": `package cli
@@ -1178,6 +1325,74 @@ func newSearchCmd(flags *rootFlags) *cobra.Command {
 	}
 	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
 		{Name: "Search", Command: "search"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_SidecarExec_Passes(t *testing.T) {
+	files := map[string]string{
+		"mcp_serve.go": `package cli
+
+import (
+	"os/exec"
+
+	"github.com/spf13/cobra"
+)
+
+// pp:data-source live
+func newMCPServeCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "serve",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return exec.CommandContext(cmd.Context(), "fixture-pp-mcp", "serve").Run()
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "MCP serve", Command: "mcp serve"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_SidecarExecWithoutContext_Passes(t *testing.T) {
+	files := map[string]string{
+		"mcp_serve.go": `package cli
+
+import (
+	"os/exec"
+
+	"github.com/spf13/cobra"
+)
+
+// pp:data-source live
+func newMCPServeCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "serve",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return exec.Command("fixture-pp-mcp", "serve").Run()
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "MCP serve", Command: "mcp serve"},
 	})
 
 	got := checkReimplementation(cliDir, pipelineDir)

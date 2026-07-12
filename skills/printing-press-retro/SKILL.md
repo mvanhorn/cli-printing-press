@@ -2,7 +2,7 @@
 name: printing-press-retro
 description: >
   Run a retrospective after generating a CLI. Identifies systemic improvements
-  to the Printing Press — templates, Go binary, skill instructions, catalog —
+  to the Printing Press — templates, Go binary, skill instructions, and workflow docs —
   so the next CLI comes out better. Creates a GitHub issue with actionable
   findings when there are Printing Press fixes to make.
   Use after any /printing-press run.
@@ -23,7 +23,7 @@ allowed-tools:
 # /printing-press-retro
 
 Analyze a Printing Press session to find ways to improve the system that produces
-CLIs — the Go binary, templates, skills, and catalog. Not fixes to the specific CLI
+CLIs — the Go binary, templates, skills, and workflow docs. Not fixes to the specific CLI
 that was just printed, but improvements so the *next* CLI comes out stronger.
 
 **It is a non-goal for the Printing Press to produce flawless CLIs without manual
@@ -425,7 +425,6 @@ work across retros (`gh issue list --label comp:<slug>`).
 | Generator templates | `generator` | `internal/generator/` |
 | Spec parser | `spec-parser` | `internal/spec/` |
 | OpenAPI parser | `openapi-parser` | `internal/openapi/` |
-| Catalog | `catalog` | `catalog/` |
 | Main skill | `skill` | `skills/printing-press/SKILL.md` |
 | Verify/dogfood/scorecard | `scorer` | CLI commands |
 
@@ -437,9 +436,9 @@ fix lands. Don't multi-label.
 **Step A: Cross-API stress test.** Test across API shapes (standard REST, proxy-envelope,
 RPC-style) and input methods (OpenAPI, crowd-sniffed, HAR-sniffed, no spec).
 
-**Step B: Name three concrete APIs from the catalog with direct evidence.** Not "every
+**Step B: Name three concrete APIs from the library with direct evidence.** Not "every
 API with multi-word resources" or "any browser-sniffed CLI." Name three specific APIs
-already in `$PRESS_LIBRARY/` (or the embedded `catalog/` directory) where you
+already in `$PRESS_LIBRARY/` or the public Printing Press Library where you
 can point to evidence the pattern exists: a path in their spec, a known endpoint shape,
 a header the vendor documents, an output you can reproduce. "Stripe, Notion, GitHub
 probably have this" is hand-waving; "Stripe (Stripe-Version header in spec line N),
@@ -583,7 +582,7 @@ Write the full retro document using this template:
 
 ## Session Stats
 - API: <name>
-- Spec source: <catalog/browser-sniffed/docs/HAR>
+- Spec source: <public-library/browser-sniffed/docs/HAR>
 - Scorecard: <score>/100 (<grade>)
 - Verify pass rate: <X>%
 - Fix loops: <N>
@@ -710,8 +709,8 @@ For each "Do" finding or group of related findings:
 ### WU-1: <Title> (from F1, F3, ...)
 - **Priority:** P1 / P2 / P3 *(max priority among absorbed findings — P1 if any
   absorbed finding is P1, else P2 if any is P2, else P3)*
-- **Component:** generator / openapi-parser / spec-parser / scorer / skill / catalog
-  *(must match one of the six fixed component slugs; drives the `comp:*` label
+- **Component:** generator / openapi-parser / spec-parser / scorer / skill
+  *(must match one of the five fixed component slugs; drives the `comp:*` label
   applied to the issue when filed)*
 - **Goal:** One sentence describing the outcome
 - **Target:** <component and area, e.g., "Generator templates in internal/generator/">
@@ -723,10 +722,10 @@ For each "Do" finding or group of related findings:
 - **Complexity:** small / medium / large
 ```
 
-The six fixed component slugs are: `generator` (`internal/generator/`),
+The five fixed component slugs are: `generator` (`internal/generator/`),
 `openapi-parser` (`internal/openapi/`), `spec-parser` (`internal/spec/`),
-`scorer` (verify / dogfood / scorecard), `skill` (`skills/printing-press/SKILL.md`),
-`catalog` (`catalog/`). If a WU genuinely spans two, pick the **primary** one — the
+`scorer` (verify / dogfood / scorecard), and `skill` (`skills/printing-press/SKILL.md`).
+If a WU genuinely spans two, pick the **primary** one — the
 component where the durable fix will land. Pick exactly one; don't multi-label.
 
 **If running from inside the printing-press repo (`IN_REPO=true`):**
@@ -952,7 +951,7 @@ Run artifact-packaging.md Step 7 to delete `$STAGING_DIR`.
 - Be honest about what went well. Protecting good patterns matters.
 - **Default is don't-file.** Bias toward filing only when Phase 3 Step B gave you
   three concrete cross-API examples *with evidence* (not speculation), and the
-  Step G case-against was clearly weaker than the case-for. "20% of catalog"
+  Step G case-against was clearly weaker than the case-for. "20% of the library"
   without named APIs is optimism. "Every API has multi-word resources" is
   hand-waving. The retro is a filter, not a wishlist; an issue overloaded
   with weak findings wastes maintainer attention.

@@ -364,6 +364,7 @@ func TestCheckScorecardDelta(t *testing.T) {
 		}, before)
 		if got == nil {
 			t.Fatal("got nil, want issue")
+			return
 		}
 		if got.AcceptedThinMCP != 2 {
 			t.Errorf("AcceptedThinMCP = %d, want 2", got.AcceptedThinMCP)

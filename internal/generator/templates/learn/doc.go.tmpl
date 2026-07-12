@@ -40,7 +40,7 @@
 //     per (query_pattern, resource_type) tuple. The first teach lands
 //     at confidence=2 (the recall skip floor); re-confirmations bump
 //     confidence. Teach validates resource shape (teach.go, teach_log.go)
-//     and emits warnings to ~/.local/share/<cli>/teach.log when the
+//     and emits warnings to the CLI state directory's teach.log when the
 //     agent taught the wrong shape.
 //
 //  2. Recall. recall.go is the read path. Normalize -> Jaccard ->

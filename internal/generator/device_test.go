@@ -143,7 +143,7 @@ func TestGeneratedBLESkillEmitsCanonicalInstallSection(t *testing.T) {
 	skillSrc, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
 	require.NoError(t, err)
 
-	// Device CLIs carry no catalog category, so the canonical install block uses
+	// Device CLIs carry no public-library category, so the canonical install block uses
 	// the category-agnostic installer path. verify-skill's canonical-sections
 	// check requires this exact block once the printed CLI has a manifest, so the
 	// device SKILL template must emit it just like the HTTP skill.md.tmpl does.
@@ -190,6 +190,7 @@ func TestGeneratedBLEDeviceEmitsMCPSurface(t *testing.T) {
 	goMod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
 	require.NoError(t, err)
 	assert.Contains(t, string(goMod), "github.com/mark3labs/mcp-go")
+	assert.Contains(t, string(goMod), "\ngo "+currentGoDirectiveVersion()+"\n")
 
 	requireGeneratedCompiles(t, outputDir) // builds ./... including the MCP binary
 }

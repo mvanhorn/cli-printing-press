@@ -13,9 +13,6 @@ func TestGenerateXMLResponseParseHelper(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("xml-response")
-	// minimalSpec ships a JSON "items" resource; drop it so the spec is
-	// XML-only and AllResponsesXML() (which gates xml_parse.go emission) is true.
-	delete(apiSpec.Resources, "items")
 	apiSpec.Resources["things"] = spec.Resource{
 		Description: "Things",
 		Endpoints: map[string]spec.Endpoint{
@@ -30,6 +27,7 @@ func TestGenerateXMLResponseParseHelper(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "xml-response-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
+	requireGeneratedCompiles(t, outputDir)
 
 	helper, err := os.ReadFile(filepath.Join(outputDir, "internal", "cliutil", "xml_parse.go"))
 	require.NoError(t, err)
@@ -114,13 +112,7 @@ func TestGenerateJSONOnlyOmitsXMLResponseParseHelper(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "JSON-only CLIs should not emit xml_parse.go")
 }
 
-// TestGenerateMixedXMLJSONOmitsSpecWideXML pins that the spec-wide XML behavior
-// (xml_parse.go, the XML→JSON normalization call site, and the application/xml
-// Accept default) activates only when every endpoint is XML. A mixed spec — one
-// XML endpoint plus minimalSpec's JSON "items" endpoint — must not emit the
-// normalizer or flip the global Accept default, so its JSON endpoints are never
-// forced to application/xml or run through XMLToJSON.
-func TestGenerateMixedXMLJSONOmitsSpecWideXML(t *testing.T) {
+func TestGenerateMixedXMLJSONScopesNormalizationToXMLRequests(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("mixed-xml-json")
@@ -136,18 +128,17 @@ func TestGenerateMixedXMLJSONOmitsSpecWideXML(t *testing.T) {
 		},
 	}
 	require.True(t, apiSpec.HasXMLResponse(), "fixture should have an XML endpoint")
-	require.False(t, apiSpec.AllResponsesXML(), "fixture is mixed, not XML-only")
 
 	outputDir := filepath.Join(t.TempDir(), "mixed-xml-json-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	_, err := os.Stat(filepath.Join(outputDir, "internal", "cliutil", "xml_parse.go"))
-	require.True(t, os.IsNotExist(err), "mixed XML/JSON specs should not emit xml_parse.go")
+	require.NoError(t, err, "mixed XML/JSON specs need the XML normalizer")
 
 	client, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
-	require.NotContains(t, string(client), "cliutil.XMLToJSON",
-		"mixed specs should not normalize responses spec-wide")
+	require.Contains(t, string(client), `isXMLRequest(req.Header.Get("Accept")) && isXMLResponseContentType`,
+		"mixed specs should scope normalization to each XML request")
 	require.NotContains(t, string(client), `req.Header.Set("Accept", "application/xml")`,
 		"mixed specs should keep the application/json Accept default")
 }

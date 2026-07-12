@@ -86,11 +86,6 @@ type FreshnessResult struct {
 
 // RunVerify executes the runtime verification pipeline.
 func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
-	releaseHome, err := scopeSubprocessHome()
-	if err != nil {
-		return nil, err
-	}
-	defer releaseHome()
 	// Keep this boundary safe for programmatic callers; CLI commands also
 	// normalize earlier when they need the stable path for follow-on argv.
 	absDir, err := filepath.Abs(cfg.Dir)
@@ -98,6 +93,11 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		return nil, fmt.Errorf("resolving CLI directory: %w", err)
 	}
 	cfg.Dir = absDir
+	releaseHome, err := scopeSubprocessHome(findCLINames(cfg.Dir)...)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
 	if cfg.NoSpec {
 		return runStructuralVerify(cfg)
 	}
@@ -618,6 +618,12 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 		if !cliHasSyncCommand(cliDir) {
 			return true, "SKIP (CLI has no sync command)"
 		}
+		if !cliHasLocalStore(cliDir) {
+			return true, "SKIP (CLI has no local store)"
+		}
+		if mode == "mock" && cliIsGraphQLCLIDir(cliDir) {
+			return true, "SKIP (GraphQL CLI: mock server cannot synthesize sync data)"
+		}
 	}
 
 	env := envFn()
@@ -641,13 +647,27 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
-		// Sync might not accept --db flag - try without.
+		// Sync might not accept --resources or --full; keep --db when
+		// possible so downstream sql probes read the same temporary store.
+		syncErr = runCLI(binary, []string{"sync", "--db", dbPath}, env, 30*time.Second)
+	}
+	if syncErr != nil {
+		syncErrors = append(syncErrors, syncErr)
+		// Sync might not accept --db either; try the bare command before
+		// deciding the pipeline crashed.
 		syncErr = runCLI(binary, []string{"sync", "--full"}, env, 30*time.Second)
+	}
+	if syncErr != nil {
+		syncErrors = append(syncErrors, syncErr)
+		syncErr = runCLI(binary, []string{"sync"}, env, 30*time.Second)
 	}
 	if syncErr != nil {
 		syncErrors = append(syncErrors, syncErr)
 		if allSyncAttemptsWereUnknownCommand(syncErrors) {
 			return true, "WARN: no sync command — data-pipeline check skipped"
+		}
+		if flag, ok := firstUnknownSyncFlag(syncErrors); ok {
+			return false, fmt.Sprintf("FAIL: sync rejected flag %s", flag)
 		}
 		return false, "FAIL: sync crashed"
 	}
@@ -667,6 +687,9 @@ func runDataPipelineTest(binary, cliDir, mode string, envFn func() []string, exp
 		// No domain tables found — ambiguous (could be minimal CLI or unusual naming).
 		// Don't fail the pipeline gate; report for human review.
 		return true, "WARN: sync completed but no domain tables found in sqlite_master"
+	}
+	if mode == "mock" && strings.TrimSpace(cliDir) != "" && !cliHasSyncableResources(cliDir) {
+		return true, fmt.Sprintf("PASS: %d domain tables created (mock mode; no syncable resources declared)", len(tables))
 	}
 
 	var bestShortTable string
@@ -726,13 +749,53 @@ func allSyncAttemptsWereUnknownCommand(errs []error) bool {
 	return true
 }
 
+func cliIsGraphQLCLIDir(dir string) bool {
+	return fileExists(filepath.Join(dir, "internal", "client", "graphql.go"))
+}
+
 func isUnknownSyncCommandError(err error) bool {
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "unknown command \"sync\"")
 }
 
+func firstUnknownSyncFlag(errs []error) (string, bool) {
+	for _, err := range errs {
+		if flag, ok := unknownSyncFlag(err); ok {
+			return flag, true
+		}
+	}
+	return "", false
+}
+
+func unknownSyncFlag(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{"unknown flag: ", "unknown shorthand flag: "} {
+		if _, after, ok := strings.Cut(text, marker); ok {
+			flag := strings.Fields(after)
+			if len(flag) > 0 {
+				return flag[0], true
+			}
+			return "", false
+		}
+	}
+	return "", false
+}
+
 func cliHasSyncCommand(cliDir string) bool {
 	return hasRegisteredCommandFileWithPrefix(filepath.Join(cliDir, "internal", "cli"), "sync")
+}
+
+func cliHasLocalStore(cliDir string) bool {
+	return fileExists(filepath.Join(cliDir, "internal", "store", "store.go"))
+}
+
+func cliHasSyncableResources(cliDir string) bool {
+	content := readAllGoFiles(filepath.Join(cliDir, "internal", "cli"))
+	content += readAllGoFiles(filepath.Join(cliDir, "internal", "store"))
+	return hasNonEmptySyncResources(content)
 }
 
 func isAuxiliaryPipelineTable(table string, totalTables int) bool {

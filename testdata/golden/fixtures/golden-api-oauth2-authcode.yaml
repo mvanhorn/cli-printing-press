@@ -1,0 +1,47 @@
+openapi: "3.0.3"
+info:
+  title: Printing Press OAuth2 AuthCode API
+  version: "1.0.0"
+  description: Purpose-built fixture for the OAuth2 authorization_code + PKCE auth shape.
+servers:
+  - url: https://api.authcode.example/v1
+security:
+  - OAuth2AuthCode: []
+components:
+  securitySchemes:
+    # authorizationCode flow declared. The OpenAPI parser detects this
+    # branch and sets AuthConfig.OAuth2Grant=authorization_code with
+    # AuthorizationURL + TokenURL, which gates generator template
+    # selection onto auth.go.tmpl (the browser loopback login flow).
+    OAuth2AuthCode:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.authcode.example/oauth/authorize
+          tokenUrl: https://accounts.authcode.example/oauth/token
+          scopes:
+            read: Read access
+            write: Write access
+  schemas:
+    Item:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+paths:
+  /items:
+    get:
+      tags: [items]
+      operationId: listItems
+      summary: List items
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"

@@ -19,15 +19,14 @@ func newItemsEnterpriseCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  tier-routing-golden-pp-cli items enterprise",
 		Annotations: map[string]string{"pp:endpoint": "items.enterprise", "pp:method": "GET", "pp:path": "/items/enterprise", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			path := "/items/enterprise"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 			c = c.WithTier("enterprise")
-
-			path := "/items/enterprise"
 			params := map[string]string{}
-			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "items", false, path, params, nil, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "items", false, path, params, nil, "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -72,7 +71,7 @@ func newItemsEnterpriseCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"})
 		},
 	}
 

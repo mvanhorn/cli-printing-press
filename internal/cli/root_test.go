@@ -85,6 +85,17 @@ func TestRootCommandCanUseLegacyBinaryName(t *testing.T) {
 	require.Equal(t, LegacyBinaryName, cmd.Use)
 }
 
+func TestRootCommandDoesNotExposeCatalog(t *testing.T) {
+	cmd := NewRootCommand("")
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"catalog"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `unknown command "catalog"`)
+}
+
 func TestVersionCommandPrintsSelectedBinaryName(t *testing.T) {
 	cmd := NewRootCommand(CanonicalBinaryName)
 	var stdout bytes.Buffer

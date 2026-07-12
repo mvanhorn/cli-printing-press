@@ -14,7 +14,7 @@ func new{{cmdIdent .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 {{- if .Hidden}}
 		Hidden: true,
 {{- end}}
-		Annotations: map[string]string{"mcp:read-only": "true"},
+		Annotations: map[string]string{"mcp:read-only": "true", "pp:typed-exit-codes": "0,2"},
 		RunE: parentNoSubcommandRunE(flags),
 	}
 {{range $eName, $endpoint := .Resource.Endpoints}}

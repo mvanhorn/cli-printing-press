@@ -3,7 +3,7 @@
 # (EXAMPLE-* ticker, ALPHA/BRAVO entities) so scripts/verify-learn-purity.sh
 # stays green. Without the learn-block emission path, every artifact below
 # would regress to the non-learn shape — no internal/learn/ tree, no
-# teach/recall/learnings commands, no v3 store schema, no self-learning
+# teach/recall/learnings commands, no v9 store schema, no self-learning
 # sections in README.md / SKILL.md / AGENTS.md.
 
 # Provenance manifest: slug, mcp binary name, mcp tool counts.
@@ -17,10 +17,13 @@ learn-loop-example/manifest.json
 # this file, the bodies of both functions would regress to defaults.
 learn-loop-example/internal/cli/learn_init.go
 
-# Teach / recall / learnings commands: the 6 cobra commands the loop
-# exposes when learn.enabled is true. Locks the command surface so a
-# template regression (skip emission, rename a subcommand) is caught.
+# Teach / recall / learnings commands: the cobra commands the loop
+# exposes when learn.enabled is true, including candidate judgment and
+# stats surfaces. Locks the command surface so a template regression
+# (skip emission, rename a subcommand) is caught.
 learn-loop-example/internal/cli/teach.go
+learn-loop-example/internal/cli/learnings_candidates.go
+learn-loop-example/internal/cli/learnings_stats.go
 
 # Root wiring: --no-learn persistent flag + learn-conditional command
 # registrations + learnHookSkipList. If learn-conditional registration
@@ -28,11 +31,13 @@ learn-loop-example/internal/cli/teach.go
 # this file.
 learn-loop-example/internal/cli/root.go
 
-# Store schema v3: StoreSchemaVersion = 3 + CREATE TABLE statements for
-# search_patterns, entity_lookups, teach_log_metadata. The additive
-# v2 -> v3 migration is the contract every learn-enabled CLI inherits.
+# Store schema v9: StoreSchemaVersion = 9 + CREATE TABLE statements for
+# search_patterns, entity_lookups, teach_log_metadata, learning_playbooks,
+# learn_candidates, and learn_events.
 learn-loop-example/internal/store/store.go
 learn-loop-example/internal/store/extras.go
+learn-loop-example/internal/store/candidates.go
+learn-loop-example/internal/store/events.go
 
 # Apply engine: the rerank orchestrator ported from prediction-goat.
 # Includes Apply / Upsert / List / Forget / store-side Recall on *Store,
@@ -44,12 +49,17 @@ learn-loop-example/internal/store/learnings_test.go
 
 # Learn package shape — one representative file per subpackage so a
 # template rename / signature change in any subpackage trips the gate:
-#   - internal/learn (top-level): recall.go is the read-path entrypoint
+#   - internal/learn (top-level): recall.go is the read-path entrypoint;
+#     journal/derive/synthesize/protocol pin the self-healing loop
 #   - internal/learn/entities: extract.go is the per-token extractor
 #   - internal/learn/lookups: seeds.go carries SeedFromConfig, the
 #     entrypoint the spec-driven learn_init.go calls
 #   - internal/learn/patterns: apply.go is the generalization engine
 learn-loop-example/internal/learn/recall.go
+learn-loop-example/internal/learn/journal.go
+learn-loop-example/internal/learn/derive.go
+learn-loop-example/internal/learn/synthesize.go
+learn-loop-example/internal/learn/protocol.go
 learn-loop-example/internal/learn/entities/extract.go
 learn-loop-example/internal/learn/lookups/seeds.go
 learn-loop-example/internal/learn/patterns/apply.go

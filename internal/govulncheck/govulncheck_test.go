@@ -25,16 +25,16 @@ func TestGoRunArgsUsesDefaultMode(t *testing.T) {
 
 func TestToolchainEnvPrefersToolchainDirective(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.25.0\ntoolchain go1.26.4\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.25.0\ntoolchain go1.26.5\n"), 0o644))
 
-	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.4"}, ToolchainEnv(dir))
+	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.5"}, ToolchainEnv(dir))
 }
 
 func TestToolchainEnvFallsBackToPatchLevelGoDirective(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.4\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.5\n"), 0o644))
 
-	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.4"}, ToolchainEnv(dir))
+	assert.Equal(t, []string{"GOTOOLCHAIN=go1.26.5"}, ToolchainEnv(dir))
 }
 
 func TestToolchainEnvIgnoresLanguageOnlyGoDirective(t *testing.T) {

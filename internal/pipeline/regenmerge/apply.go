@@ -69,6 +69,10 @@ func Apply(report *MergeReport, opts Options) error {
 		cleanup()
 		return fmt.Errorf("deep-copy to tempdir: %w", err)
 	}
+	if err := preserveGitMetadata(cliDir, tempDir); err != nil {
+		cleanup()
+		return fmt.Errorf("preserving git metadata: %w", err)
+	}
 
 	// Apply file-level changes from the report.
 	for i := range report.Files {
@@ -221,6 +225,40 @@ func assertGitClean(dir string) error {
 	}
 	if len(out) > 0 {
 		return fmt.Errorf("git tree at %s has uncommitted changes; commit/stash first or pass --force:\n%s", dir, out)
+	}
+	return nil
+}
+
+func preserveGitMetadata(srcDir, dstDir string) error {
+	for _, name := range []string{".git", ".gitmodules"} {
+		src := filepath.Join(srcDir, name)
+		dst := filepath.Join(dstDir, name)
+		info, err := os.Lstat(src)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", name, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink; refusing to preserve git metadata through regen-merge", src)
+		}
+		if info.IsDir() {
+			if err := pipeline.CopyDir(src, dst); err != nil {
+				return fmt.Errorf("copy %s directory: %w", name, err)
+			}
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file or directory", src)
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+		if err := os.WriteFile(dst, data, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
 	}
 	return nil
 }

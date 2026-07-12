@@ -52,6 +52,25 @@ const (
 	// fire for multi-entity queries where each individual entity resolves
 	// unambiguously even if the union spans multiple canonicals.
 	WarningAmbiguousAlias = "ambiguous_alias"
+	// TopWarningLookupRefreshAvailable surfaces when a cold recall
+	// carries a query entity with no entity_lookups row under ANY
+	// source (taught / inferred / synced / seeded). Stateless: no
+	// candidate row or table write backs the warning itself — the text
+	// tells the agent to run `sync`, whose post-sync lookup-refresh
+	// scanner derives rows (source='synced') from already-synced local
+	// data for entities recorded as recall lookup misses. Emitted as
+	// "lookup_refresh_available:<entity> (run sync to refresh entity
+	// lookups)" — one per unresolvable entity — and disappears on its
+	// own once the entity resolves.
+	TopWarningLookupRefreshAvailable = "lookup_refresh_available"
+	// TopWarningCandidatesPresent surfaces exactly when the envelope's
+	// `candidates` array is non-empty: quarantined auto-captured
+	// candidates rode along for this query, each carrying a two-step
+	// byte-exact next_action (try the candidate, then
+	// `learnings confirm <id>`). With nothing open the warning is
+	// absent AND the candidates key is omitted entirely, keeping the
+	// envelope byte-stable for stores with nothing pending.
+	TopWarningCandidatesPresent = "candidates_present"
 )
 
 // Jaccard returns the token-set Jaccard coefficient of two string

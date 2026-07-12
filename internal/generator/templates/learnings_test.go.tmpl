@@ -50,7 +50,7 @@ func TestUpsertLearning_InsertsAndBumpsConfidence(t *testing.T) {
 		ResourceType: "markets",
 		Source:       store.LearningSourceTaught,
 	}
-	id1, created, err := s.UpsertLearning(in)
+	id1, created, err := s.UpsertLearning(context.Background(), in)
 	if err != nil {
 		t.Fatalf("upsert 1: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestUpsertLearning_InsertsAndBumpsConfidence(t *testing.T) {
 		t.Fatalf("first upsert should be inserted; created=%v id=%d", created, id1)
 	}
 
-	id2, created, err := s.UpsertLearning(in)
+	id2, created, err := s.UpsertLearning(context.Background(), in)
 	if err != nil {
 		t.Fatalf("upsert 2: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestUpsertLearning_InsertsAndBumpsConfidence(t *testing.T) {
 		t.Fatalf("re-teach should preserve row id; got %d, want %d", id2, id1)
 	}
 
-	rows, err := s.ListLearnings(store.ListLearningsFilter{Query: "portugal"})
+	rows, err := s.ListLearnings(context.Background(), store.ListLearningsFilter{Query: "portugal"})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -86,14 +86,14 @@ func TestUpsertLearning_InsertsAndBumpsConfidence(t *testing.T) {
 func TestUpsertLearning_NormalizesQueryAcrossVariants(t *testing.T) {
 	s := openLearnings(t)
 	// Two different phrasings should collapse to the same row.
-	_, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	_, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:      "What are the odds Portugal wins?",
 		ResourceID: "KXMENWORLDCUP-26-PT",
 	})
 	if err != nil {
 		t.Fatalf("upsert 1: %v", err)
 	}
-	_, created, err := s.UpsertLearning(store.UpsertLearningInput{
+	_, created, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:      "portugal wins",
 		ResourceID: "KXMENWORLDCUP-26-PT",
 	})
@@ -103,7 +103,7 @@ func TestUpsertLearning_NormalizesQueryAcrossVariants(t *testing.T) {
 	if created {
 		t.Fatalf("normalized variant should hit existing row, not insert")
 	}
-	rows, _ := s.ListLearnings(store.ListLearningsFilter{})
+	rows, _ := s.ListLearnings(context.Background(), store.ListLearningsFilter{})
 	if len(rows) != 1 {
 		t.Fatalf("want 1 row after normalized re-teach, got %d", len(rows))
 	}
@@ -111,29 +111,29 @@ func TestUpsertLearning_NormalizesQueryAcrossVariants(t *testing.T) {
 
 func TestUpsertLearning_RejectsEmptyResourceOrQuery(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{Query: "x", ResourceID: ""}); err == nil {
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{Query: "x", ResourceID: ""}); err == nil {
 		t.Errorf("want error for empty resource_id")
 	}
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{Query: "what is", ResourceID: "X"}); err == nil {
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{Query: "what is", ResourceID: "X"}); err == nil {
 		t.Errorf("want error when query normalizes to empty")
 	}
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{Query: "x", ResourceID: "X", Action: "bogus"}); err == nil {
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{Query: "x", ResourceID: "X", Action: "bogus"}); err == nil {
 		t.Errorf("want error for invalid action")
 	}
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{Query: "x", ResourceID: "X", Action: store.LearningActionAlias}); err == nil {
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{Query: "x", ResourceID: "X", Action: store.LearningActionAlias}); err == nil {
 		t.Errorf("want error when alias action lacks target")
 	}
 }
 
 func TestRecall_ExactAndJaccardMatch(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:      "portugal world cup odds",
 		ResourceID: "KXMENWORLDCUP-26-PT",
 	}); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:      "portugal world cup odds",
 		ResourceID: "will-portugal-win-the-2026-fifa-world-cup-912",
 	}); err != nil {
@@ -175,7 +175,7 @@ func TestRecall_ExactAndJaccardMatch(t *testing.T) {
 
 func TestRecall_StopwordSymmetry(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:      "what are portugal's odds",
 		ResourceID: "KXMENWORLDCUP-26-PT",
 	}); err != nil {
@@ -194,7 +194,7 @@ func TestRecall_StopwordSymmetry(t *testing.T) {
 
 func TestRecall_MinConfidenceAndLimit(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:      "portugal world cup",
 		ResourceID: "A",
 	}); err != nil {
@@ -203,7 +203,7 @@ func TestRecall_MinConfidenceAndLimit(t *testing.T) {
 	// Per U4: first teach lands at conf=2. Two teaches on B bumps to 3.
 	// A stays at 2. min-confidence=3 isolates B.
 	for i := 0; i < 2; i++ {
-		if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+		if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 			Query:      "portugal world cup",
 			ResourceID: "B",
 		}); err != nil {
@@ -221,7 +221,7 @@ func TestRecall_MinConfidenceAndLimit(t *testing.T) {
 
 	// Limit 1 should cap.
 	for i := 0; i < 3; i++ {
-		if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+		if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 			Query:      "portugal world cup",
 			ResourceID: "C" + string(rune('0'+i)),
 		}); err != nil {
@@ -237,7 +237,7 @@ func TestRecall_MinConfidenceAndLimit(t *testing.T) {
 func TestForgetLearnings(t *testing.T) {
 	s := openLearnings(t)
 	for _, rid := range []string{"X", "Y", "Z"} {
-		if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+		if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 			Query:      "portugal world cup",
 			ResourceID: rid,
 		}); err != nil {
@@ -246,12 +246,12 @@ func TestForgetLearnings(t *testing.T) {
 	}
 
 	// Without --all / --resource / --action, refuse.
-	if _, err := s.ForgetLearnings(store.ForgetLearningsFilter{Query: "portugal world cup"}); err == nil {
+	if _, err := s.ForgetLearnings(context.Background(), store.ForgetLearningsFilter{Query: "portugal world cup"}); err == nil {
 		t.Errorf("want error when no filter provided")
 	}
 
 	// Targeted delete by resource.
-	n, err := s.ForgetLearnings(store.ForgetLearningsFilter{Query: "portugal world cup", ResourceID: "Y"})
+	n, err := s.ForgetLearnings(context.Background(), store.ForgetLearningsFilter{Query: "portugal world cup", ResourceID: "Y"})
 	if err != nil {
 		t.Fatalf("forget Y: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestForgetLearnings(t *testing.T) {
 	}
 
 	// Wipe the rest.
-	n, err = s.ForgetLearnings(store.ForgetLearningsFilter{Query: "portugal world cup", All: true})
+	n, err = s.ForgetLearnings(context.Background(), store.ForgetLearningsFilter{Query: "portugal world cup", All: true})
 	if err != nil {
 		t.Fatalf("forget all: %v", err)
 	}
@@ -343,7 +343,7 @@ func (a *stubApplier) ReplaceHit(srcType, srcID, dstType, dstID string) error {
 
 func TestApply_BoostMovesExistingHitToFront(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:        "portugal world cup",
 		ResourceID:   "KXMENWORLDCUP-26-PT",
 		ResourceType: "markets",
@@ -371,7 +371,7 @@ func TestApply_BoostMovesExistingHitToFront(t *testing.T) {
 
 func TestApply_BoostInsertsSyntheticLearnedHit(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:        "portugal world cup",
 		ResourceID:   "KXMENWORLDCUP-26-PT",
 		ResourceType: "markets",
@@ -396,7 +396,7 @@ func TestApply_BoostInsertsSyntheticLearnedHit(t *testing.T) {
 
 func TestApply_HideRemoves(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:        "portugal world cup",
 		ResourceID:   "KXFUSION",
 		ResourceType: "series",
@@ -425,7 +425,7 @@ func TestApply_HideRemoves(t *testing.T) {
 
 func TestApply_AliasReplaces(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:        "portugal world cup",
 		ResourceID:   "OLD",
 		ResourceType: "markets",
@@ -448,7 +448,7 @@ func TestApply_AliasReplaces(t *testing.T) {
 
 func TestApply_AliasCycleIsDropped(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:        "portugal world cup",
 		ResourceID:   "A",
 		ResourceType: "markets",
@@ -457,7 +457,7 @@ func TestApply_AliasCycleIsDropped(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert A->B: %v", err)
 	}
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:        "portugal world cup",
 		ResourceID:   "B",
 		ResourceType: "markets",
@@ -489,7 +489,7 @@ func TestApply_AliasCycleIsDropped(t *testing.T) {
 func TestApply_SubstringMatchOnQueryPattern(t *testing.T) {
 	s := openLearnings(t)
 	// Rule keyed on "bitcoin" alone.
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:        "bitcoin",
 		ResourceID:   "KXBTCMAX100",
 		ResourceType: "series",
@@ -514,7 +514,7 @@ func TestApply_SubstringMatchOnQueryPattern(t *testing.T) {
 
 func TestApply_NormalizationAtApplyTime(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:        "Portugal World Cup",
 		ResourceID:   "KXMENWORLDCUP-26-PT",
 		ResourceType: "markets",
@@ -536,14 +536,14 @@ func TestApply_NormalizationAtApplyTime(t *testing.T) {
 
 func TestListLearnings_FiltersByQueryAndSource(t *testing.T) {
 	s := openLearnings(t)
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:      "portugal world cup",
 		ResourceID: "A",
 		Source:     store.LearningSourceTaught,
 	}); err != nil {
 		t.Fatalf("upsert A: %v", err)
 	}
-	if _, _, err := s.UpsertLearning(store.UpsertLearningInput{
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
 		Query:      "lakers tonight",
 		ResourceID: "B",
 		Source:     store.LearningSourceTaught,
@@ -551,7 +551,7 @@ func TestListLearnings_FiltersByQueryAndSource(t *testing.T) {
 		t.Fatalf("upsert B: %v", err)
 	}
 
-	rows, err := s.ListLearnings(store.ListLearningsFilter{Query: "portugal"})
+	rows, err := s.ListLearnings(context.Background(), store.ListLearningsFilter{Query: "portugal"})
 	if err != nil {
 		t.Fatalf("list portugal: %v", err)
 	}
@@ -559,8 +559,69 @@ func TestListLearnings_FiltersByQueryAndSource(t *testing.T) {
 		t.Errorf("filter by query failed: %#v", rows)
 	}
 
-	rows, _ = s.ListLearnings(store.ListLearningsFilter{Source: store.LearningSourceTaught})
+	rows, _ = s.ListLearnings(context.Background(), store.ListLearningsFilter{Source: store.LearningSourceTaught})
 	if len(rows) != 2 {
 		t.Errorf("filter by source: want 2, got %d", len(rows))
+	}
+}
+
+func TestNormalizeQuery_SameReferentSynonymsFold(t *testing.T) {
+	cases := []struct {
+		a, b string
+	}{
+		// Multiword variant vs canonical, with punctuation noise.
+		{"why did x win last night?", "why did x win yesterday"},
+		// Spelling variants.
+		{"plans for tonite", "plans for tonight"},
+		{"report for to-day", "report for today"},
+	}
+	for _, tc := range cases {
+		ga, gb := store.NormalizeQuery(tc.a), store.NormalizeQuery(tc.b)
+		if ga != gb || ga == "" {
+			t.Errorf("write-side fold broken: NormalizeQuery(%q)=%q vs NormalizeQuery(%q)=%q",
+				tc.a, ga, tc.b, gb)
+		}
+	}
+}
+
+func TestNormalizeQuery_TonightDoesNotFoldToYesterday(t *testing.T) {
+	got := store.NormalizeQuery("who wins tonight")
+	if got != "who wins tonight" {
+		t.Errorf("NormalizeQuery = %q, want %q (same-referent only, never across day boundaries)",
+			got, "who wins tonight")
+	}
+}
+
+func TestRegisterQuerySynonyms_DeclaredFoldsUndeclaredDoesNot(t *testing.T) {
+	// Uses a vocabulary no other test touches; registration is
+	// process-wide and additive by design (one-shot at CLI startup).
+	store.RegisterQuerySynonyms(map[string]string{"foo bar": "baz"})
+	if got, want := store.NormalizeQuery("check foo bar now"), store.NormalizeQuery("check baz now"); got != want {
+		t.Errorf("declared pair should fold: %q vs %q", got, want)
+	}
+	if got := store.NormalizeQuery("check foo qux now"); got != "check foo qux now" {
+		t.Errorf("undeclared pair must not fold: got %q", got)
+	}
+}
+
+func TestUpsertAndRecall_SynonymPhrasingSymmetry(t *testing.T) {
+	s := openLearnings(t)
+	// Teach with phrasing A ("last night"), recall with phrasing B
+	// ("yesterday"): the write-side fold keys the row under the
+	// canonical form, so the read-side fold finds it as an exact
+	// pattern match.
+	if _, _, err := s.UpsertLearning(context.Background(), store.UpsertLearningInput{
+		Query:      "why did x win last night",
+		ResourceID: "resource-1",
+		Source:     store.LearningSourceTaught,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	matches, err := s.Recall(context.Background(), "why did x win yesterday", store.RecallOptions{})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(matches) != 1 || matches[0].ResourceID != "resource-1" {
+		t.Fatalf("phrasing B must recall phrasing A's learning; got %+v", matches)
 	}
 }

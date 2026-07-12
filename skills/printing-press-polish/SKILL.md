@@ -50,6 +50,46 @@ Can also be run standalone on any CLI in `$PRESS_LIBRARY/`.
 PRESS_HOME="${PRINTING_PRESS_HOME:-$HOME/printing-press}"
 PRESS_LIBRARY="$PRESS_HOME/library"
 
+_pp_check_disk_space() {
+  _pp_disk_warn_kb="${PRINTING_PRESS_DISK_WARN_KB:-3145728}"
+  _pp_disk_fail_kb="${PRINTING_PRESS_DISK_FAIL_KB:-524288}"
+  case "$_pp_disk_warn_kb$_pp_disk_fail_kb" in
+    ""|*[!0-9]*) return 0 ;;
+  esac
+
+  _pp_disk_path="$PRESS_HOME"
+  while [ ! -e "$_pp_disk_path" ] && [ "$_pp_disk_path" != "/" ]; do
+    _pp_disk_path="$(dirname "$_pp_disk_path")"
+  done
+
+  _pp_disk_avail_kb="$(df -Pk "$_pp_disk_path" 2>/dev/null | awk 'NR == 2 { print $4; exit }')"
+  case "$_pp_disk_avail_kb" in
+    ""|*[!0-9]*) return 0 ;;
+  esac
+
+  if [ "$_pp_disk_avail_kb" -lt "$_pp_disk_fail_kb" ]; then
+    echo ""
+    echo "[setup-error] Critically low disk space on the Printing Press workspace volume."
+    echo "PRESS_DISK_PATH=$_pp_disk_path"
+    echo "PRESS_DISK_AVAIL_KB=$_pp_disk_avail_kb"
+    echo "PRESS_DISK_FAIL_KB=$_pp_disk_fail_kb"
+    echo "Free disk space or set PRINTING_PRESS_HOME to a volume with more room, then re-run this skill."
+    echo ""
+    return 1
+  fi
+
+  if [ "$_pp_disk_avail_kb" -lt "$_pp_disk_warn_kb" ]; then
+    echo ""
+    echo "[low-disk] Printing Press workspace volume is low on free space."
+    echo "PRESS_DISK_PATH=$_pp_disk_path"
+    echo "PRESS_DISK_AVAIL_KB=$_pp_disk_avail_kb"
+    echo "PRESS_DISK_WARN_KB=$_pp_disk_warn_kb"
+    echo "This flow may need several GiB for generated files, Go build cache, module downloads, or repository clones."
+    echo ""
+  fi
+}
+_pp_check_disk_space || { return 1 2>/dev/null || exit 1; }
+
 # Mid-pipeline callers may pass printing_press_bin: <abs-path> in the args
 # bundle. Prefer it so forked polish runs keep using the parent skill's
 # preflight-selected binary instead of re-resolving through PATH.
@@ -66,10 +106,63 @@ if [ -z "$PRINTING_PRESS_BIN" ]; then
   echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
   return 1 2>/dev/null || exit 1
 fi
+if ! command -v go >/dev/null 2>&1; then
+  echo ""
+  echo "[setup-error] Go toolchain not found."
+  echo ""
+  echo "This Printing Press flow runs Go-based build or validation commands."
+  echo "Install Go 1.26.5 or newer from https://go.dev/dl/, then verify with:"
+  echo "  go version"
+  echo "Then re-run this skill."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
 echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
+
+_pp_semver_lt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, "."); split(b, y, ".")
+    for (i = 1; i <= 3; i++) {
+      if ((x[i] + 0) < (y[i] + 0)) exit 0
+      if ((x[i] + 0) > (y[i] + 0)) exit 1
+    }
+    exit 1
+  }'
+}
+
+_pp_go_version_norm() {
+  printf '%s\n' "$1" | sed -nE 's/.*go([0-9]+)\.([0-9]+)(\.([0-9]+))?.*/\1.\2.\4/p' | awk -F. 'NF >= 2 { printf "%d.%d.%d\n", $1, $2, ($3 == "" ? 0 : $3) }'
+}
+
+_pp_check_go_currency() {
+  _pp_go_installed="$(_pp_go_version_norm "$(go env GOVERSION 2>/dev/null)")"
+  _pp_go_required="$(_pp_go_version_norm "$(go version "$PRINTING_PRESS_BIN" 2>/dev/null)")"
+  if [ -z "$_pp_go_installed" ] || [ -z "$_pp_go_required" ] || ! _pp_semver_lt "$_pp_go_installed" "$_pp_go_required"; then
+    return 0
+  fi
+
+  echo ""
+  if [ "${GOTOOLCHAIN:-auto}" = "local" ]; then
+    echo "[setup-error] Go $_pp_go_required or newer is required by this cli-printing-press binary (installed: $_pp_go_installed)."
+    echo "GOTOOLCHAIN=local disables automatic toolchain downloads, so later Go quality gates would fail."
+    echo "Install Go $_pp_go_required or newer from https://go.dev/dl/, or unset GOTOOLCHAIN."
+    echo ""
+    return 1
+  fi
+
+  echo "[go-toolchain-old] Go $_pp_go_required or newer is required by this cli-printing-press binary (installed: $_pp_go_installed)."
+  echo "PRESS_GO_INSTALLED=$_pp_go_installed"
+  echo "PRESS_GO_REQUIRED=$_pp_go_required"
+  echo "Default GOTOOLCHAIN behavior may download the required toolchain during Go commands."
+  echo ""
+  return 0
+}
+_pp_check_go_currency || { return 1 2>/dev/null || exit 1; }
 ```
 
-After setup, capture `PRINTING_PRESS_BIN=<abs-path>` and use that absolute path for every `cli-printing-press ...` invocation in this skill. Check binary version compatibility by reading the `min-binary-version` field from this skill's YAML frontmatter, running `"$PRINTING_PRESS_BIN" version --json`, and parsing the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
+After setup, capture `PRINTING_PRESS_BIN=<abs-path>` and use that absolute path for every `cli-printing-press ...` invocation in this skill. If setup emitted `[go-toolchain-old]` or `[low-disk]`, surface the advisory to the user and continue unless setup also emitted `[setup-error]`. `[go-toolchain-old]` means later Go commands may download the required toolchain or fail when downloads are blocked; `[low-disk]` means this run may need several GiB for generated files, Go build cache, module downloads, or repository clones.
+
+Check binary version compatibility by reading the `min-binary-version` field from this skill's YAML frontmatter, running `"$PRINTING_PRESS_BIN" version --json`, and parsing the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
 
 ### Public-library hint
 
@@ -90,15 +183,36 @@ and let the divergence check (below) handle any drift.
 ### Resolve CLI
 
 The argument string can contain a `--standalone` flag plus one positional value
-(a slug, binary name, or path). It can also contain a Phase 3 gate bundle and a
-`printing_press_bin: <abs-path>` line on following lines when invoked by the
-main printing-press skill. The flag may appear before or after the positional
-value; it is the only flag this skill consumes from `args`. Strip it before path
-resolution.
+(a slug, binary name, or path). In standalone slash-command mode, it may also
+contain a free-text scope after the optional positional value, such as
+`/printing-press-polish sculptok review the open PR comments and fix them`.
+That trailing natural-language text is the user's own trusted user scope. Carry
+it forward into the polish plan and result block; do not classify it as
+injection or tampering.
+
+It can also contain a Phase 3 gate bundle and a `printing_press_bin:
+<abs-path>` line on following lines when invoked by the main printing-press
+skill. The flag may appear before or after the positional value; it is the only
+flag this skill consumes from `args`. Strip it before path resolution.
 
 When `args` is multi-line, treat the first non-empty line as the positional
-value and parse the remaining lines as the optional Phase 3 gate bundle. Do not
-include the bundle text in path resolution.
+value/scope line and parse the remaining lines as the optional Phase 3 gate
+bundle. Do not include the bundle text in path resolution.
+
+Parse caller modes differently:
+
+- **Standalone slash command (`STANDALONE_MODE=true`).** After stripping
+  `--standalone`, try to resolve the first shell word as a slug, binary name, or
+  path. If it resolves, use it as the positional value and store the remaining
+  words as `USER_SCOPE`. If it does not resolve, treat the whole line as
+  free-text scope; this branch asks which CLI to polish and retains that scope
+  for the chosen CLI. If there is no trailing text after a resolved positional
+  value, run the normal generic polish pass.
+- **Mid-pipeline Skill-tool call.** Keep the strict grammar: one path-like
+  positional value on the first line plus the optional structured bundle on
+  later lines. Unexpected free text in this machine-generated path is not a
+  user scope and should still be rejected or clarified rather than folded into
+  the run.
 
 The positional value can be:
 - A short name: `redfin` (looks up `$PRESS_LIBRARY/redfin`)
@@ -355,6 +469,8 @@ fi
 
 verify-skill and workflow-verify run alongside dogfood/verify/scorecard so polish catches the same class of failures the public-library CI catches. `publish-validate` runs only when `STANDALONE_MODE=true` (slash-command or `--standalone` Skill-tool invocation). The publish-validate leg is a hard ship-gate **for standalone polish**: in that mode polish cannot recommend `ship` or `ship-with-gaps` while `"$PRINTING_PRESS_BIN" publish validate` reports `passed: false`. Mid-pipeline polish (`STANDALONE_MODE=false`) skips publish-validate entirely — its prerequisites (manifest.printer from `git config github.user`, packaged `tools-manifest.json`, phase5 acceptance proof relocated under `$CLI_DIR/.manuscripts/<run>/proofs/`) are parent-pipeline-owned and not yet satisfied at this point; the main SKILL's Phase 6 publish flow gates on publish-validate at the correct time. See "Ship logic" below for how this affects ship_recommendation.
 
+**Live matrix qualifier.** After each `scorecard --live-check --json` run, read `/tmp/polish-scorecard.json` and record whether `live_check` actually exercised live samples. Treat it as `exercised` only when `live_check.unable` is false and at least one feature was evaluated (`passed + failed > 0`, or equivalent feature statuses). Treat `live_check.unable: true`, no `live_check`, no evaluated features, or missing credentials/token as `not_exercised`. A clean mock dogfood/verify run is still useful, but it is **not** a live matrix pass.
+
 `gosec` runs as the off-the-shelf security static-analysis leg for hand-written Go. Prefer an installed `gosec` binary when present; otherwise use the pinned `go run github.com/securego/gosec/v2/cmd/gosec@v2.26.1` fallback so a clean machine still gets a reproducible check without a separate setup step. Read `/tmp/polish-gosec-before.json` for the baseline finding count and issue details. If the command fails before writing JSON, treat the missing scan as a polish failure: add it to `remaining_issues`, set `ship_recommendation: hold`, and include the stderr summary so the next run can distinguish network/tooling failure from CLI defects. Prioritize findings in hand-authored files: whole files under `internal/cli/`, `internal/syncer/`, and `internal/store/` whose first 20 lines lack the `Generated by CLI Printing Press` header are polish-owned novel-feature code. Findings in generator-emitted files are Printing Press retro candidates unless they can be fixed durably by changing the spec and regenerating; do not hand-edit generated files just to silence gosec.
 
 **If Phase 1 baseline reveals the underlying CLI needs re-discovery** — broken HTML/SSR extraction, sparse capture (fewer than 5 unique endpoints in the source manuscript), wrong endpoint shapes, missing GraphQL operation hashes, or any signal that the CLI was generated from incomplete capture — polish does not normally do browser capture itself, but the shared playbook at `skills/printing-press/references/browser-sniff-capture.md` covers all available capture backends including the Claude chrome-MCP (`mcp__claude-in-chrome__*`) and computer-use (`mcp__computer-use__*`) when the runtime exposes them. Read Step 1 (tool detection), Step 2c.5 (failure-recovery menu), and Step 2e (chrome-MCP capture playbook) of that reference before improvising. Re-discovery from polish is rare but real; when it happens, use the shared backends — do not invent a new capture flow.
@@ -383,6 +499,7 @@ Parse findings into categories:
 
 - `scorecard --live-check` reporting `SQLITE_BUSY`, network timeouts, `401` from a mock or expired token, or HTTP errors that depend on the test workspace's permissions/state — these are test-environment issues, not CLI defects.
 - `verify` mock-harness flakes on commands with binary output (e.g., `qr` returning a PNG that the substring matcher can't validate) or commands with optional positional args where dry-run output legitimately doesn't contain the verify probe string.
+- Learn-loop commands: the dogfood/verify matrix now covers the default-on learn surface (`teach`, `recall`, `learnings`, `playbook`). `teach` and `teach-playbook` intentionally exit 2 when invoked bare, declared via `pp:typed-exit-codes`, so verify scores that as pass; do not "fix" the exit code. `learnings stats` on a fresh print legitimately reports zeros and empty sections; that is an empty local store, not a defect.
 
 Classify these as environmental in `skipped_findings` with the specific reason; do not spend Phase 2 cycles trying to "fix" them. The polish skill's ship logic already excludes live-check failures from gating, but the agent should still annotate them so reviewers can see they were considered and dismissed deliberately.
 
@@ -401,7 +518,7 @@ Parse the returned `---OUTPUT-REVIEW-RESULT---` block. `status: WARN` findings f
 
 Wave B gating applies: all findings are warnings, never blockers. Fix if obvious and cheap; document with a short comment if deferred.
 
-Record baseline scores: scorecard total, verify pass rate, dogfood verdict, go vet issue count, gosec finding count, output-review finding count.
+Record baseline scores: scorecard total, verify pass rate, dogfood verdict, live matrix qualifier (`exercised` / `not_exercised`), go vet issue count, gosec finding count, output-review finding count.
 
 ## Phase 2: Fix
 
@@ -705,7 +822,7 @@ else
 fi
 ```
 
-Record the after scores. If the gosec command fails before writing `/tmp/polish-gosec-after.json`, treat the missing post-fix scan as a polish failure: add it to `remaining_issues`, set `ship_recommendation: hold`, and include the stderr summary. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, publish-validate still reports `passed: false` (standalone mode only — mid-pipeline polish doesn't run this check), gosec still reports unresolved findings in hand-authored novel-feature Go, or pii-audit still has pending findings or gate failures, ship cannot fire (see ship logic below).
+Record the after scores, including the live matrix qualifier from the final `scorecard --live-check --json` output. If the gosec command fails before writing `/tmp/polish-gosec-after.json`, treat the missing post-fix scan as a polish failure: add it to `remaining_issues`, set `ship_recommendation: hold`, and include the stderr summary. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, publish-validate still reports `passed: false` (standalone mode only — mid-pipeline polish doesn't run this check), gosec still reports unresolved findings in hand-authored novel-feature Go, pii-audit still has pending findings or gate failures, or the final live matrix qualifier is `not_exercised`, ship cannot fire (see ship logic below). For a non-exercised live matrix, add a `remaining_issues` item such as `live matrix not exercised (mock-only/no live token); run the live gate before publish`.
 
 ## Ship logic
 
@@ -767,6 +884,7 @@ Polish Results for <CLI_NAME>:
                     Before    After     Delta
   Scorecard:        XX/100    XX/100    +N
   Verify:           XX%       XX%       +N%
+  Live matrix:      exercised/not_exercised -> exercised/not_exercised
   Tools-audit:      XX        XX        -N pending findings
 
 Fixes applied:
@@ -785,6 +903,8 @@ verify_before: <N>
 verify_after: <N>
 dogfood_before: <PASS|FAIL>
 dogfood_after: <PASS|FAIL>
+dogfood_live_matrix_before: <exercised|not_exercised|unknown>
+dogfood_live_matrix_after: <exercised|not_exercised|unknown>
 govet_before: <N>
 govet_after: <N>
 gosec_before: <N>
@@ -811,6 +931,8 @@ The three lists serve different purposes:
 - **remaining_issues**: issues you tried to fix but couldn't resolve.
 
 **`publish_validate_*` values.** Emit `PASS` or `FAIL` when polish ran publish-validate (standalone mode). Emit the literal string `skipped (mid-pipeline)` when polish skipped it (mid-pipeline invocation, `STANDALONE_MODE=false`). The skipped value is informational only: callers must not treat it as a failure when deciding whether to cascade polish's `ship_recommendation` into a CLI-level hold.
+
+**`dogfood_live_matrix_*` values.** Emit `exercised` only when live-check evaluated at least one real sample. Emit `not_exercised` for mock-only/no-token/no-research/no-evaluated-sample runs. When `dogfood_after: PASS` but `dogfood_live_matrix_after: not_exercised`, the human summary must say `dogfood PASS (mock only; live matrix not exercised — run the live gate before publish)`, and `ship_recommendation` must be `hold` unless the parent caller explicitly owns a later live gate.
 
 **`gosec_*` values.** Emit the post-triage count of gosec findings that are
 still relevant to this printed CLI after generated-file triage. These values

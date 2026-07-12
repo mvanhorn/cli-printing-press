@@ -6,7 +6,10 @@ package learn
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -69,6 +72,29 @@ func openRecallTestDB(t *testing.T) *sql.DB {
 			source TEXT NOT NULL DEFAULT 'seeded',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (kind, canonical, value)
+		)`,
+		`CREATE TABLE learning_playbooks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			query_family TEXT NOT NULL UNIQUE,
+			playbook_json TEXT,
+			notes_text TEXT,
+			source TEXT NOT NULL DEFAULT 'taught',
+			confidence INTEGER NOT NULL DEFAULT 2,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			last_observed_at TIMESTAMP
+		)`,
+		`CREATE TABLE learn_candidates (
+			id INTEGER PRIMARY KEY,
+			class TEXT NOT NULL CHECK(class IN ('flag_alias','playbook_candidate')),
+			payload TEXT NOT NULL,
+			derivation_signature TEXT NOT NULL UNIQUE,
+			sightings INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','confirmed','rejected','expired')),
+			query_family TEXT,
+			command_path TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL
 		)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -256,5 +282,485 @@ func TestRecall_ResourceNotInStoreWarning(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("missing resource_not_in_store warning; got %v", got.Results[0].Warnings)
+	}
+}
+
+// TestRecall_ColdUnresolvableEntityWarnsRunSyncAndRecordsMiss covers
+// the staleness-heal capture side: a cold recall whose entity has no
+// entity_lookups row under any source (1) surfaces the stateless
+// lookup_refresh_available warning naming `sync`, and (2) records the
+// entity in the learn_recall_misses table the post-sync scanner
+// filters on.
+func TestRecall_ColdUnresolvableEntityWarnsRunSyncAndRecordsMiss(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+
+	got, err := Recall(context.Background(), db, "standings for Zephyrium", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if got.Found {
+		t.Fatalf("want cold recall (Found=false); got %+v", got)
+	}
+
+	var sawNoLearnings, sawRefresh bool
+	for _, w := range got.Warnings {
+		if w == TopWarningNoLearningsForQueryFamily {
+			sawNoLearnings = true
+		}
+		if strings.HasPrefix(w, TopWarningLookupRefreshAvailable+":") {
+			sawRefresh = true
+			if !strings.Contains(w, "Zephyrium") {
+				t.Errorf("refresh warning should name the entity; got %q", w)
+			}
+			if !strings.Contains(w, "sync") {
+				t.Errorf("refresh warning text must name running sync; got %q", w)
+			}
+		}
+	}
+	if !sawNoLearnings {
+		t.Errorf("missing %q warning; got %v", TopWarningNoLearningsForQueryFamily, got.Warnings)
+	}
+	if !sawRefresh {
+		t.Errorf("missing %q warning; got %v", TopWarningLookupRefreshAvailable, got.Warnings)
+	}
+
+	var entity string
+	if err := db.QueryRow(`SELECT entity FROM learn_recall_misses`).Scan(&entity); err != nil {
+		t.Fatalf("recall did not record the lookup miss: %v", err)
+	}
+	if entity != "zephyrium" {
+		t.Errorf("recorded miss = %q, want lowercased %q", entity, "zephyrium")
+	}
+}
+
+// TestRecall_SyncedLookupRowPromotesPreviouslyMissedEntity is the heal
+// half of the incident replay: after a synced-source row lands (what
+// the post-sync scanner writes), the same recall that previously
+// warned lookup_refresh_available now resolves and promotes the
+// entity — even from its lowercase form, which the capitalization-
+// based extractor alone cannot catch.
+func TestRecall_SyncedLookupRowPromotesPreviouslyMissedEntity(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	if _, err := db.Exec(`INSERT INTO entity_lookups (kind, canonical, value, source)
+		VALUES ('events', 'Zephyrium', 'Zephyrium', 'synced')`); err != nil {
+		t.Fatalf("insert synced lookup row: %v", err)
+	}
+
+	got, err := Recall(context.Background(), db, "standings for zephyrium", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+
+	promoted := false
+	for _, e := range got.QueryEntities {
+		if strings.EqualFold(e, "zephyrium") {
+			promoted = true
+			break
+		}
+	}
+	if !promoted {
+		t.Errorf("synced lookup row should promote the entity; QueryEntities = %v", got.QueryEntities)
+	}
+	for _, w := range got.Warnings {
+		if strings.HasPrefix(w, TopWarningLookupRefreshAvailable+":") {
+			t.Errorf("resolved entity must not surface %q; got %v", TopWarningLookupRefreshAvailable, got.Warnings)
+		}
+	}
+
+	// A resolvable entity is not a lookup miss: nothing recorded.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'learn_recall_misses'`).Scan(&n); err != nil {
+		t.Fatalf("sqlite_master: %v", err)
+	}
+	if n != 0 {
+		var misses int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM learn_recall_misses`).Scan(&misses); err != nil {
+			t.Fatalf("count misses: %v", err)
+		}
+		if misses != 0 {
+			t.Errorf("resolved entity recorded %d miss rows, want 0", misses)
+		}
+	}
+}
+
+// candidateSeed is one learn_candidates fixture row. Zero values fall
+// back to a well-formed open flag_alias observation so tests only spell
+// out the fields they exercise.
+type candidateSeed struct {
+	id          int64
+	class       string
+	payload     string
+	signature   string
+	status      string
+	queryFamily string
+	commandPath string
+	sightings   int
+	lastSeen    string
+}
+
+func seedCandidate(t *testing.T, db *sql.DB, c candidateSeed) {
+	t.Helper()
+	if c.class == "" {
+		c.class = "flag_alias"
+	}
+	if c.payload == "" {
+		c.payload = `{"command_path":"widgets list","failed_flag":"--date","corrected_flag":"--dates"}`
+	}
+	if c.signature == "" {
+		c.signature = fmt.Sprintf("sig-%d", c.id)
+	}
+	if c.status == "" {
+		c.status = "open"
+	}
+	if c.sightings == 0 {
+		c.sightings = 1
+	}
+	if c.lastSeen == "" {
+		c.lastSeen = "2026-06-01T00:00:00Z"
+	}
+	if _, err := db.Exec(`INSERT INTO learn_candidates
+		(id, class, payload, derivation_signature, sightings, status, query_family, command_path, created_at, updated_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.id, c.class, c.payload, c.signature, c.sightings, c.status,
+		c.queryFamily, c.commandPath, c.lastSeen, c.lastSeen, c.lastSeen); err != nil {
+		t.Fatalf("seed candidate: %v", err)
+	}
+}
+
+// seedPlaybookRow (learning_playbooks fixture insert) is shared with
+// recall_canonical_test.go, which declares it.
+
+func hasWarning(warnings []string, code string) bool {
+	for _, w := range warnings {
+		if w == code {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRecall_OpenCandidateSurfacesWithTwoStepNextAction covers the
+// happy half of the candidates surface: one open family-anchored
+// candidate rides the envelope in its own `candidates` section — the
+// verified results stay untouched — with exactly two byte-exact
+// next-action steps (the trial invocation, then the literal
+// `learnings confirm <id>` command) and a plain-words rationale.
+func TestRecall_OpenCandidateSurfacesWithTwoStepNextAction(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
+	// "Alpha widget" normalizes to family "widget"; anchor the candidate there.
+	seedCandidate(t, db, candidateSeed{id: 7, queryFamily: "widget", commandPath: "widgets list", sightings: 2})
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{
+		EntityConfig:       testConfig(),
+		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+
+	// Verified surfaces are untouched: the hit is still a hit, and no
+	// candidate is interleaved into results.
+	if !got.Found || len(got.Results) != 1 || got.Results[0].ResourceID != "PREFIX-AL" {
+		t.Fatalf("verified results must be untouched by candidates; got %+v", got)
+	}
+
+	if len(got.Candidates) != 1 {
+		t.Fatalf("want 1 candidate, got %d: %+v", len(got.Candidates), got.Candidates)
+	}
+	c := got.Candidates[0]
+	if c.ID != 7 || c.Class != "flag_alias" || c.Sightings != 2 {
+		t.Errorf("candidate row fields wrong: %+v", c)
+	}
+	if !strings.Contains(c.Summary, "--dates") || !strings.Contains(c.Summary, "--date") {
+		t.Errorf("summary should name the correction compactly; got %q", c.Summary)
+	}
+	if !strings.Contains(c.Rationale, "seen 2 times") {
+		t.Errorf("rationale must count sightings in plain words; got %q", c.Rationale)
+	}
+	if !strings.Contains(c.Rationale, "family") {
+		t.Errorf("family-anchored rationale should say why it surfaced; got %q", c.Rationale)
+	}
+	if c.LastSeen.IsZero() {
+		t.Errorf("last_seen must carry the stored timestamp")
+	}
+
+	if len(c.NextAction) != 2 {
+		t.Fatalf("next_action must be exactly two steps; got %v", c.NextAction)
+	}
+	// Step 1: the corrected trial invocation, composed against the
+	// installed binary name.
+	for _, want := range []string{candidateCommandBinary, "widgets list", "--dates"} {
+		if !strings.Contains(c.NextAction[0], want) {
+			t.Errorf("trial step missing %q; got %q", want, c.NextAction[0])
+		}
+	}
+	// Step 2: byte-exact confirm command matching the registered
+	// `learnings confirm` control command.
+	wantConfirm := candidateCommandBinary + " learnings confirm 7"
+	if c.NextAction[1] != wantConfirm {
+		t.Errorf("confirm step = %q, want %q", c.NextAction[1], wantConfirm)
+	}
+
+	if !hasWarning(got.Warnings, TopWarningCandidatesPresent) {
+		t.Errorf("missing %q warning with a non-empty candidates section; got %v", TopWarningCandidatesPresent, got.Warnings)
+	}
+}
+
+// TestRecall_CandidatesCapAtThreeDeterministicOrder pins the cap and
+// the ranking contract: family-anchored first, then sightings, then
+// recency — a high-sighting unconfirmed candidate must outrank a fresh
+// low-sighting one (the no-confirm steady state depends on it).
+func TestRecall_CandidatesCapAtThreeDeterministicOrder(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	for _, c := range []candidateSeed{
+		{id: 1, queryFamily: "widget", sightings: 1, lastSeen: "2026-02-01T00:00:00Z"},
+		{id: 2, sightings: 9, lastSeen: "2026-01-02T00:00:00Z"},
+		{id: 3, queryFamily: "unrelated family", sightings: 5, lastSeen: "2026-06-30T00:00:00Z"},
+		{id: 4, sightings: 5, lastSeen: "2026-01-01T00:00:00Z"},
+		// Freshest row, lowest sightings: must NOT displace the
+		// high-sighting rows above it.
+		{id: 5, sightings: 1, lastSeen: "2026-07-01T00:00:00Z"},
+	} {
+		seedCandidate(t, db, c)
+	}
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(got.Candidates) != 3 {
+		t.Fatalf("cap is 3; got %d: %+v", len(got.Candidates), got.Candidates)
+	}
+	wantOrder := []int64{1, 2, 3}
+	for i, want := range wantOrder {
+		if got.Candidates[i].ID != want {
+			t.Errorf("candidates[%d].ID = %d, want %d (full order %+v)", i, got.Candidates[i].ID, want, got.Candidates)
+		}
+	}
+}
+
+// TestRecall_ConfirmedCandidateArrivesViaPlaybookNotCandidates pins
+// the post-confirm contract in one shot: the confirmed row never
+// reappears in candidates[], and its materialized artifact reaches the
+// agent through the normal playbook/notes surface instead.
+func TestRecall_ConfirmedCandidateArrivesViaPlaybookNotCandidates(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedPlaybookRow(t, db, "widget", "", "confirmed guidance")
+	seedCandidate(t, db, candidateSeed{
+		id:          9,
+		class:       "playbook_candidate",
+		payload:     `{"query_family":"widget","notes_text":"confirmed guidance"}`,
+		status:      "confirmed",
+		queryFamily: "widget",
+	})
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(got.Candidates) != 0 {
+		t.Errorf("confirmed candidates must never surface in candidates[]; got %+v", got.Candidates)
+	}
+	if hasWarning(got.Warnings, TopWarningCandidatesPresent) {
+		t.Errorf("no %q warning without open candidates; got %v", TopWarningCandidatesPresent, got.Warnings)
+	}
+	if got.Playbook == nil || got.Notes != "confirmed guidance" {
+		t.Errorf("the materialized artifact must arrive via the playbook/notes path; got playbook=%+v notes=%q", got.Playbook, got.Notes)
+	}
+}
+
+// TestRecall_RejectedAndExpiredCandidatesNeverSurface: settled rows of
+// either terminal-ish status stay out of the envelope.
+func TestRecall_RejectedAndExpiredCandidatesNeverSurface(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedCandidate(t, db, candidateSeed{id: 11, status: "rejected", queryFamily: "widget"})
+	seedCandidate(t, db, candidateSeed{id: 12, status: "expired", queryFamily: "widget"})
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(got.Candidates) != 0 {
+		t.Errorf("rejected/expired rows must never surface; got %+v", got.Candidates)
+	}
+	if hasWarning(got.Warnings, TopWarningCandidatesPresent) {
+		t.Errorf("no %q warning without open candidates; got %v", TopWarningCandidatesPresent, got.Warnings)
+	}
+}
+
+// TestRecall_NoCandidatesOmitsKeyAndWarning pins the empty case:
+// with nothing open the serialized envelope has no `candidates` key at
+// all and no candidates_present warning — byte-stable against the
+// pre-candidates shape.
+func TestRecall_NoCandidatesOmitsKeyAndWarning(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{
+		EntityConfig:       testConfig(),
+		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"candidates"`) {
+		t.Errorf("empty case must omit the candidates key entirely; got %s", raw)
+	}
+	if hasWarning(got.Warnings, TopWarningCandidatesPresent) {
+		t.Errorf("no %q warning in the empty case; got %v", TopWarningCandidatesPresent, got.Warnings)
+	}
+}
+
+// TestRecall_CaptureDisabledStillSurfacesCandidates: the
+// capture-specific env var kills journaling and derivation only;
+// surfacing existing candidates is a read-only path and must keep
+// working. (No t.Parallel: t.Setenv.)
+func TestRecall_CaptureDisabledStillSurfacesCandidates(t *testing.T) {
+	t.Setenv(journalNoCaptureEnvVar, "1")
+	db := openRecallTestDB(t)
+	seedCandidate(t, db, candidateSeed{id: 21, queryFamily: "widget", sightings: 3})
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(got.Candidates) != 1 || got.Candidates[0].ID != 21 {
+		t.Errorf("capture-disabled env must not hide existing candidates; got %+v", got.Candidates)
+	}
+	if !hasWarning(got.Warnings, TopWarningCandidatesPresent) {
+		t.Errorf("missing %q warning; got %v", TopWarningCandidatesPresent, got.Warnings)
+	}
+}
+
+// TestRecall_PlaybookCommandOverlapCandidateOutranksGlobal covers the
+// middle ranking tier: a candidate whose command path appears in the
+// resolved playbook's steps outranks an unanchored higher-sighting
+// row.
+func TestRecall_PlaybookCommandOverlapCandidateOutranksGlobal(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedPlaybookRow(t, db, "widget",
+		`{"steps":[{"cmd":"widgets list --dates {date}","purpose":"list widgets"}]}`,
+		"use the dates flag")
+	seedCandidate(t, db, candidateSeed{id: 31, commandPath: "widgets list", sightings: 1})
+	seedCandidate(t, db, candidateSeed{id: 32, commandPath: "other thing", sightings: 9})
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{EntityConfig: testConfig()})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if len(got.Candidates) != 2 {
+		t.Fatalf("want both candidates, got %+v", got.Candidates)
+	}
+	if got.Candidates[0].ID != 31 || got.Candidates[1].ID != 32 {
+		t.Errorf("playbook command-path overlap must outrank sightings; got order %+v", got.Candidates)
+	}
+	if !strings.Contains(got.Candidates[0].Rationale, "playbook") {
+		t.Errorf("overlap rationale should say why in plain words; got %q", got.Candidates[0].Rationale)
+	}
+}
+
+// TestRecall_HitCarriesLearningID pins the row-id linkage the
+// measurement layer joins on: every direct hit exposes the backing
+// search_learnings row id, and the command side records it as the
+// recall_hit event's matched_row_id.
+func TestRecall_HitCarriesLearningID(t *testing.T) {
+	t.Parallel()
+	db := openRecallTestDB(t)
+	seedRecallResource(t, db, "widgets", "PREFIX-AL", `{"title":"Alpha widget"}`)
+	seedLearning(t, db, "widget", `["Alpha"]`, "PREFIX-AL", "widgets", "boost", 3)
+
+	var wantID int64
+	if err := db.QueryRow(`SELECT id FROM search_learnings WHERE resource_id = 'PREFIX-AL'`).Scan(&wantID); err != nil {
+		t.Fatalf("read seeded id: %v", err)
+	}
+
+	got, err := Recall(context.Background(), db, "Alpha widget", Opts{
+		EntityConfig:       testConfig(),
+		ResourceTypeFields: map[string][]string{"widgets": {"title"}},
+	})
+	if err != nil {
+		t.Fatalf("recall: %v", err)
+	}
+	if !got.Found || len(got.Results) != 1 {
+		t.Fatalf("want 1 hit, got %+v", got)
+	}
+	if got.Results[0].LearningID != wantID {
+		t.Errorf("LearningID = %d, want %d", got.Results[0].LearningID, wantID)
+	}
+	if got.Family == "" {
+		t.Error("Result.Family should carry the structural family key for event instrumentation")
+	}
+}
+
+// TestFamilyHash_StableNonReversibleEmpty pins the event-key contract:
+// deterministic, distinct across families, no family text leaking
+// through, and "" for an empty family (stored as NULL).
+func TestFamilyHash_StableNonReversibleEmpty(t *testing.T) {
+	t.Parallel()
+	a1 := FamilyHash("orders pending show")
+	a2 := FamilyHash("orders pending show")
+	b := FamilyHash("orders list show")
+	if a1 == "" || a1 != a2 {
+		t.Errorf("FamilyHash must be deterministic; got %q vs %q", a1, a2)
+	}
+	if a1 == b {
+		t.Errorf("distinct families must hash apart; both %q", a1)
+	}
+	if strings.Contains(a1, "orders") {
+		t.Errorf("hash must not carry family text; got %q", a1)
+	}
+	if FamilyHash("") != "" || FamilyHash("   ") != "" {
+		t.Error("empty family must hash to \"\" (stored as NULL)")
+	}
+}
+
+// TestScanPII_EmailAndPhoneShapes pins the R18 insert-time guard's
+// vocabulary: obvious email/phone shapes match by rule name, and
+// bare numeric identifiers stay clean (the conservative side).
+func TestScanPII_EmailAndPhoneShapes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"clean structural query", "list pending orders for the northwest region", nil},
+		{"email", "orders placed by jane.doe@example.com yesterday", []string{PIIRuleEmail}},
+		{"email with plus tag", "tickets from support+urgent@example.co.uk", []string{PIIRuleEmail}},
+		{"dashed phone", "call the customer at 555-123-4567 about the order", []string{PIIRulePhone}},
+		{"paren phone", "contact (555) 123-4567 for delivery", []string{PIIRulePhone}},
+		{"international phone", "reach them at +1 555 123 4567", []string{PIIRulePhone}},
+		{"both", "email a@b.io or call 555-123-4567", []string{PIIRuleEmail, PIIRulePhone}},
+		{"bare numeric id stays clean", "status of order 5551234567", nil},
+		{"date stays clean", "orders between 2026-07-01 and 2026-07-02", nil},
+		{"version stays clean", "changes in release 1.2.3", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ScanPII(tc.text)
+			if len(got) != len(tc.want) {
+				t.Fatalf("ScanPII(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("ScanPII(%q)[%d] = %q, want %q", tc.text, i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }

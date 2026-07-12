@@ -7,7 +7,7 @@ This file stays **code-free** — it defines what the nouns *mean*. For naming c
 ## The system and its product
 
 ### the Printing Press
-The generator system this repository *is* — the binary, templates, skills, and curated catalog that together turn an API into a ready-to-ship CLI.
+The generator system this repository *is* — the binary, templates, skills, and verification pipeline that together turn an API into a ready-to-ship CLI.
 *Avoid:* "the machine" in user-facing output (skill output, issues, retros, confirmation prompts); it is acceptable only in developer conversation and in-repo code and docs.
 
 ### printed CLI
@@ -28,13 +28,6 @@ A device spec also records the device's *protocol contract* — how to talk to i
 
 ### API slug
 The normalized, lowercase identity derived from a spec's title, used as the stable key for an API across the system. The printed CLI's name is built from the slug but is not the same string — do not use the two interchangeably.
-
-### catalog
-The Printing Press's curated set of API blueprints — vetted, reusable starting points baked into the system. A blueprint catalog, not an index of finished CLIs; the public library holds those.
-*Avoid:* "catalog" for the public library's index of shipped CLIs — that is the *public library catalog* (see Flagged ambiguities).
-
-### tier
-A catalog entry's provenance class: *official* (a vendor-maintained spec backs it) or *community* (the spec is unofficial or reverse-engineered). It sets how much risk to expect from a generated CLI.
 
 ### discovery
 Recovering a usable spec when no official one exists, by observing how the target is actually used. For APIs the techniques are browser-sniff and crowd-sniff; for physical devices it is device-sniff. They are complementary, and a sniff can also supplement an official spec with surface the docs miss.
@@ -110,7 +103,7 @@ A targeted fix-up of a printed CLI to get it over the verification bar — narro
 Regenerating an existing printed CLI from scratch under the current Printing Press, carrying prior research, novel features, and post-publish fixes forward as context. Chosen when a Printing Press upgrade would help a CLI more than a manual fix-up would.
 
 ### retro
-Post-run analysis of *the Printing Press itself*, not the printed CLI — finding systemic improvements to templates, the binary, skills, or catalog so the next CLI comes out better.
+Post-run analysis of *the Printing Press itself*, not the printed CLI — finding systemic improvements to templates, the binary, skills, or verification pipeline so the next CLI comes out better.
 *Avoid:* "retro" for fixing the CLI that was just generated — that is polish or emboss.
 
 ## Surfaces
@@ -135,4 +128,4 @@ Anyone who later contributes to a printed CLI, accrued as a growing list alongsi
 - *"the CLI"* defaults to a **printed CLI**, not the generator that produces it — these are distinct concepts.
 - *"library"* defaults to the **local library**; the **public library** is always named explicitly.
 - *"publish"* has two distinct senses: moving a CLI into the local library, and contributing it to the public library.
-- *"catalog"* defaults to the embedded blueprint **catalog**; the public library's index of finished CLIs is the **public library catalog**.
+- *"catalog"* should be qualified: **public library catalog** for the published CLI index, or **tool catalog** for MCP/tool manifests.

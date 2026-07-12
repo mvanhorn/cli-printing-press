@@ -341,15 +341,16 @@ func (p *ProtectionObservation) UnmarshalJSON(data []byte) error {
 }
 
 type EndpointCluster struct {
-	Host          string       `json:"host,omitempty"`
-	Method        string       `json:"method"`
-	Path          string       `json:"path"`
-	Count         int          `json:"count"`
-	Statuses      []int        `json:"statuses,omitempty"`
-	ContentTypes  []string     `json:"content_types,omitempty"`
-	SizeClass     string       `json:"size_class,omitempty"`
-	RequestShape  ShapeSummary `json:"request_shape"`
-	ResponseShape ShapeSummary `json:"response_shape"`
+	Host                    string                   `json:"host,omitempty"`
+	Method                  string                   `json:"method"`
+	Path                    string                   `json:"path"`
+	Count                   int                      `json:"count"`
+	Statuses                []int                    `json:"statuses,omitempty"`
+	ContentTypes            []string                 `json:"content_types,omitempty"`
+	SizeClass               string                   `json:"size_class,omitempty"`
+	RequestShape            ShapeSummary             `json:"request_shape"`
+	ResponseShape           ShapeSummary             `json:"response_shape"`
+	LowConfidenceParameters []LowConfidenceParameter `json:"low_confidence_parameters,omitempty"`
 	// ObservedAuth lists lowercased request header names observed on this
 	// cluster's entries that match common auth surfaces (Authorization,
 	// Cookie, X-API-Key, etc.). Observation-only — values are never recorded.
@@ -369,6 +370,13 @@ type EndpointCluster struct {
 	// future numeric-confidence refinements stay backward-compatible.
 	Confidence string        `json:"confidence,omitempty"`
 	Evidence   []EvidenceRef `json:"evidence,omitempty"`
+}
+
+type LowConfidenceParameter struct {
+	Name     string `json:"name"`
+	Segment  string `json:"segment"`
+	Position int    `json:"position"`
+	Reason   string `json:"reason"`
 }
 
 type ShapeSummary struct {
@@ -582,7 +590,7 @@ func DeduplicateTrafficEndpoints(entries []EnrichedEntry) []EndpointGroup {
 	for _, entry := range entries {
 		method := strings.ToUpper(strings.TrimSpace(entry.Method))
 		host := strings.ToLower(extractHost(entry.URL))
-		normalizedPath := normalizeEntryPath(entry.URL)
+		normalizedPath, lowConfidence := normalizeEntryPathWithHints(entry.URL)
 		key := host + " " + method + " " + normalizedPath
 
 		if idx, ok := indexByKey[key]; ok {
@@ -596,6 +604,7 @@ func DeduplicateTrafficEndpoints(entries []EnrichedEntry) []EndpointGroup {
 			Method:         method,
 			NormalizedPath: normalizedPath,
 			Entries:        []EnrichedEntry{entry},
+			LowConfidence:  lowConfidence,
 		})
 	}
 
@@ -1329,9 +1338,10 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 	clusters := make([]EndpointCluster, 0, len(groups))
 	for _, group := range groups {
 		cluster := EndpointCluster{
-			Method: group.Method,
-			Path:   group.NormalizedPath,
-			Count:  len(group.Entries),
+			Method:                  group.Method,
+			Path:                    group.NormalizedPath,
+			Count:                   len(group.Entries),
+			LowConfidenceParameters: group.LowConfidence,
 		}
 		if len(group.Entries) > 0 {
 			cluster.Host = extractHost(group.Entries[0].URL)
@@ -1582,7 +1592,55 @@ func detectAnalysisWarnings(entries []EnrichedEntry, clusters []EndpointCluster)
 			warnings = append(warnings, AnalysisWarning{Type: "error_status_cluster", Message: "Endpoint cluster only observed error HTTP statuses.", Confidence: 0.7, Evidence: cluster.Evidence})
 		}
 	}
+	if allEndpointClustersHaveEmptyResponseShape(clusters) {
+		warnings = append(warnings, AnalysisWarning{
+			Type:       "empty_response_shapes",
+			Message:    "All endpoint clusters have empty response shapes; capture may have omitted response bodies. Re-fetch discovered endpoints with curl or another direct HTTP path before generating types.",
+			Confidence: 0.9,
+			Evidence:   evidenceForClusters(clusters),
+		})
+	}
 	return warnings
+}
+
+func allEndpointClustersHaveEmptyResponseShape(clusters []EndpointCluster) bool {
+	if len(clusters) == 0 {
+		return false
+	}
+	seenCluster := false
+	for _, cluster := range clusters {
+		if cluster.Count == 0 {
+			continue
+		}
+		if clusterHasOnlyNoContentStatuses(cluster) {
+			continue
+		}
+		seenCluster = true
+		if cluster.ResponseShape.Kind != "" || len(cluster.ResponseShape.Fields) > 0 {
+			return false
+		}
+	}
+	return seenCluster
+}
+
+func clusterHasOnlyNoContentStatuses(cluster EndpointCluster) bool {
+	if len(cluster.Statuses) == 0 {
+		return false
+	}
+	for _, status := range cluster.Statuses {
+		if status != 204 && status != 205 {
+			return false
+		}
+	}
+	return true
+}
+
+func evidenceForClusters(clusters []EndpointCluster) []EvidenceRef {
+	var evidence []EvidenceRef
+	for _, cluster := range clusters {
+		evidence = appendEvidence(evidence, cluster.Evidence...)
+	}
+	return evidence
 }
 
 func suggestCandidateCommands(clusters []EndpointCluster) []CandidateCommand {

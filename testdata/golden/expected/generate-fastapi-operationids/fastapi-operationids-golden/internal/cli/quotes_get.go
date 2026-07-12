@@ -22,15 +22,17 @@ func newQuotesGetCmd(flags *rootFlags) *cobra.Command {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+			path := "/api/quotes/{quote_id}"
+			if len(args) < 1 || args[0] == "" {
+				return usageErr(fmt.Errorf("quote_id is required\nUsage: %s <%s>", cmd.CommandPath(), "quote_id"))
+			}
+			path = replacePathParam(path, "quote_id", args[0])
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/api/quotes/{quote_id}"
-			path = replacePathParam(path, "quote_id", args[0])
 			params := map[string]string{}
-			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "quotes", false, path, params, nil, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "quotes", false, path, params, nil, "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -75,7 +77,7 @@ func newQuotesGetCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"})
 		},
 	}
 

@@ -30,19 +30,18 @@ func newReportsExportReportYearCmd(flags *rootFlags) *cobra.Command {
 			if !cmd.Flags().Changed("year") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "year")
 			}
+			path := "/reports/{year}/export"
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
-
-			path := "/reports/{year}/export"
 			path = replacePathParam(path, "year", formatCLIParamValue(flagYear))
 			headerOverrides := map[string]string{
 				"Accept":                           "application/octet-stream",
 				"X-Printing-Press-Binary-Response": "true",
 			}
 			params := map[string]string{}
-			data, prov, err := resolveReadWithStrategy(cmd.Context(), c, flags, "auto", "export", false, path, params, headerOverrides, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "auto", "export", false, path, params, headerOverrides, "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

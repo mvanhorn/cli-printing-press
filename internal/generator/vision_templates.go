@@ -1,9 +1,12 @@
 package generator
 
 import (
+	"fmt"
+	"io"
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/vision"
 )
@@ -161,15 +164,95 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 	return set
 }
 
-func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet) VisionTemplateSet {
-	if api != nil && api.Streaming.Enabled() {
+// learnStorePromotionInfo is printed whenever learn.enabled forces Store on a
+// VisionSet that skipped it, so operators can see why a thin CLI grew a store.
+// Shared with Generate's defensive post-constrain check in generator.go.
+const learnStorePromotionInfo = `info: learn.enabled promotes VisionSet.Store=true (the learn package depends on internal/store)
+`
+
+func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet, profile *profiler.APIProfile, w io.Writer) VisionTemplateSet {
+	// Learn promotion runs before the sync/search strip below: the learn
+	// package depends on internal/store, so learn.enabled forces Store
+	// instead of hard-erroring (soft-validation posture). Store-forces-Sync
+	// is re-derived here because SelectVisionTemplates already ran; specs
+	// with non-vestigial syncable resources get a populated store, while
+	// zero-syncable specs keep store+learn and let the strip below drop
+	// sync/search/analytics.
+	if api != nil && api.Learn.Enabled && !set.Store {
+		set.Store = true
+		if hasSyncCommandResources(profile) && !set.Sync {
+			set.Sync = true
+		}
+		fmt.Fprint(w, learnStorePromotionInfo)
+	}
+	streamingEnabled := api != nil && api.Streaming.Enabled()
+	if streamingEnabled {
 		set.Store = true
 		set.Sync = true
+	}
+	if profile != nil && !hasSyncCommandResources(profile) && !streamingEnabled {
+		syncWasRequested := set.Sync
+		set.Sync = false
+		if syncWasRequested {
+			// Local query surfaces depend on sync-populated rows. Keep the store
+			// itself because explicit store-only CLIs, insights, and HTML channel
+			// workflows can still use it without the generic sync command.
+			set.Search = false
+			set.Analytics = false
+		}
 	}
 	if set.Export && len(exportableResources(api)) == 0 {
 		set.Export = false
 	}
+	if set.Import && !hasCreateCommands(api.Resources) {
+		set.Import = false
+	}
 	return set
+}
+
+func hasSyncCommandResources(profile *profiler.APIProfile) bool {
+	if profile == nil {
+		return false
+	}
+	for _, resource := range profile.SyncableResources {
+		if !isVestigialSyncResource(resource) {
+			return true
+		}
+	}
+	for _, resource := range profile.DependentSyncResources {
+		if !isVestigialDependentSyncResource(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func isVestigialSyncResource(resource profiler.SyncableResource) bool {
+	if resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+		return true
+	}
+	// Path-template resources that are excluded from default sync and look like
+	// live query/search endpoints are not viable bulk store population sources.
+	return resource.SkipDefaultSync && looksLikeLiveQueryPath(resource.Path)
+}
+
+func isVestigialDependentSyncResource(resource profiler.DependentResource) bool {
+	if resource.UsesHTMLResponse && resource.HTMLExtract.EffectiveMode() == spec.HTMLExtractModePage {
+		return true
+	}
+	return false
+}
+
+func looksLikeLiveQueryPath(path string) bool {
+	for _, segment := range strings.FieldsFunc(strings.ToLower(path), func(r rune) bool {
+		return r == '/' || r == '?' || r == '&' || r == '='
+	}) {
+		switch segment {
+		case "search", "query", "find", "lookup":
+			return true
+		}
+	}
+	return false
 }
 
 func exportableResources(api *spec.APISpec) []string {

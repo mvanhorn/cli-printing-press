@@ -5,12 +5,18 @@ package cobratree
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/spf13/cobra"
 )
 
 // TestSplitShellArgs pins the whitespace + quote splitting used by
@@ -49,8 +55,9 @@ func TestSplitShellArgs(t *testing.T) {
 // flag in the structured args map (instead of the free-form "args"
 // string), the root flags listed in blockedRootFlags must be dropped
 // before they reach exec.CommandContext. A regression here would let a
-// caller redirect --base-url, swap --token, switch --client filesystems, or
-// load a malicious --config.
+// caller redirect --base-url, swap --token, switch --client filesystems,
+// relocate the CLI's filesystem roots via --home, or load a malicious
+// --config.
 func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 	in := map[string]any{
 		"args":     "contacts",
@@ -58,17 +65,32 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 		"client":   "attacker-client",
 		"config":   "/tmp/evil.yaml",
 		"deliver":  "fd:3",
+		"home":     "/tmp/evil-home",
 		"profile":  "attacker",
 		"token":    "stolen-token",
+		// Keys containing "=" must not be emitted verbatim as flag=value.
+		"base-url=https://evil.example.com": true,
+		"config=/tmp/evil.yaml":             true,
+		"limit=99":                          float64(42),
+		"token=stolen-token":                true,
 		// Allowed per-command flag passes through.
 		"limit": float64(10),
 	}
-	got := cliArgsFromMCP(in)
+	got := cliArgsFromMCP(in, map[string]bool{
+		"args":     true,
+		"base-url": true,
+		"client":   true,
+		"config":   true,
+		"deliver":  true,
+		"home":     true,
+		"profile":  true,
+		"token":    true,
+	})
 	want := []string{"--limit", "10"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP dropped/kept wrong keys: got %v, want %v", got, want)
 	}
-	for _, blocked := range []string{"--base-url", "--client", "--config", "--deliver", "--profile", "--token", "--args"} {
+	for _, blocked := range []string{"--base-url", "--client", "--config", "--deliver", "--home", "--profile", "--token", "--args"} {
 		for _, tok := range got {
 			if tok == blocked {
 				t.Errorf("blocked flag %q leaked through cliArgsFromMCP", blocked)
@@ -92,10 +114,66 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 		"limit":   float64(25),
 		"tags":    []any{"a", "b"},
 	}
-	got := cliArgsFromMCP(in)
+	got := cliArgsFromMCP(in, map[string]bool{"args": true})
 	want := []string{"--limit", "25", "--query", "alpha", "--tags", "a,b", "--verbose"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP per-command passthrough: got %v, want %v", got, want)
+	}
+}
+
+func TestValidateMCPArgumentNamesRejectsArgsWhenNoParamsAllowed(t *testing.T) {
+	err := validateMCPArgumentNames(map[string]any{"query": "alpha"}, nil)
+	if err == nil {
+		t.Fatal("validateMCPArgumentNames accepted an unknown arg for a parameter-free command")
+	}
+	if got, want := err.Error(), `unknown MCP parameter "query"; use the tool schema's named parameters`; got != want {
+		t.Fatalf("validateMCPArgumentNames error = %q, want %q", got, want)
+	}
+}
+
+func TestValidateMCPArgumentNamesQuotesEachUnknownArg(t *testing.T) {
+	err := validateMCPArgumentNames(map[string]any{
+		"zeta":  true,
+		"alpha": "x",
+	}, map[string]bool{})
+	if err == nil {
+		t.Fatal("validateMCPArgumentNames accepted unknown args")
+	}
+	if got, want := err.Error(), `unknown MCP parameters "alpha", "zeta"; use the tool schema's named parameters`; got != want {
+		t.Fatalf("validateMCPArgumentNames error = %q, want %q", got, want)
+	}
+}
+
+func TestBlockedStructuredArgsOnlyDropsInheritedRootFlags(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().String("profile", "", "root profile")
+	root.PersistentFlags().String("config", "", "root config")
+	root.PersistentFlags().String("json", "", "format output")
+
+	child := &cobra.Command{Use: "child"}
+	child.Flags().String("profile", "", "command profile")
+	root.AddCommand(child)
+
+	blocked := blockedStructuredArgsForCommand(child)
+	if blocked["profile"] {
+		t.Fatalf("command-local --profile was blocked as a root flag: %#v", blocked)
+	}
+	if !blocked["config"] {
+		t.Fatalf("inherited root --config was not blocked: %#v", blocked)
+	}
+	if blocked["json"] {
+		t.Fatalf("non-sensitive inherited --json should remain available: %#v", blocked)
+	}
+
+	got := cliArgsFromMCP(map[string]any{
+		"args":    "ignored",
+		"profile": "local-profile",
+		"config":  "/tmp/evil.yaml",
+		"json":    "true",
+	}, blocked)
+	want := []string{"--json", "true", "--profile", "local-profile"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cliArgsFromMCP command-aware blocklist: got %v, want %v", got, want)
 	}
 }
 
@@ -106,12 +184,17 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 // caught at unit-test scope rather than only via end-to-end MCP runs.
 func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 	guard := func(raw string) (rejected string, ok bool) {
-		for _, t := range SplitShellArgs(raw) {
-			if strings.HasPrefix(t, "-") {
+		tokens := SplitShellArgs(raw)
+		err := validatePositionalArgsForMCP(tokens, false, nil)
+		if err == nil {
+			return "", true
+		}
+		for _, t := range tokens {
+			if t != "-" && strings.HasPrefix(t, "-") {
 				return t, false
 			}
 		}
-		return "", true
+		return "", false
 	}
 	cases := []struct {
 		name        string
@@ -131,6 +214,7 @@ func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 		// the CLI is invoked via exec.CommandContext (no /bin/sh), so
 		// $VAR / && / | are inert. Pin that they don't trip the guard.
 		{"shell metachars in positional", `name with $VAR && pipe|stuff`, true, ""},
+		{"lone dash allowed as stdout escape", "-", true, ""},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -143,6 +227,371 @@ func TestArgsFieldRejectsFlagLikeTokens(t *testing.T) {
 				t.Errorf("guard(%q) blocked = %q, want %q", tc.in, tok, tc.wantBlocked)
 			}
 		})
+	}
+}
+
+func TestReadOnlyPositionalWriteSinksRejectFileOutput(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		readOnly  bool
+		sinks     map[int]bool
+		wantError bool
+	}{
+		{"unmarked read-only positional stays allowed", "out.json", true, nil, false},
+		{"write sink rejects file path", "out.json", true, map[int]bool{0: true}, true},
+		{"write sink permits stdout dash", "-", true, map[int]bool{0: true}, false},
+		{"write sink ignored outside read-only tool", "out.json", false, map[int]bool{0: true}, false},
+		{"later write sink rejects second positional", "team out.json", true, map[int]bool{1: true}, true},
+		{"later write sink allows missing optional positional", "team", true, map[int]bool{1: true}, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			err := validatePositionalArgsForMCP(SplitShellArgs(tc.raw), tc.readOnly, tc.sinks)
+			if tc.wantError && err == nil {
+				t.Fatalf("validatePositionalArgsForMCP(%q) succeeded, want error", tc.raw)
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("validatePositionalArgsForMCP(%q) returned error: %v", tc.raw, err)
+			}
+		})
+	}
+}
+
+func TestPositionalWriteSinkIndexesParsesAnnotation(t *testing.T) {
+	cmd := &cobra.Command{
+		Use: "export-unmatched [path]",
+		Annotations: map[string]string{
+			PositionalWriteSinksAnnotation: "0, 2;3",
+		},
+	}
+	got := positionalWriteSinkIndexes(cmd)
+	for _, idx := range []int{0, 2, 3} {
+		if !got[idx] {
+			t.Fatalf("positionalWriteSinkIndexes missing index %d from %#v", idx, got)
+		}
+	}
+	if got[1] {
+		t.Fatalf("positionalWriteSinkIndexes unexpectedly included index 1: %#v", got)
+	}
+}
+
+func TestPositionalsExposeNamedInputsAndRejectFlagLikeValues(t *testing.T) {
+	cmd := &cobra.Command{Use: "export <resource> [id]"}
+	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
+	if got, want := len(positionals), 2; got != want {
+		t.Fatalf("positionals length = %d, want %d: %#v", got, want, positionals)
+	}
+	if positionals[0].InputName != "resource" || !positionals[0].Required {
+		t.Fatalf("first positional = %#v, want required resource", positionals[0])
+	}
+	if positionals[1].InputName != "id" || positionals[1].Required {
+		t.Fatalf("second positional = %#v, want optional id", positionals[1])
+	}
+
+	got, err := positionalArgsFromMCP(map[string]any{"resource": "contacts", "id": "123"}, positionals, false, nil)
+	if err != nil {
+		t.Fatalf("positionalArgsFromMCP returned error: %v", err)
+	}
+	if want := []string{"contacts", "123"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("positionals = %v, want %v", got, want)
+	}
+
+	if _, err := positionalArgsFromMCP(map[string]any{"resource": "--config"}, positionals, false, nil); err == nil {
+		t.Fatal("flag-like structured positional succeeded, want error")
+	}
+}
+
+func TestStructuredPositionalWriteSinkUsesOriginalCLIIndex(t *testing.T) {
+	cmd := &cobra.Command{Use: "export [format] <output-file>"}
+	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
+	if got, want := len(positionals), 2; got != want {
+		t.Fatalf("positionals length = %d, want %d: %#v", got, want, positionals)
+	}
+
+	if _, err := positionalArgsFromMCP(
+		map[string]any{"output-file": "out.json"},
+		positionals,
+		true,
+		map[int]bool{1: true},
+	); err == nil {
+		t.Fatal("structured write sink with omitted optional positional succeeded, want error")
+	}
+
+	if _, err := positionalArgsFromMCP(
+		map[string]any{"output-file": "-"},
+		positionals,
+		true,
+		map[int]bool{1: true},
+	); err == nil {
+		t.Fatal("stdout structured write sink with omitted optional positional succeeded, want error")
+	}
+
+	got, err := positionalArgsFromMCP(
+		map[string]any{"format": "json", "output-file": "-"},
+		positionals,
+		true,
+		map[int]bool{1: true},
+	)
+	if err != nil {
+		t.Fatalf("stdout structured write sink with contiguous positionals returned error: %v", err)
+	}
+	if want := []string{"json", "-"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("structured write sink args = %v, want %v", got, want)
+	}
+}
+
+func TestStructuredPositionalsRejectGapsBeforeLaterArguments(t *testing.T) {
+	cmd := &cobra.Command{Use: "export [format] <output-file>"}
+	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
+
+	if _, err := positionalArgsFromMCP(
+		map[string]any{"output-file": "report.csv"},
+		positionals,
+		false,
+		nil,
+	); err == nil {
+		t.Fatal("later structured positional with omitted earlier positional succeeded, want error")
+	}
+
+	got, err := positionalArgsFromMCP(
+		map[string]any{"format": "csv", "output-file": "report.csv"},
+		positionals,
+		false,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("contiguous structured positionals returned error: %v", err)
+	}
+	if want := []string{"csv", "report.csv"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("contiguous structured positionals = %v, want %v", got, want)
+	}
+}
+
+func TestRawArgsWriteSinkValidationUsesStructuredPositionalOffset(t *testing.T) {
+	tokens := SplitShellArgs("evil.txt")
+	sinks := map[int]bool{1: true}
+	if err := validatePositionalArgsForMCPAtOffset(tokens, true, sinks, 1); err == nil {
+		t.Fatal("raw args write sink with structured positional offset succeeded, want error")
+	}
+	if err := validatePositionalArgsForMCPAtOffset(SplitShellArgs("-"), true, sinks, 1); err != nil {
+		t.Fatalf("stdout raw args with structured positional offset returned error: %v", err)
+	}
+}
+
+func TestCLIArgsFromMCPSkipsStructuredPositionals(t *testing.T) {
+	cmd := &cobra.Command{Use: "export <resource> [id]"}
+	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
+	blocked := cliFlagBlockedArgs(map[string]bool{"args": true}, positionals)
+	got := cliArgsFromMCP(map[string]any{
+		"resource": "contacts",
+		"id":       "123",
+		"format":   "json",
+	}, blocked)
+	want := []string{"--format", "json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cliArgsFromMCP forwarded positionals as flags: got %v, want %v", got, want)
+	}
+}
+
+func TestToolOptionsHideBlockedRootFlagsButKeepLocalCollisions(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.PersistentFlags().String("config", "", "root config")
+	root.PersistentFlags().Bool("json", false, "json output")
+
+	child := &cobra.Command{Use: "child <query>"}
+	child.Flags().String("config", "", "local config")
+	child.Flags().String("args", "", "reserved local args")
+	root.AddCommand(child)
+
+	blocked := blockedStructuredArgsForCommand(child)
+	positionals := positionalArgsForCommand(child, blocked)
+	tool := mcplib.NewTool("child", toolOptionsForFlags(child, blocked, positionals)...)
+	props := tool.InputSchema.Properties
+	if _, ok := props["json"]; !ok {
+		t.Fatalf("non-sensitive inherited --json missing from schema: %#v", props)
+	}
+	if _, ok := props["config"]; !ok {
+		t.Fatalf("command-local --config collision missing from schema: %#v", props)
+	}
+	if _, ok := props["query"]; !ok {
+		t.Fatalf("positional <query> missing from schema: %#v", props)
+	}
+	if _, ok := props["args"]; ok {
+		t.Fatalf("reserved args parameter should not be exposed as a flag schema: %#v", props)
+	}
+}
+
+func TestPositionalVariadicNestedAngleBracketsSanitizesKey(t *testing.T) {
+	// "[<slug>...]" is a nested optional variadic. A naive end-trim leaves an
+	// inner ">" (schema key "slug>"), which the Anthropic API rejects with a
+	// 400 and wedges the whole session. The key must be plain "slug", and the
+	// repeated "<slug> [<slug>...]" must collapse to a single positional slot.
+	cmd := &cobra.Command{Use: "add <slug> [<slug>...]"}
+	positionals := positionalArgsForCommand(cmd, blockedStructuredArgsForCommand(cmd))
+	if len(positionals) != 1 {
+		t.Fatalf("expected 1 collapsed positional, got %d: %#v", len(positionals), positionals)
+	}
+	if positionals[0].InputName != "slug" {
+		t.Fatalf("expected InputName %q, got %q", "slug", positionals[0].InputName)
+	}
+
+	tool := mcplib.NewTool("add", toolOptionsForFlags(cmd, blockedStructuredArgsForCommand(cmd), positionals)...)
+	props := tool.InputSchema.Properties
+	if _, ok := props["slug"]; !ok {
+		t.Fatalf("clean positional key %q missing from schema: %#v", "slug", props)
+	}
+	if _, ok := props["slug>"]; ok {
+		t.Fatalf("invalid schema key %q leaked into schema: %#v", "slug>", props)
+	}
+}
+
+func TestRegisterAllPreservesTypedToolsAndExposesHandBuiltSearchWithoutTypedEquivalent(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.AddCommand(
+		&cobra.Command{
+			Use:  "context",
+			RunE: func(cmd *cobra.Command, args []string) error { return nil },
+		},
+		&cobra.Command{
+			Use:  "auth",
+			RunE: func(cmd *cobra.Command, args []string) error { return nil },
+		},
+		&cobra.Command{
+			Use:  "search <query>",
+			RunE: func(cmd *cobra.Command, args []string) error { return nil },
+		},
+		&cobra.Command{
+			Use:         "secret",
+			Annotations: map[string]string{"mcp:hidden": "true"},
+			RunE:        func(cmd *cobra.Command, args []string) error { return nil },
+		},
+	)
+
+	s := server.NewMCPServer("test", "0.0.0")
+	s.AddTool(mcplib.NewTool("context", mcplib.WithDescription("typed context")), func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		return mcplib.NewToolResultText("typed"), nil
+	})
+	RegisterAll(s, root, func() (string, error) { return "missing-binary", nil })
+
+	tools := s.ListTools()
+	if tools["context"].Tool.Description != "typed context" {
+		t.Fatalf("typed context tool was overwritten: %#v", tools["context"].Tool)
+	}
+	if _, ok := tools["search"]; !ok {
+		t.Fatalf("hand-built search without typed search equivalent was not mirrored: %#v", tools)
+	}
+	for _, excluded := range []string{"auth", "secret"} {
+		if _, ok := tools[excluded]; ok {
+			t.Fatalf("excluded command %q was mirrored: %#v", excluded, tools)
+		}
+	}
+
+	sWithTypedSearch := server.NewMCPServer("test", "0.0.0")
+	sWithTypedSearch.AddTool(mcplib.NewTool("search", mcplib.WithDescription("typed search")), func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		return mcplib.NewToolResultText("typed"), nil
+	})
+	RegisterAll(sWithTypedSearch, root, func() (string, error) { return "missing-binary", nil })
+	if got := sWithTypedSearch.ListTools()["search"].Tool.Description; got != "typed search" {
+		t.Fatalf("typed search tool was overwritten: %q", got)
+	}
+}
+
+func TestShellOutSinglePositionalArgsFieldPreservesWhitespace(t *testing.T) {
+	bin := writeArgvHelper(t)
+	positionals := []positionalArg{positionalArg{
+		InputName: "query",
+		Display:   "<query>",
+		Required:  true,
+	}}
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"areas", "search"},
+		map[string]bool{"args": true, "query": true},
+		map[string]bool{"args": true, "query": true},
+		positionals,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"args": "New York City"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handler returned tool error: %s", toolResultText(result))
+	}
+	got := decodeArgvResult(t, result)
+	want := []string{"areas", "search", "New York City"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("shellout argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestShellOutStructuredPositionalPreservesWhitespace(t *testing.T) {
+	bin := writeArgvHelper(t)
+	positionals := []positionalArg{positionalArg{
+		InputName: "friend",
+		Display:   "<friend>",
+		Required:  true,
+	}}
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"fairness", "nudge"},
+		map[string]bool{"args": true, "friend": true},
+		map[string]bool{"args": true, "friend": true},
+		positionals,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"friend": "Jane Q Public"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handler returned tool error: %s", toolResultText(result))
+	}
+	got := decodeArgvResult(t, result)
+	want := []string{"fairness", "nudge", "Jane Q Public"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("shellout argv = %#v, want %#v", got, want)
+	}
+}
+
+func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
+	bin := writeArgvHelper(t)
+	positionals := []positionalArg{positionalArg{
+		InputName: "term",
+		Display:   "<term>",
+		Required:  true,
+	}}
+	handler := shellOutToCLI(
+		func() (string, error) { return bin, nil },
+		[]string{"search"},
+		map[string]bool{"args": true, "term": true},
+		map[string]bool{"args": true, "term": true},
+		positionals,
+		false,
+		nil,
+	)
+
+	result, err := handler(context.Background(), mcplib.CallToolRequest{Params: mcplib.CallToolParams{
+		Arguments: map[string]any{"query": "Eli Escobar"},
+	}})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("handler accepted unknown parameter, result=%s", toolResultText(result))
+	}
+	if got := toolResultText(result); !strings.Contains(got, `unknown MCP parameter "query"`) {
+		t.Fatalf("tool error = %q, want unknown parameter message", got)
 	}
 }
 
@@ -225,4 +674,53 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		t.Fatalf("write helper: %v", err)
 	}
 	return path
+}
+
+func writeArgvHelper(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "argvhelper.go")
+	body := `package main
+
+import (
+	"encoding/json"
+	"os"
+)
+
+func main() {
+	_ = json.NewEncoder(os.Stdout).Encode(os.Args[1:])
+}
+`
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatalf("write argv helper source: %v", err)
+	}
+	bin := filepath.Join(dir, "argvhelper")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	cmd := exec.Command("go", "build", "-o", bin, src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build argv helper: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func decodeArgvResult(t *testing.T, result *mcplib.CallToolResult) []string {
+	t.Helper()
+	var got []string
+	if err := json.Unmarshal([]byte(toolResultText(result)), &got); err != nil {
+		t.Fatalf("decode argv result: %v; text=%q", err, toolResultText(result))
+	}
+	return got
+}
+
+func toolResultText(result *mcplib.CallToolResult) string {
+	if result == nil || len(result.Content) == 0 {
+		return ""
+	}
+	text, ok := result.Content[0].(mcplib.TextContent)
+	if !ok {
+		return ""
+	}
+	return text.Text
 }

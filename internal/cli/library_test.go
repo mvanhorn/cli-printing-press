@@ -52,7 +52,6 @@ func TestLibraryListJSONWithManifests(t *testing.T) {
 		APIName:       "notion",
 		CLIName:       "notion-pp-cli",
 		Category:      "productivity",
-		CatalogEntry:  "notion",
 		Regions:       []string{"NL"},
 		APILanguage:   "nl",
 		Description:   "Notion workspace API",
@@ -65,7 +64,6 @@ func TestLibraryListJSONWithManifests(t *testing.T) {
 		APIName:       "stripe",
 		CLIName:       "stripe-pp-cli",
 		Category:      "payments",
-		CatalogEntry:  "stripe",
 		Description:   "Stripe payment processing API",
 	})
 

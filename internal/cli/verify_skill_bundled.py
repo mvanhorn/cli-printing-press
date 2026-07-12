@@ -68,11 +68,15 @@ def read_utf8(path: Path) -> str:
 # Cobra supplies these without explicit source-level flag declarations. Other
 # generated/global flags must still be discovered in source so command-scoped
 # copy-paste examples cannot hide missing flags behind this whitelist.
-COMMON_FLAGS = {"help", "version"}
+COMMON_FLAGS = {"help", "home", "version"}
 
 CODEBLOCK_BASH = re.compile(r"^[ \t]*```bash[^\n]*\n(.*?)\n[ \t]*```[ \t]*$", re.DOTALL | re.MULTILINE)
 FENCED_CODE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
+# Trailing punctuation that prose glues onto a token: quotes/brackets that wrap
+# a quoted command span (`'cli cmd --flag'`) and sentence punctuation. Cobra
+# flag names are `[a-z0-9-]`, so trimming these can never truncate a real name.
+TOKEN_TRAILING_PUNCT = "'\")].,;:"
 SHELL_VAR_RE = re.compile(r"\$(?:\{[^}\n]+\}|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?])")
 COMMAND_REFERENCE_SECTION_RE = re.compile(
     r"^##\s+Command\s+Reference\s*$(.*?)(?=^##\s+|\Z)",
@@ -729,7 +733,7 @@ def _cli_invocation_from_tokens(
             i += 1
             continue
         if t.startswith("--"):
-            flag_name = t.split("=", 1)[0]
+            flag_name = t.split("=", 1)[0].rstrip(TOKEN_TRAILING_PUNCT)
             flags.append(flag_name)
             # Skip a space-separated value (`--flag value`), but NOT when:
             #  - the value is inline (`--flag=value`) — the next token is a
@@ -809,6 +813,48 @@ def _split_before_shell_operator(line: str) -> str:
     return line
 
 
+def _strip_trailing_shell_comment(line: str) -> str:
+    quote: str | None = None
+    escaped = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if escaped:
+                escaped = False
+                i += 1
+                continue
+            if ch == "\\":
+                escaped = True
+                i += 1
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i].rstrip()
+        i += 1
+    return line
+
+
 def _shell_operator_cut_index(line: str, operator_index: int) -> int:
     # Redirections may be prefixed by a file descriptor, e.g. `2>err`.
     if line[operator_index] in "><":
@@ -848,7 +894,15 @@ def _extract_prose_invocations(
                 tokens = shlex.split(fragment, posix=True)
             except ValueError:
                 tokens = fragment.split()
-            tokens = [t.strip(".,;:)") for t in tokens if t.strip(".,;:)")]
+            # Strip wrapping/trailing punctuation, including quotes: a
+            # single-quoted prose command like `'<cli> auth login --chrome'`
+            # whose closing quote shlex.split cannot balance falls back to
+            # `fragment.split()` and would otherwise leak `--chrome'`.
+            tokens = [
+                t.strip(TOKEN_TRAILING_PUNCT)
+                for t in tokens
+                if t.strip(TOKEN_TRAILING_PUNCT)
+            ]
             if len(tokens) < 2:
                 continue
 
@@ -903,10 +957,7 @@ def extract_cli_invocations(skill: Path, cli_binary: str, cli_dir: Path | None =
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Strip trailing comment
-            cmt = line.find(" #")
-            if cmt != -1:
-                line = line[:cmt].strip()
+            line = _strip_trailing_shell_comment(line)
             if not line.startswith(cli_binary + " "):
                 continue
             # Strip shell command substitutions $(...) and backtick forms

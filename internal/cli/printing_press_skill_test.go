@@ -32,6 +32,11 @@ func TestPrintingPressSkillMCPEnrichmentGate(t *testing.T) {
 	require.Contains(t, content, "Mandatory >50 endpoint-tools confirmation")
 	require.Contains(t, content, "info: applied Cloudflare MCP pattern")
 	require.Contains(t, content, "does not require a blocking question")
+	require.Contains(t, content, "This is the only count that selects the >50 automatic")
+	require.Contains(t, content, "code orchestration will not shrink them")
+	require.Contains(t, content, "This collapses typed endpoint mirrors, not the runtime command mirror")
+	require.Contains(t, content, "covers the typed-endpoint surface")
+	require.Contains(t, content, "cmd.Annotations[\"mcp:hidden\"]")
 	require.Contains(t, content, "mcp.orchestration: endpoint-mirror")
 	require.Contains(t, content, "x-mcp.orchestration: endpoint-mirror")
 	require.Contains(t, content, "For OpenAPI input specs, declare these fields under `x-mcp:`")
@@ -45,7 +50,7 @@ func TestPrintingPressSkillTranscendenceCollectorSliceInit(t *testing.T) {
 	require.NoError(t, err)
 
 	content := string(data)
-	require.Contains(t, content, "results := make([]yourRowType, 0)")
+	require.Contains(t, content, "results := make([]yourRowType, 0, len(rawRows))")
 	require.Contains(t, content, "empty marshals")
 	require.NotContains(t, content, "var results []yourRowType")
 
