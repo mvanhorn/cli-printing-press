@@ -5449,3 +5449,154 @@ func TestLiveDogfoodSkipsInteractiveAuthCommands(t *testing.T) {
 	assert.NotContains(t, names, "auth login")
 	assert.Contains(t, names, "tasks list", "non-auth commands must still be collected")
 }
+
+// TestLiveDogfoodSuccessExitCodes covers the helper that WU-1 (retro F1)
+// added: the success set is exit 0 plus any pp:typed-exit-codes the command
+// declares, or an "Exit codes:" help block, defaulting to {0}.
+func TestLiveDogfoodSuccessExitCodes(t *testing.T) {
+	t.Run("annotation wins", func(t *testing.T) {
+		codes := liveDogfoodSuccessExitCodes(liveDogfoodCommand{
+			Annotations: map[string]string{typedExitCodesAnnotation: "0,2"},
+		})
+		assert.True(t, codes[0])
+		assert.True(t, codes[2])
+		assert.False(t, codes[1])
+	})
+
+	t.Run("help block fallback when no annotation", func(t *testing.T) {
+		help := "Do a thing.\n\nExit codes:\n  0  success\n  3  not found\n\nFlags:\n      --json\n"
+		codes := liveDogfoodSuccessExitCodes(liveDogfoodCommand{Help: help})
+		assert.True(t, codes[0])
+		assert.True(t, codes[3])
+		assert.False(t, codes[2])
+	})
+
+	t.Run("default is exit 0 only", func(t *testing.T) {
+		codes := liveDogfoodSuccessExitCodes(liveDogfoodCommand{})
+		assert.Equal(t, map[int]bool{0: true}, codes)
+	})
+
+	t.Run("exit 0 is always included even when the annotation omits it", func(t *testing.T) {
+		codes := liveDogfoodSuccessExitCodes(liveDogfoodCommand{
+			Annotations: map[string]string{typedExitCodesAnnotation: "2"},
+		})
+		assert.True(t, codes[0], "a normal exit-0 run must still count as success")
+		assert.True(t, codes[2])
+	})
+
+	t.Run("exit 0 is always included even when the help block omits it", func(t *testing.T) {
+		help := "Do a thing.\n\nExit codes:\n  3  not found\n\nFlags:\n      --json\n"
+		codes := liveDogfoodSuccessExitCodes(liveDogfoodCommand{Help: help})
+		assert.True(t, codes[0], "a normal exit-0 run must still count as success")
+		assert.True(t, codes[3])
+	})
+}
+
+// TestRunLiveDogfoodHonorsTypedExitCodes is WU-1's integration check: a command
+// that declares pp:typed-exit-codes and exits with a declared non-zero code on
+// its happy_path/json_fidelity probes scores PASS, while an otherwise-identical
+// command with no declaration still scores FAIL.
+func TestRunLiveDogfoodHonorsTypedExitCodes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodTypedExitFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    5 * time.Second,
+	})
+	require.NoError(t, err)
+
+	// Declared: `records verify` exits 2 and carries pp:typed-exit-codes "0,2".
+	declaredHappy := findResultByCommandKind(report, "records verify", LiveDogfoodTestHappy)
+	require.NotNil(t, declaredHappy, "expected records verify happy_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, declaredHappy.Status, declaredHappy.Reason)
+	declaredJSON := findResultByCommandKind(report, "records verify", LiveDogfoodTestJSON)
+	require.NotNil(t, declaredJSON, "expected records verify json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusPass, declaredJSON.Status, declaredJSON.Reason)
+
+	// Undeclared: `items verify` exits 2 with no annotation and must still fail.
+	undeclaredHappy := findResultByCommandKind(report, "items verify", LiveDogfoodTestHappy)
+	require.NotNil(t, undeclaredHappy, "expected items verify happy_path result")
+	assert.Equal(t, LiveDogfoodStatusFail, undeclaredHappy.Status)
+	assert.Equal(t, "exit 2", undeclaredHappy.Reason)
+}
+
+func writeLiveDogfoodTypedExitFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"records","subcommands":[
+      {"name":"verify","annotations":{"pp:typed-exit-codes":"0,2"}}
+    ]},
+    {"name":"items","subcommands":[
+      {"name":"verify"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "records" ] && [ "$2" = "verify" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Verify records.
+
+Usage:
+  fixture-pp-cli records verify [flags]
+
+Examples:
+  fixture-pp-cli records verify
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "items" ] && [ "$2" = "verify" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Verify items.
+
+Usage:
+  fixture-pp-cli items verify [flags]
+
+Examples:
+  fixture-pp-cli items verify
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "records" ] && [ "$2" = "verify" ]; then
+  echo 'no records supplied; nothing to verify' >&2
+  exit 2
+fi
+
+if [ "$1" = "items" ] && [ "$2" = "verify" ]; then
+  echo 'no items supplied; nothing to verify' >&2
+  exit 2
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
