@@ -2097,6 +2097,56 @@ func TestLiveDogfoodRequiredParamFixtureReason(t *testing.T) {
 	}
 }
 
+func TestLiveDogfoodDeclaredTypedExitReason(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		command  liveDogfoodCommand
+		exitCode int
+		want     string
+	}{
+		{
+			name:     "annotated typed exit is skipped",
+			command:  liveDogfoodCommand{Annotations: map[string]string{typedExitCodesAnnotation: "0,2"}},
+			exitCode: 2,
+			want:     reasonDeclaredTypedExit,
+		},
+		{
+			name:     "exit 0 is never a typed-exit skip",
+			command:  liveDogfoodCommand{Annotations: map[string]string{typedExitCodesAnnotation: "0,2"}},
+			exitCode: 0,
+			want:     "",
+		},
+		{
+			name:     "undeclared non-zero exit is not skipped",
+			command:  liveDogfoodCommand{Annotations: map[string]string{typedExitCodesAnnotation: "0,2"}},
+			exitCode: 1,
+			want:     "",
+		},
+		{
+			name:     "no annotation and no help block is not skipped",
+			command:  liveDogfoodCommand{},
+			exitCode: 2,
+			want:     "",
+		},
+		{
+			name:     "documented Exit codes help block is honored",
+			command:  liveDogfoodCommand{Help: "Usage:\n  x\n\nExit codes:\n  0  ok\n  2  usage\n"},
+			exitCode: 2,
+			want:     reasonDeclaredTypedExit,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := liveDogfoodDeclaredTypedExitReason(tc.command, tc.exitCode)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestLiveDogfoodFeatureAbsentFixtureReason(t *testing.T) {
 	t.Parallel()
 

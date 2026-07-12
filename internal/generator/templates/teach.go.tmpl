@@ -885,6 +885,11 @@ func newTeachPatternCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "teach-pattern",
 		Short: "Install a manual generalization pattern (query_template, resource_template, entity_kind)",
+		// Underspecified invocation intentionally exits 2 (usage error).
+		// Declaring it lets `verify` and live-dogfood score the Execute cell
+		// honestly instead of masking a FAIL, and keeps this local-write
+		// command out of the "could mutate anything" MCP bucket.
+		Annotations: map[string]string{"pp:typed-exit-codes": "0,2", "mcp:local-write": "true"},
 		Long: `Adds one row to search_patterns. The recall path uses patterns to
 substitute live query entities into a resource template, so a pattern
 with query_template="items in {entity}" and

@@ -64,6 +64,7 @@ const reasonFileFixtureRequired = "file fixture required"
 const reasonRequiredParamFixture = "blocked-fixture: required API parameter"
 const reasonFeatureAbsentFixture = "blocked-fixture: feature absent for runner credentials"
 const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
+const reasonDeclaredTypedExit = "declared typed-exit-code; synthetic happy-path insufficient"
 const reasonInteractiveCommand = "interactive command requires human input"
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
@@ -1349,13 +1350,17 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		} else if featureAbsentReason := liveDogfoodFeatureAbsentFixtureReason(happyRun); featureAbsentReason != "" {
 			happyResult.Status = LiveDogfoodStatusSkip
 			happyResult.Reason = featureAbsentReason
+		} else if typedExitReason := liveDogfoodDeclaredTypedExitReason(command, happyRun.exitCode); typedExitReason != "" {
+			happyResult.Status = LiveDogfoodStatusSkip
+			happyResult.Reason = typedExitReason
 		}
 		results = append(results, happyResult)
 
 		if happyResult.Status == LiveDogfoodStatusSkip &&
 			(happyResult.Reason == reasonUnavailableRunnerCredentials ||
 				happyResult.Reason == reasonRequiredParamFixture ||
-				happyResult.Reason == reasonFeatureAbsentFixture) {
+				happyResult.Reason == reasonFeatureAbsentFixture ||
+				happyResult.Reason == reasonDeclaredTypedExit) {
 			jsonResult := skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, happyResult.Reason)
 			jsonResult.FixtureSource = fixtureSource
 			results = append(results, jsonResult)
@@ -2293,6 +2298,43 @@ func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
 		return "exit_nonzero"
 	}
 	return "other"
+}
+
+// liveDogfoodDeclaredTypedExitReason returns a skip reason when the happy-path
+// run exited non-zero with a code the command explicitly declares as a typed
+// exit — via the pp:typed-exit-codes annotation or a documented "Exit codes:"
+// help block. LLM-fired local-write commands such as `teach`, `teach-pattern`,
+// `teach-playbook`, and `playbook amend` intentionally exit 2 when invoked
+// underspecified (they need an authored query/resource/playbook that the
+// generic runner cannot synthesize). A declared typed exit means the command
+// behaved as designed, so the happy-path probe is a skip, not a failure —
+// mirroring how `cli-printing-press verify` already honors typed exit codes.
+func liveDogfoodDeclaredTypedExitReason(command liveDogfoodCommand, exitCode int) string {
+	if exitCode == 0 {
+		return ""
+	}
+	if liveDogfoodTypedSuccessCodes(command)[exitCode] {
+		return reasonDeclaredTypedExit
+	}
+	return ""
+}
+
+// liveDogfoodTypedSuccessCodes resolves a command's declared exit-code set from
+// its annotations first, then from a documented "Exit codes:" help block. It
+// returns nil (not {0:true}) when nothing is declared, so only explicitly
+// declared non-zero codes are treated as typed exits by the caller.
+func liveDogfoodTypedSuccessCodes(command liveDogfoodCommand) map[int]bool {
+	if command.Annotations != nil {
+		if raw := strings.TrimSpace(command.Annotations[typedExitCodesAnnotation]); raw != "" {
+			if codes, ok := parseTypedExitCodesAnnotation(raw); ok {
+				return codes
+			}
+		}
+	}
+	if codes, ok := parseExitCodesFromHelp(command.Help); ok {
+		return codes
+	}
+	return nil
 }
 
 // resolveLiveDogfoodAcceptanceIdentity finds the marker's api_name, run_id,
