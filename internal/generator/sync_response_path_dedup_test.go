@@ -14,20 +14,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGenerateSyncResponsePathDedup guards the responsePathForResource switch
-// against duplicate `case` labels. The switch keys on resource+path, but a
-// single resource can hold multiple endpoints that share one templated path
-// with different response envelope keys. Google's Admin Directory is the real
-// case: /customer/{customer}/roles serves both the roles list (envelope
-// "items") and the role-privileges read (envelope "rolePrivileges"). Ranging
-// over every endpoint emitted two `case "admin\x00/customer/{customer}/roles"`
-// labels, which is a Go compile error ("duplicate case in expression switch").
-//
-// The fix dedupes by switch key (first endpoint in sorted order wins), so the
-// generated switch always compiles. This test compiles the whole generated
-// module to prove it.
 func TestGenerateSyncResponsePathDedup(t *testing.T) {
 	t.Parallel()
+
+	tests := []struct {
+		name            string
+		syncableName    string
+		nonSyncableName string
+	}{
+		{name: "syncable sorts first", syncableName: "list", nonSyncableName: "privileges"},
+		{name: "non-syncable sorts first", syncableName: "zzz_list", nonSyncableName: "alpha_privileges"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			testGenerateSyncResponsePathDedup(t, tt.syncableName, tt.nonSyncableName)
+		})
+	}
+}
+
+func testGenerateSyncResponsePathDedup(t *testing.T, syncableName, nonSyncableName string) {
+	t.Helper()
 
 	apiSpec := &spec.APISpec{
 		Name:    "dup-path-sample",
@@ -44,13 +51,10 @@ func TestGenerateSyncResponsePathDedup(t *testing.T) {
 			Path:   "~/.config/dup-path-sample-pp-cli/config.toml",
 		},
 		Resources: map[string]spec.Resource{
-			// Two endpoints in one resource sharing the exact same templated
-			// path, each with a distinct response envelope key. This is the
-			// shape that produced duplicate switch cases before the fix.
 			"roles": {
 				Description: "Directory roles",
 				Endpoints: map[string]spec.Endpoint{
-					"list": {
+					syncableName: {
 						Method:       "GET",
 						Path:         "/customer/{customer}/roles",
 						Description:  "List roles",
@@ -58,7 +62,7 @@ func TestGenerateSyncResponsePathDedup(t *testing.T) {
 						ResponsePath: "items",
 						Response:     spec.ResponseDef{Type: "array"},
 					},
-					"privileges": {
+					nonSyncableName: {
 						Method:       "GET",
 						Path:         "/customer/{customer}/roles",
 						Description:  "List role privileges",
@@ -78,20 +82,15 @@ func TestGenerateSyncResponsePathDedup(t *testing.T) {
 	require.NoError(t, err)
 	syncContent := string(syncGo)
 
-	// Exactly one case label for the shared key — not two. The NUL separator
-	// is rendered into the generated source as the escaped literal `\x00`
-	// (via %q), not a raw NUL byte.
 	caseLabel := `case "roles\x00/customer/{customer}/roles":`
 	got := strings.Count(syncContent, caseLabel)
 	assert.Equal(t, 1, got,
 		"responsePathForResource must emit the shared resource+path key exactly once; got %d", got)
 
-	// The winning ResponsePath is the first endpoint in sorted endpoint-name
-	// order ("list" < "privileges"), so the list envelope "items" wins.
 	assert.Contains(t, syncContent, `return []string{"items"}`,
-		"first endpoint in sorted order should own the deduped case")
+		"syncable endpoint should own the deduped case")
+	assert.NotContains(t, syncContent, `return []string{"rolePrivileges"}`,
+		"non-syncable endpoint must not own the deduped case")
 
-	// The whole generated module must compile — the compile error this test
-	// exists for only surfaces at build time.
 	requireGeneratedCompiles(t, outputDir)
 }

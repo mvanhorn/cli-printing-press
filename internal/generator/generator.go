@@ -5200,15 +5200,9 @@ type responsePathCase struct {
 	ResponsePath string
 }
 
-// responsePathCases returns a deterministic, deduplicated list of switch cases
-// for responsePathForResource. The switch keys on resource+path, but a single
-// resource can hold multiple endpoints that share one templated path (Google's
-// Admin Directory, for example, exposes /customer/{customer}/roles for both the
-// roles list and the role-privileges read, each with a different response
-// envelope key). Ranging over every endpoint therefore emits duplicate `case`
-// labels, which is a compile error. Dedupe by key here — first endpoint in
-// sorted (resource, endpoint) order wins — so the generated switch always
-// compiles. Sorted iteration keeps output stable across runs.
+// responsePathCases returns deterministic switch cases deduplicated by resource
+// and path. Syncable endpoints take precedence because the generated lookup is
+// used by sync; endpoint name breaks ties to keep output stable.
 func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
 	resourceNames := make([]string, 0, len(resources))
 	for name := range resources {
@@ -5224,7 +5218,14 @@ func responsePathCases(resources map[string]spec.Resource) []responsePathCase {
 		for endpointName := range resource.Endpoints {
 			endpointNames = append(endpointNames, endpointName)
 		}
-		sort.Strings(endpointNames)
+		sort.Slice(endpointNames, func(i, j int) bool {
+			left := resource.Endpoints[endpointNames[i]]
+			right := resource.Endpoints[endpointNames[j]]
+			if left.Syncable != right.Syncable {
+				return left.Syncable
+			}
+			return endpointNames[i] < endpointNames[j]
+		})
 		for _, endpointName := range endpointNames {
 			endpoint := resource.Endpoints[endpointName]
 			if endpoint.ResponsePath == "" {
