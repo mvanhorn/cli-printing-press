@@ -984,6 +984,8 @@ func TestPolishSkillInheritsPrintingPressBinaryFromParent(t *testing.T) {
 	assert.Contains(t, polishSkill, "mcp-sync refused")
 	assert.Contains(t, polishSkill, "reprint required")
 	assert.Contains(t, polishSkill, "/printing-press-reprint")
+	assert.Contains(t, polishSkill, "confirm `MCP Surface: PASS` before shipping")
+	assert.Contains(t, polishSkill, "Do not rerun dogfood against the stale `$CLI_DIR`")
 	assert.Contains(t, polishSkill, `"$PRINTING_PRESS_BIN" verify-skill --dir "$CLI_DIR"`)
 	assert.NotContains(t, polishSkill, "cli-printing-press lock update --cli \"$CLI_NAME\"")
 	assert.NotContains(t, polishSkill, "cli-printing-press mcp-sync \"$CLI_DIR\"")
