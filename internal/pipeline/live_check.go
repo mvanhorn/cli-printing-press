@@ -798,6 +798,7 @@ func sampleOutputParts(parts ...string) string {
 	capRemaining := outputSampleMaxBytes
 	truncated := false
 	for _, part := range parts {
+		part = artifacts.RedactPIIJWTs(part)
 		if redacted, ok := artifacts.RedactPIIJSONKeys(part); ok {
 			part = redacted
 		}

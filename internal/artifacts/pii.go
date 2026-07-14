@@ -197,6 +197,8 @@ var piiJSONScalarKeys = map[string]bool{
 }
 
 var piiJSONKeyNeedleRE = regexp.MustCompile(`(?i)"(?:access[_ -]?token|address1?|address2|api[_ -]?key|api[_ -]?token|billing[_ -]?address|card[_ -]?last[_ -]?4|client[_ -]?secret|csrf(?:[_ -]?token)?|customer[_ -]?(?:email|name)|email|first[_ -]?name|full[_ -]?name|invoice(?:[_ -]?number)?|last[_ -]?name|last[_ -]?4|mobile|name|password|phone(?:[_ -]?number)?|postal[_ -]?code|refresh[_ -]?token|secret|session(?:[_ -]?token)?|shipping[_ -]?address|street(?:[_ -]?address)?|token|websocket[_ -]?url|zip)"\s*:`)
+var piiJSONCredentialKeyNeedleRE = regexp.MustCompile(`(?i)"(?:auth(?:entication)?[_ -]?token|[^"\r\n]*sso[^"\r\n]*token)"\s*:`)
+var piiCredentialJWTPattern = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
 
 // RedactPIIText returns text with customer-PII shapes replaced before the
 // text is written to durable artifacts. JSON input preserves non-PII fields
@@ -223,7 +225,7 @@ func RedactPIIJSONKeys(text string) (string, bool) {
 	if strings.TrimSpace(text) == "" {
 		return text, false
 	}
-	if !piiJSONKeyNeedleRE.MatchString(text) {
+	if !piiJSONKeyNeedleRE.MatchString(text) && !piiJSONCredentialKeyNeedleRE.MatchString(text) {
 		return text, false
 	}
 	var parsed any
@@ -305,7 +307,7 @@ func redactPIIJSONLines(text string) (string, bool) {
 }
 
 func redactPIIJSONValue(value any, key string, redactStringPatterns bool) (any, bool) {
-	if key != "" && piiJSONScalarKeys[normalizePIIJSONKey(key)] {
+	if key != "" && isPIIJSONScalarKey(key) {
 		return PIIRedactedSentinel, true
 	}
 
@@ -351,7 +353,7 @@ func redactPIIJSONKeyFragments(text string) (string, bool) {
 			return match
 		}
 		key, err := strconv.Unquote(`"` + pair[1] + `"`)
-		if err != nil || !piiJSONScalarKeys[normalizePIIJSONKey(key)] {
+		if err != nil || !isPIIJSONScalarKey(key) {
 			return match
 		}
 		changed = true
@@ -373,12 +375,42 @@ func normalizePIIJSONKey(key string) string {
 	return key
 }
 
+func isPIIJSONScalarKey(key string) bool {
+	normalized := normalizePIIJSONKey(key)
+	return piiJSONScalarKeys[normalized] ||
+		normalized == "authtoken" ||
+		normalized == "authenticationtoken" ||
+		(strings.HasSuffix(normalized, "token") && hasPIISSOKeySegment(key))
+}
+
+func hasPIISSOKeySegment(key string) bool {
+	lower := strings.ToLower(key)
+	for offset := 0; offset < len(lower); {
+		relative := strings.Index(lower[offset:], "sso")
+		if relative == -1 {
+			return false
+		}
+		idx := offset + relative
+		if idx == 0 || strings.ContainsRune("_- ", rune(key[idx-1])) ||
+			(key[idx] >= 'A' && key[idx] <= 'Z' && key[idx-1] >= 'a' && key[idx-1] <= 'z') {
+			return true
+		}
+		offset = idx + len("sso")
+	}
+	return false
+}
+
+// RedactPIIJWTs removes JWT-shaped credentials before callers truncate text.
+func RedactPIIJWTs(text string) string {
+	return piiCredentialJWTPattern.ReplaceAllString(text, PIIRedactedSentinel)
+}
+
 func redactPIIPatterns(text string) string {
 	redacted := text
 	for _, det := range piiDetectors {
 		redacted = redactDetectorMatches(det, redacted)
 	}
-	return redacted
+	return RedactPIIJWTs(redacted)
 }
 
 func redactDetectorMatches(det piiDetector, text string) string {
