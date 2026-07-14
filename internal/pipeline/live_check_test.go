@@ -684,6 +684,16 @@ func TestLiveCheck_OutputSampleRedactsLongJWTAcrossTruncationBoundary(t *testing
 	require.Contains(t, got, artifacts.PIIRedactedSentinel)
 }
 
+func TestLiveCheck_OutputSampleRedactsSplitJWTAcrossTruncationBoundary(t *testing.T) {
+	header := "eyJ" + strings.Repeat("a", 32)
+	payloadAndSignature := "." + strings.Repeat("b", sampleRedactionLookaheadBytes+32) + ".signature"
+	got := sampleOutputParts(strings.Repeat("x", outputSampleMaxBytes-8)+" "+header, payloadAndSignature)
+
+	require.Contains(t, got, "…[truncated]")
+	require.NotContains(t, got, "eyJ")
+	require.Contains(t, got, artifacts.PIIRedactedSentinel)
+}
+
 // TestLiveCheck_BinaryAutoDerivation verifies RunLiveCheck finds the binary
 // when BinaryName is empty by trying <base>-pp-cli then <base>.
 func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
