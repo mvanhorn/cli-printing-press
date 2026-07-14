@@ -92,8 +92,10 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 		require.Containsf(t, got, want, "expected flag registration %q", want)
 	}
 
-	// Required-flag validation: parent-prefixed flag in the error message
-	// matches the registered flag name.
+	// Required-flag validation: the nested requirement applies only when the
+	// optional start object is populated, and the parent-prefixed flag in the
+	// error message matches the registered flag name.
+	require.Contains(t, got, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
 	require.Contains(t, got, `cmd.Flags().Changed("start-date-time")`, "required check must use parent-prefixed flag")
 	require.Contains(t, got, `"required flag \"%s\" not set", "start-date-time"`)
 
@@ -120,6 +122,65 @@ func TestGenerateNestedObjectBodyEmitsFieldFlags(t *testing.T) {
 	fset := token.NewFileSet()
 	_, parseErr := parser.ParseFile(fset, "events_create.go", got, parser.AllErrors)
 	require.NoError(t, parseErr, "generated file with nested-object body must parse as Go")
+
+	mcpGot := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	require.Contains(t, mcpGot, `mcplib.WithString("start-date-time", mcplib.Description("RFC3339 timestamp"))`)
+	require.NotContains(t, mcpGot, `mcplib.WithString("start-date-time", mcplib.Required()`)
+
+	runtimeTest := `package cli
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func runNestedRequiredCommand(t *testing.T, args ...string) error {
+	t.Helper()
+	var flags rootFlags
+	cmd := newRootCmd(&flags)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(args)
+	return cmd.Execute()
+}
+
+func TestOptionalNestedRequiredRuntime(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}"))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("MYAPI_TOKEN", "test-token")
+	t.Setenv("NESTED_BODY_BASE_URL", server.URL)
+
+	if err := runNestedRequiredCommand(t, "events", "create", "--subject", "Planning"); err != nil {
+		t.Fatalf("optional parent omitted: %v", err)
+	}
+	err := runNestedRequiredCommand(t, "events", "create", "--subject", "Planning", "--start-time-zone", "UTC")
+	if err == nil || !strings.Contains(err.Error(), "required flag \"start-date-time\" not set") {
+		t.Fatalf("partially populated parent error = %v", err)
+	}
+	if err := runNestedRequiredCommand(t, "events", "create", "--subject", "Planning", "--start-time-zone", "UTC", "--start-date-time", "2026-07-13T12:00:00Z"); err != nil {
+		t.Fatalf("complete optional parent: %v", err)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "nested_required_runtime_test.go"), []byte(runtimeTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestOptionalNestedRequiredRuntime", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+
+	promotedSpec := apiSpec
+	delete(promotedSpec.Resources["events"].Endpoints, "get")
+	promotedOutputDir := filepath.Join(t.TempDir(), "nested-body-promoted-pp-cli")
+	require.NoError(t, New(promotedSpec, promotedOutputDir).Generate())
+	promoted := readGeneratedFile(t, promotedOutputDir, "internal", "cli", "promoted_events.go")
+	require.Contains(t, promoted, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, promoted, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+	requireGeneratedCompiles(t, promotedOutputDir)
 }
 
 func TestGenerateInternalYAMLBodyObjectSchema(t *testing.T) {

@@ -5786,19 +5786,20 @@ func mcpBodyInputParams(endpoint spec.Endpoint) []spec.Param {
 	}
 	body := flattenCollidingBodyFields(endpoint.Body)
 	params := make([]spec.Param, 0, len(body))
-	collectMCPBodyInputParams(&params, body, 0, "")
+	collectMCPBodyInputParams(&params, body, 0, "", true)
 	return params
 }
 
-func collectMCPBodyInputParams(params *[]spec.Param, body []spec.Param, depth int, flagPrefix string) {
+func collectMCPBodyInputParams(params *[]spec.Param, body []spec.Param, depth int, flagPrefix string, ancestorsRequired bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
 			if depth+1 >= maxBodyFlagDepth {
 				continue
 			}
-			collectMCPBodyInputParams(params, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)))
+			collectMCPBodyInputParams(params, p.Fields, depth+1, joinFlag(flagPrefix, publicFlagName(p)), ancestorsRequired && p.Required)
 			continue
 		}
+		p.Required = p.Required && ancestorsRequired
 		if flagPrefix != "" {
 			p.FlagName = joinFlag(flagPrefix, publicFlagName(p))
 			p.Aliases = nil
@@ -6276,7 +6277,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			continue
 		}
 		if isStringCSVArrayParam(p) {
-			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
 			if strings.EqualFold(strings.TrimSpace(p.ItemType), "object") {
 				fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), csvArrayValueExpr(p, "body"+ident))
 			} else {
@@ -6290,7 +6291,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			continue
 		}
 		if isJSONOrScalarParam(p) {
-			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(b, "%s\tif looksLikeJSONComposite(body%s) {\n", indent, ident)
 			fmt.Fprintf(b, "%s\t\tvar parsed%s any\n", indent, ident)
 			fmt.Fprintf(b, "%s\t\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
@@ -6312,7 +6313,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			if isComplex {
 				rhs = "parsed" + ident
 			}
-			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(b, "%s\tvar parsed%s any\n", indent, ident)
 			fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
 			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
@@ -6331,12 +6332,12 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			// false" from "user did not touch the flag" and is correct
 			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
 			// the OpenAPI parser normalizes to "bool".
-			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(b, "%sif body%s != %s {\n", indent, ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
+		fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 		if isStringBackedBoolParam(p) {
 			fmt.Fprintf(b, "%s\tparsed%s, err := strconv.ParseBool(body%s)\n", indent, ident, ident)
 			fmt.Fprintf(b, "%s\tif err != nil {\n", indent)
@@ -6348,6 +6349,13 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 		}
 		fmt.Fprintf(b, "%s}\n", indent)
 	}
+}
+
+func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
+	if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
+		return fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
+	}
+	return fmt.Sprintf("body%s != %s", ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
 }
 
 func bodyHasStringBackedBool(endpoint spec.Endpoint) bool {
@@ -6501,6 +6509,9 @@ func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPr
 // behavior. For non-multipart, top-level params use flagChangedExpr
 // (lifts aliases); nested fields use a single Changed() check on the
 // parent-prefixed flag because aliases are not propagated to children.
+// Required fields below an optional object are checked only when any flag
+// in that object was supplied, matching JSON Schema's conditional presence
+// semantics for nested required lists.
 func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	var b strings.Builder
 	if endpoint.BodyJSONFallback {
@@ -6517,22 +6528,57 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 		}
 		return b.String()
 	}
-	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), 0, indent, "", true)
+	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), 0, indent, "", "", true)
 	return b.String()
 }
 
-func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix string, topLevel bool) {
+func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix, identPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
 			if depth+1 >= maxBodyFlagDepth {
 				continue
 			}
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, false)
+			ident := identPrefix + toCamel(paramIdent(p))
+			if p.Required {
+				renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, ident, false)
+				continue
+			}
+			var nested strings.Builder
+			renderBodyRequiredChecks(&nested, p.Fields, depth+1, indent+"\t", flag, ident, false)
+			if nested.Len() == 0 {
+				continue
+			}
+			changedExpr := bodyFieldsChangedExpr(p.Fields, depth+1, flag, ident)
+			if changedExpr == "" {
+				continue
+			}
+			fmt.Fprintf(b, "\n%sif %s {", indent, changedExpr)
+			b.WriteString(nested.String())
+			fmt.Fprintf(b, "\n%s}", indent)
 			continue
 		}
 		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, topLevel)
 	}
+}
+
+func bodyFieldsChangedExpr(body []spec.Param, depth int, flagPrefix, identPrefix string) string {
+	var expressions []string
+	for _, p := range body {
+		flag := joinFlag(flagPrefix, publicFlagName(p))
+		ident := identPrefix + toCamel(paramIdent(p))
+		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			if nested := bodyFieldsChangedExpr(p.Fields, depth+1, flag, ident); nested != "" {
+				expressions = append(expressions, nested)
+			}
+			continue
+		}
+		expressions = append(expressions, bodyLeafPresenceExpr(p, ident, flag))
+	}
+	return strings.Join(expressions, " || ")
 }
 
 // bodyExceedsFlagDepth reports whether emitting per-field body flags for
