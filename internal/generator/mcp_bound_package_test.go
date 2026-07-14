@@ -153,10 +153,9 @@ func TestGenerateMCPToolsUseOpaqueCursorForResumableListEndpoints(t *testing.T) 
 						{Name: "after", Type: "string"},
 					},
 					Pagination: &spec.Pagination{
-						Type:           "cursor",
-						LimitParam:     "limit",
-						CursorParam:    "after",
-						NextCursorPath: "next_cursor",
+						Type:        "cursor",
+						LimitParam:  "limit",
+						CursorParam: "after",
 					},
 					Response: spec.ResponseDef{Type: "array", Item: "Group"},
 				},
@@ -184,10 +183,25 @@ func TestGenerateMCPToolsUseOpaqueCursorForResumableListEndpoints(t *testing.T) 
 		"resumable MCP list tools should expose a canonical opaque cursor input")
 	assert.NotContains(t, toolsCode, `mcplib.WithString("after"`,
 		"resumable MCP list tools should not expose the raw upstream cursor parameter")
-	assert.Contains(t, toolsCode, `mcpPageConfig{CursorParam: "after", NextCursorPath: "next_cursor"}`,
-		"generated handler should receive the upstream cursor metadata needed to continue safely")
+	assert.Contains(t, toolsCode, `mcpPageConfig{CursorParam: "after", NextCursorPath: "after"}`,
+		"generated handler should fall back to the cursor parameter as the response lookup path")
 	assert.Contains(t, toolsCode, `bound.EndpointPageResponse(method, data, bound.PageOptions{`,
 		"typed MCP responses should route resumable endpoints through the cursor-aware bound path")
 
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestMCPPageConfigDoesNotTreatNumericCursorAsResponsePath(t *testing.T) {
+	for _, paginationType := range []string{"offset", "page"} {
+		t.Run(paginationType, func(t *testing.T) {
+			endpoint := spec.Endpoint{
+				Method: "GET",
+				Pagination: &spec.Pagination{
+					Type:        paginationType,
+					CursorParam: paginationType,
+				},
+			}
+			assert.Equal(t, `mcpPageConfig{CursorParam: "`+paginationType+`", NextCursorPath: ""}`, mcpPageConfig(endpoint))
+		})
+	}
 }

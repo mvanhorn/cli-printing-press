@@ -5769,9 +5769,14 @@ func mcpPageConfig(endpoint spec.Endpoint) string {
 	if !mcpEndpointPageable(endpoint) {
 		return "mcpPageConfig{}"
 	}
+	nextCursorPath := endpoint.Pagination.NextCursorPath
+	paginationType := strings.ToLower(strings.TrimSpace(endpoint.Pagination.Type))
+	if strings.TrimSpace(nextCursorPath) == "" && paginationType != "offset" && paginationType != "page" {
+		nextCursorPath = endpoint.Pagination.CursorParam
+	}
 	return fmt.Sprintf("mcpPageConfig{CursorParam: %q, NextCursorPath: %q}",
 		endpoint.Pagination.CursorParam,
-		endpoint.Pagination.NextCursorPath,
+		nextCursorPath,
 	)
 }
 
