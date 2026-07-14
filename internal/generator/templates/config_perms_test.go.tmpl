@@ -170,6 +170,9 @@ func TestLoad_RefusesOverPermissiveConfigOnRead(t *testing.T) {
 	if cfg.AuthSource != "" {
 		t.Errorf("over-permissive config must be a miss; AuthSource should be unset, got %q", cfg.AuthSource)
 	}
+	if cfg.BaseURL != "https://example.test/v1" {
+		t.Errorf("over-permissive config must preserve non-secret settings; BaseURL = %q", cfg.BaseURL)
+	}
 }
 
 {{- if or .Auth.EnvVarSpecs .Auth.EnvVars}}

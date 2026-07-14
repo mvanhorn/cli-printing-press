@@ -71,7 +71,7 @@ func TestGenerate_EmitsCredsPermsForTokenSpec(t *testing.T) {
 	// a direct require: a require line that is NOT marked "// indirect".
 	goMod := readGeneratedFile(t, outputDir, "go.mod")
 	var sysLine string
-	for _, line := range strings.Split(goMod, "\n") {
+	for line := range strings.SplitSeq(goMod, "\n") {
 		// Match the require DIRECTIVE for x/sys, not comment lines that merely
 		// mention the module. Handles both standalone (`require golang.org/x/sys
 		// v...`) and require-block (`\tgolang.org/x/sys v...`) forms.

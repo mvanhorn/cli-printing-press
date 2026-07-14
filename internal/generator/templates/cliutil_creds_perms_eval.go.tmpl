@@ -76,10 +76,13 @@ func evalCredsSecurity(sddl, currentUserSID string) error {
 		}
 		aceType := strings.ToUpper(strings.TrimSpace(fields[0]))
 		trustee := strings.ToUpper(strings.TrimSpace(fields[5]))
-		// Only plain allow ("A") / object-allow ("OA") are modeled. Conditional/
-		// callback/other ACE types (XA/XU/ZA/…) → fail closed.
+		// Plain deny ACEs do not grant access, so they cannot broaden a secret
+		// file's readable principals. Conditional/callback/other ACE types remain
+		// unsupported and fail closed because their effective access is ambiguous.
 		switch aceType {
 		case "A", "OA":
+		case "D", "OD":
+			continue
 		default:
 			return fmt.Errorf("token file DACL has an unsupported ACE type %q; refusing (fail-closed)", aceType)
 		}

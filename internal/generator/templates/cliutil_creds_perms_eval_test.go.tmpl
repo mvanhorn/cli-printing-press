@@ -13,6 +13,8 @@ func TestEvalCredsSecurity(t *testing.T) {
 		wantErr bool
 	}{
 		{"owner-me restrictive DACL", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-21-1-2-3-1000)", false},
+		{"deny ACE does not grant access", "O:S-1-5-21-1-2-3-1000D:(D;;FR;;;WD)(A;;FA;;;S-1-5-21-1-2-3-1000)", false},
+		{"object-deny ACE does not grant access", "O:S-1-5-21-1-2-3-1000D:(OD;;FR;;;WD)(A;;FA;;;S-1-5-21-1-2-3-1000)", false},
 		{"broad group Everyone", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;WD)", true},
 		{"broad group Users by SID", "O:S-1-5-21-1-2-3-1000D:(A;;FA;;;S-1-5-32-545)", true},
 		{"foreign owner", "O:S-1-5-21-9-9-9-500D:(A;;FA;;;S-1-5-21-1-2-3-1000)", true},
