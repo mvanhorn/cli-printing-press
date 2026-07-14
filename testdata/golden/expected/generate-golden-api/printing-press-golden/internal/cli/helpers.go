@@ -704,8 +704,8 @@ func paginatedGet(ctx context.Context, c interface {
 				// Check for next cursor
 				if cursorLookupPath != "" {
 					if tokenRaw, ok := rawAtPath(obj, cursorLookupPath); ok {
-						foundCursorField = true
 						if token := paginationCursorToken(tokenRaw); token != "" {
+							foundCursorField = true
 							if _, seen := seenCursorTokens[token]; seen {
 								if humanFriendly {
 									fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")

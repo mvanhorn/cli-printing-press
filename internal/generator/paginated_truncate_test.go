@@ -47,7 +47,7 @@ func TestPaginatedGetEmitsTruncationWarning(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(helpersSrc), "func emitTruncationWarning(",
 		"generated helpers.go should define emitTruncationWarning")
-	require.Contains(t, string(helpersSrc), "emitTruncationWarning(data, nextCursorPath, hasMoreField, paginationType)",
+	require.Contains(t, string(helpersSrc), "emitTruncationWarning(data, cursorLookupPath, hasMoreField, paginationType)",
 		"paginatedGet should call emitTruncationWarning on the single-page path")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
