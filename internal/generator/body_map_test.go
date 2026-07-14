@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/stretchr/testify/require"
 )
 
 // TestBodyMap pins the rendered Go code for each of the three body-param
@@ -507,10 +508,10 @@ func TestBodyFlagRegs_NonJSONStaysFlat(t *testing.T) {
 	}
 }
 
-// TestBodyRequiredChecks_NestedField uses parent-prefixed flag in the
-// emitted `cmd.Flags().Changed(...)` call so the validator agrees with
-// the flag name registered in bodyFlagRegs.
-func TestBodyRequiredChecks_NestedField(t *testing.T) {
+// TestBodyRequiredChecks_OptionalNestedObject gates required child fields on
+// the optional parent being populated. JSON Schema's child `required` list
+// applies only when the parent object is present.
+func TestBodyRequiredChecks_OptionalNestedObject(t *testing.T) {
 	t.Parallel()
 	got := bodyRequiredChecks(spec.Endpoint{
 		Body: []spec.Param{{
@@ -518,14 +519,97 @@ func TestBodyRequiredChecks_NestedField(t *testing.T) {
 			Type: "object",
 			Fields: []spec.Param{
 				{Name: "dateTime", Type: "string", Required: true},
+				{Name: "timeZone", Type: "string"},
 			},
 		}},
 	}, "\t\t\t")
-	if !strings.Contains(got, `cmd.Flags().Changed("start-date-time")`) {
-		t.Errorf("expected parent-prefixed Changed() call for nested required field, got:\n%s", got)
+	require.Contains(t, got, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+	require.Contains(t, got, `"required flag \"%s\" not set", "start-date-time"`)
+}
+
+func TestBodyRequiredChecks_OptionalNestedObjectDefaultActivatesParent(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{
+		Body: []spec.Param{{
+			Name: "start",
+			Type: "object",
+			Fields: []spec.Param{
+				{Name: "dateTime", Type: "string", Required: true},
+				{Name: "timeZone", Type: "string", Default: "UTC"},
+			},
+		}},
+	}, "\t\t\t")
+	require.Contains(t, got, `if bodyStartDateTime != "" || bodyStartTimeZone != "" {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+}
+
+func TestBodyRequiredChecks_RecursiveOptionalObjects(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{
+		Body: []spec.Param{{
+			Name: "outer",
+			Type: "object",
+			Fields: []spec.Param{
+				{Name: "label", Type: "string"},
+				{
+					Name: "config",
+					Type: "object",
+					Fields: []spec.Param{
+						{Name: "mode", Type: "string", Required: true},
+						{Name: "note", Type: "string"},
+					},
+				},
+			},
+		}},
+	}, "\t\t\t")
+	require.Contains(t, got, `if bodyOuterLabel != "" || bodyOuterConfigMode != "" || bodyOuterConfigNote != "" {`)
+	require.Contains(t, got, `if bodyOuterConfigMode != "" || bodyOuterConfigNote != "" {`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("outer-config-mode") && !flags.dryRun {`)
+}
+
+func TestBodyRequiredChecks_RequiredNestedObjectRemainsUnconditional(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{
+		Body: []spec.Param{{
+			Name:     "start",
+			Type:     "object",
+			Required: true,
+			Fields: []spec.Param{
+				{Name: "dateTime", Type: "string", Required: true},
+				{Name: "timeZone", Type: "string"},
+			},
+		}},
+	}, "\t\t\t")
+	require.NotContains(t, got, `cmd.Flags().Changed("start-time-zone")`)
+	require.Contains(t, got, `if !cmd.Flags().Changed("start-date-time") && !flags.dryRun {`)
+}
+
+func TestMCPBodyInputParams_NestedRequiredFollowsParent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		parentRequired bool
+		wantRequired   bool
+	}{
+		{name: "optional parent", parentRequired: false, wantRequired: false},
+		{name: "required parent", parentRequired: true, wantRequired: true},
 	}
-	if !strings.Contains(got, `"required flag \"%s\" not set", "start-date-time"`) {
-		t.Errorf("expected parent-prefixed flag name in error message, got:\n%s", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mcpBodyInputParams(spec.Endpoint{Body: []spec.Param{{
+				Name:     "start",
+				Type:     "object",
+				Required: tt.parentRequired,
+				Fields: []spec.Param{{
+					Name: "dateTime", Type: "string", Required: true,
+				}},
+			}}})
+			require.Len(t, got, 1)
+			require.Equal(t, tt.wantRequired, got[0].Required)
+			require.Equal(t, "start-date-time", got[0].FlagName)
+		})
 	}
 }
 
