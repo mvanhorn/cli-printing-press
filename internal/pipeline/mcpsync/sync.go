@@ -51,6 +51,96 @@ type Options struct {
 	Force bool
 }
 
+type mcpClientSurfaceRequirement struct {
+	name   string
+	marker string
+}
+
+// Keep this contract in lockstep with client APIs referenced by mcp_tools.go.tmpl.
+var mcpClientSurfaceRequirements = []mcpClientSurfaceRequirement{
+	{"BinaryResponseHeader", "const BinaryResponseHeader"},
+	{"New(config, timeout, rateLimit)", "func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client"},
+	{"Client.Config", "Config     *config.Config"},
+	{"Client.NoCache", "NoCache    bool"},
+	{"Get(context.Context, ...)", "func (c *Client) Get(ctx context.Context,"},
+	{"GetWithHeaders(context.Context, ...)", "func (c *Client) GetWithHeaders(ctx context.Context,"},
+	{"PostWithParams(context.Context, ...)", "func (c *Client) PostWithParams(ctx context.Context,"},
+	{"PostWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostWithParamsAndHeaders(ctx context.Context,"},
+	{"PostQueryWithParams(context.Context, ...)", "func (c *Client) PostQueryWithParams(ctx context.Context,"},
+	{"PostQueryWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostQueryWithParamsAndHeaders(ctx context.Context,"},
+	{"DeleteWithParams(context.Context, ...)", "func (c *Client) DeleteWithParams(ctx context.Context,"},
+	{"DeleteWithParamsAndHeaders(context.Context, ...)", "func (c *Client) DeleteWithParamsAndHeaders(ctx context.Context,"},
+	{"PutWithParams(context.Context, ...)", "func (c *Client) PutWithParams(ctx context.Context,"},
+	{"PutWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PutWithParamsAndHeaders(ctx context.Context,"},
+	{"PatchWithParams(context.Context, ...)", "func (c *Client) PatchWithParams(ctx context.Context,"},
+	{"PatchWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PatchWithParamsAndHeaders(ctx context.Context,"},
+}
+
+var conditionalMCPClientSurfaceRequirements = []struct {
+	featureMarker string
+	requirements  []mcpClientSurfaceRequirement
+}{
+	{
+		featureMarker: "func (c *Client) PostForm(",
+		requirements: []mcpClientSurfaceRequirement{
+			{"PostFormWithParams(context.Context, ...)", "func (c *Client) PostFormWithParams(ctx context.Context,"},
+			{"PostFormWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostFormWithParamsAndHeaders(ctx context.Context,"},
+			{"PostQueryFormWithParams(context.Context, ...)", "func (c *Client) PostQueryFormWithParams(ctx context.Context,"},
+			{"PostQueryFormWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostQueryFormWithParamsAndHeaders(ctx context.Context,"},
+			{"PutFormWithParams(context.Context, ...)", "func (c *Client) PutFormWithParams(ctx context.Context,"},
+			{"PutFormWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PutFormWithParamsAndHeaders(ctx context.Context,"},
+			{"PatchFormWithParams(context.Context, ...)", "func (c *Client) PatchFormWithParams(ctx context.Context,"},
+			{"PatchFormWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PatchFormWithParamsAndHeaders(ctx context.Context,"},
+		},
+	},
+	{
+		featureMarker: "func (c *Client) PostMultipart(",
+		requirements: []mcpClientSurfaceRequirement{
+			{"PostMultipartWithParams(context.Context, ...)", "func (c *Client) PostMultipartWithParams(ctx context.Context,"},
+			{"PostMultipartWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PostMultipartWithParamsAndHeaders(ctx context.Context,"},
+			{"PutMultipartWithParams(context.Context, ...)", "func (c *Client) PutMultipartWithParams(ctx context.Context,"},
+			{"PutMultipartWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PutMultipartWithParamsAndHeaders(ctx context.Context,"},
+			{"PatchMultipartWithParams(context.Context, ...)", "func (c *Client) PatchMultipartWithParams(ctx context.Context,"},
+			{"PatchMultipartWithParamsAndHeaders(context.Context, ...)", "func (c *Client) PatchMultipartWithParamsAndHeaders(ctx context.Context,"},
+		},
+	},
+	{
+		featureMarker: "requestTier string",
+		requirements: []mcpClientSurfaceRequirement{
+			{"WithTier(string)", "func (c *Client) WithTier(tier string) *Client"},
+		},
+	},
+}
+
+func ensureMCPClientSurfaceCompatible(cliDir string) error {
+	clientPath := filepath.Join(cliDir, "internal", "client", "client.go")
+	data, err := os.ReadFile(clientPath)
+	if err != nil {
+		return fmt.Errorf("mcp-sync refused: reading target CLI client API: %w; reprint required before regenerating the MCP surface", err)
+	}
+	src := string(data)
+	var missing []string
+	for _, requirement := range mcpClientSurfaceRequirements {
+		if !strings.Contains(src, requirement.marker) {
+			missing = append(missing, requirement.name)
+		}
+	}
+	for _, conditional := range conditionalMCPClientSurfaceRequirements {
+		if !strings.Contains(src, conditional.featureMarker) {
+			continue
+		}
+		for _, requirement := range conditional.requirements {
+			if !strings.Contains(src, requirement.marker) {
+				missing = append(missing, requirement.name)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("mcp-sync refused: target CLI client API is incompatible with the current MCP handler (missing %s); reprint required before regenerating tools.go", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 func Sync(cliDir string, opts Options) (Result, error) {
 	state, err := pipeline.InspectMCPSurface(cliDir)
 	if err != nil {
@@ -58,6 +148,9 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	}
 	if state.State == pipeline.MCPSurfaceHandEdited && !opts.Force {
 		return Result{}, fmt.Errorf("%w: tools.go appears hand-edited; refusing to overwrite. Use --force to override at your own risk", ErrHandEdited)
+	}
+	if err := ensureMCPClientSurfaceCompatible(cliDir); err != nil {
+		return Result{}, err
 	}
 	// MCPSurfaceRuntime means the MCP source is already on the new walker
 	// template and we don't need to migrate that. But we still refresh

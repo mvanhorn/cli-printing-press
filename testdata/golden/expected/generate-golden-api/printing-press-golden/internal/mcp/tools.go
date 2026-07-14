@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -231,6 +232,10 @@ func formatMCPParamValue(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 }
+
+func mcpPathValue(v any) string {
+	return url.PathEscape(formatMCPParamValue(v))
+}
 func mcpMultipartFieldValue(v any) string {
 	if s, ok := v.(string); ok {
 		return s
@@ -313,7 +318,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			case "path":
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
-				path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)
+				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
 			case "body":
 				bodyArgs[binding.WireName] = v
 				if multipart {
@@ -334,7 +339,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			}
 			pathParams[p] = true
 			if v, ok := args[p]; ok {
-				path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)
+				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
 			}
 		}
 

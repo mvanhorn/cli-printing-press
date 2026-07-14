@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -65,6 +66,36 @@ func TestReplacePathParamPercentEncodesValue(t *testing.T) {
 		`return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))`,
 		"replacePathParam must percent-encode the value via url.PathEscape so "+
 			"path-reserved characters (/, :, ?, #, space, %) don't produce a malformed URL")
+
+	mcpPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
+	mcpGo, err := os.ReadFile(mcpPath)
+	require.NoError(t, err)
+	mcpSrc := string(mcpGo)
+	assert.Contains(t, mcpSrc, `return url.PathEscape(formatMCPParamValue(v))`)
+	assert.Equal(t, 2, strings.Count(mcpSrc, `strings.Replace(path, placeholder, mcpPathValue(v), 1)`),
+		"both MCP path-binding loops must percent-encode path values")
+
+	mcpTest := `package mcp
+
+import "testing"
+
+func TestMCPPathValuePercentEncodesReservedCharacters(t *testing.T) {
+	tests := map[string]string{
+		"opaque-id": "opaque-id",
+		"src/main.go": "src%2Fmain.go",
+		"../secret": "..%2Fsecret",
+		"a b?c#d": "a%20b%3Fc%23d",
+	}
+	for input, want := range tests {
+		if got := mcpPathValue(input); got != want {
+			t.Fatalf("mcpPathValue(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "path_value_test.go"), []byte(mcpTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp", "-run", "TestMCPPathValuePercentEncodesReservedCharacters")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 // TestDependentPathParamStripsCompositeStorageID pins sync.go.tmpl so the
