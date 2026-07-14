@@ -41,7 +41,9 @@ func sourceCommandAnnotations(dir string) map[string]map[string]string {
 	out := map[string]map[string]string{}
 	for _, path := range files {
 		data, err := os.ReadFile(path)
-		if err != nil || (!bytes.Contains(data, []byte(typedExitCodesAnnotation)) && !bytes.Contains(data, []byte(happyArgsAnnotation))) {
+		if err != nil || (!bytes.Contains(data, []byte(typedExitCodesAnnotation)) &&
+			!bytes.Contains(data, []byte(happyArgsAnnotation)) &&
+			!bytes.Contains(data, []byte(happyStdinJSONAnnotation))) {
 			continue
 		}
 		file, err := parser.ParseFile(fset, path, data, parser.SkipObjectResolution)

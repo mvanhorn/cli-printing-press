@@ -1684,6 +1684,26 @@ func newWhereaboutsCmd() *cobra.Command {
 	assert.Equal(t, "<person>=Alice;--query=sunset", commands[0].Annotations[happyArgsAnnotation])
 }
 
+func TestEnrichCommandAnnotationsFromSourceReadsHappyStdinJSONOnly(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "patient.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newPatientCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "patient",
+		Annotations: map[string]string{"pp:happy-stdin-json": "{\"input\":{\"patient_ref\":\"patient_synthetic\"}}"},
+	}
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "patient"}})
+	require.Len(t, commands, 1)
+	assert.JSONEq(t, `{"input":{"patient_ref":"patient_synthetic"}}`, commands[0].Annotations[happyStdinJSONAnnotation])
+}
+
 func TestEnrichCommandAnnotationsFromSourceReadsAssignmentForm(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))

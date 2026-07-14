@@ -114,7 +114,10 @@ type discoveredCommand struct {
 	Annotations map[string]string
 }
 
-const happyArgsAnnotation = "pp:happy-args"
+const (
+	happyArgsAnnotation      = "pp:happy-args"
+	happyStdinJSONAnnotation = "pp:happy-stdin-json"
+)
 
 type happyArgs struct {
 	positionals []string

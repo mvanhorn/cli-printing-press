@@ -277,6 +277,150 @@ func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
 	assert.Equal(t, "1", run.stdout, "live-dogfood subprocess should see PRINTING_PRESS_DOGFOOD=1")
 }
 
+func TestRunLiveDogfoodUsesHappyStdinJSONForHappyAndJSONProbes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	stdinLog := filepath.Join(dir, "stdin.log")
+	t.Setenv("PRINTING_PRESS_TEST_STDIN_LOG", stdinLog)
+	binPath := filepath.Join(dir, "fixture-pp-cli")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "widgets" ] && [ "${2:-}" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'EOF'
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list --stdin
+
+Flags:
+      --json    emit JSON
+      --stdin   read request JSON from stdin
+EOF
+  exit 0
+fi
+input=$(cat)
+printf '%s\n' "$input" >> "$PRINTING_PRESS_TEST_STDIN_LOG"
+printf '{"ok":true}'
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o700))
+
+	fixture := `{"input":{"patient_ref":"patient_synthetic"}}`
+	results := runLiveDogfoodCommand(liveDogfoodCommand{
+		Path: []string{"widgets", "list"},
+		Annotations: map[string]string{
+			happyStdinJSONAnnotation: fixture,
+		},
+	}, resolveCtx{
+		binaryPath: binPath,
+		cliDir:     dir,
+		cache:      newCompanionCache(),
+		timeout:    5 * time.Second,
+	})
+
+	var happy, jsonResult *LiveDogfoodTestResult
+	for i := range results {
+		switch results[i].Kind {
+		case LiveDogfoodTestHappy:
+			happy = &results[i]
+		case LiveDogfoodTestJSON:
+			jsonResult = &results[i]
+		}
+	}
+	require.NotNil(t, happy)
+	require.NotNil(t, jsonResult)
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status, happy.Reason)
+	assert.Equal(t, LiveDogfoodStatusPass, jsonResult.Status, jsonResult.Reason)
+
+	logged, err := os.ReadFile(stdinLog)
+	require.NoError(t, err)
+	assert.Equal(t, fixture+"\n"+fixture+"\n", string(logged), "happy and JSON probes must receive the same stdin fixture")
+	for _, result := range results {
+		assert.NotContains(t, strings.Join(result.Args, " "), fixture, "stdin fixture must never be exposed in argv")
+		assert.NotContains(t, result.OutputSample, fixture, "runner must not add the fixture to captured output")
+	}
+}
+
+func TestRunLiveDogfoodRejectsInvalidHappyStdinJSONBeforeDomainProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	invocationLog := filepath.Join(dir, "invocations.log")
+	t.Setenv("PRINTING_PRESS_TEST_INVOCATION_LOG", invocationLog)
+	binPath := filepath.Join(dir, "fixture-pp-cli")
+	script := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_INVOCATION_LOG"
+if [ "${3:-}" = "--help" ]; then
+  cat <<'EOF'
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list --stdin
+
+Flags:
+      --json    emit JSON
+      --stdin   read request JSON from stdin
+EOF
+  exit 0
+fi
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o700))
+
+	results := runLiveDogfoodCommand(liveDogfoodCommand{
+		Path: []string{"widgets", "list"},
+		Annotations: map[string]string{
+			happyStdinJSONAnnotation: `["not-an-object"]`,
+		},
+	}, resolveCtx{
+		binaryPath: binPath,
+		cliDir:     dir,
+		cache:      newCompanionCache(),
+		timeout:    5 * time.Second,
+	})
+
+	var happy *LiveDogfoodTestResult
+	for i := range results {
+		if results[i].Kind == LiveDogfoodTestHappy {
+			happy = &results[i]
+			break
+		}
+	}
+	require.NotNil(t, happy)
+	assert.Equal(t, LiveDogfoodStatusFail, happy.Status)
+	assert.Equal(t, "invalid pp:happy-stdin-json annotation: expected a JSON object", happy.Reason)
+	assert.NotContains(t, happy.Reason, "not-an-object")
+
+	logged, err := os.ReadFile(invocationLog)
+	require.NoError(t, err)
+	assert.Equal(t, "widgets list --help\n", string(logged), "invalid fixture must stop before a domain command invocation")
+}
+
+func TestLiveDogfoodHappyStdinJSONRequiresObject(t *testing.T) {
+	valid, present, err := liveDogfoodHappyStdinJSON(liveDogfoodCommand{Annotations: map[string]string{
+		happyStdinJSONAnnotation: `{}`,
+	}})
+	require.NoError(t, err)
+	assert.True(t, present)
+	assert.Equal(t, `{}`, valid)
+
+	for _, invalid := range []string{`null`, `[]`, `"string"`, `{broken`} {
+		_, present, err = liveDogfoodHappyStdinJSON(liveDogfoodCommand{Annotations: map[string]string{
+			happyStdinJSONAnnotation: invalid,
+		}})
+		assert.True(t, present)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), invalid)
+	}
+}
+
 func TestRunLiveDogfoodLocalDatastoreManifestPreservesOperatorHome(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -810,7 +954,10 @@ func TestRunLiveDogfoodProcessRetriesTransientAuth401(t *testing.T) {
 
 	dir := t.TempDir()
 	countPath := filepath.Join(dir, "count")
+	stdinPath := filepath.Join(dir, "stdin.log")
 	binPath := writeStubBinary(t, dir, "flaky-auth", `count_file="count"
+input=$(cat)
+printf '%s\n' "$input" >> "stdin.log"
 count=0
 if [ -f "$count_file" ]; then
   count=$(cat "$count_file")
@@ -824,7 +971,8 @@ fi
 printf '{"ok":true}'
 `)
 
-	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	fixture := `{"input":{"patient_ref":"patient_synthetic"}}`
+	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second, fixture)
 	require.NoError(t, run.err, "fixture: %s", run.stderr)
 	assert.Equal(t, 0, run.exitCode)
 	assert.Equal(t, `{"ok":true}`, run.stdout)
@@ -832,6 +980,10 @@ printf '{"ok":true}'
 	count, err := os.ReadFile(countPath)
 	require.NoError(t, err)
 	assert.Equal(t, "2", string(count), "auth-shaped 401 should be retried once")
+
+	stdin, err := os.ReadFile(stdinPath)
+	require.NoError(t, err)
+	assert.Equal(t, fixture+"\n"+fixture+"\n", string(stdin), "auth retry must reuse the same stdin fixture")
 }
 
 func TestRunLiveDogfoodSkipsPersistentAuth401AsRunnerCredentialUnavailable(t *testing.T) {

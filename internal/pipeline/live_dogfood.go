@@ -1290,6 +1290,18 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	successCodes := liveDogfoodSuccessExitCodes(command)
 	mutating := liveDogfoodCommandMutates(command)
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
+	happyStdinJSON, stdinFixturePresent, stdinFixtureErr := liveDogfoodHappyStdinJSON(command)
+	if stdinFixtureErr != nil {
+		results = append(results,
+			failedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, command.Path, stdinFixtureErr.Error()),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, stdinFixtureErr.Error()),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, stdinFixtureErr.Error()),
+		)
+		if useDryRun {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, stdinFixtureErr.Error()))
+		}
+		return results
+	}
 
 	if annotationIsTrueValue(command.Annotations[interactiveAnnotation]) {
 		results = append(results,
@@ -1364,7 +1376,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			runArgs = appendDryRunArg(happyArgs)
 		}
 
-		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout)
+		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout, optionalStdinFixture(happyStdinJSON, stdinFixturePresent)...)
 		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun)
 		happyResult.FixtureSource = fixtureSource
 		if successCodes[happyRun.exitCode] {
@@ -1391,7 +1403,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			results = append(results, jsonResult)
 		} else if commandSupportsJSON(command.Help) {
 			jsonArgs := appendJSONArg(runArgs)
-			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
+			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout, optionalStdinFixture(happyStdinJSON, stdinFixturePresent)...)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
 			jsonResult.FixtureSource = fixtureSource
 			if jsonRun.exitCode == 0 {
@@ -1548,9 +1560,9 @@ func extractFlagsSection(help string) string {
 	return strings.Join(out, "\n")
 }
 
-func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
+func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout time.Duration, stdinJSON ...string) liveDogfoodRun {
 	deadline := time.Now().Add(timeout)
-	run := runLiveDogfoodProcessOnce(binaryPath, cliDir, args, timeout)
+	run := runLiveDogfoodProcessOnce(binaryPath, cliDir, args, timeout, stdinJSON...)
 	if !liveDogfoodRetryableAuth401(run) || time.Until(deadline) <= liveDogfoodAuthRetryDelay {
 		return run
 	}
@@ -1559,10 +1571,10 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 	if remaining <= 0 {
 		return run
 	}
-	return runLiveDogfoodProcessOnce(binaryPath, cliDir, args, remaining)
+	return runLiveDogfoodProcessOnce(binaryPath, cliDir, args, remaining, stdinJSON...)
 }
 
-func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {
+func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout time.Duration, stdinJSON ...string) liveDogfoodRun {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -1575,6 +1587,9 @@ func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout
 	// The transport-layer short-circuit is for verify mock-mode only.
 	cmd.Env = filterVerifyEnv(cmd.Env)
 	cmd.Env = append(cmd.Env, dogfoodEnvVar+"=1")
+	if len(stdinJSON) > 0 {
+		cmd.Stdin = strings.NewReader(stdinJSON[0])
+	}
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	stdoutCap := &limitedWriter{w: stdout, remaining: liveDogfoodMaxOutputBytes}
@@ -1604,6 +1619,25 @@ func runLiveDogfoodProcessOnce(binaryPath, cliDir string, args []string, timeout
 		}
 	}
 	return result
+}
+
+func liveDogfoodHappyStdinJSON(command liveDogfoodCommand) (string, bool, error) {
+	raw := strings.TrimSpace(command.Annotations[happyStdinJSONAnnotation])
+	if raw == "" {
+		return "", false, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &object); err != nil || object == nil {
+		return "", true, fmt.Errorf("invalid %s annotation: expected a JSON object", happyStdinJSONAnnotation)
+	}
+	return raw, true, nil
+}
+
+func optionalStdinFixture(value string, present bool) []string {
+	if !present {
+		return nil
+	}
+	return []string{value}
 }
 
 func liveDogfoodRetryableAuth401(run liveDogfoodRun) bool {
