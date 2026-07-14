@@ -203,25 +203,34 @@ func TestPaginatedGetWarnsForCursorParamFallbackWithoutAll(t *testing.T) {
 	}
 }
 
-func TestPaginatedGetTreatsEmptyFallbackCursorAsLastPage(t *testing.T) {
-	client := &paginatedTestClient{responses: []json.RawMessage{
-		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":""}` + "`" + `),
-	}}
-	stderr := capturePaginatedStderr(t, func() {
-		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
-		if err != nil {
-			t.Fatalf("paginatedGet returned error: %v", err)
-		}
-		var got []map[string]string
-		if err := json.Unmarshal(data, &got); err != nil {
-			t.Fatalf("unmarshal data: %v", err)
-		}
-		if len(got) != 1 {
-			t.Fatalf("got %d items, want 1", len(got))
-		}
-	})
-	if strings.Contains(stderr, ` + "`" + `"reason":"pagination_signal_missing"` + "`" + `) {
-		t.Fatalf("stderr should not warn when the fallback cursor field is present and empty: %s", stderr)
+func TestPaginatedGetWarnsForUnusableFallbackCursor(t *testing.T) {
+	for name, cursor := range map[string]string{
+		"empty": ` + "`" + `""` + "`" + `,
+		"null":  "null",
+		"zero":  "0",
+		"object": ` + "`" + `{"value":"next"}` + "`" + `,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &paginatedTestClient{responses: []json.RawMessage{
+				json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":` + "`" + ` + cursor + ` + "`" + `}` + "`" + `),
+			}}
+			stderr := capturePaginatedStderr(t, func() {
+				data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
+				if err != nil {
+					t.Fatalf("paginatedGet returned error: %v", err)
+				}
+				var got []map[string]string
+				if err := json.Unmarshal(data, &got); err != nil {
+					t.Fatalf("unmarshal data: %v", err)
+				}
+				if len(got) != 1 {
+					t.Fatalf("got %d items, want 1", len(got))
+				}
+			})
+			if !strings.Contains(stderr, ` + "`" + `"reason":"pagination_signal_missing"` + "`" + `) {
+				t.Fatalf("stderr missing pagination signal warning for unusable cursor: %s", stderr)
+			}
+		})
 	}
 }
 
