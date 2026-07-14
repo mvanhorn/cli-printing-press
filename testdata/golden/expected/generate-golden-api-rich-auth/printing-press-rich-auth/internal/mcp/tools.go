@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -130,6 +131,10 @@ func formatMCPParamValue(v any) string {
 	}
 }
 
+func mcpPathValue(v any) string {
+	return url.PathEscape(formatMCPParamValue(v))
+}
+
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
 func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, pageConfig mcpPageConfig, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
@@ -192,7 +197,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			case "path":
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
-				path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)
+				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
 			case "body":
 				bodyArgs[binding.WireName] = v
 			default:
@@ -206,7 +211,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			}
 			pathParams[p] = true
 			if v, ok := args[p]; ok {
-				path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)
+				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
 			}
 		}
 

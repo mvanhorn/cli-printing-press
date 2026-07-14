@@ -590,7 +590,7 @@ If Phase 1's `dogfood` reported `MCP Surface: FAIL` with a parity mismatch, the 
 "$PRINTING_PRESS_BIN" mcp-sync "$CLI_DIR"
 ```
 
-That migrates the MCP surface to the runtime walker, regenerates `tools-manifest.json` and `internal/mcp/tools.go`, and applies any `mcp-descriptions.json` overrides. Re-run `dogfood` after; the parity gate flips to PASS. This is a known migration path for every CLI generated before the cobratree landed; running it on a CLI already on the runtime walker is a no-op refresh.
+That migrates the MCP surface to the runtime walker, regenerates `tools-manifest.json` and `internal/mcp/tools.go`, and applies any `mcp-descriptions.json` overrides. If it exits with `mcp-sync refused` and `reprint required`, stop this polish run and hand off to `/printing-press-reprint`; the target CLI's generated client is too old for the current MCP handler, so rewriting `tools.go` alone would break its build. Include in the handoff that the reprint flow must run its normal dogfood gate against the regenerated CLI and confirm `MCP Surface: PASS` before shipping. Do not rerun dogfood against the stale `$CLI_DIR`. After a successful `mcp-sync`, re-run `dogfood` here; the parity gate should flip to PASS. Running `mcp-sync` on a compatible CLI already using the runtime walker is a no-op refresh.
 
 Skip this priority on CLIs where dogfood's MCP gate is already passing.
 
