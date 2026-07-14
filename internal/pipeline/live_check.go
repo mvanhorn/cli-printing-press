@@ -304,14 +304,13 @@ func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, e
 		return refresh, nil
 	}
 
-	cmdDir, err := findCLICommandDir(cliDir)
-	if err != nil {
+	if _, err := findCLICommandDir(cliDir); err != nil {
 		refresh.Action = "skipped"
 		refresh.Reason = "no CLI command directory found"
 		return refresh, nil
 	}
 
-	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir, cmdDir)
+	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir)
 	if err != nil {
 		refresh.Action = "failed"
 		refresh.Reason = err.Error()
@@ -424,36 +423,34 @@ func liveCheckExistingStageBinaryPath(cliDir, name string) (string, string) {
 	return "", ""
 }
 
-func newestLiveCheckSourceModTime(cliDir, cmdDir string) (time.Time, bool, error) {
+func newestLiveCheckSourceModTime(cliDir string) (time.Time, bool, error) {
 	var newest time.Time
 	found := false
-	for _, root := range []string{cmdDir, filepath.Join(cliDir, "internal")} {
-		if _, err := os.Stat(root); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return time.Time{}, false, err
+	err := filepath.WalkDir(cliDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" {
-				return nil
-			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			if !found || info.ModTime().After(newest) {
-				newest = info.ModTime()
-				found = true
+		if entry.IsDir() {
+			if path != cliDir && entry.Name() == ".git" {
+				return filepath.SkipDir
 			}
 			return nil
-		})
-		if err != nil {
-			return time.Time{}, false, err
 		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !found || info.ModTime().After(newest) {
+			newest = info.ModTime()
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, false, err
 	}
 	return newest, found, nil
 }

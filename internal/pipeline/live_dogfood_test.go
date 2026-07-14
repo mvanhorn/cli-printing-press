@@ -1011,6 +1011,40 @@ func TestLiveDogfoodBinaryPathRebuildsStaleRootBinary(t *testing.T) {
 	assert.Equal(t, "current source", string(out))
 }
 
+func TestLiveDogfoodBinaryPathRebuildsForSourceOutsideCmdAndInternal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the stale root binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/live-dogfood-module-source-test\n\ngo 1.23\n"), 0o644))
+	cmdDir := filepath.Join(dir, "cmd", binaryName)
+	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	mainPath := filepath.Join(cmdDir, "main.go")
+	require.NoError(t, os.WriteFile(mainPath, []byte("package main\n\nimport (\n\t\"fmt\"\n\t\"example.com/live-dogfood-module-source-test/pkg/version\"\n)\n\nfunc main() { fmt.Print(version.Value) }\n"), 0o644))
+	packageDir := filepath.Join(dir, "pkg", "version")
+	require.NoError(t, os.MkdirAll(packageDir, 0o755))
+	packagePath := filepath.Join(packageDir, "version.go")
+	require.NoError(t, os.WriteFile(packagePath, []byte("package version\n\nconst Value = \"current package source\"\n"), 0o644))
+
+	rootPath := writeStubBinary(t, dir, binaryName, `echo "stale root"`)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	newTime := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(rootPath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(mainPath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(packagePath, newTime, newTime))
+
+	path, cleanup, err := liveDogfoodBinaryPath(dir, binaryName)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	require.Equal(t, rootPath, path)
+
+	out, err := exec.Command(path).CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.Equal(t, "current package source", string(out))
+}
+
 func TestLiveDogfoodBinaryPathKeepsFreshRootBinary(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fresh root binary; skip on Windows")
