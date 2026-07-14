@@ -270,8 +270,40 @@ func newPublishPackageCmd() *cobra.Command {
 				}
 			}
 
+			sourceManifest, _ := pipeline.ReadCLIManifest(dir)
+			preferredRunID := strings.TrimSpace(sourceManifest.RunID)
+			if preferredRunID != "" && !isSafeManuscriptRunID(preferredRunID) {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("manifest run_id must be a single path component")}
+			}
+			sourceCLIName := sourceManifest.CLIName
+			if sourceCLIName == "" {
+				sourceCLIName = filepath.Base(dir)
+			}
+			sourceAPIName := sourceManifest.APIName
+			if sourceAPIName == "" {
+				sourceAPIName = naming.TrimCLISuffix(sourceCLIName)
+			}
+			if !isSafeManuscriptPathComponent(sourceCLIName) || !isSafeManuscriptPathComponent(sourceAPIName) {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("manifest cli_name and api_name must be single path components")}
+			}
+			msDir, runID := findManuscriptsRun(sourceCLIName, sourceAPIName, preferredRunID)
+			embeddedMsDir := filepath.Join(dir, ".manuscripts")
+			if runID == "" && preferredRunID != "" && manuscriptRunExists(filepath.Join(embeddedMsDir, preferredRunID)) {
+				msDir = embeddedMsDir
+				runID = preferredRunID
+			}
+			if runID == "" {
+				msDir, runID = resolveManuscripts(sourceCLIName, sourceAPIName)
+			}
+			if runID == "" {
+				if embeddedRunID, err := findMostRecentRun(embeddedMsDir); err == nil && embeddedRunID != "" {
+					msDir = embeddedMsDir
+					runID = embeddedRunID
+				}
+			}
+
 			// Re-validate before packaging
-			vResult := runValidationForPublishPackage(dir)
+			vResult := runPackageValidation(dir, msDir, runID)
 			if !vResult.Passed {
 				if asJSON {
 					enc := json.NewEncoder(os.Stdout)
@@ -363,6 +395,12 @@ func newPublishPackageCmd() *cobra.Command {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("normalizing publish metadata: %w", err)}
 			}
+			if runID != "" && runID != sourceManifest.RunID {
+				if err := setPackagedManifestRunID(outCLIDir, runID); err != nil {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("updating packaged manifest run_id: %w", err)}
+				}
+			}
 
 			// Strip build/ from the staged tree. autoBundleForHost writes
 			// host-platform .mcpb bundles + staged binaries there as a
@@ -430,13 +468,8 @@ func newPublishPackageCmd() *cobra.Command {
 				ModulePath: modulePath,
 			}
 
-			msDir, runID := resolveManuscripts(cliName, vResult.APIName)
-			if runID == "" {
-				embeddedMsDir := filepath.Join(dir, ".manuscripts")
-				if embeddedRunID, err := findMostRecentRun(embeddedMsDir); err == nil && embeddedRunID != "" {
-					msDir = embeddedMsDir
-					runID = embeddedRunID
-				}
+			if preferredRunID != "" && runID != "" && runID != preferredRunID {
+				fmt.Fprintf(os.Stderr, "warning: manifest manuscripts run %q not found; packaging fallback run %q\n", preferredRunID, runID)
 			}
 			if runID != "" {
 				result.RunID = runID
@@ -665,6 +698,68 @@ func resolveManuscripts(cliName, apiName string) (msDir string, runID string) {
 	}
 	// 3. Fuzzy resolve (strip suffixes, prefix match)
 	return resolveManuscriptDir(msRoot, apiName)
+}
+
+func findManuscriptsRun(cliName, apiName, runID string) (msDir string, foundRunID string) {
+	if runID == "" {
+		return "", ""
+	}
+	if apiName == "" {
+		apiName = naming.TrimCLISuffix(cliName)
+	}
+
+	msRoot := pipeline.PublishedManuscriptsRoot()
+	for _, dir := range []string{filepath.Join(msRoot, apiName), filepath.Join(msRoot, cliName)} {
+		if manuscriptRunExists(filepath.Join(dir, runID)) {
+			return dir, runID
+		}
+	}
+	if dir, _ := resolveManuscriptDir(msRoot, apiName); dir != "" && manuscriptRunExists(filepath.Join(dir, runID)) {
+		return dir, runID
+	}
+	return "", ""
+}
+
+func manuscriptRunExists(dir string) bool {
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
+}
+
+func isSafeManuscriptRunID(runID string) bool {
+	return isSafeManuscriptPathComponent(runID)
+}
+
+func isSafeManuscriptPathComponent(value string) bool {
+	return value != "" && value != "." && value != ".." && !filepath.IsAbs(value) &&
+		!strings.ContainsAny(value, `/\\`)
+}
+
+func runPackageValidation(dir, selectedManuscriptsDir, selectedRunID string) ValidateResult {
+	result := runValidationForPublishPackage(dir)
+	if selectedRunID == "" {
+		return result
+	}
+	manifest, err := pipeline.ReadCLIManifest(dir)
+	if err != nil {
+		return result
+	}
+	manifest.RunID = selectedRunID
+	for i := range result.Checks {
+		if result.Checks[i].Name != "phase5" {
+			continue
+		}
+		proofsDir := filepath.Join(selectedManuscriptsDir, selectedRunID, "proofs")
+		result.Checks[i] = checkPhase5GateAt(proofsDir, manifest)
+		result.Passed = true
+		for _, check := range result.Checks {
+			if !check.Passed {
+				result.Passed = false
+				break
+			}
+		}
+		break
+	}
+	return result
 }
 
 func runValidation(dir string) ValidateResult {
@@ -1126,6 +1221,33 @@ func normalizePackagedPublishMetadata(dir, category string) error {
 	return pipeline.EnsurePatchesDir(dir)
 }
 
+func setPackagedManifestRunID(dir, runID string) error {
+	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(runID)
+	if err != nil {
+		return err
+	}
+	raw["run_id"] = encoded
+	updated, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	updated = append(updated, '\n')
+	info, err := os.Stat(manifestPath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(manifestPath, updated, info.Mode())
+}
+
 func isPublishPrinterSentinel(printer string) bool {
 	return printer == "USER" || printer == "user"
 }
@@ -1172,7 +1294,10 @@ func checkPhase5Gate(dir string, manifest pipeline.CLIManifest) CheckResult {
 		return CheckResult{Name: "phase5", Passed: false, Error: "manifest missing run_id; cannot locate Phase 5 gate proof"}
 	}
 
-	proofsDir := phase5ProofsDir(dir, manifest)
+	return checkPhase5GateAt(phase5ProofsDir(dir, manifest), manifest)
+}
+
+func checkPhase5GateAt(proofsDir string, manifest pipeline.CLIManifest) CheckResult {
 	result := pipeline.ValidatePhase5Gate(proofsDir, manifest)
 	if !result.Passed {
 		return CheckResult{Name: "phase5", Passed: false, Error: result.Detail}
@@ -1186,11 +1311,11 @@ func phase5ProofsDir(dir string, manifest pipeline.CLIManifest) string {
 		filepath.Join(dir, ".manuscripts", runID, "proofs"),
 	}
 	msRoot := pipeline.PublishedManuscriptsRoot()
-	if manifest.CLIName != "" {
-		candidates = append(candidates, filepath.Join(msRoot, manifest.CLIName, runID, "proofs"))
-	}
 	if manifest.APIName != "" {
 		candidates = append(candidates, filepath.Join(msRoot, manifest.APIName, runID, "proofs"))
+	}
+	if manifest.CLIName != "" {
+		candidates = append(candidates, filepath.Join(msRoot, manifest.CLIName, runID, "proofs"))
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {

@@ -641,6 +641,9 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 	if !info.IsDir() && info.Size() >= publishableManuscriptMaxCaptureBytes {
 		return true
 	}
+	if strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".pre-pii-scrub") {
+		return true
+	}
 	if opts.IncludeRawCaptures {
 		return false
 	}
@@ -659,7 +662,9 @@ func isRawBrowserSniffCapture(path string, info fs.FileInfo) bool {
 	parentPath := filepath.Dir(clean)
 
 	if pathHasComponent(parentPath, "discovery") {
-		if matched, _ := filepath.Match("probe-*.json", base); matched {
+		hyphenated, _ := filepath.Match("probe-*.json", base)
+		underscored, _ := filepath.Match("probe_*.json", base)
+		if hyphenated || underscored {
 			return true
 		}
 	}

@@ -1129,6 +1129,7 @@ func TestPublishPackageFailsWhenManuscriptsCopyFails(t *testing.T) {
 	stubPublishPackageValidation(t)
 
 	runID := "20260328-132022"
+	setPublishableTestRunID(t, cliDir, runID)
 	manuscriptFile := filepath.Join(home, "manuscripts", "test", runID, "research", "brief.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(manuscriptFile), 0o755))
 	require.NoError(t, os.WriteFile(manuscriptFile, []byte("brief"), 0o600))
@@ -1160,6 +1161,7 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 
 	// Create manuscripts at the archived location where publish package looks
 	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
 	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
 	proofsDir := filepath.Join(home, "manuscripts", "test", runID, "proofs")
 	discoveryDir := filepath.Join(home, "manuscripts", "test", runID, "discovery")
@@ -1212,6 +1214,223 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(result.StagedDir, ".manuscripts", "stale-run", "discovery", "stale-capture.har"))
 }
 
+func TestPublishPackageUsesManifestRunInsteadOfNewerArchive(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+
+	manifestRunID := "20260711-203553-d9c009c7"
+	writeTestManifest(t, cliDir, pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "test-version",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                manifestRunID,
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
+		AuthType:             "none",
+	})
+
+	manifestBrief := filepath.Join(home, "manuscripts", "test", manifestRunID, "research", "brief.md")
+	staleProof := filepath.Join(home, "manuscripts", "test", "amend-2026-07-11T0357", "proofs", "stale.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(manifestBrief), 0o755))
+	require.NoError(t, os.WriteFile(manifestBrief, []byte("manifest run"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Dir(staleProof), 0o755))
+	require.NoError(t, os.WriteFile(staleProof, []byte("stale amend"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.Equal(t, manifestRunID, result.RunID)
+	assert.FileExists(t, filepath.Join(result.StagedDir, ".manuscripts", manifestRunID, "research", "brief.md"))
+	assert.NoDirExists(t, filepath.Join(result.StagedDir, ".manuscripts", "amend-2026-07-11T0357"))
+}
+
+func TestPublishPackageWarnsWhenManifestRunFallsBack(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(home, "manuscripts", "test")))
+	fallbackRunID := "amend-2026-07-11T0357"
+	fallbackProofs := filepath.Join(home, "manuscripts", "test", fallbackRunID, "proofs")
+	writeTestPhase5GateMarker(t, fallbackProofs, pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         fallbackRunID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
+	})
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	stderr, err := runWithCapturedStderr(t, cmd.Execute)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, `manifest manuscripts run "20260301-000000" not found`)
+	assert.Contains(t, stderr, `packaging fallback run "amend-2026-07-11T0357"`)
+	stagedDir := filepath.Join(target, "library", "other", "test")
+	assert.FileExists(t, filepath.Join(stagedDir, ".manuscripts", fallbackRunID, "proofs", pipeline.Phase5AcceptanceFilename))
+	manifest, manifestErr := pipeline.ReadCLIManifest(stagedDir)
+	require.NoError(t, manifestErr)
+	assert.Equal(t, fallbackRunID, manifest.RunID)
+	assert.True(t, checkPhase5Gate(stagedDir, manifest).Passed)
+}
+
+func TestPublishPackageRejectsUnsafeManifestRunID(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+	setPublishableTestRunID(t, cliDir, "../outside")
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest run_id must be a single path component")
+	assert.NoDirExists(t, target)
+}
+
+func TestPublishPackageRejectsUnsafeManifestLookupNames(t *testing.T) {
+	for _, field := range []string{"api_name", "cli_name"} {
+		t.Run(field, func(t *testing.T) {
+			home := setLibraryTestEnv(t)
+			cliDir := filepath.Join(home, "library", "test-pp-cli")
+			writePublishableTestCLI(t, cliDir)
+			stubPublishPackageValidation(t)
+			manifest, err := pipeline.ReadCLIManifest(cliDir)
+			require.NoError(t, err)
+			if field == "api_name" {
+				manifest.APIName = "../outside"
+			} else {
+				manifest.CLIName = "../outside"
+			}
+			writeTestManifest(t, cliDir, manifest)
+
+			target := filepath.Join(t.TempDir(), "staging")
+			cmd := newPublishCmd()
+			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+			err = cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "manifest cli_name and api_name must be single path components")
+			assert.NoDirExists(t, target)
+		})
+	}
+}
+
+func TestRunPackageValidationUsesSelectedFuzzyManuscriptDir(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "steam-web-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	runID := "amend-2026-07-11T0357"
+	writeTestManifest(t, cliDir, pipeline.CLIManifest{
+		APIName: "steam-web",
+		CLIName: "steam-web-pp-cli",
+		RunID:   "missing-run",
+	})
+	selectedDir := filepath.Join(home, "manuscripts", "steam")
+	writeTestPhase5GateMarker(t, filepath.Join(selectedDir, runID, "proofs"), pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "steam-web",
+		RunID:         runID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
+	})
+	previous := runValidationForPublishPackage
+	runValidationForPublishPackage = func(string) ValidateResult {
+		return ValidateResult{Checks: []CheckResult{{Name: "phase5", Passed: false, Error: "manifest run missing"}}}
+	}
+	t.Cleanup(func() { runValidationForPublishPackage = previous })
+
+	result := runPackageValidation(cliDir, selectedDir, runID)
+
+	assert.True(t, result.Passed)
+	assert.True(t, publishCheckByName(t, result, "phase5").Passed)
+}
+
+func TestPublishPackageNormalizesTrimmedManifestRunID(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	stubPublishPackageValidation(t)
+	setPublishableTestRunID(t, cliDir, " 20260301-000000 ")
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	manifest, err := pipeline.ReadCLIManifest(result.StagedDir)
+	require.NoError(t, err)
+	assert.Equal(t, "20260301-000000", manifest.RunID)
+}
+
+func TestPublishPackageRejectsFallbackWithMismatchedPhase5Proof(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(home, "manuscripts", "test")))
+	fallbackRunID := "amend-2026-07-11T0357"
+	fallbackProofs := filepath.Join(home, "manuscripts", "test", fallbackRunID, "proofs")
+	writeTestPhase5GateMarker(t, fallbackProofs, pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "different-run",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
+	})
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation failed, cannot package")
+	assert.NoDirExists(t, target)
+}
+
+func TestPhase5ProofsDirPrefersCanonicalAPIArchive(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	runID := "20260711-203553-d9c009c7"
+	apiProofs := filepath.Join(home, "manuscripts", "test", runID, "proofs")
+	legacyProofs := filepath.Join(home, "manuscripts", "test-pp-cli", runID, "proofs")
+	require.NoError(t, os.MkdirAll(apiProofs, 0o755))
+	require.NoError(t, os.MkdirAll(legacyProofs, 0o755))
+
+	got := phase5ProofsDir(t.TempDir(), pipeline.CLIManifest{
+		APIName: "test",
+		CLIName: "test-pp-cli",
+		RunID:   runID,
+	})
+
+	assert.Equal(t, apiProofs, got)
+}
+
 func TestPublishPackageCanIncludeRawCaptures(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
@@ -1219,6 +1438,7 @@ func TestPublishPackageCanIncludeRawCaptures(t *testing.T) {
 	stubPublishPackageValidation(t)
 
 	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
 	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
 	discoveryDir := filepath.Join(home, "manuscripts", "test", runID, "discovery")
 	require.NoError(t, os.MkdirAll(filepath.Join(researchDir, "test-browser-sniff-spec-samples"), 0o755))
@@ -1414,6 +1634,7 @@ func TestPublishPackageAllowsReservedSyntheticPII(t *testing.T) {
 	))
 
 	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
 	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "captured.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
 	require.NoError(t, os.WriteFile(
@@ -1440,6 +1661,7 @@ func TestPublishPackageRejectsPIIInManuscripts(t *testing.T) {
 	writePublishableTestCLI(t, cliDir)
 	stubPublishPackageValidation(t)
 	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
 	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "captured.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
 	require.NoError(t, os.WriteFile(researchFile, []byte(`{"recipient_email": "leak@gmail.com"}`+"\n"), 0o644))
@@ -1493,6 +1715,7 @@ func TestPublishPackageRejectsVendorPrefixSecretsInManuscripts(t *testing.T) {
 	writePublishableTestCLI(t, cliDir)
 	stubPublishPackageValidation(t)
 	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
 	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "openapi.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
 	require.NoError(t, os.WriteFile(researchFile, []byte("Authorization: Bearer "+testSecret("sk", "_live_", "1234567890abcdefghijklmnop")+"\n"), 0o644))
@@ -1574,6 +1797,7 @@ func TestPublishPackageDestWritesDirectly(t *testing.T) {
 
 	// Create manuscripts
 	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
 	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
 	require.NoError(t, os.MkdirAll(researchDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# Brief"), 0o644))
@@ -1648,6 +1872,7 @@ func TestPublishPackageDestRestoresOldCLIOnFailure(t *testing.T) {
 
 	// Create manuscripts with an unreadable file to trigger copy failure
 	runID := "20260329-100000"
+	setPublishableTestRunID(t, cliDir, runID)
 	manuscriptFile := filepath.Join(home, "manuscripts", "test", runID, "research", "brief.md")
 	require.NoError(t, os.MkdirAll(filepath.Dir(manuscriptFile), 0o755))
 	require.NoError(t, os.WriteFile(manuscriptFile, []byte("brief"), 0o600))
@@ -1896,6 +2121,14 @@ func newInsightCmd() *cobra.Command {
 		},
 	})
 	writePublishablePhase5Pass(t)
+}
+
+func setPublishableTestRunID(t *testing.T, cliDir, runID string) {
+	t.Helper()
+	manifest, err := pipeline.ReadCLIManifest(cliDir)
+	require.NoError(t, err)
+	manifest.RunID = runID
+	writeTestManifest(t, cliDir, manifest)
 }
 
 func writePublishablePhase5Pass(t *testing.T) {
