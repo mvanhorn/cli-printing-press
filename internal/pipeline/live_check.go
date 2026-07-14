@@ -334,27 +334,9 @@ func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, e
 		return refresh, nil
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(stagePath), "."+filepath.Base(stagePath)+".rebuild-*")
-	if err != nil {
-		refresh.Action = "failed"
-		return refresh, fmt.Errorf("creating staged rebuild temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		refresh.Action = "failed"
-		return refresh, fmt.Errorf("closing staged rebuild temp file: %w", err)
-	}
-	_ = os.Remove(tmpPath)
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if err := buildCLITo(cliDir, tmpPath); err != nil {
+	if err := rebuildLiveCheckBinary(cliDir, stagePath); err != nil {
 		refresh.Action = "failed"
 		return refresh, err
-	}
-	if err := replaceLiveCheckStageBinary(tmpPath, stagePath); err != nil {
-		refresh.Action = "failed"
-		return refresh, fmt.Errorf("replacing staged binary: %w", err)
 	}
 	refresh.Action = "rebuilt"
 	refresh.BinaryPath = stagePath
@@ -362,7 +344,29 @@ func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, e
 	return refresh, nil
 }
 
-func replaceLiveCheckStageBinary(src, dst string) error {
+func rebuildLiveCheckBinary(cliDir, binaryPath string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(binaryPath), "."+filepath.Base(binaryPath)+".rebuild-*")
+	if err != nil {
+		return fmt.Errorf("creating binary rebuild temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("closing binary rebuild temp file: %w", err)
+	}
+	_ = os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if err := buildCLITo(cliDir, tmpPath); err != nil {
+		return err
+	}
+	if err := replaceLiveCheckBinary(tmpPath, binaryPath); err != nil {
+		return fmt.Errorf("replacing binary: %w", err)
+	}
+	return nil
+}
+
+func replaceLiveCheckBinary(src, dst string) error {
 	if runtime.GOOS != "windows" {
 		return os.Rename(src, dst)
 	}

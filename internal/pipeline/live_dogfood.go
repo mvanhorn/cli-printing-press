@@ -444,6 +444,9 @@ func liveDogfoodBinaryPath(dir, name string) (string, func(), error) {
 		return "", func() {}, fmt.Errorf("rebuilding staged binary: %s", refresh.Reason)
 	}
 	if path, err := resolveBinaryPath(dir, name); err == nil {
+		if err := refreshLiveDogfoodBinary(dir, path); err != nil {
+			return "", func() {}, fmt.Errorf("rebuilding stale live dogfood binary: %w", err)
+		}
 		return path, func() {}, nil
 	} else if strings.TrimSpace(name) != "" {
 		return "", func() {}, err
@@ -458,6 +461,28 @@ func liveDogfoodBinaryPath(dir, name string) (string, func(), error) {
 		return "", func() {}, err
 	}
 	return path, func() { _ = os.Remove(path) }, nil
+}
+
+func refreshLiveDogfoodBinary(cliDir, binaryPath string) error {
+	binaryInfo, err := os.Stat(binaryPath)
+	if err != nil {
+		return err
+	}
+	cmdDir, err := findCLICommandDir(cliDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir, cmdDir)
+	if err != nil {
+		return err
+	}
+	if !ok || !binaryInfo.ModTime().Before(newestSource) {
+		return nil
+	}
+	return rebuildLiveCheckBinary(cliDir, binaryPath)
 }
 
 func discoverLiveDogfoodCommands(binaryPath string) ([]liveDogfoodCommand, error) {

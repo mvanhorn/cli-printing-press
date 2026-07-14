@@ -977,6 +977,109 @@ func main() {
 	assert.Equal(t, LiveDogfoodStatusPass, happy.Status)
 }
 
+func TestLiveDogfoodBinaryPathRebuildsStaleRootBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the stale root binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/live-dogfood-root-refresh-test\n\ngo 1.23\n"), 0o644))
+	cmdDir := filepath.Join(dir, "cmd", binaryName)
+	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	mainPath := filepath.Join(cmdDir, "main.go")
+	require.NoError(t, os.WriteFile(mainPath, []byte("package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Print(\"current source\") }\n"), 0o644))
+	internalDir := filepath.Join(dir, "internal", "fixture")
+	require.NoError(t, os.MkdirAll(internalDir, 0o755))
+	internalPath := filepath.Join(internalDir, "fixture.go")
+	require.NoError(t, os.WriteFile(internalPath, []byte("package fixture\n"), 0o644))
+
+	rootPath := writeStubBinary(t, dir, binaryName, `echo "stale root"`)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	newTime := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(rootPath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(mainPath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(internalPath, newTime, newTime))
+
+	path, cleanup, err := liveDogfoodBinaryPath(dir, binaryName)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	require.Equal(t, rootPath, path)
+
+	out, err := exec.Command(path).CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.Equal(t, "current source", string(out))
+}
+
+func TestLiveDogfoodBinaryPathKeepsFreshRootBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fresh root binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/live-dogfood-root-fresh-test\n\ngo 1.23\n"), 0o644))
+	cmdDir := filepath.Join(dir, "cmd", binaryName)
+	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	mainPath := filepath.Join(cmdDir, "main.go")
+	require.NoError(t, os.WriteFile(mainPath, []byte("package main\n\nfunc main() {}\n"), 0o644))
+
+	rootPath := writeStubBinary(t, dir, binaryName, `echo "fresh root"`)
+	oldTime := time.Now().Add(-2 * time.Hour)
+	freshTime := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(mainPath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(rootPath, freshTime, freshTime))
+
+	path, cleanup, err := liveDogfoodBinaryPath(dir, binaryName)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	require.Equal(t, rootPath, path)
+
+	out, err := exec.Command(path).CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.Equal(t, "fresh root\n", string(out))
+	contents, err := os.ReadFile(rootPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(contents), `echo "fresh root"`)
+}
+
+func TestLiveDogfoodBinaryPathReportsCommandDirectoryErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the root binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	rootPath := writeStubBinary(t, dir, binaryName, `echo "existing root"`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cmd"), []byte("not a directory"), 0o644))
+
+	_, _, err := liveDogfoodBinaryPath(dir, binaryName)
+	require.ErrorContains(t, err, "rebuilding stale live dogfood binary")
+
+	out, runErr := exec.Command(rootPath).CombinedOutput()
+	require.NoError(t, runErr, string(out))
+	assert.Equal(t, "existing root\n", string(out))
+}
+
+func TestLiveDogfoodBinaryPathKeepsBinaryWithoutSourceTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the root binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	binaryName := "fixture-pp-cli"
+	rootPath := writeStubBinary(t, dir, binaryName, `echo "binary only"`)
+
+	path, cleanup, err := liveDogfoodBinaryPath(dir, binaryName)
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	require.Equal(t, rootPath, path)
+
+	out, err := exec.Command(path).CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.Equal(t, "binary only\n", string(out))
+}
+
 func TestRunLiveDogfoodDoesNotLeaveFallbackDogfoodBinary(t *testing.T) {
 	dir := t.TempDir()
 	binaryName := "fixture-pp-cli"

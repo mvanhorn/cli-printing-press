@@ -4263,7 +4263,9 @@ cookie-auth CLI you could not exercise.
 The live dogfood runner enumerates the CLI's `agent-context` command tree,
 runs help, happy-path, JSON-fidelity, and error-path checks where applicable,
 captures subprocess exit codes directly without shell pipes, and emits a
-structured report with pass/fail/skipped counts. Save the JSON report to:
+structured report with pass/fail/skipped counts. Before running the matrix, it
+atomically rebuilds a selected binary that is older than the CLI's Go sources;
+binaries at least as new as the sources are reused. Save the JSON report to:
 
 `$PROOFS_DIR/<stamp>-dogfood-results.json`
 
