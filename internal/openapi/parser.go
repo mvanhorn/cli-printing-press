@@ -1296,9 +1296,9 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	envPrefix := naming.EnvPrefix(name)
 	switch auth.Type {
 	case "api_key":
-		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix)
+		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix, auth.In)
 	case "bearer_token":
-		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix)
+		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix, "")
 	}
 	applyAuthOverrideExtensions(&auth, scheme.Extensions)
 	applyAuthEnvVarDefaults(&auth, envPrefix)
@@ -1554,14 +1554,14 @@ func derivedAdditionalHeaderEnvVar(schemeName, headerName, envPrefix string, fal
 		}
 		return envPrefix + "_" + strings.ToUpper(headerSuffix)
 	}
-	envVars := defaultAuthEnvVars("api_key", "", schemeName, envPrefix)
+	envVars := defaultAuthEnvVars("api_key", "", schemeName, envPrefix, "")
 	if len(envVars) == 0 {
 		return ""
 	}
 	return envVars[0]
 }
 
-func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string {
+func defaultAuthEnvVars(authType, format, schemeName, envPrefix, placement string) []string {
 	switch authType {
 	case "api_key":
 		if authFormatIsBasic(format) {
@@ -1571,7 +1571,10 @@ func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string
 			return []string{envPrefix + "_USERNAME", envPrefix + "_PASSWORD"}
 		}
 		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN).
-		schemeEnvSuffix := stripLeadingEnvPrefix(toSnakeCase(schemeName), envPrefix)
+		schemeEnvSuffix := toSnakeCase(schemeName)
+		if !strings.EqualFold(strings.TrimSpace(placement), "cookie") {
+			schemeEnvSuffix = stripLeadingEnvPrefix(schemeEnvSuffix, envPrefix)
+		}
 		if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
 			return []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
 		}
