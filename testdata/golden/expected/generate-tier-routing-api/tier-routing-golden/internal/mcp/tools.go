@@ -54,7 +54,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items", "free", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: ""}, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/items", "free", true, false, nil, mcpPageConfig{CursorParam: "cursor", NextCursorPath: "cursor"}, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_premium",

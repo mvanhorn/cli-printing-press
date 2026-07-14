@@ -226,6 +226,11 @@ func boundedSingleArrayPageObject(data json.RawMessage, opts PageOptions) ([]byt
 		return nil, false
 	}
 	nextUpstream := extractStringPath(data, opts.NextCursorPath)
+	if nextUpstream != "" {
+		if state, err := decodeEndpointCursor(opts.Cursor); err == nil && nextUpstream == state.UpstreamCursor {
+			nextUpstream = ""
+		}
+	}
 	return boundedPageListEnvelope(arrayField, items, data, endpointListNote, opts, obj, nextUpstream), true
 }
 

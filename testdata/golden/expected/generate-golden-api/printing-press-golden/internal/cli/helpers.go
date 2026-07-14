@@ -627,12 +627,16 @@ func paginatedGet(ctx context.Context, c interface {
 			clean[k] = v
 		}
 	}
+	cursorLookupPath := nextCursorPath
+	if cursorLookupPath == "" && paginationType != "offset" && paginationType != "page" {
+		cursorLookupPath = cursorParam
+	}
 	if !fetchAll {
 		data, err := c.GetWithHeaders(ctx, path, clean, headers)
 		if err != nil {
 			return nil, err
 		}
-		emitTruncationWarning(data, nextCursorPath, hasMoreField, paginationType)
+		emitTruncationWarning(data, cursorLookupPath, hasMoreField, paginationType)
 		return data, nil
 	}
 
@@ -656,6 +660,11 @@ func paginatedGet(ctx context.Context, c interface {
 
 	// Fetch all pages
 	allItems := make([]json.RawMessage, 0)
+	seenCursorTokens := map[string]struct{}{}
+	if sentCursor := clean[cursorParam]; sentCursor != "" {
+		seenCursorTokens[sentCursor] = struct{}{}
+	}
+	foundCursorField := false
 	page := 0
 	for {
 		page++
@@ -693,9 +702,19 @@ func paginatedGet(ctx context.Context, c interface {
 				}
 
 				// Check for next cursor
-				if nextCursorPath != "" {
-					if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
+				if cursorLookupPath != "" {
+					if tokenRaw, ok := rawAtPath(obj, cursorLookupPath); ok {
 						if token := paginationCursorToken(tokenRaw); token != "" {
+							foundCursorField = true
+							if _, seen := seenCursorTokens[token]; seen {
+								if humanFriendly {
+									fmt.Fprintf(os.Stderr, "warning: --all received the same pagination cursor twice; returning fetched pages only.\n")
+								} else {
+									fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_repeated","next_cursor_path":%q,"message":"--all received the same pagination cursor twice; returning fetched pages only"}`+"\n", cursorLookupPath)
+								}
+								break
+							}
+							seenCursorTokens[token] = struct{}{}
 							if page >= paginatedGetMaxPages {
 								emitPaginatedGetMaxPagesWarning()
 								break
@@ -722,7 +741,7 @@ func paginatedGet(ctx context.Context, c interface {
 									clean[cursorParam] = next
 									continue
 								}
-								emitMissingPaginationCursorWarning(nextCursorPath)
+								emitMissingPaginationCursorWarning(cursorLookupPath)
 								break
 							}
 							hasExplicitNoMore = true
@@ -748,7 +767,7 @@ func paginatedGet(ctx context.Context, c interface {
 		break
 	}
 
-	if fetchAll && page == 1 && nextCursorPath == "" && hasMoreField == "" && paginationType != "offset" && paginationType != "page" {
+	if fetchAll && page == 1 && nextCursorPath == "" && !foundCursorField && hasMoreField == "" && paginationType != "offset" && paginationType != "page" {
 		emitMissingPaginationSignalWarning()
 	}
 	if humanFriendly {

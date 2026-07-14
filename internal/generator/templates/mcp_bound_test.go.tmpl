@@ -172,6 +172,34 @@ func TestEndpointPageResponseWrapsUpstreamCursorOpaquely(t *testing.T) {
 	}
 }
 
+func TestEndpointPageResponseDoesNotContinueWithEchoedUpstreamCursor(t *testing.T) {
+	cursor := encodeEndpointCursor(endpointCursor{Version: 1, UpstreamCursor: "server-token"})
+	data, err := json.Marshal(map[string]any{
+		"items": []map[string]string{
+			{"id": "item-0"},
+		},
+		"after": "server-token",
+	})
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	text := EndpointPageResponse("GET", data, PageOptions{
+		Cursor:         cursor,
+		CursorParam:    "after",
+		NextCursorPath: "after",
+	})
+	var envelope struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("page result must remain valid JSON: %v\n%s", err, text)
+	}
+	if envelope.NextCursor != "" {
+		t.Fatalf("echoed upstream cursor produced another continuation: %q", envelope.NextCursor)
+	}
+}
+
 func TestEndpointPageResponseOversizedFirstItemReturnsPreviewAndAdvances(t *testing.T) {
 	items := []map[string]string{
 		{"id": "too-large", "payload": strings.Repeat("x", MaxBytes+10000)},

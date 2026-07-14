@@ -47,7 +47,7 @@ func TestPaginatedGetEmitsTruncationWarning(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(helpersSrc), "func emitTruncationWarning(",
 		"generated helpers.go should define emitTruncationWarning")
-	require.Contains(t, string(helpersSrc), "emitTruncationWarning(data, nextCursorPath, hasMoreField, paginationType)",
+	require.Contains(t, string(helpersSrc), "emitTruncationWarning(data, cursorLookupPath, hasMoreField, paginationType)",
 		"paginatedGet should call emitTruncationWarning on the single-page path")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
@@ -65,11 +65,14 @@ func TestPaginatedGetHandlesNumericCursorAndMissingAllSignal(t *testing.T) {
 					Method:      "GET",
 					Path:        "/orders",
 					Description: "List orders",
+					Params: []spec.Param{
+						{Name: "limit", Type: "integer"},
+						{Name: "cursor", Type: "string"},
+					},
 					Pagination: &spec.Pagination{
-						Type:           "page",
-						CursorParam:    "page",
-						LimitParam:     "limit",
-						NextCursorPath: "meta.nextPage",
+						Type:        "cursor",
+						CursorParam: "cursor",
+						LimitParam:  "limit",
 					},
 					Response: spec.ResponseDef{Type: "array", Item: "Order"},
 				},
@@ -79,12 +82,16 @@ func TestPaginatedGetHandlesNumericCursorAndMissingAllSignal(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "paginate-edge-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
+	endpointSrc := readGeneratedCLIFileContaining(t, outputDir, `flagAll, "cursor", "cursor", "limit"`)
+	require.Contains(t, endpointSrc, `flagAll, "cursor", "cursor", "limit", 100, "", ""`,
+		"generated list command must preserve an empty next-cursor path for the runtime fallback")
 
 	behaviorTest := `package cli
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -154,6 +161,146 @@ func TestPaginatedGetAcceptsNumericNextCursor(t *testing.T) {
 	}
 	if client.params[1]["page"] != "2" {
 		t.Fatalf("second request page = %q, want 2", client.params[1]["page"])
+	}
+}
+
+func TestPaginatedGetFallsBackToCursorParamResponseField(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":"page-2"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"two"}],"cursor":""}` + "`" + `),
+	}}
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
+	if err != nil {
+		t.Fatalf("paginatedGet returned error: %v", err)
+	}
+	var got []map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d items, want 2; data=%s", len(got), data)
+	}
+	if len(client.params) != 2 {
+		t.Fatalf("got %d requests, want 2", len(client.params))
+	}
+	if client.params[1]["cursor"] != "page-2" {
+		t.Fatalf("second request cursor = %q, want page-2", client.params[1]["cursor"])
+	}
+}
+
+func TestPaginatedGetWarnsForCursorParamFallbackWithoutAll(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":"page-2"}` + "`" + `),
+	}}
+	stderr := capturePaginatedStderr(t, func() {
+		_, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, false, "cursor", "cursor", "limit", 100, "", "")
+		if err != nil {
+			t.Fatalf("paginatedGet returned error: %v", err)
+		}
+	})
+	if !containsAll(stderr, ` + "`" + `"event":"truncated"` + "`" + `, ` + "`" + `"hint":"pass --all to fetch every page"` + "`" + `) {
+		t.Fatalf("stderr missing cursor fallback truncation warning: %s", stderr)
+	}
+}
+
+func TestPaginatedGetWarnsForUnusableFallbackCursor(t *testing.T) {
+	for name, cursor := range map[string]string{
+		"empty": ` + "`" + `""` + "`" + `,
+		"null":  "null",
+		"zero":  "0",
+		"object": ` + "`" + `{"value":"next"}` + "`" + `,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &paginatedTestClient{responses: []json.RawMessage{
+				json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":` + "`" + ` + cursor + ` + "`" + `}` + "`" + `),
+			}}
+			stderr := capturePaginatedStderr(t, func() {
+				data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
+				if err != nil {
+					t.Fatalf("paginatedGet returned error: %v", err)
+				}
+				var got []map[string]string
+				if err := json.Unmarshal(data, &got); err != nil {
+					t.Fatalf("unmarshal data: %v", err)
+				}
+				if len(got) != 1 {
+					t.Fatalf("got %d items, want 1", len(got))
+				}
+			})
+			if !strings.Contains(stderr, ` + "`" + `"reason":"pagination_signal_missing"` + "`" + `) {
+				t.Fatalf("stderr missing pagination signal warning for unusable cursor: %s", stderr)
+			}
+		})
+	}
+}
+
+func TestPaginatedGetWarnsWhenFallbackCursorFieldIsMissing(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}]}` + "`" + `),
+	}}
+	stderr := capturePaginatedStderr(t, func() {
+		_, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
+		if err != nil {
+			t.Fatalf("paginatedGet returned error: %v", err)
+		}
+	})
+	if !strings.Contains(stderr, ` + "`" + `"reason":"pagination_signal_missing"` + "`" + `) {
+		t.Fatalf("stderr missing pagination signal warning: %s", stderr)
+	}
+}
+
+func TestPaginatedGetStopsWhenResponseRepeatsSentCursor(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":"page-2"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"two"}],"cursor":"page-2"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"unexpected"}],"cursor":""}` + "`" + `),
+	}}
+	stderr := capturePaginatedStderr(t, func() {
+		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
+		if err != nil {
+			t.Fatalf("paginatedGet returned error: %v", err)
+		}
+		var got []map[string]string
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal data: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %d items, want 2; data=%s", len(got), data)
+		}
+	})
+	if len(client.params) != 2 {
+		t.Fatalf("got %d requests, want 2", len(client.params))
+	}
+	if !containsAll(stderr, ` + "`" + `"event":"truncated"` + "`" + `, ` + "`" + `"reason":"pagination_cursor_repeated"` + "`" + `) {
+		t.Fatalf("stderr missing repeated-cursor warning: %s", stderr)
+	}
+}
+
+func TestPaginatedGetStopsWhenResponseCyclesToEarlierCursor(t *testing.T) {
+	client := &paginatedTestClient{responses: []json.RawMessage{
+		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"cursor":"page-2"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"two"}],"cursor":"page-3"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"three"}],"cursor":"page-2"}` + "`" + `),
+		json.RawMessage(` + "`" + `{"items":[{"id":"unexpected"}],"cursor":""}` + "`" + `),
+	}}
+	stderr := capturePaginatedStderr(t, func() {
+		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "cursor", "cursor", "limit", 100, "", "")
+		if err != nil {
+			t.Fatalf("paginatedGet returned error: %v", err)
+		}
+		var got []map[string]string
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal data: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("got %d items, want 3; data=%s", len(got), data)
+		}
+	})
+	if len(client.params) != 3 {
+		t.Fatalf("got %d requests, want 3", len(client.params))
+	}
+	if !containsAll(stderr, ` + "`" + `"event":"truncated"` + "`" + `, ` + "`" + `"reason":"pagination_cursor_repeated"` + "`" + `) {
+		t.Fatalf("stderr missing repeated-cursor warning: %s", stderr)
 	}
 }
 
@@ -494,7 +641,7 @@ func TestPaginatedGetStopsAtMaxPageSafetyLimit(t *testing.T) {
 func TestPaginatedGetStopsAtMaxPageSafetyLimitForBodyCursor(t *testing.T) {
 	responses := make([]json.RawMessage, paginatedGetMaxPages+1)
 	for i := range responses {
-		responses[i] = json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"next":"next-token"}}` + "`" + `)
+		responses[i] = json.RawMessage(fmt.Sprintf(` + "`" + `{"items":[{"id":"one"}],"meta":{"next":"next-token-%d"}}` + "`" + `, i+1))
 	}
 	client := &paginatedTestClient{responses: responses}
 	stderr := capturePaginatedStderr(t, func() {
@@ -513,8 +660,8 @@ func TestPaginatedGetStopsAtMaxPageSafetyLimitForBodyCursor(t *testing.T) {
 	if len(client.params) != paginatedGetMaxPages {
 		t.Fatalf("got %d requests, want %d", len(client.params), paginatedGetMaxPages)
 	}
-	if client.params[1]["cursor"] != "next-token" {
-		t.Fatalf("second request cursor = %q, want next-token", client.params[1]["cursor"])
+	if client.params[1]["cursor"] != "next-token-1" {
+		t.Fatalf("second request cursor = %q, want next-token-1", client.params[1]["cursor"])
 	}
 	if !containsAll(stderr, ` + "`" + `"event":"truncated"` + "`" + `, ` + "`" + `"reason":"max_pages_cap_hit"` + "`" + `) {
 		t.Fatalf("stderr missing max-pages body-cursor truncation warning: %s", stderr)
@@ -571,6 +718,7 @@ func containsAll(s string, needles ...string) bool {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "paginated_get_issue1688_test.go"), []byte(behaviorTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestPaginatedGet")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestIssue3497BareAllOffsetUsesEndpointPageSize(t *testing.T) {
