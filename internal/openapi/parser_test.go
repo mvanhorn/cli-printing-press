@@ -511,7 +511,8 @@ func TestMapParametersOnlyMarksQueryFieldSelectors(t *testing.T) {
 		},
 	}
 
-	params := mapParameters(pathItem, op)
+	params, err := mapParameters(pathItem, op)
+	require.NoError(t, err)
 	require.Len(t, params, 2)
 
 	byName := make(map[string]spec.Param, len(params))
@@ -544,7 +545,8 @@ func TestMapParametersPreservesEffectiveQuerySerialization(t *testing.T) {
 		},
 	}
 
-	params := mapParameters(&openapi3.PathItem{}, op)
+	params, err := mapParameters(&openapi3.PathItem{}, op)
+	require.NoError(t, err)
 	require.Len(t, params, 2)
 
 	assert.Equal(t, "form", params[0].QueryStyle)
@@ -575,7 +577,9 @@ func TestMapParametersDropsPhantomBracketName(t *testing.T) {
 	}
 
 	byName := make(map[string]bool)
-	for _, p := range mapParameters(pathItem, op) {
+	params, err := mapParameters(pathItem, op)
+	require.NoError(t, err)
+	for _, p := range params {
 		byName[p.Name] = true
 	}
 
@@ -583,6 +587,20 @@ func TestMapParametersDropsPhantomBracketName(t *testing.T) {
 	assert.False(t, byName["  "], "whitespace-only param name must be dropped")
 	assert.True(t, byName["tags[]"], "legitimate array-style param must be kept")
 	assert.True(t, byName["limit"], "normal param must be kept")
+}
+
+func TestMapParametersRejectsInvalidQuerySerialization(t *testing.T) {
+	t.Parallel()
+
+	op := &openapi3.Operation{Parameters: openapi3.Parameters{{Value: &openapi3.Parameter{
+		Name:   "ids",
+		In:     openapi3.ParameterInQuery,
+		Style:  openapi3.SerializationMatrix,
+		Schema: openapi3.NewArraySchema().WithItems(openapi3.NewIntegerSchema()).NewRef(),
+	}}}}
+
+	_, err := mapParameters(&openapi3.PathItem{}, op)
+	require.ErrorContains(t, err, `query parameter "ids" has invalid serialization`)
 }
 
 func readAICLargeSpec(tb testing.TB) []byte {

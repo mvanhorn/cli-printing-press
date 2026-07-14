@@ -3489,7 +3489,10 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) error {
 				descriptionSynthesized = true
 			}
 
-			params := mapParameters(pathItem, op)
+			params, err := mapParameters(pathItem, op)
+			if err != nil {
+				return fmt.Errorf("map parameters for %s %q: %w", strings.ToUpper(method), path, err)
+			}
 			body, requestContentType, bodyJSONFallback, bodyRequired, bodyIsArray := mapRequestBody(op.RequestBody, method, path)
 
 			endpoint := spec.Endpoint{
@@ -4424,7 +4427,7 @@ func hasPathParams(path string) bool {
 	return strings.Contains(path, "{") && strings.Contains(path, "}")
 }
 
-func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.Param {
+func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) ([]spec.Param, error) {
 	merged := mergeParameters(pathItem, op)
 	var urlNameOverrides map[string]string
 	urlNameOverridesRead := false
@@ -4466,8 +4469,10 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		if parameter.In == openapi3.ParameterInQuery {
 			serialization, err := parameter.SerializationMethod()
 			if err != nil {
-				warnf("skipping query parameter %q with invalid serialization: %v", paramName, err)
-				continue
+				return nil, fmt.Errorf("query parameter %q has invalid serialization: %w", paramName, err)
+			}
+			if !supportedQuerySerialization(serialization) {
+				return nil, fmt.Errorf("query parameter %q has invalid serialization: style=%q explode=%t", paramName, serialization.Style, serialization.Explode)
 			}
 			param.QueryStyle = serialization.Style
 			param.QueryExplode = &serialization.Explode
@@ -4499,7 +4504,21 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 	// instead of required positional args.
 	reclassifyPathParamModifiers(params)
 
-	return params
+	return params, nil
+}
+
+func supportedQuerySerialization(method *openapi3.SerializationMethod) bool {
+	if method == nil {
+		return false
+	}
+	switch method.Style {
+	case openapi3.SerializationForm, openapi3.SerializationSpaceDelimited, openapi3.SerializationPipeDelimited:
+		return true
+	case openapi3.SerializationDeepObject:
+		return method.Explode
+	default:
+		return false
+	}
 }
 
 // setParamMaximum records a numeric upper-bound constraint from the schema onto
