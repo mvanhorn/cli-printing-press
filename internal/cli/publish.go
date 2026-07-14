@@ -359,7 +359,7 @@ func newPublishPackageCmd() *cobra.Command {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("backfilling printer attribution: %w", err)}
 			}
-			if err := normalizePackagedPublishMetadata(outCLIDir, category); err != nil {
+			if err := normalizePackagedPublishMetadata(outCLIDir, category, modulePath); err != nil {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("normalizing publish metadata: %w", err)}
 			}
@@ -1085,7 +1085,7 @@ func backfillPackagedManifestAttribution(dir string) error {
 	return os.WriteFile(manifestPath, updated, info.Mode())
 }
 
-func normalizePackagedPublishMetadata(dir, category string) error {
+func normalizePackagedPublishMetadata(dir, category, modulePath string) error {
 	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -1100,12 +1100,24 @@ func normalizePackagedPublishMetadata(dir, category string) error {
 		return err
 	}
 
+	changed := false
 	if strings.TrimSpace(manifest.Category) != category {
 		encoded, err := json.Marshal(category)
 		if err != nil {
 			return err
 		}
 		raw["category"] = encoded
+		changed = true
+	}
+	if strings.TrimSpace(modulePath) != "" && strings.TrimSpace(manifest.ModulePath) != strings.TrimSpace(modulePath) {
+		encoded, err := json.Marshal(strings.TrimSpace(modulePath))
+		if err != nil {
+			return err
+		}
+		raw["module_path"] = encoded
+		changed = true
+	}
+	if changed {
 		updated, err := json.MarshalIndent(raw, "", "  ")
 		if err != nil {
 			return err

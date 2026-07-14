@@ -93,6 +93,10 @@ type CLIManifest struct {
 	// CLIName is the executable/binary name (for example "espn-pp-cli").
 	// It does not track the slug-keyed library directory.
 	CLIName string `json:"cli_name"`
+	// ModulePath records a qualified custom publication target supplied via
+	// publish package --module-path. It keeps canonical install verification
+	// aligned with private and forked library distributions.
+	ModulePath string `json:"module_path,omitempty"`
 	// Creator is the permanent original author (handle + display name),
 	// preserved across regens regardless of who runs the generator. Source
 	// of truth for every attribution surface.

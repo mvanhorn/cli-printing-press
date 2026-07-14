@@ -87,6 +87,20 @@ func TestCategorylessInstallSectionsAvoidOtherLibraryPath(t *testing.T) {
 	}
 }
 
+func TestCanonicalSkillInstallSectionHonorsQualifiedModulePath(t *testing.T) {
+	t.Parallel()
+	modulePath := "github.com/RonanRx/printing-press-library/library/health/ronanrx"
+	section := CanonicalSkillInstallSectionForModule("ronanrx", "health", modulePath)
+	require.Contains(t, section, "go install "+modulePath+"/cmd/ronanrx-pp-cli@latest")
+	require.NotContains(t, section, "github.com/mvanhorn/printing-press-library/library/health/ronanrx")
+
+	require.Equal(t,
+		CanonicalSkillInstallSection("ronanrx", "health"),
+		CanonicalSkillInstallSectionForModule("ronanrx", "health", "ronanrx-pp-cli"),
+		"bare generation modules must retain the public default",
+	)
+}
+
 // TestExtractSkillInstallSectionMissingStart confirms the extractor
 // reports ok=false when the canonical heading is missing — the case
 // where an agent has rewritten the section into something unrecognizable.

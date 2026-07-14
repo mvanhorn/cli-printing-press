@@ -45,6 +45,13 @@ const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails
 	"```\n" +
 	"\n"
 
+const canonicalSkillInstallSectionModuleFallbackFormat = "If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.5 or newer). This installs into `$GOPATH/bin` (default `$HOME/go/bin`), so add that directory to `$PATH` instead:\n" +
+	"\n" +
+	"```bash\n" +
+	"go install %[2]s/cmd/%[1]s-pp-cli@latest\n" +
+	"```\n" +
+	"\n"
+
 const canonicalSkillInstallSectionPrepublishFallback = "If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.\n" +
 	"\n"
 
@@ -61,14 +68,30 @@ const canonicalSkillInstallSectionEnd = "If `--version` reports \"command not fo
 // authoritative source post-generation; the template stays in sync via
 // TestCanonicalSkillInstallSectionMatchesTemplate.
 func CanonicalSkillInstallSection(name, category string) string {
+	return CanonicalSkillInstallSectionForModule(name, category, "")
+}
+
+// CanonicalSkillInstallSectionForModule returns the canonical install section
+// for an already-published module. Qualified custom module paths are honored
+// so publish --module-path packages do not fail canonical verification after
+// RewriteModulePath updates their direct-install instructions. Bare standalone
+// generation modules keep the public-library default.
+func CanonicalSkillInstallSectionForModule(name, category, modulePath string) string {
 	section := fmt.Sprintf(canonicalSkillInstallSectionStartFormat, name)
-	if category != "" {
+	if isQualifiedModulePath(modulePath) {
+		section += fmt.Sprintf(canonicalSkillInstallSectionModuleFallbackFormat, name, strings.TrimSuffix(modulePath, "/"))
+	} else if category != "" {
 		section += fmt.Sprintf(canonicalSkillInstallSectionGoFallbackFormat, name, category)
 	} else {
 		section += canonicalSkillInstallSectionPrepublishFallback
 	}
 	section += canonicalSkillInstallSectionEnd
 	return section
+}
+
+func isQualifiedModulePath(modulePath string) bool {
+	host, _, ok := strings.Cut(strings.TrimSpace(modulePath), "/")
+	return ok && strings.Contains(host, ".")
 }
 
 // ExtractSkillInstallSection slices the install/prerequisites block out of

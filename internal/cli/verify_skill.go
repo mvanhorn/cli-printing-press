@@ -14,6 +14,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/modfile"
 )
 
 // verifySkillScript is the full text of scripts/verify-skill/verify_skill.py
@@ -144,8 +145,17 @@ func runCanonicalSectionsCheck(dir string) (finding canonicalFinding, hasFinding
 		return canonicalFinding{}, false, true, nil
 	}
 
-	if _, gErr := os.Stat(filepath.Join(dir, "go.mod")); gErr != nil {
+	goModBytes, gErr := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if gErr != nil {
 		return canonicalFinding{}, false, true, nil
+	}
+	declaredModulePath := modfile.ModulePath(goModBytes)
+	modulePath := strings.TrimSpace(manifest.ModulePath)
+	if modulePath != "" && modulePath != declaredModulePath {
+		return canonicalFinding{
+			Check: canonicalSectionsCheckName, Severity: "error", Command: "(file: .printing-press.json)",
+			Detail: fmt.Sprintf("manifest module_path %q does not match go.mod module %q", modulePath, declaredModulePath),
+		}, true, false, nil
 	}
 
 	skillBytes, sErr := os.ReadFile(filepath.Join(dir, "SKILL.md"))
@@ -154,7 +164,7 @@ func runCanonicalSectionsCheck(dir string) (finding canonicalFinding, hasFinding
 	}
 	skill := string(skillBytes)
 
-	expected := generator.CanonicalSkillInstallSection(name, manifest.Category)
+	expected := generator.CanonicalSkillInstallSectionForModule(name, manifest.Category, modulePath)
 	got, ok := ExtractInstallSectionForTest(skill)
 	if !ok {
 		return canonicalFinding{

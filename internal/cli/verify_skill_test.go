@@ -731,6 +731,16 @@ func TestVerifySkill_CanonicalSectionsPassesOnFreshFixture(t *testing.T) {
 	require.Contains(t, string(out), "canonical-sections passed")
 }
 
+func TestVerifySkill_CanonicalSectionsPassesForPrivateModule(t *testing.T) {
+	t.Parallel()
+	bin := buildPrintingPressBinary(t)
+	modulePath := "github.com/RonanRx/printing-press-library/library/health/ronanrx"
+	dir := writeCanonicalFixture(t, "ronanrx", "health", "", modulePath)
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
+	require.NoError(t, err, "private module fixture must pass canonical-sections: %s", string(out))
+	require.Contains(t, string(out), "canonical-sections passed")
+}
+
 // TestVerifySkill_CanonicalSectionsNormalizesCRLF guards against Windows
 // checkouts rewriting SKILL.md line endings and producing false drift in the
 // generator-owned install section.
@@ -804,7 +814,7 @@ func Execute() error { return (&cobra.Command{Use: "fixture-pp-cli"}).Execute() 
 // for exercising the canonical-sections check end-to-end. When skillBody is
 // "", the canonical install section is used verbatim; pass a tampered body
 // to simulate hand-editing of the install section.
-func writeCanonicalFixture(t *testing.T, name, category, skillBody string) string {
+func writeCanonicalFixture(t *testing.T, name, category, skillBody string, modulePaths ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	cliDir := filepath.Join(dir, "internal", "cli")
@@ -814,15 +824,23 @@ import "github.com/spf13/cobra"
 func Execute() error { return (&cobra.Command{Use: "`+name+`-pp-cli"}).Execute() }
 `), 0o644))
 
+	modulePath := "github.com/mvanhorn/printing-press-library/library/" + category + "/" + name
+	if len(modulePaths) > 0 {
+		modulePath = modulePaths[0]
+	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-		[]byte("module github.com/example/"+name+"-pp-cli\n\ngo 1.26.5\n"), 0o644))
+		[]byte("module "+modulePath+"\n\ngo 1.26.5\n"), 0o644))
 
 	manifest := fmt.Sprintf(`{"api_name":%q,"cli_name":%q,"category":%q}`,
 		name, name+"-pp-cli", category)
+	if len(modulePaths) > 0 {
+		manifest = fmt.Sprintf(`{"api_name":%q,"cli_name":%q,"category":%q,"module_path":%q}`,
+			name, name+"-pp-cli", category, modulePath)
+	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(manifest), 0o644))
 
 	if skillBody == "" {
-		skillBody = generator.CanonicalSkillInstallSection(name, category)
+		skillBody = generator.CanonicalSkillInstallSectionForModule(name, category, modulePath)
 	}
 	skill := "---\nname: pp-" + name + "\ndescription: \"fixture\"\n---\n\n# " + name + "\n\n" + skillBody + "\nFixture body.\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644))

@@ -930,6 +930,19 @@ func TestPublishPackageNormalizesManifestCategoryToPublishCategory(t *testing.T)
 	assert.Equal(t, "productivity", source.Category, "publish package should normalize only the staged copy")
 }
 
+func TestNormalizePackagedPublishMetadataRecordsCustomModulePath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, pipeline.CLIManifestFilename)
+	require.NoError(t, os.WriteFile(manifestPath, []byte(`{"schema_version":2,"api_name":"ronanrx","cli_name":"ronanrx-pp-cli","category":"health"}`), 0o644))
+	modulePath := "github.com/RonanRx/printing-press-library/library/health/ronanrx"
+	require.NoError(t, normalizePackagedPublishMetadata(dir, "health", modulePath))
+
+	manifest, err := pipeline.ReadCLIManifest(dir)
+	require.NoError(t, err)
+	require.Equal(t, modulePath, manifest.ModulePath)
+}
+
 func TestPublishPackageFailsWhenSkillReferencesUnknownCommand(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
