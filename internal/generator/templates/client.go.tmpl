@@ -381,6 +381,11 @@ const maxIdleConnsPerHost = 32
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 {{- if .UsesHTTP2DisabledTransport}}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	// An initialized DefaultTransport can carry "h2" in ALPN even after its round tripper is removed.
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
 	return &http.Client{Timeout: timeout, Jar: jar, Transport: transport}
 {{- else if .UsesBrowserHTTPTransport}}
