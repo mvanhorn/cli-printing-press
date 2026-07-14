@@ -280,7 +280,7 @@ func TestBodyMap_NestedObject_BooleanLeaf(t *testing.T) {
 	}
 }
 
-func TestBodyMap_NestedObject_BooleanDefaultIsEmitted(t *testing.T) {
+func TestBodyMap_NestedObject_DefaultTrueBooleanRequiresChangedFlag(t *testing.T) {
 	t.Parallel()
 	got := bodyMap([]spec.Param{{
 		Name: "settings",
@@ -290,8 +290,8 @@ func TestBodyMap_NestedObject_BooleanDefaultIsEmitted(t *testing.T) {
 		},
 	}}, "\t")
 
-	require.Contains(t, got, `if cmd.Flags().Changed("settings-enabled") || bodySettingsEnabled != false {`)
-	require.Contains(t, got, `nestedSettings["enabled"] = bodySettingsEnabled`)
+	require.Contains(t, got, `if cmd.Flags().Changed("settings-enabled") {`)
+	require.NotContains(t, got, `bodySettingsEnabled != false`)
 }
 
 // TestBodyMap_NestedObject_PreservesScalarSiblings verifies that

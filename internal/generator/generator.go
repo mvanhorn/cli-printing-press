@@ -6277,7 +6277,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			continue
 		}
 		if isStringCSVArrayParam(p) {
-			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
+			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
 			if strings.EqualFold(strings.TrimSpace(p.ItemType), "object") {
 				fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), csvArrayValueExpr(p, "body"+ident))
 			} else {
@@ -6353,9 +6353,6 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 
 func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
 	if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
-		if p.Default != nil {
-			return fmt.Sprintf("cmd.Flags().Changed(%q) || body%s != %s", flag, ident, zeroValForParamRequired(p.Name, p.Type, p.Required, true))
-		}
 		return fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
 	}
 	return fmt.Sprintf("body%s != %s", ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))
