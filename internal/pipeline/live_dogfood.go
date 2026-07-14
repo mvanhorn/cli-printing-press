@@ -468,13 +468,14 @@ func refreshLiveDogfoodBinary(cliDir, binaryPath string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := findCLICommandDir(cliDir); err != nil {
+	cmdDir, err := findCLICommandDir(cliDir)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir)
+	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir, cmdDir)
 	if err != nil {
 		return err
 	}

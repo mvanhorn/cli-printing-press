@@ -21,6 +21,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
+	"golang.org/x/mod/modfile"
 )
 
 // LiveStatus is the outcome of one feature's live check.
@@ -304,13 +305,14 @@ func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, e
 		return refresh, nil
 	}
 
-	if _, err := findCLICommandDir(cliDir); err != nil {
+	cmdDir, err := findCLICommandDir(cliDir)
+	if err != nil {
 		refresh.Action = "skipped"
 		refresh.Reason = "no CLI command directory found"
 		return refresh, nil
 	}
 
-	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir)
+	newestSource, ok, err := newestLiveCheckSourceModTime(cliDir, cmdDir)
 	if err != nil {
 		refresh.Action = "failed"
 		refresh.Reason = err.Error()
@@ -423,15 +425,37 @@ func liveCheckExistingStageBinaryPath(cliDir, name string) (string, string) {
 	return "", ""
 }
 
-func newestLiveCheckSourceModTime(cliDir string) (time.Time, bool, error) {
+func newestLiveCheckSourceModTime(cliDir, cmdDir string) (time.Time, bool, error) {
+	newest, found, err := newestLiveCheckSourceUnder(cliDir)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	mayUseExternal, err := liveCheckMayUseExternalLocalModules(cliDir)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if !mayUseExternal {
+		return newest, found, nil
+	}
+	graphNewest, graphFound, err := newestLiveCheckBuildGraphModTime(cmdDir)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if graphFound && (!found || graphNewest.After(newest)) {
+		return graphNewest, true, nil
+	}
+	return newest, found, nil
+}
+
+func newestLiveCheckSourceUnder(root string) (time.Time, bool, error) {
 	var newest time.Time
 	found := false
-	err := filepath.WalkDir(cliDir, func(path string, entry os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if path != cliDir && entry.Name() == ".git" {
+			if path != root && entry.Name() == ".git" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -451,6 +475,122 @@ func newestLiveCheckSourceModTime(cliDir string) (time.Time, bool, error) {
 	})
 	if err != nil {
 		return time.Time{}, false, err
+	}
+	return newest, found, nil
+}
+
+func liveCheckMayUseExternalLocalModules(cliDir string) (bool, error) {
+	data, err := os.ReadFile(filepath.Join(cliDir, "go.mod"))
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if err == nil {
+		file, err := modfile.Parse("go.mod", data, nil)
+		if err != nil {
+			return false, err
+		}
+		for _, replacement := range file.Replace {
+			path := filepath.FromSlash(replacement.New.Path)
+			if replacement.New.Version == "" && (filepath.IsAbs(path) || path == "." || path == ".." || strings.HasPrefix(path, "."+string(os.PathSeparator)) || strings.HasPrefix(path, ".."+string(os.PathSeparator))) {
+				return true, nil
+			}
+		}
+	}
+	for dir := cliDir; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return false, nil
+}
+
+func newestLiveCheckBuildGraphModTime(cmdDir string) (time.Time, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-json", "./"+filepath.Base(cmdDir))
+	cmd.Dir = filepath.Dir(cmdDir)
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return time.Time{}, false, fmt.Errorf("listing CLI build dependencies: %w\n%s", err, string(exitErr.Stderr))
+		}
+		return time.Time{}, false, fmt.Errorf("listing CLI build dependencies: %w", err)
+	}
+
+	type buildPackage struct {
+		Dir          string
+		GoFiles      []string
+		CgoFiles     []string
+		CFiles       []string
+		CXXFiles     []string
+		MFiles       []string
+		HFiles       []string
+		FFiles       []string
+		SFiles       []string
+		SwigFiles    []string
+		SwigCXXFiles []string
+		SysoFiles    []string
+		EmbedFiles   []string
+		Module       *struct {
+			Main    bool
+			Replace *struct {
+				Version string
+			}
+		}
+	}
+
+	var newest time.Time
+	found := false
+	seen := make(map[string]bool)
+	decoder := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var pkg buildPackage
+		if err := decoder.Decode(&pkg); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return time.Time{}, false, fmt.Errorf("decoding CLI build dependencies: %w", err)
+		}
+		if pkg.Module == nil || (!pkg.Module.Main && (pkg.Module.Replace == nil || pkg.Module.Replace.Version != "")) {
+			continue
+		}
+		files := append([]string{}, pkg.GoFiles...)
+		files = append(files, pkg.CgoFiles...)
+		files = append(files, pkg.CFiles...)
+		files = append(files, pkg.CXXFiles...)
+		files = append(files, pkg.MFiles...)
+		files = append(files, pkg.HFiles...)
+		files = append(files, pkg.FFiles...)
+		files = append(files, pkg.SFiles...)
+		files = append(files, pkg.SwigFiles...)
+		files = append(files, pkg.SwigCXXFiles...)
+		files = append(files, pkg.SysoFiles...)
+		files = append(files, pkg.EmbedFiles...)
+		for _, name := range files {
+			path := name
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(pkg.Dir, path)
+			}
+			path = filepath.Clean(path)
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			info, err := os.Stat(path)
+			if err != nil {
+				return time.Time{}, false, err
+			}
+			if !found || info.ModTime().After(newest) {
+				newest = info.ModTime()
+				found = true
+			}
+		}
 	}
 	return newest, found, nil
 }
