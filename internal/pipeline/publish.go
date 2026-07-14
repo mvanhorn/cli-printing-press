@@ -641,7 +641,7 @@ func shouldSkipPublishableManuscriptFile(path string, info fs.FileInfo, opts Pub
 	if !info.IsDir() && info.Size() >= publishableManuscriptMaxCaptureBytes {
 		return true
 	}
-	if !info.IsDir() && strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".pre-pii-scrub") {
+	if strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".pre-pii-scrub") {
 		return true
 	}
 	if opts.IncludeRawCaptures {

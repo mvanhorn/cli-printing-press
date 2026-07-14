@@ -258,6 +258,7 @@ func TestCopyPublishableManuscriptDirExcludesRawBrowserSniffCaptures(t *testing.
 	require.NoError(t, os.MkdirAll(filepath.Join(src, "research", "squire-browser-sniff-spec-samples"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(src, "research"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(src, "proofs"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "proofs", "snapshot.pre-pii-scrub"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "probe-001.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "probe_users_show.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "batch-01", "probe-002.json"), []byte(`{"email":"customer@gmail.com"}`+"\n"), 0o644))
@@ -269,6 +270,7 @@ func TestCopyPublishableManuscriptDirExcludesRawBrowserSniffCaptures(t *testing.
 	require.NoError(t, os.WriteFile(filepath.Join(src, "discovery", "browser-sniff-report.md"), []byte("# Report"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "research", "brief.md"), []byte("our synthesis"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(src, "proofs", "shipcheck.md.pre-pii-scrub"), []byte("customer@gmail.com"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "proofs", "snapshot.pre-pii-scrub", "leak.json"), []byte(`{"email":"customer@gmail.com"}`), 0o644))
 
 	require.NoError(t, CopyPublishableManuscriptDir(src, dst))
 
@@ -283,6 +285,7 @@ func TestCopyPublishableManuscriptDirExcludesRawBrowserSniffCaptures(t *testing.
 	assert.FileExists(t, filepath.Join(dst, "discovery", "browser-sniff-report.md"))
 	assert.FileExists(t, filepath.Join(dst, "research", "brief.md"))
 	assert.NoFileExists(t, filepath.Join(dst, "proofs", "shipcheck.md.pre-pii-scrub"))
+	assert.NoDirExists(t, filepath.Join(dst, "proofs", "snapshot.pre-pii-scrub"))
 }
 
 func TestCopyPublishableManuscriptDirCanIncludeRawBrowserSniffCaptures(t *testing.T) {
