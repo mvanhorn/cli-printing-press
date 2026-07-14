@@ -62,8 +62,22 @@ func Load(configPath string) (*Config, error) {
 	cfg.Path = path
 
 	if explicitConfigFile {
-		if err := readConfigFile(path, cfg, "config-kind path"); err != nil && !os.IsNotExist(err) {
-			return nil, err
+		// Keep non-secret settings from a readable config even when its permissions
+		// have drifted, but never trust credentials from that file. Canonicalizing
+		// first also makes a symlink inherit the target's permission verdict.
+		if real, evalErr := filepath.EvalSymlinks(path); evalErr == nil {
+			credentialsTrusted := cliutil.VerifyCredsPerms(real) == nil
+			parsed := *cfg
+			if err := readConfigFile(path, &parsed, "config-kind path"); err != nil {
+				if !os.IsNotExist(err) {
+					return nil, err
+				}
+			} else {
+				if !credentialsTrusted {
+					parsed.clearCredentialFields()
+				}
+				*cfg = parsed
+			}
 		}
 	} else {
 		legacyPath, err := LegacyConfigPath()
@@ -75,7 +89,8 @@ func Load(configPath string) (*Config, error) {
 			if !os.IsNotExist(err) {
 				return nil, err
 			}
-		} else {
+		} else if real, evalErr := filepath.EvalSymlinks(sourcePath); evalErr == nil {
+			credentialsTrusted := cliutil.VerifyCredsPerms(real) == nil
 			owner := "config-kind path"
 			if sourcePath == legacyPath {
 				owner = "legacy config path"
@@ -88,6 +103,9 @@ func Load(configPath string) (*Config, error) {
 					return nil, err
 				}
 			} else {
+				if !credentialsTrusted {
+					parsed.clearCredentialFields()
+				}
 				*cfg = parsed
 				if sourcePath == legacyPath {
 					cfg.legacySourcePath = legacyPath

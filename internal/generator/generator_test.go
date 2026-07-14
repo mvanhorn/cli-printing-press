@@ -103,9 +103,18 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
 		// Counts include the default-on learn loop tree + forced store.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 142},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 146},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 144},
+		// +4 vs prior baseline: the read-time creds-perms guard emits 4 auth-gated
+		// files (creds_perms_eval.go, _eval_test.go, _unix.go, _windows.go) for every
+		// token-bearing spec. All three of these fixtures persist a token.
+		// +1 more (A3): config_perms_test.go, the behavioral test proving the
+		// read-time guard is wired into config.Load — also auth-gated, so it lands
+		// for every token-bearing spec.
+		// +1 more (A4): credentials_perms_test.go, the behavioral test proving the
+		// read-time guard is wired into cliutil.LoadCredentials — also auth-gated,
+		// so it lands for every token-bearing spec.
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 148},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 152},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 150},
 	}
 
 	for _, tt := range tests {
