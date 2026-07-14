@@ -93,6 +93,11 @@ type codeOrchEndpoint struct {
 type codeOrchParamBinding struct {
 	PublicName string
 	WireName   string
+{{- if hasArrayQueryParams .APISpec}}
+	QueryArray bool
+	QueryStyle string
+	QueryExplode bool
+{{- end}}
 }
 
 // codeOrchEndpoints is the generator-populated registry covering every
@@ -115,7 +120,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
-		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}}{{end}} },
+		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}},{{end}}{{end}} },
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
 {{- end}}
@@ -141,7 +146,7 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		TemplateParams: []codeOrchParamBinding{ {{- range mcpGlobalTemplateBindings $endpoint $path $.GlobalPathTemplateVars}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}} },
-		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}},{{end}}{{end}} },
+		QueryParams: []codeOrchParamBinding{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}{{if .QueryArray}}, QueryArray: true, QueryStyle: {{printf "%q" .QueryStyle}}, QueryExplode: {{.QueryExplode}}{{end}}},{{end}}{{end}} },
 {{- if $endpoint.BodyIsArray}}
 		BodyIsArray: true,
 {{- end}}
@@ -318,6 +323,9 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	// remaining params used as the request body below.
 	query := map[string]string{}
 	if ep.Method == "GET" || ep.Method == "DELETE" {
+{{- if hasArrayQueryParams .APISpec}}
+		path = codeOrchSplitQuery(path, ep.QueryParams, params)
+{{- end}}
 		for k, v := range params {
 			query[codeOrchWireQueryName(ep.QueryParams, k)] = formatMCPParamValue(v)
 		}
@@ -327,6 +335,9 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		// PUT /ledger/voucher/{id}) wrongly lands in the JSON body and the
 		// API silently ignores it or rejects the request. The remaining
 		// params stay in the map for codeOrchWriteBody (the JSON body).
+{{- if hasArrayQueryParams .APISpec}}
+		path = codeOrchSplitQuery(path, ep.QueryParams, params)
+{{- else}}
 		if enc := codeOrchSplitQuery(ep.QueryParams, params); enc != "" {
 			sep := "?"
 			if strings.Contains(path, "?") {
@@ -334,6 +345,7 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 			}
 			path += sep + enc
 		}
+{{- end}}
 	}
 
 	hdrs := ep.HeaderOverrides
@@ -419,11 +431,15 @@ func codeOrchArrayBody(params map[string]any) any {
 }
 
 // codeOrchSplitQuery removes spec-declared in:query params from params and
+{{- if hasArrayQueryParams .APISpec}}
+// appends them URL-encoded to the request path. The remaining
+{{- else}}
 // returns them URL-encoded for appending to the request path. The remaining
+{{- end}}
 // entries stay in the map for codeOrchWriteBody (the JSON body), so a write
 // method's query parameters never get buried in the body. Mutates params by
 // design (deletes the consumed query keys).
-func codeOrchSplitQuery(queryParams []codeOrchParamBinding, params map[string]any) string {
+func codeOrchSplitQuery({{if hasArrayQueryParams .APISpec}}path string, {{end}}queryParams []codeOrchParamBinding, params map[string]any) string {
 	uv := neturl.Values{}
 	for _, q := range queryParams {
 		for _, key := range []string{q.PublicName, q.WireName} {
@@ -431,13 +447,32 @@ func codeOrchSplitQuery(queryParams []codeOrchParamBinding, params map[string]an
 				continue
 			}
 			if v, ok := params[key]; ok {
+{{- if hasArrayQueryParams .APISpec}}
+				if q.QueryArray {
+					path = appendMCPArrayQueryParam(path, q.WireName, v, q.QueryStyle, q.QueryExplode)
+				} else {
+					uv.Set(q.WireName, formatMCPParamValue(v))
+				}
+{{- else}}
 				uv.Set(q.WireName, formatMCPParamValue(v))
+{{- end}}
 				delete(params, key)
 				break
 			}
 		}
 	}
+{{- if hasArrayQueryParams .APISpec}}
+	if enc := uv.Encode(); enc != "" {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		path += sep + enc
+	}
+	return path
+{{- else}}
 	return uv.Encode()
+{{- end}}
 }
 
 func codeOrchWireQueryName(queryParams []codeOrchParamBinding, name string) string {

@@ -523,6 +523,38 @@ func TestMapParametersOnlyMarksQueryFieldSelectors(t *testing.T) {
 	assert.Equal(t, spec.ParamPurposeFieldSelector, byName["opt_fields"].Purpose)
 }
 
+func TestMapParametersPreservesEffectiveQuerySerialization(t *testing.T) {
+	t.Parallel()
+
+	explodeFalse := false
+	op := &openapi3.Operation{
+		Parameters: openapi3.Parameters{
+			{Value: &openapi3.Parameter{
+				Name:   "default_ids",
+				In:     openapi3.ParameterInQuery,
+				Schema: openapi3.NewArraySchema().WithItems(openapi3.NewIntegerSchema()).NewRef(),
+			}},
+			{Value: &openapi3.Parameter{
+				Name:    "compact_ids",
+				In:      openapi3.ParameterInQuery,
+				Style:   openapi3.SerializationForm,
+				Explode: &explodeFalse,
+				Schema:  openapi3.NewArraySchema().WithItems(openapi3.NewIntegerSchema()).NewRef(),
+			}},
+		},
+	}
+
+	params := mapParameters(&openapi3.PathItem{}, op)
+	require.Len(t, params, 2)
+
+	assert.Equal(t, "form", params[0].QueryStyle)
+	require.NotNil(t, params[0].QueryExplode)
+	assert.True(t, *params[0].QueryExplode, "query parameters default to explode=true")
+	assert.Equal(t, "form", params[1].QueryStyle)
+	require.NotNil(t, params[1].QueryExplode)
+	assert.False(t, *params[1].QueryExplode)
+}
+
 // TestMapParametersDropsPhantomBracketName verifies that phantom parameter
 // names are dropped (issue #1670). A spec parameter literally named "[]" (or
 // empty) is not a usable MCP/CLI argument and would emit "?[]=value" on the

@@ -4464,6 +4464,10 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		}
 		param.Example = parameterExample(parameter, schema)
 		if parameter.In == openapi3.ParameterInQuery {
+			if serialization, err := parameter.SerializationMethod(); err == nil {
+				param.QueryStyle = serialization.Style
+				param.QueryExplode = &serialization.Explode
+			}
 			if !urlNameOverridesRead {
 				urlNameOverrides = readParamURLNameOverrides(pathItem, op)
 				urlNameOverridesRead = true

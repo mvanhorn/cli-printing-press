@@ -164,6 +164,13 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			path = replacePathParam(path, "{{.Name}}", formatCLIParamValue(flag{{camel (paramIdent .)}}))
 {{- end}}
 {{- end}}
+{{- range .Endpoint.Params}}
+{{- if isArrayQueryParam .}}
+			if flag{{camel (paramIdent .)}} != "" {
+				path = appendArrayQueryParam(path, "{{paramWireName .}}", flag{{camel (paramIdent .)}}, "{{queryParamStyle .}}", {{queryParamExplodes .}})
+			}
+{{- end}}
+{{- end}}
 
 {{- if .Endpoint.UsesHTMLResponse}}
 			htmlRequestParams := map[string]string{}
@@ -171,7 +178,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			htmlRequestParams["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam)}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
 				htmlRequestParams["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}
@@ -197,7 +204,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
-{{- if and (not .Positional) (not .PathParam)}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
@@ -215,7 +222,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
-{{- if and (not .Positional) (not .PathParam)}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
@@ -228,7 +235,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam)}}
+{{- if and (not .Positional) (not .PathParam) (not (isArrayQueryParam .))}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParamRequired .Name .Type .Required (hasDefault .)}} {
 				params["{{paramWireName .}}"] = formatCLIParamValue(flag{{camel (paramIdent .)}})
 			}

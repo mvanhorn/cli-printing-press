@@ -314,6 +314,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"flagName":                            flagName,
 		"paramIdent":                          paramIdent,
 		"paramWireName":                       paramWireName,
+		"isArrayQueryParam":                   isArrayQueryParam,
+		"queryParamStyle":                     queryParamStyle,
+		"queryParamExplodes":                  queryParamExplodes,
+		"hasArrayQueryParams":                 hasArrayQueryParams,
 		"typeFieldIdent":                      typeFieldIdent,
 		"typeFieldJSONTagComment":             typeFieldJSONTagComment,
 		"safeTypeName":                        safeTypeName,
@@ -5627,6 +5631,9 @@ type mcpParamBinding struct {
 	Location           string
 	BodyPath           []string
 	Format             string
+	QueryArray         bool
+	QueryStyle         string
+	QueryExplode       bool
 	RequestContentType string
 	Default            string
 }
@@ -5672,6 +5679,11 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 		// must match the cobra default rendering for CLI/MCP wire parity; keep in
 		// sync with that path (and cf. pipeline.stringifyParamDefault).
 		if loc == "query" {
+			if isArrayQueryParam(p) {
+				binding.QueryArray = true
+				binding.QueryStyle = queryParamStyle(p)
+				binding.QueryExplode = queryParamExplodes(p)
+			}
 			if def, ok := mcpParamDefaultValue(p); ok {
 				binding.Default = def
 			}
@@ -7150,6 +7162,27 @@ func isStringCSVArrayParam(p spec.Param) bool {
 		return true
 	}
 	return primitiveKind(p.Type) == "array" && strings.EqualFold(strings.TrimSpace(p.ItemType), "string") && len(p.Fields) == 0
+}
+
+func isArrayQueryParam(p spec.Param) bool {
+	return !p.Positional && !p.PathParam && primitiveKind(p.Type) == "array"
+}
+
+func queryParamStyle(p spec.Param) string {
+	if style := strings.TrimSpace(p.QueryStyle); style != "" {
+		return style
+	}
+	return "form"
+}
+
+func queryParamExplodes(p spec.Param) bool {
+	return p.QueryExplode == nil || *p.QueryExplode
+}
+
+func hasArrayQueryParams(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, func(endpoint spec.Endpoint) bool {
+		return slices.ContainsFunc(endpoint.Params, isArrayQueryParam)
+	})
 }
 
 func csvArrayValueExpr(p spec.Param, inputExpr string) string {

@@ -2323,22 +2323,24 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 }
 
 type Param struct {
-	Name        string   `yaml:"name" json:"name"`
-	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
-	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
-	BodyName    string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
-	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	Type        string   `yaml:"type" json:"type"`
-	Required    bool     `yaml:"required" json:"required"`
-	Positional  bool     `yaml:"positional" json:"positional"`
-	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
-	GlobalScope bool     `yaml:"global_scope,omitempty" json:"global_scope,omitempty"`
-	Default     any      `yaml:"default" json:"default"`
-	Example     any      `yaml:"example,omitempty" json:"example,omitempty"`
-	Description string   `yaml:"description" json:"description"`
-	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
-	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
-	Format      string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	Name         string   `yaml:"name" json:"name"`
+	FlagName     string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	URLName      string   `yaml:"url_name,omitempty" json:"url_name,omitempty"`   // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
+	BodyName     string   `yaml:"body_name,omitempty" json:"body_name,omitempty"` // optional override for request-body field emission while keeping the public name
+	Aliases      []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	Type         string   `yaml:"type" json:"type"`
+	Required     bool     `yaml:"required" json:"required"`
+	Positional   bool     `yaml:"positional" json:"positional"`
+	PathParam    bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
+	GlobalScope  bool     `yaml:"global_scope,omitempty" json:"global_scope,omitempty"`
+	Default      any      `yaml:"default" json:"default"`
+	Example      any      `yaml:"example,omitempty" json:"example,omitempty"`
+	Description  string   `yaml:"description" json:"description"`
+	Fields       []Param  `yaml:"fields" json:"fields"`                     // for nested objects
+	Enum         []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
+	Format       string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	QueryStyle   string   `yaml:"query_style,omitempty" json:"query_style,omitempty"`
+	QueryExplode *bool    `yaml:"query_explode,omitempty" json:"query_explode,omitempty"`
 	// Maximum captures an inclusive numeric `maximum` schema constraint on the
 	// parameter. Sync uses it to clamp the page size it requests so a generated
 	// CLI never sends a page size the API rejects (e.g. a page_size param with
