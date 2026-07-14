@@ -103,6 +103,7 @@ func TestSessionHandshakeGeneration(t *testing.T) {
 	if !strings.Contains(string(clientContent), "c.Session.Invalidate()") {
 		t.Error("client.go doesn't invalidate on status-code match")
 	}
+	requireGeneratedCompiles(t, dir)
 }
 
 func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
@@ -154,11 +155,11 @@ func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
 
 	for _, want := range []string{
 		`"github.com/enetx/surf"`,
-		"func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client",
+		"func newHTTPClient(timeout time.Duration, jar http.CookieJar, skipTLSVerify bool) *http.Client",
 		"if jar == nil",
 		"builder = builder.Session()",
 		"httpClient.Jar = jar",
-		"newHTTPClient(timeout, sess.CookieJar())",
+		"newHTTPClient(timeout, sess.CookieJar(), cfg.SkipTLSVerify)",
 	} {
 		if !strings.Contains(string(clientContent), want) {
 			t.Errorf("client.go missing expected substring %q", want)
@@ -173,12 +174,13 @@ func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
 	// handshake itself uses vanilla net/http and the bot wall returns 429
 	// on the very call that would have established the session, even when
 	// the data client could have cleared it.
-	if !strings.Contains(string(sessionContent), "client:     newHTTPClient(timeout, jar)") {
+	if !strings.Contains(string(sessionContent), "client:     newHTTPClient(timeout, jar, skipTLSVerify)") {
 		t.Error("session.go's newSessionManager must use newHTTPClient so the handshake inherits the browser-impersonated transport, not a vanilla &http.Client{}")
 	}
 	if strings.Contains(string(sessionContent), "&http.Client{Timeout: timeout, Jar: jar}") {
 		t.Error("session.go still constructs a vanilla &http.Client{} — the handshake will bypass Surf impersonation")
 	}
+	requireGeneratedCompiles(t, dir)
 }
 
 // canonicalSessionHandshakeSpec returns a session-handshake spec that uses

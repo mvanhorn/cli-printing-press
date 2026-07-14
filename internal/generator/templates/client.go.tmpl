@@ -378,7 +378,7 @@ func isPathPlaceholderName(name string) bool {
 // 32 covers any sane worker count with margin.
 const maxIdleConnsPerHost = 32
 
-func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
+func newHTTPClient(timeout time.Duration, jar http.CookieJar{{if .UsesBrowserHTTPTransport}}, skipTLSVerify bool{{end}}) *http.Client {
 {{- if .UsesHTTP2DisabledTransport}}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if transport.TLSClientConfig == nil {
@@ -396,6 +396,9 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		Chrome().
 {{- end}}
 		Timeout(timeout)
+	if !skipTLSVerify {
+		builder = builder.SecureTLS()
+	}
 {{- if .UsesBrowserHTTP3Transport}}
 	builder = builder.ForceHTTP3()
 {{- else if .UsesBrowserHTTP2Transport}}
@@ -471,8 +474,8 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		cacheDir = filepath.Join(dir, "http")
 	}
 {{- if eq .Auth.Type "session_handshake"}}
-	sess := newSessionManager(timeout, cfg.Path)
-	httpClient := newHTTPClient(timeout, sess.CookieJar())
+	sess := newSessionManager(timeout, cfg.Path{{if .UsesBrowserHTTPTransport}}, cfg.SkipTLSVerify{{end}})
+	httpClient := newHTTPClient(timeout, sess.CookieJar(){{if .UsesBrowserHTTPTransport}}, cfg.SkipTLSVerify{{end}})
 	sess.AttachTo(httpClient)
 	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
@@ -509,9 +512,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		SeedCookieJar(cookieJar, cfg.BaseURL, cfg.CookieCredential())
 	}
 {{- end}}
-	httpClient := newHTTPClient(timeout, cookieJar)
+	httpClient := newHTTPClient(timeout, cookieJar{{if .UsesBrowserHTTPTransport}}, cfg.SkipTLSVerify{{end}})
 {{- else}}
-	httpClient := newHTTPClient(timeout, nil)
+	httpClient := newHTTPClient(timeout, nil{{if .UsesBrowserHTTPTransport}}, cfg.SkipTLSVerify{{end}})
 {{- end}}
 	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),

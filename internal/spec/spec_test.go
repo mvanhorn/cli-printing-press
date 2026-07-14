@@ -4846,6 +4846,34 @@ resources:
 		assert.Empty(t, s.GlobalPathTemplateVars)
 		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "profile")
 	})
+
+	t.Run("keeps insecure root flag collision positional", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+endpoint_template_vars: [insecure]
+endpoint_template_env_overrides:
+  insecure: TESTAPI_INSECURE
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  accounts:
+    description: Accounts
+    endpoints:
+      list:
+        method: GET
+        path: /modes/{insecure}/accounts
+      get:
+        method: GET
+        path: /modes/{insecure}/accounts/{account_id}
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+
+		assert.Empty(t, s.GlobalPathTemplateVars)
+		assert.Contains(t, paramNames(s.Resources["accounts"].Endpoints["list"].Params), "insecure")
+	})
 }
 
 func TestReservedRootFlagsMatchRootTemplate(t *testing.T) {

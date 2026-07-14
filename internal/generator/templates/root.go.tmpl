@@ -33,6 +33,9 @@ type rootFlags struct {
 	dryRun       bool
 	noCache      bool
 	noInput      bool
+{{- if .UsesBrowserHTTPTransport}}
+	insecure     bool
+{{- end}}
 {{- if .HasCreateCommands}}
 	idempotent   bool
 {{- end}}
@@ -276,6 +279,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "Show request without sending")
 	rootCmd.PersistentFlags().BoolVar(&flags.noCache, "no-cache", false, "Bypass response cache")
 	rootCmd.PersistentFlags().BoolVar(&flags.noInput, "no-input", false, "Disable all interactive prompts (for CI/agents)")
+{{- if .UsesBrowserHTTPTransport}}
+	rootCmd.PersistentFlags().BoolVar(&flags.insecure, "insecure", false, "Skip TLS certificate verification")
+{{- end}}
 {{- if .HasCreateCommands}}
 	rootCmd.PersistentFlags().BoolVar(&flags.idempotent, "idempotent", false, "Treat already-existing create results as a successful no-op")
 {{- end}}
@@ -730,6 +736,11 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	if err != nil {
 		return nil, configErr(err)
 	}
+{{- if .UsesBrowserHTTPTransport}}
+	if f.insecure {
+		cfg.SetSkipTLSVerify(true)
+	}
+{{- end}}
 {{- if .GlobalPathTemplateVars}}
 	if cfg.TemplateVars == nil {
 		cfg.TemplateVars = map[string]string{}

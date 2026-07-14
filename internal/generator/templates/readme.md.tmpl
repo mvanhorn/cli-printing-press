@@ -668,6 +668,8 @@ This CLI uses standard HTTP transport with HTTP/2 disabled for browser-facing en
 ## HTTP Transport
 
 This CLI uses Chrome-compatible HTTP transport{{if .UsesBrowserHTTP3Transport}} over HTTP/3{{end}} for browser-facing endpoints. It does not require a resident browser process for normal API calls.
+
+TLS certificates are verified by default. For a trusted development or self-signed endpoint only, pass `--insecure` for one invocation, set `{{envPrefix .Name}}_SKIP_TLS_VERIFY=true` for the current environment, or set `skip_tls_verify = true` in the config file for a persistent override.
 {{- end}}
 {{- if .TrafficAnalysis}}
 
