@@ -17382,8 +17382,10 @@ func TestGenerateMCPHandlerFormatsNumericPathAndQueryScalars(t *testing.T) {
 	tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	assert.Contains(t, tools, "func formatMCPParamValue(v any) string",
 		"generated MCP handler must emit a scalar formatter shared by path and query binding")
-	assert.Contains(t, tools, `path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)`,
-		"path params must use scalar formatting so large JSON numbers do not render as e+ notation")
+	assert.Contains(t, tools, `return url.PathEscape(formatMCPParamValue(v))`,
+		"path params must use scalar formatting before percent-encoding")
+	assert.Contains(t, tools, `path = strings.Replace(path, placeholder, mcpPathValue(v), 1)`,
+		"path params must use plain-decimal formatting and percent-encoding")
 	assert.Contains(t, tools, `params[binding.WireName] = formatMCPParamValue(v)`,
 		"query params must use scalar formatting so large JSON numbers do not render as e+ notation")
 	assert.NotContains(t, tools, `path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)`)

@@ -103,7 +103,7 @@ Both `tools-manifest.json` and `internal/mcp/tools.go` are generated artifacts (
 
 Keys are the MCP tool names exactly as they appear in `tools-manifest.json`'s `name` field (snake_case, e.g. `tags_create`, `bookings_attendees_booking-add`). Values are the new descriptions written per the MCP criteria below.
 
-After writing one or more overrides, **run `cli-printing-press mcp-sync <cli-dir>`** to regenerate the manifest and runtime registration with the override applied. Then re-run the audit; the finding disappears because the manifest now reflects the override.
+After writing one or more overrides, **run `cli-printing-press mcp-sync <cli-dir>`** to regenerate the manifest and runtime registration with the override applied. If it refuses with `reprint required`, stop and reprint the CLI before retrying; do not rewrite the generated `tools.go` against an incompatible client. Then re-run the audit; the finding disappears because the manifest now reflects the override.
 
 The override file is hand-editable, persists across regenerations (it lives outside the generator's emit set), and survives `mcp-sync` runs. It's the only place an agent should write MCP descriptions that have to last.
 
@@ -278,6 +278,8 @@ cli-printing-press mcp-sync <cli-dir>
 
 The sync regenerates `tools-manifest.json` and `internal/mcp/tools.go` with the overrides applied. Both generated files now carry the richer text; both are wiped and re-emitted from the override file on every regen, so edits persist. Re-run `tools-audit` to confirm the finding is gone.
 
+If `mcp-sync` refuses with `reprint required`, the override is not applied yet. Reprint the CLI, retry the sync, and only then mark the finding resolved.
+
 ## Ledger and resumability
 
 `tools-audit` writes `<cli-dir>/.printing-press-tools-polish.json` after every run. It contains the timestamp, cli-dir, one entry per finding, a `scorecard_before` snapshot captured on the first run, and an optional `progress` checkpoint.
@@ -366,7 +368,7 @@ After applying fixes, before declaring the polish complete:
 - [ ] `go build ./...` clean (annotations don't break compilation)
 - [ ] `cli-printing-press tools-audit <cli-dir>` summary line reads `no pending findings`. No `incomplete:` block — every gate (pre-decision fields, duplicate rationale, scorecard delta) passes.
 - [ ] `cli-printing-press dogfood --dir <cli-dir>` reports `MCP Surface: PASS`
-- [ ] If `mcp-descriptions.json` was edited, `cli-printing-press mcp-sync <cli-dir>` was run to apply the overrides into `tools-manifest.json` and `internal/mcp/tools.go`. Re-run `tools-audit` after the sync to confirm thin-mcp-description findings disappeared.
+- [ ] If `mcp-descriptions.json` was edited, `cli-printing-press mcp-sync <cli-dir>` completed successfully to apply the overrides into `tools-manifest.json` and `internal/mcp/tools.go`. A `reprint required` refusal was resolved by reprinting before retrying. Re-run `tools-audit` after the sync to confirm thin-mcp-description findings disappeared.
 - [ ] If commands were renamed or had their annotations restructured, smoke-test the binary by inspecting `--help` output for the affected commands
 
 The ledger file persists until it ages out (24h). Once the polish PR merges and the CLI is rebuilt, the file is no longer load-bearing — the next `tools-audit` run can start fresh.

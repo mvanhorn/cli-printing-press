@@ -22,9 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-{{- if $hasFormRequest}}
 	"net/url"
-{{- end}}
 {{- if or .VisionSet.Search .VisionSet.Store}}
 	"os"
 {{- end}}
@@ -253,6 +251,10 @@ func formatMCPParamValue(v any) string {
 	}
 }
 
+func mcpPathValue(v any) string {
+	return url.PathEscape(formatMCPParamValue(v))
+}
+
 {{- if $hasMultipartRequest}}
 func mcpMultipartFieldValue(v any) string {
 	if s, ok := v.(string); ok {
@@ -434,7 +436,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			case "path":
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
-				path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)
+				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
 {{- if .GlobalPathTemplateVars}}
 			case "template":
 				if c.Config.TemplateVars == nil {
@@ -508,7 +510,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			}
 			pathParams[p] = true
 			if v, ok := args[p]; ok {
-				path = strings.Replace(path, placeholder, formatMCPParamValue(v), 1)
+				path = strings.Replace(path, placeholder, mcpPathValue(v), 1)
 			}
 		}
 
