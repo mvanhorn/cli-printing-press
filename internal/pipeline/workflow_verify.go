@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -106,7 +107,21 @@ func runWorkflow(binary string, wf Workflow, dir string) WorkflowResult {
 			continue
 		}
 
-		sr = executeStep(binary, step, cmdExpanded, dir)
+		stdinJSON, unresolvedStdin, stdinErr := workflowStepStdinJSON(step, vars)
+		if unresolvedStdin {
+			sr.Status = StepStatusSkippedNoInput
+			sr.Error = "missing variable from prior step in stdin_json"
+			result.Steps = append(result.Steps, sr)
+			continue
+		}
+		if stdinErr != nil {
+			sr.Status = StepStatusFailCLIBug
+			sr.Error = "invalid workflow stdin_json fixture"
+			result.Steps = append(result.Steps, sr)
+			continue
+		}
+
+		sr = executeStep(binary, step, cmdExpanded, dir, stdinJSON)
 
 		// Extract values on success.
 		if sr.Status == StepStatusPass && len(step.Extract) > 0 {
@@ -132,7 +147,7 @@ func runWorkflow(binary string, wf Workflow, dir string) WorkflowResult {
 }
 
 // executeStep runs a single workflow step and classifies the result.
-func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir string) StepResult {
+func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir string, stdinJSON []byte) StepResult {
 	sr := StepResult{
 		Command: step.Command,
 	}
@@ -152,6 +167,9 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = dir
+		if step.ArgsStdin {
+			cmd.Stdin = bytes.NewReader(stdinJSON)
+		}
 		applyDefaultSubprocessEnv(cmd)
 		// Strip verify-mode env from the subprocess so an inherited
 		// PRINTING_PRESS_VERIFY=1 cannot short-circuit the live workflow
@@ -217,6 +235,64 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 
 	sr.Status = StepStatusPass
 	return sr
+}
+
+func workflowStepStdinJSON(step WorkflowStep, vars map[string]string) ([]byte, bool, error) {
+	if !step.ArgsStdin {
+		if step.StdinJSON != nil {
+			return nil, false, fmt.Errorf("stdin_json requires args_stdin")
+		}
+		return nil, false, nil
+	}
+
+	payload := any(step.StdinJSON)
+	if step.StdinJSON == nil {
+		fallback := make(map[string]any, len(step.Args))
+		for key, value := range step.Args {
+			fallback[key] = value
+		}
+		payload = fallback
+	}
+
+	resolved, unresolved := substituteWorkflowJSONVars(payload, vars)
+	if unresolved {
+		return nil, true, nil
+	}
+	data, err := json.Marshal(resolved)
+	if err != nil {
+		return nil, false, err
+	}
+	return data, false, nil
+}
+
+func substituteWorkflowJSONVars(value any, vars map[string]string) (any, bool) {
+	switch typed := value.(type) {
+	case string:
+		resolved := substituteVars(typed, vars)
+		return resolved, strings.Contains(resolved, "${")
+	case map[string]any:
+		resolved := make(map[string]any, len(typed))
+		for key, child := range typed {
+			candidate, unresolved := substituteWorkflowJSONVars(child, vars)
+			if unresolved {
+				return nil, true
+			}
+			resolved[key] = candidate
+		}
+		return resolved, false
+	case []any:
+		resolved := make([]any, len(typed))
+		for index, child := range typed {
+			candidate, unresolved := substituteWorkflowJSONVars(child, vars)
+			if unresolved {
+				return nil, true
+			}
+			resolved[index] = candidate
+		}
+		return resolved, false
+	default:
+		return value, false
+	}
 }
 
 // classifyError determines the step status from a command failure.

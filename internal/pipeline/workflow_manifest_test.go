@@ -34,6 +34,9 @@ const testManifestYAML = `workflows:
         mode: local
       - command: "orders price_order"
         args_stdin: true
+        stdin_json:
+          input:
+            patient_ref: "patient_synthetic"
         mode: mock
         expect_fields:
           - "Order.Amounts.Customer"
@@ -87,6 +90,7 @@ func TestLoadWorkflowManifest_Valid(t *testing.T) {
 	assert.Equal(t, "orders price_order", s4.Command)
 	assert.Equal(t, StepModeMock, s4.Mode)
 	assert.True(t, s4.ArgsStdin)
+	assert.Equal(t, "patient_synthetic", s4.StdinJSON["input"].(map[string]any)["patient_ref"])
 	assert.Equal(t, []string{"Order.Amounts.Customer", "Order.Products"}, s4.ExpectFields)
 }
 

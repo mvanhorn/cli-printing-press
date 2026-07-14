@@ -2,8 +2,11 @@ package pipeline
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +28,108 @@ func TestRunWorkflowVerification_NoManifest(t *testing.T) {
 	loaded, err := LoadWorkflowVerifyReport(dir)
 	require.NoError(t, err)
 	assert.Equal(t, report.Verdict, loaded.Verdict)
+}
+
+func TestRunWorkflowDeliversStructuredStdinJSONWithoutArgvExposure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	stdinLog := filepath.Join(dir, "stdin.log")
+	argvLog := filepath.Join(dir, "argv.log")
+	t.Setenv("PRINTING_PRESS_WORKFLOW_STDIN_LOG", stdinLog)
+	t.Setenv("PRINTING_PRESS_WORKFLOW_ARGV_LOG", argvLog)
+	binary := filepath.Join(dir, "fixture-pp-cli")
+	script := `#!/bin/sh
+set -eu
+if [ "${1:-}" = "seed" ]; then
+  printf '{"patient_ref":"patient_synthetic"}'
+  exit 0
+fi
+printf '%s\n' "$*" >> "$PRINTING_PRESS_WORKFLOW_ARGV_LOG"
+input=$(cat)
+printf '%s\n' "$input" >> "$PRINTING_PRESS_WORKFLOW_STDIN_LOG"
+printf '{"ok":true,"command":"patient.diagnose"}'
+`
+	require.NoError(t, os.WriteFile(binary, []byte(script), 0o700))
+
+	result := runWorkflow(binary, Workflow{
+		Name:    "stdin workflow",
+		Primary: true,
+		Steps: []WorkflowStep{
+			{
+				Command: "seed",
+				Mode:    StepModeLocal,
+				Extract: map[string]string{"patient_ref": "$.patient_ref"},
+			},
+			{
+				Command:   "patient diagnose --stdin --dry-run",
+				ArgsStdin: true,
+				StdinJSON: map[string]any{"input": map[string]any{"patient_ref": "${patient_ref}"}},
+				Mode:      StepModeLocal,
+				ExpectFields: []string{
+					"ok",
+					"command",
+				},
+			},
+		},
+	}, dir)
+
+	assert.Equal(t, WorkflowVerdictPass, result.Verdict)
+	require.Len(t, result.Steps, 2)
+	assert.Equal(t, StepStatusPass, result.Steps[1].Status, result.Steps[1].Error)
+
+	stdin, err := os.ReadFile(stdinLog)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"input":{"patient_ref":"patient_synthetic"}}`, strings.TrimSpace(string(stdin)))
+	argv, err := os.ReadFile(argvLog)
+	require.NoError(t, err)
+	assert.Equal(t, "patient diagnose --stdin --dry-run --json\n", string(argv))
+	assert.NotContains(t, string(argv), "patient_synthetic")
+	assert.NotContains(t, result.Steps[1].Command, "patient_synthetic")
+	assert.NotContains(t, result.Steps[1].Output, "patient_synthetic")
+}
+
+func TestRunWorkflowSkipsUnresolvedStdinJSONWithoutExecuting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir := t.TempDir()
+	invoked := filepath.Join(dir, "invoked")
+	t.Setenv("PRINTING_PRESS_WORKFLOW_INVOKED", invoked)
+	binary := filepath.Join(dir, "fixture-pp-cli")
+	require.NoError(t, os.WriteFile(binary, []byte("#!/bin/sh\ntouch \"$PRINTING_PRESS_WORKFLOW_INVOKED\"\n"), 0o700))
+
+	result := runWorkflow(binary, Workflow{Steps: []WorkflowStep{{
+		Command:   "patient diagnose --stdin",
+		ArgsStdin: true,
+		StdinJSON: map[string]any{"input": map[string]any{"patient_ref": "${missing_patient_ref}"}},
+		Mode:      StepModeLocal,
+	}}}, dir)
+
+	require.Len(t, result.Steps, 1)
+	assert.Equal(t, StepStatusSkippedNoInput, result.Steps[0].Status)
+	assert.Equal(t, "missing variable from prior step in stdin_json", result.Steps[0].Error)
+	_, err := os.Stat(invoked)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestWorkflowStepStdinJSONRejectsMisconfigurationAndInvalidValues(t *testing.T) {
+	_, unresolved, err := workflowStepStdinJSON(WorkflowStep{
+		StdinJSON: map[string]any{"input": map[string]any{}},
+	}, nil)
+	assert.False(t, unresolved)
+	require.EqualError(t, err, "stdin_json requires args_stdin")
+
+	_, unresolved, err = workflowStepStdinJSON(WorkflowStep{
+		ArgsStdin: true,
+		StdinJSON: map[string]any{"invalid": math.Inf(1)},
+	}, nil)
+	assert.False(t, unresolved)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "invalid")
 }
 
 func TestRunWorkflowVerification_NoCliName(t *testing.T) {
