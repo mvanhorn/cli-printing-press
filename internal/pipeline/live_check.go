@@ -21,6 +21,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
+	"golang.org/x/mod/modfile"
 )
 
 // LiveStatus is the outcome of one feature's live check.
@@ -334,27 +335,9 @@ func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, e
 		return refresh, nil
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(stagePath), "."+filepath.Base(stagePath)+".rebuild-*")
-	if err != nil {
-		refresh.Action = "failed"
-		return refresh, fmt.Errorf("creating staged rebuild temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		refresh.Action = "failed"
-		return refresh, fmt.Errorf("closing staged rebuild temp file: %w", err)
-	}
-	_ = os.Remove(tmpPath)
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if err := buildCLITo(cliDir, tmpPath); err != nil {
+	if err := rebuildLiveCheckBinary(cliDir, stagePath); err != nil {
 		refresh.Action = "failed"
 		return refresh, err
-	}
-	if err := replaceLiveCheckStageBinary(tmpPath, stagePath); err != nil {
-		refresh.Action = "failed"
-		return refresh, fmt.Errorf("replacing staged binary: %w", err)
 	}
 	refresh.Action = "rebuilt"
 	refresh.BinaryPath = stagePath
@@ -362,7 +345,29 @@ func refreshLiveCheckStageBinary(cliDir, name string) (LiveCheckBinaryRefresh, e
 	return refresh, nil
 }
 
-func replaceLiveCheckStageBinary(src, dst string) error {
+func rebuildLiveCheckBinary(cliDir, binaryPath string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(binaryPath), "."+filepath.Base(binaryPath)+".rebuild-*")
+	if err != nil {
+		return fmt.Errorf("creating binary rebuild temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("closing binary rebuild temp file: %w", err)
+	}
+	_ = os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if err := buildCLITo(cliDir, tmpPath); err != nil {
+		return err
+	}
+	if err := replaceLiveCheckBinary(tmpPath, binaryPath); err != nil {
+		return fmt.Errorf("replacing binary: %w", err)
+	}
+	return nil
+}
+
+func replaceLiveCheckBinary(src, dst string) error {
 	if runtime.GOOS != "windows" {
 		return os.Rename(src, dst)
 	}
@@ -421,34 +426,170 @@ func liveCheckExistingStageBinaryPath(cliDir, name string) (string, string) {
 }
 
 func newestLiveCheckSourceModTime(cliDir, cmdDir string) (time.Time, bool, error) {
+	newest, found, err := newestLiveCheckSourceUnder(cliDir)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	mayUseExternal, err := liveCheckMayUseExternalLocalModules(cliDir)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if !mayUseExternal {
+		return newest, found, nil
+	}
+	graphNewest, graphFound, err := newestLiveCheckBuildGraphModTime(cmdDir)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if graphFound && (!found || graphNewest.After(newest)) {
+		return graphNewest, true, nil
+	}
+	return newest, found, nil
+}
+
+func newestLiveCheckSourceUnder(root string) (time.Time, bool, error) {
 	var newest time.Time
 	found := false
-	for _, root := range []string{cmdDir, filepath.Join(cliDir, "internal")} {
-		if _, err := os.Stat(root); err != nil {
-			if os.IsNotExist(err) {
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if path != root && entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !found || info.ModTime().After(newest) {
+			newest = info.ModTime()
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return newest, found, nil
+}
+
+func liveCheckMayUseExternalLocalModules(cliDir string) (bool, error) {
+	data, err := os.ReadFile(filepath.Join(cliDir, "go.mod"))
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if err == nil {
+		file, err := modfile.Parse("go.mod", data, nil)
+		if err != nil {
+			return false, err
+		}
+		for _, replacement := range file.Replace {
+			path := filepath.FromSlash(replacement.New.Path)
+			if replacement.New.Version == "" && (filepath.IsAbs(path) || path == "." || path == ".." || strings.HasPrefix(path, "."+string(os.PathSeparator)) || strings.HasPrefix(path, ".."+string(os.PathSeparator))) {
+				return true, nil
+			}
+		}
+	}
+	for dir := cliDir; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	return false, nil
+}
+
+func newestLiveCheckBuildGraphModTime(cmdDir string) (time.Time, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-json", "./"+filepath.Base(cmdDir))
+	cmd.Dir = filepath.Dir(cmdDir)
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return time.Time{}, false, fmt.Errorf("listing CLI build dependencies: %w\n%s", err, string(exitErr.Stderr))
+		}
+		return time.Time{}, false, fmt.Errorf("listing CLI build dependencies: %w", err)
+	}
+
+	type buildPackage struct {
+		Dir          string
+		GoFiles      []string
+		CgoFiles     []string
+		CFiles       []string
+		CXXFiles     []string
+		MFiles       []string
+		HFiles       []string
+		FFiles       []string
+		SFiles       []string
+		SwigFiles    []string
+		SwigCXXFiles []string
+		SysoFiles    []string
+		EmbedFiles   []string
+		Module       *struct {
+			Main    bool
+			Replace *struct {
+				Version string
+			}
+		}
+	}
+
+	var newest time.Time
+	found := false
+	seen := make(map[string]bool)
+	decoder := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var pkg buildPackage
+		if err := decoder.Decode(&pkg); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return time.Time{}, false, fmt.Errorf("decoding CLI build dependencies: %w", err)
+		}
+		if pkg.Module == nil || (!pkg.Module.Main && (pkg.Module.Replace == nil || pkg.Module.Replace.Version != "")) {
+			continue
+		}
+		files := append([]string{}, pkg.GoFiles...)
+		files = append(files, pkg.CgoFiles...)
+		files = append(files, pkg.CFiles...)
+		files = append(files, pkg.CXXFiles...)
+		files = append(files, pkg.MFiles...)
+		files = append(files, pkg.HFiles...)
+		files = append(files, pkg.FFiles...)
+		files = append(files, pkg.SFiles...)
+		files = append(files, pkg.SwigFiles...)
+		files = append(files, pkg.SwigCXXFiles...)
+		files = append(files, pkg.SysoFiles...)
+		files = append(files, pkg.EmbedFiles...)
+		for _, name := range files {
+			path := name
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(pkg.Dir, path)
+			}
+			path = filepath.Clean(path)
+			if seen[path] {
 				continue
 			}
-			return time.Time{}, false, err
-		}
-		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if entry.IsDir() || filepath.Ext(path) != ".go" {
-				return nil
-			}
-			info, err := entry.Info()
+			seen[path] = true
+			info, err := os.Stat(path)
 			if err != nil {
-				return err
+				return time.Time{}, false, err
 			}
 			if !found || info.ModTime().After(newest) {
 				newest = info.ModTime()
 				found = true
 			}
-			return nil
-		})
-		if err != nil {
-			return time.Time{}, false, err
 		}
 	}
 	return newest, found, nil
