@@ -49,7 +49,7 @@ func TestCredentialsFileWinsWhenLegacyConfigAlsoHasSecrets(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("mkdir config: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte("base_url = \"https://legacy.example\"\n"+legacyCredentialTOML("legacy-secret")), 0o600); err != nil {
+	if err := os.WriteFile(configPath, legacyConfigData(t, "https://legacy.example", "legacy-secret"), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
 	if err := cliutil.SaveCredentials(testCredentials("data-secret")); err != nil {
@@ -71,7 +71,7 @@ func TestCorruptCredentialsFallsBackToLegacyConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("mkdir config: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte("base_url = \"https://legacy.example\"\n"+legacyCredentialTOML("legacy-secret")), 0o600); err != nil {
+	if err := os.WriteFile(configPath, legacyConfigData(t, "https://legacy.example", "legacy-secret"), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
 	credentialsPath := filepath.Join(home, ".local", "share", "printing-press-oauth2-pp-cli", "credentials.toml")
@@ -126,7 +126,7 @@ func TestEmptyCredentialsFileDoesNotClearLegacyConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("mkdir config: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte("base_url = \"https://legacy.example\"\n"+legacyCredentialTOML("legacy-secret")), 0o600); err != nil {
+	if err := os.WriteFile(configPath, legacyConfigData(t, "https://legacy.example", "legacy-secret"), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
 	credentialsPath := filepath.Join(home, ".local", "share", "printing-press-oauth2-pp-cli", "credentials.toml")
@@ -152,7 +152,7 @@ func TestAuthWriteMigratesLegacyConfigToCredentialsOnly(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("mkdir config: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte("base_url = \"https://settings.example\"\n"+legacyCredentialTOML("legacy-secret")), 0o600); err != nil {
+	if err := os.WriteFile(configPath, legacyConfigData(t, "https://settings.example", "legacy-secret"), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
 
@@ -188,7 +188,7 @@ func TestAuthWriteScrubsLegacyConfigWhenRelocated(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(defaultConfigPath), 0o700); err != nil {
 		t.Fatalf("mkdir config: %v", err)
 	}
-	if err := os.WriteFile(defaultConfigPath, []byte("base_url = \"https://settings.example\"\n"+legacyCredentialTOML("legacy-secret")), 0o600); err != nil {
+	if err := os.WriteFile(defaultConfigPath, legacyConfigData(t, "https://settings.example", "legacy-secret"), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestClearTokensFromBothStateClearsCredentialsAndLegacy(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("mkdir config: %v", err)
 	}
-	if err := os.WriteFile(configPath, []byte("base_url = \"https://settings.example\"\n"+legacyCredentialTOML("legacy-secret")), 0o600); err != nil {
+	if err := os.WriteFile(configPath, legacyConfigData(t, "https://settings.example", "legacy-secret"), 0o600); err != nil {
 		t.Fatalf("write legacy config: %v", err)
 	}
 	if err := cliutil.SaveCredentials(testCredentials("data-secret")); err != nil {
@@ -333,8 +333,9 @@ func legacyCredentialKey() string {
 	return "access_token"
 }
 
-func legacyCredentialTOML(token string) string {
-	return legacyCredentialKey() + " = \"" + token + "\"\n"
+func legacyConfigData(t *testing.T, baseURL, token string) []byte {
+	t.Helper()
+	return []byte("base_url = \"" + baseURL + "\"\n" + legacyCredentialKey() + " = \"" + token + "\"\n")
 }
 
 func writeConfigCredential(t *testing.T, cfg *config.Config, token string) {
@@ -382,10 +383,36 @@ func captureCredentialStderr(t *testing.T, fn func()) string {
 		t.Fatalf("pipe: %v", err)
 	}
 	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	drained := false
+	defer func() {
+		os.Stderr = old
+		_ = w.Close()
+		if !drained {
+			<-done
+		}
+		_ = r.Close()
+	}()
 	fn()
 	_ = w.Close()
 	os.Stderr = old
-	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, r)
-	return buf.String()
+	captured := <-done
+	drained = true
+	_ = r.Close()
+	return captured
+}
+
+func TestCaptureCredentialStderrDrainsConcurrently(t *testing.T) {
+	want := strings.Repeat("x", 128*1024)
+	got := captureCredentialStderr(t, func() {
+		_, _ = os.Stderr.Write([]byte(want))
+	})
+	if got != want {
+		t.Fatalf("captured stderr length = %d, want %d", len(got), len(want))
+	}
 }
