@@ -2890,12 +2890,57 @@ func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
 	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	assert.Contains(t, clientGo, `"crypto/tls"`)
 	assert.Contains(t, clientGo, `transport := http.DefaultTransport.(*http.Transport).Clone()`)
+	assert.Contains(t, clientGo, `transport.TLSClientConfig.NextProtos = []string{"http/1.1"}`)
 	assert.Contains(t, clientGo, `transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)`)
 	assert.NotContains(t, clientGo, `"github.com/enetx/surf"`)
 	assert.NotContains(t, clientGo, `Impersonate()`)
 
 	gomod := readGeneratedFile(t, outputDir, "go.mod")
 	assert.NotContains(t, gomod, "github.com/enetx/surf")
+	requireGeneratedCompiles(t, outputDir)
+
+	runtimeTest := `package client
+
+import (
+	"crypto/tls"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+
+func TestBrowserHTTPTransportRejectsH2ALPN(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	defer server.Close()
+
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	originalTLSConfig := defaultTransport.TLSClientConfig
+	defaultTransport.TLSClientConfig = &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"h2", "http/1.1"},
+	}
+	t.Cleanup(func() { defaultTransport.TLSClientConfig = originalTLSConfig })
+
+	client := newHTTPClient(time.Second, nil)
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("browser-http request failed after inherited h2 ALPN: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.ProtoMajor != 1 {
+		t.Fatalf("browser-http negotiated HTTP/%d, want HTTP/1.x", resp.ProtoMajor)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(outputDir, "internal", "client", "browser_http_runtime_test.go"),
+		[]byte(runtimeTest), 0o600))
+	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestBrowserHTTPTransportRejectsH2ALPN", "-count=1")
 }
 
 // TestGenerateCookieAuthEmitsSetTokenSubcommand verifies that the
