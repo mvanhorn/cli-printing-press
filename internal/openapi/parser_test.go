@@ -4566,6 +4566,157 @@ paths:
 	}
 }
 
+func TestBrandNamedSecuritySchemesDoNotDuplicateEnvPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		title      string
+		schemeName string
+		scheme     string
+		want       string
+	}{
+		{
+			name:       "api key",
+			title:      "Clay",
+			schemeName: "ClayApiKey",
+			scheme: `type: apiKey
+      in: header
+      name: X-API-Key`,
+			want: "CLAY_API_KEY",
+		},
+		{
+			name:       "api key with multiword brand",
+			title:      "FooBar",
+			schemeName: "FooBarApiKey",
+			scheme: `type: apiKey
+      in: header
+      name: X-API-Key`,
+			want: "FOOBAR_API_KEY",
+		},
+		{
+			name:       "api key with numeric brand",
+			title:      "1Password",
+			schemeName: "1PasswordApiKey",
+			scheme: `type: apiKey
+      in: header
+      name: X-API-Key`,
+			want: "API_1PASSWORD_API_KEY",
+		},
+		{
+			name:       "specific api key",
+			title:      "Stripe",
+			schemeName: "StripeSecretKey",
+			scheme: `type: apiKey
+      in: header
+      name: X-API-Key`,
+			want: "STRIPE_SECRET_KEY",
+		},
+		{
+			name:       "generic api key",
+			title:      "Foo",
+			schemeName: "ApiKey",
+			scheme: `type: apiKey
+      in: header
+      name: X-API-Key`,
+			want: "FOO_API_KEY",
+		},
+		{
+			name:       "generic api key with fallback prefix",
+			title:      "API",
+			schemeName: "ApiKey",
+			scheme: `type: apiKey
+      in: header
+      name: X-API-Key`,
+			want: "API_API_KEY",
+		},
+		{
+			name:       "bearer token",
+			title:      "Clay",
+			schemeName: "ClayToken",
+			scheme: `type: http
+      scheme: bearer`,
+			want: "CLAY_TOKEN",
+		},
+		{
+			name:       "unprefixed scheme name",
+			title:      "Clay",
+			schemeName: "BotToken",
+			scheme: `type: http
+      scheme: bearer`,
+			want: "CLAY_BOT_TOKEN",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			yamlSpec := fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: %s
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    %s:
+      %s
+security:
+  - %s: []
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`, tt.title, tt.schemeName, tt.scheme, tt.schemeName)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			assert.Equal(t, []string{tt.want}, parsed.Auth.EnvVars)
+		})
+	}
+}
+
+func TestBrandNamedSecuritySchemeEmitsCanonicalAuthEnvVar(t *testing.T) {
+	parsed, err := Parse([]byte(`openapi: "3.0.3"
+info:
+  title: Clay
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ClayApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+security:
+  - ClayApiKey: []
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	require.NoError(t, generator.New(parsed, outputDir).Generate())
+
+	for _, path := range []string{"internal/config/config.go", "README.md", "SKILL.md"} {
+		content, err := os.ReadFile(filepath.Join(outputDir, path))
+		require.NoError(t, err)
+		assert.Contains(t, string(content), "CLAY_API_KEY", path)
+		assert.NotContains(t, string(content), "CLAY_CLAY_API_KEY", path)
+	}
+
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "./...")
+}
+
 func TestParseGoogleDiscoveryOriginInjectsAPIKeyAuth(t *testing.T) {
 	t.Parallel()
 

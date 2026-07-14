@@ -1296,9 +1296,9 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	envPrefix := naming.EnvPrefix(name)
 	switch auth.Type {
 	case "api_key":
-		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix)
+		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix, auth.In)
 	case "bearer_token":
-		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix)
+		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix, "")
 	}
 	applyAuthOverrideExtensions(&auth, scheme.Extensions)
 	applyAuthEnvVarDefaults(&auth, envPrefix)
@@ -1554,14 +1554,14 @@ func derivedAdditionalHeaderEnvVar(schemeName, headerName, envPrefix string, fal
 		}
 		return envPrefix + "_" + strings.ToUpper(headerSuffix)
 	}
-	envVars := defaultAuthEnvVars("api_key", "", schemeName, envPrefix)
+	envVars := defaultAuthEnvVars("api_key", "", schemeName, envPrefix, "")
 	if len(envVars) == 0 {
 		return ""
 	}
 	return envVars[0]
 }
 
-func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string {
+func defaultAuthEnvVars(authType, format, schemeName, envPrefix, placement string) []string {
 	switch authType {
 	case "api_key":
 		if authFormatIsBasic(format) {
@@ -1572,12 +1572,15 @@ func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string
 		}
 		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN).
 		schemeEnvSuffix := toSnakeCase(schemeName)
+		if !strings.EqualFold(strings.TrimSpace(placement), "cookie") {
+			schemeEnvSuffix = stripLeadingEnvPrefix(schemeEnvSuffix, envPrefix)
+		}
 		if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
 			return []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
 		}
 		return []string{envPrefix + "_API_KEY"}
 	case "bearer_token":
-		schemeEnvSuffix := toSnakeCase(schemeName)
+		schemeEnvSuffix := stripLeadingEnvPrefix(toSnakeCase(schemeName), envPrefix)
 		switch schemeEnvSuffix {
 		case "", "bearer", "bearer_token", "token":
 			return []string{envPrefix + "_TOKEN"}
@@ -1587,6 +1590,47 @@ func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string
 	default:
 		return nil
 	}
+}
+
+func stripLeadingEnvPrefix(schemeEnvSuffix, envPrefix string) string {
+	prefix := strings.ToLower(strings.TrimSpace(envPrefix))
+	if prefix == "" || prefix == "api" {
+		return schemeEnvSuffix
+	}
+	prefixes := []string{prefix}
+	if numericPrefix, ok := strings.CutPrefix(prefix, "api_"); ok && numericPrefix != "" && numericPrefix[0] >= '0' && numericPrefix[0] <= '9' {
+		prefixes = append(prefixes, numericPrefix)
+	}
+	for _, candidate := range prefixes {
+		if stripped, ok := stripNormalizedEnvPrefix(schemeEnvSuffix, candidate); ok {
+			return stripped
+		}
+	}
+	return schemeEnvSuffix
+}
+
+func stripNormalizedEnvPrefix(schemeEnvSuffix, prefix string) (string, bool) {
+	normalizedPrefix := strings.ReplaceAll(strings.ToLower(prefix), "_", "")
+	if normalizedPrefix == "" {
+		return "", false
+	}
+	index := 0
+	for prefixIndex := 0; prefixIndex < len(normalizedPrefix); prefixIndex++ {
+		for index < len(schemeEnvSuffix) && schemeEnvSuffix[index] == '_' {
+			index++
+		}
+		if index == len(schemeEnvSuffix) || strings.ToLower(schemeEnvSuffix[index:index+1]) != normalizedPrefix[prefixIndex:prefixIndex+1] {
+			return "", false
+		}
+		index++
+	}
+	if index == len(schemeEnvSuffix) || schemeEnvSuffix[index] != '_' {
+		return "", false
+	}
+	for index < len(schemeEnvSuffix) && schemeEnvSuffix[index] == '_' {
+		index++
+	}
+	return schemeEnvSuffix[index:], true
 }
 
 func requirementAllSupportedAPIKeys(doc *openapi3.T, req openapi3.SecurityRequirement) bool {
