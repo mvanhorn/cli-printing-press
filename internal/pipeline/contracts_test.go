@@ -772,9 +772,11 @@ func TestPublishSkillReconcilesRuntimeVersionLayoutForReprints(t *testing.T) {
 	reconciliation := skill[copyIntoLibrary:]
 
 	assert.Contains(t, reconciliation, "runtime version declaration layout")
-	assert.Contains(t, reconciliation, `VERSION_DECL_DIFF="$(git diff --unified=0 upstream/main --`)
-	assert.Contains(t, reconciliation, `git diff --unified=0 upstream/main --`)
-	assert.Contains(t, reconciliation, "failed to compare runtime version declarations with upstream/main")
+	assert.Contains(t, reconciliation, `VERSION_DECL_BASE_REF=upstream/main`)
+	assert.Contains(t, reconciliation, `git rev-parse --verify --quiet "$VERSION_DECL_BASE_REF"`)
+	assert.Contains(t, reconciliation, `VERSION_DECL_BASE_REF=origin/main`)
+	assert.Contains(t, reconciliation, `VERSION_DECL_DIFF="$(git diff --unified=0 "$VERSION_DECL_BASE_REF" --`)
+	assert.Contains(t, reconciliation, "failed to compare runtime version declarations with ${VERSION_DECL_BASE_REF}")
 	assert.Contains(t, reconciliation, `internal/cli/root.go`)
 	assert.Contains(t, reconciliation, `internal/cli/version.go`)
 	assert.Contains(t, reconciliation, `cmd/<api-slug>-pp-mcp/main.go`)

@@ -888,11 +888,15 @@ trap - EXIT
 # files, but the public library's release-ledger guard rejects those moves in a
 # normal publish PR because the post-merge release workflow owns version stamps.
 cd "$PUBLISH_REPO_DIR"
-VERSION_DECL_DIFF="$(git diff --unified=0 upstream/main -- \
+VERSION_DECL_BASE_REF=upstream/main
+if ! git rev-parse --verify --quiet "$VERSION_DECL_BASE_REF" >/dev/null; then
+  VERSION_DECL_BASE_REF=origin/main
+fi
+VERSION_DECL_DIFF="$(git diff --unified=0 "$VERSION_DECL_BASE_REF" -- \
   "library/*/<api-slug>/internal/cli/root.go" \
   "library/*/<api-slug>/internal/cli/version.go" \
   "library/*/<api-slug>/cmd/<api-slug>-pp-mcp/main.go")" || {
-  echo "failed to compare runtime version declarations with upstream/main" >&2
+  echo "failed to compare runtime version declarations with ${VERSION_DECL_BASE_REF}" >&2
   exit 1
 }
 printf '%s\n' "$VERSION_DECL_DIFF" \
