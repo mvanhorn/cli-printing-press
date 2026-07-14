@@ -40,6 +40,25 @@ func TestRedactPIIText_RedactsJSONCredentialsAndPII(t *testing.T) {
 	require.Contains(t, got, `"status":"ok"`)
 }
 
+func TestRedactPIIText_RedactsCredentialKeyVariantsAndJWTs(t *testing.T) {
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImxpdmVAdXNlci5jb20ifQ.signature"
+	got := RedactPIIText(`{"authentication_token":"auth-secret","new_sso_auth_token":"` + jwt + `","id":42,"created_at":"2026-07-13T12:34:56Z","status":"active"}`)
+
+	require.NotContains(t, got, "auth-secret")
+	require.NotContains(t, got, jwt)
+	require.Contains(t, got, `"authentication_token":"<redacted>"`)
+	require.Contains(t, got, `"new_sso_auth_token":"<redacted>"`)
+	require.Contains(t, got, `"id":42`)
+	require.Contains(t, got, `"created_at":"2026-07-13T12:34:56Z"`)
+	require.Contains(t, got, `"status":"active"`)
+}
+
+func TestRedactPIIText_RedactsJWTOutsideCredentialField(t *testing.T) {
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature"
+
+	require.Equal(t, "bearer "+PIIRedactedSentinel, RedactPIIText("bearer "+jwt))
+}
+
 func TestRedactPIIText_LeavesStructuralJSONUnchanged(t *testing.T) {
 	input := `{"id":42,"status":"active"}`
 
@@ -64,6 +83,12 @@ func TestRedactPIIJSONKeys_RedactsCredentialKeys(t *testing.T) {
 		"api key",
 		"apikey",
 		"access_token",
+		"auth_token",
+		"authentication_token",
+		"new_sso_auth_token",
+		"ssoToken",
+		"newSsoAuthToken",
+		"newSSOAuthToken",
 		"refresh_token",
 		"client_secret",
 		"secret",
@@ -87,11 +112,16 @@ func TestRedactPIIJSONKeys_RedactsCredentialKeys(t *testing.T) {
 }
 
 func TestRedactPIIJSONKeys_LeavesCredentialCountersUnchanged(t *testing.T) {
-	input := `{"token_count":5,"status":"ok"}`
-	got, changed := RedactPIIJSONKeys(input)
+	for _, input := range []string{
+		`{"token_count":5,"status":"ok"}`,
+		`{"lesson_token":"chapter-3","status":"ok"}`,
+		`{"lessonToken":"chapter-3","status":"ok"}`,
+	} {
+		got, changed := RedactPIIJSONKeys(input)
 
-	require.False(t, changed)
-	require.Equal(t, input, got)
+		require.False(t, changed)
+		require.Equal(t, input, got)
+	}
 }
 
 func TestRedactPIIJSONKeys_RedactsNDJSON(t *testing.T) {

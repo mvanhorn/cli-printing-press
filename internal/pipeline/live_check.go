@@ -939,6 +939,7 @@ func sampleOutputParts(parts ...string) string {
 	capRemaining := outputSampleMaxBytes
 	truncated := false
 	for _, part := range parts {
+		part = artifacts.RedactPIIJWTs(part)
 		if redacted, ok := artifacts.RedactPIIJSONKeys(part); ok {
 			part = redacted
 		}
@@ -964,6 +965,9 @@ func sampleOutputParts(parts ...string) string {
 		captureRemaining -= len(part)
 	}
 	sample := artifacts.RedactPIIText(rawSample.String())
+	if truncated || captureRemaining == 0 {
+		sample = redactPartialJWTTail(sample)
+	}
 	if len(sample) > outputSampleMaxBytes {
 		sample = truncateUTF8(sample, outputSampleMaxBytes)
 		sample = completePartialRedactionSentinel(sample)
@@ -973,6 +977,12 @@ func sampleOutputParts(parts ...string) string {
 		return sample + "…[truncated]"
 	}
 	return sample
+}
+
+var partialJWTTailRE = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]*){0,2}$`)
+
+func redactPartialJWTTail(sample string) string {
+	return partialJWTTailRE.ReplaceAllString(sample, artifacts.PIIRedactedSentinel)
 }
 
 func completePartialRedactionSentinel(sample string) string {
