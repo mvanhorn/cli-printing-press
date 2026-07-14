@@ -190,6 +190,92 @@ func TestGenerateRenamesParamCollidingWithPaginationAll(t *testing.T) {
 		"pagination's flagAll keeps the canonical name")
 }
 
+func TestGenerateRenamesParamCollidingWithBrowserTLSFlag(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-browser-insecure")
+	apiSpec.HTTPTransport = spec.HTTPTransportBrowserChrome
+	endpoint := apiSpec.Resources["items"].Endpoints["list"]
+	endpoint.Params = append(endpoint.Params, spec.Param{
+		Name:        "insecure",
+		Type:        "boolean",
+		Description: "Filter items by upstream security classification",
+	})
+	apiSpec.Resources["items"].Endpoints["list"] = endpoint
+	apiSpec.Resources["items"].Endpoints["get"] = spec.Endpoint{
+		Method:      "GET",
+		Path:        "/items/{id}",
+		Description: "Get an item",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-browser-insecure-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	commandPath := filepath.Join(outputDir, "internal", "cli", "items_list.go")
+	flagVars, flagBindings := parseFlagDeclarations(t, commandPath)
+	assert.Contains(t, flagVars, "flagInsecure2")
+	assert.Contains(t, flagBindings, "insecure-2")
+
+	commandSrc, err := os.ReadFile(commandPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(commandSrc), `params["insecure"] = formatCLIParamValue(flagInsecure2)`)
+
+	runtimeTest := `package cli
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestGeneratedBrowserTLSFlagDoesNotShadowEndpointParam(t *testing.T) {
+	queryValues := make(chan string, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queryValues <- r.URL.Query().Get("insecure")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, "[]")
+	}))
+	defer server.Close()
+
+	t.Setenv("MYAPI_TOKEN", "test-token")
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte(fmt.Sprintf("base_url = %q\n", server.URL)), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var flags rootFlags
+	cmd := newRootCmd(&flags)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--config", configPath, "--insecure", "items", "list", "--insecure-2", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute generated command: %v", err)
+	}
+	select {
+	case got := <-queryValues:
+		if got != "true" {
+			t.Fatalf("wire query insecure = %q, want true", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("generated command did not call the TLS test server")
+	}
+	if !flags.insecure {
+		t.Fatal("root --insecure flag was not parsed independently")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(outputDir, "internal", "cli", "browser_tls_flag_runtime_test.go"),
+		[]byte(runtimeTest), 0o600))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "^TestGeneratedBrowserTLSFlagDoesNotShadowEndpointParam$", "-count=1")
+	requireGeneratedCompiles(t, outputDir)
+}
+
 // TestGenerateRenamesParamCollidingWithAsyncWait covers the async-reserved-name
 // path. Async-job endpoints emit `var flagWait`, `var flagWaitTimeout`, and
 // `var flagWaitInterval` from the IsAsync branch in command_endpoint.go.tmpl;

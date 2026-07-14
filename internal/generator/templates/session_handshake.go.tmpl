@@ -75,11 +75,11 @@ type SessionManager struct {
 // applied to the handshake itself — otherwise the very calls that establish
 // the session run as a vanilla net/http client and get rate-limited away
 // even when the data client would have cleared the bot wall.
-func newSessionManager(timeout time.Duration, configPath string) *SessionManager {
+func newSessionManager(timeout time.Duration, configPath string{{if .UsesBrowserHTTPTransport}}, skipTLSVerify bool{{end}}) *SessionManager {
 	jar, _ := cookiejar.New(nil)
 	m := &SessionManager{
 		jar:        jar,
-		client:     newHTTPClient(timeout, jar),
+		client:     newHTTPClient(timeout, jar{{if .UsesBrowserHTTPTransport}}, skipTLSVerify{{end}}),
 		configPath: configPath,
 	}
 	m.loadFromDisk()

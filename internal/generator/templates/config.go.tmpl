@@ -29,6 +29,9 @@ type Config struct {
 {{- if .BasePath}}
 	BasePath       string `{{configTag .Config.Format}}:"base_path"`
 {{- end}}
+{{- if .UsesBrowserHTTPTransport}}
+	SkipTLSVerify  bool `{{configTag .Config.Format}}:"skip_tls_verify,omitempty"`
+{{- end}}
 	AuthHeaderVal  string `{{configTag .Config.Format}}:"auth_header"`
 	Headers        map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 	AuthSource     string `{{configTag .Config.Format}}:"-"`
@@ -209,6 +212,11 @@ func Load(configPath string) (*Config, error) {
 	cfg.snapshotFileConfig()
 
 	// Env var overrides
+{{- if .UsesBrowserHTTPTransport}}
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("{{envPrefix .Name}}_SKIP_TLS_VERIFY"))); v == "1" || v == "true" || v == "yes" || v == "on" {
+		cfg.SetSkipTLSVerify(true)
+	}
+{{- end}}
 {{- if .Auth.Inferred}}
 	// Auth inferred from API description — verify the env var below is correct
 {{- end}}
@@ -1193,6 +1201,13 @@ func (c *Config) markEnvOverride(field string) {
 	c.envOverrides[field] = true
 }
 
+{{- if .UsesBrowserHTTPTransport}}
+func (c *Config) SetSkipTLSVerify(value bool) {
+	c.SkipTLSVerify = value
+	c.markEnvOverride("SkipTLSVerify")
+}
+{{- end}}
+
 // cloneStringMap returns an independent copy of m (nil stays nil). The fileConfig
 // snapshot must not share reference-type map fields (such as Headers) with the
 // live config, or a later mutation to one would silently track in the other.
@@ -1224,6 +1239,11 @@ func (c *Config) snapshotFileConfig() {
 func (c *Config) configForSave() Config {
 	out := *c
 	if c.fileConfig != nil {
+{{- if .UsesBrowserHTTPTransport}}
+		if c.envOverrides["SkipTLSVerify"] {
+			out.SkipTLSVerify = c.fileConfig.SkipTLSVerify
+		}
+{{- end}}
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
 		if c.envOverrides["{{resolveEnvVarField .Name}}"] {
@@ -1389,6 +1409,9 @@ type persistedConfig struct {
 {{- if .BasePath}}
 	BasePath string `{{configTag .Config.Format}}:"base_path"`
 {{- end}}
+{{- if .UsesBrowserHTTPTransport}}
+	SkipTLSVerify bool `{{configTag .Config.Format}}:"skip_tls_verify,omitempty"`
+{{- end}}
 	Headers map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 {{- if .Auth.RequiresBrowserSession}}
 	ChromeProfile string `{{configTag .Config.Format}}:"chrome_profile,omitempty"`
@@ -1415,6 +1438,9 @@ func (c *Config) persisted() persistedConfig {
 		BaseURL: c.BaseURL,
 {{- if .BasePath}}
 		BasePath: c.BasePath,
+{{- end}}
+{{- if .UsesBrowserHTTPTransport}}
+		SkipTLSVerify: c.SkipTLSVerify,
 {{- end}}
 		Headers: c.Headers,
 {{- if .Auth.RequiresBrowserSession}}

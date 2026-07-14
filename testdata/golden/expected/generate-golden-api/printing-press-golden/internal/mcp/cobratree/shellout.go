@@ -171,6 +171,7 @@ var blockedRootFlags = map[string]bool{
 	"config":   true,
 	"deliver":  true,
 	"home":     true,
+	"insecure": true,
 	"profile":  true,
 	"token":    true,
 }
