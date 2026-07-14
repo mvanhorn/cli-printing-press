@@ -883,6 +883,37 @@ mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"
 rm -rf "$RELEASE_LEDGER_TMP"
 trap - EXIT
 
+# Reprints must preserve the base CLI's runtime version declaration layout as
+# well as its ledger files. Fresh prints can move `var version = ...` between
+# files, but the public library's release-ledger guard rejects those moves in a
+# normal publish PR because the post-merge release workflow owns version stamps.
+cd "$PUBLISH_REPO_DIR"
+VERSION_DECL_BASE_REF=upstream/main
+if ! git rev-parse --verify --quiet "$VERSION_DECL_BASE_REF" >/dev/null; then
+  VERSION_DECL_BASE_REF=origin/main
+fi
+VERSION_DECL_DIFF="$(git diff --unified=0 "$VERSION_DECL_BASE_REF" -- \
+  "library/*/<api-slug>/internal/cli/root.go" \
+  "library/*/<api-slug>/internal/cli/version.go" \
+  "library/*/<api-slug>/cmd/<api-slug>-pp-mcp/main.go")" || {
+  echo "failed to compare runtime version declarations with ${VERSION_DECL_BASE_REF}" >&2
+  exit 1
+}
+printf '%s\n' "$VERSION_DECL_DIFF" \
+  | grep -E '^[+-][[:space:]]*var version[[:space:]]*=' || true
+
+# If the command prints a change, reconcile the replacement to the base tree:
+# - A root.go declaration stays in root.go with the exact stamped value; remove
+#   only the duplicate declaration from version.go and keep its command code.
+# - A version.go declaration stays in version.go with the exact stamped value;
+#   remove any fresh declaration added elsewhere in the internal CLI package.
+# - An MCP main declaration stays in MCP main with the exact stamped value. If
+#   the base MCP main hardcodes the version instead, preserve that expression.
+# - If the base has no declaration in one of these runtime surfaces, preserve
+#   that no declaration layout and its existing literal/reference form. Do not
+#   introduce the fresh print's 0.0.0-dev declaration.
+# Re-run the diff command after editing. Do not continue until the command prints no matching lines.
+
 # Remove root-level binaries (should not be committed). publish package
 # already strips these before the copy; this rm -f is belt-and-suspenders
 # for the agent path. Cover the names local build paths can drop: bare slug,

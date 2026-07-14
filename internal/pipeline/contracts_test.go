@@ -764,6 +764,34 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	assert.NotContains(t, skill, "New CLIs keep the blank skeletons")
 }
 
+func TestPublishSkillReconcilesRuntimeVersionLayoutForReprints(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+
+	copyIntoLibrary := strings.Index(skill, `mv "$PUBLISH_SWAP_DIR" "$DEST_CLI_DIR"`)
+	require.NotEqual(t, -1, copyIntoLibrary)
+	reconciliation := skill[copyIntoLibrary:]
+
+	assert.Contains(t, reconciliation, "runtime version declaration layout")
+	assert.Contains(t, reconciliation, `VERSION_DECL_BASE_REF=upstream/main`)
+	assert.Contains(t, reconciliation, `git rev-parse --verify --quiet "$VERSION_DECL_BASE_REF"`)
+	assert.Contains(t, reconciliation, `VERSION_DECL_BASE_REF=origin/main`)
+	assert.Contains(t, reconciliation, `VERSION_DECL_DIFF="$(git diff --unified=0 "$VERSION_DECL_BASE_REF" --`)
+	assert.Contains(t, reconciliation, "failed to compare runtime version declarations with ${VERSION_DECL_BASE_REF}")
+	assert.Contains(t, reconciliation, `internal/cli/root.go`)
+	assert.Contains(t, reconciliation, `internal/cli/version.go`)
+	assert.Contains(t, reconciliation, `cmd/<api-slug>-pp-mcp/main.go`)
+	assert.Contains(t, reconciliation, `^[+-][[:space:]]*var version[[:space:]]*=`)
+	assert.Contains(t, reconciliation, "root.go declaration")
+	assert.Contains(t, reconciliation, "version.go declaration")
+	assert.Contains(t, reconciliation, "MCP main declaration")
+	assert.Contains(t, reconciliation, "no declaration")
+	assert.Contains(t, reconciliation, "Do not continue until the command prints no matching lines")
+	assert.Less(t,
+		strings.Index(reconciliation, "runtime version declaration layout"),
+		strings.Index(reconciliation, "# Verify this changed/new CLI builds"),
+		"version layout must be reconciled before the packaged CLI is verified")
+}
+
 func TestPublishSkillDisablesAutocrlfInManagedClone(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 	firstTimeSetup := substringBetween(t, skill, "### First-time setup", "### Subsequent publishes")
