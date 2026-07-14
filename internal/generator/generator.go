@@ -6332,7 +6332,7 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			// false" from "user did not touch the flag" and is correct
 			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
 			// the OpenAPI parser normalizes to "bool".
-			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
+			fmt.Fprintf(b, "%sif %s {\n", indent, bodyLeafPresenceExpr(p, ident, flag))
 			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.BodyWireName(), ident)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
@@ -6353,6 +6353,9 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 
 func bodyLeafPresenceExpr(p spec.Param, ident, flag string) string {
 	if (p.Type == "boolean" || p.Type == "bool") && (!p.Required || p.Default != nil) {
+		if p.Default != nil {
+			return fmt.Sprintf("cmd.Flags().Changed(%q) || body%s != %s", flag, ident, zeroValForParamRequired(p.Name, p.Type, p.Required, true))
+		}
 		return fmt.Sprintf("cmd.Flags().Changed(%q)", flag)
 	}
 	return fmt.Sprintf("body%s != %s", ident, zeroValForParamRequired(p.Name, p.Type, p.Required, paramHasDefault(p)))

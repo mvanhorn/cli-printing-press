@@ -280,6 +280,20 @@ func TestBodyMap_NestedObject_BooleanLeaf(t *testing.T) {
 	}
 }
 
+func TestBodyMap_NestedObject_BooleanDefaultIsEmitted(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "enabled", Type: "boolean", Default: true},
+		},
+	}}, "\t")
+
+	require.Contains(t, got, `if cmd.Flags().Changed("settings-enabled") || bodySettingsEnabled != false {`)
+	require.Contains(t, got, `nestedSettings["enabled"] = bodySettingsEnabled`)
+}
+
 // TestBodyMap_NestedObject_PreservesScalarSiblings verifies that
 // nested and flat body params can coexist: nested produces a block,
 // scalars keep their existing if-then-set form.
