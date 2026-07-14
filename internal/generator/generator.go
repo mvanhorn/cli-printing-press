@@ -1534,13 +1534,25 @@ func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 
 func credentialFields(auth spec.AuthConfig) []credentialField {
 	var fields []credentialField
+	usedTags := make(map[string]struct{})
 	add := func(name string) {
 		if envVarIsBuiltinField(name) {
 			return
 		}
+		tag := naming.EnvVarPlaceholder(name)
+		if _, exists := usedTags[tag]; exists {
+			tag = strings.ToLower(name)
+			for suffix := 2; ; suffix++ {
+				if _, exists := usedTags[tag]; !exists {
+					break
+				}
+				tag = fmt.Sprintf("%s_%d", strings.ToLower(name), suffix)
+			}
+		}
+		usedTags[tag] = struct{}{}
 		fields = append(fields, credentialField{
 			GoField: envVarField(name),
-			Tag:     naming.EnvVarPlaceholder(name),
+			Tag:     tag,
 		})
 	}
 	if len(auth.EnvVarSpecs) > 0 {
@@ -1673,7 +1685,7 @@ func authSetTokenAvailableForRequiredCount(auth spec.AuthConfig, requiredCount i
 	}
 	switch auth.Type {
 	case "api_key", "bearer_token":
-		return requiredCount == 1
+		return requestAuthEnvVarCount(auth) > 0 && requiredCount <= 1
 	default:
 		return false
 	}
