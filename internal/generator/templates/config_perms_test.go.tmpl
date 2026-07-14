@@ -258,11 +258,10 @@ func TestLoad_DanglingSymlinkIsMiss(t *testing.T) {
 	}
 }
 
-// TestLoad_CorruptOwnerLockedConfigDoesNotLeakSecret is the S3 assertion for the
-// parse-error path: an owner-locked but corrupt token file passes the perms
-// guard and is parsed, so Load surfaces a parse error — and that error must
-// never echo the raw token value.
-func TestLoad_CorruptOwnerLockedConfigDoesNotLeakSecret(t *testing.T) {
+// TestLoad_CorruptConfigDoesNotLeakSecret is the S3 assertion for the parse-error
+// path: malformed explicit configs must surface an error regardless of whether
+// their credentials are trusted, and that error must never echo the raw token.
+func TestLoad_CorruptConfigDoesNotLeakSecret(t *testing.T) {
 	clearCredEnv(t)
 	dir := t.TempDir()
 	p := filepath.Join(dir, configFileName())
@@ -275,5 +274,14 @@ func TestLoad_CorruptOwnerLockedConfigDoesNotLeakSecret(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), sampleReadPermsSecret) {
 		t.Errorf("S3: parse error must not contain the token value: %v", err)
+	}
+
+	grantBroad(t, p)
+	_, err = Load(p)
+	if err == nil {
+		t.Fatal("corrupt over-permissive config should surface a parse error")
+	}
+	if strings.Contains(err.Error(), sampleReadPermsSecret) {
+		t.Errorf("S3: over-permissive parse error must not contain the token value: %v", err)
 	}
 }

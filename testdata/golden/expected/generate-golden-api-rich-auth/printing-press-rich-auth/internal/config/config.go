@@ -67,7 +67,7 @@ func Load(configPath string) (*Config, error) {
 			credentialsTrusted := cliutil.VerifyCredsPerms(real) == nil
 			parsed := *cfg
 			if err := readConfigFile(path, &parsed, "config-kind path"); err != nil {
-				if credentialsTrusted && !os.IsNotExist(err) {
+				if !os.IsNotExist(err) {
 					return nil, err
 				}
 			} else {
@@ -95,12 +95,10 @@ func Load(configPath string) (*Config, error) {
 			}
 			parsed := *cfg
 			if err := parseConfigData(data, &parsed, sourcePath, owner); err != nil {
-				if credentialsTrusted {
-					if sourcePath == legacyPath {
-						fmt.Fprintf(os.Stderr, "warning: legacy config parse skipped for %s: %v\n", sourcePath, err)
-					} else {
-						return nil, err
-					}
+				if sourcePath == legacyPath {
+					fmt.Fprintf(os.Stderr, "warning: legacy config parse skipped for %s: %v\n", sourcePath, err)
+				} else {
+					return nil, err
 				}
 			} else {
 				if !credentialsTrusted {
