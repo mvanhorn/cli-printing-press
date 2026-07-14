@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -672,6 +673,25 @@ func TestLiveCheck_OutputSampleRedactsPIIAcrossTruncationBoundary(t *testing.T) 
 	require.NotContains(t, got, "jane@gmail.com")
 	require.NotContains(t, got, "jane@")
 	require.Contains(t, got, "<redacted>")
+}
+
+func TestLiveCheck_OutputSampleRedactsLongJWTAcrossTruncationBoundary(t *testing.T) {
+	jwt := "eyJ" + strings.Repeat("a", sampleRedactionLookaheadBytes) + ".payload.signature"
+	got := sampleOutput(strings.Repeat("x", outputSampleMaxBytes-8) + " " + jwt)
+
+	require.Contains(t, got, "…[truncated]")
+	require.NotContains(t, got, "eyJ")
+	require.Contains(t, got, artifacts.PIIRedactedSentinel)
+}
+
+func TestLiveCheck_OutputSampleRedactsSplitJWTAcrossTruncationBoundary(t *testing.T) {
+	header := "eyJ" + strings.Repeat("a", 32)
+	payloadAndSignature := "." + strings.Repeat("b", sampleRedactionLookaheadBytes+32) + ".signature"
+	got := sampleOutputParts(strings.Repeat("x", outputSampleMaxBytes-8)+" "+header, payloadAndSignature)
+
+	require.Contains(t, got, "…[truncated]")
+	require.NotContains(t, got, "eyJ")
+	require.Contains(t, got, artifacts.PIIRedactedSentinel)
 }
 
 // TestLiveCheck_BinaryAutoDerivation verifies RunLiveCheck finds the binary
