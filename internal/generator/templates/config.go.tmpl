@@ -1409,6 +1409,9 @@ type persistedConfig struct {
 {{- if .BasePath}}
 	BasePath string `{{configTag .Config.Format}}:"base_path"`
 {{- end}}
+{{- if .UsesBrowserHTTPTransport}}
+	SkipTLSVerify bool `{{configTag .Config.Format}}:"skip_tls_verify,omitempty"`
+{{- end}}
 	Headers map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 {{- if .Auth.RequiresBrowserSession}}
 	ChromeProfile string `{{configTag .Config.Format}}:"chrome_profile,omitempty"`
@@ -1435,6 +1438,9 @@ func (c *Config) persisted() persistedConfig {
 		BaseURL: c.BaseURL,
 {{- if .BasePath}}
 		BasePath: c.BasePath,
+{{- end}}
+{{- if .UsesBrowserHTTPTransport}}
+		SkipTLSVerify: c.SkipTLSVerify,
 {{- end}}
 		Headers: c.Headers,
 {{- if .Auth.RequiresBrowserSession}}

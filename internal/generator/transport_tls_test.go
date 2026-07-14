@@ -2,6 +2,7 @@ package generator
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -179,4 +180,62 @@ func TestGeneratedTLSOptOutsReachTransport(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/client", "./internal/config", "./internal/cli", "-run", "^TestGeneratedTLS", "-count=1")
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree", "-run", "^TestCliArgsFromMCP_BlocksRootFlags$", "-count=1")
 	requireGeneratedCompiles(t, outputDir)
+}
+
+func TestGeneratedTLSPersistedOptOutSurvivesAuthReducedSave(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("transport-tls-auth-persistence")
+	apiSpec.SpecSource = "sniffed"
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const configTest = `package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestGeneratedTLSPersistedOptOutSurvivesAuthReducedSave(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("skip_tls_verify = true\n"), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("initial Load: %v", err)
+	}
+	if !cfg.SkipTLSVerify {
+		t.Fatal("file-backed SkipTLSVerify was not loaded")
+	}
+	if err := cfg.save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	reloaded, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reloaded.SkipTLSVerify {
+		t.Fatal("file-backed SkipTLSVerify was dropped by reduced persistence")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(outputDir, "internal", "config", "transport_tls_persistence_runtime_test.go"),
+		[]byte(configTest), 0o600))
+
+	listCmd := exec.Command("go", "test", "-mod=mod", "-list", "^TestGeneratedTLSPersistedOptOutSurvivesAuthReducedSave$", "./internal/config")
+	listCmd.Dir = outputDir
+	cacheDir, err := goBuildCacheDir(outputDir)
+	require.NoError(t, err)
+	listCmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
+	listOut, err := listCmd.CombinedOutput()
+	require.NoError(t, err, string(listOut))
+	require.Contains(t, string(listOut), "TestGeneratedTLSPersistedOptOutSurvivesAuthReducedSave")
+
+	runGoCommandRequired(t, outputDir, "test", "-v", "-run", "^TestGeneratedTLSPersistedOptOutSurvivesAuthReducedSave$", "./internal/config")
 }
