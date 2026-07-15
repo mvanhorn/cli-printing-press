@@ -180,7 +180,7 @@ func TestGeneratedSyncHydratesScalarIDListItems(t *testing.T) {
 	require.Contains(t, syncSrc, `"updates": {path: "/item/{id}.json", idParam: "id"}`)
 	require.Contains(t, syncSrc, `fetchedThisPage := len(items)`)
 	require.Contains(t, syncSrc, `consumedTotal += fetchedThisPage`)
-	require.Contains(t, syncSrc, `truncatedByCap = truncatedByCap && fetchedThisPage >= pageSize.limit`)
+	require.Contains(t, syncSrc, `truncatedByCap = truncatedByCap && !shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit)`)
 
 	testPath := filepath.Join(outputDir, "internal", "cli", "sync_hydration_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(`package cli
