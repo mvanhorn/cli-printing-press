@@ -384,6 +384,9 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				if err := json.Unmarshal(data, &envelope); err != nil || !envelope.PPBinary || envelope.Encoding != "base64" {
 					return fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>")
 				}
+				if flags.csv {
+					data = append(append(json.RawMessage{'['}, data...), ']')
+				}
 				return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"})
 			}
 			_, err = cmd.OutOrStdout().Write(data)

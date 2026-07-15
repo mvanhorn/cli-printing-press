@@ -150,7 +150,6 @@ func TestPromotedBinaryResponseOutputModes(t *testing.T) {
 		args []string
 	}{
 		{name: "json", args: []string{"--json"}},
-		{name: "csv", args: []string{"--csv"}},
 		{name: "compact", args: []string{"--compact"}},
 		{name: "plain", args: []string{"--plain"}},
 		{name: "select", args: []string{"--select", "_pp_binary,encoding,data"}},
@@ -159,6 +158,17 @@ func TestPromotedBinaryResponseOutputModes(t *testing.T) {
 			requireBinaryEnvelope(t, executeBinaryCommand(t, tc.args...))
 		})
 	}
+
+	t.Run("csv", func(t *testing.T) {
+		stdout, stderr, err := runBinaryCommand(t, "certificate", "--csv")
+		if err != nil {
+			t.Fatalf("certificate --csv failed: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
+		}
+		want := "_pp_binary,bytes,content_type,data,encoding\ntrue,23,application/pdf,JVBERi0xLjcKYmluYXJ5IGZpeHR1cmU=,base64\n"
+		if string(stdout) != want {
+			t.Fatalf("csv output changed:\n got: %s\nwant: %s", stdout, want)
+		}
+	})
 
 	for _, command := range []string{"jsonbody", "textbody"} {
 		t.Run("reject-"+command, func(t *testing.T) {
