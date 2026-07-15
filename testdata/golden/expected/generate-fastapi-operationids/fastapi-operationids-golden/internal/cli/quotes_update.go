@@ -22,7 +22,19 @@ func newQuotesUpdateCmd(flags *rootFlags) *cobra.Command {
 		Annotations: map[string]string{"pp:endpoint": "quotes.update", "pp:method": "PATCH", "pp:path": "/api/quotes/{quote_id}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return cmd.Help()
+				// A missing required positional is a usage error in every output
+				// mode (matches command_promoted.go.tmpl). Machine callers
+				// (--json/--agent) also get a JSON error envelope on stdout;
+				// usageErr sets exit 2.
+				if flags.asJSON {
+					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+						"error": "missing required argument",
+						"usage": fmt.Sprintf("%s%s", cmd.CommandPath(), " <quote_id>"),
+					}, flags); printErr != nil {
+						return printErr
+					}
+				}
+				return usageErr(fmt.Errorf("missing required argument\nUsage: %s%s", cmd.CommandPath(), " <quote_id>"))
 			}
 			if !stdinBody {
 			}

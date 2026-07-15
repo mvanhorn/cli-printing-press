@@ -483,22 +483,47 @@ func boundCtx(parent context.Context, flags *rootFlags) (context.Context, contex
 	return context.WithTimeout(parent, flags.timeout)
 }
 
+// hasChangedLocalFlags checks Flag.Changed because Cobra's derived local flag
+// set does not populate the internal bookkeeping used by FlagSet.NFlag.
+func hasChangedLocalFlags(cmd *cobra.Command) bool {
+	changed := false
+	cmd.LocalNonPersistentFlags().VisitAll(func(flag *pflag.Flag) {
+		if flag.Changed {
+			changed = true
+		}
+	})
+	return changed
+}
+
 // parentNoSubcommandRunE returns a RunE that handles parents invoked without a
-// subcommand. In machine output (--json/--agent) the parent emits a structured
-// error to stdout listing valid subcommands and exits 2; otherwise cobra's
-// default help text is printed. Without this, agents driving the CLI in
-// --agent mode received only human-readable help on stdout and exit 0, with no
-// signal that the invocation was incomplete.
+// subcommand. A leftover positional means the user typed a token where a
+// subcommand was expected (a typo, an underscore instead of a hyphen, or a
+// bogus name); cobra routes it here because non-root parents don't reject
+// unknown subcommands. That case is a usage error in every output mode, so it
+// never masquerades as exit-0 help. A genuine bare parent invocation (no
+// leftover args) still emits a structured "subcommand required" error and exits
+// 2 in machine output (--json/--agent) but prints cobra's help for humans.
 func parentNoSubcommandRunE(flags *rootFlags) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		if flags != nil && flags.asJSON {
-			subs := make([]string, 0, len(cmd.Commands()))
-			for _, c := range cmd.Commands() {
-				if c.IsAvailableCommand() && c.Name() != "help" {
-					subs = append(subs, c.Name())
-				}
+		machine := flags != nil && flags.asJSON
+		subs := make([]string, 0, len(cmd.Commands()))
+		for _, c := range cmd.Commands() {
+			if c.IsAvailableCommand() && c.Name() != "help" {
+				subs = append(subs, c.Name())
 			}
-			sort.Strings(subs)
+		}
+		sort.Strings(subs)
+		if len(args) > 0 {
+			if machine {
+				_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+					"error":             "unknown subcommand",
+					"unknown":           args[0],
+					"valid_subcommands": subs,
+				})
+			}
+			return usageErr(fmt.Errorf("unknown subcommand %q for %q\nRun '%s --help' for available subcommands", args[0], cmd.CommandPath(), cmd.CommandPath()))
+		}
+		if machine {
 			_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
 				"error":             "subcommand required",
 				"valid_subcommands": subs,
