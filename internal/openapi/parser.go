@@ -584,8 +584,8 @@ func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url
 	// existing byte-compat goldens for single-host APIs don't churn.
 	var serverTemplatePlaceholders []string
 	var serverTemplateDefaults map[string]string
-	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
-		baseURL, basePath, serverTemplatePlaceholders, serverTemplateDefaults = resolveServerURLTemplate(doc.Servers[0])
+	if server := preferredTopLevelServer(doc.Servers); server != nil {
+		baseURL, basePath, serverTemplatePlaceholders, serverTemplateDefaults = resolveServerURLTemplate(server)
 	}
 	if baseURL == "" && basePath == "" {
 		// No top-level servers — walk per-operation `servers:` blocks. Specs
@@ -3674,7 +3674,16 @@ func operationServerBaseURL(specBaseURL string, pathItem *openapi3.PathItem, op 
 	if len(servers) == 0 || servers[0] == nil {
 		return ""
 	}
-	baseURL, _ := resolveServerURL(servers[0])
+	baseURL, basePath := resolveServerURL(servers[0])
+	if baseURL != "" {
+		baseURL += basePath
+	} else if basePath != "" {
+		configuredBase, configuredErr := url.Parse(strings.TrimSpace(specBaseURL))
+		relativeBase, relativeErr := url.Parse(basePath)
+		if configuredErr == nil && relativeErr == nil && configuredBase.IsAbs() {
+			baseURL = configuredBase.ResolveReference(relativeBase).String()
+		}
+	}
 	if baseURL == "" || baseURL == strings.TrimRight(specBaseURL, "/") {
 		return ""
 	}
@@ -3776,6 +3785,9 @@ func resolveServerURLTemplate(server *openapi3.Server) (baseURL, basePath string
 		}
 		return ""
 	})
+	if baseURL, basePath, ok := resolveProtocolRelativeServerURL(serverURL); ok {
+		return baseURL, basePath, placeholders, defaults
+	}
 	serverURL = normalizeURLSlashes(serverURL)
 	serverURL = strings.TrimRight(serverURL, "/")
 	if serverURL == "" {
@@ -3820,6 +3832,52 @@ func normalizeURLSlashes(s string) string {
 	s = strings.Replace(s, "http:/", "http://", 1)
 	s = strings.Replace(s, "https:/", "https://", 1)
 	return s
+}
+
+func preferredTopLevelServer(servers openapi3.Servers) *openapi3.Server {
+	if len(servers) == 0 || servers[0] == nil {
+		return nil
+	}
+	protocolRelativeHost, ok := protocolRelativeServerHost(servers[0].URL)
+	if !ok {
+		return servers[0]
+	}
+	for _, server := range servers[1:] {
+		if server == nil {
+			continue
+		}
+		parsed, err := url.Parse(strings.TrimSpace(server.URL))
+		if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") &&
+			strings.EqualFold(parsed.Host, protocolRelativeHost) {
+			return server
+		}
+	}
+	return servers[0]
+}
+
+func protocolRelativeServerHost(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "///") {
+		return "", false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "", false
+	}
+	return parsed.Host, true
+}
+
+func resolveProtocolRelativeServerURL(raw string) (baseURL, basePath string, ok bool) {
+	host, ok := protocolRelativeServerHost(raw)
+	if !ok {
+		return "", "", false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", "", false
+	}
+	path := parsed.EscapedPath()
+	return "https://" + host, strings.TrimRight(path, "/"), true
 }
 
 // mergeServerTemplatePlaceholders folds the placeholders the parser pulled
@@ -3888,6 +3946,9 @@ func resolveServerURL(server *openapi3.Server) (baseURL, basePath string) {
 		}
 		serverURL = serverURL[:start] + serverURL[end+1:]
 	}
+	if baseURL, basePath, ok := resolveProtocolRelativeServerURL(serverURL); ok {
+		return baseURL, basePath
+	}
 	serverURL = normalizeURLSlashes(serverURL)
 	serverURL = strings.TrimRight(serverURL, "/")
 	if serverURL == "" {
@@ -3910,13 +3971,17 @@ func mostCommonOperationServer(doc *openapi3.T) (baseURL, basePath string) {
 	if doc == nil || doc.Paths == nil {
 		return "", ""
 	}
-	urlCounts := map[string]int{}
+	type resolvedServer struct {
+		baseURL  string
+		basePath string
+	}
+	urlCounts := map[resolvedServer]int{}
 	pathCounts := map[string]int{}
 	tally := func(servers openapi3.Servers) {
 		for _, srv := range servers {
 			u, p := resolveServerURL(srv)
 			if u != "" {
-				urlCounts[u]++
+				urlCounts[resolvedServer{baseURL: u, basePath: p}]++
 			} else if p != "" {
 				pathCounts[p]++
 			}
@@ -3946,8 +4011,18 @@ func mostCommonOperationServer(doc *openapi3.T) (baseURL, basePath string) {
 		}
 		return best
 	}
-	if u := pickTopKey(urlCounts); u != "" {
-		return u, ""
+	var best resolvedServer
+	var bestCount int
+	for server, count := range urlCounts {
+		key := server.baseURL + server.basePath
+		bestKey := best.baseURL + best.basePath
+		if count > bestCount || (count == bestCount && key < bestKey) {
+			best = server
+			bestCount = count
+		}
+	}
+	if best.baseURL != "" {
+		return best.baseURL, best.basePath
 	}
 	if p := pickTopKey(pathCounts); p != "" {
 		warnf("no top-level servers; using most common per-operation relative path %q (generated CLI will need base_url in config)", p)
