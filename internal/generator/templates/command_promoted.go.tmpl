@@ -198,8 +198,13 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 {{- if $supportsAllPagination}}
+{{- if and (eq .Endpoint.ResponseFormat "html") (not .HasStore)}}
+			if flagAll {
+				return fmt.Errorf("--all is not supported for live HTML responses; omit --all to extract the current page")
+			}
+{{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolvePaginatedReadWithStrategy(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", path, map[string]string{
+			{{if eq .Endpoint.ResponseFormat "html"}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -208,7 +213,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{paramWireName .}}": formatCLIParamValue(flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", cmd.ErrOrStderr())
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.Type}}", "{{.Endpoint.Pagination.LimitParam}}", {{.PageSize}}, "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}", {{if eq .Endpoint.ResponseFormat "html"}}false, {{end}}cmd.ErrOrStderr())
 {{- else}}
 {{- if eq $dataSourceStrategy "local"}}
 			return fmt.Errorf("data_source_strategy local requires the local store data layer")
