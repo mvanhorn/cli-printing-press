@@ -126,6 +126,29 @@ func TestGeneratedPaginatedReadHonorsResponseFormat(t *testing.T) {
 		require.Error(t, err, string(out))
 		require.Contains(t, string(out), "--all is not supported for live HTML responses")
 	}
+
+	cacheServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><a href="/posts/one">One</a></body></html>`))
+	}))
+	cacheEnv := append(os.Environ(), strings.ToUpper(strings.ReplaceAll(apiSpec.Name, "-", "_"))+"_BASE_URL="+cacheServer.URL)
+	cacheArgs := []string{"html-posts", "list", "--json", "--home", t.TempDir()}
+	cacheCmd := exec.Command(binaryPath, cacheArgs...)
+	cacheCmd.Env = cacheEnv
+	out, err = cacheCmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	cacheServer.Close()
+
+	cacheCmd = exec.Command(binaryPath, cacheArgs...)
+	cacheCmd.Env = cacheEnv
+	out, err = cacheCmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	var cachedEnvelope struct {
+		Results []map[string]any `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(out, &cachedEnvelope), string(out))
+	require.Len(t, cachedEnvelope.Results, 1)
+	require.Equal(t, "One", cachedEnvelope.Results[0]["name"])
 }
 
 func paginatedReadEndpoint(responseFormat string) spec.Endpoint {

@@ -275,8 +275,8 @@ func resolvePaginatedReadWithStrategyAndJSONGuard(ctx context.Context, c *client
 				if err := assertLiveJSONBody(data); err != nil {
 					return nil, DataProvenance{}, err
 				}
-				writeThroughCache(ctx, resourceType, data)
 			}
+			writeThroughCache(ctx, resourceType, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 		}
 		if !isNetworkError(err) {
