@@ -40,7 +40,7 @@ Commands with a `physical-effect` or `configuration-risk` safety class require `
 The default (no-codec) runtime is Tier-1: it writes captured command payloads verbatim and surfaces raw telemetry frames. To drive a device whose protocol needs framing, scaling, checksums, or parameterized values, extend the CLI **without editing generated files**:
 
 - Implement `device.DeviceCodec` in an operator-owned file and register it from an `init` function (`codec = myCodec{}`). It encodes command payloads and decodes telemetry frames.
-- Add hand-authored commands via the `novelCommands` hook in package `cli`: a preserved-across-regen file that sets the `novelCommands` var from `init`, adding commands built on `device.Dial` + `device.Link` for stateful, held-connection choreography.
+- Add hand-authored commands via the additive `registerNovelCommand` hook in package `cli`: each preserved-across-regen file registers its own callback from `init`, adding commands built on `device.Dial` + `device.Link` for stateful, held-connection choreography without replacing another extension.
 
 Record each customization as one file per patch under `.printing-press-patches/` at this CLI's root (parallel to `.printing-press.json`) so the change isn't lost on the next regen and is visible to the next reader. One file per patch (`.printing-press-patches/<id>.json`) means two concurrent PRs never conflict on patch metadata.
 

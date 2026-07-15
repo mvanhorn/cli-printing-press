@@ -60,6 +60,10 @@ func TestGenerateMCPSharedBoundPackageAndConsumers(t *testing.T) {
 	toolsCode := stripGoComments(string(toolsSrc))
 	assert.Contains(t, toolsCode, `/internal/mcp/bound"`)
 	assert.Contains(t, toolsCode, "bound.EndpointResponse(method, data)")
+	assert.Contains(t, toolsCode, "func mcpToolError(message string)")
+	assert.Contains(t, toolsCode, "bound.Text(message)")
+	assert.Contains(t, toolsCode, "return mcpToolError(msg), nil")
+	assert.NotContains(t, toolsCode, "return mcplib.NewToolResultError(msg), nil")
 	assert.Contains(t, toolsCode, "bound.JSON(v)")
 	assert.NotContains(t, toolsCode, "func mcpBoundedListEnvelope(")
 	assert.NotContains(t, toolsCode, "func mcpOversizedPreviewEnvelope(")
@@ -72,6 +76,7 @@ func TestGenerateMCPSharedBoundPackageAndConsumers(t *testing.T) {
 	assert.NotContains(t, shelloutCode, "NewToolResultText(out)")
 
 	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/mcp")
 	runGoCommand(t, outputDir, "test", "./internal/mcp/bound")
 	runGoCommand(t, outputDir, "test", "./internal/mcp/cobratree")
 }

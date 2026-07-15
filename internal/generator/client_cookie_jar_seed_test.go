@@ -52,6 +52,8 @@ func TestCookieAuthClientSeedsJar(t *testing.T) {
 		"CookieCredential must return the env-var session unwrapped")
 	assert.Contains(t, configSrc, "return c.AccessToken",
 		"CookieCredential must fall back to the browser AccessToken unwrapped")
+	assert.NotContains(t, configSrc, "ensureAuthScheme(\"Bearer\", c.CookieseedSession)",
+		"cookie auth must not prefix a raw session before placing it in the declared cookie")
 
 	// The seed/parse helpers must be emitted (gated on HasCookies).
 	jarSrc := readGeneratedFile(t, outputDir, "internal", "client", "cookiejar.go")

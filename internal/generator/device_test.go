@@ -207,31 +207,55 @@ func TestGeneratedBLEEmitsNovelCommandHook(t *testing.T) {
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
 	require.NoError(t, err)
 	root := string(rootSrc)
-	// A nil-guarded function-variable hook: hand-authored commands attach via an
-	// operator-owned file that sets novelCommands, with no edit to generated
-	// files. The default build is a no-op (nil hook).
-	assert.Contains(t, root, "var novelCommands func(root *cobra.Command, flags *rootFlags)")
-	assert.Contains(t, root, "if novelCommands != nil {")
-	assert.Contains(t, root, "novelCommands(rootCmd, flags)")
+	// An additive hook registry lets independently preserved command files
+	// coexist without overwriting each other's registration.
+	assert.Contains(t, root, "var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)")
+	assert.Contains(t, root, "func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags))")
+	assert.Contains(t, root, "novelCommandHooks = append(novelCommandHooks, hook)")
+	assert.Contains(t, root, "for _, hook := range novelCommandHooks {")
 
 	// The generated CLI compiles with the hook unset (no operator file present).
 	requireGeneratedCompiles(t, outputDir)
 
-	// An operator file that wires the hook builds and adds a command. This mirrors
-	// how regenmerge preserves snapshot-only (NOVEL) files verbatim across regen.
-	operatorFile := filepath.Join(outputDir, "internal", "cli", "novel_ops.go")
+	// Two independent operator files both register commands. This mirrors how
+	// regenmerge preserves snapshot-only (NOVEL) files verbatim across regen.
+	operatorFile := filepath.Join(outputDir, "internal", "cli", "novel_ping.go")
 	require.NoError(t, os.WriteFile(operatorFile, []byte(`package cli
 
 import "github.com/spf13/cobra"
 
 func init() {
-	novelCommands = func(root *cobra.Command, flags *rootFlags) {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
 		_ = flags
 		root.AddCommand(&cobra.Command{Use: "ping", RunE: func(c *cobra.Command, a []string) error { return nil }})
+	})
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_echo.go"), []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func init() {
+	registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
+		_ = flags
+		root.AddCommand(&cobra.Command{Use: "echo", RunE: func(c *cobra.Command, a []string) error { return nil }})
+	})
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "novel_hooks_test.go"), []byte(`package cli
+
+import "testing"
+
+func TestNovelHooksCompose(t *testing.T) {
+	root := RootCmd()
+	for _, name := range []string{"ping", "echo"} {
+		if cmd, _, err := root.Find([]string{name}); err != nil || cmd == root {
+			t.Fatalf("registered command %q unavailable: %v", name, err)
+		}
 	}
 }
 `), 0o644))
-	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestNovelHooksCompose")
 }
 
 func TestGeneratedBLEDeviceEmitsLiveBackendSeam(t *testing.T) {

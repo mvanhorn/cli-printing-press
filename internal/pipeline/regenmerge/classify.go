@@ -58,6 +58,12 @@ func extractDecls(filename string) (declSet, error) {
 	for _, d := range file.Decls {
 		switch decl := d.(type) {
 		case *ast.FuncDecl:
+			if decl.Recv == nil && decl.Name.Name == "registerClientHook" {
+				// Client hook registration is generated scaffolding. Ignore it so
+				// a force regen can upgrade an older root while retaining a
+				// markerless package-local client extension.
+				continue
+			}
 			decls.add(canonicalFuncName(decl))
 		case *ast.GenDecl:
 			for _, spec := range decl.Specs {
@@ -66,6 +72,12 @@ func extractDecls(filename string) (declSet, error) {
 					decls.add(s.Name.Name)
 				case *ast.ValueSpec:
 					for _, n := range s.Names {
+						// The original singleton hook was generated scaffolding,
+						// not authored surface. Ignore it so a force regen can
+						// migrate older generated roots to the additive hook.
+						if n.Name == "novelCommands" || n.Name == "clientHooks" {
+							continue
+						}
 						decls.add(n.Name)
 					}
 				}

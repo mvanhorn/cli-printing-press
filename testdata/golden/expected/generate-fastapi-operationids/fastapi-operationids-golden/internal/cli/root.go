@@ -60,6 +60,26 @@ type rootFlags struct {
 	deliverSink DeliverSink
 }
 
+// novelCommandHooks are optional hooks for hand-authored command extensions.
+// A markerless file in package cli may register one from init without editing
+// this generated root, so force regeneration preserves both the source and
+// wiring. Registration is additive: independent extensions never replace one
+// another.
+var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)
+
+func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {
+	novelCommandHooks = append(novelCommandHooks, hook)
+}
+
+// clientHooks let preserved package-local extensions configure a newly-created
+// client without editing generated code. Hooks are additive and run once per
+// client construction; they must not perform provider-specific behavior here.
+var clientHooks []func(*client.Client) error
+
+func registerClientHook(hook func(*client.Client) error) {
+	clientHooks = append(clientHooks, hook)
+}
+
 // RootCmd returns the Cobra command tree without executing it. The MCP server
 // uses this to mirror every user-facing command as an agent tool.
 func RootCmd() *cobra.Command {
@@ -301,6 +321,9 @@ Run 'fastapi-operationids-golden-pp-cli doctor' to verify auth and connectivity.
 	rootCmd.AddCommand(newTeachLookupCmd(flags))
 	rootCmd.AddCommand(newTeachPlaybookCmd(flags, learnCfg))
 	rootCmd.AddCommand(newPlaybookCmd(flags, learnCfg))
+	for _, hook := range novelCommandHooks {
+		hook(rootCmd, flags)
+	}
 
 	return rootCmd
 }
@@ -536,6 +559,11 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	c := client.New(cfg, f.timeout, f.rateLimit)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
+	for _, hook := range clientHooks {
+		if err := hook(c); err != nil {
+			return nil, err
+		}
+	}
 	return c, nil
 }
 
