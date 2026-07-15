@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"debug/buildinfo"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,11 +59,8 @@ func refreshPromoteArtifacts(cliDir, cliName string) (bool, error) {
 		if err := os.MkdirAll(filepath.Dir(cliBinary), 0o755); err != nil {
 			return false, fmt.Errorf("creating staged binary directory: %w", err)
 		}
-		if err := rebuildLiveCheckBinary(cliDir, cliBinary); err != nil {
-			return false, fmt.Errorf("rebuilding staged CLI binary: %w", err)
-		}
-		if err := rebuildPromoteMCPBinary(cliDir, manifest.Name, mcpBinary); err != nil {
-			return false, fmt.Errorf("rebuilding staged MCP binary: %w", err)
+		if err := rebuildPromoteBinaryPair(cliDir, manifest.Name, cliBinary, mcpBinary); err != nil {
+			return false, err
 		}
 		refreshed = true
 	}
@@ -142,26 +140,103 @@ func fileCurrentAt(path string, threshold time.Time, goos, goarch string) bool {
 	return settings["GOOS"] == goos && settings["GOARCH"] == goarch
 }
 
-func rebuildPromoteMCPBinary(cliDir, name, outputPath string) error {
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+func rebuildPromoteBinaryPair(cliDir, mcpName, cliOutputPath, mcpOutputPath string) error {
+	cliTmpPath, err := promoteRebuildTempPath(cliOutputPath)
+	if err != nil {
+		return fmt.Errorf("creating staged CLI rebuild path: %w", err)
+	}
+	defer func() { _ = os.Remove(cliTmpPath) }()
+	mcpTmpPath, err := promoteRebuildTempPath(mcpOutputPath)
+	if err != nil {
+		return fmt.Errorf("creating staged MCP rebuild path: %w", err)
+	}
+	defer func() { _ = os.Remove(mcpTmpPath) }()
+
+	if err := buildCLITo(cliDir, cliTmpPath); err != nil {
+		return fmt.Errorf("rebuilding staged CLI binary: %w", err)
+	}
+	if err := BuildMCPBBinary(cliDir, mcpName, mcpTmpPath, runtime.GOOS, runtime.GOARCH); err != nil {
+		return fmt.Errorf("rebuilding staged MCP binary: %w", err)
+	}
+	if err := replacePromoteBinaryPair(cliTmpPath, cliOutputPath, mcpTmpPath, mcpOutputPath, replaceLiveCheckBinary); err != nil {
 		return err
 	}
+	return nil
+}
+
+type promoteOriginalBackup struct {
+	destination string
+	backupPath  string
+	existed     bool
+}
+
+func replacePromoteBinaryPair(cliTmpPath, cliOutputPath, mcpTmpPath, mcpOutputPath string, replace func(string, string) error) error {
+	cliBackup, err := backupPromoteOriginal(cliOutputPath)
+	if err != nil {
+		return fmt.Errorf("backing up staged CLI binary: %w", err)
+	}
+	defer func() { _ = os.Remove(cliBackup.backupPath) }()
+	mcpBackup, err := backupPromoteOriginal(mcpOutputPath)
+	if err != nil {
+		return errors.Join(fmt.Errorf("backing up staged MCP binary: %w", err), restorePromoteOriginal(cliBackup))
+	}
+	defer func() { _ = os.Remove(mcpBackup.backupPath) }()
+
+	if err := replace(cliTmpPath, cliOutputPath); err != nil {
+		return errors.Join(fmt.Errorf("replacing staged CLI binary: %w", err), restorePromoteOriginal(cliBackup), restorePromoteOriginal(mcpBackup))
+	}
+	if err := replace(mcpTmpPath, mcpOutputPath); err != nil {
+		return errors.Join(fmt.Errorf("replacing staged MCP binary: %w", err), restorePromoteOriginal(cliBackup), restorePromoteOriginal(mcpBackup))
+	}
+	return nil
+}
+
+func backupPromoteOriginal(destination string) (promoteOriginalBackup, error) {
+	backup := promoteOriginalBackup{destination: destination}
+	if _, err := os.Stat(destination); os.IsNotExist(err) {
+		return backup, nil
+	} else if err != nil {
+		return backup, err
+	}
+	backupPath, err := promoteRebuildTempPath(destination + ".old")
+	if err != nil {
+		return backup, err
+	}
+	if err := os.Rename(destination, backupPath); err != nil {
+		return backup, err
+	}
+	backup.backupPath = backupPath
+	backup.existed = true
+	return backup, nil
+}
+
+func restorePromoteOriginal(backup promoteOriginalBackup) error {
+	if err := os.Remove(backup.destination); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing partial staged binary %s: %w", backup.destination, err)
+	}
+	if !backup.existed {
+		return nil
+	}
+	if err := os.Rename(backup.backupPath, backup.destination); err != nil {
+		return fmt.Errorf("restoring staged binary %s: %w", backup.destination, err)
+	}
+	return nil
+}
+
+func promoteRebuildTempPath(outputPath string) (string, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(outputPath), "."+filepath.Base(outputPath)+".rebuild-*")
 	if err != nil {
-		return err
+		return "", err
 	}
 	tmpPath := tmp.Name()
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return err
+		return "", err
 	}
-	_ = os.Remove(tmpPath)
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	if err := BuildMCPBBinary(cliDir, name, tmpPath, runtime.GOOS, runtime.GOARCH); err != nil {
-		return err
+	if err := os.Remove(tmpPath); err != nil {
+		return "", err
 	}
-	return replaceLiveCheckBinary(tmpPath, outputPath)
+	return tmpPath, nil
 }
 
 func promoteBundleMatches(bundlePath, cliDir, mcpArchiveName, mcpBinary, cliArchiveName, cliBinary string) (bool, error) {
@@ -203,7 +278,7 @@ func promoteBundleMatches(bundlePath, cliDir, mcpArchiveName, mcpBinary, cliArch
 	for _, entry := range zr.File {
 		want, ok := expected[entry.Name]
 		if !ok {
-			continue
+			return false, nil
 		}
 		r, err := entry.Open()
 		if err != nil {

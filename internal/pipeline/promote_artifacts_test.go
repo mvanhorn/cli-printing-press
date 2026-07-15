@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,6 +128,92 @@ func TestRefreshPromoteArtifacts_CreatesMissingStageDirectory(t *testing.T) {
 	assert.True(t, refreshed)
 }
 
+func TestRefreshPromoteArtifacts_FailedMCPBuildPreservesBothStagedBinaries(t *testing.T) {
+	cliDir := filepath.Join(t.TempDir(), "test-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	cliName := "test-pp-cli"
+	mcpName := "test-pp-mcp"
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "go.mod"), []byte("module example.com/test\n\ngo 1.24\n"), 0o644))
+	writePromoteMain(t, cliDir, cliName, `println("fresh cli")`)
+	writePromoteMain(t, cliDir, mcpName, `this is not valid Go`)
+	require.NoError(t, WriteCLIManifest(cliDir, CLIManifest{
+		SchemaVersion: CurrentCLIManifestSchemaVersion,
+		APIName:       "test",
+		CLIName:       cliName,
+		MCPBinary:     mcpName,
+	}))
+
+	cliBinary := StagedMCPBinaryPath(cliDir, platform.ExecutablePathForGOOS(cliName, runtime.GOOS))
+	mcpBinary := StagedMCPBinaryPath(cliDir, platform.ExecutablePathForGOOS(mcpName, runtime.GOOS))
+	require.NoError(t, os.MkdirAll(filepath.Dir(cliBinary), 0o755))
+	require.NoError(t, os.WriteFile(cliBinary, []byte("original cli"), 0o755))
+	require.NoError(t, os.WriteFile(mcpBinary, []byte("original mcp"), 0o755))
+
+	refreshed, err := refreshPromoteArtifacts(cliDir, cliName)
+	require.Error(t, err)
+	assert.False(t, refreshed)
+	assert.Equal(t, "original cli", string(mustReadFile(t, cliBinary)))
+	assert.Equal(t, "original mcp", string(mustReadFile(t, mcpBinary)))
+}
+
+func TestReplacePromoteBinaryPair_SecondReplacementFailureRestoresBothOriginals(t *testing.T) {
+	dir := t.TempDir()
+	cliOutputPath := filepath.Join(dir, "cli")
+	mcpOutputPath := filepath.Join(dir, "mcp")
+	cliTmpPath := filepath.Join(dir, "new-cli")
+	mcpTmpPath := filepath.Join(dir, "new-mcp")
+	require.NoError(t, os.WriteFile(cliOutputPath, []byte("original cli"), 0o755))
+	require.NoError(t, os.WriteFile(mcpOutputPath, []byte("original mcp"), 0o755))
+	require.NoError(t, os.WriteFile(cliTmpPath, []byte("new cli"), 0o755))
+	require.NoError(t, os.WriteFile(mcpTmpPath, []byte("new mcp"), 0o755))
+
+	replacements := 0
+	err := replacePromoteBinaryPair(cliTmpPath, cliOutputPath, mcpTmpPath, mcpOutputPath, func(src, dst string) error {
+		replacements++
+		if replacements == 2 {
+			return errors.New("injected MCP replacement failure")
+		}
+		return replaceLiveCheckBinary(src, dst)
+	})
+	require.ErrorContains(t, err, "injected MCP replacement failure")
+	assert.Equal(t, "original cli", string(mustReadFile(t, cliOutputPath)))
+	assert.Equal(t, "original mcp", string(mustReadFile(t, mcpOutputPath)))
+}
+
+func TestPromoteBundleMatches_RequiresExactEntrySet(t *testing.T) {
+	cliDir := t.TempDir()
+	mcpArchiveName := "test-pp-mcp"
+	cliArchiveName := "test-pp-cli"
+	mcpBinary := filepath.Join(cliDir, "staged-mcp")
+	cliBinary := filepath.Join(cliDir, "staged-cli")
+	require.NoError(t, os.WriteFile(mcpBinary, []byte("mcp bytes"), 0o755))
+	require.NoError(t, os.WriteFile(cliBinary, []byte("cli bytes"), 0o755))
+	manifest := []byte(`{"name":"test-pp-mcp","server":{"entry_point":"bin/test-pp-mcp"}}`)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, MCPBManifestFilename), manifest, 0o644))
+
+	expectedEntries := []zipTestEntry{
+		{name: MCPBManifestFilename, data: manifest},
+		{name: "bin/" + mcpArchiveName, data: []byte("mcp bytes")},
+		{name: "bin/" + cliArchiveName, data: []byte("cli bytes")},
+	}
+	tests := []struct {
+		name    string
+		entries []zipTestEntry
+	}{
+		{name: "unexpected entry", entries: append(append([]zipTestEntry{}, expectedEntries...), zipTestEntry{name: "extra.txt", data: []byte("extra")})},
+		{name: "duplicate expected entry", entries: append(append([]zipTestEntry{}, expectedEntries...), expectedEntries[1])},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bundlePath := filepath.Join(t.TempDir(), "bundle.mcpb")
+			writeTestZIP(t, bundlePath, tt.entries)
+			matches, err := promoteBundleMatches(bundlePath, cliDir, mcpArchiveName, mcpBinary, cliArchiveName, cliBinary)
+			require.NoError(t, err)
+			assert.False(t, matches)
+		})
+	}
+}
+
 func writePromoteMain(t *testing.T, cliDir, name, body string) {
 	t.Helper()
 	dir := filepath.Join(cliDir, "cmd", name)
@@ -164,4 +251,31 @@ func fileDigest(t *testing.T, path string) [sha256.Size]byte {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return sha256.Sum256(data)
+}
+
+type zipTestEntry struct {
+	name string
+	data []byte
+}
+
+func writeTestZIP(t *testing.T, path string, entries []zipTestEntry) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	zw := zip.NewWriter(f)
+	for _, entry := range entries {
+		w, err := zw.Create(entry.name)
+		require.NoError(t, err)
+		_, err = w.Write(entry.data)
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	require.NoError(t, f.Close())
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
 }
