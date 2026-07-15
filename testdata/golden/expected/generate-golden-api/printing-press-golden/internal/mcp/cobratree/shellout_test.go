@@ -17,6 +17,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/spf13/cobra"
+	"printing-press-golden-pp-cli/internal/mcp/bound"
 )
 
 // TestSplitShellArgs pins the whitespace + quote splitting used by
@@ -597,6 +598,49 @@ func TestShellOutRejectsUnknownStructuredParameters(t *testing.T) {
 	}
 }
 
+func TestShellOutBoundsFinalError(t *testing.T) {
+	for _, mode := range []string{"fail-large-stderr", "fail-large-stdout"} {
+		t.Run(mode, func(t *testing.T) {
+			bin := writeShelloutHelper(t, mode)
+			handler := shellOutToCLI(
+				func() (string, error) { return bin, nil },
+				nil,
+				map[string]bool{},
+				map[string]bool{},
+				nil,
+				false,
+				nil,
+			)
+
+			result, err := handler(context.Background(), mcplib.CallToolRequest{})
+			if err != nil {
+				t.Fatalf("handler returned transport error: %v", err)
+			}
+			if !result.IsError {
+				t.Fatalf("handler returned success: %s", toolResultText(result))
+			}
+			if got := len(toolResultText(result)); got > bound.MaxBytes {
+				t.Fatalf("final MCP error was not bounded: %d bytes", got)
+			}
+		})
+	}
+}
+
+func TestCappedCaptureDrainsWithoutRetainingFullInput(t *testing.T) {
+	capture := newCappedCapture()
+	input := strings.Repeat("x", shelloutCaptureLimit+100)
+	n, err := capture.Write([]byte(input))
+	if err != nil {
+		t.Fatalf("capped capture write: %v", err)
+	}
+	if n != len(input) {
+		t.Fatalf("capped capture wrote %d bytes, want %d", n, len(input))
+	}
+	if got := len(capture.String()); got != shelloutCaptureLimit {
+		t.Fatalf("capped capture retained %d bytes, want %d", got, shelloutCaptureLimit)
+	}
+}
+
 func TestRunCLICommandKeepsStdoutSeparateFromStderr(t *testing.T) {
 	bin := writeShelloutHelper(t, "success")
 	got, err := RunCLICommand(context.Background(), bin, []string{"alpha", "beta"})
@@ -639,6 +683,24 @@ func TestRunCLICommandFallsBackToStdoutOnFailureWithoutStderr(t *testing.T) {
 	}
 }
 
+func TestRunCLICommandBoundsFailureOutput(t *testing.T) {
+	for _, mode := range []string{"fail-large-stderr", "fail-large-stdout"} {
+		t.Run(mode, func(t *testing.T) {
+			bin := writeShelloutHelper(t, mode)
+			_, err := RunCLICommand(context.Background(), bin, nil)
+			if err == nil {
+				t.Fatalf("RunCLICommand %s succeeded unexpectedly", mode)
+			}
+			if len(err.Error()) > bound.MaxBytes+512 {
+				t.Fatalf("failure output was not bounded: %d bytes", len(err.Error()))
+			}
+			if !strings.Contains(err.Error(), `"truncated":true`) {
+				t.Fatalf("bounded failure output did not include a preview envelope: %v", err)
+			}
+		})
+	}
+}
+
 func writeShelloutHelper(t *testing.T, mode string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -652,6 +714,10 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 			body = "@echo off\r\necho boom from stderr 1>&2\r\nexit /b 7\r\n"
 		case "fail-stdout":
 			body = "@echo off\r\necho stdout failure\r\nexit /b 7\r\n"
+		case "fail-large-stderr":
+			body = "@echo off\r\nfor /L %%i in (1,1,70000) do <nul set /p =x 1>&2\r\nexit /b 7\r\n"
+		case "fail-large-stdout":
+			body = "@echo off\r\nfor /L %%i in (1,1,70000) do <nul set /p =x\r\nexit /b 7\r\n"
 		default:
 			t.Fatalf("unknown mode %q", mode)
 		}
@@ -669,6 +735,10 @@ func writeShelloutHelper(t *testing.T, mode string) string {
 		body = "#!/bin/sh\necho boom from stderr >&2\nexit 7\n"
 	case "fail-stdout":
 		body = "#!/bin/sh\necho stdout failure\nexit 7\n"
+	case "fail-large-stderr":
+		body = "#!/bin/sh\nhead -c 70000 /dev/zero | tr '\\000' x >&2\nexit 7\n"
+	case "fail-large-stdout":
+		body = "#!/bin/sh\nhead -c 70000 /dev/zero | tr '\\000' x\nexit 7\n"
 	default:
 		t.Fatalf("unknown mode %q", mode)
 	}

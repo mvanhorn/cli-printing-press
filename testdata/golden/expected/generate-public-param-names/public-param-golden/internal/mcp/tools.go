@@ -153,7 +153,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
-			return mcplib.NewToolResultError(err.Error()), nil
+			return mcpToolError(err.Error()), nil
 		}
 
 		// mcp-go v0.47+ made CallToolParams.Arguments an `any` to support
@@ -175,12 +175,12 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			if v, ok := args["cursor"]; ok {
 				s, ok := v.(string)
 				if !ok {
-					return mcplib.NewToolResultError("cursor must be an opaque string returned by a previous MCP response"), nil
+					return mcpToolError("cursor must be an opaque string returned by a previous MCP response"), nil
 				}
 				mcpCursor = s
 				upstreamCursor, err := bound.UpstreamCursor(s)
 				if err != nil {
-					return mcplib.NewToolResultError(err.Error()), nil
+					return mcpToolError(err.Error()), nil
 				}
 				if upstreamCursor != "" {
 					params[pageConfig.CursorParam] = upstreamCursor
@@ -297,7 +297,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			}
 			data, _, err = c.DeleteWithParams(ctx, path, params)
 		default:
-			return mcplib.NewToolResultError("unsupported method: " + method), nil
+			return mcpToolError("unsupported method: " + method), nil
 		}
 
 		if err != nil {
@@ -306,22 +306,22 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			case strings.Contains(msg, "HTTP 409"):
 				return mcplib.NewToolResultText("already exists (no-op)"), nil
 			case strings.Contains(msg, "HTTP 401"):
-				return mcplib.NewToolResultError("authentication failed: " + msg +
+				return mcpToolError("authentication failed: " + msg +
 					"\nhint: check your API credentials." +
 					"\n      Run 'public-param-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 403"):
-				return mcplib.NewToolResultError("permission denied: " + msg +
+				return mcpToolError("permission denied: " + msg +
 					"\nhint: this API is configured without credentials; the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy." +
 					"\n      Run 'public-param-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {
 					return mcplib.NewToolResultText("already deleted (no-op)"), nil
 				}
-				return mcplib.NewToolResultError("not found: " + msg), nil
+				return mcpToolError("not found: " + msg), nil
 			case strings.Contains(msg, "HTTP 429"):
-				return mcplib.NewToolResultError("rate limited: " + msg), nil
+				return mcpToolError("rate limited: " + msg), nil
 			default:
-				return mcplib.NewToolResultError(msg), nil
+				return mcpToolError(msg), nil
 			}
 		}
 
@@ -333,10 +333,10 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				"byte_count":       len(data),
 			})
 			if err != nil {
-				return mcplib.NewToolResultError(fmt.Sprintf("encoding binary result: %v", err)), nil
+				return mcpToolError(fmt.Sprintf("encoding binary result: %v", err)), nil
 			}
 			if len(out) > bound.MaxBytes {
-				return mcplib.NewToolResultError(fmt.Sprintf("binary response is too large for MCP text output: %d response bytes encode to %d base64 bytes and %d MCP result bytes, exceeding the %d byte budget. Use the companion CLI command with --output <file> to save the payload locally.", len(data), len(encoded), len(out), bound.MaxBytes)), nil
+				return mcpToolError(fmt.Sprintf("binary response is too large for MCP text output: %d response bytes encode to %d base64 bytes and %d MCP result bytes, exceeding the %d byte budget. Use the companion CLI command with --output <file> to save the payload locally.", len(data), len(encoded), len(out), bound.MaxBytes)), nil
 			}
 			return mcplib.NewToolResultText(string(out)), nil
 		}
@@ -349,6 +349,12 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 
 func mcpToolResultText(method string, data json.RawMessage) *mcplib.CallToolResult {
 	return mcplib.NewToolResultText(bound.EndpointResponse(method, data))
+}
+
+// mcpToolError keeps provider-controlled typed endpoint errors within the MCP
+// text-result budget just like successful endpoint results.
+func mcpToolError(message string) *mcplib.CallToolResult {
+	return mcplib.NewToolResultError(bound.Text(message))
 }
 
 func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {

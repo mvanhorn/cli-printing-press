@@ -406,17 +406,21 @@ func deviceTransport(flags *rootFlags) device.Transport {
 	return device.NewReplayTransport()
 }
 
-// novelCommands is an optional hook for hand-authored commands. It is nil by
-// default (no extra commands). To extend this CLI WITHOUT editing generated
-// files, add a file in package cli — it is preserved across regeneration — that
-// sets this var from an init function:
+// novelCommandHooks are optional hooks for hand-authored commands. To extend
+// this CLI WITHOUT editing generated files, add a file in package cli — it is
+// preserved across regeneration — that registers a hook from init. Hooks are
+// additive, so independent extensions cannot replace one another:
 //
 //	func init() {
-//		novelCommands = func(root *cobra.Command, flags *rootFlags) {
+//		registerNovelCommand(func(root *cobra.Command, flags *rootFlags) {
 //			root.AddCommand(newMyCmd(flags))
-//		}
+//		})
 //	}
-var novelCommands func(root *cobra.Command, flags *rootFlags)
+var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)
+
+func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags)) {
+	novelCommandHooks = append(novelCommandHooks, hook)
+}
 
 func RootCmd() *cobra.Command {
 	var flags rootFlags
@@ -468,8 +472,8 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 {{- range .Commands}}
 	rootCmd.AddCommand(newDeviceCommandCmd(flags, device.CommandDefinition{Name: {{quote .Name}}, CharacteristicUUID: {{quote .CharacteristicUUID}}, Safety: {{quote .Safety}}, ValidationStatus: {{quote .ValidationStatus}}, PayloadHex: {{quote .PayloadHex}}, Parameters: []string{ {{- range .Parameters}}{{quote .}}, {{- end}} }}))
 {{- end}}
-	if novelCommands != nil {
-		novelCommands(rootCmd, flags)
+	for _, hook := range novelCommandHooks {
+		hook(rootCmd, flags)
 	}
 	return rootCmd
 }

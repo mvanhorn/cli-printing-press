@@ -63,8 +63,11 @@ func TestRecipeNarrativeEmitsMCPIntentTools(t *testing.T) {
 
 	shellout := readGeneratedFile(t, outputDir, "internal", "mcp", "cobratree", "shellout.go")
 	require.Contains(t, shellout, `exec.CommandContext(ctx, binPath, args...)`)
-	require.Contains(t, shellout, `cmd.Stdout = &stdout`)
-	require.Contains(t, shellout, `cmd.Stderr = &stderr`)
+	require.Contains(t, shellout, `const shelloutCaptureLimit = bound.MaxBytes + 1`)
+	require.Contains(t, shellout, `stdout := newCappedCapture()`)
+	require.Contains(t, shellout, `stderr := newCappedCapture()`)
+	require.Contains(t, shellout, `cmd.Stdout = stdout`)
+	require.Contains(t, shellout, `cmd.Stderr = stderr`)
 	require.NotContains(t, shellout, "CombinedOutput")
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp")

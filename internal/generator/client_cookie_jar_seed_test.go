@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -52,6 +53,18 @@ func TestCookieAuthClientSeedsJar(t *testing.T) {
 		"CookieCredential must return the env-var session unwrapped")
 	assert.Contains(t, configSrc, "return c.AccessToken",
 		"CookieCredential must fall back to the browser AccessToken unwrapped")
+	cookieCredentialStart := strings.Index(configSrc, "func (c *Config) CookieCredential() string {")
+	if cookieCredentialStart < 0 {
+		t.Fatal("CookieCredential must be emitted")
+	}
+	cookieCredentialSrc := configSrc[cookieCredentialStart:]
+	cookieCredentialEnd := strings.Index(cookieCredentialSrc, "\n}\n")
+	if cookieCredentialEnd < 0 {
+		t.Fatal("CookieCredential must have a complete body")
+	}
+	cookieCredentialSrc = cookieCredentialSrc[:cookieCredentialEnd+3]
+	assert.NotContains(t, cookieCredentialSrc, "ensureAuthScheme(\"Bearer\", c.CookieseedSession)",
+		"cookie auth must not prefix a raw session before placing it in the declared cookie")
 
 	// The seed/parse helpers must be emitted (gated on HasCookies).
 	jarSrc := readGeneratedFile(t, outputDir, "internal", "client", "cookiejar.go")

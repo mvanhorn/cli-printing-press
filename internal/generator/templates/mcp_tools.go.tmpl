@@ -395,16 +395,16 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- if .HasRequiredRoles}}
 		cfg, err := newMCPConfig()
 		if err != nil {
-			return mcplib.NewToolResultError(err.Error()), nil
+			return mcpToolError(err.Error()), nil
 		}
 		if err := cli.RequireRoleWith(nil, cfg, pathTemplate, requiredRole); err != nil {
-			return mcplib.NewToolResultError(err.Error()), nil
+			return mcpToolError(err.Error()), nil
 		}
 		c := newMCPClientFromConfig(cfg)
 {{- else}}
 		c, err := newMCPClient()
 		if err != nil {
-			return mcplib.NewToolResultError(err.Error()), nil
+			return mcpToolError(err.Error()), nil
 		}
 {{- end}}
 	{{- if .HasTierRouting}}
@@ -430,12 +430,12 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			if v, ok := args["cursor"]; ok {
 				s, ok := v.(string)
 				if !ok {
-					return mcplib.NewToolResultError("cursor must be an opaque string returned by a previous MCP response"), nil
+					return mcpToolError("cursor must be an opaque string returned by a previous MCP response"), nil
 				}
 				mcpCursor = s
 				upstreamCursor, err := bound.UpstreamCursor(s)
 				if err != nil {
-					return mcplib.NewToolResultError(err.Error()), nil
+					return mcpToolError(err.Error()), nil
 				}
 				if upstreamCursor != "" {
 					params[pageConfig.CursorParam] = upstreamCursor
@@ -510,7 +510,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- if $hasMCPJSONOrScalar}}
 				bodyValue, err := coerceMCPBodyValue(binding, v)
 				if err != nil {
-					return mcplib.NewToolResultError(err.Error()), nil
+					return mcpToolError(err.Error()), nil
 				}
 {{- end}}
 {{- if $hasNestedBodyPath}}
@@ -553,10 +553,10 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				if s, ok := v.(string); ok && s != "" {
 					var parsed any
 					if err := json.Unmarshal([]byte(s), &parsed); err != nil {
-						return mcplib.NewToolResultError("body_json must be a valid JSON object: " + err.Error()), nil
+						return mcpToolError("body_json must be a valid JSON object: " + err.Error()), nil
 					}
 					if _, isMap := parsed.(map[string]any); !isMap {
-						return mcplib.NewToolResultError(fmt.Sprintf("body_json must be a JSON object, got JSON %T", parsed)), nil
+						return mcpToolError(fmt.Sprintf("body_json must be a JSON object, got JSON %T", parsed)), nil
 					}
 					bodyJSONOverride = json.RawMessage(s)
 				}
@@ -817,7 +817,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 			}
 			data, _, err = c.DeleteWithParams(ctx, path, params)
 		default:
-			return mcplib.NewToolResultError("unsupported method: " + method), nil
+			return mcpToolError("unsupported method: " + method), nil
 		}
 
 		if err != nil {
@@ -827,7 +827,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				return mcplib.NewToolResultText("already exists (no-op)"), nil
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
-				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
+				return mcpToolError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
 {{- if $authSetupHint}}
 					{{printf "%q" (printf "\n      %s" $authSetupHint)}} +
@@ -843,7 +843,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 {{- end}}
 			case strings.Contains(msg, "HTTP 401"):
-				return mcplib.NewToolResultError("authentication failed: " + {{if and .Auth.Type (ne .Auth.Type "none")}}cliutil.SanitizeErrorBody(msg){{else}}msg{{end}} +
+				return mcpToolError("authentication failed: " + {{if and .Auth.Type (ne .Auth.Type "none")}}cliutil.SanitizeErrorBody(msg){{else}}msg{{end}} +
 {{- if eq .Auth.Type "oauth2"}}
 					{{printf "%q" (printf "\nhint: your token may have expired. Re-run '%s-pp-cli auth login' to re-authenticate" .Name)}} +
 {{- else if eq .Auth.Type "api_key"}}
@@ -866,7 +866,7 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 			case strings.Contains(msg, "HTTP 403"):
-				return mcplib.NewToolResultError("permission denied: " + {{if and .Auth.Type (ne .Auth.Type "none")}}cliutil.SanitizeErrorBody(msg){{else}}msg{{end}} +
+				return mcpToolError("permission denied: " + {{if and .Auth.Type (ne .Auth.Type "none")}}cliutil.SanitizeErrorBody(msg){{else}}msg{{end}} +
 {{- if eq .Auth.Type "oauth2"}}
 					{{printf "%q" (printf "\nhint: your token may lack required scopes. Re-run '%s-pp-cli auth login' to re-authorize" .Name)}} +
 {{- else if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
@@ -890,11 +890,11 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				if method == "DELETE" {
 					return mcplib.NewToolResultText("already deleted (no-op)"), nil
 				}
-				return mcplib.NewToolResultError("not found: " + msg), nil
+				return mcpToolError("not found: " + msg), nil
 			case strings.Contains(msg, "HTTP 429"):
-				return mcplib.NewToolResultError("rate limited: " + msg), nil
+				return mcpToolError("rate limited: " + msg), nil
 			default:
-				return mcplib.NewToolResultError(msg), nil
+				return mcpToolError(msg), nil
 			}
 		}
 
@@ -906,10 +906,10 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 				"byte_count":       len(data),
 			})
 			if err != nil {
-				return mcplib.NewToolResultError(fmt.Sprintf("encoding binary result: %v", err)), nil
+				return mcpToolError(fmt.Sprintf("encoding binary result: %v", err)), nil
 			}
 			if len(out) > bound.MaxBytes {
-				return mcplib.NewToolResultError(fmt.Sprintf("binary response is too large for MCP text output: %d response bytes encode to %d base64 bytes and %d MCP result bytes, exceeding the %d byte budget. Use the companion CLI command with --output <file> to save the payload locally.", len(data), len(encoded), len(out), bound.MaxBytes)), nil
+				return mcpToolError(fmt.Sprintf("binary response is too large for MCP text output: %d response bytes encode to %d base64 bytes and %d MCP result bytes, exceeding the %d byte budget. Use the companion CLI command with --output <file> to save the payload locally.", len(data), len(encoded), len(out), bound.MaxBytes)), nil
 			}
 			return mcplib.NewToolResultText(string(out)), nil
 		}
@@ -922,6 +922,12 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 
 func mcpToolResultText(method string, data json.RawMessage) *mcplib.CallToolResult {
 	return mcplib.NewToolResultText(bound.EndpointResponse(method, data))
+}
+
+// mcpToolError keeps provider-controlled typed endpoint errors within the MCP
+// text-result budget just like successful endpoint results.
+func mcpToolError(message string) *mcplib.CallToolResult {
+	return mcplib.NewToolResultError(bound.Text(message))
 }
 
 func mcpToolPageResultText(method string, data json.RawMessage, pageConfig mcpPageConfig, cursor string) *mcplib.CallToolResult {

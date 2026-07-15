@@ -29,6 +29,16 @@ func TestPathsResolverEmitsAndGeneratedCLIBuilds(t *testing.T) {
 	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
 	require.Contains(t, rootSrc, `StringVar(&flags.homePath, "home"`)
 	require.Contains(t, rootSrc, "cliutil.SetHomeOverride(flags.homePath)")
+	require.Contains(t, rootSrc, "var novelCommandHooks []func(root *cobra.Command, flags *rootFlags)")
+	require.Contains(t, rootSrc, "func registerNovelCommand(hook func(root *cobra.Command, flags *rootFlags))")
+	require.Contains(t, rootSrc, "novelCommandHooks = append(novelCommandHooks, hook)")
+	require.Contains(t, rootSrc, "for _, hook := range novelCommandHooks {")
+	require.Contains(t, rootSrc, "hook(rootCmd, flags)")
+	require.Contains(t, rootSrc, "var clientHooks []func(*client.Client) error")
+	require.Contains(t, rootSrc, "func registerClientHook(hook func(*client.Client) error)")
+	require.Contains(t, rootSrc, "clientHooks = append(clientHooks, hook)")
+	require.Contains(t, rootSrc, "for _, hook := range clientHooks {")
+	require.Contains(t, rootSrc, "if err := hook(c); err != nil {")
 
 	requireGeneratedCompiles(t, outputDir)
 }

@@ -4,7 +4,6 @@
 package cobratree
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -17,34 +16,65 @@ import (
 	"{{modulePath}}/internal/mcp/bound"
 )
 
+func boundedToolResultError(message string) *mcplib.CallToolResult {
+	return mcplib.NewToolResultError(bound.Text(message))
+}
+
+const shelloutCaptureLimit = bound.MaxBytes + 1
+
+// cappedCapture drains a child-process stream while retaining enough bytes for
+// bound.Text to render an oversized result as a truncated preview.
+type cappedCapture struct {
+	data []byte
+}
+
+func newCappedCapture() *cappedCapture {
+	return &cappedCapture{data: make([]byte, 0, shelloutCaptureLimit)}
+}
+
+func (c *cappedCapture) Write(p []byte) (int, error) {
+	remaining := shelloutCaptureLimit - len(c.data)
+	if remaining > 0 {
+		if remaining > len(p) {
+			remaining = len(p)
+		}
+		c.data = append(c.data, p[:remaining]...)
+	}
+	return len(p), nil
+}
+
+func (c *cappedCapture) String() string {
+	return string(c.data)
+}
+
 func shellOutToCLI(cliPath func() (string, error), commandPath []string, blockedStructuredArgs map[string]bool, allowedStructuredArgs map[string]bool, positionals []positionalArg, readOnly bool, positionalWriteSinks map[int]bool) server.ToolHandlerFunc {
 	lookupPath, lookupErr := cliPath()
 	prefixArgs := append([]string{}, commandPath...)
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		if lookupErr != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("companion CLI binary not found: %v\nTried sibling lookup, {{envPrefix .Name}}_CLI_PATH env var, and PATH.", lookupErr)), nil
+			return boundedToolResultError(fmt.Sprintf("companion CLI binary not found: %v\nTried sibling lookup, {{envPrefix .Name}}_CLI_PATH env var, and PATH.", lookupErr)), nil
 		}
 		args := req.GetArguments()
 		if err := validateMCPArgumentNames(args, allowedStructuredArgs); err != nil {
-			return mcplib.NewToolResultError(err.Error()), nil
+			return boundedToolResultError(err.Error()), nil
 		}
 		finalArgs := append([]string{}, prefixArgs...)
 		finalArgs = append(finalArgs, cliArgsFromMCP(args, blockedStructuredArgs)...)
 		positionalArgs, err := positionalArgsFromMCP(args, positionals, readOnly, positionalWriteSinks)
 		if err != nil {
-			return mcplib.NewToolResultError(err.Error()), nil
+			return boundedToolResultError(err.Error()), nil
 		}
 		finalArgs = append(finalArgs, positionalArgs...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
 			rawPositionals := positionalArgsFromRawArgsField(raw, positionals, len(positionalArgs))
 			if err := validatePositionalArgsForMCPAtOffset(rawPositionals, readOnly, positionalWriteSinks, len(positionalArgs)); err != nil {
-				return mcplib.NewToolResultError(err.Error()), nil
+				return boundedToolResultError(err.Error()), nil
 			}
 			finalArgs = append(finalArgs, rawPositionals...)
 		}
 		out, err := RunCLICommand(ctx, lookupPath, finalArgs)
 		if err != nil {
-			return mcplib.NewToolResultError(err.Error()), nil
+			return boundedToolResultError(err.Error()), nil
 		}
 		return mcplib.NewToolResultText(bound.Text(out)), nil
 	}
@@ -261,22 +291,26 @@ func SplitShellArgs(s string) []string {
 // telemetry or quota output cannot corrupt JSON results.
 func RunCLICommand(ctx context.Context, binPath string, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, binPath, args...) // #nosec G204 -- trusted companion CLI path, args pre-tokenized.
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	stdout := newCappedCapture()
+	stderr := newCappedCapture()
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	stdoutText := stdout.String()
+	if err != nil {
+		stderrText := strings.TrimSpace(stderr.String())
+		msg := stderrText
 		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
+			msg = strings.TrimSpace(stdoutText)
 		}
 		if msg != "" {
 			label := "stderr"
-			if strings.TrimSpace(stderr.String()) == "" {
+			if stderrText == "" {
 				label = "output"
 			}
-			return stdout.String(), fmt.Errorf("cli %s: %w (%s: %s)", binPath, err, label, msg)
+			return stdoutText, fmt.Errorf("cli %s: %w (%s: %s)", binPath, err, label, bound.Text(msg))
 		}
-		return stdout.String(), fmt.Errorf("cli %s: %w", binPath, err)
+		return stdoutText, fmt.Errorf("cli %s: %w", binPath, err)
 	}
-	return stdout.String(), nil
+	return stdoutText, nil
 }

@@ -659,6 +659,37 @@ func TestMCPToolResultTextBoundsOversizedNonGETResponses(t *testing.T) {
 	}
 }
 
+func TestMCPToolErrorBoundsEndpointErrors(t *testing.T) {
+	message := "provider returned HTTP 500: " + strings.Repeat("z", bound.MaxBytes+10000)
+	result := mcpToolError(message)
+	if !result.IsError {
+		t.Fatal("mcpToolError must mark the result as an error")
+	}
+
+	text := mcpTextContent(t, result)
+	if len(text) > bound.MaxBytes {
+		t.Fatalf("bounded endpoint error length = %d, want <= %d", len(text), bound.MaxBytes)
+	}
+
+	var envelope struct {
+		Truncated     bool   `json:"truncated"`
+		OriginalBytes int    `json:"original_bytes"`
+		Preview       string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(text), &envelope); err != nil {
+		t.Fatalf("bounded endpoint error must remain JSON: %v\\n%s", err, text)
+	}
+	if !envelope.Truncated {
+		t.Fatalf("bounded endpoint error did not mark truncation: %s", text)
+	}
+	if envelope.OriginalBytes != len(message) {
+		t.Fatalf("original_bytes = %d, want %d", envelope.OriginalBytes, len(message))
+	}
+	if envelope.Preview == "" {
+		t.Fatal("bounded endpoint error should include a preview")
+	}
+}
+
 func mcpTextContent(t *testing.T, result *mcplib.CallToolResult) string {
 	t.Helper()
 	if result == nil {
