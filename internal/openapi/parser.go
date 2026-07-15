@@ -3675,7 +3675,9 @@ func operationServerBaseURL(specBaseURL string, pathItem *openapi3.PathItem, op 
 		return ""
 	}
 	baseURL, basePath := resolveServerURL(servers[0])
-	baseURL += basePath
+	if baseURL != "" {
+		baseURL += basePath
+	}
 	if baseURL == "" || baseURL == strings.TrimRight(specBaseURL, "/") {
 		return ""
 	}
@@ -3852,11 +3854,11 @@ func protocolRelativeServerHost(raw string) (string, bool) {
 	if !strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "///") {
 		return "", false
 	}
-	host := strings.TrimPrefix(raw, "//")
-	if i := strings.IndexByte(host, '/'); i >= 0 {
-		host = host[:i]
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return "", false
 	}
-	return host, host != ""
+	return parsed.Host, true
 }
 
 func resolveProtocolRelativeServerURL(raw string) (baseURL, basePath string, ok bool) {
@@ -3864,7 +3866,11 @@ func resolveProtocolRelativeServerURL(raw string) (baseURL, basePath string, ok 
 	if !ok {
 		return "", "", false
 	}
-	path := strings.TrimPrefix(strings.TrimSpace(raw), "//"+host)
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", "", false
+	}
+	path := parsed.EscapedPath()
 	return "https://" + host, strings.TrimRight(path, "/"), true
 }
 

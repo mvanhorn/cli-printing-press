@@ -10592,7 +10592,7 @@ func TestParseProtocolRelativeServer(t *testing.T) {
 
 	parse := func(t *testing.T, servers string) *spec.APISpec {
 		t.Helper()
-		parsed, err := Parse([]byte(fmt.Sprintf(`openapi: "3.0.3"
+		parsed, err := Parse(fmt.Appendf(nil, `openapi: "3.0.3"
 info:
   title: Protocol Relative Server Test
   version: "1.0"
@@ -10604,7 +10604,7 @@ paths:
       operationId: getResource
       responses:
         '200': {description: OK}
-`, servers)))
+`, servers))
 		require.NoError(t, err)
 		return parsed
 	}
@@ -10659,6 +10659,22 @@ func TestProtocolRelativeRequestBaseURL(t *testing.T) {
 		assert.Empty(t, parsed.BasePath)
 	})
 
+	t.Run("keeps query outside host and before resource paths", func(t *testing.T) {
+		parsed := parse(t, `  - url: //api.real.com?version=2`)
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+		assert.Empty(t, parsed.BasePath)
+		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
+		assert.Equal(t, "/resource", endpoint.Path)
+	})
+
+	t.Run("keeps fragment outside host and before resource paths", func(t *testing.T) {
+		parsed := parse(t, `  - url: //api.real.com#metadata`)
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+		assert.Empty(t, parsed.BasePath)
+		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
+		assert.Equal(t, "/resource", endpoint.Path)
+	})
+
 	t.Run("preserves path for an operation-level server", func(t *testing.T) {
 		parsedWithOperationServer, err := Parse([]byte(`openapi: "3.0.3"
 info: {title: Operation Server Test, version: "1.0"}
@@ -10676,6 +10692,27 @@ paths:
 		require.NoError(t, err)
 		endpoint := findParsedEndpointByPath(t, parsedWithOperationServer, "GET", "/resource")
 		assert.Equal(t, "https://other.real.com/api/v2", endpoint.BaseURL)
+	})
+
+	t.Run("keeps relative operation server on configured origin", func(t *testing.T) {
+		parsed, err := Parse([]byte(`openapi: "3.0.3"
+info: {title: Relative Operation Server Test, version: "1.0"}
+servers:
+  - url: https://api.real.com
+paths:
+  /resource:
+    get:
+      operationId: getResource
+      servers:
+        - url: /api/v2
+      responses:
+        '200': {description: OK}
+`))
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
+		assert.Empty(t, endpoint.BaseURL)
+		assert.Equal(t, "/resource", endpoint.Path)
 	})
 
 	t.Run("preserves path for operation-only fallback", func(t *testing.T) {
