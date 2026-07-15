@@ -10587,6 +10587,173 @@ paths:
 	})
 }
 
+func TestParseProtocolRelativeServer(t *testing.T) {
+	t.Parallel()
+
+	parse := func(t *testing.T, servers string) *spec.APISpec {
+		t.Helper()
+		parsed, err := Parse(fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: Protocol Relative Server Test
+  version: "1.0"
+servers:
+%s
+paths:
+  /resource:
+    get:
+      operationId: getResource
+      responses:
+        '200': {description: OK}
+`, servers))
+		require.NoError(t, err)
+		return parsed
+	}
+
+	t.Run("defaults scheme and separates host from path", func(t *testing.T) {
+		parsed := parse(t, `  - url: //api.real.com/api/v2`)
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+		assert.Equal(t, "/api/v2", parsed.BasePath)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+		require.NoError(t, generator.New(parsed, outputDir).Generate())
+
+		configData, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+		require.NoError(t, err)
+		assert.Contains(t, string(configData), `BaseURL:  "https://api.real.com"`)
+		assert.Contains(t, string(configData), `BasePath: "/api/v2"`)
+
+		clientData, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+		require.NoError(t, err)
+		assert.Contains(t, string(clientData), "return c.BaseURL + c.BasePath")
+		runtimeTest := `package client
+
+import (
+	"testing"
+	"time"
+
+	"protocol-relative-server-pp-cli/internal/config"
+)
+
+func TestProtocolRelativeRequestBaseURL(t *testing.T) {
+	c := New(&config.Config{BaseURL: "https://api.real.com", BasePath: "/api/v2"}, time.Second, 0)
+	if got := c.RequestBaseURL(); got != "https://api.real.com/api/v2" {
+		t.Fatalf("RequestBaseURL() = %q", got)
+	}
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "client", "protocol_relative_test.go"), []byte(runtimeTest), 0o600))
+		runGo(t, outputDir, "mod", "tidy")
+		runGo(t, outputDir, "test", "./internal/client")
+	})
+
+	t.Run("prefers an absolute sibling for the same host", func(t *testing.T) {
+		parsed := parse(t, `  - url: //api.real.com/api/v2
+  - url: http://api.real.com/api/v3`)
+		assert.Equal(t, "http://api.real.com/api/v3", parsed.BaseURL)
+		assert.Empty(t, parsed.BasePath)
+	})
+
+	t.Run("leaves an absolute server unchanged", func(t *testing.T) {
+		parsed := parse(t, `  - url: https://api.real.com/api/v2`)
+		assert.Equal(t, "https://api.real.com/api/v2", parsed.BaseURL)
+		assert.Empty(t, parsed.BasePath)
+	})
+
+	t.Run("keeps query outside host and before resource paths", func(t *testing.T) {
+		parsed := parse(t, `  - url: //api.real.com?version=2`)
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+		assert.Empty(t, parsed.BasePath)
+		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
+		assert.Equal(t, "/resource", endpoint.Path)
+	})
+
+	t.Run("keeps fragment outside host and before resource paths", func(t *testing.T) {
+		parsed := parse(t, `  - url: //api.real.com#metadata`)
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+		assert.Empty(t, parsed.BasePath)
+		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
+		assert.Equal(t, "/resource", endpoint.Path)
+	})
+
+	t.Run("preserves path for an operation-level server", func(t *testing.T) {
+		parsedWithOperationServer, err := Parse([]byte(`openapi: "3.0.3"
+info: {title: Operation Server Test, version: "1.0"}
+servers:
+  - url: https://api.real.com
+paths:
+  /resource:
+    get:
+      operationId: getResource
+      servers:
+        - url: //other.real.com/api/v2
+      responses:
+        '200': {description: OK}
+`))
+		require.NoError(t, err)
+		endpoint := findParsedEndpointByPath(t, parsedWithOperationServer, "GET", "/resource")
+		assert.Equal(t, "https://other.real.com/api/v2", endpoint.BaseURL)
+	})
+
+	t.Run("keeps relative operation server on configured origin", func(t *testing.T) {
+		parsed, err := Parse([]byte(`openapi: "3.0.3"
+info: {title: Relative Operation Server Test, version: "1.0"}
+servers:
+  - url: https://api.real.com
+paths:
+  /resource:
+    get:
+      operationId: getResource
+      servers:
+        - url: /api/v2
+      responses:
+        '200': {description: OK}
+`))
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
+		assert.Equal(t, "https://api.real.com/api/v2", endpoint.BaseURL)
+		assert.Equal(t, "/resource", endpoint.Path)
+	})
+
+	t.Run("relative operation server replaces configured base path", func(t *testing.T) {
+		parsed, err := Parse([]byte(`openapi: "3.0.3"
+info: {title: Relative Operation Replacement Test, version: "1.0"}
+servers:
+  - url: https://api.real.com/api/v1
+paths:
+  /resource:
+    get:
+      operationId: getResource
+      servers:
+        - url: /api/v2
+      responses:
+        '200': {description: OK}
+`))
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.real.com/api/v1", parsed.BaseURL)
+		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
+		assert.Equal(t, "https://api.real.com/api/v2", endpoint.BaseURL)
+		assert.Equal(t, "/resource", endpoint.Path)
+	})
+
+	t.Run("preserves path for operation-only fallback", func(t *testing.T) {
+		parsed, err := Parse([]byte(`openapi: "3.0.3"
+info: {title: Operation Only Server Test, version: "1.0"}
+paths:
+  /resource:
+    get:
+      operationId: getResource
+      servers:
+        - url: //api.real.com/api/v2
+      responses:
+        '200': {description: OK}
+`))
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+		assert.Equal(t, "/api/v2", parsed.BasePath)
+	})
+}
+
 // TestAuthCompanionFromOpenAPI exercises the x-auth-companion extension at
 // both scheme level and info level, including the scheme-wins precedence
 // when both are set.
