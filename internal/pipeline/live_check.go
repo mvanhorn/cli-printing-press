@@ -371,6 +371,11 @@ func replaceLiveCheckBinary(src, dst string) error {
 	if runtime.GOOS != "windows" {
 		return os.Rename(src, dst)
 	}
+	if _, err := os.Stat(dst); os.IsNotExist(err) {
+		return os.Rename(src, dst)
+	} else if err != nil {
+		return err
+	}
 
 	backup, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".old-*")
 	if err != nil {
@@ -460,7 +465,8 @@ func newestLiveCheckSourceUnder(root string) (time.Time, bool, error) {
 			}
 			return nil
 		}
-		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+		isModuleInput := filepath.Dir(path) == root && (entry.Name() == "go.mod" || entry.Name() == "go.sum")
+		if !isModuleInput && (filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go")) {
 			return nil
 		}
 		info, err := entry.Info()

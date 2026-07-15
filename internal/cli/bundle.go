@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -267,15 +266,5 @@ func resolvePlatform(s string) (string, string, error) {
 // retaining the size-oriented ldflags Claude Desktop examples use. Users can
 // --skip-build and pass their own binary.
 func buildMCPBBinary(cliDir, mcpName, outputPath, goos, goarch string) error {
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-		return fmt.Errorf("creating bin dir: %w", err)
-	}
-	pkg := "./cmd/" + mcpName
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w -buildid=", "-o", outputPath, pkg)
-	cmd.Dir = cliDir
-	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("go build %s: %w\n%s", pkg, err, string(out))
-	}
-	return nil
+	return pipeline.BuildMCPBBinary(cliDir, mcpName, outputPath, goos, goarch)
 }
