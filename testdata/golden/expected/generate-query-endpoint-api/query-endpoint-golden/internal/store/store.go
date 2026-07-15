@@ -138,6 +138,8 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return nil, fmt.Errorf("creating db directory: %w", err)
 	}
+	hardenSQLiteFiles(dbPath)
+	defer hardenSQLiteFiles(dbPath)
 
 	// Pragma order is load-bearing: busy_timeout must engage BEFORE
 	// journal_mode(WAL) so the delete→WAL conversion (an exclusive
@@ -170,6 +172,14 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	}
 
 	return s, nil
+}
+
+// hardenSQLiteFiles is best-effort so stores on filesystems without Unix modes
+// remain usable. The deferred call catches files the SQLite driver creates.
+func hardenSQLiteFiles(dbPath string) {
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		_ = os.Chmod(path, 0o600)
+	}
 }
 
 func ensureSQLiteDriverInitialized(ctx context.Context, dsn string) error {

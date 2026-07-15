@@ -61,6 +61,9 @@ func TestGeneratedFleetHardening(t *testing.T) {
 	require.Contains(t, deliverGo, "os.MkdirAll(dir, 0o700)",
 		"the agent-deliver dir must be created mode 0700 (gosec G301)")
 	require.NotContains(t, deliverGo, "os.MkdirAll(dir, 0o755)")
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^TestOpen(HardensSQLiteFilePermissions|WithRelativePathDoesNotChmodWorkingDirectory)$")
 }
 
 // TestNoWorldReadableMkdirAllInTemplates is the fleet-wide regression guard for
@@ -101,7 +104,7 @@ func generateForHardeningTest(t *testing.T, apiSpec *spec.APISpec) string {
 	t.Helper()
 	outputDir := strings.TrimSuffix(t.TempDir(), "/") + "/" + naming.CLI(apiSpec.Name)
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	gen.profile = &profiler.APIProfile{
 		SyncableResources: []profiler.SyncableResource{
 			{Name: "widgets", Path: "/widgets", Method: "GET"},
