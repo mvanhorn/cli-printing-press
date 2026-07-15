@@ -3,13 +3,16 @@ package pipeline
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 // BundleParams describes one MCPB bundle build. CLIDir must contain a
@@ -212,4 +215,22 @@ func DefaultBundleOutputPath(cliDir, mcpBinary, goos, goarch string) string {
 // to construct the path themselves.
 func StagedMCPBinaryPath(cliDir, mcpBinary string) string {
 	return filepath.Join(cliDir, "build", "stage", "bin", mcpBinary)
+}
+
+// BuildMCPBBinary centralizes build flags so direct bundle builds and promote
+// refreshes produce interchangeable staged binaries.
+func BuildMCPBBinary(cliDir, name, outputPath, goos, goarch string) error {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return fmt.Errorf("creating bin dir: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pkg := "./cmd/" + name
+	cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags=-s -w -buildid=", "-o", outputPath, pkg)
+	cmd.Dir = cliDir
+	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("go build %s: %w\n%s", pkg, err, string(out))
+	}
+	return nil
 }

@@ -4642,7 +4642,7 @@ The override is forbidden unless the fresh tree contains the novels:
 "$PRINTING_PRESS_BIN" lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
 ```
 
-The `promote` command handles the full sequence: stages the working directory, atomically swaps it into `$PRESS_LIBRARY/<api>` (slug-keyed), writes the `.printing-press.json` manifest, updates the `CurrentRunPointer`, and releases the lock — all in one step. The `--cli` flag accepts the CLI binary name; the Go code translates to the slug-keyed library path internally.
+The `promote` command handles the full sequence: refreshes stale host CLI/MCP binaries and their `.mcpb` bundle, stages the working directory, atomically swaps it into `$PRESS_LIBRARY/<api>` (slug-keyed), writes the `.printing-press.json` manifest, updates the `CurrentRunPointer`, and releases the lock — all in one step. When sources and bundle contents are unchanged, the refresh is a no-op. The `--cli` flag accepts the CLI binary name; the Go code translates to the slug-keyed library path internally.
 
 **Path B — reprint over a library with hand-authored content that the fresh tree did not fully rebuild (`-d "$LIB_TARGET"` AND `NOVEL_COUNT > 0` AND the guarded Path A override did not pass).** Use `regen-merge` to fold the fresh tree into the live library before promotion. `regen-merge` classifies every Go file under `internal/` and `cmd/` against the fresh tree, overwrites safely-templated files, re-injects `AddCommand` calls in `root.go` and resource-parents that the fresh tree lacks, and leaves files with hand-edited additions (`TEMPLATED-WITH-ADDITIONS`) untouched for human review. `--apply` writes via stage-and-swap-with-recovery, so partial failure can never lose data.
 

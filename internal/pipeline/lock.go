@@ -234,6 +234,9 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	if err := validatePIIGateForPromote(workingDir, state); err != nil {
 		return err
 	}
+	if _, err := refreshPromoteArtifacts(workingDir, cliName); err != nil {
+		return fmt.Errorf("refreshing staged artifacts: %w", err)
+	}
 
 	slug := naming.TrimCLISuffix(cliName)
 	libraryDir := filepath.Join(PublishedLibraryRoot(), slug)
@@ -296,6 +299,10 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	if err := WriteMCPBManifest(stagingDir); err != nil {
 		_ = os.RemoveAll(stagingDir)
 		return fmt.Errorf("writing MCPB manifest to staging: %w", err)
+	}
+	if _, err := syncPromoteBundle(stagingDir, cliName); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return fmt.Errorf("syncing MCPB bundle in staging: %w", err)
 	}
 
 	// Remove any stale backup from a prior successful swap before we create a
