@@ -23,6 +23,20 @@ func CleanText(s string) string {
 	return html.UnescapeString(strings.TrimSpace(s))
 }
 
+// ScrubTerminal removes control characters that can alter terminal behavior
+// while preserving tabs and newlines used by human-readable layouts.
+func ScrubTerminal(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' {
+			return r
+		}
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // ParseStoredTime parses timestamps read back from SQLite-backed generated
 // stores. modernc.org/sqlite can serialize time.Time using Go's native
 // time.String format, while hand-written sync code often stores RFC3339.
