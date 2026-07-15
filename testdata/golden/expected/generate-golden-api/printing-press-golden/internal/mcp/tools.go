@@ -391,31 +391,63 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 		case "PUT":
 			if multipart {
 				if len(headers) > 0 {
+					if readOnly {
+						data, _, err = c.PutQueryMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
+						break
+					}
 					data, _, err = c.PutMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
+					break
+				}
+				if readOnly {
+					data, _, err = c.PutQueryMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 					break
 				}
 				data, _, err = c.PutMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 				break
 			}
 			if len(headers) > 0 {
-				data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				if readOnly {
+					data, _, err = c.PutQueryWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				} else {
+					data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				}
 				break
 			}
-			data, _, err = c.PutWithParams(ctx, path, params, bodyArgs)
+			if readOnly {
+				data, _, err = c.PutQueryWithParams(ctx, path, params, bodyArgs)
+			} else {
+				data, _, err = c.PutWithParams(ctx, path, params, bodyArgs)
+			}
 		case "PATCH":
 			if multipart {
 				if len(headers) > 0 {
+					if readOnly {
+						data, _, err = c.PatchQueryMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
+						break
+					}
 					data, _, err = c.PatchMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
+					break
+				}
+				if readOnly {
+					data, _, err = c.PatchQueryMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 					break
 				}
 				data, _, err = c.PatchMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 				break
 			}
 			if len(headers) > 0 {
-				data, _, err = c.PatchWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				if readOnly {
+					data, _, err = c.PatchQueryWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				} else {
+					data, _, err = c.PatchWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				}
 				break
 			}
-			data, _, err = c.PatchWithParams(ctx, path, params, bodyArgs)
+			if readOnly {
+				data, _, err = c.PatchQueryWithParams(ctx, path, params, bodyArgs)
+			} else {
+				data, _, err = c.PatchWithParams(ctx, path, params, bodyArgs)
+			}
 		case "DELETE":
 			if len(headers) > 0 {
 				data, _, err = c.DeleteWithParamsAndHeaders(ctx, path, params, headers)

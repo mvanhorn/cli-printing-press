@@ -460,6 +460,14 @@ func (c *Client) PutWithHeaders(ctx context.Context, path string, body any, head
 func (c *Client) PutWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PUT", path, params, body, headers)
 }
+
+func (c *Client) PutQueryWithParams(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, body, nil)
+}
+
+func (c *Client) PutQueryWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, body, headers)
+}
 func (c *Client) PutMultipart(ctx context.Context, path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
@@ -474,6 +482,14 @@ func (c *Client) PutMultipartWithHeaders(ctx context.Context, path string, field
 
 func (c *Client) PutMultipartWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+func (c *Client) PutQueryMultipartWithParams(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PutQueryMultipartWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 func (c *Client) Patch(ctx context.Context, path string, body any) (json.RawMessage, int, error) {
@@ -491,6 +507,14 @@ func (c *Client) PatchWithHeaders(ctx context.Context, path string, body any, he
 func (c *Client) PatchWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, params, body, headers)
 }
+
+func (c *Client) PatchQueryWithParams(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchQueryWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, body, headers)
+}
 func (c *Client) PatchMultipart(ctx context.Context, path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
@@ -505,6 +529,14 @@ func (c *Client) PatchMultipartWithHeaders(ctx context.Context, path string, fie
 
 func (c *Client) PatchMultipartWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+func (c *Client) PatchQueryMultipartWithParams(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PatchQueryMultipartWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 type multipartRequestBody struct {

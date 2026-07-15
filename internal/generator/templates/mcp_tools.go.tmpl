@@ -678,7 +678,15 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- if $hasMultipartRequest}}
 			if multipart {
 				if len(headers) > 0 {
+					if readOnly {
+						data, _, err = c.PutQueryMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
+						break
+					}
 					data, _, err = c.PutMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
+					break
+				}
+				if readOnly {
+					data, _, err = c.PutQueryMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 					break
 				}
 				data, _, err = c.PutMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
@@ -688,7 +696,15 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- if $hasFormRequest}}
 			if formEncoded {
 				if len(headers) > 0 {
+					if readOnly {
+						data, _, err = c.PutQueryFormWithParamsAndHeaders(ctx, path, params, formFields, headers)
+						break
+					}
 					data, _, err = c.PutFormWithParamsAndHeaders(ctx, path, params, formFields, headers)
+					break
+				}
+				if readOnly {
+					data, _, err = c.PutQueryFormWithParams(ctx, path, params, formFields)
 					break
 				}
 				data, _, err = c.PutFormWithParams(ctx, path, params, formFields)
@@ -698,23 +714,47 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- if $hasBodyJSONFallback}}
 			if len(bodyJSONOverride) > 0 {
 				if len(headers) > 0 {
-					data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyJSONOverride, headers)
+					if readOnly {
+						data, _, err = c.PutQueryWithParamsAndHeaders(ctx, path, params, bodyJSONOverride, headers)
+					} else {
+						data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyJSONOverride, headers)
+					}
 					break
 				}
-				data, _, err = c.PutWithParams(ctx, path, params, bodyJSONOverride)
+				if readOnly {
+					data, _, err = c.PutQueryWithParams(ctx, path, params, bodyJSONOverride)
+				} else {
+					data, _, err = c.PutWithParams(ctx, path, params, bodyJSONOverride)
+				}
 				break
 			}
 {{- end}}
 			if len(headers) > 0 {
-				data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				if readOnly {
+					data, _, err = c.PutQueryWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				} else {
+					data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				}
 				break
 			}
-			data, _, err = c.PutWithParams(ctx, path, params, bodyArgs)
+			if readOnly {
+				data, _, err = c.PutQueryWithParams(ctx, path, params, bodyArgs)
+			} else {
+				data, _, err = c.PutWithParams(ctx, path, params, bodyArgs)
+			}
 		case "PATCH":
 {{- if $hasMultipartRequest}}
 			if multipart {
 				if len(headers) > 0 {
+					if readOnly {
+						data, _, err = c.PatchQueryMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
+						break
+					}
 					data, _, err = c.PatchMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
+					break
+				}
+				if readOnly {
+					data, _, err = c.PatchQueryMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 					break
 				}
 				data, _, err = c.PatchMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
@@ -724,7 +764,15 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- if $hasFormRequest}}
 			if formEncoded {
 				if len(headers) > 0 {
+					if readOnly {
+						data, _, err = c.PatchQueryFormWithParamsAndHeaders(ctx, path, params, formFields, headers)
+						break
+					}
 					data, _, err = c.PatchFormWithParamsAndHeaders(ctx, path, params, formFields, headers)
+					break
+				}
+				if readOnly {
+					data, _, err = c.PatchQueryFormWithParams(ctx, path, params, formFields)
 					break
 				}
 				data, _, err = c.PatchFormWithParams(ctx, path, params, formFields)
@@ -734,18 +782,34 @@ func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse b
 {{- if $hasBodyJSONFallback}}
 			if len(bodyJSONOverride) > 0 {
 				if len(headers) > 0 {
-					data, _, err = c.PatchWithParamsAndHeaders(ctx, path, params, bodyJSONOverride, headers)
+					if readOnly {
+						data, _, err = c.PatchQueryWithParamsAndHeaders(ctx, path, params, bodyJSONOverride, headers)
+					} else {
+						data, _, err = c.PatchWithParamsAndHeaders(ctx, path, params, bodyJSONOverride, headers)
+					}
 					break
 				}
-				data, _, err = c.PatchWithParams(ctx, path, params, bodyJSONOverride)
+				if readOnly {
+					data, _, err = c.PatchQueryWithParams(ctx, path, params, bodyJSONOverride)
+				} else {
+					data, _, err = c.PatchWithParams(ctx, path, params, bodyJSONOverride)
+				}
 				break
 			}
 {{- end}}
 			if len(headers) > 0 {
-				data, _, err = c.PatchWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				if readOnly {
+					data, _, err = c.PatchQueryWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				} else {
+					data, _, err = c.PatchWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				}
 				break
 			}
-			data, _, err = c.PatchWithParams(ctx, path, params, bodyArgs)
+			if readOnly {
+				data, _, err = c.PatchQueryWithParams(ctx, path, params, bodyArgs)
+			} else {
+				data, _, err = c.PatchWithParams(ctx, path, params, bodyArgs)
+			}
 		case "DELETE":
 			if len(headers) > 0 {
 				data, _, err = c.DeleteWithParamsAndHeaders(ctx, path, params, headers)

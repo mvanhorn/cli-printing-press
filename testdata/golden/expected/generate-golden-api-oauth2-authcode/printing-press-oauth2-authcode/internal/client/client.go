@@ -445,6 +445,14 @@ func (c *Client) PutWithParamsAndHeaders(ctx context.Context, path string, param
 	return c.do(ctx, "PUT", path, params, body, headers)
 }
 
+func (c *Client) PutQueryWithParams(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, body, nil)
+}
+
+func (c *Client) PutQueryWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, body, headers)
+}
+
 func (c *Client) Patch(ctx context.Context, path string, body any) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, nil, body, nil)
 }
@@ -459,6 +467,14 @@ func (c *Client) PatchWithHeaders(ctx context.Context, path string, body any, he
 
 func (c *Client) PatchWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, params, body, headers)
+}
+
+func (c *Client) PatchQueryWithParams(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchQueryWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, body, headers)
 }
 
 // isMutatingVerb reports whether the HTTP method writes server state.
