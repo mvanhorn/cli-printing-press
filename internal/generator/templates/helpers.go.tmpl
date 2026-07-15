@@ -483,6 +483,18 @@ func boundCtx(parent context.Context, flags *rootFlags) (context.Context, contex
 	return context.WithTimeout(parent, flags.timeout)
 }
 
+// hasChangedLocalFlags checks Flag.Changed because Cobra's derived local flag
+// set does not populate the internal bookkeeping used by FlagSet.NFlag.
+func hasChangedLocalFlags(cmd *cobra.Command) bool {
+	changed := false
+	cmd.LocalNonPersistentFlags().VisitAll(func(flag *pflag.Flag) {
+		if flag.Changed {
+			changed = true
+		}
+	})
+	return changed
+}
+
 // parentNoSubcommandRunE returns a RunE that handles parents invoked without a
 // subcommand. A leftover positional means the user typed a token where a
 // subcommand was expected (a typo, an underscore instead of a hyphen, or a

@@ -7588,7 +7588,7 @@ func TestPipedJsonGateRespectsExplicitFormatFlags(t *testing.T) {
 func TestRequiredFlagCommands_HelpFallbackOnEmptyInvocation(t *testing.T) {
 	t.Parallel()
 
-	guard := "if cmd.Flags().NFlag() == 0 && len(args) == 0 && !flags.dryRun {"
+	guard := "if !hasChangedLocalFlags(cmd) && len(args) == 0 && !flags.dryRun {"
 
 	for _, path := range []string{
 		filepath.Join("templates", "command_endpoint.go.tmpl"),
@@ -7658,7 +7658,7 @@ func TestRequiredFlagCommands_HelpFallbackGatedToRequiredInput(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	guard := "if cmd.Flags().NFlag() == 0 && len(args) == 0 && !flags.dryRun {"
+	guard := "if !hasChangedLocalFlags(cmd) && len(args) == 0 && !flags.dryRun {"
 
 	listBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_list.go"))
 	require.NoError(t, err)

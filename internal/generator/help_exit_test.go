@@ -19,6 +19,14 @@ func TestGeneratedNestedHelpExitsZeroAndUsageErrorsExitTwo(t *testing.T) {
 		Description: "Manage items",
 		Endpoints: map[string]spec.Endpoint{
 			"list": {Method: "GET", Path: "/items", Description: "List items"},
+			"find": {
+				Method:      "GET",
+				Path:        "/items/find",
+				Description: "Find an item",
+				Params: []spec.Param{
+					{Name: "query", Type: "string", Required: true},
+				},
+			},
 			"compare": {
 				Method:      "GET",
 				Path:        "/items/{left_id}/compare/{right_id}",
@@ -26,6 +34,19 @@ func TestGeneratedNestedHelpExitsZeroAndUsageErrorsExitTwo(t *testing.T) {
 				Params: []spec.Param{
 					{Name: "left_id", Type: "string", Required: true, Positional: true, PathParam: true},
 					{Name: "right_id", Type: "string", Required: true, Positional: true, PathParam: true},
+				},
+			},
+		},
+	}
+	apiSpec.Resources["subscribe"] = spec.Resource{
+		Description: "Manage subscriptions",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/subscribe",
+				Description: "Create a subscription",
+				Body: []spec.Param{
+					{Name: "email", Type: "string", Required: true},
 				},
 			},
 		},
@@ -56,6 +77,16 @@ func TestGeneratedNestedHelpExitsZeroAndUsageErrorsExitTwo(t *testing.T) {
 	require.Contains(t, humanMissing, "missing required argument")
 	jsonMissing := assertExitCode(t, 2, binPath, "items", "compare", "--json")
 	require.Contains(t, jsonMissing, `"missing required argument"`)
+
+	for _, args := range [][]string{
+		{"items", "find", "--json"},
+		{"items", "find", "--agent"},
+		{"subscribe", "--json"},
+		{"subscribe", "--agent"},
+	} {
+		missingInput := assertExitCode(t, 2, binPath, args...)
+		require.Contains(t, missingInput, `"requires input"`, "args %v output:\n%s", args, missingInput)
+	}
 
 	// An unknown/misspelled subcommand on a parent group is a usage error in
 	// every output mode. Before the fix human mode fell through to exit-0 help
