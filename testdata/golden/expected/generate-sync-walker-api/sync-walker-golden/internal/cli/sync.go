@@ -281,6 +281,7 @@ Resource scoping:
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
 					}
+					totalSynced += res.Count
 					warnCount++
 				} else {
 					if humanFriendly {
@@ -313,6 +314,7 @@ Resource scoping:
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
 					}
+					totalSynced += res.Count
 					warnCount++
 				} else {
 					if humanFriendly {
@@ -345,7 +347,7 @@ Resource scoping:
 			// The PersistentPreRunE learn hook skips `sync` via
 			// shouldSkipLearnHook, so this explicit post-sync call is the
 			// one wiring point for the staleness-heal loop.
-			if successCount > 0 && !c.DryRun && !noLearnActive(flags) && !cliutil.IsVerifyEnv() && !cliutil.IsDogfoodEnv() {
+			if totalSynced > 0 && !c.DryRun && !noLearnActive(flags) && !cliutil.IsVerifyEnv() && !cliutil.IsDogfoodEnv() {
 				refreshLookupsFromSyncedStore(cmd.Context(), db.DB(), syncEventWriter)
 			}
 
@@ -1886,6 +1888,7 @@ type parentReport struct {
 	stored          int
 	consumed        int
 	extractFailures int
+	failure         error // non-nil when this parent's batch upsert failed
 	denied          bool
 	firstDenial     *accessWarning
 	anomaly         *parentAnomaly // nil unless this parent hit an extraction anomaly
@@ -2085,8 +2088,11 @@ func syncOneParent(
 		stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)
 		if err != nil {
 			outcome.reason = "upsert_error"
+			rep.failure = fmt.Errorf("upserting batch for %s parent %s: %w", dep.Name, parentID, err)
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: upsert error for parent %s: %v\n", dep.Name, parentID, err)
+			} else {
+				fmt.Fprintln(syncEvents, syncErrorJSON(dep.Name, parentID, rep.failure))
 			}
 			break
 		}
@@ -2330,6 +2336,8 @@ func syncDependentResource(ctx context.Context, c interface {
 	// workers (first drained wins) — acceptable, both are diagnostic-only and
 	// "first parent" is inherently nondeterministic under concurrency.
 	dryRunHit := false
+	failedParents := 0
+	var firstFailure error
 	for rep := range reports {
 		if rep.dryRun {
 			dryRunHit = true
@@ -2338,6 +2346,12 @@ func syncDependentResource(ctx context.Context, c interface {
 		totalCount += rep.stored
 		depConsumedTotal += rep.consumed
 		depExtractFailureTotal += rep.extractFailures
+		if rep.failure != nil {
+			failedParents++
+			if firstFailure == nil {
+				firstFailure = rep.failure
+			}
+		}
 		if rep.denied {
 			deniedParents++
 			if firstDenial == nil {
@@ -2360,6 +2374,13 @@ func syncDependentResource(ctx context.Context, c interface {
 
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "\n")
+	}
+	if failedParents > 0 {
+		failure := fmt.Errorf("%s failed to store data for %d of %d parents: %w", dep.Name, failedParents, len(parentRows), firstFailure)
+		if failedParents == len(parentRows) && totalCount == 0 {
+			return syncResult{Resource: dep.Name, Count: 0, Err: failure, Duration: time.Since(started)}
+		}
+		return syncResult{Resource: dep.Name, Count: totalCount, Warn: failure, Duration: time.Since(started)}
 	}
 
 	_ = db.SaveSyncState(dep.Name, "", totalCount)
