@@ -61,6 +61,7 @@ but do not stop the import.`,
 			scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB line buffer
 
 			var success, failed, skipped int
+			var terminalErr error
 			for scanner.Scan() {
 				line := strings.TrimSpace(scanner.Text())
 				if line == "" || line[0] == '#' {
@@ -75,10 +76,14 @@ but do not stop the import.`,
 					continue
 				}
 
-				_, _, err := c.Post(cmd.Context(), path, body)
+				_, status, err := c.Post(cmd.Context(), path, body)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to import record: %v\n", err)
 					failed++
+					if status == 401 || status == 403 {
+						terminalErr = classifyAPIError(err, flags)
+						break
+					}
+					fmt.Fprintf(os.Stderr, "warning: failed to import record: %v\n", err)
 					continue
 				}
 				success++
@@ -90,13 +95,22 @@ but do not stop the import.`,
 
 			// JSON envelope: {succeeded, failed, skipped}.
 			if flags.asJSON {
-				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				if err := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 					"succeeded": success,
 					"failed":    failed,
 					"skipped":   skipped,
-				}, flags)
+				}, flags); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "Import complete: %d succeeded, %d failed, %d skipped\n", success, failed, skipped)
 			}
-			fmt.Fprintf(os.Stderr, "Import complete: %d succeeded, %d failed, %d skipped\n", success, failed, skipped)
+			if failed > 0 {
+				if terminalErr != nil {
+					return fmt.Errorf("import stopped after auth failure with %d succeeded, %d failed, and %d skipped: %w", success, failed, skipped, terminalErr)
+				}
+				return apiErr(fmt.Errorf("import completed with %d failed record(s), %d succeeded, and %d skipped", failed, success, skipped))
+			}
 			return nil
 		},
 	}

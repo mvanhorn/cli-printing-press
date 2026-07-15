@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -85,6 +86,7 @@ func TestDependentFanoutWorkerPoolNoRace(t *testing.T) {
 	src := string(syncSrc)
 	require.Contains(t, src, "func syncOneParent(", "sync.go must emit the per-parent worker entry")
 	require.Contains(t, src, "lockedWriter", "sync.go must emit the mutex-guarded event writer for concurrent workers")
+	require.Equal(t, 4, strings.Count(src, "totalSynced += res.Count"), "warning and success results must both contribute stored rows")
 
 	// In-package test (package cli) for access to unexported syncDependentResource
 	// / dependentResourceDef. This minimal spec has no membership scope, no
@@ -102,6 +104,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"` + naming.CLI(apiSpec.Name) + `/internal/store"
 )
@@ -248,6 +251,100 @@ func TestSyncDependentResource_DryRunShortCircuitsUnderConcurrency(t *testing.T)
 	if cnt != 0 {
 		t.Errorf("stored modules rows = %d, want 0 (dry-run must not mutate)", cnt)
 	}
+}
+
+func installModuleUpsertFailure(t *testing.T, db *store.Store, when string) {
+	t.Helper()
+	stmt := ` + "`" + `CREATE TRIGGER fail_module_upsert
+		BEFORE INSERT ON resources
+		WHEN NEW.resource_type = 'modules'` + "`" + `
+	if when != "" {
+		stmt += " AND " + when
+	}
+	stmt += ` + "`" + ` BEGIN SELECT RAISE(ABORT, 'forced module upsert failure'); END` + "`" + `
+	if _, err := db.DB().Exec(stmt); err != nil {
+		t.Fatalf("install failure trigger: %v", err)
+	}
+}
+
+type moduleSyncState struct {
+	cursor   string
+	syncedAt time.Time
+	count    int
+}
+
+func seedModuleSyncState(t *testing.T, db *store.Store) moduleSyncState {
+	t.Helper()
+	if err := db.SaveSyncState("modules", "cursor-before", 7); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+	return readModuleSyncState(t, db)
+}
+
+func readModuleSyncState(t *testing.T, db *store.Store) moduleSyncState {
+	t.Helper()
+	cursor, syncedAt, count, err := db.GetSyncState("modules")
+	if err != nil {
+		t.Fatalf("read sync state: %v", err)
+	}
+	return moduleSyncState{cursor: cursor, syncedAt: syncedAt, count: count}
+}
+
+func assertModuleSyncStateUnchanged(t *testing.T, db *store.Store, before moduleSyncState) {
+	t.Helper()
+	after := readModuleSyncState(t, db)
+	if after.cursor != before.cursor || !after.syncedAt.Equal(before.syncedAt) || after.count != before.count {
+		t.Fatalf("sync state changed after failed persistence: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestSyncDependentResource_AllUpsertsFailReturnsError(t *testing.T) {
+	db := seedFanoutRaceProjects(t, 2)
+	defer db.Close()
+	before := seedModuleSyncState(t, db)
+	installModuleUpsertFailure(t, db, "")
+
+	fake := &fakeDependentGetter{respond: func(path string, _ map[string]string) (json.RawMessage, error) {
+		return json.RawMessage(fmt.Sprintf(` + "`" + `[{"id":"m-%s"}]` + "`" + `, sanitizeRacePath(path))), nil
+	}}
+	var events bytes.Buffer
+	res := syncDependentResource(context.Background(), fake, db, modulesDep(), "", true, 0, false, true, &syncUserParams{}, &events, 2)
+	if res.Err == nil {
+		t.Fatalf("expected all-parent upsert failure to return Err; result=%+v", res)
+	}
+	if res.Warn != nil {
+		t.Fatalf("all-parent failure returned Warn instead of Err: %v", res.Warn)
+	}
+	if n := strings.Count(events.String(), ` + "`" + `"event":"sync_error"` + "`" + `); n != 2 {
+		t.Fatalf("sync_error events = %d, want 2; events:\n%s", n, events.String())
+	}
+	assertModuleSyncStateUnchanged(t, db, before)
+}
+
+func TestSyncDependentResource_PartialUpsertFailureReturnsWarning(t *testing.T) {
+	db := seedFanoutRaceProjects(t, 2)
+	defer db.Close()
+	before := seedModuleSyncState(t, db)
+	installModuleUpsertFailure(t, db, ` + "`" + `json_extract(NEW.data, '$.parent_id') = 'p-0'` + "`" + `)
+
+	fake := &fakeDependentGetter{respond: func(path string, _ map[string]string) (json.RawMessage, error) {
+		return json.RawMessage(fmt.Sprintf(` + "`" + `[{"id":"m-%s"}]` + "`" + `, sanitizeRacePath(path))), nil
+	}}
+	var events bytes.Buffer
+	res := syncDependentResource(context.Background(), fake, db, modulesDep(), "", true, 0, false, true, &syncUserParams{}, &events, 2)
+	if res.Err != nil {
+		t.Fatalf("partial failure returned Err: %v", res.Err)
+	}
+	if res.Warn == nil {
+		t.Fatalf("expected partial upsert failure to return Warn; result=%+v", res)
+	}
+	if res.Count != 1 {
+		t.Fatalf("Count = %d, want one successfully stored parent", res.Count)
+	}
+	if n := strings.Count(events.String(), ` + "`" + `"event":"sync_error"` + "`" + `); n != 1 {
+		t.Fatalf("sync_error events = %d, want 1; events:\n%s", n, events.String())
+	}
+	assertModuleSyncStateUnchanged(t, db, before)
 }
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "fanout_race_test.go")

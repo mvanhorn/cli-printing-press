@@ -275,6 +275,7 @@ Resource scoping:
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
 					}
+					totalSynced += res.Count
 					warnCount++
 				} else {
 					if humanFriendly {
@@ -307,7 +308,7 @@ Resource scoping:
 			// The PersistentPreRunE learn hook skips `sync` via
 			// shouldSkipLearnHook, so this explicit post-sync call is the
 			// one wiring point for the staleness-heal loop.
-			if successCount > 0 && !c.DryRun && !noLearnActive(flags) && !cliutil.IsVerifyEnv() && !cliutil.IsDogfoodEnv() {
+			if totalSynced > 0 && !c.DryRun && !noLearnActive(flags) && !cliutil.IsVerifyEnv() && !cliutil.IsDogfoodEnv() {
 				refreshLookupsFromSyncedStore(cmd.Context(), db.DB(), syncEventWriter)
 			}
 
