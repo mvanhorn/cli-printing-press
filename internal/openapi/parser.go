@@ -3677,6 +3677,12 @@ func operationServerBaseURL(specBaseURL string, pathItem *openapi3.PathItem, op 
 	baseURL, basePath := resolveServerURL(servers[0])
 	if baseURL != "" {
 		baseURL += basePath
+	} else if basePath != "" {
+		configuredBase, configuredErr := url.Parse(strings.TrimSpace(specBaseURL))
+		relativeBase, relativeErr := url.Parse(basePath)
+		if configuredErr == nil && relativeErr == nil && configuredBase.IsAbs() {
+			baseURL = configuredBase.ResolveReference(relativeBase).String()
+		}
 	}
 	if baseURL == "" || baseURL == strings.TrimRight(specBaseURL, "/") {
 		return ""

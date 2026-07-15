@@ -10711,7 +10711,28 @@ paths:
 		require.NoError(t, err)
 		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
 		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
-		assert.Empty(t, endpoint.BaseURL)
+		assert.Equal(t, "https://api.real.com/api/v2", endpoint.BaseURL)
+		assert.Equal(t, "/resource", endpoint.Path)
+	})
+
+	t.Run("relative operation server replaces configured base path", func(t *testing.T) {
+		parsed, err := Parse([]byte(`openapi: "3.0.3"
+info: {title: Relative Operation Replacement Test, version: "1.0"}
+servers:
+  - url: https://api.real.com/api/v1
+paths:
+  /resource:
+    get:
+      operationId: getResource
+      servers:
+        - url: /api/v2
+      responses:
+        '200': {description: OK}
+`))
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.real.com/api/v1", parsed.BaseURL)
+		endpoint := findParsedEndpointByPath(t, parsed, "GET", "/resource")
+		assert.Equal(t, "https://api.real.com/api/v2", endpoint.BaseURL)
 		assert.Equal(t, "/resource", endpoint.Path)
 	})
 
