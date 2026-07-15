@@ -442,6 +442,14 @@ func (c *Client) PutWithParamsAndHeaders(ctx context.Context, path string, param
 	return c.do(ctx, "PUT", path, params, body, headers)
 }
 
+func (c *Client) PutQueryWithParams(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, body, nil)
+}
+
+func (c *Client) PutQueryWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, body, headers)
+}
+
 func (c *Client) Patch(ctx context.Context, path string, body any) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, nil, body, nil)
 }
@@ -456,6 +464,14 @@ func (c *Client) PatchWithHeaders(ctx context.Context, path string, body any, he
 
 func (c *Client) PatchWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, params, body, headers)
+}
+
+func (c *Client) PatchQueryWithParams(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchQueryWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, body, headers)
 }
 
 // isMutatingVerb reports whether the HTTP method writes server state.
@@ -570,6 +586,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 
 	maxRetries := clientMaxRetries()
+	// Retry only methods that are safe to replay after an ambiguous transport
+	// failure or server error; a write may already have committed remotely.
+	canRetryAmbiguousFailure := readOnlyIntent || method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -662,14 +681,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// timeout). Back off before retrying — same exponential schedule as
 			// the 5xx path below — so a brief outage does not burn every attempt
 			// in a tight loop. ctx cancellation breaks out of the wait at once.
-			if attempt < maxRetries {
+			if attempt < maxRetries && canRetryAmbiguousFailure {
 				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				fmt.Fprintf(os.Stderr, "network error (%v), retrying in %s (attempt %d/%d)\n", c.maskError(err, authHeader), wait, attempt+1, maxRetries)
 				if serr := sleepContext(ctx, wait); serr != nil {
 					return nil, 0, serr
 				}
+				continue
 			}
-			continue
+			return nil, 0, lastErr
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
@@ -730,7 +750,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 
 		// Server error - retry with backoff
-		if resp.StatusCode >= 500 && attempt < maxRetries {
+		if resp.StatusCode >= 500 && attempt < maxRetries && canRetryAmbiguousFailure {
 			wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
 			if err := sleepContext(ctx, wait); err != nil {

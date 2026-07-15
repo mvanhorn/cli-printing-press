@@ -460,6 +460,14 @@ func (c *Client) PutWithHeaders(ctx context.Context, path string, body any, head
 func (c *Client) PutWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PUT", path, params, body, headers)
 }
+
+func (c *Client) PutQueryWithParams(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, body, nil)
+}
+
+func (c *Client) PutQueryWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, body, headers)
+}
 func (c *Client) PutMultipart(ctx context.Context, path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
@@ -474,6 +482,14 @@ func (c *Client) PutMultipartWithHeaders(ctx context.Context, path string, field
 
 func (c *Client) PutMultipartWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+func (c *Client) PutQueryMultipartWithParams(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PutQueryMultipartWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 func (c *Client) Patch(ctx context.Context, path string, body any) (json.RawMessage, int, error) {
@@ -491,6 +507,14 @@ func (c *Client) PatchWithHeaders(ctx context.Context, path string, body any, he
 func (c *Client) PatchWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, params, body, headers)
 }
+
+func (c *Client) PatchQueryWithParams(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchQueryWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, body, headers)
+}
 func (c *Client) PatchMultipart(ctx context.Context, path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
@@ -505,6 +529,14 @@ func (c *Client) PatchMultipartWithHeaders(ctx context.Context, path string, fie
 
 func (c *Client) PatchMultipartWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+func (c *Client) PatchQueryMultipartWithParams(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PatchQueryMultipartWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead(ctx, "PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 type multipartRequestBody struct {
@@ -672,6 +704,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 	}
 
 	maxRetries := clientMaxRetries()
+	// Retry only methods that are safe to replay after an ambiguous transport
+	// failure or server error; a write may already have committed remotely.
+	canRetryAmbiguousFailure := readOnlyIntent || method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -749,14 +784,15 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 			// timeout). Back off before retrying — same exponential schedule as
 			// the 5xx path below — so a brief outage does not burn every attempt
 			// in a tight loop. ctx cancellation breaks out of the wait at once.
-			if attempt < maxRetries {
+			if attempt < maxRetries && canRetryAmbiguousFailure {
 				wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				fmt.Fprintf(os.Stderr, "network error (%v), retrying in %s (attempt %d/%d)\n", c.maskError(err, authHeader), wait, attempt+1, maxRetries)
 				if serr := sleepContext(ctx, wait); serr != nil {
 					return nil, 0, serr
 				}
+				continue
 			}
-			continue
+			return nil, 0, lastErr
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
@@ -817,7 +853,7 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 		}
 
 		// Server error - retry with backoff
-		if resp.StatusCode >= 500 && attempt < maxRetries {
+		if resp.StatusCode >= 500 && attempt < maxRetries && canRetryAmbiguousFailure {
 			wait := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 			fmt.Fprintf(os.Stderr, "server error %d, retrying in %s (attempt %d/%d)\n", resp.StatusCode, wait, attempt+1, maxRetries)
 			if err := sleepContext(ctx, wait); err != nil {
