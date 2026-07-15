@@ -174,7 +174,21 @@ func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 // remain usable. The deferred call catches files the SQLite driver creates.
 func hardenSQLiteFiles(dbPath string) {
 	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
-		_ = os.Chmod(path, 0o600)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		openInfo, statErr := file.Stat()
+		pathInfo, lstatErr := os.Lstat(path)
+		if statErr == nil && lstatErr == nil && pathInfo.Mode().IsRegular() && os.SameFile(openInfo, pathInfo) {
+			_ = file.Chmod(0o600)
+		}
+		_ = file.Close()
 	}
 }
 
