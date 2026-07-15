@@ -1799,7 +1799,7 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 	tw := newTabWriter(w)
 	upperHeaders := make([]string, len(headers))
 	for i, h := range headers {
-		upperHeaders[i] = bold(strings.ToUpper(h))
+		upperHeaders[i] = bold(strings.ToUpper(cliutil.ScrubTerminal(h)))
 	}
 
 	fmt.Fprintln(tw, strings.Join(upperHeaders, "\t"))
@@ -1961,8 +1961,9 @@ func printAutoCards(w io.Writer, items []map[string]any) error {
 	// Find the longest header for alignment (from fields we'll actually show)
 	maxLen := 0
 	for _, h := range headers {
-		if len(h) > maxLen {
-			maxLen = len(h)
+		displayHeader := cliutil.ScrubTerminal(h)
+		if len(displayHeader) > maxLen {
+			maxLen = len(displayHeader)
 		}
 	}
 
@@ -1973,15 +1974,16 @@ func printAutoCards(w io.Writer, items []map[string]any) error {
 
 		// Card header: use first priority field as the card title
 		titleVal := formatCellValue(item[headers[0]])
+		titleHeader := cliutil.ScrubTerminal(headers[0])
 		if len(headers) > 1 {
 			secondVal := formatCellValue(item[headers[1]])
 			if secondVal != "" {
-				fmt.Fprintf(w, "%s %s — %s\n", bold(strings.ToUpper(headers[0])), titleVal, secondVal)
+				fmt.Fprintf(w, "%s %s — %s\n", bold(strings.ToUpper(titleHeader)), titleVal, secondVal)
 			} else {
-				fmt.Fprintf(w, "%s %s\n", bold(strings.ToUpper(headers[0])), titleVal)
+				fmt.Fprintf(w, "%s %s\n", bold(strings.ToUpper(titleHeader)), titleVal)
 			}
 		} else {
-			fmt.Fprintf(w, "%s %s\n", bold(strings.ToUpper(headers[0])), titleVal)
+			fmt.Fprintf(w, "%s %s\n", bold(strings.ToUpper(titleHeader)), titleVal)
 		}
 
 		// Remaining fields indented — skip empty, zero, and false values
@@ -1991,10 +1993,11 @@ func printAutoCards(w io.Writer, items []map[string]any) error {
 				continue
 			}
 			// Multi-line values (nested arrays) start with \n
+			displayHeader := cliutil.ScrubTerminal(h)
 			if strings.HasPrefix(v, "\n") {
-				fmt.Fprintf(w, "  %s:%s\n", h, v)
+				fmt.Fprintf(w, "  %s:%s\n", displayHeader, v)
 			} else {
-				fmt.Fprintf(w, "  %-*s  %s\n", maxLen, h+":", v)
+				fmt.Fprintf(w, "  %-*s  %s\n", maxLen, displayHeader+":", v)
 			}
 		}
 	}
@@ -2004,6 +2007,7 @@ func printAutoCards(w io.Writer, items []map[string]any) error {
 func formatCellValue(v any) string {
 	switch val := v.(type) {
 	case string:
+		val = cliutil.ScrubTerminal(val)
 		// Format ISO dates as just the date portion
 		if len(val) >= 19 && val[4] == '-' && val[7] == '-' && val[10] == 'T' {
 			return val[:10]
@@ -2031,7 +2035,7 @@ func formatCellValue(v any) string {
 		parts := make([]string, 0, len(val))
 		for _, item := range val {
 			if s, ok := item.(string); ok {
-				parts = append(parts, s)
+				parts = append(parts, cliutil.ScrubTerminal(s))
 			} else {
 				b, _ := json.Marshal(item)
 				parts = append(parts, string(b))

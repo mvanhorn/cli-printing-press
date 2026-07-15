@@ -89,9 +89,70 @@ func TestHumanFriendlyForcesTableAndNoColorStripsANSI(t *testing.T) {
 		t.Fatalf("--no-color should strip ANSI styling, got %q", plain.String())
 	}
 }
+
+func TestTerminalControlCharactersAreScrubbedFromHumanOutput(t *testing.T) {
+	rows := []map[string]any{{
+		"id":          "one",
+		"name\x1b[31m": "Alpha\x1b[0m\u009b31m",
+	}}
+
+	var table bytes.Buffer
+	if err := printAutoTable(&table, rows); err != nil {
+		t.Fatalf("printAutoTable returned error: %v", err)
+	}
+	if strings.ContainsAny(table.String(), "\x1b\u009b") {
+		t.Fatalf("table output retained terminal controls: %q", table.String())
+	}
+	if !strings.Contains(table.String(), "Alpha[0m31m") {
+		t.Fatalf("table output should preserve printable text, got %q", table.String())
+	}
+
+	cardRows := []map[string]any{{
+		"name\x1b[31m": "Alpha\u009b31m",
+		"flag":          true,
+	}}
+	var cards bytes.Buffer
+	if err := printAutoCards(&cards, cardRows); err != nil {
+		t.Fatalf("printAutoCards returned error: %v", err)
+	}
+	remainingFieldRows := []map[string]any{{
+		"id":              "one",
+		"status":          "active",
+		"details\x1b[31m": []any{"Beta\x1b[0m"},
+	}}
+	if err := printAutoCards(&cards, remainingFieldRows); err != nil {
+		t.Fatalf("printAutoCards returned error: %v", err)
+	}
+	if strings.ContainsAny(cards.String(), "\x1b\u009b") {
+		t.Fatalf("card output retained terminal controls: %q", cards.String())
+	}
+	if !strings.Contains(cards.String(), "NAME[31M Alpha31m") || !strings.Contains(cards.String(), "details[31m:") || !strings.Contains(cards.String(), "Beta[0m") {
+		t.Fatalf("card output should scrub title, remaining header, and array values while preserving printable text, got %q", cards.String())
+	}
+}
+
+func TestTerminalControlCharactersRemainInJSONOutput(t *testing.T) {
+	const rawValue = "Alpha\x1b[31m\u009b31m"
+	data, err := json.Marshal([]map[string]any{{"name": rawValue}})
+	if err != nil {
+		t.Fatalf("json.Marshal returned error: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := printOutputWithFlags(&out, data, &rootFlags{asJSON: true}); err != nil {
+		t.Fatalf("printOutputWithFlags returned error: %v", err)
+	}
+	var decoded []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("JSON output is invalid: %v", err)
+	}
+	if got := decoded[0]["name"]; got != rawValue {
+		t.Fatalf("JSON value = %q, want byte-exact %q", got, rawValue)
+	}
+}
 `), 0o644))
 
-	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestHumanFriendlyForcesTableAndNoColorStripsANSI", "-count=1")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestPrintOutputWithFlagsPlainRendersTSV|TestPrintOutputWithFlagsPlainEmptyArrayIsEmpty|TestHumanFriendlyForcesTableAndNoColorStripsANSI|TestTerminalControl", "-count=1")
 }
 
 func TestLocalAnalysisTemplatesRouteMachineFormatsThroughSharedGate(t *testing.T) {

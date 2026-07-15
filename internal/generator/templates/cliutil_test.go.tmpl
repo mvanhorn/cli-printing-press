@@ -44,6 +44,14 @@ func TestCleanText(t *testing.T) {
 	}
 }
 
+func TestScrubTerminal(t *testing.T) {
+	input := "keep\tcolumns\nlines\x00\x07\x1b[31m\x7f\u0085\u009b31m"
+	want := "keep columns lines[31m31m"
+	if got := ScrubTerminal(input); got != want {
+		t.Fatalf("ScrubTerminal(%q) = %q, want %q", input, got, want)
+	}
+}
+
 func TestParseStoredTime(t *testing.T) {
 	cases := []struct {
 		name string
