@@ -25,12 +25,12 @@ func CleanText(s string) string {
 	return html.UnescapeString(strings.TrimSpace(s))
 }
 
-// ScrubTerminal removes control characters that can alter terminal behavior
-// while preserving tabs and newlines used by human-readable layouts.
+// ScrubTerminal prevents untrusted scalar values from altering terminal output.
+// Tabs and newlines become spaces; other control characters are removed.
 func ScrubTerminal(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\t' || r == '\n' {
-			return r
+			return ' '
 		}
 		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			return -1
