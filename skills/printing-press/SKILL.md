@@ -1114,7 +1114,7 @@ Before new research:
 
    If multiple blocked entries somehow match, pick the most recent `attempted_at` value and mention that additional older journal entries exist. If `blocked-apis.json` is malformed, print "Blocked-API journal check skipped: blocked-apis.json is malformed. Proceeding with the registry check." and continue; do not let a bad journal file block fresh prints.
 
-   **Read the registry and reason about matches** — do not gate on string equality alone. The file is small (~88 KB, ~135 entries today); read it directly and use judgment. Each entry has fields `name` (slug), `category`, `api` (brand display), `description`, `path`, `printer`.
+   **Read the registry and reason about matches** — do not gate on string equality alone. The registry uses schema version 2: entries are under the `.entries` key (i.e., `jq '.entries[]'`), not at the top level. Read it directly and use judgment. Each entry has fields `name` (slug), `category`, `api` (brand display), `description`, `search_terms`, `path`, `release`, `printer`.
 
    The user's argument may arrive in many shapes, and only some are catchable by deterministic match:
 
