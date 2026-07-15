@@ -10,5 +10,5 @@
 # latest published release, so a typo above the newest version cannot brick
 # every install. Below the skill's frozen `min-binary-version` (the hard
 # compatibility floor) it has no effect — that floor always wins.
-min_supported=4.27.1
+min_supported=4.28.0
 reason=Releases below this version generate CLIs with since-fixed bugs; upgrade to regenerate cleanly.
