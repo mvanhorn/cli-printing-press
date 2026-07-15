@@ -66,6 +66,19 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	require.Error(t, err, "top-level login --no-input should fail when no credentials are available")
 	require.Contains(t, string(noInputOut), "OAUTH_LOGIN_PROMPTS_CLIENT_ID")
 
+	dryRunOut, err := exec.Command(binPath, "--config", configPath, "--no-input", "--dry-run", "login").CombinedOutput()
+	require.NoError(t, err, "top-level login --dry-run should not require credentials: %s", string(dryRunOut))
+	require.JSONEq(t, `{"status":"dry_run","action":"auth login","would":"start OAuth2 authorization-code flow (PKCE without client secret), open browser, capture loopback callback"}`, string(dryRunOut))
+
+	require.NoError(t, os.WriteFile(configPath, []byte("client_id = \"saved-id\"\n"), 0o600))
+	configuredProbe := exec.Command(binPath, "--config", configPath, "--no-input", "--dry-run", "login")
+	configuredProbe.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1")
+	configuredProbeOut, err := configuredProbe.CombinedOutput()
+	require.NoError(t, err, "configured OAuth login probe failed: %s", string(configuredProbeOut))
+	require.Contains(t, string(configuredProbeOut), "would launch: https://accounts.example.com/oauth/authorize?")
+	require.Contains(t, string(configuredProbeOut), "client_id=saved-id")
+	require.Contains(t, string(configuredProbeOut), "code_challenge_method=S256")
+
 	const runtimeTest = `package cli
 
 import (

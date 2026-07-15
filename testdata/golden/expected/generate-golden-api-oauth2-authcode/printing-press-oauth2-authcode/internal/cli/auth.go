@@ -97,6 +97,13 @@ func runOAuthLogin(cmd *cobra.Command, flags *rootFlags, clientID, clientSecret 
 	if err != nil {
 		return err
 	}
+	// Credential-free probes cannot construct an authorize URL. Keep supplied
+	// or configured client IDs on the detailed verify path below so it still
+	// emits PKCE params.
+	if (dryRunOK(flags) || cliutil.IsVerifyEnv()) && clientID == "" && cfg.ClientID == "" {
+		fmt.Fprintln(w, `{"status":"dry_run","action":"auth login","would":"start OAuth2 authorization-code flow (PKCE without client secret), open browser, capture loopback callback"}`)
+		return nil
+	}
 	clientID, clientSecret, err = resolveOAuthCredentials(cmd, flags, cfg, clientID, clientSecret)
 	if err != nil {
 		return err
