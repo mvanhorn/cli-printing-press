@@ -1089,7 +1089,8 @@ func TestLiveDogfoodBinaryPathKeepsFreshRootBinary(t *testing.T) {
 
 	dir := t.TempDir()
 	binaryName := "fixture-pp-cli"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/live-dogfood-root-fresh-test\n\ngo 1.23\n"), 0o644))
+	modulePath := filepath.Join(dir, "go.mod")
+	require.NoError(t, os.WriteFile(modulePath, []byte("module example.com/live-dogfood-root-fresh-test\n\ngo 1.23\n"), 0o644))
 	cmdDir := filepath.Join(dir, "cmd", binaryName)
 	require.NoError(t, os.MkdirAll(cmdDir, 0o755))
 	mainPath := filepath.Join(cmdDir, "main.go")
@@ -1098,6 +1099,7 @@ func TestLiveDogfoodBinaryPathKeepsFreshRootBinary(t *testing.T) {
 	rootPath := writeStubBinary(t, dir, binaryName, `echo "fresh root"`)
 	oldTime := time.Now().Add(-2 * time.Hour)
 	freshTime := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(modulePath, oldTime, oldTime))
 	require.NoError(t, os.Chtimes(mainPath, oldTime, oldTime))
 	require.NoError(t, os.Chtimes(rootPath, freshTime, freshTime))
 
