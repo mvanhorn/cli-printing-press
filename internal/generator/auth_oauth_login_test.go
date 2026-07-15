@@ -66,6 +66,10 @@ func TestOAuthLoginTopLevelCommandAndCredentialFallback(t *testing.T) {
 	require.Error(t, err, "top-level login --no-input should fail when no credentials are available")
 	require.Contains(t, string(noInputOut), "OAUTH_LOGIN_PROMPTS_CLIENT_ID")
 
+	dryRunOut, err := exec.Command(binPath, "--config", configPath, "--no-input", "--dry-run", "login").CombinedOutput()
+	require.NoError(t, err, "top-level login --dry-run should not require credentials: %s", string(dryRunOut))
+	require.JSONEq(t, `{"status":"dry_run","action":"auth login","would":"start OAuth2 authorization-code flow (PKCE without client secret), open browser, capture loopback callback"}`, string(dryRunOut))
+
 	const runtimeTest = `package cli
 
 import (
