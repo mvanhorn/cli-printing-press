@@ -63,6 +63,10 @@ but do not stop the import.`,
 			var success, failed, skipped int
 			var terminalErr error
 			for scanner.Scan() {
+				if terminalErr != nil {
+					skipped++
+					continue
+				}
 				line := strings.TrimSpace(scanner.Text())
 				if line == "" || line[0] == '#' {
 					skipped++
@@ -81,7 +85,7 @@ but do not stop the import.`,
 					failed++
 					if status == 401 || status == 403 {
 						terminalErr = classifyAPIError(err, flags)
-						break
+						continue
 					}
 					fmt.Fprintf(os.Stderr, "warning: failed to import record: %v\n", err)
 					continue

@@ -167,13 +167,13 @@ func TestImportBatchMidstreamAuthFailurePreservesCommittedCount(t *testing.T) {
 	if err == nil || ExitCode(err) != 4 {
 		t.Fatalf("expected typed auth failure, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "1 succeeded, 1 failed") {
+	if !strings.Contains(err.Error(), "1 succeeded, 1 failed, and 1 skipped") {
 		t.Fatalf("auth failure error missing committed counts: %v", err)
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d, want committed record plus auth failure only", requests)
 	}
-	for _, want := range []string{` + "`" + `"succeeded": 1` + "`" + `, ` + "`" + `"failed": 1` + "`" + `} {
+	for _, want := range []string{` + "`" + `"succeeded": 1` + "`" + `, ` + "`" + `"failed": 1` + "`" + `, ` + "`" + `"skipped": 1` + "`" + `} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %s: %s", want, out)
 		}
