@@ -184,6 +184,17 @@ func TestCursorPageHasContinuation(t *testing.T) {
 	}
 }
 
+func TestExtractItemsByKnownKeysFallsThroughEmptyPreferredKey(t *testing.T) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte("{\"items\":[],\"records\":[{\"id\":\"one\"}]}"), &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %%v", err)
+	}
+	items, ok := extractItemsByKnownKeys(envelope)
+	if !ok || len(items) != 1 {
+		t.Fatalf("extractItemsByKnownKeys() = %%d items, ok=%%v; want 1 item, ok=true", len(items), ok)
+	}
+}
+
 func TestSyncResourceFollowsShortCursorPages(t *testing.T) {
 	for _, tc := range []struct {
 		resource    string
@@ -250,6 +261,25 @@ func TestSyncResourceFollowsEmptyCursorPage(t *testing.T) {
 	}
 }
 
+func TestSyncResourceUsesPopulatedFallbackAfterEmptyItems(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[],\"records\":[{\"id\":\"one\"}],\"next_cursor\":\"\",\"has_more\":false}"),
+	}}
+	result := syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	if result.Count != 1 {
+		t.Fatalf("sync count = %%d, want 1", result.Count)
+	}
+}
+
 func TestSyncResourcePreservesCursorWhenCapHitsShortPage(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
@@ -297,7 +327,7 @@ func TestSyncResourceDoesNotAdvancePastNullItems(t *testing.T) {
 }
 `, modulePath+"/internal/store")
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_short_page_test.go"), []byte(behaviorTest), 0o644))
-	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestShortPageEndsPagination|TestCursorPageHasContinuation|TestSyncResource")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestShortPageEndsPagination|TestCursorPageHasContinuation|TestExtractItemsByKnownKeys|TestSyncResource")
 	requireGeneratedCompiles(t, outputDir)
 }
 

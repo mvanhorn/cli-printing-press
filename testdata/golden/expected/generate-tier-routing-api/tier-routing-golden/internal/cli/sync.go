@@ -1026,6 +1026,8 @@ func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMe
 }
 
 func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	var emptyItems []json.RawMessage
+	foundEmpty := false
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
 			extract := extractObjectArray
@@ -1033,9 +1035,16 @@ func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMes
 				extract = extractJSONItemsArray
 			}
 			if items, ok := extract(raw); ok {
-				return items, true
+				if len(items) > 0 {
+					return items, true
+				}
+				emptyItems = items
+				foundEmpty = true
 			}
 		}
+	}
+	if foundEmpty {
+		return emptyItems, true
 	}
 	return nil, false
 }
