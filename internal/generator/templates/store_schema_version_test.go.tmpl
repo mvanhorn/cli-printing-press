@@ -8,7 +8,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +18,100 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func TestOpenHardensSQLiteFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+
+	for _, tc := range []struct {
+		name       string
+		precreateDB bool
+		wantDirMode os.FileMode
+	}{
+		{name: "fresh store", wantDirMode: 0o700},
+		{name: "pre-existing permissive store", precreateDB: true, wantDirMode: 0o755},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "private", "data.db")
+			if tc.precreateDB {
+				if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+					t.Fatalf("create permissive store dir: %v", err)
+				}
+				if err := os.WriteFile(dbPath, nil, 0o644); err != nil {
+					t.Fatalf("create permissive store: %v", err)
+				}
+			}
+
+			s, err := Open(dbPath)
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			defer s.Close()
+
+			assertPrivateMode(t, filepath.Dir(dbPath), tc.wantDirMode)
+			assertPrivateMode(t, dbPath, 0o600)
+			assertPrivateMode(t, dbPath+"-wal", 0o600)
+			assertPrivateMode(t, dbPath+"-shm", 0o600)
+		})
+	}
+}
+
+func TestOpenWithRelativePathDoesNotChmodWorkingDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+
+	workingDir := t.TempDir()
+	info, err := os.Stat(workingDir)
+	if err != nil {
+		t.Fatalf("stat working directory: %v", err)
+	}
+	wantDirMode := info.Mode().Perm()
+	t.Chdir(workingDir)
+
+	s, err := Open("data.db")
+	if err != nil {
+		t.Fatalf("open relative store: %v", err)
+	}
+	defer s.Close()
+
+	assertPrivateMode(t, ".", wantDirMode)
+	assertPrivateMode(t, "data.db", 0o600)
+	assertPrivateMode(t, "data.db-wal", 0o600)
+	assertPrivateMode(t, "data.db-shm", 0o600)
+}
+
+func TestHardenSQLiteFilesSkipsSymlinkSidecars(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "unrelated")
+	if err := os.WriteFile(targetPath, nil, 0o644); err != nil {
+		t.Fatalf("create unrelated file: %v", err)
+	}
+	dbPath := filepath.Join(dir, "data.db")
+	if err := os.Symlink(targetPath, dbPath+"-wal"); err != nil {
+		t.Fatalf("create WAL symlink: %v", err)
+	}
+
+	hardenSQLiteFiles(dbPath)
+
+	assertPrivateMode(t, targetPath, 0o644)
+}
+
+func assertPrivateMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %04o, want %04o", path, got, want)
+	}
+}
 
 // TestSchemaVersion_StampedOnFreshDB verifies that opening a brand-new
 // database stamps the current schema version. This is the contract that

@@ -61,14 +61,18 @@ func TestGeneratedFleetHardening(t *testing.T) {
 	require.Contains(t, deliverGo, "os.MkdirAll(dir, 0o700)",
 		"the agent-deliver dir must be created mode 0700 (gosec G301)")
 	require.NotContains(t, deliverGo, "os.MkdirAll(dir, 0o755)")
+
+	requireGeneratedCompiles(t, outputDir)
+	runGoCommand(t, outputDir, "test", "./internal/store", "-run", "^(TestOpen(HardensSQLiteFilePermissions|WithRelativePathDoesNotChmodWorkingDirectory)|TestHardenSQLiteFilesSkipsSymlinkSidecars)$")
 }
 
 // TestNoWorldReadableMkdirAllInTemplates is the fleet-wide regression guard for
-// gosec G301: no emitted template may create a directory world-readable
+// gosec G301: no emitted production template may create a directory world-readable
 // (`0o755`). Scoped to template source because the alternative — generating
 // every feature combination (store, deliver, share, session-handshake, ...) and
 // asserting on each emitted file — is impractical; this catches a future
-// template edit reintroducing the mode regardless of which feature emits it.
+// production template edit reintroducing the mode regardless of which feature
+// emits it. Generated test templates may deliberately create permissive fixtures.
 // The generator's own `MkdirAll` calls (build-time output dirs in *.go) are out
 // of scope — they don't ship in printed CLIs.
 func TestNoWorldReadableMkdirAllInTemplates(t *testing.T) {
@@ -79,7 +83,7 @@ func TestNoWorldReadableMkdirAllInTemplates(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") {
+		if d.IsDir() || !strings.HasSuffix(path, ".tmpl") || strings.HasSuffix(path, "_test.go.tmpl") {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
@@ -101,7 +105,7 @@ func generateForHardeningTest(t *testing.T, apiSpec *spec.APISpec) string {
 	t.Helper()
 	outputDir := strings.TrimSuffix(t.TempDir(), "/") + "/" + naming.CLI(apiSpec.Name)
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	gen.profile = &profiler.APIProfile{
 		SyncableResources: []profiler.SyncableResource{
 			{Name: "widgets", Path: "/widgets", Method: "GET"},
