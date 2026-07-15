@@ -369,7 +369,6 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 {{- if .Endpoint.UsesBinaryResponse}}
-			_ = json.Valid
 			_ = os.Stderr
 {{- if .HasStore}}
 			_ = prov
@@ -378,7 +377,17 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				return nil
 			}
 			if flags.asJSON || flags.csv || flags.compact || flags.plain || flags.selectFields != "" {
-				return fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>")
+				var envelope struct {
+					PPBinary bool   `json:"_pp_binary"`
+					Encoding string `json:"encoding"`
+				}
+				if err := json.Unmarshal(data, &envelope); err != nil || !envelope.PPBinary || envelope.Encoding != "base64" {
+					return fmt.Errorf("binary response cannot be rendered as structured output; redirect stdout or use --deliver file:<path>")
+				}
+				if flags.csv {
+					data = append(append(json.RawMessage{'['}, data...), ']')
+				}
+				return printOutputWithFlagsMeta(cmd.OutOrStdout(), data, flags, map[string]any{"source": "live"})
 			}
 			_, err = cmd.OutOrStdout().Write(data)
 			return err
