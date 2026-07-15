@@ -13657,7 +13657,7 @@ func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
 
 	assert.NotContains(t, syncContent, `if !hasMore || len(items) < pageSize.limit || nextCursor == ""`,
 		"sync loops must not require an API-returned next cursor for offset pagination")
-	assert.Contains(t, syncContent, `if !hasMore || fetchedThisPage < pageSize.limit {`,
+	assert.Contains(t, syncContent, `if !hasMore || shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {`,
 		"sync loops must break only on real done signals before handling cursor advancement")
 	assert.Contains(t, syncContent, `if pageSize.cursorType == "offset" {`,
 		"offset pagination must advance the cursor client-side when has_more is true")

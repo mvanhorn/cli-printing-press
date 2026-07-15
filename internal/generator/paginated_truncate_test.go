@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,283 @@ func TestPaginatedGetEmitsTruncationWarning(t *testing.T) {
 		"paginatedGet should call emitTruncationWarning on the single-page path")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
+func TestGeneratedSyncShortPageTerminationRespectsPaginationType(t *testing.T) {
+	t.Parallel()
+
+	templateSrc, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
+	require.NoError(t, err)
+	require.Equal(t, 11, strings.Count(string(templateSrc), "shortPageEndsPagination("),
+		"the helper definition and every termination and cap-classification variant must stay cursor-aware")
+	require.Equal(t, 3, strings.Count(string(templateSrc), "cursorPageHasContinuation("),
+		"the helper definition and both flat and dependent empty-page branches must preserve cursor continuation")
+
+	apiSpec := minimalSpec("sync-short-page")
+	apiSpec.Resources = map[string]spec.Resource{
+		"orders": {
+			Description: "Manage orders",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/orders",
+					Description: "List orders",
+					Pagination: &spec.Pagination{
+						Type:           "cursor",
+						CursorParam:    "after",
+						NextCursorPath: "next_cursor",
+						HasMoreField:   "has_more",
+					},
+					Response: spec.ResponseDef{Type: "array", Item: "Order"},
+				},
+			},
+		},
+		"tokens": {
+			Description: "Manage tokens",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/tokens",
+					Description: "List tokens",
+					Pagination: &spec.Pagination{
+						Type:           "page_token",
+						CursorParam:    "page_token",
+						NextCursorPath: "next_cursor",
+						HasMoreField:   "has_more",
+					},
+					Response: spec.ResponseDef{Type: "array", Item: "Token"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "sync-short-page-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+	goMod, err := os.ReadFile(filepath.Join(outputDir, "go.mod"))
+	require.NoError(t, err)
+	modulePath := strings.TrimPrefix(strings.SplitN(string(goMod), "\n", 2)[0], "module ")
+
+	behaviorTest := fmt.Sprintf(`package cli
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"path/filepath"
+	"testing"
+
+	%q
+)
+
+type shortPageSyncClient struct {
+	responses []json.RawMessage
+	params    []map[string]string
+}
+
+func (c *shortPageSyncClient) Get(_ context.Context, _ string, params map[string]string) (json.RawMessage, error) {
+	copied := make(map[string]string, len(params))
+	for key, value := range params {
+		copied[key] = value
+	}
+	c.params = append(c.params, copied)
+	response := c.responses[0]
+	c.responses = c.responses[1:]
+	return response, nil
+}
+
+func (c *shortPageSyncClient) RateLimit() float64 { return 0 }
+
+func TestShortPageEndsPagination(t *testing.T) {
+	tests := []struct {
+		name       string
+		cursorType string
+		fetched    int
+		limit      int
+		want       bool
+	}{
+		{name: "cursor short page continues", cursorType: "cursor", fetched: 50, limit: 100, want: false},
+		{name: "page token short page continues", cursorType: "page_token", fetched: 50, limit: 100, want: false},
+		{name: "offset short page ends", cursorType: "offset", fetched: 50, limit: 100, want: true},
+		{name: "page short page ends", cursorType: "page", fetched: 50, limit: 100, want: true},
+		{name: "full cursor page continues", cursorType: "cursor", fetched: 100, limit: 100, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shortPageEndsPagination(tt.cursorType, tt.fetched, tt.limit); got != tt.want {
+				t.Fatalf("shortPageEndsPagination(%%q, %%d, %%d) = %%v, want %%v", tt.cursorType, tt.fetched, tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCursorPageHasContinuation(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		cursorType string
+		hasMore    bool
+		nextCursor string
+		want       bool
+	}{
+		{name: "cursor continues", cursorType: "cursor", hasMore: true, nextCursor: "page-2", want: true},
+		{name: "page token continues", cursorType: "page_token", hasMore: true, nextCursor: "page-2", want: true},
+		{name: "missing cursor stops", cursorType: "cursor", hasMore: true, want: false},
+		{name: "has more false stops", cursorType: "cursor", nextCursor: "page-2", want: false},
+		{name: "offset empty page stops", cursorType: "offset", hasMore: true, nextCursor: "2", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cursorPageHasContinuation(tt.cursorType, tt.hasMore, tt.nextCursor); got != tt.want {
+				t.Fatalf("cursorPageHasContinuation(%%q, %%v, %%q) = %%v, want %%v", tt.cursorType, tt.hasMore, tt.nextCursor, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractItemsByKnownKeysFallsThroughEmptyPreferredKey(t *testing.T) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte("{\"items\":[],\"records\":[{\"id\":\"one\"}]}"), &envelope); err != nil {
+		t.Fatalf("unmarshal envelope: %%v", err)
+	}
+	items, ok := extractItemsByKnownKeys(envelope)
+	if !ok || len(items) != 1 {
+		t.Fatalf("extractItemsByKnownKeys() = %%d items, ok=%%v; want 1 item, ok=true", len(items), ok)
+	}
+}
+
+func TestSyncResourceFollowsShortCursorPages(t *testing.T) {
+	for _, tc := range []struct {
+		resource    string
+		cursorParam string
+	}{
+		{resource: "orders", cursorParam: "after"},
+		{resource: "tokens", cursorParam: "page_token"},
+	} {
+		t.Run(tc.resource, func(t *testing.T) {
+			db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+			if err != nil {
+				t.Fatalf("open store: %%v", err)
+			}
+			defer db.Close()
+
+			client := &shortPageSyncClient{responses: []json.RawMessage{
+				json.RawMessage("{\"items\":[{\"id\":\"one\"}],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+				json.RawMessage("{\"items\":[{\"id\":\"two\"}],\"next_cursor\":\"\",\"has_more\":false}"),
+			}}
+			result := syncResource(context.Background(), client, db, tc.resource, "", true, 0, false, false, &syncUserParams{}, io.Discard)
+			if result.Err != nil || result.Warn != nil {
+				t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+			}
+			if result.Count != 2 || len(client.params) != 2 {
+				t.Fatalf("sync count/calls = %%d/%%d, want 2/2", result.Count, len(client.params))
+			}
+			if got := client.params[1][tc.cursorParam]; got != "page-2" {
+				t.Fatalf("second request %%s = %%q, want page-2", tc.cursorParam, got)
+			}
+		})
+	}
+}
+
+func TestSyncResourceFollowsEmptyCursorPage(t *testing.T) {
+	for _, tc := range []struct {
+		resource    string
+		cursorParam string
+	}{
+		{resource: "orders", cursorParam: "after"},
+		{resource: "tokens", cursorParam: "page_token"},
+	} {
+		t.Run(tc.resource, func(t *testing.T) {
+			db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+			if err != nil {
+				t.Fatalf("open store: %%v", err)
+			}
+			defer db.Close()
+
+			client := &shortPageSyncClient{responses: []json.RawMessage{
+				json.RawMessage("{\"items\":[],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+				json.RawMessage("{\"items\":[{\"id\":\"two\"}],\"next_cursor\":\"\",\"has_more\":false}"),
+			}}
+			result := syncResource(context.Background(), client, db, tc.resource, "", true, 0, false, false, &syncUserParams{}, io.Discard)
+			if result.Err != nil || result.Warn != nil {
+				t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+			}
+			if result.Count != 1 || len(client.params) != 2 {
+				t.Fatalf("sync count/calls = %%d/%%d, want 1/2", result.Count, len(client.params))
+			}
+			if got := client.params[1][tc.cursorParam]; got != "page-2" {
+				t.Fatalf("second request %%s = %%q, want page-2", tc.cursorParam, got)
+			}
+		})
+	}
+}
+
+func TestSyncResourceUsesPopulatedFallbackAfterEmptyItems(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[],\"records\":[{\"id\":\"one\"}],\"next_cursor\":\"\",\"has_more\":false}"),
+	}}
+	result := syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	if result.Count != 1 {
+		t.Fatalf("sync count = %%d, want 1", result.Count)
+	}
+}
+
+func TestSyncResourcePreservesCursorWhenCapHitsShortPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":[],\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	result := syncResource(context.Background(), client, db, "orders", "", true, 1, false, false, &syncUserParams{}, io.Discard)
+	if result.Err != nil || result.Warn != nil {
+		t.Fatalf("sync result error=%%v warning=%%v", result.Err, result.Warn)
+	}
+	cursor, _, _, err := db.GetSyncState("orders")
+	if err != nil {
+		t.Fatalf("get sync state: %%v", err)
+	}
+	if cursor != "page-2" {
+		t.Fatalf("saved cursor = %%q, want page-2", cursor)
+	}
+}
+
+func TestSyncResourceDoesNotAdvancePastNullItems(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %%v", err)
+	}
+	defer db.Close()
+
+	client := &shortPageSyncClient{responses: []json.RawMessage{
+		json.RawMessage("{\"items\":null,\"next_cursor\":\"page-2\",\"has_more\":true}"),
+	}}
+	_ = syncResource(context.Background(), client, db, "orders", "", true, 0, false, false, &syncUserParams{}, io.Discard)
+	if len(client.params) != 1 {
+		t.Fatalf("sync calls = %%d, want 1", len(client.params))
+	}
+	cursor, _, _, err := db.GetSyncState("orders")
+	if err != nil {
+		t.Fatalf("get sync state: %%v", err)
+	}
+	if cursor != "" {
+		t.Fatalf("saved cursor = %%q, want empty", cursor)
+	}
+}
+`, modulePath+"/internal/store")
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_short_page_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "-run", "TestShortPageEndsPagination|TestCursorPageHasContinuation|TestExtractItemsByKnownKeys|TestSyncResource")
+	requireGeneratedCompiles(t, outputDir)
 }
 
 func TestPaginatedGetHandlesNumericCursorAndMissingAllSignal(t *testing.T) {
