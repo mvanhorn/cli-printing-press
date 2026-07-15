@@ -616,7 +616,7 @@ func syncResource(ctx context.Context, c interface {
 			break
 		}
 
-		if len(items) == 0 {
+		if len(items) == 0 && !cursorPageHasContinuation(pageSize.cursorType, hasMore, nextCursor) {
 			if isEmptyPageResponse(data, responsePathForResource(resource, path)...) {
 				// Natural end: the API legitimately returned an empty page.
 				outcome.complete = true
@@ -741,7 +741,7 @@ func syncResource(ctx context.Context, c interface {
 				// so the cap truncated and the STARTPOSITION resume cursor must persist.
 				truncatedByCap = hasMore && fetchedThisPage >= queryPageSize
 			} else {
-				truncatedByCap = truncatedByCap && fetchedThisPage >= pageSize.limit
+				truncatedByCap = truncatedByCap && !shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit)
 			}
 			if truncatedByCap {
 				capExitCursor = nextCursor
@@ -804,7 +804,7 @@ func syncResource(ctx context.Context, c interface {
 			outcome.complete = true
 			break
 		}
-		if path != queryPath && fetchedThisPage < pageSize.limit {
+		if path != queryPath && shortPageEndsPagination(pageSize.cursorType, fetchedThisPage, pageSize.limit) {
 			outcome.complete = true
 			break
 		}
@@ -908,6 +908,14 @@ type paginationDefaults struct {
 	cursorType  string // paginator class: "", "cursor", "page_token", "offset", "page"
 	limitParam  string
 	limit       int
+}
+
+func shortPageEndsPagination(cursorType string, fetched, limit int) bool {
+	return cursorType != "cursor" && cursorType != "page_token" && fetched < limit
+}
+
+func cursorPageHasContinuation(cursorType string, hasMore bool, nextCursor string) bool {
+	return (cursorType == "cursor" || cursorType == "page_token") && hasMore && nextCursor != ""
 }
 
 // determinePaginationDefaults returns the pagination parameter names to use.
@@ -1068,6 +1076,8 @@ func extractItemsFromEnvelope(envelope map[string]json.RawMessage) ([]json.RawMe
 }
 
 func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	var emptyItems []json.RawMessage
+	foundEmpty := false
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
 			extract := extractObjectArray
@@ -1075,9 +1085,16 @@ func extractItemsByKnownKeys(envelope map[string]json.RawMessage) ([]json.RawMes
 				extract = extractJSONItemsArray
 			}
 			if items, ok := extract(raw); ok {
-				return items, true
+				if len(items) > 0 {
+					return items, true
+				}
+				emptyItems = items
+				foundEmpty = true
 			}
 		}
+	}
+	if foundEmpty {
+		return emptyItems, true
 	}
 	return nil, false
 }
@@ -1111,7 +1128,7 @@ func extractSingleObjectArraySibling(envelope map[string]json.RawMessage) ([]jso
 
 func extractJSONItemsArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	var items []json.RawMessage
-	if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+	if err := json.Unmarshal(raw, &items); err != nil || isJSONNull(raw) {
 		return nil, false
 	}
 	return items, true
@@ -1119,7 +1136,7 @@ func extractJSONItemsArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 
 func extractObjectArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	items, ok := extractJSONItemsArray(raw)
-	if !ok {
+	if !ok || len(items) == 0 {
 		return nil, false
 	}
 	var obj map[string]json.RawMessage
