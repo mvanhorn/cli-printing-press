@@ -286,9 +286,21 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
+{{- if and .IsReadOnly (eq (upper .Endpoint.Method) "PUT")}}
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PutQueryMultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
+{{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PATCH")}}
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PatchQueryMultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
+{{- else}}
 			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
+{{- end}}
+{{- else}}
+{{- if and .IsReadOnly (eq (upper .Endpoint.Method) "PUT")}}
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PutQueryMultipartWithParams(cmd.Context(), path, params, fields, fileFields)
+{{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PATCH")}}
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PatchQueryMultipartWithParams(cmd.Context(), path, params, fields, fileFields)
 {{- else}}
 			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParams(cmd.Context(), path, params, fields, fileFields)
+{{- end}}
 {{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
@@ -296,12 +308,20 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 {{- if and .IsReadOnly (eq (upper .Endpoint.Method) "POST")}}
 			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PostQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+{{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PUT")}}
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PutQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+{{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PATCH")}}
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PatchQueryFormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
 {{- else}}
 			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
 {{- end}}
 {{- else}}
 {{- if and .IsReadOnly (eq (upper .Endpoint.Method) "POST")}}
 			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PostQueryFormWithParams(cmd.Context(), path, params, fields)
+{{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PUT")}}
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PutQueryFormWithParams(cmd.Context(), path, params, fields)
+{{- else if and .IsReadOnly (eq (upper .Endpoint.Method) "PATCH")}}
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.PatchQueryFormWithParams(cmd.Context(), path, params, fields)
 {{- else}}
 			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParams(cmd.Context(), path, params, fields)
 {{- end}}
@@ -316,8 +336,8 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{else}}
 			bodyMap := map[string]any{}
 			var body any = bodyMap
-{{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if and .IsReadOnly (eq (upper .Endpoint.Method) "POST")}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, _, err := c.PostQueryWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
-{{else}}			data, _, err := c.PostQueryWithParams(cmd.Context(), path, params, body)
+{{bodyMapForEndpointVars .Endpoint "\t\t\t" "bodyMap" "body"}}{{end}}{{if .IsReadOnly}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}QueryWithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
+{{else}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}QueryWithParams(cmd.Context(), path, params, body)
 {{end}}{{else}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
 {{else}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(cmd.Context(), path, params, body)
 {{end}}{{end}}
