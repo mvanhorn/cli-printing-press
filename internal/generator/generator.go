@@ -2537,11 +2537,18 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
-	if g.hasGeneratedSyncImplementation() {
-		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), g.Spec); err != nil {
+	if g.hasDataLayer() {
+		syncHintData := struct {
+			*spec.APISpec
+			HasSync bool
+		}{
+			APISpec: g.Spec,
+			HasSync: g.hasGeneratedSyncImplementation(),
+		}
+		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), syncHintData); err != nil {
 			return fmt.Errorf("rendering sync hint helper: %w", err)
 		}
-		if err := g.renderTemplate("sync_hint_test.go.tmpl", filepath.Join("internal", "cli", "sync_hint_test.go"), g.Spec); err != nil {
+		if err := g.renderTemplate("sync_hint_test.go.tmpl", filepath.Join("internal", "cli", "sync_hint_test.go"), syncHintData); err != nil {
 			return fmt.Errorf("rendering sync hint test: %w", err)
 		}
 	}
