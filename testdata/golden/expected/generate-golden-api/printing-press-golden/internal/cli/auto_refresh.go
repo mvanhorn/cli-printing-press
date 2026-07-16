@@ -80,6 +80,10 @@ func autoRefreshIfStale(ctx context.Context, flags *rootFlags, resources []strin
 		meta.Reason = "no_resources"
 		return meta
 	}
+	if noLearnActive(flags) {
+		meta.Reason = "no_learn"
+		return meta
+	}
 	policy := cachePolicy()
 	if policy.EnvOptOut != "" && os.Getenv(policy.EnvOptOut) == "1" {
 		meta.Decision = "skipped"

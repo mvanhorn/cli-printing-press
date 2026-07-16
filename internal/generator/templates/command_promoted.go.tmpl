@@ -215,7 +215,7 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 {{- if .HasStore}}
-			{{if eq .Endpoint.ResponseFormat "html"}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", path, map[string]string{
+			{{if eq .Endpoint.ResponseFormat "html"}}data, prov, err := resolvePaginatedReadWithStrategyAndJSONGuard{{else}}data, prov, err := resolvePaginatedReadWithStrategy{{end}}(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -260,9 +260,9 @@ func new{{cmdIdent .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
 {{- if eq .Endpoint.ResponseFormat "html"}}
-			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyResponsePathAndJSONGuard(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, false, cmd.ErrOrStderr())
 {{- else}}
-			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{$dataSourceStrategy}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
+			data, prov, err := resolveReadWithStrategyAndResponsePath(cmd.Context(), c, flags, "{{if localReadSupported .Endpoint}}{{$dataSourceStrategy}}{{else}}live{{end}}", "{{lower .ResourceName}}", {{localReadIsList $supportsAllPagination .APISpec .EndpointName .Endpoint}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, {{printf "%q" .Endpoint.ResponsePath}}, cmd.ErrOrStderr())
 {{- end}}
 {{- else if eq $method "GET"}}
 {{- if eq $dataSourceStrategy "local"}}

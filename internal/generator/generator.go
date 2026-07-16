@@ -354,6 +354,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"isGraphQL":             isGraphQLSpec,
 		"localReadIsList":       localReadIsList,
+		"localReadSupported":    localReadSupported,
 		"dataSourceStrategy":    spec.EffectiveDataSourceStrategy,
 		"networkFallbackReason": networkFallbackReason,
 		"exportableResources":   exportableResources,
@@ -8287,6 +8288,16 @@ func localReadIsList(supportsAllPagination bool, apiSpec *spec.APISpec, endpoint
 		return true
 	}
 	return networkFallbackReason(apiSpec) == "synthetic_anchor_fallback" && strings.EqualFold(endpoint.Response.Type, "array")
+}
+
+func localReadSupported(endpoint spec.Endpoint) bool {
+	segments := strings.Split(strings.Trim(strings.TrimSpace(endpoint.Path), "/"), "/")
+	for i, segment := range segments {
+		if strings.Contains(segment, "{") {
+			return i == len(segments)-1
+		}
+	}
+	return true
 }
 
 func localReadLooksLikeCollection(endpointName string, endpoint spec.Endpoint) bool {
