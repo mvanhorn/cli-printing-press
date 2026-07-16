@@ -6416,8 +6416,9 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 		isComplex := p.Type == "object" || p.Type == "array"
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
-			// real JSON). jsonStringParam: validate then store the raw
-			// string (the API expects a JSON-encoded string field).
+			// real JSON) after checking its top-level shape.
+			// jsonStringParam: validate then store the raw string (the API
+			// expects a JSON-encoded string field).
 			rhs := "body" + ident
 			if isComplex {
 				rhs = "parsed" + ident
@@ -6427,6 +6428,17 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
 			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
 			fmt.Fprintf(b, "%s\t}\n", indent)
+			if isComplex {
+				shape, valueVar, valueType := "object", "asMap", "map[string]any"
+				if p.Type == "array" {
+					shape, valueVar, valueType = "array", "asArray", "[]any"
+				}
+				fmt.Fprintf(b, "%s\t%s, ok := parsed%s.(%s)\n", indent, valueVar, ident, valueType)
+				fmt.Fprintf(b, "%s\tif !ok {\n", indent)
+				fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"--%s must be a JSON %s, got JSON %%T\", parsed%s)\n", indent, flag, shape, ident)
+				fmt.Fprintf(b, "%s\t}\n", indent)
+				rhs = valueVar
+			}
 			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.BodyWireName(), rhs)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
