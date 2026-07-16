@@ -2537,7 +2537,7 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
-	if g.hasDataLayer() {
+	if g.hasGeneratedSyncImplementation() {
 		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering sync hint helper: %w", err)
 		}
@@ -3855,6 +3855,7 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 type visionRenderData struct {
 	*spec.APISpec
 	VisionSet                    VisionTemplateSet
+	HasSync                      bool
 	SyncableResources            []profiler.SyncableResource
 	DependentSyncResources       []profiler.DependentResource
 	TenantScopedParents          []profiler.TenantScopedParent
@@ -4165,6 +4166,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	return visionRenderData{
 		APISpec:                      g.Spec,
 		VisionSet:                    g.VisionSet,
+		HasSync:                      g.hasGeneratedSyncImplementation(),
 		SyncableResources:            g.profile.SyncableResources,
 		DependentSyncResources:       g.profile.DependentSyncResources,
 		TenantScopedParents:          g.profile.TenantScopedParents(),

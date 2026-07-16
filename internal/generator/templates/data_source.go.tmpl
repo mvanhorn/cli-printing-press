@@ -613,9 +613,11 @@ func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, r
 	}
 	defer db.Close()
 
+	{{if .HasSync}}
 	if flags != nil {
 		emitSyncHints(hintWriter, db, resourceType, flags.maxAge)
 	}
+	{{- end}}
 
 	prov := localProvenance(db, resourceType, reason)
 
