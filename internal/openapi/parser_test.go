@@ -11999,6 +11999,22 @@ func TestDetectPaginationPreservesParameterCase(t *testing.T) {
 	}
 }
 
+func TestDetectPaginationRecognizesSizeWithAdvanceParam(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{{Name: "page"}, {Name: "size"}}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "page", pag.CursorParam)
+	assert.Equal(t, "page", pag.Type)
+	assert.Equal(t, "size", pag.LimitParam)
+}
+
+func TestDetectPaginationDoesNotClassifySizeOnly(t *testing.T) {
+	t.Parallel()
+
+	assert.Nil(t, detectPagination([]spec.Param{{Name: "size"}}, nil))
+}
+
 func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
 	t.Parallel()
 

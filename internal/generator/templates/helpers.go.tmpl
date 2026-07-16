@@ -1385,11 +1385,26 @@ func paginationCursorToken(raw json.RawMessage) string {
 }
 
 func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, bool) {
+	return extractPaginatedItemsFromObject(obj, true)
+}
+
+func extractPaginatedItemsFromObject(obj map[string]json.RawMessage, allowEmbedded bool) ([]json.RawMessage, bool) {
 	for _, field := range []string{"data", "items", "results", "messages", "members", "values"} {
 		if arr, ok := obj[field]; ok {
 			var nested []json.RawMessage
 			if json.Unmarshal(arr, &nested) == nil {
 				return nested, true
+			}
+		}
+	}
+
+	if allowEmbedded {
+		if raw, ok := obj["_embedded"]; ok {
+			var embedded map[string]json.RawMessage
+			if json.Unmarshal(raw, &embedded) == nil {
+				if nested, ok := extractPaginatedItemsFromObject(embedded, false); ok {
+					return nested, true
+				}
 			}
 		}
 	}

@@ -8245,6 +8245,14 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 			}
 		}
 	}
+	// A standalone size parameter is ambiguous and cannot advance pages by
+	// itself. Treat it as a page-size parameter only when an advance parameter
+	// was detected as well.
+	if pag.LimitParam == "" && pag.CursorParam != "" {
+		if orig, ok := originalCase["size"]; ok {
+			pag.LimitParam = orig
+		}
+	}
 
 	// Also check for has_more in response schemas
 	if op != nil && op.Responses != nil {
