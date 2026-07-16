@@ -161,6 +161,7 @@ type Generator struct {
 	htmlSyncStubComputed bool
 	htmlSyncStub         bool
 	htmlSyncStubSelected bool
+	learnStorePromoted   bool
 
 	mcpParamDescriptions *mcpdesc.ParamDescriptionCompactor
 }
@@ -1010,6 +1011,7 @@ type readmeTemplateData struct {
 	CompactDescription string
 	SkillDescription   string
 	HasDataLayer       bool
+	HasSync            bool
 	HasAsyncJobs       bool
 	HasWriteCommands   bool
 	HasCreateCommands  bool
@@ -1076,6 +1078,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		CompactDescription:    g.compactDescription(),
 		SkillDescription:      g.skillDescription(),
 		HasDataLayer:          g.hasDataLayer(),
+		HasSync:               g.hasGeneratedSyncImplementation(),
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
 		HasCreateCommands:     hasCreateCommands(g.Spec.Resources),
@@ -1093,7 +1096,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 func (g *Generator) hasDataLayer() bool {
 	// Explicit store-only plans remain supported for custom population paths;
 	// zero-syncable learn stores must not advertise generic local-data surfaces.
-	return g != nil && g.VisionSet.Store && (g.hasGeneratedSyncImplementation() || hasSyncCommandResources(g.profile))
+	return g != nil && g.VisionSet.Store && (!g.learnStorePromoted || g.hasGeneratedSyncImplementation() || hasSyncCommandResources(g.profile))
 }
 
 func (g *Generator) hasWorkflowSurface() bool {
@@ -2310,8 +2313,12 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 		g.resetHTMLSyncStubCache()
 	}
+	storeSelectedBeforeConstrain := g.VisionSet.Store
 	g.htmlSyncStubSelected = g.VisionSet.Sync && g.shouldEmitHTMLSyncStub()
 	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet, g.profile, os.Stderr)
+	if g.Spec.Learn.Enabled && !storeSelectedBeforeConstrain && g.VisionSet.Store {
+		g.learnStorePromoted = true
+	}
 	if g.Spec.Learn.Enabled && !g.VisionSet.Store {
 		// Defensive: constrainVisionTemplates already promotes Store for
 		// learn-enabled specs, so this branch is unreachable through the

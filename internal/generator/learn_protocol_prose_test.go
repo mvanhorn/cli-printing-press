@@ -21,7 +21,7 @@ func TestGeneratedProseCarriesLearnProtocol(t *testing.T) {
 	apiSpec.Learn.Enabled = true
 	outputDir := filepath.Join(t.TempDir(), "learn-prose-pp-cli")
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
 	require.NoError(t, gen.Generate())
 
 	skill := readGeneratedFile(t, outputDir, "SKILL.md")
@@ -107,4 +107,26 @@ func TestGeneratedProseOmitsLearnProtocolWhenDisabled(t *testing.T) {
 	readme := readGeneratedFile(t, outputDir, "README.md")
 	assert.NotContains(t, readme, "### Self-learning loop")
 	assert.NotContains(t, readme, "learnings stats")
+}
+
+// TestGeneratedLearnProtocolOmitsSyncAdviceForExplicitStoreOnlyPlan pins the
+// rendered SKILL.md contract for an explicit store-only plan over a syncable
+// API: the data layer exists, but the generated sync command does not.
+func TestGeneratedLearnProtocolOmitsSyncAdviceForExplicitStoreOnlyPlan(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("learn-prose-store-only")
+	apiSpec.Learn.Enabled = true
+	outputDir := filepath.Join(t.TempDir(), "learn-prose-store-only-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	require.True(t, gen.hasDataLayer(), "explicit store-only plan must retain its data layer")
+	require.False(t, gen.hasGeneratedSyncImplementation(), "explicit store-only plan must not gain generated sync")
+	require.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "sync.go"))
+
+	skill := readGeneratedFile(t, outputDir, "SKILL.md")
+	assert.NotContains(t, skill, "lookup_refresh_available",
+		"SKILL.md must not advise running a sync command that was not generated")
 }
